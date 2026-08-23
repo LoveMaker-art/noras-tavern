@@ -54,20 +54,12 @@ Requirements: Python 3.10+ and an OpenAI-compatible Chat Completions endpoint.
 ```bash
 git clone https://github.com/LoveMaker-art/noras-tavern.git
 cd noras-tavern
-
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-
-export TAVERN_STATE_DIR="$PWD/tavern-state"
-export TAVERN_MODEL_BASE="https://your-provider.example/v1"
-export TAVERN_MODEL_KEY="replace-with-your-key"
-export TAVERN_MODEL="your-model-id"
-
-python3 app/backend/server.py --port 8799
+python3 start.py
 ```
 
-Open [http://127.0.0.1:8799](http://127.0.0.1:8799). Runtime data is written only to `TAVERN_STATE_DIR`, not to the source tree.
+The first run asks for the model endpoint, API key, and model ID, then creates the local environment, installs dependencies, and saves `.env`. Later starts use the same `python3 start.py` command. On Windows, use `py start.py`.
+
+When the terminal prints `Tavern → http://127.0.0.1:8799`, open that address. Do not open `app/frontend/index.html` directly: the static page has no backend and will report that Tavern cannot reach its backend. Runtime data is written only to `TAVERN_STATE_DIR`, not to the source tree.
 
 For production deployment, reverse proxies, environment variables, and storage boundaries, follow the [standalone deployment guide](docs/standalone.md) and [configuration reference](docs/configuration.md).
 

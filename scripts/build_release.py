@@ -36,6 +36,7 @@ BACKEND_FILES = (
     "card_import.py",
     "card_preparation.py",
     "continuity_model.py",
+    "env_loader.py",
     "generation_service.py",
     "memory_cache.py",
     "message_segments.py",

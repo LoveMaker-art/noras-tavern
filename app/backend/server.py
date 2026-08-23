@@ -21,6 +21,12 @@ from urllib.parse import parse_qs, quote, urlparse
 HERE = os.path.dirname(os.path.abspath(__file__))
 APP_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
+from env_loader import load_standalone_env  # noqa: E402
+
+# Standalone source checkouts load their root .env before modules read model
+# configuration. Existing process variables retain precedence.
+LOADED_ENV_FILE = load_standalone_env(__file__) if __name__ == "__main__" else None
+
 import actor  # noqa: E402
 import card_import  # noqa: E402
 import card_preparation  # noqa: E402
@@ -3570,7 +3576,9 @@ def ev_set_note(ev):
 MODELS_PATH = os.path.join(STATE, "model_configs.json")
 HERMES_CONFIG_PATH = os.environ.get(
     "HERMES_CONFIG_PATH", os.path.join(HERMES_HOME, "config.yaml"))
-OFFICIAL_MODELS = ("deepseek-v4-flash",)
+# The environment-selected model is the standalone built-in. Hermes deployments
+# keep the same default because TAVERN_MODEL defaults to deepseek-v4-flash.
+OFFICIAL_MODELS = (actor.MODEL_NAME,)
 MODEL_REGISTRY = ModelRegistry(
     MODELS_PATH,
     builtin_base=actor.MODEL_BASE,
@@ -4108,8 +4116,9 @@ def main():
     migrated = _migrate_worldbook_storage()
     if migrated:
         print(f"worldbook storage migrated: {migrated} production(s)", flush=True)
-    print("酒馆演员运行时 → http://%s:%d  (model=%s, key=%s)" % (
-        host, port, actor.MODEL_NAME, "set" if actor.MODEL_KEY else "MISSING"))
+    print("Tavern → http://%s:%d  (model=%s, key=%s%s)" % (
+        host, port, actor.MODEL_NAME, "set" if actor.MODEL_KEY else "MISSING",
+        f", env={LOADED_ENV_FILE}" if LOADED_ENV_FILE else ""), flush=True)
     _schedule_story_state_backlog()
     BoundedThreadingHTTPServer((host, port), H).serve_forever()
 

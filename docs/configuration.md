@@ -15,6 +15,10 @@
 独立部署必须显式设置状态目录、模型地址和密钥。Hermes 环境在未设置模型变量时可读取
 `$HERMES_HOME/config.yaml`，但这只是 Hermes 兼容回退，不应作为独立部署方式。
 
+独立部署的 `python3 start.py` 会在首次运行时创建并维护项目根目录的 `.env`。直接运行
+后端时也会自动读取该文件；已经存在的进程环境变量优先级更高。可用
+`TAVERN_ENV_FILE=/path/to/custom.env` 显式指定其他配置文件。
+
 ## 服务与安全
 
 | 变量 | 默认值 | 说明 |
@@ -60,5 +64,6 @@
 
 - 密钥只通过环境变量、Hermes 配置或 Tavern 状态文件保存，不进入前端和 Git。
 - `.env.example` 只提供占位符；`.env` 已被 `.gitignore` 排除。
+- `TAVERN_MEMORY_MODEL` 留空时自动使用 `TAVERN_MODEL`，不需要重复填写。
 - 自定义模型由运行时写入 `TAVERN_STATE_DIR/model_configs.json`，属于实例数据。
 - 修改环境变量后应重启运行时；修改世界、角色卡或模型选择不需要更新源码。

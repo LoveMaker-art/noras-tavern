@@ -9,29 +9,31 @@
 - 可写的持久化目录
 - OpenAI-compatible `POST /chat/completions` 模型接口
 
-## 安装
+## 一条命令启动
 
 ```sh
 git clone https://github.com/LoveMaker-art/noras-tavern.git
 cd noras-tavern
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
+python3 start.py
 ```
 
-复制配置模板并填写模型信息：
+首次运行时，启动器会：
+
+- 检查 Python 是否为 3.10 或更高版本；
+- 询问模型接口、API Key 和模型 ID；
+- 在项目根目录生成权限受限的 `.env`；
+- 自动创建 `.venv` 并安装或更新依赖；
+- 启动前后端同源服务。
+
+以后再次进入项目目录运行 `python3 start.py` 即可。Windows 使用 `py start.py`。
+需要更换模型基础配置时运行 `python3 start.py --configure`。
+
+也可以复制 `.env.example` 后手动填写。后端会自动读取项目根目录的 `.env`，无需再执行
+`source`、`set -a` 或逐项导出环境变量：
 
 ```sh
 cp .env.example .env
-```
-
-Tavern 不会自行读取 `.env`。启动前需将其导入当前 shell：
-
-```sh
-set -a
-. ./.env
-set +a
-python3 app/backend/server.py --port "${TAVERN_PORT:-8799}"
+python3 start.py
 ```
 
 浏览器打开 `http://127.0.0.1:8799/`。健康检查：
@@ -39,6 +41,9 @@ python3 app/backend/server.py --port "${TAVERN_PORT:-8799}"
 ```sh
 curl -fsS http://127.0.0.1:8799/api/health
 ```
+
+不要直接打开 `app/frontend/index.html`。Tavern 的网页和 API 必须由同一个后端地址提供；
+直接打开静态文件时，“开启新世界”等操作会因无法连接后端而失败。
 
 ## 持久化与升级
 

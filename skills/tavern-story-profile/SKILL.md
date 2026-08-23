@@ -1,7 +1,7 @@
 ---
 name: tavern-story-profile
 description: Recall stories and maintain durable Tavern preferences.
-version: 1.24.4
+version: 1.24.5
 author: ClawChat Tavern
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]

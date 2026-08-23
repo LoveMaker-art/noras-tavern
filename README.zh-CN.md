@@ -54,20 +54,15 @@ Tavern 不依赖 Liveware 才能运行。Liveware 只是 ClawChat 中的可选�
 ```bash
 git clone https://github.com/LoveMaker-art/noras-tavern.git
 cd noras-tavern
-
-python3 -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-
-export TAVERN_STATE_DIR="$PWD/tavern-state"
-export TAVERN_MODEL_BASE="https://your-provider.example/v1"
-export TAVERN_MODEL_KEY="replace-with-your-key"
-export TAVERN_MODEL="your-model-id"
-
-python3 app/backend/server.py --port 8799
+python3 start.py
 ```
 
-打开 [http://127.0.0.1:8799](http://127.0.0.1:8799)。运行数据只写入 `TAVERN_STATE_DIR`，不会写回源码目录。
+首次启动会询问模型接口、API Key 和模型 ID，并自动创建本地环境、安装依赖和保存
+`.env`。以后仍然只需运行 `python3 start.py`。Windows 可以使用 `py start.py`。
+
+终端显示 `Tavern → http://127.0.0.1:8799` 后，打开该地址。不要直接双击
+`app/frontend/index.html`；静态页面无法连接后端，会显示“无法连接酒馆后端”。运行数据只写入
+`TAVERN_STATE_DIR`，不会写回源码目录。
 
 正式部署、反向代理、环境变量和数据目录说明见[独立部署](docs/standalone.md)与[配置参考](docs/configuration.md)。
 

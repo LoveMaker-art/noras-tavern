@@ -1,9 +1,28 @@
 /* bridge.js — Tavern frontend to same-origin runtime bridge. */
 (function (global) {
   "use strict";
+  function normalizeFetchError(error) {
+    if (error && error.name === "AbortError") return error;
+    if (error instanceof TypeError) {
+      const message = typeof I18N !== "undefined" && I18N.t
+        ? I18N.t("backendUnavailable")
+        : "Tavern backend is unavailable. Start the server and open its HTTP address.";
+      const unavailable = new Error(message);
+      unavailable.code = "backend_unreachable";
+      return unavailable;
+    }
+    return error;
+  }
+  async function request(path, options) {
+    try {
+      return await fetch(path, options);
+    } catch (error) {
+      throw normalizeFetchError(error);
+    }
+  }
   async function event(ev) {
     try {
-      const r = await fetch("/api/event", {
+      const r = await request("/api/event", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(ev),
@@ -23,12 +42,12 @@
     }
   }
   async function get(path) {
-    const r = await fetch(path);
+    const r = await request(path);
     return r.json();
   }
   async function generate(ev, signal) {
     try {
-      const r = await fetch("/api/event", {
+      const r = await request("/api/event", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(ev),
@@ -45,7 +64,7 @@
     }
   }
   async function audioRequest(path, payload, signal) {
-    const r = await fetch(path, {
+    const r = await request(path, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
@@ -66,7 +85,7 @@
     return audioRequest("/api/tts/preview", payload, signal);
   }
   async function saveVoiceClone(payload) {
-    const r = await fetch("/api/tts/clone", {
+    const r = await request("/api/tts/clone", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(payload),
