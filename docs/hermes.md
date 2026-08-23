@@ -1,14 +1,45 @@
 # Hermes + Tavern 部署
 
+本文只负责把 Tavern 接入一个**已经能够正常对话的 Hermes Agent**。Tavern Bootstrap
+不会安装 Hermes，也不会替 Hermes 选择模型服务商。
+
 Tavern 使用 Hermes 官方的技能目录规则：`$HERMES_HOME/skills/` 是已安装技能的唯一来源。
 没有设置 `HERMES_HOME` 时，Hermes 默认使用 `~/.hermes`；使用 profile 时应让 Hermes
 提供对应的 `HERMES_HOME`，不要把路径写死为 `~/.hermes` 或 `/opt/data`。
 
-## 两种安装方式
+## 适用平台
 
-### 完整安装
+- 完整 Hermes + Tavern 集成：Linux、macOS、WSL2。
+- 原生 Windows：Hermes 官方支持原生安装，但本项目的完整集成仍依赖 POSIX `sh`；请使用
+  WSL2，或按[独立部署](standalone.md)只运行 Tavern。
+- ClawChat Liveware：可选，且只在运行环境提供相应插件与 Liveware 命令时启用。
 
-需要同时安装 Tavern Web 应用、全部技能和更新器时，运行经过清单校验的 Bootstrap：
+## 从零开始
+
+### 1. 安装 Hermes
+
+按照 Hermes 官方[安装指南](https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/installation)执行：
+
+```sh
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+```
+
+安装后如终端还找不到 `hermes`，按官方提示重新加载当前 shell。不要使用
+`pip install hermes-agent` 代替官方安装器。
+
+### 2. 配置并验证 Hermes
+
+```sh
+hermes setup
+```
+
+使用 Nous Portal 时可以运行官方提供的 `hermes setup --portal`。完成配置后，先打开 Hermes
+并进行一次真实对话。只有 Hermes 能稳定返回普通消息后，才继续安装 Tavern；Tavern 不负责
+修复 Hermes 本身的 provider、模型或网络配置。
+
+### 3. 安装完整 Tavern 集成
+
+运行经过清单校验的 Bootstrap：
 
 ```sh
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
@@ -31,7 +62,18 @@ Bootstrap 会先下载 manifest、验证归档和逐文件哈希，再审查当�
 只有无冲突的计划才会应用；健康检查失败时回滚受管理文件。用户世界、角色、故事、密钥、
 素材、`SOUL.md` 和其他自定义技能均不在覆盖范围内。
 
-### 只安装技能
+### 4. 验证安装
+
+```sh
+hermes skills list
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/creative/tavern/scripts/tavern_cli.py" doctor --json
+curl -fsS http://127.0.0.1:8799/api/health
+```
+
+`doctor` 应确认 API、技能和实例路径；健康接口应返回 `"ok": true`。随后可以直接打开
+`http://127.0.0.1:8799/`，或在 Hermes 中提出“创建一个酒馆世界”“导入这张角色卡”等请求。
+
+## 已有 Tavern，只安装技能
 
 Tavern 已在本机或其他位置运行，只需要让 Hermes 控制它时，可使用官方 Custom Tap：
 
@@ -97,13 +139,3 @@ install -m 600 integrations/hermes/SOUL.md "$HERMES_HOME/SOUL.md"
 
 ClawChat Hook、Liveware 注册和恢复脚本随 `tavern` 技能安装，但只有检测到相应插件和
 Liveware 二进制时才使用。普通 Hermes 或独立 Tavern 不会触发这条链路。
-
-## 验证
-
-```sh
-hermes skills list
-python3 "$HERMES_HOME/skills/creative/tavern/scripts/tavern_cli.py" doctor --json
-curl -fsS http://127.0.0.1:8799/api/health
-```
-
-`doctor` 应确认 API、技能和实例路径；健康接口应返回 `"ok": true`。

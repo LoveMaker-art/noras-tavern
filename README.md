@@ -39,15 +39,18 @@ The same world is available as a focused mobile reading experience and a desktop
 
 ## Choose Your Setup
 
-| Goal | Install | Best for |
-| --- | --- | --- |
-| Run Tavern by itself | `app/` | A private or self-hosted storytelling web app |
-| Run Tavern with Hermes | `app/`, `skills/`, `integrations/hermes/` | Letting an agent build and operate worlds through natural language |
-| Add ClawChat Liveware | Hermes setup plus the optional hook | Opening Tavern from an existing ClawChat conversation |
+There are two primary installation paths:
 
-Tavern does not require Liveware. Liveware is an optional ClawChat surface; Hermes is the agent integration provided by this repository.
+| I want to... | Start here | What gets installed |
+| --- | --- | --- |
+| Play Tavern as a web app | [Standalone Tavern](#quick-start) | Tavern only; Hermes, ClawChat, and Liveware are not required |
+| Use an agent to build and manage Tavern worlds | [Hermes + Tavern](#hermes-agent) | Hermes first, then the Tavern app and Hermes skills |
+
+ClawChat Liveware is an optional surface for the second path. It is not a third runtime and is not required by standalone Tavern or ordinary Hermes installations.
 
 ## Quick Start
+
+### Path A: Standalone Tavern
 
 Requirements: Python 3.10+ and an OpenAI-compatible Chat Completions endpoint.
 
@@ -65,7 +68,18 @@ For production deployment, reverse proxies, environment variables, and storage b
 
 ## Hermes Agent
 
-For an existing Hermes installation, the verified bootstrap installs or updates the Tavern application, the complete skill set, and the managed Hermes integration files:
+### Path B: Hermes + Tavern
+
+The Tavern bootstrap does **not** install Hermes Agent. Start with a working Hermes installation, following the official [Hermes installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation) and [quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart):
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+```
+
+`hermes setup --portal` is the official shortest setup when using Nous Portal. Before adding Tavern, open Hermes and verify that it can complete one normal conversation.
+
+Then install or update the Tavern application, its complete Hermes skill set, and the managed integration files:
 
 ```bash
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
@@ -73,7 +87,19 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 The updater reviews the release manifest, checks compatibility, creates rollback material, applies managed files, and performs a health check. Worlds, cards, stories, model configuration, identity, and uploaded assets remain outside its overwrite boundary.
 
-If Tavern is already running and you only need the skills, install the repository as a [Hermes Custom Tap](docs/hermes.md#只安装技能).
+Verify the integration:
+
+```bash
+hermes skills list
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/creative/tavern/scripts/tavern_cli.py" doctor --json
+curl -fsS http://127.0.0.1:8799/api/health
+```
+
+After verification, ask Hermes to create or inspect a Tavern world, or open `http://127.0.0.1:8799/` directly.
+
+The complete Tavern integration currently targets Linux, macOS, and WSL2 because its managed runtime scripts use POSIX `sh`. Standalone Tavern supports native Windows through `py start.py`.
+
+If Tavern is already running and you only need the skills, install the repository as a [Hermes Custom Tap](docs/hermes.md#已有-tavern只安装技能).
 
 ## How It Fits Together
 

@@ -39,15 +39,18 @@ Nora's Tavern 保存普通聊天界面最容易丢失的部分：世界、登场
 
 ## 选择部署方式
 
-| 目标 | 安装内容 | 适用场景 |
-| --- | --- | --- |
-| 单独运行 Tavern | `app/` | 私有部署或自托管互动故事 Web 应用 |
-| Hermes + Tavern | `app/`、`skills/`、`integrations/hermes/` | 让 Agent 通过自然语言构建和管理世界 |
-| 接入 ClawChat Liveware | Hermes 部署加可选 Hook | 从 ClawChat 对话中直接打开 Tavern |
+本项目只有两条主要安装路径：
 
-Tavern 不依赖 Liveware 才能运行。Liveware 只是 ClawChat 中的可选展示入口；Hermes 是本仓库已经提供的 Agent 集成方式。
+| 我想要…… | 从这里开始 | 会安装什么 |
+| --- | --- | --- |
+| 只玩酒馆 Web 应用 | [路径 A：独立酒馆](#快速开始) | 只安装 Tavern，不需要 Hermes、ClawChat 或 Liveware |
+| 让 Agent 创建并管理酒馆世界 | [路径 B：Hermes + Tavern](#接入-hermes-agent) | 先安装 Hermes，再安装 Tavern 应用和 Hermes 技能 |
+
+ClawChat Liveware 只是路径 B 的可选展示入口，不是第三套运行方式。独立 Tavern 和普通 Hermes 用户都不需要安装 Liveware。
 
 ## 快速开始
+
+### 路径 A：独立酒馆
 
 需要 Python 3.10+，以及一个兼容 OpenAI Chat Completions 的模型接口。
 
@@ -68,7 +71,18 @@ python3 start.py
 
 ## 接入 Hermes Agent
 
-已经安装 Hermes 时，可使用经过校验的 Bootstrap 安装或更新 Tavern 应用、完整技能和受管理的 Hermes 集成文件：
+### 路径 B：Hermes + Tavern
+
+Tavern Bootstrap **不会安装 Hermes Agent**。请先按照 Hermes 官方的[安装指南](https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/installation)和[快速入门](https://hermes-agent.nousresearch.com/docs/zh-Hans/getting-started/quickstart)完成 Hermes 安装与模型配置：
+
+```bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
+hermes setup
+```
+
+使用 Nous Portal 时，官方提供的最短配置方式是 `hermes setup --portal`。添加 Tavern 前，请先打开 Hermes，完成一次能够正常返回内容的真实对话。
+
+Hermes 工作正常后，再安装或更新 Tavern 应用、完整 Hermes 技能和受管理的集成文件：
 
 ```bash
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
@@ -76,7 +90,19 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 更新器会检查发布清单与兼容性、创建回滚材料、应用受管理文件，并在完成后执行健康检查。世界、角色卡、故事、模型配置、身份与上传素材都不在覆盖范围内。
 
-如果 Tavern 已经运行，只需要技能，可按 [Hermes Custom Tap 指南](docs/hermes.md#只安装技能)单独安装。
+安装完成后验证：
+
+```bash
+hermes skills list
+python3 "${HERMES_HOME:-$HOME/.hermes}/skills/creative/tavern/scripts/tavern_cli.py" doctor --json
+curl -fsS http://127.0.0.1:8799/api/health
+```
+
+验证通过后，可以让 Hermes“创建一个酒馆世界”，也可以直接打开 `http://127.0.0.1:8799/`。
+
+完整 Tavern 集成目前面向 Linux、macOS 和 WSL2，因为受管理的运行脚本依赖 POSIX `sh`。原生 Windows 用户可以使用 `py start.py` 独立运行 Tavern。
+
+如果 Tavern 已经运行，只需要技能，可按 [Hermes Custom Tap 指南](docs/hermes.md#已有-tavern只安装技能)单独安装。
 
 ## 系统关系
 
