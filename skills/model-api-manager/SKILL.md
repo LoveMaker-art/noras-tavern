@@ -1,7 +1,7 @@
 ---
 name: model-api-manager
 description: Configure model APIs for Hermes Agent or Tavern.
-version: 1.0.0
+version: 1.0.1
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -38,6 +38,11 @@ already said the agent, Tavern/the story model, or both.
 - `agent` changes the Hermes provider and default model.
 - `tavern` changes Tavern's active text-generation model only.
 - `both` runs both independent validations and applies one atomic transaction.
+
+For `agent` or `both`, tell the user before applying the change, in the user's
+current language, that Hermes Gateway must restart after validation, ClawChat
+may disconnect briefly, and the new model becomes the global default after the
+restart. This is a notice, not an additional confirmation prompt.
 
 TTS, image, embedding, auxiliary, story-ledger, and character-state models are
 outside this skill unless the user explicitly asks for one of them.
@@ -108,7 +113,9 @@ After apply:
 3. Run Tavern `model test` and `doctor --json` for `tavern` or `both`.
 4. Report the two scopes separately: provider name, model ID, latency, active
    state, and a masked key suffix only.
-5. Never say "both succeeded" when only one target succeeded.
+5. For `agent` or `both`, explicitly report whether the gateway restart
+   succeeded and state that subsequent messages use the new global default.
+6. Never say "both succeeded" when only one target succeeded.
 
 Load `references/security-and-rollback.md` from this skill for failures,
 partial writes, credential rotation, or recovery.
