@@ -518,6 +518,37 @@ def release_material(work, release=None, historical=False):
     return release, manifest, archive_path, skill_manifest, skill_archive_path
 
 
+def historical_system_material(work, release):
+    """Verify an installed release without coupling it to today's skill layout."""
+    work.mkdir(parents=True, exist_ok=True)
+    manifest_path = work / ASSET_MANIFEST
+    archive_path = work / ASSET_ARCHIVE
+    download(release["assets"][ASSET_MANIFEST], manifest_path)
+    download(release["assets"][ASSET_ARCHIVE], archive_path)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (
+        manifest.get("schema") != 4
+        or manifest.get("scope") != "tavern-system"
+        or manifest.get("archive") != ASSET_ARCHIVE
+    ):
+        raise RuntimeError("unsupported historical release manifest")
+    version = str(manifest.get("version") or "")
+    if release.get("tag") != "v" + version:
+        raise RuntimeError("historical release tag and manifest version do not match")
+    if sha256_file(archive_path) != manifest.get("sha256"):
+        raise RuntimeError("historical release archive SHA256 mismatch")
+    managed = [str(path) for path in (manifest.get("managed_files") or [])]
+    for path in managed:
+        area, separator, name = path.partition("/")
+        if not separator or name not in ALLOWED_MANAGED.get(area, set()):
+            raise RuntimeError(f"historical release attempts to manage a forbidden path: {path}")
+    expected_runtime = {f"runtime/{name}" for name in runtime_files_for_version(version)}
+    actual_runtime = {path for path in managed if path.startswith("runtime/")}
+    if actual_runtime != expected_runtime:
+        raise RuntimeError("historical release runtime does not match its version allowlist")
+    return manifest, archive_path
+
+
 def safe_extract(archive, destination, manifest):
     destination = destination.resolve()
     allowed_areas = {"runtime", "updater", "system-skills"}
@@ -862,6 +893,74 @@ def compatibility_replacement(area, name, current_hash, target_version):
     return migration["reason"]
 
 
+def starter_card_key(card):
+    if not isinstance(card, dict):
+        raise ValueError("starter card must be an object")
+    for field in ("source", "file", "name"):
+        value = str(card.get(field) or "").strip()
+        if value:
+            return field + ":" + value
+    raise ValueError("starter card has no stable identity")
+
+
+def starter_document(path):
+    document = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(document.get("cards"), list):
+        raise ValueError("starter index must contain a cards array")
+    cards = {}
+    order = []
+    for card in document["cards"]:
+        key = starter_card_key(card)
+        if key in cards:
+            raise ValueError("starter index contains duplicate card identities")
+        cards[key] = card
+        order.append(key)
+    return document, cards, order
+
+
+def merge_starter_index(base, current, incoming, output):
+    """Three-way merge the official starter catalog while preserving local cards."""
+    try:
+        if base:
+            base_doc, base_cards, _base_order = starter_document(base)
+        else:
+            base_doc, base_cards = {"cards": []}, {}
+        current_doc, current_cards, current_order = starter_document(current)
+        incoming_doc, incoming_cards, incoming_order = starter_document(incoming)
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError):
+        return False
+
+    merged_doc = dict(incoming_doc)
+    for field, value in current_doc.items():
+        if field != "cards" and value != base_doc.get(field):
+            merged_doc[field] = value
+
+    merged_cards = dict(incoming_cards)
+    merged_order = list(incoming_order)
+    for key, base_card in base_cards.items():
+        current_card = current_cards.get(key)
+        if current_card is None:
+            merged_cards.pop(key, None)
+            merged_order = [item for item in merged_order if item != key]
+        elif current_card != base_card:
+            merged_cards[key] = current_card
+            if key not in merged_order:
+                merged_order.append(key)
+    for key in current_order:
+        if key not in base_cards:
+            merged_cards[key] = current_cards[key]
+            if key not in merged_order:
+                merged_order.append(key)
+
+    merged_doc["cards"] = [merged_cards[key] for key in merged_order if key in merged_cards]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(merged_doc, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return True
+
+
 def merge_area(
         area, base_root, current_root, incoming_root, output_root, managed_names,
         compatibility_target=None):
@@ -887,6 +986,9 @@ def merge_area(
             source, status = n, "upstream"
         elif nh == bh:
             source, status = c, "local"
+        elif area == "runtime" and name == "assets/fixtures/starter/index.json" and c and n and merge_starter_index(
+                b, c, n, output_root / name):
+            status = "structured-merged"
         elif b and c and n and metadata_only_upgrade(
                 area, name, b, c, compatibility_target):
             source, status = n, "metadata-normalized"
@@ -910,7 +1012,7 @@ def merge_area(
             status = "conflict"
         if status == "conflict":
             conflicts.append(f"{area}/{name}")
-        elif status != "merged" and source:
+        elif status not in ("merged", "structured-merged") and source:
             copy_file(source, output_root / name)
         report.append({
             "path": f"{area}/{name}",
@@ -1458,15 +1560,14 @@ def command_review(_args):
                 try:
                     base_work = work / "base"
                     base_release = tagged_release(installed)
-                    (_old_release, old_manifest, old_archive,
-                     old_skill_manifest, old_skill_archive) = release_material(
-                        base_work, base_release, historical=True)
+                    old_manifest, old_archive = historical_system_material(
+                        base_work, base_release)
                     if old_manifest["version"] != installed:
                         raise RuntimeError("installed release version does not match its manifest")
                     base_root = base_work / "unpacked"
                     base_root.mkdir()
                     safe_extract(old_archive, base_root, old_manifest)
-                    safe_extract_skill(old_skill_archive, base_root, old_skill_manifest)
+                    baseline_source = "installed-tag-system"
                 except Exception as tagged_error:
                     try:
                         base_root = bundled_baseline(work / "bundled-base", release, installed)
@@ -1604,26 +1705,19 @@ def command_report(args):
         "conflicts": plan["conflicts"],
         "metadata_normalized": plan.get("metadata_normalized") or [],
         "compatibility_migrations": plan.get("compatibility_migrations") or [],
-        "changes": (
-            changes if args.details else [
-                {key: item[key] for key in ("path", "category", "status")}
-                for item in changes
-            ]
-        ),
+        "changed_files": len(changes),
         "details": bool(args.details),
-        "skills_policy": "The six official Tavern creative-skill directories and the managed model API system-skill directory are backed up and replaced exactly; the two obsolete construction-skill directories are deleted and never installed or registered; every other skill directory is excluded.",
-        "excluded": [
-            "runtime/web files outside the eight official managed code files",
-            "runtime/assets",
-            "runtime identity/persona files other than the neutral actor_self.md seed template",
-            "starter and fixture content",
-            "every skill directory outside the six exact official Tavern creative skills, the managed model API system skill, and two explicit obsolete directories scheduled for deletion",
-            str(DATA / "tavern-state"),
-            "credentials and model keys",
+        "preserved": [
+            "Tavern state, worlds, characters, stories, uploads and model configuration",
+            "identity, persona, credentials and ClawChat databases",
+            "custom skill directories",
+            "locally added or edited starter catalog entries",
         ],
-        "agents_policy": f"The complete {AGENTS_PATH} is release-managed and will be replaced after its current contents are backed up.",
-        "next_step": "Report this summary once and wait for approval. Use --details only when the user explicitly requests file hashes or conflict diagnosis.",
+        "managed_policy": "Official runtime, frontend, Tavern skills and AGENTS.md are verified and backed up before replacement.",
+        "next_step": "Report this compact summary once. Request file details only for a real conflict diagnosis.",
     }
+    if args.details:
+        report["changes"] = changes
     print(json.dumps(report, ensure_ascii=False))
 
 

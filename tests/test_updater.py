@@ -140,6 +140,121 @@ class UpdaterMergeTests(unittest.TestCase):
         self.assertEqual(report[0]["status"], "conflict")
         self.assertFalse((output / "server.py").exists())
 
+    def test_starter_index_preserves_local_cards_and_accepts_official_updates(self):
+        base = self.root / "base/runtime"
+        current = self.root / "current/runtime"
+        incoming = self.root / "incoming/runtime"
+        output = self.root / "output/runtime"
+        name = "assets/fixtures/starter/index.json"
+        self.write(base, name, json.dumps({
+            "note": "official old",
+            "cards": [
+                {"file": "a.png", "name": "A", "source": "official:a"},
+                {"file": "b.png", "name": "B", "source": "official:b"},
+            ],
+        }))
+        self.write(current, name, json.dumps({
+            "note": "my catalog",
+            "cards": [
+                {"file": "a.png", "name": "A localized", "source": "official:a"},
+                {"file": "custom.png", "name": "Custom", "source": "local:custom"},
+            ],
+        }))
+        self.write(incoming, name, json.dumps({
+            "note": "official new",
+            "cards": [
+                {"file": "a.png", "name": "A upstream", "source": "official:a"},
+                {"file": "b.png", "name": "B", "source": "official:b"},
+                {"file": "c.png", "name": "C", "source": "official:c"},
+            ],
+        }))
+
+        report, conflicts = UPDATER.merge_area(
+            "runtime", base, current, incoming, output, {name},
+            compatibility_target="1.24.9")
+
+        self.assertFalse(conflicts)
+        self.assertEqual(report[0]["status"], "structured-merged")
+        merged = json.loads((output / name).read_text(encoding="utf-8"))
+        self.assertEqual(merged["note"], "my catalog")
+        cards = {card["source"]: card for card in merged["cards"]}
+        self.assertEqual(cards["official:a"]["name"], "A localized")
+        self.assertNotIn("official:b", cards)
+        self.assertIn("official:c", cards)
+        self.assertIn("local:custom", cards)
+
+    def test_starter_index_is_adopted_without_conflict_when_old_release_had_no_catalog(self):
+        base = self.root / "base/runtime"
+        current = self.root / "current/runtime"
+        incoming = self.root / "incoming/runtime"
+        output = self.root / "output/runtime"
+        base.mkdir(parents=True)
+        name = "assets/fixtures/starter/index.json"
+        self.write(current, name, json.dumps({
+            "cards": [{"file": "custom.png", "name": "Custom", "source": "local:custom"}],
+        }))
+        self.write(incoming, name, json.dumps({
+            "cards": [{"file": "official.png", "name": "Official", "source": "official:a"}],
+        }))
+
+        report, conflicts = UPDATER.merge_area(
+            "runtime", base, current, incoming, output, {name},
+            compatibility_target="1.24.9")
+
+        self.assertFalse(conflicts)
+        self.assertEqual(report[0]["status"], "structured-merged")
+        sources = {
+            card["source"]
+            for card in json.loads((output / name).read_text(encoding="utf-8"))["cards"]
+        }
+        self.assertEqual(sources, {"official:a", "local:custom"})
+
+    def test_historical_system_material_does_not_require_old_skill_layout(self):
+        source = self.root / "historical-source"
+        for name in UPDATER.SINGLE_PASS_RUNTIME_FILES:
+            content = "1.23.7\n" if name == ".tavern-release-version" else f"old {name}\n"
+            self.write(source / "runtime", name, content)
+        self.write(source / "updater", "SKILL.md", "old updater\n")
+        archive = self.root / "tavern-release.tar.gz"
+        with tarfile.open(archive, "w:gz") as package:
+            package.add(source / "runtime", arcname="runtime")
+            package.add(source / "updater", arcname="updater")
+        files = {
+            path.relative_to(source).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in source.rglob("*") if path.is_file()
+        }
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps({
+            "schema": 4,
+            "scope": "tavern-system",
+            "version": "1.23.7",
+            "archive": archive.name,
+            "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+            "managed_files": sorted(files),
+            "files": files,
+        }), encoding="utf-8")
+        release = {
+            "tag": "v1.23.7",
+            "assets": {manifest.name: str(manifest), archive.name: str(archive)},
+        }
+        UPDATER.ALLOWED_MANAGED = {
+            **UPDATER.ALLOWED_MANAGED,
+            "runtime": set(UPDATER.SINGLE_PASS_RUNTIME_FILES),
+            "updater": {"SKILL.md"},
+        }
+
+        with mock.patch.object(
+                UPDATER, "download", side_effect=lambda src, dst: shutil.copy2(src, dst)):
+            old_manifest, old_archive = UPDATER.historical_system_material(
+                self.root / "historical-download", release)
+
+        self.assertEqual(old_manifest["version"], "1.23.7")
+        unpacked = self.root / "historical-unpacked"
+        unpacked.mkdir()
+        UPDATER.safe_extract(old_archive, unpacked, old_manifest)
+        self.assertEqual(
+            (unpacked / "runtime/.tavern-release-version").read_text(), "1.23.7\n")
+
     def test_known_transitional_runtime_is_migrated_to_upstream(self):
         base = self.root / "base/runtime"
         current = self.root / "current/runtime"
@@ -625,10 +740,9 @@ class UpdaterMergeTests(unittest.TestCase):
         report = json.loads(output.getvalue())
 
         self.assertFalse(report["details"])
-        self.assertEqual(
-            report["changes"],
-            [{"path": "runtime/server.py", "category": "backend", "status": "upstream"}],
-        )
+        self.assertEqual(report["changed_files"], 1)
+        self.assertNotIn("changes", report)
+        self.assertNotIn("runtime/server.py", output.getvalue())
         self.assertNotIn("installed_sha256", output.getvalue())
 
     def test_apply_rejects_plan_with_hidden_file_conflicts(self):

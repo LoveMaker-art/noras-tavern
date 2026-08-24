@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, install, and roll back verified Tavern releases.
-version: 1.24.8
+version: 1.24.9
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -32,9 +32,10 @@ uses that Release's own rules to produce `check`, `review`, and `report`. It doe
 not install Tavern runtime, frontend, creative or system skills, `AGENTS.md`, or user data
 during review.
 
-Summarize the installed and target releases, changed categories, validation,
-preserved data, and real conflicts. Then stop and wait for a new explicit user
-approval. The original request to inspect or update does not authorize apply.
+Summarize only the installed and target releases, category counts, validation,
+preserved data, and real conflicts. Keep per-file details out of model context
+unless a real conflict requires diagnosis. Then stop and wait for a new explicit
+user approval. The original request to inspect or update does not authorize apply.
 
 ## Apply And Rollback
 
@@ -72,6 +73,10 @@ health, or skill-registration checks still trigger automatic rollback.
   treat live instance files or arbitrary branches as an official baseline.
 - Preserve recognized local runtime and frontend changes through verified
   three-way review. Unknown conflicts stop apply.
+- Resolve an old installation from its exact tagged system Release; historical
+  creative-skill layouts do not participate in the merge base.
+- Merge the official starter index structurally so local additions, edits, and
+  deletions survive while new official entries remain available.
 - Validate managed Python, Shell, and JavaScript before installation, then
   verify skill registration, process health, identity, model, console, and
   story-profile surfaces before committing the transaction.

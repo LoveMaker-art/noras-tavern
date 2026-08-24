@@ -106,6 +106,25 @@ def main():
         data = root / "data"
         extract_install(args.base_assets, data)
         refresh_updater(args.target_assets, data)
+        starter = data / "apps/tavern-runtime/assets/fixtures/starter"
+        starter.mkdir(parents=True, exist_ok=True)
+        starter_index = starter / "index.json"
+        if starter_index.is_file():
+            starter_document = json.loads(starter_index.read_text(encoding="utf-8"))
+        else:
+            starter_document = {"note": "local starter catalog", "cards": []}
+        starter_document.setdefault("cards", []).append({
+            "file": "custom-local.png",
+            "name": "Custom Local",
+            "source": "local:integration-fixture",
+        })
+        starter_index.write_text(
+            json.dumps(starter_document, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        custom_starter = starter / "custom-local.png"
+        custom_starter.write_bytes(b"local starter fixture")
+        custom_starter_hash = sha256(custom_starter)
         protected = data / "tavern-state"
         protected.mkdir(parents=True)
         (protected / "private.json").write_text('{"preference":"keep me"}\n', encoding="utf-8")
@@ -141,6 +160,12 @@ def main():
         assert applied["to"] == target_version
         assert (data / "apps/tavern-runtime/.tavern-release-version").read_text().strip() == target_version
         assert state_hashes(protected) == before
+        merged_starter = json.loads(starter_index.read_text(encoding="utf-8"))
+        assert any(
+            card.get("source") == "local:integration-fixture"
+            for card in merged_starter.get("cards") or []
+        )
+        assert sha256(custom_starter) == custom_starter_hash
         baseline_meta = json.loads((data / "tavern-updates/baseline/.baseline.json").read_text())
         assert baseline_meta["version"] == target_version
         assert sha256(data / "tavern-updates/baseline/runtime/server.py") == target_manifest["files"]["runtime/server.py"]
@@ -148,6 +173,7 @@ def main():
         rolled_back = run_json([sys.executable, str(UPDATER), "rollback", "--confirm"], env)
         assert rolled_back["to"] == base_version
         assert state_hashes(protected) == before
+        assert sha256(custom_starter) == custom_starter_hash
         assert not (data / "tavern-updates/state.json").exists()
         print(json.dumps({
             "ok": True,

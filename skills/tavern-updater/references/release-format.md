@@ -119,8 +119,10 @@ Legacy versions without their own GitHub Release may be represented by two addit
 Every release review starts through the verified Bootstrap, which installs the
 target release's updater before it reviews or applies the current manifests.
 This avoids coupling manifest compatibility to the previously installed updater.
-Historical releases continue to validate only against the allowlist and hashes
-declared by their own verified artifacts.
+Historical merge bases use only the tagged Release's verified system manifest
+and archive. Their creative-skill archive is not loaded or validated because
+skills are replaced from the target Release and do not participate in the
+three-way runtime merge.
 
 Only the manifest-listed runtime and frontend code files and the exact contents
 of the declared creative-skill directories are release assets. Developer smoke
@@ -128,8 +130,10 @@ tools and host-side installers are not skill assets.
 `runtime/actor_self.md` is the sole identity-adjacent exception: it is a neutral
 seed template used only when runtime state is absent.
 `$TAVERN_STATE_DIR/actor_self.md`, `SOUL.md`, other identity/persona files,
-frontend backups, images and other assets, starter/fixture content, runtime
-state, credentials, and nonofficial skill directories are never release assets.
+frontend backups, user uploads and images, runtime state, credentials, and
+nonofficial skill directories are never release assets. The bundled starter
+fixtures are official release assets; their JSON index is structurally merged
+so local additions, edits, and deletions survive official catalog updates.
 Every regular archive file must appear in its archive's `managed_files` and
 `files`. Build with `scripts/build_release.py`, then attach all generated assets
 to a stable GitHub Release tagged `v<version>`.
@@ -143,6 +147,4 @@ During an actual version upgrade, query-string-only edits to local JS/CSS refere
 `runtime/web/index.html` are metadata-normalized before conflict classification. Exact hashes
 from updater-owned transitional deployments may also be migrated to a declared minimum target
 version. These narrow compatibility rules never authorize replacing unknown local code.
-The target skill manifest must exactly match the current official allowlist. A verified
-historical split-skill manifest may contain a safe subset of that allowlist, but it must
-still include every official skill's `SKILL.md` and may never introduce an unknown path.
+The target skill manifest must exactly match the current official allowlist.
