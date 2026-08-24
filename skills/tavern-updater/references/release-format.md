@@ -114,15 +114,14 @@ the release boundary. Source files live under `integrations/`; the build injects
 ClawChat lifecycle scripts, the shared CLI, Hook files, and canonical `AGENTS.md`
 into their installed Hermes paths so each file has one repository source.
 
-Legacy versions without their own GitHub Release may be represented by two additional assets on the latest stable Release: `baseline-v<VERSION>-manifest.json` and `tavern-baseline-v<VERSION>.tar.gz`. The archive contains only the exact allowlisted runtime tree. Its schema-1 manifest binds the version, archive SHA256, complete file list, every file hash, and embedded `.tavern-release-version` marker. It is a merge base only; it is never installed directly and never contains skills, updater code, credentials, identity state, or Tavern user data.
+Legacy versions without their own GitHub Release may be represented by two additional assets on the latest stable Release: `baseline-v<VERSION>-manifest.json` and `tavern-baseline-v<VERSION>.tar.gz`. The archive contains only the exact allowlisted runtime tree. Its schema-1 manifest binds the version, archive SHA256, complete file list, every file hash, and embedded `.tavern-release-version` marker. It is used only to distinguish official starter fixtures from local starter customization; it is never installed directly and never contains skills, updater code, credentials, identity state, or Tavern user data.
 
 Every release review starts through the verified Bootstrap, which installs the
 target release's updater before it reviews or applies the current manifests.
 This avoids coupling manifest compatibility to the previously installed updater.
-Historical merge bases use only the tagged Release's verified system manifest
-and archive. Their creative-skill archive is not loaded or validated because
-skills are replaced from the target Release and do not participate in the
-three-way runtime merge.
+Historical comparison material uses only the tagged Release's verified system
+manifest and archive. Creative skills are replaced from the target Release and
+do not participate in legacy starter detection.
 
 Only the manifest-listed runtime and frontend code files and the exact contents
 of the declared creative-skill directories are release assets. Developer smoke
@@ -131,20 +130,19 @@ tools and host-side installers are not skill assets.
 seed template used only when runtime state is absent.
 `$TAVERN_STATE_DIR/actor_self.md`, `SOUL.md`, other identity/persona files,
 frontend backups, user uploads and images, runtime state, credentials, and
-nonofficial skill directories are never release assets. The bundled starter
-fixtures are official release assets; their JSON index is structurally merged
-so local additions, edits, and deletions survive official catalog updates.
+nonofficial skill directories are never release assets. Bundled starter
+fixtures are official release assets. Legacy local starter additions, edits,
+assets, and deletions are migrated into `$TAVERN_STATE_DIR/starter`, which is
+loaded as a protected overlay over the official catalog.
 Every regular archive file must appear in its archive's `managed_files` and
 `files`. Build with `scripts/build_release.py`, then attach all generated assets
 to a stable GitHub Release tagged `v<version>`.
 
-Every published version intended to serve as a future merge base must retain these
-verified assets. During review, the updater resolves the installed version's tagged
-Release and uses its unmodified managed files as the three-way merge base. After a
-successful update, the unmodified target Release is cached with version and hash
-metadata. Merged instance files are never written into the official baseline cache.
-During an actual version upgrade, query-string-only edits to local JS/CSS references in
-`runtime/web/index.html` are metadata-normalized before conflict classification. Exact hashes
-from updater-owned transitional deployments may also be migrated to a declared minimum target
-version. These narrow compatibility rules never authorize replacing unknown local code.
-The target skill manifest must exactly match the current official allowlist.
+Every published version intended to support future legacy starter extraction
+should retain these verified assets. During review, the updater resolves the
+installed version's tagged Release and compares only the starter catalog and
+referenced assets. Release-managed runtime, frontend, updater, official skills,
+and `AGENTS.md` are backed up and replaced exactly from the reviewed target.
+After a successful update, the unmodified target Release is cached with version
+and hash metadata. The target skill manifest must exactly match the current
+official allowlist.

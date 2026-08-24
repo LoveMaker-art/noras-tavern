@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, install, and roll back verified Tavern releases.
-version: 1.24.9
+version: 1.24.10
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -66,22 +66,26 @@ health, or skill-registration checks still trigger automatic rollback.
 - Replace official creative and system skill directories exactly after backup;
   never merge local files into them or replace either skill root.
 - Preserve custom skills and every path outside the release-managed scope.
+- Back up and replace release-managed runtime, frontend, updater, official
+  skills, and `AGENTS.md` exactly. Do not merge instance patches into official
+  code; customization belongs in protected state, configuration, or custom
+  skill directories.
 - Preserve `$TAVERN_STATE_DIR`, `$HERMES_HOME/config.yaml`, identity and
-  persona files, assets, starter content, credentials, sessions, logs, and
-  ClawChat databases.
-- Resolve merge bases only from hash-verified official Release artifacts. Never
-  treat live instance files or arbitrary branches as an official baseline.
-- Preserve recognized local runtime and frontend changes through verified
-  three-way review. Unknown conflicts stop apply.
-- Resolve an old installation from its exact tagged system Release; historical
-  creative-skill layouts do not participate in the merge base.
-- Merge the official starter index structurally so local additions, edits, and
-  deletions survive while new official entries remain available.
+  persona files, assets, credentials, sessions, logs, ClawChat databases, and
+  every unowned path.
+- Before replacing a legacy runtime, compare its starter catalog with a
+  hash-verified historical Release when available. Move local starter additions,
+  edits, assets, and deletions into `$TAVERN_STATE_DIR/starter`; if no baseline
+  exists, preserve the entire installed starter catalog there.
+- Load the official starter catalog and protected user overlay together at
+  runtime. Official updates therefore cannot overwrite user starter content.
 - Validate managed Python, Shell, and JavaScript before installation, then
   verify skill registration, process health, identity, model, console, and
   story-profile surfaces before committing the transaction.
-- Never run an automatic migration that rewrites persistent user state. Such a
-  migration requires a separate review and explicit approval.
+- Restrict automatic state migration to the legacy starter extraction above;
+  it is previewed in the review plan, backed up, atomic, and rolled back with
+  the rest of the transaction. Never rewrite worlds, characters, stories, or
+  model configuration during an update.
 - Serialize review, report, apply, and rollback with the updater lock.
 
 Load `references/release-format.md` only for release-format or manifest work.

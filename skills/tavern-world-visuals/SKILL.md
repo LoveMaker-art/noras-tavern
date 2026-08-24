@@ -1,7 +1,7 @@
 ---
 name: tavern-world-visuals
 description: Manage safe per-world Tavern themes and backgrounds.
-version: 1.24.9
+version: 1.24.10
 author: ClawChat Tavern
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]

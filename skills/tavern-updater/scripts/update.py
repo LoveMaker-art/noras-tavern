@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Reviewable, merge-aware, state-preserving Tavern release updater."""
+"""Reviewable, state-preserving Tavern release updater."""
 
 import argparse
 from contextlib import contextmanager
@@ -32,6 +32,10 @@ HERMES_HOME = Path(os.environ.get("HERMES_HOME") or (
     else Path.home() / ".hermes"
 )).expanduser().resolve()
 DATA = Path(os.environ.get("TAVERN_DATA_ROOT", HERMES_HOME)).expanduser().resolve()
+TAVERN_STATE_DIR = Path(
+    os.environ.get("TAVERN_STATE_DIR", DATA / "tavern-state")
+).expanduser().resolve()
+CUSTOM_STARTER_DIR = TAVERN_STATE_DIR / "starter"
 PYTHON = os.environ.get("TAVERN_PYTHON", sys.executable)
 HERMES = os.environ.get("TAVERN_HERMES", shutil.which("hermes") or "hermes")
 HEALTH_URL = os.environ.get("TAVERN_HEALTH_URL", "http://127.0.0.1:8799/api/health")
@@ -68,7 +72,7 @@ OBSOLETE_UPDATER_FILES = (
 # Exact fingerprints of transitional runtime builds that were deployed to some
 # instances before the equivalent implementation was published as a Release.
 # Only these known bytes may be replaced automatically; unknown local edits must
-# continue through the normal three-way merge and conflict review.
+# remain available only for identifying legacy starter customizations.
 COMPATIBILITY_REPLACEMENTS = {
     "runtime/server.py": {
         "c0ec128edbba6fb6e9ddd16a30c48ff68d3beba7a2ba0b87de6e74e1859ea79b": {
@@ -774,6 +778,31 @@ def stage_agents(unpacked, plan_dir):
     }
 
 
+def stage_official_area(area, incoming_root, output_root, managed_names):
+    """Stage release-owned files exactly; local copies remain available in backup."""
+    current = tree_files(TARGETS[area])
+    incoming = tree_files(incoming_root)
+    report = []
+    for name in sorted(managed_names):
+        source = incoming.get(name)
+        if source is None:
+            raise RuntimeError(f"release is missing official file: {area}/{name}")
+        installed = current.get(name)
+        current_hash = sha256_file(installed) if installed else None
+        release_hash = sha256_file(source)
+        copy_file(source, output_root / name)
+        report.append({
+            "path": f"{area}/{name}",
+            "category": category(area, name),
+            "status": "unchanged" if current_hash == release_hash else "upstream",
+            "base_sha256": None,
+            "installed_sha256": current_hash,
+            "release_sha256": release_hash,
+            "metadata_normalized": False,
+        })
+    return report, []
+
+
 def stage_official_skills(incoming_root, output_root, managed_names):
     expected = set(managed_names)
     if expected != CREATIVE_SKILL_FILES:
@@ -896,7 +925,7 @@ def compatibility_replacement(area, name, current_hash, target_version):
 def starter_card_key(card):
     if not isinstance(card, dict):
         raise ValueError("starter card must be an object")
-    for field in ("source", "file", "name"):
+    for field in ("file", "card_json", "source", "name"):
         value = str(card.get(field) or "").strip()
         if value:
             return field + ":" + value
@@ -959,6 +988,108 @@ def merge_starter_index(base, current, incoming, output):
         encoding="utf-8",
     )
     return True
+
+
+def safe_starter_asset_name(card):
+    name = str(card.get("card_json") or card.get("file") or "").strip()
+    path = Path(name)
+    if not name or path.is_absolute() or ".." in path.parts:
+        raise RuntimeError("starter entry contains an unsafe asset path")
+    return path.as_posix()
+
+
+def stage_legacy_starter_migration(base_runtime, current_runtime, output):
+    """Extract local starter changes from a legacy runtime into protected state."""
+    relative = Path("assets/fixtures/starter")
+    base_dir = base_runtime / relative
+    current_dir = current_runtime / relative
+    current_index = current_dir / "index.json"
+    if not current_index.is_file():
+        return {"cards": 0, "disabled": 0, "assets": 0}
+    try:
+        current_doc, current_cards, current_order = starter_document(current_index)
+        base_index = base_dir / "index.json"
+        if base_index.is_file():
+            _base_doc, base_cards, _base_order = starter_document(base_index)
+        else:
+            base_cards = {}
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+        raise RuntimeError("local starter catalog cannot be migrated safely") from error
+
+    custom_keys = [
+        key for key in current_order
+        if key not in base_cards or current_cards[key] != base_cards[key]
+    ]
+    disabled = sorted(key for key in base_cards if key not in current_cards)
+    cards = [current_cards[key] for key in custom_keys]
+    if not cards and not disabled:
+        return {"cards": 0, "disabled": 0, "assets": 0}
+
+    output.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for card in cards:
+        name = safe_starter_asset_name(card)
+        source = current_dir / name
+        if not source.is_file():
+            raise RuntimeError(f"local starter asset is missing: {name}")
+        copy_file(source, output / name)
+        copied += 1
+    (output / "index.json").write_text(
+        json.dumps({
+            "schema": 1,
+            "source": "legacy-runtime-migration",
+            "cards": cards,
+            "disabled": disabled,
+        }, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {"cards": len(cards), "disabled": len(disabled), "assets": copied}
+
+
+def install_starter_migration(staged):
+    index_path = staged / "index.json"
+    if not index_path.is_file():
+        return {"cards": 0, "disabled": 0, "assets": 0}
+    staged_doc, staged_cards, staged_order = starter_document(index_path)
+    existing_index = CUSTOM_STARTER_DIR / "index.json"
+    if existing_index.is_file():
+        try:
+            existing_doc, existing_cards, existing_order = starter_document(existing_index)
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as error:
+            raise RuntimeError("protected starter catalog is invalid") from error
+    else:
+        existing_doc, existing_cards, existing_order = {"cards": []}, {}, []
+
+    merged_cards = dict(staged_cards)
+    merged_order = list(staged_order)
+    for key in existing_order:
+        merged_cards[key] = existing_cards[key]
+        if key not in merged_order:
+            merged_order.append(key)
+    disabled = set(staged_doc.get("disabled") or []) | set(existing_doc.get("disabled") or [])
+    disabled -= set(merged_cards)
+
+    CUSTOM_STARTER_DIR.mkdir(parents=True, exist_ok=True)
+    copied = 0
+    for key in staged_order:
+        card = staged_cards[key]
+        name = safe_starter_asset_name(card)
+        source = staged / name
+        target = CUSTOM_STARTER_DIR / name
+        if key in existing_cards and target.is_file():
+            continue
+        copy_file(source, target)
+        copied += 1
+    atomic_write_text(
+        existing_index,
+        json.dumps({
+            "schema": 1,
+            "source": "protected-starter-overlay",
+            "cards": [merged_cards[key] for key in merged_order],
+            "disabled": sorted(disabled),
+        }, ensure_ascii=False, indent=2) + "\n",
+    )
+    return {"cards": len(staged_cards), "disabled": len(disabled), "assets": copied}
 
 
 def merge_area(
@@ -1335,6 +1466,9 @@ def backup_current(version, managed_files, obsolete_files=None):
     agents_present = AGENTS_PATH.is_file()
     if agents_present:
         copy_file(AGENTS_PATH, backup / "AGENTS.md")
+    starter_overlay_present = CUSTOM_STARTER_DIR.is_dir()
+    if starter_overlay_present:
+        shutil.copytree(CUSTOM_STARTER_DIR, backup / "protected-starter")
     obsolete_present = []
     for name in OBSOLETE_UPDATER_FILES:
         current = TARGETS["updater"] / name
@@ -1361,6 +1495,8 @@ def backup_current(version, managed_files, obsolete_files=None):
         "skill_directories_present": skill_directories_present,
         "system_skill_directories_present": system_skill_directories_present,
         "agents_present": agents_present,
+        "starter_overlay_managed": True,
+        "starter_overlay_present": starter_overlay_present,
     }
     (backup / "backup.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return backup
@@ -1458,6 +1594,10 @@ def restore(backup):
             AGENTS_PATH.unlink()
         except FileNotFoundError:
             pass
+    if metadata.get("starter_overlay_managed"):
+        remove_path(CUSTOM_STARTER_DIR)
+        if metadata.get("starter_overlay_present"):
+            shutil.copytree(backup / "protected-starter", CUSTOM_STARTER_DIR)
     shutil.rmtree(BASELINE, ignore_errors=True)
     if metadata.get("baseline_present") and (backup / "baseline").is_dir():
         shutil.copytree(backup / "baseline", BASELINE)
@@ -1578,8 +1718,8 @@ def command_review(_args):
                         baseline_warning = (
                             "No verified official baseline is available for installed version "
                             f"{installed}: tagged release: {tagged_error}; bundled baseline: "
-                            f"{bundled_error}. Existing runtime or updater files that differ from the target "
-                            "are treated as conflicts and will not be overwritten."
+                            f"{bundled_error}. Official code can still be replaced safely; the entire "
+                            "installed starter catalog will be preserved as a user overlay."
                         )
                         base_root = work / "untrusted-empty-base"
                         for area in TARGETS:
@@ -1589,9 +1729,15 @@ def command_review(_args):
         plan_dir = PLANS / plan_id
         staged = plan_dir / "staged"
         upstream = plan_dir / "upstream"
+        starter_migration = plan_dir / "starter-migration"
         staged.mkdir(parents=True)
         upstream.mkdir(parents=True)
         copy_managed(unpacked, upstream, managed_files)
+        starter_migration_summary = stage_legacy_starter_migration(
+            base_root / "runtime",
+            TARGETS["runtime"],
+            starter_migration,
+        )
         files, conflicts = [], []
         managed_by_area = split_managed(managed_files)
         for area, target in TARGETS.items():
@@ -1603,13 +1749,8 @@ def command_review(_args):
                 area_files, area_conflicts = stage_official_system_skills(
                     incoming, staged / area, managed_by_area[area])
             else:
-                area_files, area_conflicts = merge_area(
-                    area, base_root / area, target, incoming, staged / area,
-                    managed_by_area[area],
-                    compatibility_target=(
-                        manifest["version"] if manifest["version"] != installed else None
-                    ),
-                )
+                area_files, area_conflicts = stage_official_area(
+                    area, incoming, staged / area, managed_by_area[area])
             files.extend(area_files)
             conflicts.extend(area_conflicts)
         staged_agents, agents_report = stage_agents(unpacked, plan_dir)
@@ -1635,6 +1776,8 @@ def command_review(_args):
             "current_fingerprint": managed_fingerprint(managed_files, obsolete_files),
             "staged_hashes": {area: tree_hashes(staged / area) for area in TARGETS},
             "upstream_hashes": {area: tree_hashes(upstream / area) for area in TARGETS},
+            "starter_migration_hashes": tree_hashes(starter_migration),
+            "starter_migration": starter_migration_summary,
             "staged_agents_sha256": sha256_file(staged_agents),
             "baseline_trusted": baseline_trusted,
             "baseline_source": baseline_source,
@@ -1675,6 +1818,7 @@ def command_review(_args):
         "conflicts": plan["conflicts"],
         "metadata_normalized": plan["metadata_normalized"],
         "compatibility_migrations": plan["compatibility_migrations"],
+        "starter_migration": plan["starter_migration"],
     }, ensure_ascii=False))
 
 
@@ -1705,6 +1849,9 @@ def command_report(args):
         "conflicts": plan["conflicts"],
         "metadata_normalized": plan.get("metadata_normalized") or [],
         "compatibility_migrations": plan.get("compatibility_migrations") or [],
+        "starter_migration": plan.get("starter_migration") or {
+            "cards": 0, "disabled": 0, "assets": 0,
+        },
         "changed_files": len(changes),
         "details": bool(args.details),
         "preserved": [
@@ -1752,10 +1899,13 @@ def load_plan(plan_id):
     actual_upstream = {area: tree_hashes(upstream / area) for area in TARGETS}
     if actual_upstream != plan.get("upstream_hashes"):
         raise RuntimeError("verified upstream files changed after review")
+    starter_migration = plan_path.parent / "starter-migration"
+    if tree_hashes(starter_migration) != (plan.get("starter_migration_hashes") or {}):
+        raise RuntimeError("reviewed starter migration changed after review")
     staged_agents = plan_path.parent / "staged-agents.md"
     if not staged_agents.is_file() or sha256_file(staged_agents) != plan.get("staged_agents_sha256"):
         raise RuntimeError("reviewed AGENTS.md staging changed after review")
-    return plan, staged, upstream, staged_agents
+    return plan, staged, upstream, staged_agents, starter_migration
 
 
 @exclusive
@@ -1765,7 +1915,7 @@ def command_apply(args):
     if not args.plan:
         raise RuntimeError("apply requires --plan from a successful review")
     BACKUPS.mkdir(parents=True, exist_ok=True)
-    plan, staged, upstream, staged_agents = load_plan(args.plan)
+    plan, staged, upstream, staged_agents, starter_migration = load_plan(args.plan)
     managed_files = plan.get("managed_files") or []
     obsolete_files = plan.get("obsolete_files") or []
     installed = local_version()
@@ -1773,6 +1923,7 @@ def command_apply(args):
     try:
         stop_server()
         install_managed(staged, managed_files, areas={"runtime"})
+        starter_report = install_starter_migration(starter_migration)
         remove_obsolete_managed_files(obsolete_files)
         replace_official_skills(staged / "skills")
         replace_official_system_skills(staged / "system-skills")
@@ -1806,6 +1957,7 @@ def command_apply(args):
         raise
     print(json.dumps({"updated": True, "from": installed, "to": plan["target"],
                       "plan_id": args.plan, "skills": skill_report,
+                      "starter_migration": starter_report,
                       "health": report}, ensure_ascii=False))
 
 

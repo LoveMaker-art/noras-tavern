@@ -148,6 +148,7 @@ No user worlds, cards, conversations, credentials, ClawChat sessions, or registr
 ## Development
 
 ```bash
+python3 -m pip install -r requirements.txt
 PYTHONPATH=app/backend python3 -m unittest discover -s tests -v
 node --test tests/frontend_security.test.js
 python3 scripts/build_release.py

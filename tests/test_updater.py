@@ -23,6 +23,13 @@ SPEC = importlib.util.spec_from_file_location(
 UPDATER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(UPDATER)
 
+CLI_SPEC = importlib.util.spec_from_file_location(
+    "tavern_cli_under_test",
+    ROOT / "skills/tavern/scripts/tavern_cli.py",
+)
+TAVERN_CLI = importlib.util.module_from_spec(CLI_SPEC)
+CLI_SPEC.loader.exec_module(TAVERN_CLI)
+
 
 class UpdaterMergeTests(unittest.TestCase):
     def setUp(self):
@@ -39,6 +46,8 @@ class UpdaterMergeTests(unittest.TestCase):
             for area in ("runtime", "skills", "system-skills", "updater")
         }
         UPDATER.AGENTS_PATH = self.root / "installed/AGENTS.md"
+        UPDATER.TAVERN_STATE_DIR = self.root / "installed/tavern-state"
+        UPDATER.CUSTOM_STARTER_DIR = UPDATER.TAVERN_STATE_DIR / "starter"
         UPDATER.SKIP_SERVICE = True
         UPDATER.PYTHON = sys.executable
         UPDATER.ALLOWED_MANAGED = {
@@ -65,6 +74,89 @@ class UpdaterMergeTests(unittest.TestCase):
     def write_official_system_skill_stage(self, root, marker="release"):
         for name in UPDATER.SYSTEM_SKILL_FILES:
             self.write(root, name, marker + ":" + name + "\n")
+
+    def test_official_runtime_is_staged_exactly_without_local_code_conflicts(self):
+        incoming = self.root / "incoming/runtime"
+        output = self.root / "output/runtime"
+        self.write(UPDATER.TARGETS["runtime"], "server.py", "local retry patch\n")
+        self.write(incoming, "server.py", "official release\n")
+
+        report, conflicts = UPDATER.stage_official_area(
+            "runtime", incoming, output, {"server.py"})
+
+        self.assertEqual(conflicts, [])
+        self.assertEqual(report[0]["status"], "upstream")
+        self.assertEqual((output / "server.py").read_text(), "official release\n")
+
+    def test_legacy_starter_migration_preserves_cards_that_share_a_source(self):
+        current = UPDATER.TARGETS["runtime"]
+        starter = current / "assets/fixtures/starter"
+        cards = [
+            {"file": f"cafe-{index}.json", "name": f"Cafe {index}",
+             "source": "builtin:cafe-starter"}
+            for index in range(1, 5)
+        ]
+        self.write(starter, "index.json", json.dumps({"cards": cards}))
+        for card in cards:
+            self.write(starter, card["file"], json.dumps({"name": card["name"]}))
+
+        output = self.root / "starter-migration"
+        report = UPDATER.stage_legacy_starter_migration(
+            self.root / "missing-base/runtime", current, output)
+
+        self.assertEqual(report, {"cards": 4, "disabled": 0, "assets": 4})
+        migrated = json.loads((output / "index.json").read_text())
+        self.assertEqual(len(migrated["cards"]), 4)
+        self.assertEqual(
+            {card["file"] for card in migrated["cards"]},
+            {f"cafe-{index}.json" for index in range(1, 5)},
+        )
+
+    def test_starter_migration_extracts_local_edits_additions_and_deletions(self):
+        relative = Path("assets/fixtures/starter")
+        base = self.root / "base/runtime"
+        current = UPDATER.TARGETS["runtime"]
+        base_cards = [
+            {"file": "a.json", "name": "A", "source": "official:a"},
+            {"file": "b.json", "name": "B", "source": "official:b"},
+        ]
+        current_cards = [
+            {"file": "a.json", "name": "A localized", "source": "official:a"},
+            {"file": "custom.json", "name": "Custom", "source": "local:custom"},
+        ]
+        self.write(base / relative, "index.json", json.dumps({"cards": base_cards}))
+        self.write(current / relative, "index.json", json.dumps({"cards": current_cards}))
+        self.write(current / relative, "a.json", '{"name":"A localized"}\n')
+        self.write(current / relative, "custom.json", '{"name":"Custom"}\n')
+
+        output = self.root / "starter-migration"
+        report = UPDATER.stage_legacy_starter_migration(base, current, output)
+
+        self.assertEqual(report, {"cards": 2, "disabled": 1, "assets": 2})
+        migrated = json.loads((output / "index.json").read_text())
+        self.assertEqual(migrated["disabled"], ["file:b.json"])
+        self.assertEqual(
+            {card["file"] for card in migrated["cards"]},
+            {"a.json", "custom.json"},
+        )
+
+    def test_protected_starter_overlay_is_restored_on_rollback(self):
+        managed = ["runtime/server.py"]
+        self.write(UPDATER.TARGETS["runtime"], "server.py", "old\n")
+        self.write(UPDATER.CUSTOM_STARTER_DIR, "index.json", '{"cards":[]}\n')
+        self.write(UPDATER.CUSTOM_STARTER_DIR, "keep.json", '{"name":"Keep"}\n')
+        backup = UPDATER.backup_current("1.0.0", managed)
+
+        self.write(UPDATER.CUSTOM_STARTER_DIR, "index.json", '{"cards":[{"file":"new.json"}]}\n')
+        self.write(UPDATER.CUSTOM_STARTER_DIR, "new.json", '{}\n')
+        UPDATER.restore(backup)
+
+        self.assertEqual(
+            (UPDATER.CUSTOM_STARTER_DIR / "index.json").read_text(),
+            '{"cards":[]}\n',
+        )
+        self.assertTrue((UPDATER.CUSTOM_STARTER_DIR / "keep.json").is_file())
+        self.assertFalse((UPDATER.CUSTOM_STARTER_DIR / "new.json").exists())
 
     def test_default_release_discovery_avoids_github_api(self):
         with mock.patch.object(
@@ -763,6 +855,31 @@ class UpdaterMergeTests(unittest.TestCase):
 
 
 class RuntimeStateBoundaryTests(unittest.TestCase):
+    def test_starter_catalog_combines_official_and_protected_entries(self):
+        with tempfile.TemporaryDirectory(prefix="tavern-starter-test-") as temp:
+            root = Path(temp)
+            official = root / "official"
+            custom = root / "custom"
+            official.mkdir()
+            custom.mkdir()
+            (official / "index.json").write_text(json.dumps({"cards": [
+                {"file": "a.json", "name": "Official A"},
+                {"file": "b.json", "name": "Official B"},
+            ]}), encoding="utf-8")
+            (custom / "index.json").write_text(json.dumps({
+                "cards": [
+                    {"file": "a.json", "name": "Localized A"},
+                    {"file": "c.json", "name": "Custom C"},
+                ],
+                "disabled": ["file:b.json"],
+            }), encoding="utf-8")
+            with mock.patch.object(TAVERN_CLI, "STARTER_DIR", str(official)), \
+                    mock.patch.object(TAVERN_CLI, "CUSTOM_STARTER_DIR", str(custom)):
+                cards = TAVERN_CLI._load_starter_index()
+
+            self.assertEqual([card["name"] for card in cards], ["Localized A", "Custom C"])
+            self.assertEqual(cards[0]["_starter_dir"], str(custom))
+
     def test_existing_actor_profile_is_migrated_without_losing_content(self):
         with tempfile.TemporaryDirectory(prefix="tavern-state-test-") as temp:
             state = Path(temp)

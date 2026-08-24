@@ -95,6 +95,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base-assets", required=True, type=Path)
     parser.add_argument("--target-assets", required=True, type=Path)
+    parser.add_argument("--simulate-unknown-baseline", action="store_true")
     args = parser.parse_args()
     base_manifest = json.loads((args.base_assets / "manifest.json").read_text())
     target_manifest = json.loads((args.target_assets / "manifest.json").read_text())
@@ -106,6 +107,23 @@ def main():
         data = root / "data"
         extract_install(args.base_assets, data)
         refresh_updater(args.target_assets, data)
+        runtime = data / "apps/tavern-runtime"
+        installed_version = "0.9.0" if args.simulate_unknown_baseline else base_version
+        if args.simulate_unknown_baseline:
+            (runtime / ".tavern-release-version").write_text(
+                installed_version + "\n", encoding="utf-8"
+            )
+        server = runtime / "server.py"
+        server.write_text(
+            server.read_text(encoding="utf-8") + "\n# local retry-policy patch\n",
+            encoding="utf-8",
+        )
+        model_retry = runtime / "model_retry.py"
+        if model_retry.is_file():
+            model_retry.write_text(
+                model_retry.read_text(encoding="utf-8") + "\n# local retry-five patch\n",
+                encoding="utf-8",
+            )
         starter = data / "apps/tavern-runtime/assets/fixtures/starter"
         starter.mkdir(parents=True, exist_ok=True)
         starter_index = starter / "index.json"
@@ -128,7 +146,7 @@ def main():
         protected = data / "tavern-state"
         protected.mkdir(parents=True)
         (protected / "private.json").write_text('{"preference":"keep me"}\n', encoding="utf-8")
-        before = state_hashes(protected)
+        private_hash = sha256(protected / "private.json")
 
         api = root / "api"
         (api / "tags").mkdir(parents=True)
@@ -151,7 +169,12 @@ def main():
             "baseline_source": review["baseline_source"],
             "baseline_warning": review["baseline_warning"],
         }
-        assert review["baseline_trusted"]
+        assert review["conflicts"] == []
+        if args.simulate_unknown_baseline:
+            assert not review["baseline_trusted"]
+            assert review["baseline_source"] == "unavailable"
+        else:
+            assert review["baseline_trusted"]
         report = run_json(
             [sys.executable, str(UPDATER), "report", "--plan", review["plan_id"]], env)
         assert report["ready"]
@@ -159,28 +182,36 @@ def main():
             [sys.executable, str(UPDATER), "apply", "--plan", review["plan_id"], "--confirm"], env)
         assert applied["to"] == target_version
         assert (data / "apps/tavern-runtime/.tavern-release-version").read_text().strip() == target_version
-        assert state_hashes(protected) == before
-        merged_starter = json.loads(starter_index.read_text(encoding="utf-8"))
+        assert sha256(protected / "private.json") == private_hash
+        assert sha256(starter_index) == target_manifest["files"][
+            "runtime/assets/fixtures/starter/index.json"
+        ]
+        protected_starter = protected / "starter"
+        merged_starter = json.loads(
+            (protected_starter / "index.json").read_text(encoding="utf-8")
+        )
         assert any(
             card.get("source") == "local:integration-fixture"
             for card in merged_starter.get("cards") or []
         )
-        assert sha256(custom_starter) == custom_starter_hash
+        assert sha256(protected_starter / "custom-local.png") == custom_starter_hash
         baseline_meta = json.loads((data / "tavern-updates/baseline/.baseline.json").read_text())
         assert baseline_meta["version"] == target_version
         assert sha256(data / "tavern-updates/baseline/runtime/server.py") == target_manifest["files"]["runtime/server.py"]
 
         rolled_back = run_json([sys.executable, str(UPDATER), "rollback", "--confirm"], env)
-        assert rolled_back["to"] == base_version
-        assert state_hashes(protected) == before
+        assert rolled_back["to"] == installed_version
+        assert sha256(protected / "private.json") == private_hash
+        assert not protected_starter.exists()
         assert sha256(custom_starter) == custom_starter_hash
         assert not (data / "tavern-updates/state.json").exists()
         print(json.dumps({
             "ok": True,
-            "from": base_version,
+            "from": installed_version,
             "to": target_version,
             "baseline": review["baseline_source"],
-            "protected_state_unchanged": True,
+            "protected_user_data_preserved": True,
+            "legacy_code_patches_replaced": True,
             "rollback": True,
         }))
 

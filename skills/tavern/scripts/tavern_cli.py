@@ -83,6 +83,7 @@ STARTER_DIR = os.environ.get(
 TAVERN_STATE_DIR = os.environ.get(
     "TAVERN_STATE_DIR", os.path.join(TAVERN_DATA_ROOT, "tavern-state")
 )
+CUSTOM_STARTER_DIR = os.path.join(TAVERN_STATE_DIR, "starter")
 TAVERN_APPS_FILE = os.environ.get(
     "TAVERN_APPS_FILE",
     os.path.join(TAVERN_STATE_DIR, "apps.json"),
@@ -382,15 +383,49 @@ def _parse_full_path(arg):
     return s.split("?", 1)[0].split("#", 1)[0].strip().strip("/")
 
 
-def _load_starter_index():
-    path = os.path.join(STARTER_DIR, "index.json")
+def _starter_key(card):
+    for field in ("file", "card_json", "source", "name"):
+        value = str(card.get(field) or "").strip()
+        if value:
+            return f"{field}:{value}"
+    return ""
+
+
+def _starter_document(directory):
+    path = os.path.join(directory, "index.json")
     if not os.path.exists(path):
-        return []
+        return {"cards": [], "disabled": []}
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f).get("cards") or []
+            document = json.load(f)
+        if not isinstance(document, dict) or not isinstance(document.get("cards"), list):
+            return {"cards": [], "disabled": []}
+        return document
     except Exception:  # noqa: BLE001
-        return []
+        return {"cards": [], "disabled": []}
+
+
+def _load_starter_index():
+    official = _starter_document(STARTER_DIR)
+    custom = _starter_document(CUSTOM_STARTER_DIR)
+    disabled = {str(value) for value in (custom.get("disabled") or [])}
+    cards = {}
+    order = []
+    for directory, entries in (
+            (STARTER_DIR, official.get("cards") or []),
+            (CUSTOM_STARTER_DIR, custom.get("cards") or [])):
+        for raw in entries:
+            if not isinstance(raw, dict):
+                continue
+            key = _starter_key(raw)
+            if not key or key in disabled:
+                continue
+            card = dict(raw)
+            card["_starter_dir"] = directory
+            if key not in cards:
+                order.append(key)
+            cards[key] = card
+    return [cards[key] for key in order if key in cards]
 
 
 def _print_starter_list(cards):
@@ -557,7 +592,7 @@ def cmd_starter(a):
         _die(f"没找到 starter 卡「{a.which}」——`starter` 不带参数看列表（可用序号或名字片段）。")
     card_json = entry.get("card_json")
     card_file = entry.get("file")
-    path = os.path.join(STARTER_DIR, card_json or card_file or "")
+    path = os.path.join(entry.get("_starter_dir") or STARTER_DIR, card_json or card_file or "")
     if not os.path.exists(path):
         _die(f"starter 卡文件缺失：{path}")
     print(f"↓ 导入内置 starter 卡：{entry['name']}（{entry.get('genre', '')}）")
