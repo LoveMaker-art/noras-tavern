@@ -1367,12 +1367,24 @@ def _classify_lore_entry(text, p, cards):
         "story_state": _effective_story_state(p),
         "recent_story": _recent_story_excerpt(p, response_language=language),
     }, ensure_ascii=False)
-    try:
-        out = actor.chat([{ "role": "system", "content": sys }, { "role": "user", "content": user }],
-                         temperature=0.1, model=_active_model()).strip()
-        raw = _json_from_model_text(out)
-    except Exception:
-        raw = {}
+    raw = {}
+    model = _active_model()
+    for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
+        try:
+            out = actor.chat(
+                [{"role": "system", "content": sys}, {"role": "user", "content": user}],
+                temperature=0.1, model=model,
+            ).strip()
+            raw = _json_from_model_text(out)
+            if raw:
+                break
+            raise ValueError("lore classifier returned invalid JSON")
+        except Exception as error:
+            if attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS:
+                break
+            print("lore classifier retry with same model:", repr(error),
+                  file=sys.stderr, flush=True)
+            time.sleep(model_retry.retry_delay_seconds(attempt + 1))
     return _normalize_lore_entry(raw, text, cards)
 
 
@@ -2626,7 +2638,7 @@ Format rules:
         "response_format": {"type": "json_object"},
     } if supports_smart_reply_controls else None)
     recoverable_error = None
-    for _attempt in range(2):
+    for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
         try:
             raw = actor.chat(
                 msgs,
@@ -2635,16 +2647,15 @@ Format rules:
                 max_tokens=4000,
                 request_options=request_options,
             )
-        except RuntimeError as exc:
-            message = str(exc)
-            if "长度上限" not in message and "空内容" not in message:
-                raise
+        except Exception as exc:
             recoverable_error = exc
-            continue
-        suggestions = _parse_suggestions(raw)
-        if len(suggestions) == 3:
-            return {"suggestions": suggestions}
-        recoverable_error = RuntimeError("模型没有返回三条完整建议。")
+        else:
+            suggestions = _parse_suggestions(raw)
+            if len(suggestions) == 3:
+                return {"suggestions": suggestions}
+            recoverable_error = RuntimeError("模型没有返回三条完整建议。")
+        if attempt + 1 < model_retry.MAX_MODEL_ATTEMPTS:
+            time.sleep(model_retry.retry_delay_seconds(attempt + 1))
     raise recoverable_error or RuntimeError("智能回复生成失败。")
 
 
@@ -2784,18 +2795,22 @@ def _refresh_taste_profile():
         + json.dumps(schema, ensure_ascii=False)
     )
     source = "\n".join(f"- {item}" for item in preferences)
-    out = actor.chat(
+    def validate_taste_profile(out):
+        parsed = _json_from_model_text(out)
+        if not isinstance(parsed, dict) or any(
+                key not in parsed or not isinstance(parsed.get(key), list)
+                for key in story_profile.TASTE_PROFILE_FIELDS):
+            raise ValueError("taste profile model output does not match the required schema")
+        return parsed
+
+    status, parsed, error = _validated_model_call(
         [{"role": "system", "content": prompt},
          {"role": "user", "content": source}],
-        temperature=0.2,
-        model=_active_model(),
-        max_tokens=1200,
+        0.2, _memory_model(), 1200, validate_taste_profile,
+        "zh", "taste_profile",
     )
-    parsed = _json_from_model_text(out)
-    if not isinstance(parsed, dict) or any(
-            key not in parsed or not isinstance(parsed.get(key), list)
-            for key in story_profile.TASTE_PROFILE_FIELDS):
-        raise ValueError("taste profile model output does not match the required schema")
+    if status != "ok":
+        raise RuntimeError("taste profile update failed") from error
     return story_profile.set_taste_profile(STATE, SEED_ACTOR, parsed)
 
 
@@ -3463,6 +3478,24 @@ def _schedule_story_state_backlog():
             _schedule_story_state(pid)
 
 
+def _reflect_on_play_with_retry(card, story):
+    """Run preference reflection with the active Tavern model only."""
+    model = _active_model()
+    last_error = RuntimeError("preference reflection did not run")
+    for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
+        try:
+            return actor.reflect_on_play(
+                card, story, actor_self_text(), model=model)
+        except Exception as error:
+            last_error = error
+            if attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS:
+                raise
+            print("preference reflection retry with same model:", repr(error),
+                  file=sys.stderr, flush=True)
+            time.sleep(model_retry.retry_delay_seconds(attempt + 1))
+    raise last_error
+
+
 def _reflect_production(p):
     """复盘一场戏 → 蒸馏偏好 → **合并进「我对你的了解」** + 记生涯年表。explicit + auto 共用。"""
     story = p.get("story", [])
@@ -3470,7 +3503,7 @@ def _reflect_production(p):
         return {"learned": None, "reason": "戏太短，没什么可学的"}
     cards, _, _, _ = _loadout(p)
     card = {"name": "、".join(c.get("name", "角色") for c in cards) or "角色"}
-    learned = actor.reflect_on_play(card, story, actor_self_text(), model=_active_model())
+    learned = _reflect_on_play_with_retry(card, story)
     if not learned:
         return {"learned": None, "reason": "这场没看出明显偏好"}
     merged, _ = _record_actor_learning(
@@ -3496,7 +3529,7 @@ def ev_reflect_preview(ev):
         return {"learned": None, "reason": "戏太短，没什么可学的", "production": p.get("name")}
     cards, _, _, _ = _loadout(p)
     card = {"name": "、".join(c.get("name", "角色") for c in cards) or "角色"}
-    learned = actor.reflect_on_play(card, story, actor_self_text(), model=_active_model())
+    learned = _reflect_on_play_with_retry(card, story)
     if not learned:
         return {"learned": None, "reason": "这场没看出足够明确的用户偏好", "production": p.get("name")}
     return {"learned": learned, "production": p.get("name"), "write": False}
@@ -3596,25 +3629,22 @@ def _clawling_model_name(model_id):
     return MODEL_REGISTRY.model_name(model_id)
 
 
-MEMORY_PRIMARY_MODEL = actor.MEMORY_MODEL_NAME
-
-
-def _memory_model():
-    """Use the configured ledger model, defaulting to the built-in model."""
-    return {
-        "base": actor.MODEL_BASE,
-        "key": actor.MODEL_KEY,
-        "model": MEMORY_PRIMARY_MODEL,
-    }
-
-
 def _active_model():
     return MODEL_REGISTRY.active_override()
 
 
+def _memory_model():
+    """Use Tavern's active model for every model-backed background task."""
+    return _active_model() or {
+        "base": actor.MODEL_BASE,
+        "key": actor.MODEL_KEY,
+        "model": actor.MODEL_NAME,
+    }
+
+
 def _card_preparation_model():
-    """Use only the model currently configured for Tavern card preparation."""
-    return _active_model() or _memory_model()
+    """Use Tavern's active model for card preparation."""
+    return _memory_model()
 
 
 def _public_models():

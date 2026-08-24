@@ -64,11 +64,6 @@ def _load_model_base():
 # 地址与凭证均从环境或 Hermes 配置解析。
 MODEL_BASE = _load_model_base()
 MODEL_NAME = os.environ.get("TAVERN_MODEL", "deepseek-v4-flash")
-_configured_memory_model = os.environ.get("TAVERN_MEMORY_MODEL", "").strip()
-MEMORY_MODEL_NAME = (
-    MODEL_NAME if _configured_memory_model in ("", "your-model-id")
-    else _configured_memory_model
-)
 MODEL_TEMP = float(os.environ.get("TAVERN_MODEL_TEMP", "0.85"))
 ACTOR_MAX_TOKENS = int(os.environ.get('TAVERN_ACTOR_MAX_TOKENS', '10000'))
 MODEL_TIMEOUT = min(300, max(10, int(os.environ.get("TAVERN_MODEL_TIMEOUT", "120"))))

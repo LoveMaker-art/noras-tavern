@@ -66,6 +66,24 @@ class ServerRetryPolicyTests(unittest.TestCase):
         self.assertEqual([item["messages"] for item in payload["calls"]],
                          [1, 3, 3, 3, 3, 3])
 
+    def test_background_tasks_share_the_active_tavern_model(self):
+        result = self._run(textwrap.dedent("""
+            configured = {
+                'base': 'https://models.example/v1',
+                'key': 'secret',
+                'model': 'one-active-model',
+            }
+            server._active_model = lambda: configured
+            print(json.dumps({
+                'memory': server._memory_model(),
+                'cards': server._card_preparation_model(),
+            }))
+        """))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        self.assertEqual(payload["memory"]["model"], "one-active-model")
+        self.assertEqual(payload["cards"], payload["memory"])
+
 
 if __name__ == "__main__":
     unittest.main()

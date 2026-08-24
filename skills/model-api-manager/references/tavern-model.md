@@ -14,12 +14,18 @@ python3 "$CLI" doctor --json
 ```
 
 The helper calls Tavern's local event API so a secret is not exposed in process
-arguments. `model add` tests before saving and makes the new configuration the
-active Tavern text model.
+arguments. `model add` tests before saving and makes the new configuration
+Tavern's single active language model.
 
-The active Tavern model is global for story generation. It does not change the
-Hermes Agent model, TTS model, or the independently managed story-ledger model.
-Frontend model selection cannot create missing server credentials.
+The active Tavern model is used by story generation, smart reply, card
+preparation, story-ledger compression, character-state maintenance, and
+preference reflection. These tasks do not maintain independent model choices.
+They retry the same active model when a request fails or structured output is
+rejected; they never switch to a fallback model.
+
+This setting does not change the Hermes Agent model, TTS model, image model, or
+embedding model. Frontend model selection cannot create missing server
+credentials.
 
 Tavern requires OpenAI-compatible Chat Completions. Tool calling is not required
 for story generation, so its probe is intentionally different from the agent

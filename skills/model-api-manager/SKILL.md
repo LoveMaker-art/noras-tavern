@@ -1,7 +1,7 @@
 ---
 name: model-api-manager
 description: Configure model APIs for Hermes Agent or Tavern.
-version: 1.0.1
+version: 1.0.2
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -36,7 +36,8 @@ Map the answer to `agent`, `tavern`, or `both`. Do not ask again when the user
 already said the agent, Tavern/the story model, or both.
 
 - `agent` changes the Hermes provider and default model.
-- `tavern` changes Tavern's active text-generation model only.
+- `tavern` changes Tavern's single active model for story generation and all
+  model-backed Tavern background tasks.
 - `both` runs both independent validations and applies one atomic transaction.
 
 For `agent` or `both`, tell the user before applying the change, in the user's
@@ -44,8 +45,10 @@ current language, that Hermes Gateway must restart after validation, ClawChat
 may disconnect briefly, and the new model becomes the global default after the
 restart. This is a notice, not an additional confirmation prompt.
 
-TTS, image, embedding, auxiliary, story-ledger, and character-state models are
-outside this skill unless the user explicitly asks for one of them.
+TTS, image, and embedding models are outside this skill. Tavern story-ledger
+compression, character-state maintenance, preference reflection, smart reply,
+and card preparation deliberately share Tavern's active model and are not
+configured separately.
 
 ## Gather And Classify
 
@@ -98,9 +101,16 @@ this skill. For Tavern behavior and its existing specialist commands, load
 - Tavern configuration belongs to Tavern's server-side model registry.
 - Never copy Tavern credentials into Hermes config or vice versa implicitly.
 - Reusing one endpoint for `both` still creates two explicit consumer records.
-- Tavern's active text model is global for story generation. Its story-ledger
-  compression model remains independently managed.
-- Do not delete built-in or fallback models while adding a custom model.
+- Tavern has one active language model. After a successful compatibility probe
+  and apply transaction, story generation, smart reply, card preparation,
+  story-ledger compression, character-state maintenance, and preference
+  reflection all use that model.
+- Tavern background tasks never switch to a fallback model. A failed request or
+  rejected structured output is retried with the same active model under the
+  runtime's bounded retry policy.
+- Do not delete built-in or other saved model configurations while adding a
+  custom model. Saved alternatives are manual choices, never automatic
+  fallbacks.
 - Do not restart Tavern for an agent-only change.
 - Restart the Hermes gateway only after an agent configuration validates.
 

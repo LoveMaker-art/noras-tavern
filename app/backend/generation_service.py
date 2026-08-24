@@ -5,6 +5,9 @@ events, persistence, cancellation, story-state scheduling, or background jobs.
 Runtime dependencies are injected by server.py to avoid global coupling.
 """
 import sys
+import time
+
+import model_retry
 
 
 def loadout(production, *, ensure_production_session):
@@ -19,12 +22,26 @@ def loadout(production, *, ensure_production_session):
 
 def perform_loaded(cards, worldbooks, persona, story, note, *,
                    actor_module, model, story_state, response_language):
-    return actor_module.perform(
-        cards, worldbooks, persona, story, note,
-        model=model,
-        story_state=story_state,
-        response_language=response_language,
-    )
+    last_error = RuntimeError("model call did not run")
+    for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
+        try:
+            result = actor_module.perform(
+                cards, worldbooks, persona, story, note,
+                model=model,
+                story_state=story_state,
+                response_language=response_language,
+            )
+            if str(result or "").strip():
+                return result
+            raise RuntimeError("model returned empty story content")
+        except Exception as error:  # noqa: BLE001
+            last_error = error
+            if attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS:
+                raise
+            print("actor generation retry with same model:", repr(error),
+                  file=sys.stderr, flush=True)
+            time.sleep(model_retry.retry_delay_seconds(attempt + 1))
+    raise last_error
 
 
 def perform_into(production, *, actor_module, active_model,

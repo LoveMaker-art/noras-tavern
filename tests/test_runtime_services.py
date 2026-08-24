@@ -75,6 +75,33 @@ class RuntimeServiceRegressionTests(unittest.TestCase):
         self.assertEqual(len(actor.calls), 1)
         self.assertNotIn("turn_plan", actor.calls[0])
 
+    def test_generation_failures_retry_the_same_model_five_times(self):
+        class FakeActor:
+            def __init__(self):
+                self.models = []
+
+            def perform(self, _cards, _worldbooks, _persona, _story, _note, **kwargs):
+                self.models.append(kwargs.get("model"))
+                raise TimeoutError("temporary failure")
+
+        actor = FakeActor()
+        original_sleep = generation_service.time.sleep
+        generation_service.time.sleep = lambda _seconds: None
+        try:
+            with self.assertRaises(TimeoutError):
+                generation_service.perform_loaded(
+                    [], [], {}, [], "",
+                    actor_module=actor,
+                    model={"model": "one-active-model"},
+                    story_state={},
+                    response_language="zh",
+                )
+        finally:
+            generation_service.time.sleep = original_sleep
+
+        self.assertEqual(len(actor.models), 6)
+        self.assertEqual(actor.models, [{"model": "one-active-model"}] * 6)
+
     def test_story_state_service_turn_boundaries_and_normalization(self):
         story = [
             {"role": "user", "text": "第一轮"},

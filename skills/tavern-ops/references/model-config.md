@@ -16,7 +16,12 @@ python3 "$CLI" model rm <name> --json
 the provider/configuration name, model ID, latency, and masked key. Never echo a
 full key or put it in documentation.
 
+Tavern has one active language model. The selected model is shared by story
+generation, smart reply, card preparation, story-ledger compression,
+character-state maintenance, and preference reflection. These tasks retry the
+same active model on failure and never switch models automatically.
+
 Frontend selection does not create server credentials. If generation fails,
 compare selected configuration, model ID, base URL, key availability, and the
-upstream error before changing anything. The built-in configuration must remain
-available as the fallback choice.
+upstream error before changing anything. Keep the built-in configuration as a
+manual recovery choice, not an automatic fallback.
