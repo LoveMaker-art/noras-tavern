@@ -1,7 +1,7 @@
 ---
 name: tavern
 description: Route broad Tavern requests to one specialist workflow.
-version: 1.24.5
+version: 1.24.6
 author: ClawChat Tavern
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]

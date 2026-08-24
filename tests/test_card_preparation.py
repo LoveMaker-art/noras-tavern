@@ -189,13 +189,13 @@ class CardPreparationTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertNotIn("assistant", [message["role"] for message in calls[1]])
 
-    def test_upstream_timeout_uses_configured_fallback_model(self):
+    def test_upstream_timeout_retries_only_the_configured_model(self):
         calls = []
 
         def chat(_messages, **kwargs):
             model_name = (kwargs.get("model") or {}).get("model")
             calls.append(model_name)
-            if model_name == "deepseek-v4-flash":
+            if len(calls) < 3:
                 raise TimeoutError("upstream timed out")
             return json.dumps(model_result(), ensure_ascii=False)
 
@@ -203,12 +203,11 @@ class CardPreparationTests(unittest.TestCase):
             mixed_card(),
             chat,
             model={"base": "https://api.example/v1", "model": "deepseek-v4-flash"},
-            fallback_models=[
-                {"base": "https://api.example/v1", "model": "deepseek-v4-pro"},
-            ],
         )
 
-        self.assertEqual(calls, ["deepseek-v4-flash", "deepseek-v4-pro"])
+        self.assertEqual(calls, [
+            "deepseek-v4-flash", "deepseek-v4-flash", "deepseek-v4-flash",
+        ])
         self.assertTrue(plan["summary"]["profile_ready"])
 
     def test_bundled_description_splits_supporting_character_and_world_lore(self):

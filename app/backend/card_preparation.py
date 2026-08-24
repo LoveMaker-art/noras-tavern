@@ -13,8 +13,10 @@ import difflib
 import hashlib
 import json
 import re
+import time
 
 import card_import
+import model_retry
 
 
 SCHEMA_VERSION = "tavern-card-preparation/v1"
@@ -654,23 +656,11 @@ def _merge_batch_results(results, main_name):
     return merged
 
 
-def prepare_card(card, chat, model=None, fallback_models=None):
+def prepare_card(card, chat, model=None):
     """Return a validated, side-effect-free semantic import plan."""
     normalized = card_import.normalize_card(card) if "source_format" not in card else copy.deepcopy(card)
     payload, entries, source_by_ref = _source_payload(normalized)
     chunks = _payload_chunks(payload)
-    models = [model]
-    for candidate in fallback_models or []:
-        marker = (
-            str((candidate or {}).get("base") or "").strip(),
-            str((candidate or {}).get("model") or "").strip(),
-        )
-        if marker not in {
-            (str((item or {}).get("base") or "").strip(),
-             str((item or {}).get("model") or "").strip())
-            for item in models
-        }:
-            models.append(candidate)
     batch_results = []
     for chunk in chunks:
         expected_refs = [source["source_ref"] for source in chunk["sources"]]
@@ -681,50 +671,48 @@ def prepare_card(card, chat, model=None, fallback_models=None):
         ]
         last_error = ""
         completed = False
-        for candidate in models:
-            model_base = str((candidate or {}).get("base") or "").lower()
-            request_options = (
-                {"thinking_mode": False}
-                if not candidate or "clawling" in model_base
-                else None
-            )
-            upstream_failed = False
-            for attempt in range(2):
-                messages = base_messages
-                if attempt:
-                    messages = base_messages + [{
-                        "role": "user",
-                        "content": (
-                            "The previous answer failed validation: " + last_error +
-                            ". Start over from this same batch and return one complete compact JSON object only."
-                        ),
-                    }]
-                try:
-                    output = chat(
-                        messages,
-                        temperature=0.1,
-                        model=candidate,
-                        max_tokens=6000,
-                        request_options=request_options,
-                    )
-                except Exception as error:  # network, timeout, empty/safety response
-                    last_error = str(error)
-                    upstream_failed = True
+        model_base = str((model or {}).get("base") or "").lower()
+        request_options = (
+            {"thinking_mode": False}
+            if not model or "clawling" in model_base
+            else None
+        )
+        validation_error = ""
+        for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
+            messages = base_messages
+            if validation_error:
+                messages = base_messages + [{
+                    "role": "user",
+                    "content": (
+                        "The previous answer failed validation: " + validation_error +
+                        ". Start over from this same batch and return one complete compact JSON object only."
+                    ),
+                }]
+            try:
+                output = chat(
+                    messages,
+                    temperature=0.1,
+                    model=model,
+                    max_tokens=6000,
+                    request_options=request_options,
+                )
+            except Exception as error:  # network, timeout, empty/safety response
+                last_error = str(error)
+                validation_error = ""
+                if (attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS
+                        or not model_retry.is_retryable_model_error(error)):
                     break
-                try:
-                    parsed = _json_from_text(output)
-                    batch_results.append(_validate_batch_result(
-                        parsed, expected_refs, normalized.get("name") or ""))
-                    completed = True
-                    break
-                except ValueError as error:
-                    last_error = str(error)
-            if completed:
+                time.sleep(model_retry.retry_delay_seconds(attempt + 1))
+                continue
+            try:
+                parsed = _json_from_text(output)
+                batch_results.append(_validate_batch_result(
+                    parsed, expected_refs, normalized.get("name") or ""))
+                completed = True
                 break
-            if not upstream_failed:
-                # The upstream answered twice but violated the contract. Keep
-                # this as a model-quality error instead of masking it by fallback.
-                break
+            except ValueError as error:
+                last_error = str(error)
+                validation_error = last_error
         if not completed:
             batch = chunk.get("batch") or {}
             raise ValueError(

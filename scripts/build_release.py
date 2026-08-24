@@ -41,6 +41,7 @@ BACKEND_FILES = (
     "memory_cache.py",
     "message_segments.py",
     "model_registry.py",
+    "model_retry.py",
     "personality_service.py",
     "production_views.py",
     "reply_format.py",

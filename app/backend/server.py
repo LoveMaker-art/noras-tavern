@@ -14,7 +14,6 @@ import re
 import sys
 import threading
 import time
-import yaml
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, quote, urlparse
 
@@ -31,6 +30,7 @@ import actor  # noqa: E402
 import card_import  # noqa: E402
 import card_preparation  # noqa: E402
 import generation_service  # noqa: E402
+import model_retry  # noqa: E402
 import personality_service  # noqa: E402
 import story_profile  # noqa: E402
 import story_state_service  # noqa: E402
@@ -1080,9 +1080,8 @@ def ev_prepare_card(ev):
         if source_url not in urls:
             urls.append(source_url)
         card["source_urls"] = urls
-    primary, fallbacks = _card_preparation_models()
     plan = card_preparation.prepare_card(
-        card, actor.chat, model=primary, fallback_models=fallbacks)
+        card, actor.chat, model=_card_preparation_model())
     return {"preparation": plan}
 
 
@@ -1179,9 +1178,8 @@ def _prepare_and_apply_external_card(card, source, source_url=""):
         if source_url not in urls:
             urls.append(source_url)
         card["source_urls"] = urls
-    primary, fallbacks = _card_preparation_models()
     plan = card_preparation.prepare_card(
-        card, actor.chat, model=primary, fallback_models=fallbacks)
+        card, actor.chat, model=_card_preparation_model())
     return ev_apply_card_preparation({
         "preparation": plan,
         "confirm": True,
@@ -2885,10 +2883,12 @@ def _story_state_shape_error(raw):
 
 def _validated_model_call(messages, temperature, model, max_tokens,
                           validator, language, task_name):
-    """Validate one model response and allow one same-model contract retry."""
+    """Call and validate one configured model with a bounded retry budget."""
     base_messages = list(messages)
     current_messages = base_messages
-    for attempt in range(2):
+    last_status = "upstream_error"
+    last_error = RuntimeError("model call did not run")
+    for attempt in range(model_retry.MAX_MODEL_ATTEMPTS):
         try:
             output = actor.chat(
                 current_messages,
@@ -2897,12 +2897,21 @@ def _validated_model_call(messages, temperature, model, max_tokens,
                 max_tokens=max_tokens,
             ).strip()
         except Exception as error:
-            return "upstream_error", None, error
+            last_status, last_error = "upstream_error", error
+            if (attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS
+                    or not model_retry.is_retryable_model_error(error)):
+                return last_status, None, last_error
+            print("%s upstream retry with same model %s:" % (
+                task_name, model.get("model")), repr(error),
+                file=sys.stderr, flush=True)
+            time.sleep(model_retry.retry_delay_seconds(attempt + 1))
+            continue
         try:
             return "ok", validator(output), None
         except Exception as error:
-            if attempt:
-                return "output_rejected", None, error
+            last_status, last_error = "output_rejected", error
+            if attempt + 1 >= model_retry.MAX_MODEL_ATTEMPTS:
+                return last_status, None, last_error
             if language == "en":
                 correction = (
                     "Your previous JSON was rejected by the deterministic validator: %s. "
@@ -2926,7 +2935,7 @@ def _validated_model_call(messages, temperature, model, max_tokens,
             print("%s output retry with same model %s:" % (
                 task_name, model.get("model")), repr(error),
                 file=sys.stderr, flush=True)
-    return "output_rejected", None, RuntimeError("unreachable validation state")
+    return last_status, None, last_error
 
 
 def _merge_story_state_batch(prev, batch, start_turn, end_turn,
@@ -3027,41 +3036,34 @@ def _merge_story_state_batch(prev, batch, start_turn, end_turn,
             "end_turn": end_turn,
         },
     }, ensure_ascii=False)
-    last_error = None
-    for mem_model in _memory_models():
-        def validate_story_state(out):
-            if not out:
-                raise ValueError("empty story ledger output")
-            raw = _json_from_model_text(out)
-            shape_error = _story_state_shape_error(raw)
-            if shape_error:
-                raise ValueError(shape_error)
-            reference_error = _story_state_reference_error(raw, valid_ids)
-            if reference_error:
-                raise ValueError(reference_error)
-            state = _normalize_story_state(raw, end_turn, source_tokens, valid_ids)
-            state["response_language"] = language
-            if not _story_state_has_memory(state):
-                raise ValueError("empty normalized story ledger")
-            if not _story_state_quality_ok(prev or {}, state):
-                raise ValueError("story ledger lost protected memory")
-            return state
+    mem_model = _memory_model()
 
-        status, state, error = _validated_model_call([
-                {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": user},
-            ], 0.1, mem_model, 6000, validate_story_state, language, "story_state")
-        if status == "ok":
-            return state
-        last_error = error
-        if status == "upstream_error":
-            print("story_state upstream failed with %s:" % mem_model.get("model"),
-                  repr(error), file=sys.stderr, flush=True)
-            continue
-        print("story_state output rejected from %s after same-model retry:" %
-              mem_model.get("model"), repr(error), file=sys.stderr, flush=True)
-        return None
-    print("story_state batch failed:", repr(last_error), file=sys.stderr, flush=True)
+    def validate_story_state(out):
+        if not out:
+            raise ValueError("empty story ledger output")
+        raw = _json_from_model_text(out)
+        shape_error = _story_state_shape_error(raw)
+        if shape_error:
+            raise ValueError(shape_error)
+        reference_error = _story_state_reference_error(raw, valid_ids)
+        if reference_error:
+            raise ValueError(reference_error)
+        state = _normalize_story_state(raw, end_turn, source_tokens, valid_ids)
+        state["response_language"] = language
+        if not _story_state_has_memory(state):
+            raise ValueError("empty normalized story ledger")
+        if not _story_state_quality_ok(prev or {}, state):
+            raise ValueError("story ledger lost protected memory")
+        return state
+
+    status, state, error = _validated_model_call([
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user},
+        ], 0.1, mem_model, 6000, validate_story_state, language, "story_state")
+    if status == "ok":
+        return state
+    print("story_state %s with configured model %s:" % (
+        status, mem_model.get("model")), repr(error), file=sys.stderr, flush=True)
     return None
 
 
@@ -3160,43 +3162,36 @@ def _merge_runtime_cast_batch(previous, batch, start_turn, end_turn,
         "story_ledger": story_ledger or {},
         "range": {"start_turn": start_turn, "end_turn": end_turn},
     }, ensure_ascii=False)
-    last_error = None
-    for mem_model in _memory_models():
-        def validate_runtime_cast(out):
-            raw = _canonicalize_runtime_cast_output(
-                _json_from_model_text(out), start_turn, end_turn)
-            review_error = _runtime_cast_review_error(
-                raw, roster, start_turn, end_turn)
-            if review_error:
-                raise ValueError(review_error)
-            shape_error = _runtime_cast_shape_error(
-                raw, roster, start_turn, end_turn)
-            if shape_error:
-                raise ValueError(shape_error)
-            noop_error = _runtime_cast_noop_error(raw, previous, persona)
-            if noop_error:
-                raise ValueError(noop_error)
-            result = _normalize_runtime_cast_result(
-                raw, previous, start_turn, end_turn, persona)
-            if len(result.get("characters") or []) != len(previous.get("characters") or []):
-                raise ValueError("normalized cast changed roster size")
-            return result
+    mem_model = _memory_model()
 
-        status, result, error = _validated_model_call([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": payload},
-        ], 0.0, mem_model, 4500, validate_runtime_cast, language, "runtime_cast")
-        if status == "ok":
-            return result
-        last_error = error
-        if status == "upstream_error":
-            print("runtime_cast upstream failed with %s:" % mem_model.get("model"),
-                  repr(error), file=sys.stderr, flush=True)
-            continue
-        print("runtime_cast output rejected from %s after same-model retry:" %
-              mem_model.get("model"), repr(error), file=sys.stderr, flush=True)
-        return None
-    print("runtime_cast batch failed:", repr(last_error), file=sys.stderr, flush=True)
+    def validate_runtime_cast(out):
+        raw = _canonicalize_runtime_cast_output(
+            _json_from_model_text(out), start_turn, end_turn)
+        review_error = _runtime_cast_review_error(
+            raw, roster, start_turn, end_turn)
+        if review_error:
+            raise ValueError(review_error)
+        shape_error = _runtime_cast_shape_error(
+            raw, roster, start_turn, end_turn)
+        if shape_error:
+            raise ValueError(shape_error)
+        noop_error = _runtime_cast_noop_error(raw, previous, persona)
+        if noop_error:
+            raise ValueError(noop_error)
+        result = _normalize_runtime_cast_result(
+            raw, previous, start_turn, end_turn, persona)
+        if len(result.get("characters") or []) != len(previous.get("characters") or []):
+            raise ValueError("normalized cast changed roster size")
+        return result
+
+    status, result, error = _validated_model_call([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": payload},
+    ], 0.0, mem_model, 4500, validate_runtime_cast, language, "runtime_cast")
+    if status == "ok":
+        return result
+    print("runtime_cast %s with configured model %s:" % (
+        status, mem_model.get("model")), repr(error), file=sys.stderr, flush=True)
     return None
 
 
@@ -3574,8 +3569,6 @@ def ev_set_note(ev):
 # 自定义配置可由 reader 或 CLI 写入。key 只落 server 端 state 文件（0600），
 # 任何读端点一律脱敏。
 MODELS_PATH = os.path.join(STATE, "model_configs.json")
-HERMES_CONFIG_PATH = os.environ.get(
-    "HERMES_CONFIG_PATH", os.path.join(HERMES_HOME, "config.yaml"))
 # The environment-selected model is the standalone built-in. Hermes deployments
 # keep the same default because TAVERN_MODEL defaults to deepseek-v4-flash.
 OFFICIAL_MODELS = (actor.MODEL_NAME,)
@@ -3615,59 +3608,13 @@ def _memory_model():
     }
 
 
-def _clawling_memory_fallbacks(primary):
-    """Read Clawling fallback candidates from Hermes config, never from code constants."""
-    try:
-        with open(HERMES_CONFIG_PATH, encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
-    except (OSError, ValueError, TypeError, yaml.YAMLError) as e:
-        print("memory fallback config unavailable:", repr(e), file=sys.stderr, flush=True)
-        return []
-
-    candidates = []
-    seen = {str(primary.get("model") or "").strip()}
-
-    def add(model, base=None):
-        name = str(model or "").strip()
-        if not name or name in seen:
-            return
-        seen.add(name)
-        candidates.append({
-            "base": str(base or actor.MODEL_BASE).strip() or actor.MODEL_BASE,
-            "key": actor.MODEL_KEY,
-            "model": name,
-        })
-
-    for item in config.get("fallback_providers") or []:
-        if not isinstance(item, dict) or str(item.get("provider") or "").lower() != "clawling":
-            continue
-        add(item.get("model"), item.get("base_url"))
-
-    # Configured Clawling catalog is the secondary source when no explicit
-    # fallback order exists. Dict order is preserved by YAML/Python.
-    if not candidates:
-        clawling = ((config.get("providers") or {}).get("clawling") or {})
-        for model in (clawling.get("models") or {}):
-            add(model, clawling.get("api"))
-
-    limit = max(1, int(os.environ.get("TAVERN_MEMORY_FALLBACK_LIMIT", "3")))
-    return candidates[:limit]
-
-
-def _memory_models():
-    """Fixed primary plus config-driven Clawling fallbacks for story compression."""
-    primary = _memory_model()
-    return [primary, *_clawling_memory_fallbacks(primary)]
-
-
 def _active_model():
     return MODEL_REGISTRY.active_override()
 
 
-def _card_preparation_models():
-    """Active Tavern model plus config-driven fallbacks for upstream failures."""
-    primary = _active_model() or _memory_model()
-    return primary, _clawling_memory_fallbacks(primary)
+def _card_preparation_model():
+    """Use only the model currently configured for Tavern card preparation."""
+    return _active_model() or _memory_model()
 
 
 def _public_models():

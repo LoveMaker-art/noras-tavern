@@ -90,6 +90,7 @@ class RepositoryHygieneTests(unittest.TestCase):
             "runtime/memory_cache.py",
             "runtime/message_segments.py",
             "runtime/model_registry.py",
+            "runtime/model_retry.py",
             "runtime/production_views.py",
             "runtime/reply_format.py",
             "runtime/request_security.py",
