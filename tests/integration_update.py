@@ -22,7 +22,9 @@ def sha256(path):
 
 
 def release_document(version, assets):
-    names = ("manifest.json", "tavern-release.tar.gz", "skill-manifest.json", "tavern-skill.tar.gz")
+    names = ["manifest.json", "tavern-release.tar.gz", "skill-manifest.json", "tavern-skill.tar.gz"]
+    names.extend(path.name for path in sorted(assets.glob("baseline-v*-manifest.json")))
+    names.extend(path.name for path in sorted(assets.glob("tavern-baseline-v*.tar.gz")))
     return {
         "tag_name": "v" + version,
         "draft": False,
@@ -44,15 +46,30 @@ def extract_install(assets, data_root):
             package.extractall(stage)
         shutil.copytree(stage / "runtime", data_root / "apps/tavern-runtime")
         shutil.copytree(stage / "updater", data_root / "skills/system/tavern-updater")
-        for skill in (stage / "system-skills").iterdir():
-            if skill.is_dir():
-                shutil.copytree(skill, data_root / "skills/system" / skill.name)
+        system_skills = stage / "system-skills"
+        if system_skills.is_dir():
+            for skill in system_skills.iterdir():
+                if skill.is_dir():
+                    shutil.copytree(skill, data_root / "skills/system" / skill.name)
         shutil.copy2(stage / "updater/references/AGENTS.md", data_root / "AGENTS.md")
         creative_root = data_root / "skills/creative"
         creative_root.mkdir(parents=True)
         for skill in (stage / "skills").iterdir():
             if skill.is_dir():
                 shutil.copytree(skill, creative_root / skill.name)
+
+
+def refresh_updater(assets, data_root):
+    """Mirror the bootstrap step that installs the target updater before review."""
+    with tempfile.TemporaryDirectory(prefix="tavern-updater-refresh-") as temp:
+        stage = Path(temp)
+        with tarfile.open(assets / "tavern-release.tar.gz", "r:gz") as package:
+            package.extractall(stage)
+        shutil.copytree(
+            stage / "updater",
+            data_root / "skills/system/tavern-updater",
+            dirs_exist_ok=True,
+        )
 
 
 def run_json(command, env):
@@ -88,6 +105,7 @@ def main():
         root = Path(temp)
         data = root / "data"
         extract_install(args.base_assets, data)
+        refresh_updater(args.target_assets, data)
         protected = data / "tavern-state"
         protected.mkdir(parents=True)
         (protected / "private.json").write_text('{"preference":"keep me"}\n', encoding="utf-8")

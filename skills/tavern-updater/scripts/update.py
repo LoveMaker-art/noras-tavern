@@ -241,7 +241,8 @@ STARTER_ASSET_FILES = {
 }
 STARTER_ASSET_RUNTIME_FILES = CARD_PREPARATION_RUNTIME_FILES | STARTER_ASSET_FILES
 PRE_RETRY_RUNTIME_FILES = PERSONALITY_RUNTIME_FILES | STARTER_ASSET_FILES
-RUNTIME_FILES = PRE_RETRY_RUNTIME_FILES | {"model_retry.py"}
+ENV_LOADER_RUNTIME_FILES = PRE_RETRY_RUNTIME_FILES | {"env_loader.py"}
+RUNTIME_FILES = ENV_LOADER_RUNTIME_FILES | {"model_retry.py"}
 OBSOLETE_MANAGED_FILES = {
     "runtime/turn_plan_service.py",
 }
@@ -254,6 +255,7 @@ CARD_PREPARATION_RUNTIME_VERSION = (1, 23, 13)
 PERSONALITY_RUNTIME_VERSION = (1, 24, 0)
 STARTER_ASSET_RUNTIME_VERSION = (1, 23, 18)
 RETRY_POLICY_RUNTIME_VERSION = (1, 24, 6)
+ENV_LOADER_RUNTIME_VERSION = (1, 24, 5)
 ALLOWED_MANAGED = {
     "runtime": RUNTIME_FILES | {"turn_plan_service.py"},
     "updater": {
@@ -280,6 +282,8 @@ def runtime_files_for_version(version):
     key = version_key(version)
     if key >= RETRY_POLICY_RUNTIME_VERSION:
         return RUNTIME_FILES
+    if key >= ENV_LOADER_RUNTIME_VERSION:
+        return ENV_LOADER_RUNTIME_FILES
     if key >= PERSONALITY_RUNTIME_VERSION:
         return PRE_RETRY_RUNTIME_FILES
     if key >= STARTER_ASSET_RUNTIME_VERSION:
@@ -371,14 +375,17 @@ def release_from_download(version=None):
     version_key(version)
     tag = "v" + version
     base = f"{RELEASES_URL}/download/{tag}"
-    names = (
+    names = [
         ASSET_MANIFEST,
         ASSET_ARCHIVE,
         SKILL_ASSET_MANIFEST,
         SKILL_ASSET_ARCHIVE,
-        "baseline-v1.14.12-manifest.json",
-        "tavern-baseline-v1.14.12.tar.gz",
-    )
+    ]
+    for baseline_version in ("1.14.12", "1.21.5"):
+        names.extend((
+            f"baseline-v{baseline_version}-manifest.json",
+            f"tavern-baseline-v{baseline_version}.tar.gz",
+        ))
     return {
         "tag": tag,
         "assets": {name: f"{base}/{name}" for name in names},

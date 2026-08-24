@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <!-- 禁用户缩放:与 index.html 同款 app 质感 -->
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+  <title>Story Profile</title>
+  <meta name="application-name" content="Story Profile" />
+  <meta property="og:type" content="website" />
+  <meta property="og:title" content="Story Profile" />
+  <meta property="og:description" content="记下你的口味、角色和走过的故事。" />
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Story Profile" />
+  <meta name="twitter:description" content="记下你的口味、角色和走过的故事。" />
+  <link rel="stylesheet" href="console.css" />
+</head>
+<body data-doc-title="appWindowTitleActor">
+  <main id="acPage" class="acPage">
+    <div class="acTopbar">
+      <button id="acBack" class="acBack hidden" type="button" data-i18n-aria="ariaBack" aria-label="返回酒馆"><span class="acBackMark">‹</span><span data-i18n="ariaBack">返回酒馆</span></button>
+      <div class="acTopTitle" data-i18n="docTitleActor">故事档案</div>
+    </div>
+    <div id="acRoot" class="acCard">
+      <div class="acEmpty" data-i18n="acLoading">读取故事档案…</div>
+    </div>
+  </main>
+  <script src="i18n.js"></script>
+  <script src="security.js"></script>
+  <script src="actor.js"></script>
+</body>
+</html>

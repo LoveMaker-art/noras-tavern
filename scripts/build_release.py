@@ -2,6 +2,7 @@
 """Build the state-free Tavern release assets consumed by tavern-updater."""
 
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -79,11 +80,7 @@ FRONTEND_FILES = (
     "index.html",
     "security.js",
 )
-LEGACY_BASELINE_RUNTIME_FILES = tuple(LEGACY_BACKEND_FILES) + tuple(
-    f"web/{name}" for name in LEGACY_FRONTEND_FILES
-) + (
-    ".tavern-release-version",
-)
+UPDATER_SOURCE = UPDATER / "scripts/update.py"
 CREATIVE_SKILL_NAMES = (
     "tavern",
     "tavern-world",
@@ -103,6 +100,13 @@ def copy(source, destination):
     else:
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
+
+
+def runtime_files_for_version(version):
+    spec = importlib.util.spec_from_file_location("tavern_release_updater", UPDATER_SOURCE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module.runtime_files_for_version(version))
 
 
 def main():
@@ -202,7 +206,8 @@ def main():
                 for path in baseline_source.rglob("*")
                 if path.is_file()
             }
-            if actual_source_files != set(LEGACY_BASELINE_RUNTIME_FILES):
+            baseline_runtime_files = runtime_files_for_version(baseline_version)
+            if actual_source_files != baseline_runtime_files:
                 raise RuntimeError(
                     f"legacy baseline {baseline_version} does not match the runtime allowlist"
                 )
@@ -210,7 +215,7 @@ def main():
             if marker != baseline_version:
                 raise RuntimeError(f"legacy baseline {baseline_version} has a mismatched version marker")
             baseline_stage = DIST / f"baseline-v{baseline_version}-release"
-            for name in LEGACY_BASELINE_RUNTIME_FILES:
+            for name in baseline_runtime_files:
                 copy(baseline_source / name, baseline_stage / "runtime" / name)
             baseline_files = {
                 path.relative_to(baseline_stage).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()

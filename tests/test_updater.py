@@ -84,6 +84,8 @@ class UpdaterMergeTests(unittest.TestCase):
                 "/releases/download/v1.23.10/tavern-release.tar.gz"
             )
         )
+        self.assertIn("baseline-v1.21.5-manifest.json", release["assets"])
+        self.assertIn("tavern-baseline-v1.21.5.tar.gz", release["assets"])
 
     def test_official_target_not_merged_install_becomes_next_baseline(self):
         base = self.root / "base/runtime"
@@ -212,7 +214,9 @@ class UpdaterMergeTests(unittest.TestCase):
         self.assertIn("card_preparation.py", UPDATER.RUNTIME_FILES)
         self.assertIn("personality_service.py", UPDATER.RUNTIME_FILES)
         self.assertIn("model_retry.py", UPDATER.RUNTIME_FILES)
+        self.assertIn("env_loader.py", UPDATER.RUNTIME_FILES)
         self.assertNotIn("model_retry.py", UPDATER.PRE_RETRY_RUNTIME_FILES)
+        self.assertNotIn("env_loader.py", UPDATER.PRE_RETRY_RUNTIME_FILES)
         self.assertIn("assets/fixtures/starter/index.json", UPDATER.RUNTIME_FILES)
         self.assertFalse(
             UPDATER.STARTER_ASSET_FILES & UPDATER.CARD_PREPARATION_RUNTIME_FILES
@@ -222,6 +226,15 @@ class UpdaterMergeTests(unittest.TestCase):
         self.assertNotIn("generation_service.py", UPDATER.EXPANDED_RUNTIME_FILES)
         self.assertIn("turn_plan_service.py", UPDATER.MODULAR_RUNTIME_FILES)
         self.assertNotIn("turn_plan_service.py", UPDATER.RUNTIME_FILES)
+
+    def test_env_loader_file_boundary_matches_historical_releases(self):
+        self.assertNotIn("env_loader.py", UPDATER.runtime_files_for_version("1.24.4"))
+        self.assertEqual(
+            UPDATER.runtime_files_for_version("1.24.5"),
+            UPDATER.ENV_LOADER_RUNTIME_FILES,
+        )
+        self.assertIn("env_loader.py", UPDATER.runtime_files_for_version("1.24.7"))
+        self.assertIn("model_retry.py", UPDATER.runtime_files_for_version("1.24.7"))
 
     def test_obsolete_runtime_file_is_removed_and_restored_on_rollback(self):
         obsolete = self.write(
