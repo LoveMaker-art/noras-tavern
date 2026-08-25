@@ -1775,15 +1775,17 @@ function openCastLibrarySheet() {
 
 function openCreateCastSheet() {
   if (!state.active) return;
-  const card = el("div", "modalCard newWorldSheet");
+  const card = el("div", "modalCard newWorldSheet createCastSheet");
   card.innerHTML = `<div class="newWorldHd">
       <div><p class="modalTitle">${esc(t("createCastTitle"))}</p><p class="newWorldSub">${esc(t("createCastSub"))}</p></div>
       <button class="sheetClose" aria-label="${esc(t("ariaClose"))}">×</button>
     </div>
-    <input id="newCastName" class="newWorldInput" placeholder="${esc(t("createCastName"))}" />
-    <textarea id="newCastDesc" class="newWorldText" placeholder="${esc(t("createCastDesc"))}"></textarea>
-    <textarea id="newCastPersona" class="newWorldText" placeholder="${esc(t("createCastPersona"))}"></textarea>
-    <textarea id="newCastScenario" class="newWorldText" placeholder="${esc(t("createCastScenario"))}"></textarea>
+    <div class="createCastBody">
+      <input id="newCastName" class="newWorldInput" placeholder="${esc(t("createCastName"))}" />
+      <textarea id="newCastDesc" class="newWorldText" placeholder="${esc(t("createCastDesc"))}"></textarea>
+      <textarea id="newCastPersona" class="newWorldText" placeholder="${esc(t("createCastPersona"))}"></textarea>
+      <textarea id="newCastScenario" class="newWorldText" placeholder="${esc(t("createCastScenario"))}"></textarea>
+    </div>
     <div class="newWorldActs"><button class="ghost">${esc(t("cancel"))}</button><button class="primary">${esc(t("createCastSave"))}</button></div>`;
   openModal(card);
   card.querySelector(".sheetClose").onclick = closeModal;

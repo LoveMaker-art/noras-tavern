@@ -746,6 +746,16 @@ textarea.formControl{min-height:74px;resize:vertical;line-height:1.55}
 
 /* 新世界入口:左栏只管理世界,导入/粘贴/角色库都收进创建流程。 */
 .newWorldSheet{max-width:390px;padding:0;overflow:hidden}
+.createCastSheet{height:min(720px,calc(100dvh - 48px));max-height:calc(100dvh - 48px);
+  display:flex;flex-direction:column}
+.createCastSheet .newWorldHd{flex:0 0 auto}
+.createCastBody{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+  -webkit-overflow-scrolling:touch;touch-action:pan-y;padding:0 0 8px}
+.createCastSheet .newWorldActs{flex:0 0 auto;padding:12px 12px calc(13px + env(safe-area-inset-bottom,0px));
+  border-top:1px solid var(--line);background:var(--surface)}
+@media(max-width:560px){
+  .createCastSheet{height:calc(100dvh - 20px);max-height:calc(100dvh - 20px)}
+}
 .newWorldHd{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;
   padding:18px 18px 8px;border-bottom:0}
 .newWorldSub{margin:3px 0 0;color:var(--muted);font-size:12px;line-height:1.55}

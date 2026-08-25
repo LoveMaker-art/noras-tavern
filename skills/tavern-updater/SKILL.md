@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, install, and roll back verified Tavern releases.
-version: 1.24.10
+version: 1.24.11
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]

@@ -1,7 +1,7 @@
 ---
 name: tavern-ops
 description: Configure and operate Tavern models, services, and Liveware.
-version: 1.24.10
+version: 1.24.11
 author: ClawChat Tavern
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]
