@@ -43,11 +43,13 @@ class UpdaterMergeTests(unittest.TestCase):
         UPDATER.LOCK = UPDATER.UPDATE_ROOT / "update.lock"
         UPDATER.TARGETS = {
             area: self.root / "installed" / area
-            for area in ("runtime", "skills", "system-skills", "updater")
+            for area in ("runtime", "skills", "system-skills", "updater", "scripts", "cron")
         }
         UPDATER.AGENTS_PATH = self.root / "installed/AGENTS.md"
         UPDATER.TAVERN_STATE_DIR = self.root / "installed/tavern-state"
         UPDATER.CUSTOM_STARTER_DIR = UPDATER.TAVERN_STATE_DIR / "starter"
+        UPDATER.HERMES_CRON_DIR = UPDATER.TARGETS["cron"]
+        UPDATER.HERMES_CRON_JOBS_FILE = UPDATER.HERMES_CRON_DIR / "jobs.json"
         UPDATER.SKIP_SERVICE = True
         UPDATER.PYTHON = sys.executable
         UPDATER.ALLOWED_MANAGED = {
@@ -55,6 +57,8 @@ class UpdaterMergeTests(unittest.TestCase):
             "skills": set(UPDATER.CREATIVE_SKILL_FILES),
             "system-skills": set(UPDATER.SYSTEM_SKILL_FILES),
             "updater": set(),
+            "scripts": set(UPDATER.HERMES_SCRIPT_FILES),
+            "cron": set(UPDATER.HERMES_CRON_FILES),
         }
 
     def tearDown(self):
@@ -621,6 +625,16 @@ class UpdaterMergeTests(unittest.TestCase):
                 for path in manifest["managed_files"]
                 if path.startswith("updater/")
             },
+            "scripts": {
+                path.partition("/")[2]
+                for path in manifest["managed_files"]
+                if path.startswith("scripts/")
+            },
+            "cron": {
+                path.partition("/")[2]
+                for path in manifest["managed_files"]
+                if path.startswith("cron/")
+            },
         }
         baseline_runtime = ROOT / "legacy-baselines/v1.14.12/runtime"
         shutil.copytree(baseline_runtime, UPDATER.TARGETS["runtime"])
@@ -852,6 +866,69 @@ class UpdaterMergeTests(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "conflict state is inconsistent"):
             UPDATER.load_plan(plan_id)
+
+    def test_update_check_cron_job_is_merged_without_replacing_other_jobs(self):
+        staged = self.root / "staged"
+        template = {
+            "id": "2c8f8f5846b7",
+            "name": "Nora Tavern daily update check (09:00 Asia/Shanghai)",
+            "prompt": "",
+            "skills": [],
+            "skill": None,
+            "script": "nora-tavern-update-check.sh",
+            "no_agent": True,
+            "schedule": {"kind": "cron", "expr": "0 1 * * *", "display": "0 1 * * *"},
+            "schedule_display": "0 1 * * *",
+            "repeat": {"times": None, "completed": 0},
+            "enabled": True,
+            "state": "scheduled",
+            "deliver": "local",
+        }
+        self.write(staged / "cron", "nora-tavern-update-check.json", json.dumps(template))
+        existing_jobs = {
+            "jobs": [
+                {"id": "other", "name": "Keep me", "script": "other.sh"},
+                {
+                    "id": "legacy-id",
+                    "name": template["name"],
+                    "script": template["script"],
+                    "next_run_at": "2000-01-01T00:00:00+00:00",
+                    "created_at": "2026-08-01T00:00:00+00:00",
+                    "last_run_at": "2026-08-02T00:00:00+00:00",
+                    "last_status": "ok",
+                },
+            ],
+        }
+        self.write(UPDATER.HERMES_CRON_DIR, "jobs.json", json.dumps(existing_jobs))
+
+        report = UPDATER.install_update_check_cron(staged)
+
+        stored = json.loads(UPDATER.HERMES_CRON_JOBS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(report["action"], "updated")
+        self.assertEqual(len(stored["jobs"]), 2)
+        self.assertEqual(stored["jobs"][0]["id"], "other")
+        update_job = stored["jobs"][1]
+        self.assertEqual(update_job["id"], "legacy-id")
+        self.assertEqual(update_job["script"], "nora-tavern-update-check.sh")
+        self.assertTrue(update_job["no_agent"])
+        self.assertEqual(update_job["schedule"]["expr"], "0 1 * * *")
+        self.assertEqual(update_job["created_at"], "2026-08-01T00:00:00+00:00")
+        self.assertEqual(update_job["last_run_at"], "2026-08-02T00:00:00+00:00")
+        self.assertEqual(update_job["last_status"], "ok")
+        self.assertNotEqual(update_job["next_run_at"], "2000-01-01T00:00:00+00:00")
+
+    def test_restore_rolls_back_hermes_cron_jobs_file(self):
+        managed = ["cron/nora-tavern-update-check.json"]
+        before = {"jobs": [{"id": "before", "script": "before.sh"}]}
+        after = {"jobs": [{"id": "after", "script": "after.sh"}]}
+        self.write(UPDATER.HERMES_CRON_DIR, "jobs.json", json.dumps(before))
+
+        backup = UPDATER.backup_current("1.24.11", managed)
+        UPDATER.HERMES_CRON_JOBS_FILE.write_text(json.dumps(after), encoding="utf-8")
+        UPDATER.restore(backup)
+
+        stored = json.loads(UPDATER.HERMES_CRON_JOBS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual(stored, before)
 
 
 class RuntimeStateBoundaryTests(unittest.TestCase):

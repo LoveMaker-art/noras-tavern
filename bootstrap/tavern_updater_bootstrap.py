@@ -188,7 +188,7 @@ def extract_updater(archive_path, manifest, destination):
             path = PurePosixPath(member.name)
             if path.is_absolute() or ".." in path.parts or not path.parts:
                 raise RuntimeError("release archive contains an unsafe path")
-            if path.parts[0] not in ("runtime", "updater", "system-skills"):
+            if path.parts[0] not in ("runtime", "updater", "system-skills", "scripts", "cron"):
                 raise RuntimeError("release archive contains an unmanaged top-level path")
             if member.issym() or member.islnk() or member.isdev():
                 raise RuntimeError("release archive contains an unsupported link or device")

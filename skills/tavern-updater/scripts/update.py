@@ -19,6 +19,7 @@ import tempfile
 import time
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 
 REPO = os.environ.get("TAVERN_UPDATE_REPO", "LoveMaker-art/noras-tavern")
 API_OVERRIDE = os.environ.get("TAVERN_UPDATE_API")
@@ -36,6 +37,13 @@ TAVERN_STATE_DIR = Path(
     os.environ.get("TAVERN_STATE_DIR", DATA / "tavern-state")
 ).expanduser().resolve()
 CUSTOM_STARTER_DIR = TAVERN_STATE_DIR / "starter"
+HERMES_SCRIPTS_DIR = Path(
+    os.environ.get("TAVERN_UPDATE_SCRIPTS_DIR", DATA / "scripts")
+).expanduser().resolve()
+HERMES_CRON_DIR = Path(
+    os.environ.get("TAVERN_UPDATE_CRON_DIR", DATA / "cron")
+).expanduser().resolve()
+HERMES_CRON_JOBS_FILE = HERMES_CRON_DIR / "jobs.json"
 PYTHON = os.environ.get("TAVERN_PYTHON", sys.executable)
 HERMES = os.environ.get("TAVERN_HERMES", shutil.which("hermes") or "hermes")
 HEALTH_URL = os.environ.get("TAVERN_HEALTH_URL", "http://127.0.0.1:8799/api/health")
@@ -45,6 +53,8 @@ TARGETS = {
     "skills": DATA / "skills/creative",
     "system-skills": DATA / "skills/system",
     "updater": DATA / "skills/system/tavern-updater",
+    "scripts": HERMES_SCRIPTS_DIR,
+    "cron": HERMES_CRON_DIR,
 }
 AGENTS_PATH = DATA / "AGENTS.md"
 UPDATE_ROOT = DATA / "tavern-updates"
@@ -107,6 +117,13 @@ CREATIVE_SKILL_NAMES = (
 SYSTEM_SKILL_NAMES = (
     "model-api-manager",
 )
+HERMES_SCRIPT_FILES = {
+    "nora-tavern-update-check.sh",
+    "nora-tavern-card-send.py",
+}
+HERMES_CRON_FILES = {
+    "nora-tavern-update-check.json",
+}
 OBSOLETE_CREATIVE_SKILL_NAMES = (
     "tavern-cards",
     "tavern-worldbooks",
@@ -272,6 +289,8 @@ ALLOWED_MANAGED = {
     },
     "skills": CREATIVE_SKILL_FILES,
     "system-skills": SYSTEM_SKILL_FILES,
+    "scripts": HERMES_SCRIPT_FILES,
+    "cron": HERMES_CRON_FILES,
 }
 
 
@@ -555,7 +574,7 @@ def historical_system_material(work, release):
 
 def safe_extract(archive, destination, manifest):
     destination = destination.resolve()
-    allowed_areas = {"runtime", "updater", "system-skills"}
+    allowed_areas = {"runtime", "updater", "system-skills", "scripts", "cron"}
     with tarfile.open(archive, "r:gz") as package:
         for member in package.getmembers():
             parts = Path(member.name).parts
@@ -725,6 +744,8 @@ def category(area, name):
         return "skill"
     if area == "updater":
         return "updater"
+    if area in ("scripts", "cron"):
+        return "integration"
     suffix = Path(name).suffix.lower()
     if name.startswith("web/") or suffix in (".html", ".css", ".js"):
         return "frontend"
@@ -754,6 +775,98 @@ def atomic_write_text(path, content):
             pending.unlink()
         except OSError:
             pass
+
+
+def _utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _next_update_check_run_at(now=None):
+    now = now or datetime.now(timezone.utc)
+    candidate = now.replace(hour=1, minute=0, second=0, microsecond=0)
+    if candidate <= now:
+        candidate += timedelta(days=1)
+    return candidate.isoformat()
+
+
+def _load_cron_jobs_document():
+    if not HERMES_CRON_JOBS_FILE.is_file():
+        return {"jobs": []}
+    try:
+        data = json.loads(HERMES_CRON_JOBS_FILE.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Hermes cron database is invalid JSON: {HERMES_CRON_JOBS_FILE}") from exc
+    if isinstance(data, list):
+        return {"jobs": data}
+    if isinstance(data, dict) and isinstance(data.get("jobs", []), list):
+        return data
+    raise RuntimeError("Hermes cron database must be a JSON object with a jobs array")
+
+
+def _update_check_job_matches(job, template):
+    return (
+        str(job.get("id") or "") == str(template.get("id") or "")
+        or str(job.get("script") or "") == str(template.get("script") or "")
+        or str(job.get("name") or "") == str(template.get("name") or "")
+    )
+
+
+def install_update_check_cron(staged_root):
+    template_path = staged_root / "cron/nora-tavern-update-check.json"
+    if not template_path.is_file():
+        return {"installed": False, "reason": "template-missing"}
+    template = json.loads(template_path.read_text(encoding="utf-8"))
+    if (
+        template.get("script") != "nora-tavern-update-check.sh"
+        or not template.get("no_agent")
+        or (template.get("schedule") or {}).get("expr") != "0 1 * * *"
+    ):
+        raise RuntimeError("Nora Tavern update-check cron template is malformed")
+    document = _load_cron_jobs_document()
+    jobs = list(document.get("jobs") or [])
+    index = next((i for i, job in enumerate(jobs) if _update_check_job_matches(job, template)), None)
+    existing = jobs[index] if index is not None else {}
+    now_iso = _utc_now_iso()
+    next_run_at = existing.get("next_run_at") or _next_update_check_run_at()
+    try:
+        if datetime.fromisoformat(str(next_run_at).replace("Z", "+00:00")) <= datetime.now(timezone.utc):
+            next_run_at = _next_update_check_run_at()
+    except (TypeError, ValueError):
+        next_run_at = _next_update_check_run_at()
+    merged = {
+        **template,
+        "id": existing.get("id") or template["id"],
+        "created_at": existing.get("created_at") or now_iso,
+        "next_run_at": next_run_at,
+        "last_run_at": existing.get("last_run_at"),
+        "last_status": existing.get("last_status"),
+        "last_error": existing.get("last_error"),
+        "last_delivery_error": existing.get("last_delivery_error"),
+    }
+    if index is None:
+        jobs.append(merged)
+        action = "created"
+    else:
+        jobs[index] = merged
+        action = "unchanged" if existing == merged else "updated"
+    document["jobs"] = jobs
+    document["updated_at"] = now_iso
+    atomic_write_text(
+        HERMES_CRON_JOBS_FILE,
+        json.dumps(document, ensure_ascii=False, indent=2) + "\n",
+    )
+    try:
+        HERMES_CRON_JOBS_FILE.chmod(0o600)
+    except OSError:
+        pass
+    return {
+        "installed": True,
+        "action": action,
+        "id": merged["id"],
+        "script": merged["script"],
+        "schedule": merged["schedule_display"],
+        "next_run_at": merged["next_run_at"],
+    }
 
 
 def stage_agents(unpacked, plan_dir):
@@ -1214,7 +1327,14 @@ def validate_release_code(unpacked, managed_files):
             env=validation_env,
         )
     for path in shell_files:
-        run(["sh", "-n", str(path)])
+        checker = "sh"
+        try:
+            first_line = path.read_text(encoding="utf-8", errors="ignore").splitlines()[0]
+        except (OSError, IndexError):
+            first_line = ""
+        if "bash" in first_line:
+            checker = shutil.which("bash") or "bash"
+        run([checker, "-n", str(path)])
     node = shutil.which("node")
     if javascript_files and not node:
         raise RuntimeError("Node.js is required to validate managed frontend JavaScript")
@@ -1469,6 +1589,9 @@ def backup_current(version, managed_files, obsolete_files=None):
     starter_overlay_present = CUSTOM_STARTER_DIR.is_dir()
     if starter_overlay_present:
         shutil.copytree(CUSTOM_STARTER_DIR, backup / "protected-starter")
+    cron_jobs_present = HERMES_CRON_JOBS_FILE.is_file()
+    if cron_jobs_present:
+        copy_file(HERMES_CRON_JOBS_FILE, backup / "hermes-cron/jobs.json")
     obsolete_present = []
     for name in OBSOLETE_UPDATER_FILES:
         current = TARGETS["updater"] / name
@@ -1497,6 +1620,7 @@ def backup_current(version, managed_files, obsolete_files=None):
         "agents_present": agents_present,
         "starter_overlay_managed": True,
         "starter_overlay_present": starter_overlay_present,
+        "cron_jobs_present": cron_jobs_present,
     }
     (backup / "backup.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return backup
@@ -1598,6 +1722,13 @@ def restore(backup):
         remove_path(CUSTOM_STARTER_DIR)
         if metadata.get("starter_overlay_present"):
             shutil.copytree(backup / "protected-starter", CUSTOM_STARTER_DIR)
+    if metadata.get("cron_jobs_present"):
+        copy_file(backup / "hermes-cron/jobs.json", HERMES_CRON_JOBS_FILE)
+    else:
+        try:
+            HERMES_CRON_JOBS_FILE.unlink()
+        except FileNotFoundError:
+            pass
     shutil.rmtree(BASELINE, ignore_errors=True)
     if metadata.get("baseline_present") and (backup / "baseline").is_dir():
         shutil.copytree(backup / "baseline", BASELINE)
@@ -1933,6 +2064,8 @@ def command_apply(args):
         ok, report = health()
         if not ok:
             raise RuntimeError("health check failed: " + json.dumps(report, ensure_ascii=False))
+        install_managed(staged, managed_files, areas={"scripts", "cron"})
+        cron_report = install_update_check_cron(staged)
         # Self-update last so a failed application update keeps the known-good updater.
         install_managed(staged, managed_files, areas={"updater"})
         remove_obsolete_updater_files()
@@ -1958,6 +2091,7 @@ def command_apply(args):
     print(json.dumps({"updated": True, "from": installed, "to": plan["target"],
                       "plan_id": args.plan, "skills": skill_report,
                       "starter_migration": starter_report,
+                      "cron": cron_report,
                       "health": report}, ensure_ascii=False))
 
 

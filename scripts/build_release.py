@@ -16,6 +16,8 @@ ASSETS = APP / "assets"
 HERMES = ROOT / "integrations/hermes"
 SKILLS = ROOT / "skills"
 HERMES_AGENTS = HERMES / "AGENTS.md"
+HERMES_SCRIPTS = HERMES / "scripts"
+HERMES_CRON = HERMES / "cron"
 LEGACY_BASELINES = ROOT / "legacy-baselines"
 UPDATER = SKILLS / "tavern-updater"
 MODEL_API_MANAGER = SKILLS / "model-api-manager"
@@ -92,6 +94,13 @@ CREATIVE_SKILL_NAMES = (
 SYSTEM_SKILL_NAMES = (
     "model-api-manager",
 )
+HERMES_SCRIPT_FILES = (
+    "nora-tavern-update-check.sh",
+    "nora-tavern-card-send.py",
+)
+HERMES_CRON_FILES = (
+    "nora-tavern-update-check.json",
+)
 
 
 def copy(source, destination):
@@ -131,6 +140,10 @@ def main():
     copy(HERMES_AGENTS, STAGE / "updater/references/AGENTS.md")
     if (UPDATER / "agents").is_dir():
         copy(UPDATER / "agents", STAGE / "updater/agents")
+    for name in HERMES_SCRIPT_FILES:
+        copy(HERMES_SCRIPTS / name, STAGE / "scripts" / name)
+    for name in HERMES_CRON_FILES:
+        copy(HERMES_CRON / name, STAGE / "cron" / name)
     copy(MODEL_API_MANAGER, STAGE / "system-skills/model-api-manager")
     files = {
         path.relative_to(STAGE).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
@@ -141,6 +154,8 @@ def main():
         package.add(STAGE / "runtime", arcname="runtime")
         package.add(STAGE / "updater", arcname="updater")
         package.add(STAGE / "system-skills", arcname="system-skills")
+        package.add(STAGE / "scripts", arcname="scripts")
+        package.add(STAGE / "cron", arcname="cron")
     digest = hashlib.sha256(ARCHIVE.read_bytes()).hexdigest()
     manifest = {
         "schema": 4,
