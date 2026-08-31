@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Review/apply/rollback one pinned Node Tavern full release. Never replace user state."""
+"""Review/apply/rollback a pinned full release; Python data is migrated on a copy."""
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -276,8 +276,8 @@ class Updater:
         plan = json.loads((transaction / "plan.json").read_text())
         if plan_digest(plan) != expected or plan["home"] != str(self.home):
             raise ValueError("Plan changed or belongs to another installation")
-        if plan.get('isolatedClean') and type(self) is Updater:
-            raise ValueError('Use the isolated updater for this clean transaction; legacy file apply is not permitted')
+        if (plan.get('isolatedClean') or plan.get('cleanTransaction')) and type(self) is Updater:
+            raise ValueError('Use the clean updater for this transaction; legacy file apply is not permitted')
         for change in plan["changes"]:
             self._target(change["name"])
             if change["source"]:
@@ -486,7 +486,7 @@ class NativeLifecycle:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hermes-home", type=Path, default=os.environ.get("HERMES_HOME", "/opt/data"))
-    parser.add_argument("--isolated-test-port", type=int, help="Experimental clean transaction on a marked temporary copy only")
+    parser.add_argument("--isolated-test-port", type=int, help="Run the same update transaction on a marked temporary copy with a separate port")
     sub = parser.add_subparsers(dest="command", required=True)
     fetch = sub.add_parser("fetch")
     fetch.add_argument("--tag", required=True)
@@ -497,18 +497,42 @@ def main():
     review.add_argument("--allow-candidate", action="store_true")
     for name in ("apply", "rollback"):
         child = sub.add_parser(name)
-        child.add_argument("--transaction", type=Path, required=True)
-        child.add_argument("--expected-plan", required=True)
+        child.add_argument("--transaction", type=Path)
+        child.add_argument("--expected-plan")
+        child.add_argument("--plan", help=argparse.SUPPRESS)
         child.add_argument("--confirm", action="store_true", required=True)
     args = parser.parse_args()
+    if args.command in ('apply', 'rollback'):
+        home = safe(Path(args.hermes_home).absolute())
+        if args.plan:
+            if args.transaction or args.expected_plan:
+                raise ValueError('Use either the legacy reviewed plan ID or the explicit transaction/digest pair')
+            reviewed = json.loads((home / 'tavern-updates-v2/bootstrap-review.json').read_text())
+            if args.plan != Path(reviewed['transaction']).name:
+                raise ValueError('Legacy plan ID differs from the pinned Bootstrap review')
+            args.transaction, args.expected_plan = Path(reviewed['transaction']), reviewed['planDigest']
+            args.isolated_test_port = reviewed.get('testPort')
+        elif args.command == 'rollback' and not args.transaction and not args.expected_plan:
+            installed = json.loads((home / 'tavern-updates-v2/installed.json').read_text())
+            args.transaction = home / 'tavern-updates-v2' / installed['transaction']
+            args.expected_plan = installed.get('planDigest')
+            if args.isolated_test_port is None:
+                args.isolated_test_port = installed.get('testPort')
+        if not args.transaction or not args.expected_plan:
+            raise ValueError('An explicitly reviewed transaction and pinned plan digest are required')
     if args.command == "fetch":
         result = download_release(args.tag, args.destination)
     else:
-        if args.isolated_test_port is not None:
-            from isolated_update import IsolatedUpdater
-            updater = IsolatedUpdater(args.hermes_home, port=args.isolated_test_port)
-        else:
-            updater = Updater(args.hermes_home)
+        from clean_update import CleanUpdater
+        updater = CleanUpdater(args.hermes_home, port=args.isolated_test_port)
+        if args.command == 'rollback':
+            # Old file-level receipts still need their original recovery path.
+            # New installs never use that writer, only the whole-tree transaction.
+            transaction, plan = updater._load_plan(args.transaction, args.expected_plan)
+            if not plan.get('cleanTransaction'):
+                if plan.get('isolatedClean'):
+                    raise ValueError('Recover this experimental receipt with its original updater version')
+                updater = Updater(args.hermes_home)
         if args.command == "review":
             result = updater.review(args.release_dir, args.manifest_sha256, candidate=args.allow_candidate)
         else:

@@ -36,6 +36,8 @@ OLD_PROFILE_HELPERS = (
 )
 BEGIN, END = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
 LEGACY_SECTIONS = {
+    # Exact official Python v1.24.12 routing section; preserve/review local edits.
+    "## Tavern": "13779deb93a44337e993ab47e33221c669690fd293268cacdd0100210eb59747",
     "## Tavern Skill Routing": "aeaf6c777e0f35201e95c7f6d3547822f391abe08b8b5a1dfce63bbfb4881285",
     "## Execution Contract": "c0b9aeacaec3e0d98d3b8e569e5381bf0e0d8ce79b215d7203750070a2b49f9f",
     "## Tavern Updates": "5e86541ed63ae6b635af7afb7c9498d791ca3e02f7913bffc39f8aca8b188eb8",
@@ -85,7 +87,7 @@ def merge_agents(existing, block):
         if end < start:
             raise ValueError("Invalid AGENTS marker order")
         before, after = existing[:start], existing[end + len(END):]
-        if any(heading in before + after for heading in LEGACY_SECTIONS):
+        if set(re.findall(r'(?m)^## [^\n]+$', before + after)).intersection(LEGACY_SECTIONS):
             raise ValueError("Mixed managed and legacy AGENTS sections; review manually")
         return before + block.strip() + after
     kept = []

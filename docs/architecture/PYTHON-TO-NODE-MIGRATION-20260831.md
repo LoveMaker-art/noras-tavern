@@ -4,7 +4,8 @@
 
 用户确认：只处理 Python 用户进入 Node，不做 Node 不同版本的数据升级；允许补齐
 Node 对独立角色、当前状态、关系、账本实体的承载和消费，然后在本地隔离验证。
-未授权本轮部署、GitHub 推送、真实模型调用或浏览器操作。
+最初迁移验收阶段未执行部署、GitHub 推送、真实模型调用或浏览器操作。
+该阶段代码后续已按授权提交为 `f64f9c3` 并推送发布分支，未合并 main。
 
 源代码：`aaa1afceb2e40512cdd52b91e6db4924387c2db9` 的原 Python `app/backend`。
 实现位于隔离发布工作树，基于 `663af1e`，不改用户本地 main 的已有未提交工作。
@@ -74,15 +75,61 @@ fixture 和 `verify_clean_release.py`；构建入口改为 Python 迁移测试�
   5a0d1a0cc8504f32eb9dccd609d3a25688958bac1b0429069027c638f888d35f。
   同一个包重新通过完整构建、正常迁移→读取→手动回滚（临时端口 65057），以及
   --fail-after-start 的启动失败→自动回滚。全部结果退出码为 0；测试临时实例已清理。
-  日志位于 /tmp/nora-python-migration-check.W1EM6F，源码/技能改动仍未提交或部署。
+  日志位于 /tmp/nora-python-migration-check.W1EM6F；该记录对应提交之前的验收，未部署。
+
+## 后续迁移兼容补齐（本地，尚未发布）
+
+- Python 的主关键词、副关键词及排除词组合转换为 ST 原生正则关键词；普通
+  关键词保持普通字段。无需新运行时选择器或额外模型调用。原始条目仍保留。
+- `/assets/` 从受审阅旧程序的 frontend/assets（旧布局为 backend/web/assets）
+  读取，与 `/world-assets/` 一起复制为 Node 背景资源，并在状态内归档原图。
+  拒绝路径穿越、资源内符号链接和缺失文件；更新副本以外的源文件不变。
+- 16 项迁移测试、62 项更新器测试通过；直接运行原 Python 筛选函数与 ST 原生
+  正则解析器，对照 100 个常驻/副关键词/排除/大小写/字面量组合，结果一致。
+- 完整候选构建通过：`candidate-f64f9c3a15dd-1788152463837`，源码摘要
+  `24bbc10720f8961ddc48bd59a0e06d675a7d497618a3f5973ef271dc1c4d38a2`。
+  同包通过真实 Node 临时进程迁移读取、原图片 HTTP 字节比对、手动回滚，以及
+  启动后故障注入自动回滚。保留 2 个世界、32 条消息、独立角色和 Profile 内容。
+  日志：`/tmp/nora-upgrade-assets-check.BTHyC7`。没有真实模型调用或远端部署。
+- 上述验收时，正式整目录切换尚未获准实施。随后用户明确授权正式更新器
+  改造；最新实现状态见下一节。历史候选包不包含下一节的新入口。
+
+## 正式入口改造（本地实现；尚未发布）
+
+用户确认维护停服、整目录替换、Python 数据转换与完整恢复后，默认命令已接入
+`CleanUpdater`。测试端口仍要求临时目录标记；正式路径与演练复用同一事务。
+旧 file-level 更新器仅为历史收据保留恢复兼容入口，新 apply 不走该路径。
+
+1. 旧安装器 URL 不变。发布包同时生成安装 shell、Bootstrap Python 和摘要清单。
+   Bootstrap 校验完整包后更新自身技能，固定 review 的事务与摘要；旧 `apply --plan`
+   只接受该份计划。分支源码并不等于这些 GitHub Release 附件已发布。
+2. 准备依赖后核验源进程的 PID、启动身份和程序路径，记录私有恢复意图再停服。
+   Python 后台任务非空时拒绝更新。未知进程、端口占用、监督程序拉起均拒绝继续；
+   正常进程恰好在两次检查间退出可被识别，不能把信息读取失败一概当作已退出。
+3. 复制完整状态，在副本迁移 Python；当前 Node 只做验证，不做版本数据升级。
+   替换 app/MCP/ops/受管技能目录，保留明确的插件目录；旧代码进入私有恢复目录，
+   不留在活动程序或技能发现路径内。USER.md/MEMORY.md 与受管配置纳入恢复。
+4. 原 Python 官方 AGENTS 路由按原文摘要替换，保留用户其他指令；用户修改过的
+   旧路由要求人工核对。新受管块仍可使用 Tavern 标题，验收检查实际入口而非标题。
+5. 新进程检查 World 快照、Profile 与新 MCP 子进程。收据
+   `installed-awaiting-hermes-reload` 明确区分文件安装和真实 Hermes 激活；
+   仍需 `/reload-mcp` 与新会话检查技能及 AGENTS。
+6. 每个切换先记日志再重命名；失败恢复代码、数据和原运行/停服状态。
+   原本停服的 Python 不会因回滚擅自启动后台模型任务；已验收版本有新对话后，
+   后续回滚拒绝覆盖这些修改。
+
+维护窗口仍是前提：本实现没有网关全局写入闸门，Python health 也不报告全部
+前台请求。操作者须停止聊天及外部写入；不能声称已自动排空所有并发请求。
+真实用户副本、Liveware 页面、Hermes 网关重载与依赖安全门禁分别验收。
+此处只记录源码行为，最终测试结果以对应候选包的摘要和命令日志为准。
 
 ## 尚未覆盖，不得宣称无损支持所有 Python 用户
 
 1. 原 Python 后台角色状态模型算法没有搬回；保存的最新状态进入上下文，后续剧情
    以新的对话/账本为准，MVU 仍归现有运行时。不是复刻旧后台三次模型调用。
-2. Python 特有 exclusion-key 世界书组合尚需语义适配；目前拒绝这类输入。
-   其他关键词/概率/递归等进入 ST 的选取逻辑，不保证随机触发过程与 Python 相同。
-3. `/assets/` 老程序资源需明确源映射；缺失背景或不支持主题值会阻止迁移。
+2. Python exclusion-key 组合已按上述方式转换；概率、递归及预算采用 ST 选取
+   逻辑，不保证整个随机触发过程与旧 Python 相同。
+3. `/assets/` 与 `/world-assets/` 已支持；缺失背景或不支持主题值仍会阻止迁移。
    cover 仅归档并报告，当前 UI 不显示；旧卡导入已删掉的执行脚本/图像不能复原。
 4. 仅覆盖所审计的 runtime_cast schema 3 与 Profile schema 1；异常记录/混合数据
    必须先解决，不删除记录绕过检查。未遍历真实 Python 用户的全部版本/数据。
@@ -99,6 +146,7 @@ node --test ops/tests/test_python_migration.mjs
 python3 -m unittest discover -s ops/tests
 node ops/scripts/package-release.mjs --candidate --offline
 python3 ops/tests/verify_python_release.py --release-dir <本轮候选包> --old-ref aaa1afceb2e40512cdd52b91e6db4924387c2db9
+python3 ops/tests/verify_python_release.py --release-dir <本轮候选包> --old-ref aaa1afceb2e40512cdd52b91e6db4924387c2db9 --via-bootstrap --repeat-update
 python3 ops/tests/verify_python_release.py --release-dir <本轮候选包> --old-ref aaa1afceb2e40512cdd52b91e6db4924387c2db9 --fail-after-start
 ```
 

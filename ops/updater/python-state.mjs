@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { pathToFileURL } from 'node:url';
+import { pythonLoreEntry } from './python-lore.mjs';
+import { collectPythonAssets } from './python-assets.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const record = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -38,7 +40,7 @@ function pythonJson(value) {
     return JSON.stringify(value);
 }
 
-export async function convertPythonState(state, app, { hermesModel = null, legacyModel = null } = {}) {
+export async function convertPythonState(state, app, { hermesModel = null, legacyModel = null, legacyApp = null } = {}) {
     const engine = path.join(app, 'engine/sillytavern');
     const module = relative => import(pathToFileURL(path.join(engine, relative)));
     const { validateWorldManifest } = await module('src/nora-world-core/domain.js');
@@ -57,13 +59,8 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     if (!(await files(source)).some(entry => entry.name === 'productions')) throw new Error('Python productions directory is required; Node migration is not supported');
     let sourceModels = null;
     try { sourceModels = await json(path.join(state, 'model_configs.json')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const sourceAssets = {};
-    for (const production of productions.values()) for (const url of Object.values(production.ui?.assets || {})) {
-        if (typeof url !== 'string' || !url.startsWith('/world-assets/')) continue;
-        const name = decodeURIComponent(url.slice(14));
-        if (path.basename(name) !== name || name === '.' || name === '..') throw new Error('Unsafe Python asset');
-        sourceAssets[name] = hash(await regular(path.join(state, 'world-assets', name)));
-    }
+    const assets = await collectPythonAssets(state, productions, legacyApp);
+    const sourceAssets = Object.fromEntries([...assets.entries].map(([name, bytes]) => [name, hash(bytes)]));
     const inputHash = hash(JSON.stringify({ cards: [...cards], books: [...books], productions: [...productions], models: sourceModels, sourceAssets, hermesModel, legacyModel }));
     const root = path.join(state, 'native/default-user');
     const plan = new Map();
@@ -85,6 +82,7 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     if ((await files(path.join(root, 'nora-world-core/worlds'))).length || (await files(path.join(root, 'nora-worlds'))).length) {
         throw new Error('Mixed Node and Python Worlds require explicit conflict resolution');
     }
+    for (const [name, bytes] of assets.entries) put('python-source-assets/' + name, bytes);
     for (const file of ['story_profile.json', 'profile_eras.json', 'profile_events.jsonl']) {
         try {
             const bytes = await regular(path.join(state, file));
@@ -127,14 +125,7 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
             const id = entry.id ?? entry.uid ?? index;
             if ((!Number.isInteger(id) && !pythonId(id)) || ids.has(String(id))) throw new Error('Duplicate or unsafe Python worldbook entry: ' + name);
             ids.add(String(id));
-            if (['exclusion_keys', 'exclude_keys', 'exclude', 'exclusions'].some(key => entry[key]?.length)) throw new Error('Python exclusion-key lore requires explicit semantic conversion: ' + name);
-            const array = value => Array.isArray(value) ? value : value ? [String(value)] : [];
-            const chance = Number(entry.probability ?? entry.probability_percent ?? 100);
-            return { ...entry, id, keys: array(entry.keys || entry.key), secondary_keys: array(entry.secondary_keys || entry.secondaryKeys || entry.secondary),
-                content: entry.content || entry.comment || '', insertion_order: entry.insertion_order ?? entry.priority ?? 100,
-                extensions: { ...entry.extensions, case_sensitive: Boolean(entry.case_sensitive || entry.caseSensitive),
-                    match_whole_words: false, scan_depth: 6, exclude_recursion: !(data.recursive || entry.recursive),
-                    probability: chance <= 1 ? chance * 100 : chance } };
+            return { ...pythonLoreEntry(entry, data), id };
         });
         const converted = convertEmbeddedBook({ ...data, entries: normalized });
         converted.originalData = clone(data);
@@ -200,11 +191,9 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
             ui = clone(production.ui);
             for (const [key, url] of Object.entries(ui.assets || {})) {
                 if (key === 'cover') { report.warnings.push({ world: id, code: 'COVER_NOT_DISPLAYED' }); delete ui.assets[key]; continue; }
-                if (url.startsWith('/world-assets/')) {
-                    const asset = decodeURIComponent(url.slice(14));
-                    if (path.basename(asset) !== asset || !/\.(png|jpe?g|webp)$/i.test(asset)) throw new Error('Unsafe Python background');
-                    const bytes = await regular(path.join(state, 'world-assets', asset));
-                    const output = 'python-' + hash(bytes) + path.extname(asset).toLowerCase();
+                const bytes = assets.get(url);
+                if (bytes) {
+                    const output = 'python-' + hash(bytes) + path.extname(url.split(/[?#]/, 1)[0]).toLowerCase();
                     if (!plan.has('native/default-user/backgrounds/' + output)) put('native/default-user/backgrounds/' + output, bytes);
                     ui.assets[key] = '/backgrounds/' + output;
                 } else if (!url.startsWith('https://')) throw new Error('Python background requires its original source asset: ' + id);

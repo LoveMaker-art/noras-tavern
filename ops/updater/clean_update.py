@@ -1,8 +1,4 @@
-"""Clean-release transactions, restricted to explicitly marked temporary test homes.
-
-The public release updater remains unchanged until this path has target-host
-acceptance. This adapter reuses its pinned bundle/skill/config review contract.
-"""
+"""Whole-directory updates: one transaction implementation for live and test homes."""
 import json
 import os
 from pathlib import Path
@@ -22,18 +18,20 @@ def require_isolation(home):
     home = safe(home)
     roots = {Path(tempfile.gettempdir()).resolve(), Path('/tmp').resolve()}
     if not any(root in home.parents for root in roots):
-        raise ValueError("Clean transactions are restricted to temporary isolated copies; production is not enabled")
+        raise ValueError("Test ports require a temporary isolated copy")
     marker = json.loads((home / MARKER).read_text()) if (home / MARKER).is_file() else {}
     if marker != {"schema": 1, "home": str(home), "purpose": "isolated-update-test"}:
         raise ValueError("Explicit isolated-copy marker is required")
 
 
-class IsolatedUpdater(Updater):
+class CleanUpdater(Updater):
     def __init__(self, home, *, lifecycle=None, port=None):
         super().__init__(home, lifecycle=lifecycle)
-        require_isolation(self.home)
-        self.isolated_port = port or 8799  # The default is used only by injected file-test adapters.
-        self.lifecycle = lifecycle or IsolatedLifecycle(self, port=port)
+        self.test_mode = port is not None
+        if self.test_mode:
+            require_isolation(self.home)
+        self.isolated_port = port or 8799
+        self.lifecycle = lifecycle or CleanLifecycle(self, port=self.isolated_port)
 
     def _python_source(self):
         return (self.targets['app'] / 'backend/server.py').is_file() and not (self.targets['app'] / 'native-runtime.json').exists()
@@ -48,9 +46,12 @@ class IsolatedUpdater(Updater):
         self._check_data_layout()
 
     def _check_data_layout(self):
-        require_isolation(self.home)
+        if self.test_mode:
+            require_isolation(self.home)
         if self._python_source() and not (self.state / 'productions').is_dir():
             raise ValueError('Python productions directory is required')
+        if not self._python_source():
+            super()._check_data_layout()
         trees.inventory(self.state, state=True)  # Refuse unsafe state links before copying.
 
     def _groups(self, installer):
@@ -86,20 +87,21 @@ class IsolatedUpdater(Updater):
                 new = trees.inventory(extension) or {}
                 extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
                                              for rel, item in old.items() if 'sha256' in item and rel not in new)
-        plan.update(isolatedClean=True, groups=groups, extensionRetirements=extension_retirements,
+        plan.update(cleanTransaction=True, testMode=self.test_mode, port=self.isolated_port, groups=groups, extensionRetirements=extension_retirements,
                     sourceRuntime='python' if self._python_source() else 'node')
         json_write(transaction / 'plan.json', plan)
-        result.update(planDigest=plan_digest(plan), mode='isolated-clean',
+        result.update(planDigest=plan_digest(plan), mode='clean-directory',
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
                       inactiveExtensionFiles=extension_retirements,
                       migration='Python productions -> Node Worlds on copied state; current Node state is only validated, never migrated',
-                      activation='Isolated process only; no Liveware binding or Hermes gateway reload')
+                      activation='Verify Tavern/Profile/MCP, then reload Hermes MCP and start a fresh skill session',
+                      maintenance='Pause chats before apply; active Python background work blocks maintenance')
         return result
 
     def _preconditions(self, transaction, plan):
-        if not plan.get('isolatedClean'):
-            raise ValueError('This is not an isolated clean plan')
+        if not plan.get('cleanTransaction') or plan.get('testMode') != self.test_mode or plan.get('port') != self.isolated_port:
+            raise ValueError('Clean transaction mode/port differs from review')
         super()._preconditions(transaction, plan)
         for group in plan['groups']:
             if trees.fingerprint(safe(group['target'])) != group['before']:
@@ -112,7 +114,7 @@ class IsolatedUpdater(Updater):
         need += trees.size(transaction / 'source')
         need += 64 * 1024 ** 2 if prepared else 1024 ** 3
         if shutil.disk_usage(self.root).free < need:
-            raise ValueError(f'Insufficient disk space for complete isolated transaction: need {need} bytes')
+            raise ValueError(f'Insufficient disk space for complete transaction: need {need} bytes')
         for target in [self.state, self.home / 'skills', self.home / 'memories', *self.targets.values()]:
             parent = target
             while not parent.exists():
@@ -191,30 +193,34 @@ class IsolatedUpdater(Updater):
 
     def apply(self, transaction, expected):
         with self.lock():
-            require_isolation(self.home)
+            if self.test_mode:
+                require_isolation(self.home)
             for receipt in self.root.glob('review-*/receipt.json'):
-                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'isolated-installed'):
+                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload'):
                     raise ValueError('Unfinished update requires recovery first')
             transaction, plan = self._load_plan(transaction, expected)
             if (transaction / 'receipt.json').exists():
                 raise ValueError('Transaction already attempted')
             self._preconditions(transaction, plan)
             self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
-            self.lifecycle.require_offline()
             self._space(transaction)
             self.lifecycle.prepare(transaction)
             self._preconditions(transaction, plan)
             self._space(transaction, prepared=True)
-            entries = self._prepare(transaction, plan)
-            self._preconditions(transaction, plan)
-            self.lifecycle.require_offline()
-            if trees.fingerprint(self.state, state=True) != entries[len(plan['groups'])]['before']:
-                raise ValueError('State changed after snapshot')
             atomic(transaction / 'backup/baseline.json', content(self.root / 'installed.json'))
-            receipt = {'status': 'applying', 'planDigest': expected, 'entries': entries, 'applied': [], 'restored': [],
-                       'versions': plan['versions'], 'commit': plan['commit'], 'isolatedClean': True}
+            receipt = {'status': 'preparing', 'planDigest': expected, 'entries': [], 'applied': [], 'restored': [],
+                       'versions': plan['versions'], 'commit': plan['commit'], 'cleanTransaction': True}
             json_write(transaction / 'receipt.json', receipt)
             try:
+                self.lifecycle.pause(transaction)
+                self.lifecycle.require_offline()
+                entries = self._prepare(transaction, plan)
+                self._preconditions(transaction, plan)
+                self.lifecycle.require_offline()
+                if trees.fingerprint(self.state, state=True) != entries[len(plan['groups'])]['before']:
+                    raise ValueError('State changed after snapshot')
+                receipt.update(status='applying', entries=entries)
+                json_write(transaction / 'receipt.json', receipt)
                 for i, entry in enumerate(entries):
                     if trees.fingerprint(Path(entry['target']), state=entry['state']) != entry['before']:
                         raise ValueError('Concurrent modification before switch: ' + entry['name'])
@@ -228,8 +234,10 @@ class IsolatedUpdater(Updater):
                         raise ValueError('Installed file mismatch: ' + name)
                 receipt['accepted'] = {str(i): trees.fingerprint(Path(e['target']), state=e['state']) for i, e in enumerate(entries)}
                 json_write(self.root / 'installed.json', {'transaction': transaction.name, 'manifestSha256': plan['manifestSha256'],
-                           'commit': plan['commit'], 'files': plan['files']})
-                receipt.update(status='isolated-installed', verification=verification)
+                           'commit': plan['commit'], 'files': plan['files'], 'planDigest': expected,
+                           'testPort': self.isolated_port if self.test_mode else None})
+                receipt.update(status='installed-awaiting-hermes-reload', verification=verification,
+                               hermesReloadRequired=True, freshSessionRequired=True)
                 json_write(transaction / 'receipt.json', receipt)
                 return {k: v for k, v in receipt.items() if k not in ('entries', 'applied', 'restored', 'accepted')}
             except BaseException:
@@ -238,7 +246,7 @@ class IsolatedUpdater(Updater):
                 raise
 
     def _recover(self, transaction, receipt, *, automatic=False):
-        if isinstance(self.lifecycle, IsolatedLifecycle):
+        if isinstance(self.lifecycle, CleanLifecycle):
             self.lifecycle.module_path = transaction / 'source/app/native_lifecycle.py'
         def preflight():
             for i in reversed(receipt['applied']):
@@ -246,7 +254,8 @@ class IsolatedUpdater(Updater):
                     trees.recovery_check(receipt['entries'][i], allow_state_change=automatic,
                                          accepted=receipt.get('accepted', {}).get(str(i)))
         preflight()
-        self.lifecycle.stop()
+        if receipt['applied']:
+            self.lifecycle.stop()
         preflight()
         for i in reversed(receipt['applied']):
             if i in receipt['restored']:
@@ -265,49 +274,52 @@ class IsolatedUpdater(Updater):
         self.lifecycle.restore(transaction)
         receipt['status'] = 'rolled-back'
         json_write(transaction / 'receipt.json', receipt)
-        return {'status': receipt['status'], 'isolatedClean': True}
+        return {'status': receipt['status'], 'cleanTransaction': True}
 
     def rollback(self, transaction, expected):
         with self.lock():
-            require_isolation(self.home)
+            if self.test_mode:
+                require_isolation(self.home)
             transaction, plan = self._load_plan(transaction, expected)
             receipt = json.loads((transaction / 'receipt.json').read_text())
+            if plan.get('testMode') != self.test_mode or plan.get('port') != self.isolated_port:
+                raise ValueError('Recovery mode/port differs from review')
             self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
-            if not receipt.get('isolatedClean'):
+            if not receipt.get('cleanTransaction'):
                 raise ValueError('Use original updater for legacy transaction recovery')
             if receipt['status'] == 'rolled-back':
-                return {'status': 'rolled-back', 'isolatedClean': True}
+                return {'status': 'rolled-back', 'cleanTransaction': True}
             baseline = self.root / 'installed.json'
-            if receipt['status'] == 'isolated-installed' and (not baseline.exists()
+            if receipt['status'] == 'installed-awaiting-hermes-reload' and (not baseline.exists()
                     or json.loads(baseline.read_text()).get('transaction') != transaction.name):
                 raise ValueError('A newer transaction is installed; stale rollback refused')
-            return self._recover(transaction, receipt, automatic=receipt['status'] != 'isolated-installed')
+            return self._recover(transaction, receipt, automatic=receipt['status'] != 'installed-awaiting-hermes-reload')
 
 
-class IsolatedLifecycle(NativeLifecycle):
+class CleanLifecycle(NativeLifecycle):
     def __init__(self, updater, *, port):
-        if not isinstance(port, int) or not 1024 <= port <= 65535 or port in (8799, 8809):
+        if not isinstance(port, int) or not 1024 <= port <= 65535 or (updater.test_mode and port in (8799, 8809)):
             raise ValueError('A separate isolated test port is required')
         super().__init__(updater, port=port)
 
     def require_offline(self):
         import socket
         if Path(os.environ.get('HERMES_HOME', '')).resolve() != self.u.home:
-            raise ValueError('HERMES_HOME must point to the marked isolated copy')
+            raise ValueError('HERMES_HOME must point to the reviewed installation')
         for key in ('TAVERN_PERSONALITY_FILE', 'TAVERN_HERMES_MEMORIES_DIR', 'TAVERN_HERMES_STATE_DB'):
             if os.environ.get(key):
                 value = Path(os.environ[key]).resolve()
                 if self.u.home not in value.parents:
-                    raise ValueError('External Hermes path is not allowed in an isolated rehearsal: ' + key)
+                    raise ValueError('External Hermes path requires explicit mapping: ' + key)
         if not self.u._python_source() and any(self.runtime().status()['processes'].values()):
-            raise ValueError('Stop the isolated Tavern and all its writers before migration')
+            raise ValueError('Tavern restarted during maintenance; stop its supervisor before retrying')
         if self.u._python_source():
             commands = subprocess.check_output(['ps', '-axo', 'command='], text=True)
             if any(str(self.u.targets['app'] / 'backend/server.py') in line for line in commands.splitlines()):
-                raise ValueError('Stop the isolated Python server before migration; no process was stopped')
+                raise ValueError('Python server is still running during maintenance')
         with socket.socket() as probe:
             if probe.connect_ex(('127.0.0.1', self.port)) == 0:
-                raise ValueError('Isolated port is occupied; no process was stopped')
+                raise ValueError('Tavern port is occupied during maintenance')
 
     def runtime(self):
         from update import module_at
@@ -327,7 +339,8 @@ class IsolatedLifecycle(NativeLifecycle):
                 model = model_module.load_model_config(self.u.home / 'config.yaml')
             except (model_module.NativeModelConfigError, FileNotFoundError):
                 model = None
-            json_write(transaction / 'prepared/model-input.json', {'hermesModel': model, 'legacyModel': load_python_model(self.u.home)})
+            json_write(transaction / 'prepared/model-input.json', {'hermesModel': model, 'legacyModel': load_python_model(self.u.home),
+                                                                  'legacyApp': str(self.u.targets['app'])})
         result = subprocess.run(['node', str(transaction / 'source/ops/updater/prepare-state.mjs'),
                                  str(state), str(transaction / 'source/app')],
                                 capture_output=True, text=True, timeout=180)
@@ -370,6 +383,13 @@ for (const name of Object.values(PUBLIC_DIRECTORIES)) {
         json_write(runtime.dependencies_marker, {'schema': 1, 'node_major': runtime.node_major(), 'lock_sha256': runtime.lock_digest()})
         runtime.start(port=self.port, assets_prepared=True)
 
+    def pause(self, transaction):
+        from maintenance import pause
+        pause(self, transaction)
+
+    def stop(self):
+        self.runtime().stop_run('production')
+
     def verify(self, transaction):
         import http.cookiejar
         import urllib.parse
@@ -403,10 +423,8 @@ for (const name of Object.values(PUBLIC_DIRECTORIES)) {
         return result
 
     def restore(self, transaction):
+        from maintenance import resume
         if getattr(self, 'source_runtime', 'node') == 'python':
-            # The required source state was OFFLINE. Preserve that state; starting
-            # the Python main() would schedule billable backlog work implicitly.
             if not self.u._python_source() or not (self.u.state / 'productions').is_dir():
                 raise ValueError('Original Python installation was not restored')
-            return
-        self.runtime().start(port=self.port, assets_prepared=True)
+        resume(self, transaction)

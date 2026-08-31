@@ -66,6 +66,15 @@ try {
         agents: digest(fs.readFileSync(path.join(stage, 'ops/skills/agents-tavern.md'))),
     };
     identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
+    const bootstrap = fs.readFileSync(path.join(stage, 'ops/updater/bootstrap.py'));
+    const installer = fs.readFileSync(path.join(stage, 'ops/updater/install.sh'));
+    const bootstrapManifest = Buffer.from(JSON.stringify({ schema: 2, scope: 'tavern-updater-bootstrap',
+        commit: identity.commit, sha256: digest(bootstrap), installerSha256: digest(installer) }, null, 2) + '\n');
+    for (const [name, bytes] of [['tavern-updater-bootstrap.py', bootstrap], ['install-tavern-updater.sh', installer], ['bootstrap-manifest.json', bootstrapManifest]]) {
+        fs.writeFileSync(path.join(release, name), bytes);
+        checksums.push(`${digest(bytes)}  ${name}`);
+    }
+    identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer) };
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');

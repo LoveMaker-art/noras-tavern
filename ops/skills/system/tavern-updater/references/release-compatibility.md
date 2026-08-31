@@ -1,9 +1,9 @@
 # Full-release contract
 
-This document describes the default file-update mode. The clean-directory/data
-migration implementation is restricted to authorized temporary copies; see
-[isolated rehearsals](isolated-rehearsal.md). A successful rehearsal does not
-authorize removing that restriction or applying it to a live installation.
+The default CLI uses whole-directory transactions. An explicit apply approval
+includes the reviewed maintenance interruption, Python data conversion and code
+replacement. [Isolated rehearsals](isolated-rehearsal.md) exercise the same code;
+they do not establish target-host UI or gateway acceptance.
 
 The trusted repository is `LoveMaker-art/noras-tavern`. An explicit GitHub Release
 tag must have `release-manifest.json`, `SHA256SUMS` and all three archives. A branch
@@ -16,22 +16,27 @@ not a publisher signature.
 | nora-tavern-nora-mcp.tar.gz | apps/nora-mcp |
 | nora-tavern-ops.tar.gz | apps/tavern-ops; installs managed skills and AGENTS block |
 
-Supported existing layout: `apps/tavern-runtime/native-runtime.json` schema 2,
-state in `tavern-state`, engine config in `tavern-state/native-runtime/config.yaml`,
-loopback port 8799. Custom paths, Python state directories, remaining World v1
-registry records and unknown/corrupt World record schemas are rejected at review
-and checked again before apply. A retained v1 registry may already have been
-migrated, but requires reconciliation evidence; never delete it just to bypass
-the guard. A World v2 schema check is not a full resource-binding validation.
+Supported source: Python `apps/tavern-runtime/backend/server.py`, or current Node
+`native-runtime.json` schema 2; state in `tavern-state`, loopback port 8799. Python
+runtime_cast schema 3/Profile schema 1 are converted and validated on a copy.
+Node requires its existing `native-runtime/config.yaml`; World v1 conversion is
+outside scope. Custom paths, mixed/corrupt data and broken references fail closed.
+Old `/assets/` images are read from the reviewed Python frontend before switching.
 
 ## First adoption
 
-Obtain the approved repository commit through the normal trusted source channel.
-Use Hermes' Python interpreter (includes PyYAML) to run `ops/updater/update.py`
-from that reviewed checkout, outside active skill directories. Use the same
-fetch/review/apply process below. This installs the skill entrypoint and versioned
-ops implementation together. Old updater recovery records remain untouched.
-The old Python archive format is never treated as compatible.
+The Python-era skill already starts review through this unchanged address:
+
+```sh
+curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh
+```
+
+Publish that installer, `bootstrap-manifest.json` and `tavern-updater-bootstrap.py`
+beside the full bundle. Bootstrap validates hashes, stages the target updater
+privately, refreshes only its skill, and returns a pinned review/apply command.
+App/MCP/data/AGENTS stay unchanged until apply. Old `apply --plan <id>` resolves
+only the pinned Bootstrap review, never a freshly recomputed digest. SHA-256 is
+integrity binding, not an independent publisher signature.
 
 ## Commands
 
@@ -47,9 +52,10 @@ python scripts/update.py --hermes-home /opt/data rollback --transaction <review-
 
 Review checks archives, per-file hashes, traversal, symlinks, duplicate members,
 size limits, the full inventory and current target hashes. Apply checks again.
-Only previously managed obsolete files are pruned; unknown user files remain.
-First adoption lists every overwrite but cannot infer whether a same-name source
-file is a user hotfix: inspect unexpected changes before approving.
+Whole app/MCP/ops and managed skill directories are replaced after preparation.
+Review lists unknown files leaving active paths; they stay in recovery. Supported
+custom server/frontend plugin locations are preserved explicitly. Inspect local
+code customizations before approving.
 
 The desired inventory includes unchanged AGENTS and skill files. Updater 2.0.0
 could mistake unchanged AGENTS for a retired file during a second update; use
@@ -71,10 +77,10 @@ cookies, account settings and user data are not release assets and stay in place
 
 ## Limits of this recovery
 
-The current backup covers managed program/configuration files, not the complete
-world/chat/Profile state. Startup-time data changes are therefore not covered by
-file rollback. There is no complete writer-drain or clean-directory switch yet.
-Preparing npm requires variable disk space; the preflight allowance is an
-estimate and is checked again before interruption. Keep an independently verified
-data backup and an agreed maintenance window for any authorized runtime test.
-Do not distribute this candidate as an automatic migration for Python users.
+Recovery includes complete project state and USER.md/MEMORY.md, not the whole
+Hermes home, and restores the prior running/offline condition. New user edits
+after successful installation block later rollback instead of being discarded.
+Pause chats and external writers first. Busy Python jobs or unknown processes
+block maintenance; supervisors require coordination. Dependency space is estimated,
+not guaranteed. Retain recovery until target-host acceptance; a candidate is not
+an accepted stable release.

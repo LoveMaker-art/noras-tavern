@@ -108,14 +108,18 @@ python3 ops/updater/update.py --hermes-home /opt/data apply --transaction <revie
 Review is required before apply. Candidate bundles require explicitly authorized
 testing and `--allow-candidate`. Backups/receipts are private and remain on the
 installation host. Worlds, chats, keys and unrelated host configuration are not
-release payloads. Node schema-2 installations use the full updater; old Python
-data and nonstandard instance paths require a separately reviewed migration.
+release payloads. The default updater replaces whole reviewed program directories
+and project state. Python productions are converted on a private copy; current
+Node data is validated without a version migration. Nonstandard instance paths,
+unknown data formats and broken references require reconciliation before apply.
 
 A successful install reports `installed-awaiting-hermes-reload`: use Hermes'
 `/reload-mcp`, then a fresh session for skill/AGENTS context, and verify there.
 The updater does not re-register Liveware or restart its own parent Hermes.
 See [compatibility and recovery](ops/skills/system/tavern-updater/references/release-compatibility.md).
 
-Pushing this branch does not publish a GitHub Release or enable an old updater to
-download new artifacts. The initial adoption entrypoint is this repository's
-reviewed `ops/updater/update.py`; later installs use the installed updater skill.
+Pushing this branch does not publish a GitHub Release. Packaging also emits the
+installer and Bootstrap assets used by the original Python updater skill. Publish
+them with the full bundle to enable first adoption. Bootstrap refreshes only the
+updater before review; an approved apply switches app, MCP, skills, state and
+managed AGENTS together. Keep a maintenance window and recovery until acceptance.

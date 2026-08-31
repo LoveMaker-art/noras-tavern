@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import test_full_update as fixtures
-from isolated_update import IsolatedUpdater, MARKER
+from clean_update import CleanUpdater, MARKER
 import tree_transaction as trees
 
 
@@ -19,8 +19,9 @@ class CleanUpdateTests(unittest.TestCase):
         self.home = self.fixture.home
         (self.home / MARKER).write_text(json.dumps({'schema': 1, 'home': str(self.home), 'purpose': 'isolated-update-test'}))
         self.fixture.service.require_offline = lambda: None
+        self.fixture.service.pause = lambda transaction: None
         self.fixture.service.migrate = lambda transaction, state: {'fixtureAdapter': True}
-        self.u = IsolatedUpdater(self.home, lifecycle=self.fixture.service)
+        self.u = CleanUpdater(self.home, lifecycle=self.fixture.service, port=54321)
         self.fixture.u = self.u
         self.fixture.initial = self.fixture.snapshot()
 
@@ -137,11 +138,12 @@ class CleanUpdateTests(unittest.TestCase):
 import os, sys
 sys.path.insert(0, sys.argv[1])
 sys.path.insert(0, sys.argv[2])
-from isolated_update import IsolatedUpdater
+from clean_update import CleanUpdater
 from test_full_update import Service
 import tree_transaction as trees
 service = Service()
 service.require_offline = lambda: None
+service.pause = lambda transaction: None
 service.migrate = lambda transaction, state: {'fixtureAdapter': True}
 original = trees.rename
 def kill_after_rename(source, target):
@@ -149,7 +151,7 @@ def kill_after_rename(source, target):
     if '/backup/trees/0' in str(target):
         os._exit(73)
 trees.rename = kill_after_rename
-IsolatedUpdater(sys.argv[3], lifecycle=service).apply(sys.argv[4], sys.argv[5])
+CleanUpdater(sys.argv[3], lifecycle=service, port=54321).apply(sys.argv[4], sys.argv[5])
 """
         result = subprocess.run([sys.executable, '-c', code, str(fixtures.OPS / 'updater'), str(fixtures.OPS / 'tests'),
                                  str(self.home), review['transaction'], review['planDigest']], capture_output=True, text=True)
@@ -161,8 +163,8 @@ IsolatedUpdater(sys.argv[3], lifecycle=service).apply(sys.argv[4], sys.argv[5])
         self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
 
     def test_receipt_disk_error_does_not_skip_restoring_original_trees(self):
-        import isolated_update
-        original = isolated_update.json_write
+        import clean_update
+        original = clean_update.json_write
         failed = False
         def fail_once(path, value):
             nonlocal failed
@@ -170,7 +172,7 @@ IsolatedUpdater(sys.argv[3], lifecycle=service).apply(sys.argv[4], sys.argv[5])
                 failed = True
                 raise OSError('simulated full disk')
             return original(path, value)
-        with patch('isolated_update.json_write', side_effect=fail_once):
+        with patch('clean_update.json_write', side_effect=fail_once):
             with self.assertRaisesRegex(OSError, 'full disk'):
                 self.fixture.apply(self.fixture.review())
         self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
@@ -178,12 +180,12 @@ IsolatedUpdater(sys.argv[3], lifecycle=service).apply(sys.argv[4], sys.argv[5])
     def test_normal_updater_cannot_apply_an_isolated_clean_plan(self):
         review = self.fixture.review()
         ordinary = fixtures.Updater(self.home, lifecycle=self.fixture.service)
-        with self.assertRaisesRegex(ValueError, 'isolated updater'):
+        with self.assertRaisesRegex(ValueError, 'clean updater'):
             ordinary.apply(review['transaction'], review['planDigest'])
 
     def test_non_temporary_home_is_rejected_before_any_operation(self):
-        from isolated_update import require_isolation
-        with self.assertRaisesRegex(ValueError, 'production is not enabled'):
+        from clean_update import require_isolation
+        with self.assertRaisesRegex(ValueError, 'temporary isolated copy'):
             require_isolation(Path('/opt/data'))
 
 

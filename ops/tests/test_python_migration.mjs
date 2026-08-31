@@ -185,6 +185,78 @@ test('broken references reject the whole import before writing native output', a
     await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
 });
 
+test('Python combined lore conditions retain primary, secondary and exclusions with native regex keys', async t => {
+    const { state, root } = await setup(t, data => {
+        data.worldbooks[0].entries = [{ id: 1, keys: ['港口'], secondary_keys: ['船长'], selective: true,
+            exclusion_keys: ['封锁'], content: '允许靠岸', enabled: true },
+        { id: 2, constant: true, exclusion_keys: ['封锁'], content: '常驻但可排除' },
+        { id: 3, keys: ['/abc/', 'a.b'], content: '关键词是字面量，不是正则' }];
+    });
+    await convertPythonState(state, app);
+    const file = (await fs.readdir(path.join(root, 'worlds')))[0];
+    const entries = (await readJson(path.join(root, 'worlds', file))).entries;
+    const match = (entry, text) => entry.constant || entry.key.some(key => {
+        const end = key.lastIndexOf('/');
+        return new RegExp(key.slice(1, end), key.slice(end + 1)).test(text);
+    });
+    assert.equal(match(entries[1], '港口 船长'), true);
+    assert.equal(match(entries[1], '港口'), false);
+    assert.equal(match(entries[1], '船长'), false);
+    assert.equal(match(entries[1], '港口\n船长\n封锁'), false);
+    assert.equal(match(entries[2], ''), true);
+    assert.equal(match(entries[2], '封锁'), false);
+    assert.equal(match(entries[3], 'axb'), false);
+    assert.equal(match(entries[3], 'a.b'), true);
+    assert.equal(match(entries[3], '/abc/'), true);
+});
+
+test('old frontend assets are copied before replacement, archived and replayable without the old program', async t => {
+    const { state, root } = await setup(t, data => {
+        data.productions[0].ui = { version: 1, assets: { background: '/assets/scenes/harbor.png?v=1' } };
+    });
+    const legacyApp = path.join(state, 'old-app');
+    await fs.mkdir(path.join(legacyApp, 'frontend/assets/scenes'), { recursive: true });
+    const bytes = Buffer.from('test-image-bytes');
+    await fs.writeFile(path.join(legacyApp, 'frontend/assets/scenes/harbor.png'), bytes);
+    await convertPythonState(state, app, { legacyApp });
+    const world = await new WorldStore({ root: path.join(root, 'nora-world-core') }).get('prod_fixture');
+    assert.match(world.ui.assets.background, /^\/backgrounds\/python-.*\.png$/);
+    assert.deepEqual(await fs.readFile(path.join(root, world.ui.assets.background.slice(1))), bytes);
+    await fs.rm(legacyApp, { recursive: true });
+    assert.equal((await convertPythonState(state, app, { legacyApp })).repeated, true);
+});
+
+test('old asset traversal refuses before any native output is written', async t => {
+    const { state } = await setup(t, data => {
+        data.productions[0].ui = { version: 1, assets: { background: '/assets/%2e%2e/secret.png' } };
+    });
+    await assert.rejects(convertPythonState(state, app, { legacyApp: path.join(state, 'old-app') }), /Unsafe Python asset/);
+    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+});
+
+test('a symlink inside the legacy frontend cannot import files outside its asset root', async t => {
+    const { state } = await setup(t, data => {
+        data.productions[0].ui = { version: 1, assets: { background: '/assets/link/private.png' } };
+    });
+    const legacyApp = path.join(state, 'old-app');
+    await fs.mkdir(path.join(legacyApp, 'frontend/assets'), { recursive: true });
+    await fs.mkdir(path.join(state, 'private'));
+    await fs.writeFile(path.join(state, 'private/private.png'), 'must-not-be-imported');
+    await fs.symlink(path.join(state, 'private'), path.join(legacyApp, 'frontend/assets/link'));
+    await assert.rejects(convertPythonState(state, app, { legacyApp }), /Unsafe Python asset symlink/);
+    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+});
+
+test('missing legacy image leaves original records intact and creates no native output', async t => {
+    const { state } = await setup(t, data => {
+        data.productions[0].ui = { version: 1, assets: { background: '/assets/missing.png' } };
+    });
+    const source = await fs.readFile(path.join(state, 'productions/prod_fixture.json'));
+    await assert.rejects(convertPythonState(state, app, { legacyApp: path.join(state, 'old-app') }), { code: 'ENOENT' });
+    assert.deepEqual(await fs.readFile(path.join(state, 'productions/prod_fixture.json')), source);
+    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+});
+
 test('stale old ledger keeps full raw history without inventing activation', async t => {
     const { state, root } = await setup(t, data => { data.productions[0].story_state.covered_signature = 'wrong'; });
     const report = await convertPythonState(state, app);
