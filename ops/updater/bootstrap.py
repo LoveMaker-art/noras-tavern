@@ -193,6 +193,16 @@ def main():
         if args.isolated_test_port is not None:
             command += ['--isolated-test-port', str(args.isolated_test_port)]
         env = {**os.environ, 'HERMES_HOME': str(home)}
+        from liveware_integration import prepare_update
+        from feedback import phase, failure_report
+        try:
+            with phase('liveware-auth', '检查目标机器 Liveware 登录状态'):
+                prepare_update(home, allow_login=args.apply and args.confirm, isolated=args.isolated_test_port is not None)
+        except Exception as error:
+            failure = failure_report(error)
+            failure.update(status='refused-before-maintenance',
+                           recovery='登录准备未通过；没有停止原服务或切换活动文件。')
+            raise UpdateFailure(failure) from None
         notice('审查目标机器与更新计划')
         review = json.loads(checked_cli(command + ['review', '--release-dir', str(bundle),
                             '--manifest-sha256', expected] + (['--allow-candidate'] if args.allow_candidate else []),

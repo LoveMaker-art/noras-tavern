@@ -108,6 +108,33 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn('--apply requires --confirm', result.stderr)
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
+    def test_auth_preparation_requires_confirmed_apply_and_precedes_review(self):
+        with patch('liveware_integration.prepare_update') as prepare:
+            self.completed_bootstrap()
+        prepare.assert_called_once_with(self.home, allow_login=True, isolated=False)
+
+    def test_failed_login_stops_before_review_or_service_changes(self):
+        from liveware_integration import PlatformError
+        before = self.fixture.snapshot()
+        with patch('liveware_integration.prepare_update', side_effect=PlatformError('AUTH', 'synthetic auth failure')), \
+             self.assertRaises(bootstrap.UpdateFailure) as raised:
+            self.completed_bootstrap()
+        self.assertEqual(raised.exception.result['status'], 'refused-before-maintenance')
+        self.assertEqual(raised.exception.result['phase'], 'liveware-auth')
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_review_only_checks_auth_without_logging_in(self):
+        args = ['bootstrap.py', '--data-root', str(self.home), '--release-dir', str(self.fixture.release),
+                '--manifest-sha256', fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes())]
+        def review(*args, **kwargs):
+            prepare.assert_called_once_with(self.home, allow_login=False, isolated=False)
+            raise RuntimeError('stop at review boundary')
+        with patch.object(sys, 'argv', args), patch.dict(os.environ, self.env), \
+             patch('liveware_integration.prepare_update') as prepare, \
+             patch.object(bootstrap, 'run_cli', side_effect=review), \
+             redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'review boundary'):
+            bootstrap.main()
+
     def completed_bootstrap(self, *, status='installed-awaiting-hermes-reload', returncode=0, isolated=False, check_progress=False):
         """Real bundle/adoption; substitute only the child review/apply processes."""
         transaction = self.home / 'tavern-updates-v2/review-completion'
@@ -126,6 +153,8 @@ class BootstrapTests(unittest.TestCase):
                 '--manifest-sha256', fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes()),
                 '--apply', '--confirm']
         if isolated:
+            self.fixture.write('.tavern-isolated-update.json', json.dumps({
+                'schema': 1, 'home': str(self.home), 'purpose': 'isolated-update-test'}))
             args += ['--isolated-test-port', '54321']
         output = io.StringIO()
         notice = io.StringIO()

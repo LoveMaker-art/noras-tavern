@@ -30,39 +30,103 @@ def launcher_record(value):
     return {key: value[key] for key in ('app_id', 'name', 'url')} if value is not None else None
 
 
+class PlatformError(ValueError):
+    def __init__(self, code, message):
+        self.code = 'LIVEWARE_' + code
+        super().__init__(self.code + ': ' + message)
+
+
+def command_error(output, operation):
+    # Classify internally; never expose CLI responses, tokens or argv values.
+    if re.search(r'\b(unauthorized|unauthenticated|forbidden|invalid token|token expired|not logged in|please log in|please login)\b|\bHTTP\s*(401|403)\b', output, re.I):
+        return PlatformError('AUTH', operation + ' 鉴权失败；需要目标机器的 Liveware 登录。')
+    if re.search(r'time[ -]?out|timed out|deadline exceeded', output, re.I):
+        return PlatformError('TIMEOUT', operation + ' 请求超时；没有自动重试。')
+    return PlatformError('COMMAND', operation + ' 执行失败；请检查目标机器的 Liveware 连接。')
+
+
 class Platform:
     def __init__(self, home):
         self.home = Path(home)
         self.binary = os.environ.get('LIVEWARE_BIN') or shutil.which('liveware') or str(self.home / 'clawchat/liveware/liveware')
         self.plugin = Path(os.environ.get('CLAWCHAT_PLUGIN_DIR') or self.home / 'plugins/clawchat')
 
-    def cli(self, *args):
-        result = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=45)
+    def environment(self, *, login=False):
+        """Resolve credentials for this installation, not the agent's shell HOME.
+
+        Re-read after login. Credentials stay in child environments only and are
+        never serialized into a plan, receipt, command line or release artifact.
+        """
+        from update import safe
+        env = {**os.environ, 'HOME': str(self.home), 'HERMES_HOME': str(self.home)}
+        path = safe(self.home / '.clawling/liveware.json')
+        if path.exists():
+            try:
+                with path.open('rb') as stream:
+                    raw = stream.read(65537)
+                if len(raw) > 65536:
+                    raise ValueError('size')
+                saved = json.loads(raw)
+                if not isinstance(saved, dict) or not saved.get('token'):
+                    raise ValueError('token')
+                for key in ('token', 'apiUrl', 'instanceId'):
+                    if key in saved and (not isinstance(saved[key], str) or any(ord(c) < 32 for c in saved[key])):
+                        raise ValueError('field')
+            except (OSError, ValueError):
+                raise PlatformError('CREDENTIALS', '目标机器 Liveware 凭证文件不可用；未覆盖该文件。') from None
+            for key in ('LIVEWARE_TOKEN', 'LIVEWARE_API_URL', 'LIVEWARE_CONTROL_URL', 'LIVEWARE_INSTANCE_ID'):
+                env.pop(key, None)
+            for key, field in (('LIVEWARE_TOKEN', 'token'), ('LIVEWARE_API_URL', 'apiUrl'), ('LIVEWARE_INSTANCE_ID', 'instanceId')):
+                if saved.get(field):
+                    env[key] = saved[field]
+        if login:
+            # The official plugin supplies ClawChat's access token itself.
+            env.pop('LIVEWARE_TOKEN', None)
+        return env
+
+    def run(self, command, operation, *, login=False, **kwargs):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=45,
+                                    env=self.environment(login=login), **kwargs)
+        except subprocess.TimeoutExpired:
+            raise PlatformError('TIMEOUT', operation + ' 请求超时；没有自动重试。') from None
+        except OSError:
+            raise PlatformError('UNAVAILABLE', operation + ' 无法启动；请检查 Liveware CLI 和 ClawChat 插件安装。') from None
         if result.returncode:
-            # CLI stderr may contain auth material; keep errors categorical.
-            raise ValueError('Liveware command failed: ' + ' '.join(args[:2]))
+            raise command_error(result.stderr + '\n' + result.stdout, operation)
         return result.stdout
 
+    def query(self, output, operation):
+        try:
+            return json.loads(output)
+        except ValueError:
+            error = command_error(output, operation)
+            if error.code == 'LIVEWARE_COMMAND':
+                error = PlatformError('PROTOCOL', operation + ' 返回了不支持的数据；未按空列表处理。')
+            raise error from None
+
+    def cli(self, *args):
+        return self.run([self.binary, *args], ' '.join(args[:2]))
+
     def apps(self):
-        return rows(json.loads(self.cli('app', 'list', '--json')))
+        return rows(self.query(self.cli('app', 'list', '--json'), 'app list'))
 
     def backends(self, app_id):
-        return rows(json.loads(self.cli('backend', 'list', app_id, '--json')))
+        return rows(self.query(self.cli('backend', 'list', app_id, '--json'), 'backend list'))
 
     def launcher(self, operation, **parameters):
-        if operation not in ('list_apps', 'register_app', 'unregister_app'):
+        if operation not in ('list_apps', 'register_app', 'unregister_app', 'liveware_login'):
             raise ValueError('Unsupported launcher operation')
         code = ('import asyncio,json,sys; sys.path.insert(0,sys.argv[1]); '
                 'from clawchat_gateway import tools; '
                 'print(json.dumps(asyncio.run(getattr(tools,sys.argv[2])(**json.load(sys.stdin)))))')
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(self.plugin), operation],
-            input=json.dumps(parameters), capture_output=True, text=True, timeout=45,
-            env={**os.environ, 'HERMES_HOME': str(self.home)})
-        if result.returncode:
-            raise ValueError('ClawChat launcher command failed: ' + operation)
-        value = json.loads(result.stdout)
+        output = self.run([sys.executable, '-B', '-c', code, str(self.plugin), operation], operation,
+                          input=json.dumps(parameters), login=operation == 'liveware_login')
+        value = self.query(output, operation)
         if not isinstance(value, dict) or value.get('error') or value.get('ok') is False or value.get('success') is False:
-            raise ValueError('ClawChat launcher rejected: ' + operation)
+            raise command_error(json.dumps(value), operation)
+        if operation == 'liveware_login' and value.get('ok') is not True:
+            raise PlatformError('PROTOCOL', 'Liveware 登录未返回成功确认。')
         return value
 
     def registrations(self):
@@ -70,6 +134,31 @@ class Platform:
 
     def bind(self, app_id, target):
         self.cli('tunnel', 'bind', app_id, target)
+
+
+def prepare_update(home, *, allow_login=False, isolated=False):
+    """Restore legacy login preparation BEFORE review/maintenance, at most once.
+
+    Review is read-only. Only an explicitly confirmed update may refresh login;
+    no binding, registration, creation or failed update is automatically replayed.
+    """
+    if isolated:
+        from clean_update import require_isolation
+        require_isolation(Path(home))
+        return
+    from update import safe
+    if not safe(Path(home) / 'tavern-state/apps.json').exists():
+        return
+    platform = Platform(home)
+    try:
+        platform.apps()
+    except PlatformError as error:
+        if error.code != 'LIVEWARE_AUTH' or not allow_login:
+            raise
+        from feedback import phase
+        with phase('liveware-login', '通过目标机器 ClawChat 插件准备 Liveware 登录'):
+            platform.launcher('liveware_login')
+            platform.apps()
 
 
 def identities(home, platform):
