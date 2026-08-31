@@ -46,10 +46,10 @@ mkdir -p "$TAVERN_STATE"
 
 # Skill installation is separate from Liveware provisioning; do not recreate
 # retired specialist entries here. See ops/skills/INSTALL.md in the source tree.
-CONSOLE_APP_NAME="${TAVERN_CONSOLE_APP_NAME:-tavern}"
+CONSOLE_APP_NAME="${TAVERN_CONSOLE_APP_NAME:-Tavern}"
 CONSOLE_NAME="$CONSOLE_APP_NAME"
 TAVERN_APP="${TAVERN_APP_DIR:-$DATA_ROOT/apps/tavern-runtime}"
-ACTOR_APP_NAME="${TAVERN_ACTOR_APP_NAME:-story profile}"
+ACTOR_APP_NAME="${TAVERN_ACTOR_APP_NAME:-Story Profile}"
 ACTOR_NAME="$ACTOR_APP_NAME"
 
 # 1. liveware 登录（token 从 plugin profile config 解析；env CLAWCHAT_TOKEN 是空壳别直接传）
@@ -90,7 +90,7 @@ def created_app_id(output):
 
 def find(name, apps):
     for a in apps:
-        if a.get("name") == name and a.get("status") == "active":
+        if str(a.get("name", "")).casefold() == name.casefold() and a.get("status") == "active":
             return a
     return None
 

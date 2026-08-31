@@ -29,9 +29,9 @@ test('separate Liveware roots identify the correct app without relying on forwar
     await once(server, 'listening');
     const base = `http://127.0.0.1:${server.address().port}`;
     for (const [route, title, icon] of [
-        ['/', 'tavern', '/favicon.ico'],
-        [STORY_PROFILE_UPSTREAM_PATH, 'story profile', '/story-profile-icon-v2.png'],
-        [`${STORY_PROFILE_UPSTREAM_PATH}/?launch=1`, 'story profile', '/story-profile-icon-v2.png'],
+        ['/', 'Tavern', '/tavern-icon-dbf4ecbd54ec.png'],
+        [STORY_PROFILE_UPSTREAM_PATH, 'Story Profile', '/story-profile-icon-v2.png'],
+        [`${STORY_PROFILE_UPSTREAM_PATH}/?launch=1`, 'Story Profile', '/story-profile-icon-v2.png'],
     ]) {
         const response = await fetch(base + route);
         assert.equal(response.status, 200, route);
@@ -39,13 +39,13 @@ test('separate Liveware roots identify the correct app without relying on forwar
         const html = await response.text();
         assert.ok(html.includes(`<title>${title}</title>`), route);
         assert.match(html, new RegExp(`<link[^>]*rel="icon"[^>]*${icon.replaceAll('.', '\\.')}[^>]*>`));
-        if (title === 'story profile') assert.equal(response.headers.get('cache-control'), 'no-store');
+        if (title === 'Story Profile') assert.equal(response.headers.get('cache-control'), 'no-store');
     }
     for (const prefix of ['', STORY_PROFILE_UPSTREAM_PATH]) {
         const legacy = await fetch(base + prefix + '/actor', { redirect: 'manual' });
         assert.equal(legacy.status, 307);
         assert.equal(legacy.headers.get('location'), '/actor.html');
-        for (const asset of ['actor.html', 'actor.js', 'story-profile-icon-v2.png', 'favicon.ico']) {
+        for (const asset of ['actor.html', 'actor.js', 'story-profile-icon-v2.png', 'favicon.ico', 'tavern-icon-dbf4ecbd54ec.png']) {
             const response = await fetch(`${base}${prefix}/${asset}`);
             assert.equal(response.status, 200, asset);
             assert.deepEqual(Buffer.from(await response.arrayBuffer()), readFileSync(new URL(`../public/${asset}`, import.meta.url)));

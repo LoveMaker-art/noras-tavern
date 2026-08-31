@@ -1,7 +1,7 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:b71a441b33bbd0a6e0378c59b3e926e6273d1081fcde144b9b83ca2dfeea4da7",
+  "sourceRevision": "sha256:b66f16006867ffa89bb4f92bc007b6a3178a8bd23332ec69fc34ced71ce368c2",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
@@ -30,8 +30,8 @@
     },
     "engine/sillytavern/public/actor.html": {
       "source": "story-profile/public/actor.html",
-      "sourceSha256": "c13c09c4068b858efdfe0621579c67be52eeab1547d07f60933f374e61f4f5ab",
-      "sha256": "2cb5c28b28e47d96e5d15679d350a5cf21cfbf6734d345e4691aa32c74883fa0"
+      "sourceSha256": "f4a24948cbae5a060739a681207213dc9ff8428ce83b1c5af8343f4154989062",
+      "sha256": "b2468017f93cb2d5fc10497f2ef0e362d1aeded4d81fa69684708be660963738"
     },
     "engine/sillytavern/public/story-profile-book.svg": {
       "source": "story-profile/public/story-profile-book.svg",

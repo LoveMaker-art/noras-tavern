@@ -265,7 +265,7 @@ for (const signal of [
     if (!cardAdapter.includes(signal)) throw new Error(`The ST card adapter must preserve complex-card authorization: ${signal}`);
 }
 
-if (!html.includes('<title>tavern</title>') || !html.includes('{{NORA_ASSET_BASE}}/favicon.ico')) {
+if (!html.includes('<title>Tavern</title>') || !html.includes('{{NORA_ASSET_BASE}}/tavern-icon-dbf4ecbd54ec.png')) {
     throw new Error('The Nora shell must own the page title and content-addressed application icon.');
 }
 
