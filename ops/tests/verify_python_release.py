@@ -119,14 +119,20 @@ def main():
             if args.via_bootstrap:
                 if args.fail_after_start:
                     raise ValueError('Use the shared transaction harness separately for failure injection')
-                result = subprocess.check_output([sys.executable, str(stage / 'ops/updater/bootstrap.py'),
+                # Match curl installation: one downloaded file, no sibling
+                # updater modules; Bootstrap itself performs review + apply.
+                standalone = home.parent / 'tavern-updater-bootstrap.py'
+                shutil.copyfile(stage / 'ops/updater/bootstrap.py', standalone)
+                result = subprocess.check_output([sys.executable, str(standalone),
                     '--data-root', str(home), '--release-dir', str(args.release_dir.resolve()),
-                    '--manifest-sha256', manifest_hash, '--allow-candidate', '--isolated-test-port', str(port)], text=True)
+                    '--manifest-sha256', manifest_hash, '--allow-candidate', '--isolated-test-port', str(port),
+                    '--apply', '--confirm'], cwd=home.parent, text=True)
                 adopted = json.loads(result)
                 review = adopted['review']
                 launcher = home / 'skills/system/tavern-updater/scripts/update.py'
                 legacy_cli = [sys.executable, str(launcher)]
-                subprocess.run(legacy_cli + ['apply', '--plan', adopted['report']['plan_id'], '--confirm'], check=True)
+                assert adopted['apply']['status'] == 'installed-awaiting-hermes-reload'
+                assert 'restartCommand' not in adopted, 'An isolated rehearsal must not request a real gateway restart'
                 installed = json.loads((Path(review['transaction']) / 'receipt.json').read_text())
             else:
                 review = updater.review(args.release_dir, manifest_hash, candidate=True)

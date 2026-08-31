@@ -146,6 +146,9 @@ def main():
                     raise ValueError('Previously staged bootstrap was modified')
         else:
             os.replace(stage, installed)
+        # The standalone downloaded Bootstrap has no sibling updater modules.
+        # Later imports must follow the verified tree after its durable move.
+        sys.path.insert(0, str(installed / 'ops/updater'))
         entry = installed / 'ops/updater/update.py'
         target = safe(home / 'skills/system/tavern-updater')
         backup = work / 'previous-updater'

@@ -129,6 +129,36 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Update did not complete'):
             self.completed_bootstrap(returncode=1)
 
+    def test_downloaded_standalone_bootstrap_resolves_completion_after_stage_moves(self):
+        # Reproduce curl's single-file download, without repo sys.path or cached
+        # completion imports from this test runner. Only child processes are stubbed.
+        script = r'''
+import importlib.util, json, pathlib, sys
+from unittest.mock import patch
+source, target, bundle, digest = sys.argv[1:]
+spec = importlib.util.spec_from_file_location('downloaded_bootstrap', source)
+bootstrap = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bootstrap)
+transaction = pathlib.Path(target) / 'tavern-updates-v2/review-completion'
+review = {'transaction': str(transaction), 'planDigest': 'fixture-digest'}
+def apply(command, **kwargs):
+    transaction.mkdir(parents=True)
+    (transaction / 'receipt.json').write_text(json.dumps({'status': 'installed-awaiting-hermes-reload', 'commit': 'a' * 40}))
+    return bootstrap.subprocess.CompletedProcess(command, 0, '', '')
+sys.argv = [source, '--data-root', target, '--release-dir', bundle, '--manifest-sha256', digest, '--apply', '--confirm']
+with patch.object(bootstrap.subprocess, 'check_output', return_value=json.dumps(review)), patch.object(bootstrap.subprocess, 'run', side_effect=apply):
+    bootstrap.main()
+'''
+        downloaded = self.fixture.root / 'tavern-updater-bootstrap.py'
+        downloaded.write_bytes((fixtures.OPS / 'updater/bootstrap.py').read_bytes())
+        result = subprocess.run([sys.executable, '-c', script, str(downloaded), str(self.home),
+                                 str(self.fixture.release), fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes())],
+                                env={k: v for k, v in self.env.items() if k != 'PYTHONPATH'},
+                                cwd=self.fixture.root, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['restartCommand'], '/restart')
+        self.assertIn('/restart', result.stderr)
+
     def test_existing_skill_symlink_is_rejected_before_copy(self):
         skill = self.home / 'skills/system/tavern-updater'
         skill.mkdir(parents=True)
