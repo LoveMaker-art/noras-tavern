@@ -12,11 +12,15 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
 import urllib.request
 from html.parser import HTMLParser
+from urllib.parse import urlsplit
 
 ROLES = {'console': ('Tavern', ''), 'actor': ('Story Profile', '/_liveware/story-profile')}
 CLAWNEST_LIVEWARE = Path('/opt/clawnest/bin/liveware')
+MAX_HTML = 2 * 1024 * 1024
+MAX_GATEWAY_ERROR = 64 * 1024
 
 
 def rows(value, key=None):
@@ -176,6 +180,39 @@ class Platform:
         self.cli('tunnel', 'bind', app_id, target)
 
 
+class Metadata(HTMLParser):
+    icon = None
+    application = None
+    title = ''
+    in_title = False
+
+    def handle_starttag(self, tag, attrs):
+        values = dict(attrs)
+        if tag == 'title':
+            self.in_title = True
+        if tag == 'meta' and values.get('name') == 'application-name':
+            self.application = values.get('content')
+        if tag == 'link' and 'icon' in values.get('rel', '').split():
+            self.icon = values.get('href')
+
+    def handle_endtag(self, tag):
+        if tag == 'title':
+            self.in_title = False
+
+    def handle_data(self, value):
+        if self.in_title:
+            self.title += value
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_a, **_kw):
+        return None
+
+
+def direct_opener():
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+
+
 def prepare_update(home, *, allow_login=False, isolated=False):
     """Restore legacy login preparation BEFORE review/maintenance, at most once.
 
@@ -304,11 +341,16 @@ class Integration:
                     raise ValueError('Launcher metadata did not converge: ' + role)
                 action['status'] = 'verified'
                 save()
-        journal['status'] = 'binding-acknowledged'
+            action = {'role': role, 'kind': 'external-entry', 'url': desired['url'], 'status': 'intent'}
+            journal['actions'].append(action)
+            save()
+            action['evidence'] = public_entry(desired['url'], title)
+            action['status'] = 'verified'
+            save()
+        journal['status'] = 'external-entry-verified'
         save()
-        return {'status': 'binding-acknowledged', 'localEntriesVerified': True, 'launcherMetadataVerified': True,
-                'externalEntryVerified': False,
-                'limitation': 'CLI cannot read local tunnel targets; authenticated ClawChat entry/UI still needs owner verification'}
+        return {'status': 'external-entry-verified', 'localEntriesVerified': True, 'launcherMetadataVerified': True,
+                'externalEntryVerified': True}
 
     def recover(self, journal, save):
         if not journal.get('actions'):
@@ -324,6 +366,10 @@ class Integration:
                 # No public getter for original upstream: do not guess one or
                 # overwrite a possible concurrent operator binding.
                 pending = True
+                continue
+            if action['kind'] == 'external-entry':
+                action['status'] = 'restored'
+                save()
                 continue
             role = action['role']
             actual = registrations(self.platform, before['apps'])[role]
@@ -346,29 +392,7 @@ class Integration:
 
 def local_entry(url, title):
     """Only loopback HTTP, no proxy/redirect, capped HTML and image reads."""
-    class Metadata(HTMLParser):
-        icon = None
-        application = None
-        title = ''
-        in_title = False
-        def handle_starttag(self, tag, attrs):
-            values = dict(attrs)
-            if tag == 'title':
-                self.in_title = True
-            if tag == 'meta' and values.get('name') == 'application-name':
-                self.application = values.get('content')
-            if tag == 'link' and 'icon' in values.get('rel', '').split():
-                self.icon = values.get('href')
-        def handle_endtag(self, tag):
-            if tag == 'title':
-                self.in_title = False
-        def handle_data(self, value):
-            if self.in_title:
-                self.title += value
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *_a, **_kw):
-            return None
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    opener = direct_opener()
     def read(address, maximum):
         with opener.open(address, timeout=10) as response:
             value = response.read(maximum + 1)
@@ -384,6 +408,42 @@ def local_entry(url, title):
     icon = read(origin.scheme + '://' + origin.netloc + metadata.icon, 8 * 1024 * 1024)
     if not icon.startswith(b'\x89PNG\r\n\x1a\n'):
         raise ValueError('Local entry icon is not a PNG: ' + title)
+
+
+def public_entry(url, title):
+    """Verify the public Liveware route reaches either the app or ClawChat gate."""
+    origin = urlsplit(url)
+    if origin.scheme != 'https' or origin.path not in ('', '/') or origin.query or origin.fragment:
+        raise ValueError('Unsupported public Liveware entry URL: ' + title)
+    if not re.fullmatch(r'[A-Za-z0-9.-]+\.apps\.clawling\.io', origin.netloc):
+        raise ValueError('Unsupported public Liveware entry domain: ' + title)
+    request = urllib.request.Request(url, headers={
+        'Accept': 'text/html,application/json',
+        'User-Agent': 'tavern-updater/2 liveware-public-entry-check',
+    })
+    try:
+        with direct_opener().open(request, timeout=15) as response:
+            status = response.status
+            content_type = response.headers.get_content_type()
+            body = response.read(MAX_HTML + 1)
+    except urllib.error.HTTPError as response:
+        status = response.code
+        content_type = response.headers.get_content_type()
+        body = response.read(MAX_GATEWAY_ERROR + 1)
+    except OSError as error:
+        raise ValueError('Public Liveware entry is unreachable: ' + title) from error
+    if status == 401:
+        text = body[:MAX_GATEWAY_ERROR].decode('utf-8', 'replace').casefold()
+        if 'open in clawchat' in text:
+            return {'status': 401, 'gate': 'open-in-clawchat'}
+        raise ValueError('Public Liveware entry rejected without ClawChat gate: ' + title)
+    if status != 200 or len(body) > MAX_HTML or content_type not in ('text/html', 'application/xhtml+xml'):
+        raise ValueError('Public Liveware entry is unhealthy: ' + title)
+    metadata = Metadata()
+    metadata.feed(body.decode('utf-8', 'replace'))
+    if metadata.title.strip() != title and metadata.application != title:
+        raise ValueError('Public Liveware entry metadata differs from release: ' + title)
+    return {'status': 200, 'title': metadata.title.strip() or metadata.application}
 
 
 def initialize(home, platform):
@@ -450,7 +510,7 @@ def main():
     with installation_lock(home):
         require_idle(home)
         journal_path = safe(home / 'tavern-updates-v2/liveware-recovery.json')
-        if journal_path.exists() and json.loads(journal_path.read_text()).get('status') != 'binding-acknowledged':
+        if journal_path.exists() and json.loads(journal_path.read_text()).get('status') not in ('binding-acknowledged', 'external-entry-verified'):
             raise ValueError('Previous Liveware operation is unfinished; automatic startup retry refused')
         if args.operation == 'initialize':
             initialize(home, integration.platform)

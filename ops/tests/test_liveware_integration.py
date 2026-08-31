@@ -80,7 +80,8 @@ class LivewareTests(unittest.TestCase):
 
     def test_apply_keeps_ids_and_distinguishes_binding_ack_from_actual_entry(self):
         before = copy.deepcopy(self.platform.available)
-        with patch('liveware_integration.local_entry') as local:
+        with patch('liveware_integration.local_entry') as local, \
+             patch('liveware_integration.public_entry', return_value={'status': 401, 'gate': 'open-in-clawchat'}) as public:
             result = self.fixture.apply(self.fixture.review())
         self.assertEqual(self.platform.available, before)
         self.assertEqual([a['name'] for a in self.platform.registered], ['Tavern', 'Story Profile'])
@@ -88,8 +89,21 @@ class LivewareTests(unittest.TestCase):
         self.assertEqual(binds, [('bind', 'app-console', 'http://127.0.0.1:8799'),
                                 ('bind', 'app-actor', 'http://127.0.0.1:8799/_liveware/story-profile')])
         self.assertEqual(local.call_count, 2)
-        self.assertEqual(result['liveware']['status'], 'binding-acknowledged')
-        self.assertFalse(result['liveware']['externalEntryVerified'])
+        self.assertEqual(public.call_count, 2)
+        self.assertEqual(result['liveware']['status'], 'external-entry-verified')
+        self.assertTrue(result['liveware']['externalEntryVerified'])
+
+    def test_public_entry_failure_does_not_report_success(self):
+        review = self.fixture.review()
+        with patch('liveware_integration.local_entry'), \
+             patch('liveware_integration.public_entry', side_effect=ValueError('public route unhealthy')):
+            with self.assertRaisesRegex(ValueError, 'original Liveware binding'):
+                self.fixture.apply(review)
+        receipt = json.loads((__import__('pathlib').Path(review['transaction']) / 'receipt.json').read_text())
+        self.assertNotEqual(receipt['status'], 'installed-awaiting-hermes-reload')
+        self.assertIn(receipt['status'], ('rolled-back', 'integration-pending'))
+        self.assertEqual(receipt['failure']['phase'], 'reconcile-liveware')
+        self.assertEqual(receipt['failure']['reason'], 'public route unhealthy')
 
     def test_local_entry_failure_does_not_touch_platform_and_restores_local(self):
         before = self.fixture.snapshot()
@@ -122,7 +136,8 @@ class LivewareTests(unittest.TestCase):
 
     def test_concurrent_launcher_edit_is_not_overwritten_by_recovery(self):
         reviewed = self.integration.review()
-        with patch('liveware_integration.local_entry'):
+        with patch('liveware_integration.local_entry'), \
+             patch('liveware_integration.public_entry', return_value={'status': 401, 'gate': 'open-in-clawchat'}):
             self.integration.apply(reviewed, self.journal, self.save)
         self.platform.registered[1]['name'] = 'owner-edited'
         before = copy.deepcopy(self.platform.writes)

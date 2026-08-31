@@ -17,6 +17,8 @@ sys.dont_write_bytecode = True
 from bundle import PARTS, digest, download_release, extract_bundle, read_bundle, relative
 from runtime_lock import installation_lock
 
+MANAGED_HERMES_SKILL_NAMES = frozenset({'tavern', 'tavern-ops', 'tavern-updater', 'nora-cardforge'})
+
 
 # Exact upstream bytes from skills/tavern/hooks/tavern-liveware-register/
 # at v1.24.12 (aaa1afce), and ops/hooks/tavern-liveware-register/ at
@@ -171,6 +173,15 @@ class ReleaseReview:
         original = json.loads(json.dumps(value))
         if retire_activation and 'plugins' in value and 'enabled' in value['plugins']:
             value['plugins']['enabled'] = [name for name in value['plugins']['enabled'] if name != 'tavern-update-activation']
+        skills = value.get('skills')
+        if skills is not None:
+            if not isinstance(skills, dict):
+                raise ValueError('Unsupported Hermes skills configuration')
+            disabled = skills.get('disabled')
+            if disabled is not None:
+                if not isinstance(disabled, list) or any(not isinstance(name, str) for name in disabled):
+                    raise ValueError('Unsupported Hermes disabled skills configuration')
+                skills['disabled'] = [name for name in disabled if name not in MANAGED_HERMES_SKILL_NAMES]
         servers = value.setdefault("mcp_servers", {})
         old = servers.get("nora", {})
         current = json.loads(json.dumps(old))

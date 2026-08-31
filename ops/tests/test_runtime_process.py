@@ -57,8 +57,11 @@ class RuntimeProcessTests(unittest.TestCase):
              patch.object(processes.time, 'sleep') as sleep, \
              patch.object(processes, 'port_open', return_value=True):
             result = processes.stop_process(self.record, self.script, port=8799, timeout=0)
-        self.assertEqual(run.call_args_list[0].args[0], ['pkill', '-f', 'server.py --port 8799'])
-        self.assertEqual(run.call_args_list[1].args[0], ['pkill', '-f', 'server.py 8799'])
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ['pkill', '-f', 'server.py --port 8799'],
+            ['pkill', '-f', 'server.py .*--port 8799'],
+            ['pkill', '-f', 'server.py 8799'],
+        ])
         sleep.assert_called_once_with(1)
         self.assertEqual(result['mode'], 'legacy-pkill')
         self.assertIsNone(result['originalAlive'])

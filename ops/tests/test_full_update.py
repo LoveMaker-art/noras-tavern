@@ -378,6 +378,18 @@ class FullUpdateTests(unittest.TestCase):
         self.assertEqual(config["env"]["NORA_MCP_MODE"], "operator")
         self.assertEqual(config["tools"]["include"], ["nora.status"])
 
+    def test_managed_tavern_skills_are_removed_from_disabled_config(self):
+        before = 'skills:\n  disabled: [nora-cardforge, tavern, tavern-ops, unrelated-skill]\nmcp_servers: {other: {command: keep}}\n'
+        self.write("config.yaml", before)
+        review = self.review()
+        self.apply(review)
+        import yaml
+        config = yaml.safe_load((self.home / "config.yaml").read_text())
+        self.assertEqual(config["skills"]["disabled"], ["unrelated-skill"])
+        self.assertEqual(config["mcp_servers"]["other"], {"command": "keep"})
+        self.u.rollback(review["transaction"], review["planDigest"])
+        self.assertEqual((self.home / "config.yaml").read_text(), before)
+
     def test_lifecycle_sync_preserves_existing_operator_config(self):
         spec = importlib.util.spec_from_file_location("test_native_lifecycle", OPS.parent / "app/native_lifecycle.py")
         module = importlib.util.module_from_spec(spec)
