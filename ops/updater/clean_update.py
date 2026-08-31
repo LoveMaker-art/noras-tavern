@@ -346,7 +346,10 @@ class CleanLifecycle(NativeLifecycle):
         return module.NativeRuntime(self.u.home, app, self.u.state, contract)
 
     def migrate(self, transaction, state):
+        profile_normalization = None
         if (state / 'productions').is_dir():
+            from python_profile import normalize_empty_placeholder
+            profile_normalization = normalize_empty_placeholder(state)
             model_module = module_at('python_migration_model', transaction / 'source/app/native_model_config.py')
             try:
                 model = model_module.load_model_config(self.u.home / 'config.yaml')
@@ -368,7 +371,10 @@ class CleanLifecycle(NativeLifecycle):
             app = transaction / 'source/app'
             contract = module.RuntimeContract.from_dict(json.loads((app / 'native-runtime.json').read_text()))
             module.NativeRuntime(self.u.home, app, state, contract).sync_assets()
-        return json.loads(result.stdout)
+        report = json.loads(result.stdout)
+        if profile_normalization:
+            report['profileNormalization'] = profile_normalization
+        return report
 
     def prepare(self, transaction):
         if getattr(self, 'source_runtime', 'node') != 'python':
