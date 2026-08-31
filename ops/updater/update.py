@@ -183,8 +183,9 @@ class Updater:
             if env.get(name) and Path(env[name]).resolve() != path.resolve():
                 raise ValueError("Different MCP instance configured: " + name)
             env[name] = str(path)
-        env.setdefault("NORA_MCP_BASE_URL", "http://127.0.0.1:8799")
-        if env["NORA_MCP_BASE_URL"] != "http://127.0.0.1:8799":
+        base_url = f"http://127.0.0.1:{getattr(self, 'isolated_port', 8799)}"
+        env.setdefault("NORA_MCP_BASE_URL", base_url)
+        if env["NORA_MCP_BASE_URL"] != base_url:
             raise ValueError("Non-default instance URL requires explicit layout migration")
         current.setdefault("timeout", 420)
         servers["nora"] = current
@@ -275,6 +276,8 @@ class Updater:
         plan = json.loads((transaction / "plan.json").read_text())
         if plan_digest(plan) != expected or plan["home"] != str(self.home):
             raise ValueError("Plan changed or belongs to another installation")
+        if plan.get('isolatedClean') and type(self) is Updater:
+            raise ValueError('Use the isolated updater for this clean transaction; legacy file apply is not permitted')
         for change in plan["changes"]:
             self._target(change["name"])
             if change["source"]:
@@ -483,6 +486,7 @@ class NativeLifecycle:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--hermes-home", type=Path, default=os.environ.get("HERMES_HOME", "/opt/data"))
+    parser.add_argument("--isolated-test-port", type=int, help="Experimental clean transaction on a marked temporary copy only")
     sub = parser.add_subparsers(dest="command", required=True)
     fetch = sub.add_parser("fetch")
     fetch.add_argument("--tag", required=True)
@@ -500,7 +504,11 @@ def main():
     if args.command == "fetch":
         result = download_release(args.tag, args.destination)
     else:
-        updater = Updater(args.hermes_home)
+        if args.isolated_test_port is not None:
+            from isolated_update import IsolatedUpdater
+            updater = IsolatedUpdater(args.hermes_home, port=args.isolated_test_port)
+        else:
+            updater = Updater(args.hermes_home)
         if args.command == "review":
             result = updater.review(args.release_dir, args.manifest_sha256, candidate=args.allow_candidate)
         else:

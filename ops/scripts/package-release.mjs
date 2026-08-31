@@ -27,6 +27,7 @@ try {
     run('npm', ['run', 'test:integration'], mcp, { NORA_TAVERN_SOURCE: engine });
     run('npm', ['test'], path.join(stage, 'ops/skills/creative/nora-cardforge'));
     run('python3', ['-m', 'unittest', 'discover', '-s', 'ops/tests'], stage, { PYTHONDONTWRITEBYTECODE: '1' });
+    run(process.execPath, ['--test', 'ops/tests/test_state_migration.mjs'], stage);
     if (!candidate) run('npm', ['audit', '--omit=dev', '--audit-level=moderate'], mcp);
     run('python3', ['-m', 'unittest', 'discover', '-s', 'story-profile/tests'], stage,
         { PYTHONDONTWRITEBYTECODE: '1' });

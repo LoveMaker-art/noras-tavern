@@ -1,5 +1,10 @@
 # Full-release contract
 
+This document describes the default file-update mode. The clean-directory/data
+migration implementation is restricted to authorized temporary copies; see
+[isolated rehearsals](isolated-rehearsal.md). A successful rehearsal does not
+authorize removing that restriction or applying it to a live installation.
+
 The trusted repository is `LoveMaker-art/noras-tavern`. An explicit GitHub Release
 tag must have `release-manifest.json`, `SHA256SUMS` and all three archives. A branch
 push does not create these assets. SHA-256 binds review to selected bytes; it is

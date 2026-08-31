@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, upgrade and roll back verified Tavern releases.
-version: 2.0.1
+version: 2.1.0-rc.1
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: full-release-v2-guards-20260831
+    revision: isolated-clean-rehearsal-20260831
     requires_tools: [terminal]
 ---
 
@@ -30,6 +30,9 @@ Read [release compatibility](references/release-compatibility.md) to resolve the
 installed layout, trusted source, first updater adoption and activation steps.
 Use Hermes' Python environment, Node 20+ and npm. Preserve the existing MCP
 permission mode and tool allowlist.
+For explicitly authorized isolated migration rehearsals, first read
+[isolated clean transactions](references/isolated-rehearsal.md). This experimental
+path cannot target the live installation and is not the default update mode.
 
 ## How to Run
 
@@ -75,7 +78,7 @@ Concurrent modifications block rollback instead of overwriting them.
 The preflight reserves space for managed-file backups/replacements and an
 estimated 1 GiB for dependency preparation. It checks again before stopping the
 service. This is not a guarantee against disk exhaustion or a full data backup.
-The updater retains unknown old code and has no complete user-state rollback;
+The default file updater retains unknown old code and has no complete user-state rollback;
 do not use it as a clean-install or universal old-data migration tool.
 
 Worlds, chats, keys, custom skills and instructions outside the managed AGENTS

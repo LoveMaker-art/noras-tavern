@@ -1,0 +1,191 @@
+"""Clean-update acceptance tests use only disposable Hermes installations."""
+import json
+from pathlib import Path
+import subprocess
+import sys
+import unittest
+from unittest.mock import patch
+
+import test_full_update as fixtures
+from isolated_update import IsolatedUpdater, MARKER
+import tree_transaction as trees
+
+
+class CleanUpdateTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = fixtures.FullUpdateTests()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.home = self.fixture.home
+        (self.home / MARKER).write_text(json.dumps({'schema': 1, 'home': str(self.home), 'purpose': 'isolated-update-test'}))
+        self.fixture.service.require_offline = lambda: None
+        self.fixture.service.migrate = lambda transaction, state: {'fixtureAdapter': True}
+        self.u = IsolatedUpdater(self.home, lifecycle=self.fixture.service)
+        self.fixture.u = self.u
+        self.fixture.initial = self.fixture.snapshot()
+
+    def test_unknown_old_program_is_not_in_the_active_release(self):
+        review = self.fixture.review()
+        self.fixture.apply(review)
+        self.assertFalse((self.home / "apps/tavern-runtime/custom-plugin.js").exists())
+        recovery = Path(review["transaction"]) / "backup"
+        self.assertTrue(any(p.read_bytes() == b"user plugin" for p in recovery.rglob("custom-plugin.js")))
+
+    def test_failed_startup_restores_full_story_state(self):
+        def fail(_transaction):
+            self.fixture.write("tavern-state/native/default-user/chats/story.jsonl", "startup rewrote data")
+            self.fixture.write("tavern-state/new-migration.json", '{"created":true}')
+            raise RuntimeError("startup failure after data write")
+        self.fixture.service.activate = fail
+        with self.assertRaisesRegex(RuntimeError, "startup failure"):
+            self.fixture.apply(self.fixture.review())
+        self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
+
+    def test_three_updates_then_latest_rollback_preserve_context_and_state(self):
+        for _ in range(3):
+            review = self.fixture.review()
+            before = self.fixture.snapshot()
+            self.fixture.apply(review)
+            self.assertIn('Keep my instructions', (self.home / 'AGENTS.md').read_text())
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+        self.assertEqual(self.u.rollback(review['transaction'], review['planDigest'])['status'], 'rolled-back')
+
+    def test_new_user_dialogue_blocks_later_data_rollback(self):
+        review = self.fixture.review()
+        self.fixture.apply(review)
+        self.fixture.write('tavern-state/native/default-user/chats/story.jsonl', 'new user conversation')
+        before = self.fixture.snapshot()
+        with self.assertRaisesRegex(ValueError, 'concurrent modification'):
+            self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_custom_server_and_frontend_plugins_are_preserved(self):
+        self.fixture.write('apps/tavern-runtime/engine/sillytavern/plugins/custom/index.js', 'user server plugin')
+        self.fixture.write('tavern-state/native/default-user/extensions/my-plugin/index.js', 'user browser plugin')
+        self.fixture.write('tavern-state/native/default-user/extensions/nora-ui/obsolete.js', 'old shipped plugin code')
+        self.fixture.write('skills/creative/tavern-world/scripts/retired.py', 'old specialist helper')
+        review = self.fixture.review()
+        self.assertIn('engine/sillytavern/plugins/custom/index.js', review['preservedPlugins']['app'])
+        self.fixture.apply(review)
+        self.assertEqual((self.home / 'apps/tavern-runtime/engine/sillytavern/plugins/custom/index.js').read_text(), 'user server plugin')
+        self.assertEqual((self.home / 'tavern-state/native/default-user/extensions/my-plugin/index.js').read_text(), 'user browser plugin')
+        self.assertFalse((self.home / 'tavern-state/native/default-user/extensions/nora-ui/obsolete.js').exists())
+        self.assertFalse((self.home / 'skills/creative/tavern-world').exists())
+
+    def test_interruption_between_directory_renames_restores_original(self):
+        original = trees.rename
+        fired = False
+        def interrupted(source, target):
+            nonlocal fired
+            original(source, target)
+            if not fired and '/backup/trees/' in str(target):
+                fired = True
+                raise KeyboardInterrupt('crash between old and new directory')
+        review = self.fixture.review()
+        with patch('tree_transaction.rename', side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.fixture.apply(review)
+        self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
+
+    def test_corrupt_state_backup_blocks_all_recovery(self):
+        review = self.fixture.review()
+        self.fixture.apply(review)
+        backup = Path(review['transaction']) / 'backup/state/native/default-user/chats/story.jsonl'
+        backup.write_text('corrupted backup')
+        before = self.fixture.snapshot()
+        with self.assertRaisesRegex(ValueError, 'backup checksum'):
+            self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_missing_marker_prevents_clean_apply(self):
+        review = self.fixture.review()
+        (self.home / MARKER).unlink()
+        with self.assertRaisesRegex(ValueError, 'marker'):
+            self.fixture.apply(review)
+
+    def test_unknown_file_changed_after_review_blocks_switch(self):
+        review = self.fixture.review()
+        self.fixture.write('apps/tavern-runtime/custom-plugin.js', 'new custom edit')
+        with self.assertRaisesRegex(ValueError, 'Target changed'):
+            self.fixture.apply(review)
+
+    def test_migration_failure_does_not_touch_original_data(self):
+        def migrate(transaction, state):
+            (state / 'migration-error.json').write_text('{}')
+            raise ValueError('invalid data mapping')
+        self.fixture.service.migrate = migrate
+        with self.assertRaisesRegex(ValueError, 'invalid data mapping'):
+            self.fixture.apply(self.fixture.review())
+        self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
+
+    def test_profile_markdown_projections_restore_after_failed_startup(self):
+        self.fixture.write('memories/USER.md', 'personal content\noriginal profile')
+        before = self.fixture.snapshot()
+        def fail(transaction):
+            self.fixture.write('memories/USER.md', 'startup changed shared document')
+            self.fixture.write('memories/MEMORY.md', 'startup created new projection')
+            raise RuntimeError('projection write followed by failure')
+        self.fixture.service.activate = fail
+        with self.assertRaisesRegex(RuntimeError, 'projection write'):
+            self.fixture.apply(self.fixture.review())
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_force_killed_process_can_replay_persisted_rename_intent(self):
+        review = self.fixture.review()
+        code = """
+import os, sys
+sys.path.insert(0, sys.argv[1])
+sys.path.insert(0, sys.argv[2])
+from isolated_update import IsolatedUpdater
+from test_full_update import Service
+import tree_transaction as trees
+service = Service()
+service.require_offline = lambda: None
+service.migrate = lambda transaction, state: {'fixtureAdapter': True}
+original = trees.rename
+def kill_after_rename(source, target):
+    original(source, target)
+    if '/backup/trees/0' in str(target):
+        os._exit(73)
+trees.rename = kill_after_rename
+IsolatedUpdater(sys.argv[3], lifecycle=service).apply(sys.argv[4], sys.argv[5])
+"""
+        result = subprocess.run([sys.executable, '-c', code, str(fixtures.OPS / 'updater'), str(fixtures.OPS / 'tests'),
+                                 str(self.home), review['transaction'], review['planDigest']], capture_output=True, text=True)
+        self.assertEqual(result.returncode, 73, result.stderr)
+        self.assertFalse((self.home / 'apps/tavern-runtime').exists())
+        receipt = json.loads((Path(review['transaction']) / 'receipt.json').read_text())
+        self.assertEqual(receipt['applied'], [0])
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
+
+    def test_receipt_disk_error_does_not_skip_restoring_original_trees(self):
+        import isolated_update
+        original = isolated_update.json_write
+        failed = False
+        def fail_once(path, value):
+            nonlocal failed
+            if not failed and Path(path).name == 'receipt.json' and len(value.get('applied', [])) == 2:
+                failed = True
+                raise OSError('simulated full disk')
+            return original(path, value)
+        with patch('isolated_update.json_write', side_effect=fail_once):
+            with self.assertRaisesRegex(OSError, 'full disk'):
+                self.fixture.apply(self.fixture.review())
+        self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
+
+    def test_normal_updater_cannot_apply_an_isolated_clean_plan(self):
+        review = self.fixture.review()
+        ordinary = fixtures.Updater(self.home, lifecycle=self.fixture.service)
+        with self.assertRaisesRegex(ValueError, 'isolated updater'):
+            ordinary.apply(review['transaction'], review['planDigest'])
+
+    def test_non_temporary_home_is_rejected_before_any_operation(self):
+        from isolated_update import require_isolation
+        with self.assertRaisesRegex(ValueError, 'production is not enabled'):
+            require_isolation(Path('/opt/data'))
+
+
+if __name__ == "__main__":
+    unittest.main()
