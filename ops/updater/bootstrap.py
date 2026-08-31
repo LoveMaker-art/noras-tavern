@@ -70,6 +70,16 @@ def stage_ops(bundle, root, expected, candidate=False):
     return manifest
 
 
+def installation_home(value):
+    home = Path(value).absolute()
+    explicit = (os.environ.get('HERMES_HOME') == str(home) and (home / 'config.yaml').is_file()
+                and (home / 'skills').is_dir() and (home / 'apps/tavern-runtime').is_dir())
+    if home == Path('/') or (home == Path.home() and not explicit) or any(
+            part.is_symlink() for part in (home, *home.parents)):
+        raise ValueError('Use an exact non-symlink Hermes installation')
+    return home
+
+
 def main():
     # Direct invocations must fail before refreshing skills too. The shell entry
     # selects Hermes' interpreter; Bootstrap preserves it for the reviewed CLI.
@@ -90,9 +100,7 @@ def main():
     args = parser.parse_args()
     if args.apply and not args.confirm:
         raise ValueError('--apply requires --confirm')
-    home = Path(args.home).absolute()
-    if home in (Path('/'), Path.home()) or any(part.is_symlink() for part in (home, *home.parents)):
-        raise ValueError('Use an exact non-symlink Hermes installation')
+    home = installation_home(args.home)
     update_root = home / 'tavern-updates-v2'
     if update_root.is_symlink():
         raise ValueError('Unsafe bootstrap state directory')

@@ -5,11 +5,21 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 
 import test_full_update as fixtures
+from bootstrap import installation_home
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_account_home_requires_explicit_existing_hermes_installation(self):
+        with patch.object(Path, 'home', return_value=self.home), patch.dict(os.environ, self.env):
+            self.assertEqual(installation_home(self.home), self.home)
+        with patch.object(Path, 'home', return_value=self.fixture.root), \
+             patch.dict(os.environ, {'HERMES_HOME': str(self.fixture.root)}):
+            with self.assertRaisesRegex(ValueError, 'exact non-symlink'):
+                installation_home(self.fixture.root)
+
     def setUp(self):
         self.fixture = fixtures.FullUpdateTests()
         self.fixture.setUp()
