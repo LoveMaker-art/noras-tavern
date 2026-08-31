@@ -226,9 +226,11 @@ def require_listener(record, script, port):
         raise ProcessError('wrong-listener', 'Tavern health endpoint is not owned by the reviewed process')
 
 
-def legacy_stop_pattern(script, port):
+def legacy_stop_patterns(script, port):
     name = Path(script).name
-    return f'{name} --port {port}' if port is not None else name
+    if port is None:
+        return [name]
+    return [f'{name} --port {port}', f'{name} {port}']
 
 
 def stop_process(record, script, *, port=None, stop=None, timeout=20):
@@ -238,7 +240,8 @@ def stop_process(record, script, *, port=None, stop=None, timeout=20):
         stop()
     else:
         mode = 'legacy-pkill'
-        subprocess.run(['pkill', '-f', legacy_stop_pattern(script, port)], check=False)
+        for pattern in legacy_stop_patterns(script, port):
+            subprocess.run(['pkill', '-f', pattern], check=False)
     time.sleep(1)
     return {
         'pid': record.get('pid'),
