@@ -210,20 +210,20 @@ test('Python combined lore conditions retain primary, secondary and exclusions w
     assert.equal(match(entries[3], '/abc/'), true);
 });
 
-test('old frontend assets are copied before replacement, archived and replayable without the old program', async t => {
+for (const legacyWeb of ['web', 'frontend', 'backend/web']) test(`old ${legacyWeb} assets survive replacement and replay`, async t => {
     const { state, root } = await setup(t, data => {
         data.productions[0].ui = { version: 1, assets: { background: '/assets/scenes/harbor.png?v=1' } };
     });
     const legacyApp = path.join(state, 'old-app');
-    await fs.mkdir(path.join(legacyApp, 'frontend/assets/scenes'), { recursive: true });
+    await fs.mkdir(path.join(legacyApp, legacyWeb, 'assets/scenes'), { recursive: true });
     const bytes = Buffer.from('test-image-bytes');
-    await fs.writeFile(path.join(legacyApp, 'frontend/assets/scenes/harbor.png'), bytes);
-    await convertPythonState(state, app, { legacyApp });
+    await fs.writeFile(path.join(legacyApp, legacyWeb, 'assets/scenes/harbor.png'), bytes);
+    await convertPythonState(state, app, { legacyApp, legacyWeb });
     const world = await new WorldStore({ root: path.join(root, 'nora-world-core') }).get('prod_fixture');
     assert.match(world.ui.assets.background, /^\/backgrounds\/python-.*\.png$/);
     assert.deepEqual(await fs.readFile(path.join(root, world.ui.assets.background.slice(1))), bytes);
     await fs.rm(legacyApp, { recursive: true });
-    assert.equal((await convertPythonState(state, app, { legacyApp })).repeated, true);
+    assert.equal((await convertPythonState(state, app, { legacyApp, legacyWeb })).repeated, true);
 });
 
 test('old asset traversal refuses before any native output is written', async t => {

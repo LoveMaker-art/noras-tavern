@@ -20,7 +20,8 @@ async function readWithin(root, relative) {
     return fs.readFile(file);
 }
 
-export async function collectPythonAssets(state, productions, legacyApp) {
+export async function collectPythonAssets(state, productions, legacyApp, legacyWeb = 'frontend') {
+    if (!['web', 'frontend', 'backend/web'].includes(legacyWeb)) throw new Error('Invalid reviewed Python web root');
     const result = new Map();
     const archived = path.join(state, 'python-source-assets');
     for (const production of productions.values()) for (const url of Object.values(production.ui?.assets || {})) {
@@ -33,9 +34,7 @@ export async function collectPythonAssets(state, productions, legacyApp) {
             if (relative.startsWith('world-assets/')) bytes = await readWithin(state, relative);
             else {
                 if (!legacyApp) throw new Error('Python frontend asset requires the reviewed legacy application directory');
-                let frontend = path.join(legacyApp, 'frontend');
-                try { await fs.stat(frontend); }
-                catch (missing) { if (missing.code !== 'ENOENT') throw missing; frontend = path.join(legacyApp, 'backend/web'); }
+                const frontend = path.join(legacyApp, legacyWeb);
                 bytes = await readWithin(frontend, relative);
             }
         }

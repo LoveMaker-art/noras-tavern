@@ -2,7 +2,8 @@
 """Adopt a pinned full-release updater through the Python-era bootstrap URL.
 
 Review refreshes only the updater skill. App, MCP, data and AGENTS switch together
-only on a separately confirmed apply. Uses stdlib until verified ops are staged.
+only on a separately confirmed apply. Requires Hermes' existing PyYAML; never
+installs dependencies into the system Python.
 """
 import argparse
 import hashlib
@@ -70,6 +71,12 @@ def stage_ops(bundle, root, expected, candidate=False):
 
 
 def main():
+    # Direct invocations must fail before refreshing skills too. The shell entry
+    # selects Hermes' interpreter; Bootstrap preserves it for the reviewed CLI.
+    try:
+        import yaml  # noqa: F401
+    except ImportError as error:
+        raise ValueError('PyYAML is required; run install.sh with TAVERN_PYTHON set to the Hermes virtualenv interpreter. No files were updated.') from error
     default = os.environ.get('HERMES_HOME') or ('/opt/data' if Path('/opt/data/skills').is_dir() else str(Path.home() / '.hermes'))
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--data-root', '--hermes-home', dest='home', default=default)

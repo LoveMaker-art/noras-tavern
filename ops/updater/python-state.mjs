@@ -40,7 +40,7 @@ function pythonJson(value) {
     return JSON.stringify(value);
 }
 
-export async function convertPythonState(state, app, { hermesModel = null, legacyModel = null, legacyApp = null } = {}) {
+export async function convertPythonState(state, app, { hermesModel = null, legacyModel = null, legacyApp = null, legacyWeb = 'frontend' } = {}) {
     const engine = path.join(app, 'engine/sillytavern');
     const module = relative => import(pathToFileURL(path.join(engine, relative)));
     const { validateWorldManifest } = await module('src/nora-world-core/domain.js');
@@ -59,7 +59,7 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     if (!(await files(source)).some(entry => entry.name === 'productions')) throw new Error('Python productions directory is required; Node migration is not supported');
     let sourceModels = null;
     try { sourceModels = await json(path.join(state, 'model_configs.json')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    const assets = await collectPythonAssets(state, productions, legacyApp);
+    const assets = await collectPythonAssets(state, productions, legacyApp, legacyWeb);
     const sourceAssets = Object.fromEntries([...assets.entries].map(([name, bytes]) => [name, hash(bytes)]));
     const inputHash = hash(JSON.stringify({ cards: [...cards], books: [...books], productions: [...productions], models: sourceModels, sourceAssets, hermesModel, legacyModel }));
     const root = path.join(state, 'native/default-user');

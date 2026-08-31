@@ -30,6 +30,8 @@ def main():
     parser.add_argument('--fail-after-start', action='store_true', help='Inject one verification failure after real Node startup to test automatic recovery')
     parser.add_argument('--via-bootstrap', action='store_true', help='Exercise the shipped Bootstrap and public CLI through first adoption')
     parser.add_argument('--repeat-update', action='store_true', help='Update the running migrated Node again and roll that update back')
+    parser.add_argument('--source-layout', choices=('installed', 'source'), default='installed',
+                        help='Default reproduces the deployed flat server.py + web layout, not the repository tree')
     args = parser.parse_args()
     old_commit = subprocess.check_output(['git', 'rev-parse', '--verify', args.old_ref + '^{commit}'], cwd=REPOSITORY, text=True).strip()
     manifest_hash = digest((args.release_dir / 'release-manifest.json').read_bytes())
@@ -52,19 +54,28 @@ def main():
         subprocess.run(['tar', '-x', '-C', str(historical)], input=archive, check=True)
         old_app = home / 'apps/tavern-runtime'
         old_app.parent.mkdir()
-        shutil.copytree(historical / 'app', old_app)
-        assert (old_app / 'backend/server.py').is_file() and not (old_app / 'native-runtime.json').exists(), 'Expected original Python source'
+        if args.source_layout == 'installed':
+            shutil.copytree(historical / 'app/backend', old_app)
+            shutil.copytree(historical / 'app/frontend', old_app / 'web', dirs_exist_ok=True)
+            backend = old_app
+            web = old_app / 'web'
+        else:
+            shutil.copytree(historical / 'app', old_app)
+            backend = old_app / 'backend'
+            web = old_app / 'frontend'
+        entry = (backend / 'server.py').relative_to(old_app)
+        assert (old_app / entry).is_file() and not (old_app / 'native-runtime.json').exists(), 'Expected original Python source'
         original_agents = subprocess.check_output(['git', 'show', old_commit + ':integrations/hermes/AGENTS.md'], cwd=REPOSITORY, text=True)
         (home / 'AGENTS.md').write_text(original_agents + '\n## Personal instructions\nKeep my instructions.\n')
         (home / 'config.yaml').write_text('model: {provider: qa-no-real-model}\n')
         (home / 'SOUL.md').write_text('Isolated QA identity\n')
         fixture = json.loads(subprocess.check_output([sys.executable, str(OPS / 'tests/fixtures/create-python-fixture.py'),
-                                                     str(old_app / 'backend')], text=True))
+                                                     str(backend)], text=True))
         # Exercise old program-owned assets and conjunction rules through the
         # actual copied-state worker, not just the converter's unit interface.
-        legacy_image = old_app / 'frontend/assets/migration-qa.png'
+        legacy_image = web / 'assets/migration-qa.png'
         legacy_image.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(next((old_app / 'assets/fixtures/starter').glob('*.png')), legacy_image)
+        shutil.copyfile(next((historical / 'app/assets/fixtures/starter').glob('*.png')), legacy_image)
         original_image = legacy_image.read_bytes()
         fixture['productions'][0]['ui'] = {'version': 1, 'assets': {'background': '/assets/migration-qa.png?v=1'}}
         fixture['worldbooks'][0]['entries'].append({'id': 1, 'keys': ['港口'], 'secondary_keys': ['船长'],
@@ -78,7 +89,7 @@ def main():
         seed = home / 'seed-actor.md'
         seed.write_text('# 故事主理人\n\n## 对你的了解\n- 喜欢航海故事\n')
         script = "import sys,json; sys.path.insert(0,sys.argv[1]); import story_profile as p; p.ensure_profile(sys.argv[2],sys.argv[3]); p.sync_story_states(sys.argv[2],sys.argv[3],json.loads(sys.argv[4]))"
-        subprocess.run([sys.executable, '-c', script, str(old_app / 'backend'), str(state), str(seed),
+        subprocess.run([sys.executable, '-c', script, str(backend), str(state), str(seed),
                         json.dumps(fixture['productions'], ensure_ascii=False)], check=True)
         before = {name: trees.fingerprint(home / name, state=name == 'tavern-state')
                   for name in ('apps/tavern-runtime', 'tavern-state', 'memories', 'config.yaml', 'AGENTS.md')}
@@ -130,8 +141,8 @@ def main():
             expected_block = (stage / 'ops/skills/agents-tavern.md').read_text().strip()
             assert agents.count(expected_block) == 1, 'Managed skill routing was not installed exactly once'
             assert '`tavern-world`' not in agents and 'references/shared-contract.md' not in agents, 'Old Python skill routing remained active'
-            assert not (old_app / 'backend/server.py').exists(), 'Old Python executable remains active'
-            assert (Path(review['transaction']) / 'backup/trees/0/backend/server.py').exists()
+            assert not (old_app / entry).exists(), 'Old Python executable remains active'
+            assert (Path(review['transaction']) / 'backup/trees/0' / entry).exists()
             opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
             def get(route):
                 with opener.open(f'http://127.0.0.1:{port}' + route, timeout=20) as response:
@@ -179,7 +190,7 @@ def main():
             with socket.socket() as probe:
                 assert probe.connect_ex(('127.0.0.1', port)) != 0, 'Rollback unexpectedly started a service'
             print(json.dumps({'oldCommit': old_commit, 'newSourceDigest': manifest['sourceDigest'],
-                'pythonToNode': True, 'worlds': 2, 'messages': 32, 'independentCharacters': 2,
+                'pythonToNode': True, 'sourceLayout': args.source_layout, 'worlds': 2, 'messages': 32, 'independentCharacters': 2,
                 'profileContentPreserved': True, 'fullStateRollback': True, 'pythonRestoredOffline': True,
                 'newMcp': installed['verification']['newMcpProcess'], 'modelsCalled': 0,
                 'viaBootstrap': args.via_bootstrap, 'runningNodeUpdateAndRollback': args.repeat_update,

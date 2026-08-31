@@ -14,6 +14,7 @@ import time
 import urllib.request
 
 from update import atomic, json_write, safe
+from python_installation import python_script
 
 
 def process_record(pid, script):
@@ -50,7 +51,7 @@ def process_record(pid, script):
                 return None
             raise ValueError('Cannot verify live Tavern process working directory')
         cwd = next((line[1:] for line in names.stdout.splitlines() if line.startswith('n')), '')
-    executable = Path(argv[0]).name
+    executable = Path(argv[0]).name.lower()
     expected = 'python' if script.suffix == '.py' else 'node'
     if not executable.startswith(expected) or not cwd or not any(str((Path(cwd) / arg).resolve()) == str(script.resolve()) for arg in argv[1:] if not arg.startswith('-')):
         raise ValueError('PID does not execute the reviewed Tavern program')
@@ -63,15 +64,59 @@ def port_open(port):
         return sock.connect_ex(('127.0.0.1', port)) == 0
 
 
+def python_processes(app):
+    """Find only same-user processes executing this exact reviewed Python file.
+
+    Containers can restart with an old persisted PID file. Never kill by name or
+    trust that PID alone; reuse the same cwd/argv/owner checks as normal shutdown.
+    """
+    script = python_script(app)
+    if Path('/proc/self').exists():
+        candidates = []
+        for entry in Path('/proc').iterdir():
+            if not entry.name.isdigit():
+                continue
+            try:
+                if entry.stat().st_uid != os.getuid():
+                    continue
+                args = (entry / 'cmdline').read_bytes().decode().strip('\0').split('\0')
+                if args and Path(args[0]).name.startswith('python') and any(Path(arg).name == 'server.py' for arg in args[1:]):
+                    candidates.append(int(entry.name))
+            except FileNotFoundError:
+                continue
+    else:
+        lines = subprocess.check_output(['ps', '-axo', 'pid=,uid=,comm='], text=True).splitlines()
+        candidates = [int(parts[0]) for line in lines if len(parts := line.split(None, 2)) == 3
+                      and int(parts[1]) == os.getuid() and Path(parts[2]).name.lower().startswith('python')]
+    result = []
+    for pid in candidates:
+        try:
+            record = process_record(pid, script)
+        except ValueError as error:
+            if str(error) == 'PID does not execute the reviewed Tavern program':
+                continue
+            raise
+        if record:
+            result.append(record)
+    return result
+
+
 def pause(lifecycle, transaction):
     u = lifecycle.u
     python = lifecycle.source_runtime == 'python'
     pid_file = safe(u.state / 'server.pid') if python else lifecycle.runtime().run_dir('production') / 'native.pid'
-    script = u.targets['app'] / ('backend/server.py' if python else 'engine/sillytavern/server.js')
+    script = python_script(u.targets['app']) if python else u.targets['app'] / 'engine/sillytavern/server.js'
     current = process_record(int(pid_file.read_text().strip()), script) if pid_file.exists() else None
+    if python:
+        found = python_processes(u.targets['app'])
+        if len(found) > 1 or (current and found and current != found[0]):
+            raise ValueError('Multiple or changing Python processes; no service was stopped')
+        if not current and found:
+            current = found[0]
     if not current and port_open(lifecycle.port):
         raise ValueError('Tavern port has an unowned process; no service was stopped')
-    record = {'schema': 1, 'sourceRuntime': lifecycle.source_runtime, 'wasRunning': bool(current), 'process': current, 'paused': False}
+    record = {'schema': 1, 'sourceRuntime': lifecycle.source_runtime, 'script': str(script),
+              'wasRunning': bool(current), 'process': current, 'paused': False}
     if current and python:
         with urllib.request.urlopen(f'http://127.0.0.1:{lifecycle.port}/api/health', timeout=10) as response:
             health = json.load(response)
@@ -106,7 +151,9 @@ def resume(lifecycle, transaction):
     if record['sourceRuntime'] != 'python':
         lifecycle.runtime().start(port=lifecycle.port, assets_prepared=True)
         return
-    script = lifecycle.u.targets['app'] / 'backend/server.py'
+    script = python_script(lifecycle.u.targets['app'])
+    if record.get('script', str(script)) != str(script):
+        raise ValueError('Restored Python entry differs from the paused process')
     old = record['process']
     current = process_record(old['pid'], script)
     if current:

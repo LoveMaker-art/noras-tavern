@@ -34,7 +34,42 @@ target.write_bytes((root / url.rsplit('/', 1)[-1]).read_bytes())
 ''')
         curl.chmod(0o755)
         self.env = {**os.environ, 'PATH': str(binaries) + os.pathsep + os.environ['PATH'],
-                    'TAVERN_INSTALLER_FIXTURE': str(self.root), 'TMPDIR': str(self.root)}
+                    'TAVERN_INSTALLER_FIXTURE': str(self.root), 'TMPDIR': str(self.root),
+                    'TAVERN_PYTHON': sys.executable}
+
+    def test_explicit_python_is_used_even_when_path_python_has_no_yaml(self):
+        python = self.root / 'bin/python3'
+        python.write_text('#!/bin/sh\nexec "' + sys.executable + '" -S "$@"\n')
+        python.chmod(0o755)
+        script = b'import yaml, json, sys; print(json.dumps(sys.argv[1:]))\n'
+        (self.root / 'tavern-updater-bootstrap.py').write_bytes(script)
+        (self.root / 'bootstrap-manifest.json').write_text(json.dumps({
+            'scope': 'tavern-updater-bootstrap', 'sha256': hashlib.sha256(script).hexdigest()}))
+        result = self.run_installer('--tag', 'v1.26.0-rc.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_bad_explicit_python_fails_before_downloading_or_refreshing_skills(self):
+        self.env['TAVERN_PYTHON'] = str(self.root / 'nonexistent-python')
+        result = self.run_installer('--tag', 'v1.26.0-rc.1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('TAVERN_PYTHON', result.stderr)
+        self.assertEqual(self.requests(), [])
+
+    def test_automatic_selection_skips_path_python_without_yaml(self):
+        self.env.pop('TAVERN_PYTHON')
+        venv = self.root / 'venv/bin'
+        venv.mkdir(parents=True)
+        (venv / 'python3').symlink_to(sys.executable)
+        self.env['VIRTUAL_ENV'] = str(venv.parent)
+        python = self.root / 'bin/python3'
+        python.write_text('#!/bin/sh\nexec "' + sys.executable + '" -S "$@"\n')
+        python.chmod(0o755)
+        script = b'import yaml, json, sys; print(json.dumps(sys.argv[1:]))\n'
+        (self.root / 'tavern-updater-bootstrap.py').write_bytes(script)
+        (self.root / 'bootstrap-manifest.json').write_text(json.dumps({
+            'scope': 'tavern-updater-bootstrap', 'sha256': hashlib.sha256(script).hexdigest()}))
+        result = self.run_installer('--tag', 'v1.26.0-rc.1')
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def run_installer(self, *args):
         return subprocess.run(['sh', str(INSTALLER), *args], env=self.env, capture_output=True, text=True)

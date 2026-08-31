@@ -9,6 +9,7 @@ import tempfile
 from bundle import PARTS
 from update import Updater, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
 from python_model import load_python_model
+from python_installation import python_installation
 import tree_transaction as trees
 
 MARKER = ".tavern-isolated-update.json"
@@ -34,7 +35,7 @@ class CleanUpdater(Updater):
         self.lifecycle = lifecycle or CleanLifecycle(self, port=self.isolated_port)
 
     def _python_source(self):
-        return (self.targets['app'] / 'backend/server.py').is_file() and not (self.targets['app'] / 'native-runtime.json').exists()
+        return python_installation(self.targets['app']) is not None
 
     def _configured_paths(self):
         if not self._python_source():
@@ -88,7 +89,8 @@ class CleanUpdater(Updater):
                 extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
                                              for rel, item in old.items() if 'sha256' in item and rel not in new)
         plan.update(cleanTransaction=True, testMode=self.test_mode, port=self.isolated_port, groups=groups, extensionRetirements=extension_retirements,
-                    sourceRuntime='python' if self._python_source() else 'node')
+                    sourceRuntime='python' if self._python_source() else 'node',
+                    pythonSource=python_installation(self.targets['app']))
         json_write(transaction / 'plan.json', plan)
         result.update(planDigest=plan_digest(plan), mode='clean-directory',
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
@@ -103,6 +105,8 @@ class CleanUpdater(Updater):
         if not plan.get('cleanTransaction') or plan.get('testMode') != self.test_mode or plan.get('port') != self.isolated_port:
             raise ValueError('Clean transaction mode/port differs from review')
         super()._preconditions(transaction, plan)
+        if plan.get('pythonSource') != python_installation(self.targets['app']):
+            raise ValueError('Python source layout changed since review')
         for group in plan['groups']:
             if trees.fingerprint(safe(group['target'])) != group['before']:
                 raise ValueError('Target changed since review: ' + group['name'])
@@ -314,8 +318,8 @@ class CleanLifecycle(NativeLifecycle):
         if not self.u._python_source() and any(self.runtime().status()['processes'].values()):
             raise ValueError('Tavern restarted during maintenance; stop its supervisor before retrying')
         if self.u._python_source():
-            commands = subprocess.check_output(['ps', '-axo', 'command='], text=True)
-            if any(str(self.u.targets['app'] / 'backend/server.py') in line for line in commands.splitlines()):
+            from maintenance import python_processes
+            if python_processes(self.u.targets['app']):
                 raise ValueError('Python server is still running during maintenance')
         with socket.socket() as probe:
             if probe.connect_ex(('127.0.0.1', self.port)) == 0:
@@ -339,8 +343,12 @@ class CleanLifecycle(NativeLifecycle):
                 model = model_module.load_model_config(self.u.home / 'config.yaml')
             except (model_module.NativeModelConfigError, FileNotFoundError):
                 model = None
+            plan = json.loads((transaction / 'plan.json').read_text())
+            if plan.get('pythonSource') != python_installation(self.u.targets['app']):
+                raise ValueError('Python source layout changed before migration')
             json_write(transaction / 'prepared/model-input.json', {'hermesModel': model, 'legacyModel': load_python_model(self.u.home),
-                                                                  'legacyApp': str(self.u.targets['app'])})
+                                                                  'legacyApp': str(self.u.targets['app']),
+                                                                  'legacyWeb': plan['pythonSource']['web']})
         result = subprocess.run(['node', str(transaction / 'source/ops/updater/prepare-state.mjs'),
                                  str(state), str(transaction / 'source/app')],
                                 capture_output=True, text=True, timeout=180)

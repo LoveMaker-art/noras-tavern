@@ -23,10 +23,40 @@ class MaintenanceTests(unittest.TestCase):
         self.transaction.mkdir()
         self.lifecycle = SimpleNamespace(source_runtime='python', port=54321,
             u=SimpleNamespace(home=self.home, state=self.state, targets={'app': self.home / 'app'}))
+        (self.home / 'app/backend').mkdir(parents=True)
+        (self.home / 'app/backend/server.py').write_text('# fixture\n')
+        processes = patch.object(maintenance, 'python_processes', return_value=[])
+        processes.start()
+        self.addCleanup(processes.stop)
         self.record = {'pid': 87654321, 'identity': 'test', 'argv': ['python3', str(self.home / 'app/backend/server.py')], 'cwd': str(self.home)}
 
     def health(self, running):
         return io.BytesIO(json.dumps({'ok': True, 'background_jobs': {'running': running, 'queued': 0}}).encode())
+
+    def test_flat_installation_and_stale_pid_use_verified_process_and_record_entry(self):
+        (self.home / 'app/backend/server.py').unlink()
+        script = self.home / 'app/server.py'
+        script.write_text('# installed fixture\n')
+        record = {**self.record, 'argv': ['python3', 'server.py'], 'cwd': str(self.home / 'app')}
+        (self.state / 'server.pid').write_text('87654320')
+        with patch.object(maintenance, 'process_record', side_effect=[None, record, None, None]) as check, \
+             patch.object(maintenance, 'python_processes', return_value=[record]), \
+             patch.object(maintenance, 'port_open', return_value=False), \
+             patch.object(maintenance.urllib.request, 'urlopen', return_value=self.health(0)), \
+             patch.object(maintenance.os, 'kill') as kill:
+            maintenance.pause(self.lifecycle, self.transaction)
+        self.assertTrue(all(call.args[1] == script for call in check.call_args_list))
+        kill.assert_called_once_with(record['pid'], maintenance.signal.SIGTERM)
+        journal = json.loads((self.transaction / 'maintenance.json').read_text())
+        self.assertEqual(journal['script'], str(script))
+        self.assertEqual(journal['process'], record)
+
+    def test_two_matching_python_processes_are_never_stopped(self):
+        with patch.object(maintenance, 'python_processes', return_value=[self.record, {**self.record, 'pid': 87654322}]), \
+             patch.object(maintenance.os, 'kill') as kill:
+            with self.assertRaisesRegex(ValueError, 'Multiple or changing'):
+                maintenance.pause(self.lifecycle, self.transaction)
+        kill.assert_not_called()
 
     def test_process_exit_between_ps_and_cwd_is_normal_shutdown(self):
         running = subprocess.CompletedProcess([], 0, 'S Mon Aug 31 10:00:00 2026 node server.js\n')

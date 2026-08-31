@@ -27,6 +27,7 @@ try {
         try { options = JSON.parse(await fs.readFile(path.join(transaction, 'prepared/model-input.json'), 'utf8')); }
         catch (error) { if (error.code !== 'ENOENT') throw error; }
         if (options.legacyApp !== path.join(home, 'apps/tavern-runtime')) throw new Error('Legacy source must match the reviewed installation');
+        if (!plan.pythonSource || options.legacyWeb !== plan.pythonSource.web) throw new Error('Python web root must match the reviewed layout');
         const report = await convertPythonState(state, app, options);
         await validateState(state, app);
         console.log(JSON.stringify(report));

@@ -23,6 +23,14 @@ class BootstrapTests(unittest.TestCase):
             '--release-dir', str(f.release), '--manifest-sha256', fixtures.digest((f.release / 'release-manifest.json').read_bytes()),
             *extra], env=self.env, capture_output=True, text=True)
 
+    def test_missing_yaml_fails_before_any_bootstrap_state_or_skill_change(self):
+        result = subprocess.run([sys.executable, '-S', str(fixtures.OPS / 'updater/bootstrap.py'),
+                                 '--data-root', str(self.home)], env=self.env, capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('TAVERN_PYTHON', result.stderr)
+        self.assertFalse((self.home / 'tavern-updates-v2').exists())
+        self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
+
     def test_review_adopts_updater_but_preserves_app_state_and_agents(self):
         before = self.fixture.snapshot()
         result = self.run_bootstrap('--allow-candidate')
