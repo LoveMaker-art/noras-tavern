@@ -98,7 +98,8 @@ class Updater:
             rel = Path(*p.parts[1:])
             # The only host configuration owned by this updater is an explicit
             # skill file, the merged AGENTS, the Nora MCP entry and engine deps.
-            if str(rel) not in ("AGENTS.md", "config.yaml", "tavern-state/native-runtime/dependencies.json") and not (
+            if str(rel) not in ("AGENTS.md", "config.yaml", "tavern-state/native-runtime/dependencies.json",
+                                "plugins/tavern-update-activation/__init__.py", "plugins/tavern-update-activation/plugin.yaml") and not (
                 str(rel).startswith("skills/") or str(rel).startswith("tavern-state/native/default-user/extensions/")):
                 raise ValueError("Invalid managed host path: " + name)
             return self.home / rel
@@ -163,11 +164,19 @@ class Updater:
             if shutil.disk_usage(location).free < required:
                 raise ValueError(f"Insufficient disk space at {location}: need at least {required} bytes; no files switched")
 
-    def _mcp_config(self):
+    def _mcp_config(self, *, activation=False):
         import yaml  # Hermes' Python environment already owns this dependency.
         path = self.home / "config.yaml"
         raw = content(path) or b""
         value = yaml.safe_load(raw) or {}
+        original = json.loads(json.dumps(value))
+        if activation:
+            plugins = value.setdefault('plugins', {})
+            enabled = plugins.setdefault('enabled', [])
+            if not isinstance(enabled, list) or not isinstance(plugins.get('disabled', []), list):
+                raise ValueError('Hermes plugin configuration requires review')
+            if 'tavern-update-activation' not in plugins.get('disabled', []) and 'tavern-update-activation' not in enabled:
+                enabled.append('tavern-update-activation')
         servers = value.setdefault("mcp_servers", {})
         old = servers.get("nora", {})
         current = json.loads(json.dumps(old))
@@ -193,7 +202,7 @@ class Updater:
         current.setdefault("timeout", 420)
         servers["nora"] = current
         # Keep comments/formatting byte-exact when there is no semantic change.
-        return raw if current == old else yaml.safe_dump(value, allow_unicode=True, sort_keys=False).encode()
+        return raw if value == original else yaml.safe_dump(value, allow_unicode=True, sort_keys=False).encode()
 
     def review(self, directory, expected, *, candidate=False):
         self._configured_paths()
@@ -239,7 +248,18 @@ class Updater:
             prefix = "app/native-extensions/"
             if name.startswith(prefix):
                 desired["home/tavern-state/native/default-user/extensions/" + name[len(prefix):]] = stage / name
-        generated_file("home/config.yaml", self._mcp_config())
+        activation_files = ('__init__.py', 'plugin.yaml')
+        activation = all('ops/updater/hermes-plugin/' + name in manifest['artifacts'] for name in activation_files)
+        if activation:
+            old_baseline = json.loads((self.root / 'installed.json').read_text()) if (self.root / 'installed.json').exists() else {}
+            for name in activation_files:
+                managed = 'home/plugins/tavern-update-activation/' + name
+                source = stage / 'ops/updater/hermes-plugin' / name
+                existing = sha(self._target(managed))
+                if existing not in (None, sha(source), old_baseline.get('files', {}).get(managed)):
+                    raise ValueError('Modified activation plugin; preserve and review: ' + managed)
+                desired[managed] = source
+        generated_file("home/config.yaml", self._mcp_config(activation=activation))
         baseline = self.root / "installed.json"
         previous = json.loads(baseline.read_text()) if baseline.exists() else {"files": {}}
         for name, old_sha in previous["files"].items():
@@ -498,6 +518,8 @@ def main():
     review.add_argument("--release-dir", type=Path, required=True)
     review.add_argument("--manifest-sha256", required=True)
     review.add_argument("--allow-candidate", action="store_true")
+    activation = sub.add_parser('activation', help='Request owner confirmation or inspect activation; never confirms/restarts from the CLI')
+    activation.add_argument('operation', choices=('request', 'status'))
     for name in ("apply", "rollback"):
         child = sub.add_parser(name)
         child.add_argument("--transaction", type=Path)
@@ -505,6 +527,12 @@ def main():
         child.add_argument("--plan", help=argparse.SUPPRESS)
         child.add_argument("--confirm", action="store_true", required=True)
     args = parser.parse_args()
+    if args.command == 'activation':
+        if args.isolated_test_port is not None:
+            raise ValueError('Rehearsals cannot activate a real gateway')
+        from activation import command
+        print(json.dumps(command(args.hermes_home, args.operation), ensure_ascii=False, indent=2))
+        return
     if args.command in ('apply', 'rollback'):
         home = safe(Path(args.hermes_home).absolute())
         if args.plan:

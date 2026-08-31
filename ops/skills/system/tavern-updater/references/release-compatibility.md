@@ -71,8 +71,10 @@ and retain the latest usable backup until acceptance.
 
 The updater restarts Tavern through its Node lifecycle and probes a fresh
 read-only MCP process. It does not restart the Hermes process executing the
-update. `installed-awaiting-hermes-reload` requires owner `/reload-mcp` and a fresh
-session for skills/AGENTS. These are distinct activation checks. Liveware bindings,
+update. `installed-awaiting-hermes-reload` requires [owner activation](activation.md):
+the gateway handles a transaction-bound confirmation, reloads MCP/skills and opens
+a fresh session without deleting history. First bridge loading is a separate
+owner gateway action. These are distinct activation checks. Liveware bindings,
 cookies, account settings and user data are not release assets and stay in place.
 
 ## Limits of this recovery

@@ -102,7 +102,7 @@ class CleanUpdater(Updater):
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
                       inactiveExtensionFiles=extension_retirements,
                       migration='Python productions -> Node Worlds on copied state; current Node state is only validated, never migrated',
-                      activation='Verify Tavern/Profile/MCP, then reload Hermes MCP and start a fresh skill session',
+                      activation='Files install first; request transaction-bound owner activation through the Hermes bridge (first bridge load requires owner gateway activation)',
                       maintenance='Pause chats before apply; active Python background work blocks maintenance')
         return result
 
@@ -250,7 +250,8 @@ class CleanUpdater(Updater):
                            'commit': plan['commit'], 'files': plan['files'], 'planDigest': expected,
                            'testPort': self.isolated_port if self.test_mode else None})
                 receipt.update(status='installed-awaiting-hermes-reload', verification=verification,
-                               hermesReloadRequired=True, freshSessionRequired=True)
+                               hermesReloadRequired=True, freshSessionRequired=True,
+                               activationCommand='activation request', activationStatusCommand='activation status')
                 json_write(transaction / 'receipt.json', receipt)
                 return {k: v for k, v in receipt.items() if k not in ('entries', 'applied', 'restored', 'accepted')}
             except BaseException:

@@ -12,6 +12,41 @@ import tree_transaction as trees
 
 
 class CleanUpdateTests(unittest.TestCase):
+    def test_activation_plugin_is_reviewed_installed_and_rolled_back(self):
+        import yaml
+        before = self.fixture.snapshot()
+        review = self.fixture.review()
+        self.assertEqual(self.fixture.snapshot(), before)
+        self.fixture.apply(review)
+        plugin = self.home / 'plugins/tavern-update-activation/__init__.py'
+        self.assertEqual(plugin.read_bytes(), (fixtures.OPS / 'updater/hermes-plugin/__init__.py').read_bytes())
+        config = yaml.safe_load((self.home / 'config.yaml').read_text())
+        self.assertIn('tavern-update-activation', config['plugins']['enabled'])
+        self.assertIn('other', config['mcp_servers'])
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_disabled_activation_plugin_and_unrelated_plugins_stay_unchanged(self):
+        import yaml
+        self.fixture.write('config.yaml', 'plugins:\n  enabled: [clawchat]\n  disabled: [tavern-update-activation]\n')
+        self.fixture.apply(self.fixture.review())
+        config = yaml.safe_load((self.home / 'config.yaml').read_text())
+        self.assertEqual(config['plugins'], {'enabled': ['clawchat'], 'disabled': ['tavern-update-activation']})
+
+    def test_modified_activation_plugin_is_not_overwritten(self):
+        self.fixture.write('plugins/tavern-update-activation/__init__.py', 'custom owner code')
+        before = self.fixture.snapshot()
+        with self.assertRaisesRegex(ValueError, 'Modified activation plugin'):
+            self.fixture.review()
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_unchanged_nora_config_still_enables_new_bridge(self):
+        import yaml
+        (self.home / 'config.yaml').write_bytes(self.u._mcp_config())
+        (self.home / 'config.yaml').write_bytes(self.u._mcp_config(activation=True))
+        config = yaml.safe_load((self.home / 'config.yaml').read_text())
+        self.assertIn('tavern-update-activation', config['plugins']['enabled'])
+
     def setUp(self):
         self.fixture = fixtures.FullUpdateTests()
         self.fixture.setUp()

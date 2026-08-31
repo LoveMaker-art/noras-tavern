@@ -1,6 +1,6 @@
 ---
 name: tavern-updater
-description: Review, upgrade and roll back verified Tavern releases.
+description: Review, upgrade, activate and roll back Tavern releases.
 version: 2.1.0-rc.1
 author: Tavern Project
 license: AGPL-3.0-only
@@ -68,9 +68,11 @@ Bootstrap assets is not an available upgrade.
    if preconditions changed, review again instead of overwriting new local work.
 4. Read the receipt. `installed-awaiting-hermes-reload` means installed files and
    a fresh MCP probe passed, not that the gateway switched its existing MCP process.
-5. Have the owner run Hermes `/reload-mcp`, including its confirmation. Verify
-   tools through the actual gateway. Use a fresh session for changed skills and
-   AGENTS context; preserve history. Report these activation checks separately.
+5. Read [owner activation](references/activation.md), then request activation in
+   the owner's ClawChat conversation. The loaded gateway bridge sends the consent
+   prompt and handles the owner's next “确定”; the agent cannot confirm it.
+   First bridge installation or a changed bridge implementation requires owner
+   gateway activation once. Report that prerequisite instead of claiming success.
 
 ## Pitfalls
 
