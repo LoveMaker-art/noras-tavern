@@ -51,13 +51,19 @@ Bootstrap assets is not an available upgrade.
 
 ## Execute and report
 
-1. Say that the approved update script is starting, then execute that command
-   once with `terminal`. The script performs the update without model calls.
+For an approved exact update command, send only a brief start announcement and
+one final summary. Keep automatic progress in terminal output, not chat messages.
+Answer a user-requested status question or a required authorization prompt when
+needed; otherwise wait for the result without intermediate narration.
+
+1. Say "开始更新。" (or its equivalent in the user's language), then execute
+   the approved command once with `terminal`. The script performs the update
+   without model calls.
 2. If the terminal returns a running session, wait/poll that same session for its
-   exit code and new output. Relay the latest `[tavern-updater]` phase and elapsed
-   time when available. Terminal output is not necessarily streamed into ClawChat;
-   silence alone is not a failure and never authorizes a second update command.
-3. When the command exits, immediately report the result and end the turn:
+   exit code and new output. Read `[tavern-updater]` progress internally and retain
+   it in terminal logs. Silence alone is not a failure and never authorizes a
+   second update command.
+3. When the command exits, send one concise final summary and end the turn:
    - Success: installed version/status and the script's owner `/restart` instruction.
      Installation does not mean the current gateway has reloaded.
    - Failure: failed phase, concrete `error`, `status`/`recovery`, and transaction
@@ -86,6 +92,9 @@ do not claim failure, success or rollback without evidence.
 | `rollback` | Matching transaction, original plan digest, owner approval and `--confirm` |
 
 ## Procedure
+
+Use this procedure when choosing a release or planning an upgrade. An approved
+exact command follows **Execute and report**, without an extra planning narrative.
 
 1. Resolve the exact Hermes home and source runtime. Python namespaces are converted
    on a private state copy, retaining Worlds, cast, messages, ledger, Profile and

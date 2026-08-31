@@ -81,6 +81,31 @@ async def liveware_login():
         self.assertEqual(dict(os.environ), before)
         self.assertFalse((self.home / 'login-calls').exists())
 
+    def test_platform_install_resolves_when_login_shell_path_omits_it(self):
+        self.credentials()
+        platform_binary = self.home / 'platform/bin/liveware'
+        platform_binary.parent.mkdir(parents=True)
+        self.binary.rename(platform_binary)
+        os.environ.pop('LIVEWARE_BIN', None)
+        with patch.dict(os.environ, {'PATH': '/usr/bin:/bin'}), \
+             patch.object(liveware, 'CLAWNEST_LIVEWARE', platform_binary, create=True):
+            p = liveware.Platform(self.home)
+            self.assertEqual(p.binary, str(platform_binary))
+            self.assertEqual(p.apps()[0]['appId'], 'app-console')
+            import shutil
+            self.assertEqual(shutil.which('liveware', path=p.environment(login=True)['PATH']), str(platform_binary))
+            self.assertEqual(os.environ['PATH'], '/usr/bin:/bin')
+
+    def test_explicit_missing_binary_is_not_replaced_by_another_install(self):
+        with patch.dict(os.environ, {'LIVEWARE_BIN': str(self.home / 'missing/liveware')}):
+            with self.assertRaisesRegex(ValueError, 'LIVEWARE_UNAVAILABLE.*missing/liveware'):
+                liveware.Platform(self.home).apps()
+
+    def test_nonexecutable_binary_reports_permission_error(self):
+        self.binary.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, 'LIVEWARE_PERMISSION'):
+            liveware.Platform(self.home).apps()
+
     def test_confirmed_update_prepares_login_once_and_reloads_credentials(self):
         liveware.prepare_update(self.home, allow_login=True)
         self.assertEqual((self.home / 'login-calls').read_text(), 'login\n')

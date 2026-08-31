@@ -16,6 +16,7 @@ import urllib.request
 from html.parser import HTMLParser
 
 ROLES = {'console': ('Tavern', ''), 'actor': ('Story Profile', '/_liveware/story-profile')}
+CLAWNEST_LIVEWARE = Path('/opt/clawnest/bin/liveware')
 
 
 def rows(value, key=None):
@@ -45,11 +46,40 @@ def command_error(output, operation):
     return PlatformError('COMMAND', operation + ' 执行失败；请检查目标机器的 Liveware 连接。')
 
 
+def resolve_binary(home):
+    """Support PATH installs, ClawNest's bundled CLI and the plugin download.
+
+    Hermes' login shell may remove ClawNest from PATH. An explicit override is
+    authoritative; an invalid override must not silently select another install.
+    """
+    configured = os.environ.get('LIVEWARE_BIN')
+    candidates = [shutil.which(configured) or configured] if configured else [
+        shutil.which('liveware'), CLAWNEST_LIVEWARE, Path(home) / 'clawchat/liveware/liveware']
+    checked = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = Path(candidate).absolute()
+        checked.append(str(path))
+        if path.is_file() and os.access(path, os.X_OK):
+            return str(path)
+        if configured and path.is_file():
+            raise PlatformError('PERMISSION', 'Liveware 文件没有执行权限：' + str(path))
+    raise PlatformError('UNAVAILABLE', '未找到可执行的 Liveware；已检查：' + ', '.join(checked))
+
+
 class Platform:
     def __init__(self, home):
         self.home = Path(home)
-        self.binary = os.environ.get('LIVEWARE_BIN') or shutil.which('liveware') or str(self.home / 'clawchat/liveware/liveware')
+        self._binary = None
         self.plugin = Path(os.environ.get('CLAWCHAT_PLUGIN_DIR') or self.home / 'plugins/clawchat')
+
+    @property
+    def binary(self):
+        # Offline/isolated updates and unconfigured installations need no CLI.
+        if self._binary is None:
+            self._binary = resolve_binary(self.home)
+        return self._binary
 
     def environment(self, *, login=False):
         """Resolve credentials for this installation, not the agent's shell HOME.
@@ -59,6 +89,13 @@ class Platform:
         """
         from update import safe
         env = {**os.environ, 'HOME': str(self.home), 'HERMES_HOME': str(self.home)}
+        # The official plugin resolves its own bare `liveware` command. Both
+        # callers must see the selected installation even after a login shell
+        # reset PATH. Only child environments change; no shell profiles are edited.
+        directory = str(Path(self.binary).parent)
+        entries = [p for p in env.get('PATH', '').split(os.pathsep) if p and p != directory]
+        env['PATH'] = os.pathsep.join([directory, *entries])
+        env['LIVEWARE_BIN'] = self.binary
         path = safe(self.home / '.clawling/liveware.json')
         if path.exists():
             try:
@@ -90,8 +127,11 @@ class Platform:
                                     env=self.environment(login=login), **kwargs)
         except subprocess.TimeoutExpired:
             raise PlatformError('TIMEOUT', operation + ' 请求超时；没有自动重试。') from None
-        except OSError:
-            raise PlatformError('UNAVAILABLE', operation + ' 无法启动；请检查 Liveware CLI 和 ClawChat 插件安装。') from None
+        except OSError as error:
+            code = 'PERMISSION' if isinstance(error, PermissionError) else 'UNAVAILABLE'
+            # Preserve OS diagnostics, not subprocess output or secret arguments.
+            raise PlatformError(code, operation + ' 无法启动 ' + str(command[0])
+                                + '; errno=' + str(error.errno) + ' (' + str(error.strerror) + ')') from None
         if result.returncode:
             raise command_error(result.stderr + '\n' + result.stdout, operation)
         return result.stdout
