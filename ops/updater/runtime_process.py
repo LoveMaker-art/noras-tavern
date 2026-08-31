@@ -230,7 +230,7 @@ def legacy_stop_patterns(script, port):
     name = Path(script).name
     if port is None:
         return [name]
-    return [f'{name} --port {port}', f'{name} {port}']
+    return [f'{name} --port {port}', f'{name} .*--port {port}', f'{name} {port}']
 
 
 def stop_process(record, script, *, port=None, stop=None, timeout=20):
