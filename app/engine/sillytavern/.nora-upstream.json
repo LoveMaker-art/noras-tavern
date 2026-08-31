@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "engine": "SillyTavern",
+  "version": "1.18.0",
+  "repository": "https://github.com/SillyTavern/SillyTavern.git",
+  "tag": "1.18.0",
+  "commit": "51ad27fb86d39a3daca3adaa970375c9670c12df",
+  "integration": "nora-source"
+}

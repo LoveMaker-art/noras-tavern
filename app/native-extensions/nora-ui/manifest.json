@@ -1,0 +1,12 @@
+{
+  "display_name": "Nora Tavern UI",
+  "loading_order": 5,
+  "requires": [],
+  "dependencies": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Nora Tavern",
+  "version": "2.17.4",
+  "auto_update": false,
+  "minimum_client_version": "1.18.0"
+}

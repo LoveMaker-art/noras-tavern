@@ -1,0 +1,13 @@
+{
+  "source": "Pre-cleanup resources: retained selector/declaration order and all actor UI translations, including identity overrides.",
+  "originalCssSha256": "c0f7634e209d8e828a3d0092193e173aeeeff3e56d8ed797b6e849a05b4de742",
+  "originalI18nSha256": "8f326dd6572bce37a826d56ec17d5edf49f978dfa9204b783af515481981e0da",
+  "cssDigest": "0343a0a61174875177c1267fbcd54154ba474e958c0a7829fd875d5504d95a07",
+  "uiKeys": ["acEntriesCount", "acKnowsEmpty", "acKnowsHead", "acLoadFailed", "acLoading", "acNameFallback", "acTimelineEmpty", "acTimelineHead", "appWindowTitleActor", "ariaBack", "docTitleActor", "intimacyMax", "intimacySub", "intimacyToNext", "personalityCancel", "personalityConflict", "personalityDiscard", "personalityEmpty", "personalityHint", "personalityOpen", "personalitySave", "personalitySaveFailed", "personalitySaved", "personalitySaving", "personalityTitle", "statDebut", "statDebutUnit", "statPlayed", "statPlayedUnit", "statProds", "statProdsUnit", "statRoles", "statRolesUnit", "statTimeline", "statTimelineUnit", "statWritten", "statWrittenUnit", "wan"],
+  "translationDigests": {
+    "zh-CN": ["d7baab44fb93f5a19092d9b2c77a7d464591480c78972c5458cec8ca43d5192c", "1a1aee1ce311447e45ad5b07018b881d217972ed5475239aa64e5e416cedb3d4", "8a4b1ef8f2fcc81eae2cc866a5b2e69b7b2170d4dafb8ac7fbb31b05bbe3383e"],
+    "zh-TW": ["b5aaedf0910d0cf596de4920754e5c4c0de00e43a942e4f8c5d5e7dc17d7c6a1", "f1e271fdfbbc857c2cc91c1aaa0e5d73072627572b4967fac2aa45f9b13aeba1", "869f1db2e75795b44af2ed870c17c24d23dedab4f6b1e7d05d1cf9ae2b4bf65f"],
+    "en-US": ["dc803938cbc83b2a88b6b2c5e6be3658bf1d96a1455dd0ec9df9d8bd9bcb7548", "dc803938cbc83b2a88b6b2c5e6be3658bf1d96a1455dd0ec9df9d8bd9bcb7548", "f61574aaaa5c6cf53da65d49c6965b54897005e8e30b9695402560c34ac5394c"],
+    "ja": ["dc803938cbc83b2a88b6b2c5e6be3658bf1d96a1455dd0ec9df9d8bd9bcb7548", "dc803938cbc83b2a88b6b2c5e6be3658bf1d96a1455dd0ec9df9d8bd9bcb7548", "f61574aaaa5c6cf53da65d49c6965b54897005e8e30b9695402560c34ac5394c"]
+  }
+}

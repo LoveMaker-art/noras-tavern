@@ -1,0 +1,19 @@
+{
+  "display_name": "酒馆助手",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "dist/index.js",
+  "css": "dist/index.css",
+  "hooks": {
+    "activate": "activateTauriTavernChatSurface"
+  },
+  "author": "KAKAA",
+  "version": "4.9.3",
+  "homePage": "https://github.com/N0VI028/JS-Slash-Runner",
+  "auto_update": false,
+  "minimum_client_version": "1.12.13",
+  "i18n": {
+    "en": "i18n/en.json"
+  }
+}

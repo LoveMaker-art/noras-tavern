@@ -1,0 +1,9 @@
+{
+  "schema": 2,
+  "engine": "SillyTavern",
+  "upstream_repository": "https://github.com/SillyTavern/SillyTavern.git",
+  "upstream_tag": "1.18.0",
+  "upstream_commit": "51ad27fb86d39a3daca3adaa970375c9670c12df",
+  "node_min_major": 20,
+  "source_dir": "engine/sillytavern"
+}

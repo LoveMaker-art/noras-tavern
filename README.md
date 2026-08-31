@@ -1,163 +1,93 @@
-<div align="center">
+# Nora Tavern
 
-# Nora's Tavern
+Nora's product layer and deployment runtime for complex Tavern cards.
 
-### Persistent worlds for multi-character AI stories
+## Layout
 
-An open-source storytelling system that runs as a standalone web app or as a controllable workspace for Hermes Agent.
+- `app/`: the Node compatibility engine, Nora runtime adapters, Nora UI, model configuration, lifecycle code, and tests.
+- `ops/`: maintained lifecycle, Liveware registration, provisioning, and deployment scripts from the remote instance.
+- `local-state/`: private, Git-ignored runtime snapshot used to reproduce the current worlds and installed extensions locally.
+- `release/`: generated, Git-ignored production archives and their integrity manifest.
+- `story-profile/`: authoritative Story Profile source synchronized into the Tavern release snapshot; included in this repository, not a submodule.
+- `../st-mcp/`: independent MCP control and indexing project for the embedded SillyTavern engine.
 
-[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [Hermes integration](#hermes-agent) · [Documentation](#documentation)
+## Development Rules
 
-[![Latest release](https://img.shields.io/github/v/release/LoveMaker-art/noras-tavern?display_name=tag&sort=semver)](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
-[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-8b5cf6.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-3776ab.svg)](https://www.python.org/)
-[![Hermes skills](https://img.shields.io/badge/Hermes-custom%20tap-111827.svg)](docs/hermes.md)
+1. Treat `app/engine/sillytavern`, `app/native-extensions`, `app/native_lifecycle.py`, and `app/native_model_config.py` as the Tavern production source. Treat `story-profile` as the Story Profile source.
+2. Do not edit the remote runtime directly. Implement and verify changes here first.
+3. Do not commit `local-state`, API keys, cookies, tokens, logs, caches, or generated dependency directories.
+4. Build the Nora bundle from `app/engine/sillytavern/webpack.nora.config.mjs`; do not hand-edit `public/dist/nora/entry.js`.
+5. A deployment must back up affected remote files, upload only the verified delta, restart through the maintained lifecycle scripts, and run health plus user-workflow verification.
 
-</div>
+## Install
 
-![Tavern desktop interface](docs/images/tavern-desktop.jpg)
-
-Nora's Tavern keeps the parts of a long-running story that ordinary chat interfaces tend to lose: the world, the cast, the player's persona, active lore, character changes, and a compact story ledger. The interface stays focused on the scene while the state model works behind it.
-
-## What It Includes
-
-- **Multi-character worlds** with a player persona, cast roster, worldbooks, triggered lore, and persistent sessions.
-- **Long-story continuity** through scheduled story-ledger compression and structured character-state updates.
-- **Portable character cards** with normalized imports for common Tavern/SillyTavern card data.
-- **Story controls** for continue, regenerate, edit, smart replies, text-model selection, and voice playback.
-- **World presentation** with per-world desktop/mobile backgrounds, typography, color, and reading surfaces.
-- **Agent operations** through Hermes skills that can create worlds, import material, manage models, inspect state, and update the application.
-- **State isolation**: source code and user data live in separate directories, so releases can be applied without replacing stories or credentials.
-
-## Product Preview
-
-| Mobile story view | World and cast workspace |
-| --- | --- |
-| ![Tavern mobile story view](docs/images/tavern-mobile.jpg) | ![Tavern world and cast panel](docs/images/world-and-cast.jpg) |
-
-The same world is available as a focused mobile reading experience and a desktop workspace for inspecting the cast, lore, libraries, models, and story profile.
-
-## Choose Your Setup
-
-There are two primary installation paths:
-
-| I want to... | Start here | What gets installed |
-| --- | --- | --- |
-| Play Tavern as a web app | [Standalone Tavern](#quick-start) | Tavern only; Hermes, ClawChat, and Liveware are not required |
-| Use an agent to build and manage Tavern worlds | [Hermes + Tavern](#hermes-agent) | Hermes first, then the Tavern app and Hermes skills |
-
-ClawChat Liveware is an optional surface for the second path. It is not a third runtime and is not required by standalone Tavern or ordinary Hermes installations.
-
-## Quick Start
-
-### Path A: Standalone Tavern
-
-Requirements: Python 3.10+ and an OpenAI-compatible Chat Completions endpoint.
-
-```bash
-git clone https://github.com/LoveMaker-art/noras-tavern.git
-cd noras-tavern
-python3 start.py
+```sh
+cd app/engine/sillytavern
+npm ci
 ```
 
-The first run asks for the model endpoint, API key, and model ID, then creates the local environment, installs dependencies, and saves `.env`. Later starts use the same `python3 start.py` command. On Windows, use `py start.py`.
+The production dependency lock requires Node.js 20 or newer.
+Node.js 22.22.3 is the runtime used by the current local release checks.
+Tavern is a single-user/Agent workspace: deploy a separate instance and data
+directory for each trust boundary, not one shared public multi-tenant service.
 
-When the terminal prints `Tavern → http://127.0.0.1:8799`, open that address. Do not open `app/frontend/index.html` directly: the static page has no backend and will report that Tavern cannot reach its backend. Runtime data is written only to `TAVERN_STATE_DIR`, not to the source tree.
+Story Profile is embedded as a checksum-verified snapshot. One checkout contains
+both projects. After intentionally changing `story-profile/`, update its snapshot:
 
-For production deployment, reverse proxies, environment variables, and storage boundaries, follow the [standalone deployment guide](docs/standalone.md) and [configuration reference](docs/configuration.md).
-
-## Hermes Agent
-
-### Path B: Hermes + Tavern
-
-The Tavern bootstrap does **not** install Hermes Agent. Start with a working Hermes installation, following the official [Hermes installation guide](https://hermes-agent.nousresearch.com/docs/getting-started/installation) and [quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart):
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-hermes setup
+```sh
+npm run sync:story-profile
+npm run check:story-profile-source
 ```
 
-`hermes setup --portal` is the official shortest setup when using Nous Portal. Before adding Tavern, open Hermes and verify that it can complete one normal conversation.
+Ordinary builds only verify the embedded snapshot; they do not silently pull
+new source changes. Release checks enforce source/snapshot parity. The host adapter preserves the original UI and adds CSRF
+headers to its mutation requests.
 
-Then install or update the Tavern application, its complete Hermes skill set, and the managed integration files:
+The snapshot revision is a content digest of its input files, not Git HEAD, so
+committing or exporting the repository does not invalidate the snapshot. An
+explicit `NORA_STORY_PROFILE_SOURCE` override is available for development.
 
-```bash
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
+## Verification
+
+```sh
+cd app/engine/sillytavern
+npm run test:nora
+npm run lint
+npm run build:nora
 ```
 
-The updater reviews the release manifest, checks compatibility, creates rollback material, applies managed files, and performs a health check. Worlds, cards, stories, model configuration, identity, and uploaded assets remain outside its overwrite boundary.
+From the repository root, create a local candidate for further verification:
 
-Verify the integration:
-
-```bash
-hermes skills list
-python3 "${HERMES_HOME:-$HOME/.hermes}/skills/creative/tavern/scripts/tavern_cli.py" doctor --json
-curl -fsS http://127.0.0.1:8799/api/health
+```sh
+sh ops/scripts/package-release.sh --candidate
 ```
 
-After verification, ask Hermes to create or inspect a Tavern world, or open `http://127.0.0.1:8799/` directly.
+Use `--offline` only after the locked dependencies are available in npm's local
+cache. Candidate mode snapshots tracked and non-ignored new source files,
+records the dirty state and source digest, and is **not release approval**.
 
-The complete Tavern integration currently targets Linux, macOS, and WSL2 because its managed runtime scripts use POSIX `sh`. Standalone Tavern supports native Windows through `py start.py`.
+Stable packaging requires committed, clean source and current target-environment
+workflow evidence (see `ops/scripts/verify-product-workflows.mjs`):
 
-If Tavern is already running and you only need the skills, install the repository as a [Hermes Custom Tap](docs/hermes.md#已有-tavern只安装技能).
-
-## How It Fits Together
-
-```mermaid
-flowchart LR
-    U[Reader] --> W[Tavern Web UI]
-    H[Hermes Agent] --> S[Hermes skills]
-    S --> C[Shared Tavern CLI]
-    W --> A[Tavern HTTP API]
-    C --> A
-    A --> M[OpenAI-compatible models]
-    A --> D[(Tavern state directory)]
-    G[ClawChat Liveware] -. optional .-> W
+```sh
+sh ops/scripts/package-release.sh --browser-report /absolute/path/to/report.json
 ```
 
-The web UI and Hermes skills operate on the same Tavern API and state. The agent does not edit production JSON directly; the shared CLI and HTTP boundary keep operations predictable.
+It exports that commit to an isolated directory, installs locked dependencies,
+checks production dependency advisories, runs tests/lint/build/contracts and the
+workflow gate, then archives explicit file lists. A nonzero security audit blocks
+stable packaging; unresolved advisories are not silently accepted.
 
-## Repository Layout
+Each uniquely named directory under `release/` contains app/ops archives, a
+source/artifact manifest and SHA-256 checksums. Runtime data, ignored private
+files, installed dependencies and tests are not packaged. Path/content checks
+reject common secret formats; they are not a guarantee against every possible
+credential representation. Licensing and necessary runtime metadata remain.
 
-```text
-app/backend/             Tavern backend source
-app/frontend/            Tavern web frontend source
-app/assets/              Built-in templates and runtime assets
-skills/                  Hermes Custom Tap and shared CLI
-integrations/hermes/     Optional AGENTS and SOUL templates
-tools/                   Portable Tavern CLI entry point
-bootstrap/               Verified updater bootstrap
-docs/                    Deployment, configuration, and architecture
-scripts/                 Release build tooling
-tests/                   Backend, frontend, updater, and boundary tests
-```
+Current findings and outstanding release gates:
+[Release hardening record](docs/architecture/RELEASE-HARDENING-2026-08-30.md).
 
-No user worlds, cards, conversations, credentials, ClawChat sessions, or registration records belong in the source tree.
-
-## Documentation
-
-| Guide | Covers |
-| --- | --- |
-| [Standalone deployment](docs/standalone.md) | Local and server installation without Hermes |
-| [Hermes deployment](docs/hermes.md) | Skills, paths, hooks, ClawChat, and updates |
-| [Configuration](docs/configuration.md) | Models, storage, security, and performance |
-| [Architecture](docs/architecture.md) | Runtime boundaries, state, APIs, and release design |
-| [Contributing](CONTRIBUTING.md) | Development workflow and pull requests |
-| [Security policy](SECURITY.md) | Reporting vulnerabilities and handling secrets |
-
-## Development
-
-```bash
-python3 -m pip install -r requirements.txt
-PYTHONPATH=app/backend python3 -m unittest discover -s tests -v
-node --test tests/frontend_security.test.js
-python3 scripts/build_release.py
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) before changing runtime boundaries, state migrations, updater manifests, or shared skills.
-
-## License
-
-Nora's Tavern is licensed under [GNU AGPL-3.0-only](LICENSE). If you provide a modified version over a network, you must make the corresponding source available as required by section 13 of the AGPL.
-
-Releases up to and including `v1.18.1` remain available under the MIT License shipped with those releases.
+Runtime data and model credentials are intentionally separate from source.
+Set `TAVERN_APP_DIR` to the installed `app` directory and `TAVERN_STATE_DIR` to
+a persistent directory outside it; lifecycle commands are provided by
+`app/native_lifecycle.py`. Never distribute an author's live state directory.

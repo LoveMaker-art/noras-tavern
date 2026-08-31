@@ -1,0 +1,68 @@
+node_modules/
+public/chats/
+public/characters/
+public/User Avatars/
+public/backgrounds/
+public/groups/
+public/group chats/
+public/worlds/
+public/user/
+public/css/bg_load.css
+public/themes/
+public/OpenAI Settings/
+public/KoboldAI Settings/
+public/NovelAI Settings/
+public/TextGen Settings/
+public/instruct/
+public/context/
+public/stats.json
+/uploads/
+*.jsonl
+/config.conf
+/config.yaml
+/config.conf.bak
+/docker/config
+/docker/user
+/docker/extensions
+/docker/data
+/docker/dist
+.DS_Store
+public/settings.json
+/thumbnails
+whitelist.txt
+.vscode/**
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+secrets.json
+/dist
+/backups/*
+!/backups/!README.md
+public/movingUI/
+public/QuickReplies/
+content.log
+cloudflared.exe
+public/assets/
+access.log
+/vectors/
+/cache/
+public/css/user.css
+public/error/
+/plugins/*
+!/plugins/.gitkeep
+!/plugins/package.json
+!/plugins/nora-sidecar/
+!/plugins/nora-sidecar/index.mjs
+/data/*
+!/data/.gitkeep
+/default/scaffold/*
+!/default/scaffold/README.md
+/public/scripts/extensions/third-party/*
+!/public/scripts/extensions/third-party/.gitkeep
+/certs
+.aider*
+.env
+/StartDev.bat
+yarn.lock
+*.code-workspace
+test-results/

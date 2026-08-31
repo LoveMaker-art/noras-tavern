@@ -1,0 +1,43 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora 同名不同内容测试角色",
+    "description": "用于验证同名 Worldbook 不会错误覆盖。",
+    "personality": "稳定、清晰。",
+    "scenario": "另一间测试室。",
+    "first_mes": "同名不同内容测试开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": [
+      "nora-fixture"
+    ],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {},
+    "character_book": {
+      "name": "Nora 同名测试设定",
+      "extensions": {},
+      "entries": [
+        {
+          "id": 0,
+          "keys": [
+            "另一间测试室"
+          ],
+          "secondary_keys": [],
+          "comment": "另一份脱敏设定",
+          "content": "这一份内容必须获得独立的碰撞安全名称。",
+          "constant": true,
+          "selective": false,
+          "enabled": true,
+          "insertion_order": 100,
+          "position": "before_char",
+          "extensions": {}
+        }
+      ]
+    }
+  }
+}

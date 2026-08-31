@@ -1,0 +1,41 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const source = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
+const endpoint = fs.readFileSync(new URL('../src/endpoints/chats.js', import.meta.url), 'utf8');
+const earlyShell = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+const messageAdapter = fs.readFileSync(new URL('../public/scripts/nora-adapters/st-message-adapter.js', import.meta.url), 'utf8');
+const tokenizers = fs.readFileSync(new URL('../public/scripts/tokenizers.js', import.meta.url), 'utf8');
+const tokenizerEndpoint = fs.readFileSync(new URL('../src/endpoints/tokenizers.js', import.meta.url), 'utf8');
+
+assert.match(source, /const NORA_CHAT_WINDOW_SIZE = 40;/, 'Nora should request a bounded initial message window');
+assert.match(source, /function getChatRenderWindowSize\(\)[\s\S]*?NORA_CHAT_WINDOW_SIZE[\s\S]*?power_user\.chat_truncation/, 'Nora windowing must preserve the upstream fallback');
+assert.match(source, /export async function showMoreMessages\([^)]*\)[\s\S]*?getChatRenderWindowSize\(\)/, 'older-message loading must use the same window size');
+assert.match(source, /async function loadEarlierNoraChatWindow\(\)/, 'Nora must request older history only when the user asks for it');
+assert.match(source, /export async function ensureNoraFullChatLoaded\(\)/, 'Nora must expose a full-history safety gate before mutation or generation');
+assert.match(source, /body\.nora_window\s*=\s*NORA_CHAT_WINDOW_SIZE/, 'Nora chat requests must ask the server for a bounded window');
+assert.match(source, /isNoraProductMode\(\)[\s\S]*?ensureNoraFullChatLoaded\(\)[\s\S]*?GENERATION_STARTED/, 'generation must hydrate complete history before prompt assembly');
+assert.match(source, /isNoraProductMode\(\) \? \$\('#nora-chat'\) : chatElement/, 'Nora history loading must preserve the outer scroller');
+assert.match(source, /scrollElement\.scrollTop\(scrollElement\.scrollTop\(\) \+ newHeight - prevHeight\)/, 'loading older messages must retain the visible reading position');
+assert.match(source, /export async function printMessages\(\)[\s\S]*?getChatRenderWindowSize\(\)[\s\S]*?查看更早内容/, 'initial rendering must expose Nora history loading');
+assert.match(source, /chat\.slice\(firstId, messageId\)/, 'windowing should slice only the rendered view');
+assert.match(endpoint, /export function getChatWindowData\(/, 'the server must own chat response windowing');
+assert.match(endpoint, /request\.body\.nora_window[\s\S]*?getChatWindowData/, 'the existing chat route must opt into windowed responses only for Nora');
+assert.doesNotMatch(earlyShell, /\/api\/chats\/get|nora_window|__NORA_CHAT_PROMISES__/, 'the v2 shell must not prefetch a legacy chat before the authoritative World is selected');
+assert.match(messageAdapter, /async function sendText\([^)]*\)\s*\{\s*(?:assertActive\(signal\);\s*)?const \{ current: before \} = await hydrateHistory\(\)/, 'Nora sendText must preserve complete history before generation');
+assert.match(messageAdapter, /async function editAndRegenerate\([^)]*\)\s*\{\s*(?:assertActive\(signal\);\s*)?let \{ current, messageId \} = await hydrateHistory\(id\)/, 'Nora editAndRegenerate must hydrate and translate the visible message id');
+assert.match(messageAdapter, /runBackupTransaction\(execute\)/, 'edit-and-regenerate must collapse intermediate ST saves into one recovery snapshot');
+assert.match(messageAdapter, /execute\(\{ saveBeforeGeneration: true \}\)/, 'older runtimes must still persist the edited user turn before generation');
+assert.match(messageAdapter, /async function swipe\([^)]*\)\s*\{\s*const \{ current, messageId \} = await hydrateHistory\(id\)/, 'Nora swipe must hydrate and translate the visible message id');
+assert.match(messageAdapter, /regenerate:\s*async \(\{ signal \} = \{\}\) => \{\s*assertActive\(signal\);\s*await hydrateHistory\(\)/, 'Nora regenerate must honor cancellation and preserve complete history');
+assert.match(messageAdapter, /editMessage:\s*async \(id, text\) => \{\s*const \{ current, messageId \} = await hydrateHistory\(id\)/, 'Nora editMessage must hydrate and translate the visible message id');
+assert.match(source, /if \(!isNoraProduct\)\s*\{\s*await criticalExtensionActivation;/, 'ordinary ST may still block on critical extensions');
+assert.doesNotMatch(source, /messageElement\.find\('\.avatar img'\)\.attr\('src', avatarImg\);/, 'hidden Nora message avatars must not start thumbnail requests');
+assert.match(source, /export async function runNoraChatBackupTransaction\(operation\)/, 'the ST compatibility boundary must expose one chat-backup transaction');
+assert.match(source, /skip_backup:\s*skipBackup \|\| noraChatBackupTransactionDepth > 0/, 'intermediate transaction saves must skip redundant recovery snapshots');
+assert.match(tokenizers, /export async function prefetchTokenCountsOpenAI\(messages\)/, 'OpenAI prompt preparation must expose batched token-cache warming');
+assert.match(tokenizers, /\/api\/tokenizers\/openai\/count-batch/, 'batched token warming must use one Nora/ST server request');
+assert.match(tokenizerEndpoint, /router\.post\('\/openai\/count-batch'/, 'the server must expose the batched OpenAI tokenizer route');
+assert.match(tokenizerEndpoint, /Promise\.all\(messages\.map/, 'batch token counting may parallelize local tokenizer work but must not serialize client round trips');
+
+console.log('nora-chat-window-contract=PASS');

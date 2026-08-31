@@ -1,0 +1,24 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora CHARX 兼容测试角色",
+    "description": "用于 Nora World Core CHARX 基础容器验收的脱敏角色。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间安静的测试室。",
+    "first_mes": "CHARX 测试世界已经开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": [
+      "nora-fixture"
+    ],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {},
+    "assets": [],
+    "character_book": null
+  }
+}

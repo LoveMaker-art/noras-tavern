@@ -1,0 +1,32 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora Tavern Helper 测试角色",
+    "description": "用于验证 Tavern Helper-only 能力声明。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间脚本清单测试室。",
+    "first_mes": "Tavern Helper 测试开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture. The script is inert.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": ["nora-fixture"],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {
+      "tavern_helper": {
+        "scripts": [
+          {
+            "type": "script",
+            "id": "nora-helper-fixture",
+            "name": "Nora inert helper fixture",
+            "enabled": true,
+            "content": "globalThis.__NORA_HELPER_FIXTURE__ = true;"
+          }
+        ]
+      }
+    }
+  }
+}

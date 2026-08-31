@@ -1,0 +1,11 @@
+{
+    "display_name": "Story Ledger",
+    "loading_order": 25,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "author": "Nora",
+    "version": "1.0.0",
+    "homePage": "",
+    "auto_update": false
+}

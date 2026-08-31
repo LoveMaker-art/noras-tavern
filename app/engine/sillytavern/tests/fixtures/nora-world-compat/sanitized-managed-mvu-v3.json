@@ -1,0 +1,41 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora Managed MVU 测试角色",
+    "description": "用于验证 Managed MVU 能力声明和基础 World 非阻塞打开。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间变量测试室。",
+    "first_mes": "Managed MVU 测试开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": [
+      "nora-fixture"
+    ],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {},
+    "character_book": {
+      "name": "Nora Managed MVU 设定",
+      "extensions": {},
+      "entries": [
+        {
+          "id": 0,
+          "keys": [],
+          "secondary_keys": [],
+          "comment": "[initvar]",
+          "content": "<status_current_variables>{}</status_current_variables>\n<UpdateVariable>{}</UpdateVariable>",
+          "constant": true,
+          "selective": false,
+          "enabled": true,
+          "insertion_order": 100,
+          "position": "before_char",
+          "extensions": {}
+        }
+      ]
+    }
+  }
+}

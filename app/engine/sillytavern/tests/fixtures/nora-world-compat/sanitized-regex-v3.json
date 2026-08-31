@@ -1,0 +1,38 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora Regex 测试角色",
+    "description": "用于验证 Regex-only 能力声明。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间正则测试室。",
+    "first_mes": "Regex 测试开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": ["nora-fixture"],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {
+      "regex_scripts": [
+        {
+          "id": "nora-regex-fixture",
+          "scriptName": "Nora fixture transform",
+          "findRegex": "/NORA_FIXTURE/g",
+          "replaceString": "fixture-ready",
+          "trimStrings": [],
+          "placement": [1],
+          "disabled": false,
+          "markdownOnly": false,
+          "promptOnly": false,
+          "runOnEdit": true,
+          "substituteRegex": 0,
+          "minDepth": null,
+          "maxDepth": null
+        }
+      ]
+    }
+  }
+}

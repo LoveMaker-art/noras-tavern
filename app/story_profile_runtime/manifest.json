@@ -1,0 +1,71 @@
+{
+  "schema": "nora-story-profile-runtime/v1",
+  "source": "repository-project",
+  "sourceRevision": "sha256:b71a441b33bbd0a6e0378c59b3e926e6273d1081fcde144b9b83ca2dfeea4da7",
+  "files": {
+    "story_profile_runtime/core/story_profile.py": {
+      "source": "story-profile/core/story_profile.py",
+      "sourceSha256": "5314ab86d76f737a9abcef96e3fe7730d69ca63cad599b6aae8060f6cdc45cfb",
+      "sha256": "5314ab86d76f737a9abcef96e3fe7730d69ca63cad599b6aae8060f6cdc45cfb"
+    },
+    "story_profile_runtime/core/reflection.py": {
+      "source": "story-profile/core/reflection.py",
+      "sourceSha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0",
+      "sha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0"
+    },
+    "story_profile_runtime/adapters/nora/cli.py": {
+      "source": "story-profile/adapters/nora/cli.py",
+      "sourceSha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16",
+      "sha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16"
+    },
+    "story_profile_runtime/adapters/nora/model-config.js": {
+      "source": "story-profile/adapters/nora/model-config.js",
+      "sourceSha256": "b1c89d0bcfb964c678869480b5bc41018b7f4feae4b21c90db8cfc9e7bc1ff09",
+      "sha256": "b1c89d0bcfb964c678869480b5bc41018b7f4feae4b21c90db8cfc9e7bc1ff09"
+    },
+    "story_profile_runtime/adapters/nora/preference-checkpoint.js": {
+      "source": "story-profile/adapters/nora/preference-checkpoint.js",
+      "sourceSha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8",
+      "sha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8"
+    },
+    "engine/sillytavern/public/actor.html": {
+      "source": "story-profile/public/actor.html",
+      "sourceSha256": "c13c09c4068b858efdfe0621579c67be52eeab1547d07f60933f374e61f4f5ab",
+      "sha256": "2cb5c28b28e47d96e5d15679d350a5cf21cfbf6734d345e4691aa32c74883fa0"
+    },
+    "engine/sillytavern/public/story-profile-book.svg": {
+      "source": "story-profile/public/story-profile-book.svg",
+      "sourceSha256": "ea6a6819ba0e4349132be05b79be1f95c1d52eb58f2336c3f83963a64ea35527",
+      "sha256": "ea6a6819ba0e4349132be05b79be1f95c1d52eb58f2336c3f83963a64ea35527"
+    },
+    "engine/sillytavern/public/story-profile-icon-v2.png": {
+      "source": "story-profile/public/story-profile-icon-v2.png",
+      "sourceSha256": "564136847ec13c861603eae6a086bf35013e889ee9d64e7d82a7329485ababcc",
+      "sha256": "564136847ec13c861603eae6a086bf35013e889ee9d64e7d82a7329485ababcc"
+    },
+    "engine/sillytavern/public/actor.js": {
+      "source": "story-profile/public/actor.js",
+      "sourceSha256": "6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359",
+      "sha256": "9d958e7ce861493e84aa42f0c8c70223730ab62d259ff83098e66d9053156d8e"
+    },
+    "engine/sillytavern/public/console.css": {
+      "source": "story-profile/public/console.css",
+      "sourceSha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32",
+      "sha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32"
+    },
+    "engine/sillytavern/public/i18n.js": {
+      "source": "story-profile/public/i18n.js",
+      "sourceSha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0",
+      "sha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0"
+    },
+    "engine/sillytavern/public/security.js": {
+      "source": "story-profile/public/security.js",
+      "sourceSha256": "90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965",
+      "sha256": "90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965"
+    },
+    "story_profile_runtime/package.json": {
+      "source": null,
+      "sha256": "609158e6c5fbc237939fa3ddf7faab80ab690bdc0c8d584414a885130103c4e8"
+    }
+  }
+}

@@ -1,0 +1,135 @@
+{
+  "schema_version": 1,
+  "scope": "nora-tavern",
+  "support_levels": [
+    "adapter",
+    "matrix",
+    "unsupported"
+  ],
+  "unknown_card_action_policy": "explicit-error",
+  "removed_st_dom_controls": [
+    "#send_but",
+    "#mes_stop",
+    "#options_button"
+  ],
+  "post_message_actions": [
+    {
+      "type": "request_chat_completion",
+      "command": "story.send",
+      "owner": "card-action-gateway"
+    },
+    {
+      "type": "request_chat_stop",
+      "command": "story.stop",
+      "owner": "card-action-gateway"
+    }
+  ],
+  "capabilities": [
+    {
+      "id": "story.send",
+      "owner": "story-action-dispatcher",
+      "support": "adapter",
+      "entrypoint": "StoryActionDispatcher.execute(story.send)",
+      "model_output": "direct",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "story.stop",
+      "owner": "story-action-dispatcher",
+      "support": "adapter",
+      "entrypoint": "StoryActionDispatcher.cancel(story)",
+      "model_output": "none",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "story.regenerate",
+      "owner": "story-action-dispatcher",
+      "support": "adapter",
+      "entrypoint": "StoryActionDispatcher.execute(story.regenerate)",
+      "model_output": "direct",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "story.edit",
+      "owner": "story-action-dispatcher",
+      "support": "adapter",
+      "entrypoint": "StoryActionDispatcher.execute(story.edit|story.edit-and-regenerate)",
+      "model_output": "conditional",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "story.swipe",
+      "owner": "story-action-dispatcher",
+      "support": "adapter",
+      "entrypoint": "StoryActionDispatcher.execute(story.swipe)",
+      "model_output": "none",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "helper.generate",
+      "owner": "tavern-helper-action-adapter",
+      "support": "adapter",
+      "entrypoint": "TavernHelper.generate",
+      "model_output": "direct",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "helper.generateRaw",
+      "owner": "tavern-helper-action-adapter",
+      "support": "adapter",
+      "entrypoint": "TavernHelper.generateRaw",
+      "model_output": "direct",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "helper.stop",
+      "owner": "tavern-helper-action-adapter",
+      "support": "adapter",
+      "entrypoint": "TavernHelper.stopGenerationById|stopAllGeneration",
+      "model_output": "none",
+      "dispatcher": "StoryActionDispatcher"
+    },
+    {
+      "id": "helper.slash",
+      "owner": "tavern-helper-native",
+      "support": "matrix",
+      "entrypoint": "TavernHelper.triggerSlash|triggerSlashWithResult",
+      "model_output": "indirect-possible",
+      "dispatcher": null,
+      "limit": "Slash pipelines may invoke ST generation commands internally and require per-command certification."
+    },
+    {
+      "id": "helper.variables",
+      "owner": "tavern-helper-native",
+      "support": "adapter",
+      "entrypoint": "TavernHelper.getVariables|replaceVariables|updateVariablesWith",
+      "model_output": "none",
+      "dispatcher": null
+    },
+    {
+      "id": "helper.worldbook",
+      "owner": "tavern-helper-native",
+      "support": "adapter",
+      "entrypoint": "TavernHelper.getWorldbook|replaceWorldbook|updateWorldbookWith",
+      "model_output": "none",
+      "dispatcher": null
+    },
+    {
+      "id": "legacy.dom-controls",
+      "owner": "per-extension-adapter",
+      "support": "matrix",
+      "entrypoint": "named extension adapter",
+      "model_output": "unknown",
+      "dispatcher": null,
+      "limit": "Removed ST controls are not recreated or simulated."
+    },
+    {
+      "id": "remote.arbitrary-script",
+      "owner": "security-policy",
+      "support": "unsupported",
+      "entrypoint": "explicit opt-in policy",
+      "model_output": "unknown",
+      "dispatcher": null
+    }
+  ]
+}

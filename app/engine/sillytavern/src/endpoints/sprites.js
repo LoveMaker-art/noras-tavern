@@ -1,0 +1,289 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
+import express from 'express';
+import mime from 'mime-types';
+import sanitize from 'sanitize-filename';
+import { sync as writeFileAtomicSync } from 'write-file-atomic';
+
+import { getImageBuffers } from '../util.js';
+
+/**
+ * Gets the path to the sprites folder for the provided character name
+ * @param {import('../workspace.js').UserDirectoryList} directories - User directories
+ * @param {string} name - The name of the character
+ * @param {boolean} isSubfolder - Whether the name contains a subfolder
+ * @returns {string | null} The path to the sprites folder. Null if the name is invalid.
+ */
+function getSpritesPath(directories, name, isSubfolder) {
+    if (isSubfolder) {
+        const nameParts = name.split('/');
+        const characterName = sanitize(nameParts[0]);
+        const subfolderName = sanitize(nameParts[1]);
+
+        if (!characterName || !subfolderName) {
+            return null;
+        }
+
+        return path.join(directories.characters, characterName, subfolderName);
+    }
+
+    name = sanitize(name);
+
+    if (!name) {
+        return null;
+    }
+
+    return path.join(directories.characters, name);
+}
+
+/**
+ * Imports base64 encoded sprites from RisuAI character data.
+ * The sprites are saved in the character's sprites folder.
+ * The additionalAssets and emotions are removed from the data.
+ * @param {import('../workspace.js').UserDirectoryList} directories User directories
+ * @param {object} data RisuAI character data
+ * @returns {void}
+ */
+export function importRisuSprites(directories, data) {
+    try {
+        const name = data?.data?.name;
+        const risuData = data?.data?.extensions?.risuai;
+
+        // Not a Risu AI character
+        if (!risuData || !name) {
+            return;
+        }
+
+        let images = [];
+
+        if (Array.isArray(risuData.additionalAssets)) {
+            images = images.concat(risuData.additionalAssets);
+        }
+
+        if (Array.isArray(risuData.emotions)) {
+            images = images.concat(risuData.emotions);
+        }
+
+        // No sprites to import
+        if (images.length === 0) {
+            return;
+        }
+
+        // Create sprites folder if it doesn't exist
+        const spritesPath = getSpritesPath(directories, name, false);
+
+        // Invalid sprites path
+        if (!spritesPath) {
+            return;
+        }
+
+        // Create sprites folder if it doesn't exist
+        if (!fs.existsSync(spritesPath)) {
+            fs.mkdirSync(spritesPath, { recursive: true });
+        }
+
+        // Path to sprites is not a directory. This should never happen.
+        if (!fs.statSync(spritesPath).isDirectory()) {
+            return;
+        }
+
+        console.info(`RisuAI: Found ${images.length} sprites for ${name}. Writing to disk.`);
+        const files = fs.readdirSync(spritesPath);
+
+        outer: for (const [label, fileBase64] of images) {
+            // Remove existing sprite with the same label
+            for (const file of files) {
+                if (path.parse(file).name === label) {
+                    console.warn(`RisuAI: The sprite ${label} for ${name} already exists. Skipping.`);
+                    continue outer;
+                }
+            }
+
+            const filename = label + '.png';
+            const pathToFile = path.join(spritesPath, sanitize(filename));
+            writeFileAtomicSync(pathToFile, fileBase64, { encoding: 'base64' });
+        }
+
+        // Remove additionalAssets and emotions from data (they are now in the sprites folder)
+        delete data.data.extensions.risuai.additionalAssets;
+        delete data.data.extensions.risuai.emotions;
+    } catch (error) {
+        console.error(error);
+    }
+}
+
+export const router = express.Router();
+
+router.get('/get', function (request, response) {
+    const name = String(request.query.name);
+    const isSubfolder = name.includes('/');
+    const spritesPath = getSpritesPath(request.user.directories, name, isSubfolder);
+    let sprites = [];
+
+    try {
+        if (spritesPath && fs.existsSync(spritesPath) && fs.statSync(spritesPath).isDirectory()) {
+            sprites = fs.readdirSync(spritesPath)
+                .filter(file => {
+                    const mimeType = mime.lookup(file);
+                    return mimeType && mimeType.startsWith('image/');
+                })
+                .map((file) => {
+                    const pathToSprite = path.join(spritesPath, file);
+                    const mtime = fs.statSync(pathToSprite).mtime?.toISOString().replace(/[^0-9]/g, '').slice(0, 14);
+
+                    const fileName = path.parse(pathToSprite).name.toLowerCase();
+                    // Extract the label from the filename via regex, which can be suffixed with a sub-name, either connected with a dash or a dot.
+                    // Examples: joy.png, joy-1.png, joy.expressive.png
+                    const label = fileName.match(/^(.+?)(?:[-\\.].*?)?$/)?.[1] ?? fileName;
+
+                    return {
+                        label: label,
+                        path: `/characters/${name}/${file}` + (mtime ? `?t=${mtime}` : ''),
+                    };
+                });
+        }
+    } catch (err) {
+        console.error(err);
+    }
+    return response.send(sprites);
+});
+
+router.post('/delete', async (request, response) => {
+    const label = request.body.label;
+    const name = String(request.body.name);
+    const isSubfolder = name.includes('/');
+    const spriteName = request.body.spriteName || label;
+
+    if (!spriteName || !name) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const spritesPath = getSpritesPath(request.user.directories, name, isSubfolder);
+
+        // No sprites folder exists, or not a directory
+        if (!spritesPath || !fs.existsSync(spritesPath) || !fs.statSync(spritesPath).isDirectory()) {
+            return response.sendStatus(404);
+        }
+
+        const files = fs.readdirSync(spritesPath);
+
+        // Remove existing sprite with the same label
+        for (const file of files) {
+            if (path.parse(file).name === spriteName) {
+                fs.unlinkSync(path.join(spritesPath, file));
+            }
+        }
+
+        return response.sendStatus(200);
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/upload-zip', async (request, response) => {
+    const file = request.file;
+    const name = String(request.body.name);
+    const isSubfolder = name.includes('/');
+
+    if (!file || !name) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const spritesPath = getSpritesPath(request.user.directories, name, isSubfolder);
+
+        // Invalid sprites path
+        if (!spritesPath) {
+            return response.sendStatus(400);
+        }
+
+        // Create sprites folder if it doesn't exist
+        if (!fs.existsSync(spritesPath)) {
+            fs.mkdirSync(spritesPath, { recursive: true });
+        }
+
+        // Path to sprites is not a directory. This should never happen.
+        if (!fs.statSync(spritesPath).isDirectory()) {
+            return response.sendStatus(404);
+        }
+
+        const spritePackPath = path.join(file.destination, file.filename);
+        const sprites = await getImageBuffers(spritePackPath);
+        const files = fs.readdirSync(spritesPath);
+
+        for (const [filename, buffer] of sprites) {
+            // Remove existing sprite with the same label
+            const existingFile = files.find(file => path.parse(file).name === path.parse(filename).name);
+
+            if (existingFile) {
+                fs.unlinkSync(path.join(spritesPath, existingFile));
+            }
+
+            // Write sprite buffer to disk
+            const pathToSprite = path.join(spritesPath, sanitize(filename));
+            writeFileAtomicSync(pathToSprite, buffer);
+        }
+
+        // Remove uploaded ZIP file
+        fs.unlinkSync(spritePackPath);
+        return response.send({ ok: true, count: sprites.length });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});
+
+router.post('/upload', async (request, response) => {
+    const file = request.file;
+    const label = request.body.label;
+    const name = String(request.body.name);
+    const isSubfolder = name.includes('/');
+    const spriteName = request.body.spriteName || label;
+
+    if (!file || !label || !name) {
+        return response.sendStatus(400);
+    }
+
+    try {
+        const spritesPath = getSpritesPath(request.user.directories, name, isSubfolder);
+
+        // Invalid sprites path
+        if (!spritesPath) {
+            return response.sendStatus(400);
+        }
+
+        // Create sprites folder if it doesn't exist
+        if (!fs.existsSync(spritesPath)) {
+            fs.mkdirSync(spritesPath, { recursive: true });
+        }
+
+        // Path to sprites is not a directory. This should never happen.
+        if (!fs.statSync(spritesPath).isDirectory()) {
+            return response.sendStatus(404);
+        }
+
+        const files = fs.readdirSync(spritesPath);
+
+        // Remove existing sprite with the same label
+        for (const file of files) {
+            if (path.parse(file).name === spriteName) {
+                fs.unlinkSync(path.join(spritesPath, file));
+            }
+        }
+
+        const filename = spriteName + path.parse(file.originalname).ext;
+        const spritePath = path.join(file.destination, file.filename);
+        const pathToFile = path.join(spritesPath, sanitize(filename));
+        // Copy uploaded file to sprites folder
+        fs.cpSync(spritePath, pathToFile);
+        // Remove uploaded file
+        fs.unlinkSync(spritePath);
+        return response.send({ ok: true });
+    } catch (error) {
+        console.error(error);
+        return response.sendStatus(500);
+    }
+});

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Tavern Updater"
-  short_description: "Safely update Tavern code and official skills"
-  default_prompt: "Use $tavern-updater to review the latest Tavern release, report code and official skill changes, then wait for approval before applying it."

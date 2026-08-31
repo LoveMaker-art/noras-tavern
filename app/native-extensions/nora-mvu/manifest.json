@@ -1,0 +1,14 @@
+{
+  "display_name": "Nora MVU Runtime",
+  "loading_order": 90,
+  "requires": [],
+  "dependencies": ["third-party/JS-Slash-Runner"],
+  "js": "index.js",
+  "hooks": {
+    "activate": "activateNoraMvu"
+  },
+  "author": "Nora Tavern / MagicalAstrogy",
+  "version": "1.0.0-nora.1",
+  "auto_update": false,
+  "minimum_client_version": "1.18.0"
+}

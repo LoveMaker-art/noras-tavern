@@ -1,0 +1,330 @@
+{
+  "schema": "tavern-release-audit/v1",
+  "date": "2026-08-30",
+  "head": "9f0ba72634e1fbbd93bb915d4a9c61cd25b50ab5",
+  "scope": "Local architecture and release audit; no product fixes, deployment or browser acceptance",
+  "behavior": {
+    "command": "node --test tests/nora-*.test.mjs",
+    "cwd": "app/engine/sillytavern",
+    "tests": 276,
+    "passed": 266,
+    "failed": 9,
+    "skipped": 1,
+    "environment": "Node v22.22.3 macOS; local HTTP test allowed outside sandbox"
+  },
+  "contracts": {
+    "total": 25,
+    "passed": 21,
+    "failed": [
+      "brand-surface",
+      "chat-window",
+      "ui-modules",
+      "ui-shell"
+    ]
+  },
+  "lint": {
+    "errors": 79,
+    "rules": [
+      "indent"
+    ]
+  },
+  "workflowGate": {
+    "technicalPassed": false,
+    "browserExecuted": false,
+    "missingReferencedTest": "tests/nora-interaction-controller.test.mjs"
+  },
+  "boundaryWitnesses": [
+    {
+      "id": "empty-workspace-readiness",
+      "expected": "Existing generation prerequisite resolves after startup",
+      "observed": {
+        "runtimeReadyClass": true,
+        "originalWaitResolved": false,
+        "lateWaitResolved": true
+      },
+      "verdict": "FAIL"
+    },
+    {
+      "id": "readiness-event-positive-control",
+      "verdict": "PASS"
+    },
+    {
+      "id": "cold-tokenizer-single-flight",
+      "expected": {
+        "downloads": 1,
+        "instances": 1
+      },
+      "observed": {
+        "downloads": 4,
+        "instances": 4
+      },
+      "verdict": "FAIL"
+    }
+  ],
+  "storeWitness": {
+    "id": "cross-world-resource-index-race",
+    "expected": {
+      "worldCount": 2,
+      "referenceCount": 2,
+      "deleteSharedBook": false
+    },
+    "observed": {
+      "worldCount": 2,
+      "references": [
+        "world:owner"
+      ],
+      "deleteSharedBook": true,
+      "referencesAfterReload": [
+        "world:owner",
+        "world:shared"
+      ]
+    },
+    "verdict": "FAIL"
+  },
+  "transportWitness": {
+    "id": "operation-deadline-excludes-hung-http",
+    "configuredDeadlineMs": 10,
+    "sampledAfterMs": 60,
+    "observed": "still-pending",
+    "requestsHaveAbortSignal": [
+      false,
+      false
+    ],
+    "afterResponseFinallyArrives": "completed",
+    "verdict": "FAIL"
+  },
+  "profileCsrfWitness": {
+    "id": "migrated-profile-personality-csrf",
+    "sendsCsrfHeader": false,
+    "observedStatus": 403,
+    "error": "EBADCSRFTOKEN",
+    "positiveControlPassed": true,
+    "scope": "Default CSRF-enabled Tavern host only; not a test of standalone Story Profile app",
+    "verdict": "FAIL"
+  },
+  "isolatedRelease": {
+    "head": "9f0ba72634e1fbbd93bb915d4a9c61cd25b50ab5",
+    "checks": [
+      {
+        "name": "standalone-story-check",
+        "exit": 1,
+        "durationMs": 21,
+        "error": null
+      },
+      {
+        "name": "clean-offline-install",
+        "exit": 0,
+        "durationMs": 1622,
+        "error": null
+      },
+      {
+        "name": "isolated-build",
+        "exit": 0,
+        "durationMs": 11586,
+        "error": null
+      },
+      {
+        "name": "archive-exclusion-check",
+        "exit": 0,
+        "durationMs": 1533,
+        "error": null
+      }
+    ],
+    "dependencies": "clean npm ci --offline --ignore-scripts; lifecycle hooks not exercised",
+    "rebuiltDifferences": [
+      "app/engine/sillytavern/public/dist/nora/163.js",
+      "app/engine/sillytavern/public/dist/nora/333.js",
+      "app/engine/sillytavern/public/dist/nora/77.js",
+      "app/engine/sillytavern/public/dist/nora/84.js",
+      "app/engine/sillytavern/public/dist/nora/entry.js",
+      "app/engine/sillytavern/public/dist/nora/entry.js.br",
+      "app/engine/sillytavern/public/dist/nora/entry.js.gz",
+      "app/engine/sillytavern/public/dist/nora/inline-modules.json.gz",
+      "app/engine/sillytavern/public/dist/nora/legacy.js.gz",
+      "app/engine/sillytavern/public/dist/nora/lib-core.js",
+      "app/engine/sillytavern/public/dist/nora/lib-core.js.br",
+      "app/engine/sillytavern/public/dist/nora/lib-core.js.gz",
+      "app/engine/sillytavern/public/dist/nora/lib.js",
+      "app/engine/sillytavern/public/dist/nora/lib.js.br",
+      "app/engine/sillytavern/public/dist/nora/lib.js.gz"
+    ],
+    "privateSentinelsIncluded": [
+      "app/.env",
+      "app/audit-runtime.log",
+      "app/engine/sillytavern/data/default-user/secrets.json"
+    ],
+    "archiveBytes": 43600232
+  },
+  "repeatBuild": {
+    "cleanOfflineInstallWithHooks": 0,
+    "repeatBuildExit": 0,
+    "repeatBuildDifferences": [],
+    "originalBuildDifferences": [
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/163.js",
+        "committedBytes": 10044,
+        "rebuiltBytes": 10045,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/333.js",
+        "committedBytes": 11223,
+        "rebuiltBytes": 11225,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/77.js",
+        "committedBytes": 2359,
+        "rebuiltBytes": 2361,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/84.js",
+        "committedBytes": 4630,
+        "rebuiltBytes": 4632,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/entry.js",
+        "committedBytes": 140806,
+        "rebuiltBytes": 140814,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/entry.js.br",
+        "committedBytes": 37206,
+        "rebuiltBytes": 37217,
+        "decompressedEqual": false
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/entry.js.gz",
+        "committedBytes": 44331,
+        "rebuiltBytes": 44344,
+        "decompressedEqual": false
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/inline-modules.json.gz",
+        "committedBytes": 735640,
+        "rebuiltBytes": 735640,
+        "decompressedEqual": true
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/legacy.js.gz",
+        "committedBytes": 132899,
+        "rebuiltBytes": 132899,
+        "decompressedEqual": true
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib-core.js",
+        "committedBytes": 798755,
+        "rebuiltBytes": 798757,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib-core.js.br",
+        "committedBytes": 203040,
+        "rebuiltBytes": 203337,
+        "decompressedEqual": false
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib-core.js.gz",
+        "committedBytes": 248216,
+        "rebuiltBytes": 248225,
+        "decompressedEqual": false
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib.js",
+        "committedBytes": 910219,
+        "rebuiltBytes": 910221,
+        "decompressedEqual": null
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib.js.br",
+        "committedBytes": 232381,
+        "rebuiltBytes": 232419,
+        "decompressedEqual": false
+      },
+      {
+        "file": "app/engine/sillytavern/public/dist/nora/lib.js.gz",
+        "committedBytes": 281962,
+        "rebuiltBytes": 281972,
+        "decompressedEqual": false
+      }
+    ]
+  },
+  "index": {
+    "project": "tavern",
+    "baselineFiles": 826,
+    "baselineNodes": 246121,
+    "baselineEdges": 325222,
+    "trackedFiles": 1121,
+    "trackedBytes": 71974585,
+    "sourcePaths": 476,
+    "mainGraphSourcePaths": 459,
+    "hashExactDuplicateOwnedSources": [],
+    "classifiedOwnedSources": 98,
+    "supplement": {
+      "schema": "tavern-static-index-gap-supplement/v1",
+      "baseline": "9f0ba72634e1fbbd93bb915d4a9c61cd25b50ab5",
+      "note": "AST and hash inventory only, not a Codebase MCP call graph or proof of runtime compatibility. Sources are unchanged.",
+      "entries": [
+        {
+          "file": "app/engine/sillytavern/public/actor.js",
+          "sha256": "6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359",
+          "bytes": 8538,
+          "parser": "installed TypeScript 5.9.3",
+          "syntaxDiagnostics": [],
+          "functionAndClassCount": 11,
+          "apiBindings": []
+        },
+        {
+          "file": "app/native-extensions/JS-Slash-Runner/dist/index.js",
+          "sha256": "f0d6f2fdad33062c0b5df868894721420b65af3d32057d08a0dcf2da3ad8523a",
+          "bytes": 1127371,
+          "parser": "installed TypeScript 5.9.3",
+          "syntaxDiagnostics": [],
+          "functionAndClassCount": 2004,
+          "apiBindings": [
+            {
+              "name": "generate",
+              "implementation": "DK",
+              "line": 753
+            },
+            {
+              "name": "generateRaw",
+              "implementation": "OK",
+              "line": 753
+            },
+            {
+              "name": "stopGenerationById",
+              "implementation": "_K",
+              "line": 753
+            },
+            {
+              "name": "stopAllGeneration",
+              "implementation": "vK",
+              "line": 753
+            },
+            {
+              "name": "triggerSlash",
+              "implementation": "kq",
+              "line": 753
+            },
+            {
+              "name": "triggerSlashWithResult",
+              "implementation": "kq",
+              "line": 753
+            }
+          ]
+        }
+      ]
+    },
+    "mvuProject": "tavern-mvu-runtime",
+    "helperProjectWarning": "tavern-helper-runtime returned only index.css; helper JS is not in that semantic graph"
+  },
+  "trackedSourceScan": {
+    "commonCredentialPatternHits": [],
+    "privateFileNameHits": [],
+    "limitation": "Pattern scan, not exhaustive secret or security audit"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora 空开场测试角色",
+    "description": "用于验证空 first message 和空 alternate greetings。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间安静的测试室。",
+    "first_mes": "",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": [
+      "nora-fixture"
+    ],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {},
+    "character_book": null
+  }
+}

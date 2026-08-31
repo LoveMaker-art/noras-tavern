@@ -1,0 +1,45 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "Nora V2 兼容测试角色",
+    "description": "用于 Nora World Core 兼容验收的脱敏角色。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间安静的测试室。",
+    "first_mes": "测试世界已经开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [
+      "这是第二种开场。"
+    ],
+    "tags": [
+      "nora-fixture"
+    ],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {},
+    "character_book": {
+      "name": "Nora 同名测试设定",
+      "extensions": {},
+      "entries": [
+        {
+          "id": 0,
+          "keys": [
+            "测试室"
+          ],
+          "secondary_keys": [],
+          "comment": "脱敏设定",
+          "content": "测试室用于验证 Worldbook 投影。",
+          "constant": true,
+          "selective": false,
+          "enabled": true,
+          "insertion_order": 100,
+          "position": "before_char",
+          "extensions": {}
+        }
+      ]
+    }
+  }
+}

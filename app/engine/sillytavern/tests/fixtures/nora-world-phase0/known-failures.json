@@ -1,0 +1,27 @@
+{
+  "schema": "nora-world-phase0-known-failures/v1",
+  "captured_at": "2026-08-28",
+  "scope": "Current Nora Tavern architecture before World Core v2",
+  "scenarios": [
+    {
+      "id": "duplicate-world-on-retry",
+      "runtime_observation": "Importing one source card has produced two Worlds with different chat bindings.",
+      "target_outcome": "Retries of one Import Operation return one World; an explicit second creation uses a new operation key."
+    },
+    {
+      "id": "world-hidden-by-projection-order",
+      "runtime_observation": "A created World can be absent from the UI or lose its character and Worldbook projection after refresh.",
+      "target_outcome": "An authoritative World remains listed regardless of character-library and recent-chat loading order."
+    },
+    {
+      "id": "empty-opening-looks-like-missing-world",
+      "runtime_observation": "A valid imported card with no first message or alternate greeting produced a header-only chat and a blank scene.",
+      "target_outcome": "The World opens with an explicit empty-story state and remains a valid, visible World."
+    },
+    {
+      "id": "capability-timeout-blocks-world-open",
+      "runtime_observation": "MVU readiness timeout was reported as World open failure; hiding the error did not prove MVU readiness.",
+      "target_outcome": "The base World opens and MVU reports READY or DEGRADED independently with a retry path."
+    }
+  ]
+}

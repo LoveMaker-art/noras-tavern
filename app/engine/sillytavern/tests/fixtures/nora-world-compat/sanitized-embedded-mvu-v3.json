@@ -1,0 +1,32 @@
+{
+  "spec": "chara_card_v3",
+  "spec_version": "3.0",
+  "data": {
+    "name": "Nora Embedded MVU 测试角色",
+    "description": "用于验证 Embedded MVU 能力来源识别。",
+    "personality": "稳定、清晰。",
+    "scenario": "一间嵌入式变量测试室。",
+    "first_mes": "Embedded MVU 测试开始。",
+    "mes_example": "",
+    "creator_notes": "Sanitized compatibility fixture. The URL is structural evidence and is not executed by backend tests.",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "alternate_greetings": [],
+    "tags": ["nora-fixture"],
+    "creator": "Nora",
+    "character_version": "1.0",
+    "extensions": {
+      "tavern_helper": {
+        "scripts": [
+          {
+            "type": "script",
+            "id": "nora-embedded-mvu-fixture",
+            "name": "Nora embedded MVU fixture",
+            "enabled": true,
+            "content": "https://testing.invalid/MagicalAstrogy/MagVarUpdate@fixture/artifact/bundle.js"
+          }
+        ]
+      }
+    }
+  }
+}

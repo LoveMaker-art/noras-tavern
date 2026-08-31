@@ -1,21 +1,25 @@
-# 运行时状态（每个副本本地产物，server.py 启动自建；不入库）
-/app/state/
-/tavern-state/
-/dist/
-*.env
-.env
-*.bak
-*.bak-*
-*.before-*
-
-# python
-.venv/
-__pycache__/
-*.pyc
-*.pyo
-
-# 日志
-*.log
-
-# macOS
 .DS_Store
+
+# Rebuildable local code index
+.codebase-memory/
+
+# Reproducible dependencies and generated output
+**/node_modules/
+**/.cache/
+**/coverage/
+release/
+
+# Private production-state snapshot. Keep only its documentation in Git.
+local-state/**
+!local-state/README.md
+
+# Runtime and credential material must never enter source control.
+*.log
+*.pid
+*.token
+*.pyc
+__pycache__/
+.env
+.env.*
+secrets.json*
+cookie-secret.txt

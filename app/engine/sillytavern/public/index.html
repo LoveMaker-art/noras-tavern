@@ -1,0 +1,1655 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>tavern</title>
+    <base href="/">
+    <meta charset="utf-8">
+    <script>{{NORA_LOCALE_BOOTSTRAP}}</script>
+    <meta name="viewport" content="width=device-width, viewport-fit=cover, initial-scale=1, maximum-scale=1.0, user-scalable=no, interactive-widget=resizes-content">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="darkreader-lock">
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="theme-color" content="#333">
+    <style>
+        /* Put critical CSS here. The rest should go in stylesheets. */
+        body {
+            background-color: #11120f;
+        }
+
+        /* Keep incomplete Nora and legacy runtime surfaces out of the first paint. */
+        body.nora-booting #nora-layout > * {
+            visibility: hidden !important;
+        }
+        .nora-buffer { position: absolute; inset: 0; z-index: 3; display: flex; visibility: hidden; align-items: center; justify-content: center; flex-direction: column; overflow: hidden; padding: 24px; background: var(--nora-bg); color: var(--nora-ink); opacity: 0; pointer-events: none; transition: opacity 120ms ease-out, visibility 0s linear 120ms; }
+        .nora-buffer-mark { display: flex; width: 112px; height: 20px; align-items: center; justify-content: center; gap: 10px; color: var(--nora-brand); }
+        .nora-buffer-line { width: 40px; height: 1px; flex: 0 0 40px; background: var(--nora-line-2); transform: scaleX(.45); }
+        .nora-buffer-line:first-child { transform-origin: right; }
+        .nora-buffer-line:last-child { transform-origin: left; }
+        .nora-buffer-star { width: 12px; flex: 0 0 12px; font: 18px/1 var(--nora-sans); text-align: center; }
+        .nora-buffer-title { width: min(280px, 80vw); margin-top: 14px; overflow: hidden; color: var(--nora-ink); font: 600 14px/1.4 var(--nora-sans); text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+        .nora-buffer-status { margin-top: 4px; color: var(--nora-muted); font: 12px/1.5 var(--nora-sans); text-align: center; }
+        .nora-boot-retry { margin-top: 16px; min-width: 104px; min-height: 38px; padding: 8px 18px; border: 1px solid var(--nora-brand); border-radius: 8px; background: transparent; color: var(--nora-brand-ink); cursor: pointer; }
+        #nora-boot-buffer { position: fixed; z-index: 2000; }
+        body.nora-booting #nora-boot-buffer { visibility: visible !important; opacity: 1; transition: none; }
+        body.nora-world-opening #nora-world-buffer { pointer-events: auto; animation: nora-buffer-reveal 1ms linear 120ms forwards; }
+        body.nora-world-opening .nora-buffer-line { animation: nora-buffer-line 1.4s ease-in-out infinite; }
+        body.nora-world-opening .nora-buffer-star, body.nora-booting .nora-buffer-star { animation: nora-buffer-star 1.4s ease-in-out infinite; }
+        body.nora-booting .nora-buffer-line { animation: nora-buffer-line 1.4s ease-in-out infinite; }
+        @keyframes nora-buffer-reveal { to { visibility: visible; opacity: 1; } }
+        @keyframes nora-buffer-line { 0%, 100% { opacity: .45; transform: scaleX(.45); } 50% { opacity: 1; transform: scaleX(1); } }
+        @keyframes nora-buffer-star { 0%, 100% { opacity: .55; } 50% { opacity: 1; } }
+        @media (prefers-reduced-motion: reduce) {
+            .nora-buffer { transition: none !important; }
+            .nora-buffer-line, .nora-buffer-star { animation: none !important; }
+            .nora-buffer-line { opacity: .72; transform: scaleX(1); }
+            body.nora-world-opening #nora-world-buffer { animation: nora-buffer-reveal 1ms linear 120ms forwards !important; }
+        }
+        body.nora-product > #bg1,
+        body.nora-product > #sheld {
+            display: none !important;
+        }
+        #nora-chat .mes_buttons, #nora-chat .mes_edit_buttons, #nora-chat .mes_edit,
+        #nora-chat .mes_reasoning_actions .mes_edit, #nora-chat .mes:not([data-nora-reasoning-ready="true"]) .mes_reasoning_details {
+            display: none !important;
+        }
+
+        :root {
+            --nora-bg: #f6f3ec;
+            --nora-surface: #fffdf8;
+            --nora-ink: #221f1a;
+            --nora-ink-2: #5d574c;
+            --nora-muted: #928b7d;
+            --nora-line: #e6e0d4;
+            --nora-line-2: #d8d1c2;
+            --nora-brand: #ff812a;
+            --nora-brand-ink: #a8521a;
+            --nora-brand-tint: rgba(255, 129, 42, .10);
+            --nora-vh: 100dvh;
+            --nora-sans: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+        }
+        @media (prefers-color-scheme: dark) {
+            :root { --nora-bg: #15140f; --nora-surface: #1d1b15; --nora-ink: #ece7da; --nora-ink-2: #b3ab9a; --nora-muted: #7d7565; --nora-line: #2b281f; --nora-line-2: #39342a; --nora-brand-ink: #ffa45c; --nora-brand-tint: rgba(255, 129, 42, .13); }
+        }
+        body.nora-product { margin: 0 !important; overflow: hidden !important; background: var(--nora-bg) !important; color: var(--nora-ink) !important; font: 15px/1.5 var(--nora-sans) !important; letter-spacing: 0 !important; }
+        body.nora-product *, body.nora-product *::before, body.nora-product *::after { box-sizing: border-box; }
+        body.nora-product button, body.nora-product textarea { font: inherit; letter-spacing: 0; }
+        #nora-layout { position: fixed; inset: 0; z-index: 1000; display: flex; width: 100%; height: var(--nora-vh); overflow: hidden; background: var(--nora-bg); color: var(--nora-ink); }
+        .nora-pane { flex: 0 0 auto; min-height: 0; overflow-y: auto; background: var(--nora-surface); }
+        .nora-pane-head { padding: 15px 13px 10px; color: var(--nora-muted); font-size: 11px; font-weight: 600; }
+        #nora-rail { display: flex; width: 208px; flex-direction: column; padding: 0 10px 14px; border-right: 1px solid var(--nora-line); }
+        #nora-world-list { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: 3px; overflow-y: auto; }
+        .nora-world { position: relative; display: block; width: 100%; padding: 9px 12px; border: 0; border-radius: 8px; background: transparent; color: var(--nora-ink-2); text-align: left; cursor: pointer; }
+        .nora-world.active { background: var(--nora-brand-tint); color: var(--nora-ink); }
+        .nora-world strong, .nora-world small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .nora-world strong { font-size: 13px; font-weight: 600; }
+        .nora-world small { margin-top: 2px; color: var(--nora-muted); font-size: 11px; }
+        .nora-rail-empty { margin: auto 8px; color: var(--nora-muted); text-align: center; }
+        .nora-rail-empty span { color: var(--nora-brand); font-size: 24px; }
+        .nora-rail-empty p { margin: 7px 0 1px; color: var(--nora-ink-2); font-size: 13px; }
+        .nora-rail-empty small { font-size: 11px; }
+        .nora-world-progress { display: flex; min-height: 38px; align-items: center; justify-content: center; gap: 7px; margin: 4px 2px 8px; padding: 8px 9px; border: 1px solid var(--nora-line); border-radius: 8px; color: var(--nora-muted); font-size: 11px; text-align: center; }
+        .nora-progress-dot { width: 7px; height: 7px; flex: 0 0 7px; border-radius: 50%; background: var(--nora-brand); animation: nora-progress-pulse 1.1s ease-in-out infinite; }
+        @keyframes nora-progress-pulse { 50% { opacity: .35; transform: scale(.78); } }
+        .nora-rail-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--nora-line); }
+        .nora-outline-button { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--nora-brand); border-radius: 8px; background: transparent; color: var(--nora-brand-ink); cursor: pointer; }
+        #nora-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
+        #nora-topbar { position: relative; display: none; min-height: 54px; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
+        #nora-panel-toggle { margin-left: auto; }
+        .nora-title-wrap { position: absolute; top: 50%; left: 50%; max-width: calc(100% - 116px); transform: translate(-50%, -50%); text-align: center; }
+        .nora-title { display: flex; justify-content: center; gap: 6px; font-weight: 600; }
+        .nora-mark { color: var(--nora-brand); }
+        .nora-subtitle { color: var(--nora-muted); font-size: 11px; }
+        .nora-icon-button { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--nora-ink-2); cursor: pointer; }
+        #nora-story-pane { position: relative; min-height: 0; flex: 1; overflow: hidden; }
+        #nora-chat { width: 100%; height: 100%; overflow-y: auto; padding: 34px 22px 18px; }
+        .nora-empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; color: var(--nora-muted); text-align: center; pointer-events: none; }
+        .nora-empty.hidden { display: none !important; }
+        body.nora-world-opening #nora-empty { display: none !important; }
+        .nora-empty > span { color: var(--nora-brand); font-size: 32px; }
+        .nora-empty p { margin: 7px 0 0; color: var(--nora-ink-2); }
+        .nora-empty small { margin-top: 2px; font-size: 12px; }
+        #nora-composer { display: flex; align-items: flex-end; gap: 9px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--nora-line); background: var(--nora-surface); }
+.nora-format-control { position: relative; display: flex; flex: 0 0 44px; align-items: center; }
+#nora-action.nora-format-trigger { display: inline-flex; width: 44px; height: 32px; padding: 0; align-items: center; justify-content: center; border: 1px solid var(--nora-line-2); border-radius: 10px; background: transparent; color: var(--nora-ink-2); font: 500 12px/1 var(--nora-sans); cursor: pointer; }
+#nora-action.nora-format-trigger:hover, #nora-action.nora-format-trigger[aria-expanded="true"] { border-color: var(--nora-brand); background: var(--nora-brand-tint); color: var(--nora-brand-ink); }
+#nora-action.nora-format-trigger:disabled { opacity: .5; cursor: default; }
+        #nora-input { min-width: 0; height: 39px; flex: 1; resize: none; padding: 8px 14px; border: 1px solid var(--nora-line-2); border-radius: 18px; outline: none; background: var(--nora-bg); color: var(--nora-ink); }
+        .nora-composer-round, .nora-send { display: flex; width: 38px; height: 38px; flex: 0 0 38px; align-items: center; justify-content: center; border-radius: 50%; cursor: pointer; }
+        .nora-composer-round { border: 1px solid var(--nora-line-2); background: transparent; color: var(--nora-muted); }
+        .nora-send { border: 0; background: var(--nora-brand); color: #fff; }
+        .nora-send.empty { background: var(--nora-line-2); color: var(--nora-muted); }
+        #nora-panel { display: flex; width: 224px; flex-direction: column; border-left: 1px solid var(--nora-line); }
+        .nora-panel-body { display: flex; min-height: 100%; flex-direction: column; padding: 14px 13px; color: var(--nora-muted); }
+        #nora-panel .pSection { margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--nora-line); }
+        #nora-panel .pHead { margin-bottom: 8px; color: var(--nora-muted); font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+        #nora-panel .pLink { display: block; width: 100%; padding: 7px 0; border: 0; background: transparent; color: var(--nora-brand-ink); font-size: 12.5px; text-align: left; }
+        #nora-scrim { position: fixed; inset: 0; z-index: 1001; visibility: hidden; border: 0; background: rgba(0, 0, 0, .55); opacity: 0; }
+        #nora-runtime { position: fixed; left: -10000px; top: -10000px; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+        @media (max-width: 1020px) { #nora-topbar { display: flex; } #nora-panel { position: fixed; z-index: 1002; top: 0; right: 0; width: 80%; max-width: 320px; height: var(--nora-vh); visibility: hidden; opacity: 0; } body.nora-panel-open #nora-panel { visibility: visible; opacity: 1; } body.nora-panel-open #nora-scrim { visibility: visible; opacity: 1; } }
+        @media (min-width: 761px) { #nora-rail-toggle { display: none; } }
+        @media (max-width: 760px) { #nora-rail { position: fixed; z-index: 1002; top: 0; left: 0; width: 78%; max-width: 300px; height: var(--nora-vh); transform: translateX(-110%); } body.nora-rail-open #nora-rail { transform: none; } body.nora-rail-open #nora-scrim { visibility: visible; opacity: 1; } #nora-input { font-size: 16px; } }
+    </style>
+    <script>
+        globalThis.__NORA_ASSET_RELEASE__ = '{{NORA_ASSET_RELEASE}}';
+        globalThis.__NORA_ASSET_BASE__ = '{{NORA_ASSET_BASE}}';
+        globalThis.__NORA_INLINE_MANIFEST_URL__ = '{{NORA_INLINE_MANIFEST_URL}}';
+        globalThis.__NORA_ASSET_URL__ = (assetPath) => {
+            const value = String(assetPath || '');
+            if (!value || /^(?:[a-z]+:)?\/\//i.test(value) || /^(?:data|blob):/i.test(value)) return value;
+            return `${globalThis.__NORA_ASSET_BASE__}/${value.replace(/^\/+/, '')}`;
+        };
+        globalThis.__NORA_BOOT_METRICS__ = {
+            instrumentationVersion: '2.17.6',
+            sessionId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+            startedAt: performance.now(),
+            startedEpoch: Date.now(),
+            steps: [],
+            extensions: [],
+            extensionBatches: [],
+            milestones: [],
+            longTasks: [],
+        };
+        globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'head-metrics-ready', at: 0 });
+        const recordAssetCacheMilestone = (name, details = {}) => {
+            globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                name,
+                at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                ...details,
+            });
+        };
+        recordAssetCacheMilestone('shell-bootstrap-requested');
+        globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__ = fetch('/api/nora-boot/bootstrap?max=250&metadata=true', {
+            cache: 'no-cache',
+            credentials: 'same-origin',
+            priority: 'high',
+            headers: { 'X-Nora-Trace-Id': globalThis.__NORA_BOOT_METRICS__.sessionId },
+        }).then(async (response) => {
+            if (!response.ok) throw new Error(`Nora bootstrap HTTP ${response.status}`);
+            recordAssetCacheMilestone('shell-bootstrap-response', { status: response.status });
+            return response.json();
+        });
+        globalThis.__NORA_INLINE_MANIFEST_PROMISE__ = fetch(globalThis.__NORA_INLINE_MANIFEST_URL__, {
+                cache: 'force-cache',
+                credentials: 'same-origin',
+                priority: 'high',
+            }).then(async (response) => {
+            if (!response.ok) throw new Error(`Nora module manifest request failed (${response.status}).`);
+            recordAssetCacheMilestone('module-manifest-network-response', {
+                status: response.status,
+                responseType: response.type,
+                cacheControl: response.headers.get('cache-control'),
+                etagPresent: response.headers.has('etag'),
+                age: response.headers.get('age'),
+            });
+            return response.json();
+        });
+        globalThis.__NORA_BOOT_METRICS__.milestones.push({
+            name: 'module-manifest-requested',
+            at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+        });
+        try {
+            const longTaskObserver = new PerformanceObserver((list) => {
+                const metrics = globalThis.__NORA_BOOT_METRICS__;
+                list.getEntries().forEach((entry) => metrics.longTasks.push({
+                    start: Math.round(entry.startTime * 10) / 10,
+                    duration: Math.round(entry.duration * 10) / 10,
+                }));
+                if (metrics.longTasks.length > 200) metrics.longTasks.splice(0, metrics.longTasks.length - 200);
+            });
+            longTaskObserver.observe({ type: 'longtask', buffered: true });
+        } catch {}
+    </script>
+    <link rel="modulepreload" href="{{NORA_ASSET_BASE}}/dist/nora/lib-core.js">
+    <link rel="modulepreload" href="{{NORA_ASSET_BASE}}/dist/nora/entry.js">
+    <link href="{{NORA_ASSET_BASE}}/css/nora-runtime-contract.css" rel="stylesheet">
+    <link href="{{NORA_ASSET_BASE}}/css/fontawesome.min.css" rel="stylesheet">
+    <link href="{{NORA_ASSET_BASE}}/css/solid.min.css" rel="stylesheet">
+    <link href="{{NORA_ASSET_BASE}}/css/toastr.min.css" rel="stylesheet">
+    <link rel="apple-touch-icon" sizes="57x57" href="{{NORA_ASSET_BASE}}/img/apple-icon-57x57.png" />
+    <link rel="apple-touch-icon" sizes="72x72" href="{{NORA_ASSET_BASE}}/img/apple-icon-72x72.png" />
+    <link rel="apple-touch-icon" sizes="114x114" href="{{NORA_ASSET_BASE}}/img/apple-icon-114x114.png" />
+    <link rel="apple-touch-icon" sizes="144x144" href="{{NORA_ASSET_BASE}}/img/apple-icon-144x144.png" />
+    <link id="third-party_nora-ui-css" rel="stylesheet" type="text/css" href="{{NORA_ASSET_BASE}}/scripts/extensions/third-party/nora-ui/style.css" media="print" onload="this.media='all'">
+    <link rel="icon" type="image/png" href="{{NORA_ASSET_BASE}}/favicon.ico">
+    <!-- Scripts are loaded at the end of the body to improve page load speed -->
+</head>
+
+<!-- Native lifecycle integration marker: class="no-blur nora-product" -->
+<body class="no-blur nora-product nora-no-world nora-booting">
+    <div id="nora-layout">
+        <div id="nora-boot-buffer" class="nora-buffer" role="status" aria-live="polite">
+            <div class="nora-buffer-mark" aria-hidden="true"><span class="nora-buffer-line"></span><span class="nora-buffer-star">✦</span><span class="nora-buffer-line"></span></div>
+            <div class="nora-buffer-title">tavern</div><div class="nora-buffer-status" data-i18n="故事即将开始">故事即将开始</div>
+            <button id="nora-boot-retry" class="nora-boot-retry" type="button" hidden data-i18n="重新加载">重新加载</button>
+        </div>
+        <aside id="nora-rail" class="nora-pane" aria-label="世界" data-i18n="[aria-label]世界">
+            <div class="nora-pane-head" data-i18n="世界">世界</div>
+            <div id="nora-world-list"><div class="nora-rail-empty"><span>✦</span><p data-i18n="还没有世界">还没有世界</p><small data-i18n="导入登场角色开始第一场故事">导入登场角色开始第一场故事</small></div></div>
+            <div class="nora-rail-actions"><button id="nora-new-world" class="nora-outline-button" type="button"><span>＋</span><span data-i18n="开启新世界">开启新世界</span></button></div>
+        </aside>
+        <main id="nora-stage">
+            <header id="nora-topbar">
+                <button id="nora-rail-toggle" class="nora-icon-button" type="button" aria-label="世界" data-i18n="[aria-label]世界">☰</button>
+                <div class="nora-title-wrap"><div class="nora-title"><span class="nora-mark">✦</span><span id="nora-title" data-i18n="酒馆">酒馆</span></div><div id="nora-subtitle" class="nora-subtitle"></div></div>
+                <button id="nora-panel-toggle" class="nora-icon-button" type="button" aria-label="角色与设定" data-i18n="[aria-label]角色与设定">ⓘ</button>
+            </header>
+            <div id="nora-story-pane"><div id="nora-world-backdrop"></div><div id="nora-chat" aria-live="polite"></div><div id="nora-empty" class="nora-empty"><span>✦</span><p data-i18n="选一个世界，故事会从这里开始。">选一个世界，故事会从这里开始。</p><small data-i18n="也可以导入登场角色开启新世界">也可以导入登场角色开启新世界</small></div><div id="nora-world-buffer" class="nora-buffer" role="status" aria-live="polite" aria-hidden="true"><div class="nora-buffer-mark" aria-hidden="true"><span class="nora-buffer-line"></span><span class="nora-buffer-star">✦</span><span class="nora-buffer-line"></span></div><div id="nora-world-buffer-title" class="nora-buffer-title" data-i18n="正在进入世界">正在进入世界</div><div class="nora-buffer-status" data-i18n="正在进入这个世界">正在进入这个世界</div></div></div>
+            <div id="nora-composer-notice" class="nora-composer-notice" role="alert" aria-live="assertive" hidden></div>
+            <form id="nora-composer" autocomplete="off"><div class="nora-format-control"><button id="nora-action" class="nora-format-trigger" type="button" aria-label="对白、动作与强调" title="对白、动作与强调" aria-haspopup="menu" aria-controls="nora-format-menu" aria-expanded="false" disabled data-i18n="[aria-label]对白、动作与强调;[title]对白、动作与强调"><svg class="nora-format-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 7V4h12v3M9 4v15M6 19h6M16 13h5M16 18h5"/></svg></button></div><textarea id="nora-input" rows="1" placeholder="续写这一场…" aria-label="消息" data-i18n="[placeholder]续写这一场…;[aria-label]消息"></textarea><button id="nora-send" class="nora-send empty" type="submit" aria-label="发送" disabled data-i18n="[aria-label]发送">↑</button></form>
+        </main>
+        <aside id="nora-panel" class="nora-pane" aria-label="角色与设定" data-i18n="[aria-label]角色与设定"><div id="nora-panel-body" class="nora-panel-body panelBody"><div class="pSection"><div class="pHead" data-i18n="我的角色">我的角色</div><button class="pLink" data-early-action="profile" type="button" data-i18n="角色资料">角色资料</button></div><div class="pSection"><div class="pHead" data-i18n="世界设定">世界设定</div><button class="pLink" data-early-action="worldbook" type="button" data-i18n="常驻设定与触发设定">常驻设定与触发设定</button></div><div class="pSection"><div class="pHead" data-i18n="资料库">资料库</div><button class="pLink" data-early-action="model" type="button" data-i18n="模型配置">模型配置</button><button class="pLink" data-early-action="archive" type="button" data-i18n="故事档案">故事档案</button></div></div></aside>
+        <button id="nora-scrim" type="button" aria-label="关闭面板" data-i18n="[aria-label]关闭面板"></button><div id="nora-modal" class="nora-modal" aria-hidden="true"></div><div id="nora-toast" class="nora-toast" role="status" aria-live="polite" hidden></div><input id="nora-character-import" type="file" accept=".json,image/png,.yaml,.yml,.charx,.byaf" multiple hidden><div id="nora-runtime" aria-hidden="true"></div>
+    </div>
+    <div id="extensions_settings" class="nora-headless-extension-host" hidden aria-hidden="true"></div>
+    <script>
+        (() => {
+            const state = globalThis.__NORA_EARLY__ = { startedAt: performance.now(), pendingAction: null, pendingSend: false, data: null };
+            const tr = globalThis.__NORA_TRANSLATE_EARLY__;
+            document.querySelectorAll('#nora-layout [data-i18n]').forEach(element => {
+                for (const key of element.dataset.i18n.split(';')) {
+                    const attribute = key.match(/^\[([^\]]+)\](.+)$/);
+                    if (attribute) element.setAttribute(attribute[1], tr(attribute[2]));
+                    else element.textContent = tr(key);
+                }
+            });
+            const list = document.getElementById('nora-world-list');
+            const input = document.getElementById('nora-input');
+            const composer = document.getElementById('nora-composer');
+            const send = document.getElementById('nora-send');
+            const retry = document.getElementById('nora-boot-retry');
+            const bootStatus = document.querySelector('#nora-boot-buffer .nora-buffer-status');
+            const queueAction = (name, target) => {
+                state.pendingAction = { name, clickedAt: performance.now() };
+                target?.setAttribute('aria-busy', 'true');
+            };
+            const render = () => {
+                list.innerHTML = `<div class="nora-world-progress" role="status"><span class="nora-progress-dot" aria-hidden="true"></span><span>${tr('正在读取世界…')}</span></div>`;
+            };
+            function failEarlyShell(error) {
+                document.body.classList.add('nora-boot-failed');
+                bootStatus.textContent = tr('加载失败，请检查网络后重试');
+                retry.hidden = false;
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                    name: 'shell-bootstrap-failed',
+                    at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                    message: String(error?.message || error),
+                });
+                console.warn('[Nora early] Core data preload failed:', error);
+            }
+            retry.addEventListener('click', () => location.reload());
+            const cachedWorlds = null;
+            try {
+                localStorage.removeItem('nora-early-worlds');
+                localStorage.removeItem('nora-early-worlds:v2');
+            } catch {}
+            document.addEventListener('click', (event) => {
+                const target = event.target instanceof Element ? event.target : null;
+                const earlyAction = target?.closest('[data-early-action]');
+                const hydrated = document.body.classList.contains('nora-ui-hydrated');
+                if (hydrated) return;
+                if (target?.closest('#nora-rail-toggle')) document.body.classList.add('nora-rail-open');
+                if (target?.closest('#nora-panel-toggle')) document.body.classList.add('nora-panel-open');
+                if (target?.closest('#nora-scrim')) document.body.classList.remove('nora-rail-open', 'nora-panel-open');
+                if (target?.closest('#nora-new-world')) queueAction('new-world', target.closest('#nora-new-world'));
+                if (earlyAction) queueAction(earlyAction.dataset.earlyAction, earlyAction);
+            }, true);
+            input.addEventListener('input', (event) => {
+                const empty = !event.target.value.trim();
+                send.classList.toggle('empty', empty);
+                send.disabled = empty || state.pendingSend;
+            });
+            input.addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && !document.body.classList.contains('nora-ui-hydrated')) {
+                    event.preventDefault();
+                    composer.requestSubmit();
+                }
+            });
+            composer.addEventListener('submit', (event) => {
+                if (document.body.classList.contains('nora-ui-hydrated')) return;
+                event.preventDefault();
+                if (!input.value.trim()) return;
+                state.pendingSend = true;
+                composer.setAttribute('aria-busy', 'true');
+                send.disabled = true;
+            });
+            requestAnimationFrame(() => {
+                const readyMs = String(Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10);
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'shell-rendered', at: Number(readyMs), cachedWorlds: Boolean(cachedWorlds?.characters?.length) });
+            });
+            globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                name: 'early-core-data-requested',
+                at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+            });
+            const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__;
+            globalThis.__NORA_CSRF_PROMISE__ = bootstrapPromise.then(data => data.csrfToken);
+            globalThis.__NORA_CHARACTERS_PROMISE__ = bootstrapPromise.then(data => data.characters);
+            globalThis.__NORA_SETTINGS_PROMISE__ = bootstrapPromise.then(data => data.runtimeSettings);
+            globalThis.__NORA_SECRET_STATE_PROMISE__ = bootstrapPromise.then(data => data.secretState);
+            globalThis.__NORA_VERSION_PROMISE__ = bootstrapPromise.then(data => data.version);
+            const dataPromise = bootstrapPromise.then((data) => {
+                globalThis.__NORA_AGENT_USER_ID__ = String(data.agentUserId || '');
+                const { characters = [] } = data;
+                state.data = data;
+                globalThis.__NORA_EARLY_DATA__ = data;
+                if (!document.body.classList.contains('nora-ui-hydrated')) render(data);
+                const freshDataMs = String(Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10);
+                document.documentElement.dataset.noraFreshDataMs = freshDataMs;
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'fresh-world-data', at: Number(freshDataMs), characters: characters.length, worlds: 'authoritative-v2' });
+                return data;
+            });
+            globalThis.__NORA_EARLY_DATA_PROMISE__ = dataPromise;
+            dataPromise.catch(failEarlyShell);
+        })();
+    </script>
+    <div id="bg1"></div>
+    
+    
+    <!-- various fullscreen popups -->
+    <div name="templatesAndPopupsWrapper"> <!--this div is just for IDE sanity for quick collapsing-->
+        <!-- Point to this element when you need a no-op selector -->
+        <template id="NULL_SELECTOR" class="displayNone"></template>
+        <div id="export_format_popup" class="list-group">
+            <div class="export_format list-group-item" data-format="png">PNG</div>
+            <div class="export_format list-group-item" data-format="json">JSON</div>
+        </div>
+        <div id="zoomed_avatar_template" class="template_element">
+            <div class="zoomed_avatar">
+                <div class="panelControlBar flex-container">
+                    <div class="fa-fw fa-solid fa-grip drag-grabber"></div>
+                    <div class="fa-fw fa-solid fa-circle-xmark dragClose" id="closeZoom"></div>
+                </div>
+                <div class="zoomed_avatar_container">
+                    <img class="zoomed_avatar_img" src="" data-izoomify-url="" data-izoomify-magnify="1.8" data-izoomify-duration="300" alt="">
+                </div>
+            </div>
+        </div>
+        <template id="generic_draggable_template">
+            <div class="draggable">
+                <div class="dragTitle"></div>
+                <div class="panelControlBar flex-container">
+                    <div class="fa-fw fa-solid fa-grip drag-grabber"></div>
+                    <div class="fa-fw fa-solid fa-circle-xmark dragClose"></div>
+                </div>
+            </div>
+        </template>
+        <div id="user_avatar_template" class="template_element">
+            <div class="avatar-container">
+                <div imgfile="" class="avatar">
+                    <img src="" alt="User Avatar">
+                </div>
+                <div class="flex-container wide100pLess70px character_select_container">
+                    <div class="wide100p character_name_block">
+                        <span class="ch_name flex1"></span>
+                        <small class="ch_additional_info"></small>
+                    </div>
+                    <div class="ch_description"></div>
+                    <div class="avatar_container_states buttons_block">
+                        <div class="locked_to_chat_label avatar_state has_hover_label menu_button menu_button_icon disabled" title="Persona is locked to the current chat" data-i18n="[title]Persona is locked to the current chat">
+                            <i class="icon fa-solid fa-lock fa-fw"></i>
+                            <i class="label_icon icon fa-solid fa-comments fa-fw"></i>
+                            <div class="label" data-i18n="Chat">Chat</div>
+                        </div>
+                        <div class="locked_to_character_label avatar_state has_hover_label menu_button menu_button_icon disabled " title="Persona is locked to the current character" data-i18n="[title]Persona is locked to the current character">
+                            <i class="icon fa-solid fa-lock fa-fw"></i>
+                            <i class="label_icon icon fa-solid fa-user fa-fw"></i>
+                            <div class="label" data-i18n="Character">Character</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <template id="popup_template" data-i18n="[popup-button-save]popup-button-save;[popup-button-yes]popup-button-yes;[popup-button-no]popup-button-no;[popup-button-cancel]popup-button-cancel;[popup-button-import]popup-button-import;[popup-button-crop]popup-button-crop" popup-button-save="Save" popup-button-yes="Yes" popup-button-no="No" popup-button-cancel="Cancel" popup-button-import="Import" popup-button-crop="Crop"> <!-- localization data holder for popups -->
+            <dialog class="popup">
+                <div class="popup-body">
+                    <div class="popup-content">
+                        <h3 class="popup-header">text</h3>
+                    </div>
+                    <div class="popup-crop-wrap">
+                        <img class="popup-crop-image" src="">
+                    </div>
+                    <textarea class="popup-input text_pole result-control auto-select" rows="1" data-result="1" data-result-event="submit"></textarea>
+                    <div class="popup-inputs"></div>
+                    <div class="popup-controls">
+                        <div class="popup-button-ok menu_button result-control" data-result="1" data-i18n="Delete">Delete</div>
+                        <div class="popup-button-cancel menu_button result-control" data-result="0" data-i18n="Cancel">Cancel</div>
+                    </div>
+                </div>
+                <div class="popup-button-close right_menu_button fa-solid fa-circle-xmark" data-result="0" title="Close popup" data-i18n="[title]Close popup"></div>
+            </dialog>
+        </template>
+        <div id="shadow_popup">
+            <div id="dialogue_popup">
+                <div id="dialogue_popup_holder">
+                    <div id="dialogue_popup_text">
+                        <h3 class="margin0">text</h3>
+                    </div>
+                    <textarea id="dialogue_popup_input" class="text_pole" rows="1"></textarea>
+                    <div id="dialogue_popup_controls">
+                        <div id="dialogue_popup_ok" class="menu_button" data-i18n="Delete" data-result="1">Delete</div>
+                        <div id="dialogue_popup_cancel" class="menu_button" data-i18n="Cancel" data-result="0">Cancel</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="character_popup" class="flex-container flexFlowColumn flexNoGap">
+            <div id="character_popup_text">
+                <h3 id="character_popup-button-h3" class="margin0"></h3> <span data-i18n="Advanced Definitions">- Advanced
+                    Definitions</span>
+            </div>
+            <hr class="margin-bot-10px">
+            <div id="character_cross" class="fa-solid fa-circle-xmark"></div>
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <h4>
+                        <span data-i18n="Prompt Overrides">Prompt Overrides</span>
+                        <small data-i18n="(For Chat Completion and Instruct Mode)">(For Chat Completion and Instruct Mode)</small>
+                    </h4>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <small data-i18n="Insert {{original}} into either box to include the respective default prompt from system settings.">Insert {{original}} into either box to include the respective default prompt from system settings.</small>
+                    <div>
+                        <h4 class="flex-container alignItemsBaseline">
+                            <span data-i18n="Main Prompt">Main Prompt</span>
+                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="system_prompt_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                        </h4>
+                        <textarea id="system_prompt_textarea" name="system_prompt" data-macros data-i18n="[placeholder]Any contents here will replace the default Main Prompt used for this character. (v2 spec: system_prompt)" placeholder="Any contents here will replace the default Main Prompt used for this character.&#10;(v2 spec: system_prompt)" form="form_create" class="text_pole" autocomplete="off" rows="3"></textarea>
+                        <div class="extension_token_counter">
+                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="system_prompt_textarea">counting...</span>
+                        </div>
+                    </div>
+                    <div>
+                        <h4 class="flex-container alignItemsBaseline">
+                            <span data-i18n="Post-History Instructions">Post-History Instructions</span>
+                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="post_history_instructions_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                        </h4>
+                        <textarea id="post_history_instructions_textarea" name="post_history_instructions" data-macros data-i18n="[placeholder]Any contents here will replace the default Post-History Instructions used for this character. (v2 spec: post_history_instructions)" placeholder="Any contents here will replace the default Post-History Instructions used for this character.&#10;(v2 spec: post_history_instructions)" form="form_create" class="text_pole" autocomplete="off" rows="3"></textarea>
+                        <div class="extension_token_counter">
+                            <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="post_history_instructions_textarea">counting...</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <hr>
+            <div class="inline-drawer">
+                <div class="inline-drawer-toggle inline-drawer-header">
+                    <h4 data-i18n="Creator's Metadata (Not sent with the AI prompt)"><!-- This data-i18n attribute on the left is kept for backward compatibility, use the ones below when translating -->
+                        <span data-i18n="Creator's Metadata">Creator's Metadata</span>
+                        <small data-i18n="(Not sent with the AI Prompt)">(Not sent with the AI Prompt)</small>
+                    </h4>
+                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+                </div>
+                <div class="inline-drawer-content">
+                    <small data-i18n="Everything here is optional">Everything here is optional</small>
+                    <div class="flex-container flexnowrap">
+                        <div class="flex1">
+                            <h4 data-i18n="Created by">Created by</h4>
+                            <textarea id="creator_textarea" name="creator" data-i18n="[placeholder](Botmaker's name / Contact Info)" placeholder="(Botmaker's name / Contact info)" form="form_create" class="text_pole" autocomplete="off" rows="2"></textarea>
+                        </div>
+                        <div class="flex1">
+                            <h4 data-i18n="Character Version">Character Version</h4>
+                            <textarea id="character_version_textarea" name="character_version" data-i18n="[placeholder](If you want to track character versions)" placeholder="(If you want to track character versions)" form="form_create" class="text_pole" autocomplete="off" rows="2"></textarea>
+                        </div>
+                    </div>
+                    <div class="flex-container flexnowrap">
+                        <div class="flex1">
+                            <h4 class="flex-container alignItemsBaseline">
+                                <span data-i18n="Creator's Notes">Creator's Notes</span>
+                                <i class="editor_maximize fa-solid fa-maximize" data-for="creator_notes_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                            </h4>
+                            <textarea id="creator_notes_textarea" name="creator_notes" data-i18n="[placeholder](Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" placeholder="(Describe the bot, give use tips, or list the chat models it has been tested on. This will be displayed in the character list.)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
+                        </div>
+                        <div class="flex1">
+                            <h4 class="flex-container alignItemsBaseline">
+                                <span data-i18n="Tags to Embed">Tags to Embed</span>
+                                <i class="editor_maximize fa-solid fa-maximize" data-for="tags_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                            </h4>
+                            <textarea id="tags_textarea" name="tags" data-i18n="[placeholder](Write a comma-separated list of tags)" placeholder="(Write a comma-separated list of tags)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <hr>
+            <div id="personality_div">
+                <h4 class="flex-container alignItemsBaseline">
+                    <span data-i18n="Personality summary">Personality summary</span>
+                    <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="personality_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                </h4>
+                <textarea id="personality_textarea" name="personality" data-macros data-i18n="[placeholder](A brief description of the personality)" placeholder="(A brief description of the personality)" form="form_create" class="text_pole" autocomplete="off" rows="4"></textarea>
+                <div class="extension_token_counter">
+                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="personality_textarea" data-token-permanent="true">counting...</span>
+                </div>
+            </div>
+            <div id="scenario_div">
+                <h4 class="flex-container alignItemsBaseline">
+                    <span data-i18n="Scenario">Scenario</span>
+                    <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="scenario_pole" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                </h4>
+                <textarea id="scenario_pole" name="scenario" data-macros data-i18n="[placeholder](Circumstances and context of the interaction)" placeholder="(Circumstances and context of the interaction)" class="text_pole" value="" autocomplete="off" form="form_create" rows="4"></textarea>
+                <div class="extension_token_counter">
+                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="scenario_pole" data-token-permanent="true">counting...</span>
+                </div>
+            </div>
+            <div id="depth_prompt_div" class="flex-container">
+                <div class="flex1">
+                    <h4 class="flex-container alignItemsBaseline">
+                        <span data-i18n="Character's Note">
+                            Character's Note
+                        </span>
+                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="depth_prompt_prompt" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                    </h4>
+                    <textarea id="depth_prompt_prompt" name="depth_prompt_prompt" data-macros class="text_pole" rows="5" autocomplete="off" form="form_create" data-i18n="[placeholder](Text to be inserted in-chat @ designated depth and role)" placeholder="(Text to be inserted in-chat @ designated depth and role)"></textarea>
+                </div>
+                <div>
+                    <h4>
+                        <span data-i18n="@ Depth">
+                            @ Depth
+                        </span>
+                    </h4>
+                    <input id="depth_prompt_depth" name="depth_prompt_depth" class="text_pole textarea_compact m-t-0" type="number" min="0" max="9999" value="4" form="form_create" />
+                    <h4>
+                        <span data-i18n="Role">
+                            Role
+                        </span>
+                    </h4>
+                    <select id="depth_prompt_role" name="depth_prompt_role" form="form_create" class="text_pole textarea_compact m-t-0">
+                        <option value="system" data-i18n="System">System</option>
+                        <option value="user" data-i18n="User">User</option>
+                        <option value="assistant" data-i18n="Assistant">Assistant</option>
+                    </select>
+                    <div class="extension_token_counter">
+                        <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="depth_prompt_prompt" data-token-permanent="true">counting...</span>
+                    </div>
+                </div>
+            </div>
+            
+            <hr>
+            <div id="mes_example_div" class="flex-container flexFlowColumn">
+                <div>
+                    <h4 class="flex-container alignItemsBaseline">
+                        <span data-i18n="Examples of dialogue" class="mdhotkey_location">Examples of dialogue</span>
+                        <i class="editor_maximize fa-solid fa-maximize right_menu_button" data-for="mes_example_textarea" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                    </h4>
+                    <h5>
+                        <span data-i18n="Important to set the character's writing style.">Important to set the character's writing style.</span>
+                    </h5>
+                </div>
+                <textarea id="mes_example_textarea" class="flexGrow mdHotkeys" name="mes_example" data-macros data-i18n="[placeholder](Examples of chat dialog. Begin each example with START on a new line.)" placeholder="(Examples of chat dialog. Begin each example with &lt;START&gt; on a new line.)" form="form_create" rows="6"></textarea>
+                <div class="extension_token_counter">
+                    <span data-i18n="extension_token_counter">Tokens:</span> <span data-token-counter="mes_example_textarea">counting...</span>
+                </div>
+                <!-- TODO: Example chats handhold-editor concept: https://gist.github.com/Cohee1207/50da02a4001ac1adae9b440f9b8e1079 -->
+            </div>
+            <div id="character_popup_ok" class="menu_button" data-i18n="Save">Save</div>
+        </div>
+
+        <div id="shadow_select_chat_popup">
+            <div id="select_chat_popup">
+                <div name="selectChatPopupHeader" class="flex-container alignitemscenter justifySpaceBetween flexGap10">
+                    <div id="select_chat_import"> <!-- import chat popup header -->
+                        <form id="form_import_chat" action="javascript:void(null);" method="post" enctype="multipart/form-data" style="display: none;">
+                            <input type="file" id="chat_import_file" accept=".json, .jsonl" multiple name="avatar">
+                            <input id="chat_import_file_type" name="file_type" class="text_pole" value="" autocomplete="off" style="display: none;">
+                            <input id="chat_import_avatar_url" name="avatar_url" class="text_pole" value="" autocomplete="off" style="display: none;">
+                            <input id="chat_import_character_name" name="character_name" class="text_pole" value="" autocomplete="off" style="display: none;">
+                        </form>
+                    </div>
+                    <div id="selectChatPopupHeaderText" class="TxtLrgBoldCenter">
+                        <span id="ChatHistoryCharName"></span><span data-i18n="Chat History">Chat History</span>
+                    </div>
+                    <div id="newChatFromManageScreenButton" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-plus"></i>
+                        <span data-i18n="New Chat">New Chat</span>
+                    </div>
+                    <div id="chat_import_button" class="menu_button menu_button_icon">
+                        <i class="fa-solid fa-file-import"></i>
+                        <span data-i18n="Import Chat">Import Chat</span>
+                    </div>
+                    <input type="search" id="select_chat_search" class="text_pole flex1" data-i18n="[placeholder]Search..." placeholder="Search..." autocomplete="off">
+                    <div id="select_chat_cross" class="opacity50p hoverglow fa-solid fa-circle-xmark fontsize120p" alt="Close Past Chat Popup"></div>
+                </div>
+                <div id="select_chat_div"></div>
+            </div>
+        </div>
+        <div id="background_template" class="template_element">
+            <div class="bg_example flex-container" bgfile="" title="">
+                <div class="bg_example_img"></div>
+                <div class="mobile-only-menu-toggle">
+                    <i class="fa-solid fa-ellipsis-vertical"></i>
+                </div>
+                <div class="jg-menu">
+                    <div data-action="lock" class="jg-button jg-lock fa-solid fa-lock fa-fw pointer" data-i18n="[title]Lock" title="Lock"></div>
+                    <div data-action="unlock" class="jg-button jg-unlock fa-solid fa-lock-open fa-fw pointer" data-i18n="[title]Unlock" title="Unlock"></div>
+                    <div data-action="copy" class="jg-button jg-copy fa-solid fa-file-arrow-up" data-i18n="[title]Copy to global backgrounds" title="Copy to global backgrounds"></div>
+                    <div data-action="edit" class="jg-button jg-edit fa-solid fa-pen-to-square fa-fw pointer" data-i18n="[title]Rename Background" title="Rename Background"></div>
+                    <div data-action="delete" class="jg-button jg-delete fa-solid fa-trash-can fa-fw pointer" data-i18n="[title]Delete Background" title="Delete Background"></div>
+                    <div data-action="folder" class="jg-button jg-folder fa-solid fa-folder fa-fw pointer" data-i18n="[title]Add to folder" title="Add to folder"></div>
+                    <div data-action="set-cover" class="jg-button jg-set-cover fa-solid fa-image fa-fw pointer" data-i18n="[title]Set as folder cover" title="Set as folder cover"></div>
+                </div>
+                <div class="BGSampleTitle"></div>
+            </div>
+        </div>
+        <div id="bg_folder_tile_template" class="template_element">
+            <div class="bg_folder_tile" data-folder-id="">
+                <div class="bg_folder_tile_cover"></div>
+                <div class="bg_folder_tile_overlay">
+                    <i class="fa-solid fa-folder"></i>
+                    <span class="bg_folder_tile_name"></span>
+                </div>
+                <div class="mobile-only-menu-toggle">
+                    <i class="fa-solid fa-ellipsis-vertical"></i>
+                </div>
+                <div class="bg_folder_tile_menu jg-menu">
+                    <div data-action="rename-folder" class="jg-button fa-solid fa-pen-to-square fa-fw pointer" data-i18n="[title]Rename folder" title="Rename folder"></div>
+                    <div data-action="delete-folder" class="jg-button fa-solid fa-trash-can fa-fw pointer" data-i18n="[title]Delete folder" title="Delete folder"></div>
+                </div>
+            </div>
+        </div>
+        <div id="bg_new_folder_template" class="template_element">
+            <div class="bg_folder_tile bg_new_folder_tile">
+                <i class="fa-solid fa-folder-plus fa-2x"></i>
+                <span data-i18n="New Folder">New Folder</span>
+            </div>
+        </div>
+        <!-- templates for JS to reuse when needed -->
+        <div id="character_world_template" class="template_element">
+            <div class="character_world range-block flexFlowColumn flex-container">
+                <div class="range-block-title">
+                    <h3>
+                        <span data-i18n="Select a World Info file for">Select a World Info file for</span>
+                        <span class="character_name"></span>:
+                    </h3>
+                </div>
+                <h4 data-i18n="Primary Lorebook">Primary Lorebook</h4>
+                <div class="range-block-counter justifyLeft flex-container flexFlowColumn margin-bot-10px">
+                    <span data-i18n="A selected World Info will be bound to this character as its own Lorebook.">A selected World Info will be bound to this character as its own Lorebook.</span>
+                    <span data-i18n="When generating an AI reply, it will be combined with the entries from a global World Info selector.">When generating an AI reply, it will be combined with the entries from a global World Info selector.</span>
+                    <span data-i18n="Exporting a character would also export the selected Lorebook file embedded in the JSON data.">Exporting a character would also export the selected Lorebook file embedded in the JSON data.</span>
+                </div>
+                <div class="range-block-range wide100p">
+                    <select class="character_world_info_selector wide100p">
+                        <option value="">--- None ---</option>
+                    </select>
+                </div>
+                <div class="range-block-title">
+                    <h4>
+                        <span data-i18n="Additional Lorebooks">Additional Lorebooks</span>
+                    </h4>
+                </div>
+                <div class="range-block-counter justifyLeft flex-container flexFlowColumn margin-bot-10px">
+                    <span data-i18n="Associate one or more auxillary Lorebooks with this character.">Associate one or more auxillary Lorebooks with this character.</span><br>
+                    <span data-i18n="NOTE: These choices are optional and won't be preserved on character export!">NOTE: These choices are optional and won't be preserved on character export!</span>
+                </div>
+                <div class="range-block-range wide100p">
+                    <select class="character_extra_world_info_selector wide100p" multiple>
+                        <option value="" data-i18n="-- World Info not found --">-- World Info not found --</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+        <div id="past_chat_template" class="template_element">
+            <div class="select_chat_block_wrapper flex-container">
+                <div class="select_chat_block  wide100p flex-container" file_name="">
+                    <div id="select_chat_name_wrapper" class="flex-container alignitemscenter justifySpaceBetween wide100p">
+                        <div class="flex-container alignItemsCenter">
+                            <small class="select_chat_block_filename select_chat_block_filename_item"></small>
+                            <div title="Rename chat file" class="renameChatButton hoverglow opacity50p fa-solid fa-pencil fa-sm" data-i18n="[title]Rename chat file"></div>
+                        </div>
+                        <div class="flex-container gap10px alignItemsCenter">
+                            <div class="select_chat_info flex-container">
+                                <small class="chat_messages_date select_chat_block_filename_item"></small>
+                                <small class="chat_file_size select_chat_block_filename_item"></small>
+                                <small class="chat_messages_num select_chat_block_filename_item"></small>
+                            </div>
+                            <div class="select_chat_actions flex-container gap10px">
+                                <div title="Export JSONL chat file" data-format="jsonl" class="exportRawChatButton opacity50p hoverglow fa-solid fa-file-export" data-i18n="[title]Export JSONL chat file"></div>
+                                <div title="Download chat as plain text document" data-format="txt" class="exportChatButton opacity50p hoverglow fa-solid fa-file-lines" data-i18n="[title]Download chat as plain text document"></div>
+                                <div title="Delete chat file" file_name="" class="PastChat_cross opacity50p hoverglow fa-solid fa-skull" data-i18n="[title]Delete chat file"></div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="select_chat_block_mes"></div>
+                </div>
+            </div>
+        </div>
+        <div id="tag_view_template" class="template_element">
+            <div class="tag_view_item">
+                <div class="drag-handle" data-i18n="[title]Drag to reorder tag">☰</div>
+                <div title="Tag as folder" class="tag_as_folder fa-solid fa-folder-open right_menu_button" data-i18n="[title]Use tag as folder">
+                    <span class="tag_folder_indicator"></span>
+                </div>
+                <div class="right_menu_button fa-solid fa-eye fa-fw eye-toggle"></div>
+                <div class="tag_view_color_picker" data-value="color"></div>
+                <div class="tag_view_color_picker" data-value="color2"></div>
+                <div class="tag_view_name" contenteditable="true"></div>
+                <div class="tag_view_counter"><span class="tag_view_counter_value"></span>&nbsp;<span data-i18n="tag_entries">entries</span></div>
+                <div title="Delete tag" class="tag_delete fa-solid fa-trash-can right_menu_button" data-i18n="[title]Delete tag"></div>
+            </div>
+        </div>
+        <div id="entry_edit_template" class="template_element">
+            <div class="world_entry_edit">
+                <div class="flex-container wide100p alignitemscenter">
+                    <div name="keywordsAndLogicBlock" class="flex-container wide100p alignitemscenter">
+                        <div class="world_entry_form_control keyprimary flex1">
+                            <small class="displayNone">
+                                <span data-i18n="Comma separated (required)">
+                                    Comma separated (required)
+                                </span>
+                            </small>
+                            <small class="textAlignCenter" data-i18n="Primary Keywords">Primary Keywords</small>
+                            <select class="keyprimaryselect keyselect" name="key" data-i18n="[placeholder]Keywords or Regexes" placeholder="Keywords or Regexes" multiple="multiple"></select>
+                            <textarea class="text_pole keyprimarytextpole mobile" name="key" rows="1" data-i18n="[placeholder]Comma separated list" placeholder="Comma separated list" style="display: none;"></textarea>
+                            <button type="button" class="switch_input_type_icon" tabindex="-1" title="Switch to plaintext mode" data-i18n="[title]Switch to plaintext mode" data-icon-on="✨" data-icon-off="⌨️" data-tooltip-on="Switch to fancy mode" data-tooltip-off="Switch to plaintext mode">
+                                ⌨️
+                            </button>
+                        </div>
+                        <div class="world_entry_form_control">
+                            <small class="textAlignCenter" data-i18n="Logic">Logic</small>
+                            <select name="entryLogicType" class="text_pole widthFitContent margin0">
+                                <option value="0" data-i18n="AND ANY">AND ANY</option>
+                                <option value="3" data-i18n="AND ALL">AND ALL</option>
+                                <option value="1" data-i18n="NOT ALL">NOT ALL</option>
+                                <option value="2" data-i18n="NOT ANY">NOT ANY</option>
+                            </select>
+                        </div>
+                        <div class="world_entry_form_control keysecondary flex1">
+                            <small class="displayNone">
+                                <span data-i18n="(ignored if empty)">
+                                    (ignored if empty)
+                                </span>
+                            </small>
+                            <small class="textAlignCenter" data-i18n="Optional Filter">Optional Filter</small>
+                            <select class="keysecondaryselect keyselect" name="keysecondary" data-i18n="[placeholder]Keywords or Regexes (ignored if empty)" placeholder="Keywords or Regexes (ignored if empty)" multiple="multiple"></select>
+                            <textarea class="text_pole keysecondarytextpole mobile" name="keysecondary" rows="1" data-i18n="[placeholder]Comma separated list (ignored if empty)" placeholder="Comma separated list (ignored if empty)" style="display: none;"></textarea>
+                            <button type="button" class="switch_input_type_icon" tabindex="-1" title="Switch to plaintext mode" data-i18n="[title]Switch to plaintext mode" data-icon-on="✨" data-icon-off="⌨️" data-tooltip-on="Switch to fancy mode" data-tooltip-off="Switch to plaintext mode">
+                                ⌨️
+                            </button>
+                        </div>
+                    </div>
+                    <div name="perEntryOverridesBlock" class="flex-container wide100p alignitemscenter">
+                        <div class="world_entry_form_control flex1" title="Set the outlet name for this WI entry.&#10;&#10;WI entries with position 'outlet' will not be added to the prompt automatically. Instead, they will be collected and can be used as a macro in the prompt.&#10;Add {{outlet::YourName}} to the prompt in any place you want to add all WI entries this specific outlet." data-i18n="[title]wi_outlet_name">
+                            <small class="textAlignCenter">
+                                <span data-i18n="Outlet Name">Outlet Name</span>
+                                <div class="fa-solid fa-circle-info opacity50p"></div>
+                            </small>
+                            <input class="text_pole margin0" name="outletName" type="text" placeholder="Outlet Name" data-i18n="[placeholder]Outlet Name">
+                        </div>
+                        <div class="world_entry_form_control flex1">
+                            <small class="textAlignCenter" data-i18n="Scan Depth">Scan Depth</small>
+                            <input class="text_pole margin0" name="scanDepth" type="number" placeholder="Use global setting" data-i18n="[placeholder]Use global setting" max="1000">
+                        </div>
+                        <div class="world_entry_form_control flex1">
+                            <small class="textAlignCenter" data-i18n="Case-Sensitive">Case-Sensitive</small>
+                            <select name="caseSensitive" class="text_pole widthNatural margin0">
+                                <option value="null" data-i18n="Use global">Use global</option>
+                                <option value="true" data-i18n="Yes">Yes</option>
+                                <option value="false" data-i18n="No">No</option>
+                            </select>
+                        </div>
+                        <div class="world_entry_form_control flex1">
+                            <small class="textAlignCenter" data-i18n="Whole Words">Whole Words</small>
+                            <select name="matchWholeWords" class="text_pole widthNatural margin0">
+                                <option value="null" data-i18n="Use global">Use global</option>
+                                <option value="true" data-i18n="Yes">Yes</option>
+                                <option value="false" data-i18n="No">No</option>
+                            </select>
+                        </div>
+                        <div class="world_entry_form_control flex1">
+                            <small class="textAlignCenter" data-i18n="Group Scoring">Group Scoring</small>
+                            <select name="useGroupScoring" class="text_pole widthNatural margin0">
+                                <option value="null" data-i18n="Use global">Use global</option>
+                                <option value="true" data-i18n="Yes">Yes</option>
+                                <option value="false" data-i18n="No">No</option>
+                            </select>
+                        </div>
+                        <div class="world_entry_form_control flex1" title="Can be used to automatically activate Quick Replies" data-i18n="[title]Can be used to automatically activate Quick Replies">
+                            <small class="textAlignCenter" data-i18n="Automation ID">Automation ID</small>
+                            <input class="text_pole margin0" name="automationId" type="text" placeholder="( None )" data-i18n="[placeholder]( None )">
+                        </div>
+                        <div class="world_entry_form_control flex1" title="Defines delay levels for recursive scans.&#13;&#13;Initially, only the first level (smallest number) will match.&#13;Once no matches are found, the next level becomes eligible for matching.&#13;This repeats until all levels are checked.&#13;&#13;Tied to the &quot;Delay until recursion&quot; setting." data-i18n="[title]delay_until_recursion_level">
+                            <small class="textAlignCenter">
+                                <span data-i18n="Recursion Level">Recursion Level</span>
+                                <div class="fa-solid fa-circle-info opacity50p"></div>
+                            </small>
+                            <input class="text_pole margin0" name="delayUntilRecursionLevel" type="text" placeholder="1">
+                        </div>
+                    </div>
+                    <div name="contentAndCharFilterBlock" class="world_entry_thin_controls flex2">
+                        <div class="world_entry_form_control flex1">
+                            <label for="content ">
+                                <small>
+                                    <span class="alignitemscenter flex-container flexnowrap wide100p justifySpaceBetween">
+                                        <span class="alignitemscenter flex-container">
+                                            <span data-i18n="Content" class="mdhotkey_location">
+                                                Content
+                                            </span>
+                                            <i class="editor_maximize fa-solid fa-maximize right_menu_button" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                                        </span>
+                                        <span>
+                                            (<span data-i18n="extension_token_counter">Tokens:</span>&nbsp; <span class="world_entry_form_token_counter" data-first-run="true">counting...</span>)&nbsp;
+                                            <span class="world_entry_form_uid_value" data-first-run="true"></span>
+                                        </span>
+                                        <div class="flex-container">
+                                            <div class="flex-container flexFlowColumn">
+                                                <label class="checkbox flex-container alignitemscenter flexNoGap" data-i18n="[title]This entry will not be recursively activated by other entries." title="This entry will not be recursively activated by other entries.">
+                                                    <input type="checkbox" name="excludeRecursion" />
+                                                    <span data-i18n="Non-recursable">
+                                                        Non-recursable
+                                                    </span>
+                                                </label>
+                                                <label class="checkbox flex-container alignitemscenter flexNoGap" title="This entry will not activate other entries recursively." data-i18n="[title]This entry will not activate other entries recursively.">
+                                                    <input type="checkbox" name="preventRecursion" />
+                                                    <span data-i18n="Prevent further recursion">
+                                                        Prevent further recursion
+                                                    </span>
+                                                </label>
+                                            </div>
+                                            <div class="flex-container flexFlowColumn">
+                                                <label class="checkbox flex-container alignitemscenter flexNoGap" title="This entry can only be activated on recursive checking." data-i18n="[title]This entry can only be activated on recursive checking.">
+                                                    <input type="checkbox" name="delay_until_recursion" />
+                                                    <span data-i18n="Delay until recursion">
+                                                        Delay until recursion
+                                                    </span>
+                                                </label>
+                                                <label class="checkbox flex-container alignitemscenter flexNoGap" title="This entry will be included ignoring budget constraints, assuming all other checks pass." data-i18n="[title]This entry will be included ignoring budget constraints, assuming all other checks pass.">
+                                                    <input type="checkbox" name="ignoreBudget" />
+                                                    <span data-i18n="Ignore budget">
+                                                        Ignore budget
+                                                    </span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    </span>
+                                </small>
+                                <small class="displayNone">
+                                    <span data-i18n="What this keyword should mean to the AI, sent verbatim">
+                                        What this keyword should mean to the AI, sent verbatim
+                                    </span>
+                                </small>
+                            </label>
+                            <textarea class="text_pole mdHotkeys" name="content" rows="8" data-i18n="[placeholder]What this keyword should mean to the AI, sent verbatim" placeholder="What this keyword should mean to the AI, sent verbatim"></textarea>
+                        </div>
+                    </div>
+                    <div class="world_entry_thin_controls commentContainer">
+                    </div>
+                </div>
+                <div class="flex-container wide100p flexGap10">
+                    <div class="flex4 flex-container flexFlowColumn flexNoGap">
+                        <div class="flex-container justifySpaceBetween">
+                            <small for="group">
+                                <span data-i18n="Inclusion Group">Inclusion Group</span>
+                            </small>
+                            <label class="checkbox_label flexNoGap margin-r5" for="groupOverride">
+                                <input type="checkbox" name="groupOverride" />
+                                <span>
+                                    <small title="Prioritize this entry: When checked, this entry is prioritized out of all selections.&#13;If multiple are prioritized, the one with the highest 'Order' is chosen.&#13;" data-i18n="[title]Prioritize this entry: When checked, this entry is prioritized out of all selections.If multiple are prioritized, the one with the highest 'Order' is chosen.">
+                                        <span data-i18n="Prioritize">Prioritize</span>
+                                        <div class="fa-solid fa-circle-info opacity50p"></div>
+                                    </small>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="range-block-range">
+                            <input type="text" class="text_pole margin0" name="group" rows="1" data-i18n="[placeholder]Only one entry with the same label will be activated" placeholder="Only one entry with the same label will be activated">
+                        </div>
+                    </div>
+                    <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]A relative likelihood of entry activation within the group" title="A relative likelihood of entry activation within the group">
+                        <div class="flex-container justifySpaceBetween marginBot5">
+                            <small for="groupWeight" data-i18n="Group Weight">
+                                Group Weight
+                            </small>
+                        </div>
+                        <div class="range-block-range">
+                            <input type="number" class="text_pole margin0" name="groupWeight" rows="1" placeholder="100" min="1" max="999999">
+                        </div>
+                    </div>
+                    <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]Sticky entries will stay active for N messages after being triggered." title="Sticky entries will stay active for N messages after being triggered.">
+                        <div class="flex-container justifySpaceBetween marginBot5">
+                            <small class="flex-container alignItemsBaseline" for="sticky">
+                                <span data-i18n="Sticky">
+                                    Sticky
+                                </span>
+                                <i class="fa-solid fa-comments fa-xs"></i>
+                            </small>
+                        </div>
+                        <div class="range-block-range">
+                            <input class="text_pole margin0" name="sticky" type="number" data-i18n="[placeholder]Non-sticky" placeholder="Non-sticky" min="0" max="999999">
+                        </div>
+                    </div>
+                    <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]Entries with a cooldown can't be activated N messages after being triggered." title="Entries with a cooldown can't be activated N messages after being triggered.">
+                        <div class="flex-container justifySpaceBetween marginBot5">
+                            <small class="flex-container alignItemsBaseline" for="cooldown">
+                                <span data-i18n="Cooldown">
+                                    Cooldown
+                                </span>
+                                <i class="fa-solid fa-comments fa-xs"></i>
+                            </small>
+                        </div>
+                        <div class="range-block-range">
+                            <input class="text_pole margin0" name="cooldown" type="number" data-i18n="[placeholder]No cooldown" placeholder="No cooldown" min="0" max="999999">
+                        </div>
+                    </div>
+                    <div class="flex2 flex-container flexFlowColumn flexNoGap" data-i18n="[title]Entries with a delay can't be activated until there are N messages present in the chat." title="Entries with a delay can't be activated until there are N messages present in the chat.">
+                        <div class="flex-container justifySpaceBetween marginBot5">
+                            <small class="flex-container alignItemsBaseline" for="delay">
+                                <span data-i18n="Delay">
+                                    Delay
+                                </span>
+                                <i class="fa-solid fa-comments fa-xs"></i>
+                            </small>
+                        </div>
+                        <div class="range-block-range">
+                            <input class="text_pole margin0" name="delay" type="number" data-i18n="[placeholder]No delay" placeholder="No delay" min="0" max="999999">
+                        </div>
+                    </div>
+                </div>
+                <div class="flex-container wide100p flexGap10">
+                    <div class="flex4 flex-container flexFlowColumn flexNoGap">
+                        <div class="flex-container justifySpaceBetween">
+                            <small for="characterFilter" data-i18n="Filter to Characters or Tags">
+                                Filter to Characters or Tags
+                            </small>
+                            <label class="checkbox_label flexNoGap margin-r5" for="character_exclusion">
+                                <input type="checkbox" name="character_exclusion" />
+                                <span>
+                                    <small title="Switch the Character/Tags filter around to exclude the listed characters and tags from matching for this entry" data-i18n="[title]Switch the Character/Tags filter around to exclude the listed characters and tags from matching for this entry">
+                                        <span data-i18n="Exclude">Exclude</span>
+                                        <div class="fa-solid fa-circle-info opacity50p"></div>
+                                    </small>
+                                </span>
+                            </label>
+                        </div>
+                        <div class="range-block-range">
+                            <select name="characterFilter" multiple>
+                                <option value="" data-i18n="-- Characters not found --">
+                                    -- Characters not found --
+                                </option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="flex4">
+                        <div class="flex-container justifySpaceBetween">
+                            <small>
+                                <span data-i18n="Filter to Generation Triggers">
+                                    Filter to Generation Triggers
+                                </span>
+                            </small>
+                            <!-- Not a real control. Used to make label heights even. -->
+                            <label class="checkbox_label" for="__invisible">
+                                <input type="checkbox" name="__invisible">
+                                <span><small>&nbsp;</small></span>
+                            </label>
+                        </div>
+                        <div class="range-block-range">
+                            <select name="triggers" multiple>
+                                <option data-i18n="Normal" value="normal">Normal</option>
+                                <option data-i18n="Continue" value="continue">Continue</option>
+                                <option data-i18n="Impersonate" value="impersonate">Impersonate</option>
+                                <option data-i18n="Swipe" value="swipe">Swipe</option>
+                                <option data-i18n="Regenerate" value="regenerate">Regenerate</option>
+                                <option data-i18n="Quiet" value="quiet">Quiet</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div name="WIEntryBottomControls" class="flex-container flex1 justifySpaceBetween world_entry_form_horizontal">
+                    <div class="flex-container flexFlowColumn flexNoGap  wi-enter-footer-text">
+                        <label class="checkbox flex-container">
+                            <input type="checkbox" name="selective" />
+                            <span data-i18n="Selective">Selective</span>
+                        </label>
+                        <label class="checkbox flex-container">
+                            <input type="checkbox" name="useProbability" />
+                            <span data-i18n="Use Probability">Use Probability</span>
+                        </label>
+                        <label class="checkbox flex-container">
+                            <input type="checkbox" name="addMemo">
+                            <span data-i18n="Add Memo">Add Memo</span>
+                        </label>
+                    </div>
+                </div>
+                <div class="inline-drawer wide100p flexFlowColumn">
+                    <div class="inline-drawer-toggle inline-drawer-header inline-drawer-header-pointer userSettingsInnerExpandable">
+                        <strong data-i18n="Additional Matching Sources">Additional Matching Sources</strong>
+                        <div class="fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+                    </div>
+                    <div class="inline-drawer-content flex-container flexFlowRow flexGap10 paddingBottom5px">
+                        <small class="flex-container flex1 flexFlowColumn">
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchCharacterDescription" />
+                                <span data-i18n="Character Description">
+                                    Character Description
+                                </span>
+                            </label>
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchCharacterPersonality" />
+                                <span data-i18n="Character Personality">
+                                    Character Personality
+                                </span>
+                            </label>
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchScenario" />
+                                <span data-i18n="Scenario">
+                                    Scenario
+                                </span>
+                            </label>
+                        </small>
+                        <small class="flex-container flex1 flexFlowColumn">
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchPersonaDescription" />
+                                <span data-i18n="Persona Description">
+                                    Persona Description
+                                </span>
+                            </label>
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchCharacterDepthPrompt" />
+                                <span data-i18n="Character's Note">
+                                    Character's Note
+                                </span>
+                            </label>
+                            <label class="checkbox flex-container alignItemsCenter flexNoGap">
+                                <input type="checkbox" name="matchCreatorNotes" />
+                                <span data-i18n="Creator's Notes">
+                                    Creator's Notes
+                                </span>
+                            </label>
+                        </small>
+                    </div>
+                </div>
+            </div>
+            <div class="world_entry">
+                <form class="world_entry_form  wi-card-entry">
+                    <div class="inline-drawer wide100p">
+                        <div class="inline-drawer-header gap5px padding0">
+                            <span class="drag-handle">&#9776;</span>
+                            <div class="gap5px world_entry_thin_controls wide100p alignitemscenter">
+                                <div class="inline-drawer-toggle fa-fw fa-solid fa-circle-chevron-down inline-drawer-icon down"></div>
+                                <div class="fa-solid fa-toggle-on killSwitch" name="entryKillSwitch" data-i18n="[title]Toggle entry's active state." title="Toggle entry's active state."></div>
+                                <div class="flex-container alignitemscenter wide100p">
+                                    <div class="WIEntryTitleAndStatus flex-container flex1 alignitemscenter">
+                                        <div class="flex-container flex1">
+                                            <textarea class="text_pole" rows="1" name="comment" data-i18n="[placeholder]Entry Title/Memo" placeholder="Entry Title/Memo"></textarea>
+                                        </div>
+                                        <!-- <span class="world_entry_form_position_value"></span> -->
+                                        <select data-i18n="[title]WI Entry Status:🔵 Constant🟢 Normal🔗 Vectorized" title="WI Entry Status:&#13;🔵 Constant&#13;🟢 Normal&#13;🔗 Vectorized" name="entryStateSelector" class="text_pole widthNatural margin0">
+                                            <option value="constant" title="Constant" data-i18n="[title]WI_Entry_Status_Constant">🔵</option>
+                                            <option value="normal" title="Normal" data-i18n="[title]WI_Entry_Status_Normal">🟢</option>
+                                            <option value="vectorized" title="Vectorized" data-i18n="[title]WI_Entry_Status_Vectorized">🔗</option>
+                                        </select>
+                                    </div>
+                                    <div class="WIEnteryHeaderControls flex-container">
+                                        <div name="PositionBlock" class="world_entry_form_control world_entry_form_radios wi-enter-footer-text">
+                                            <label for="position" class="WIEntryHeaderTitleMobile" data-i18n="Position:">Position:</label>
+                                            <select name="position" class="text_pole widthNatural margin0" data-i18n="[title]T_Position" title="↑Char: Before Character Definitions&#13;↓Char: After Character Definitions&#13;↑EM: Before Example Messages&#13;↓EM: After Example Messages&#13;↑AN: Before Author's Note&#13;↓AN: After Author's Note&#13;@D ⚙️: at Depth (System)&#13;@D 👤: at Depth (User)&#13;@D 🤖: at Depth (Assistant)">
+                                                <option value="0" data-role="" data-i18n="Before Char Defs">
+                                                    ↑Char
+                                                </option>
+                                                <option value="1" data-role="" data-i18n="After Char Defs">
+                                                    ↓Char
+                                                </option>
+                                                <option value="5" data-role="" data-i18n="Before EM">
+                                                    ↑EM
+                                                </option>
+                                                <option value="6" data-role="" data-i18n="After EM">
+                                                    ↓EM
+                                                </option>
+                                                <option value="2" data-role="" data-i18n="Before AN">
+                                                    ↑AN
+                                                </option>
+                                                <option value="3" data-role="" data-i18n="After AN">
+                                                    ↓AN
+                                                </option>
+                                                <option value="4" data-role="0" data-i18n="at Depth System">
+                                                    @D ⚙️
+                                                </option>
+                                                <option value="4" data-role="1" data-i18n="at Depth User">
+                                                    @D 👤
+                                                </option>
+                                                <option value="4" data-role="2" data-i18n="at Depth AI">
+                                                    @D 🤖
+                                                </option>
+                                                <option value="7" data-role="" data-i18n="Outlet">
+                                                    ➡️ Outlet
+                                                </option>
+                                            </select>
+                                        </div>
+                                        <div class="world_entry_form_control wi-enter-footer-text flex-container flexNoGap">
+                                            <label for="depth" class="WIEntryHeaderTitleMobile" data-i18n="Depth:">Depth:</label>
+                                            <input title="Depth" class="text_pole wideMax100px margin0" type="number" name="depth" data-i18n="[title]Depth" placeholder="" min="0" max="9999" />
+                                        </div>
+                                        <div class="world_entry_form_control wi-enter-footer-text  flex-container flexNoGap">
+                                            <label for="order" class="WIEntryHeaderTitleMobile" data-i18n="Order:">Order:</label>
+                                            <input title="Order" data-i18n="[title]Order" class="text_pole wideMax100px margin0" type="number" name="order" placeholder="" min="0" max="9999" />
+                                        </div>
+                                        <div class="world_entry_form_control wi-enter-footer-text flex-container flexNoGap probabilityContainer">
+                                            <label for="order" class="WIEntryHeaderTitleMobile" data-i18n="Trigger %:">Trigger %:</label>
+                                            <input title="Probability" data-i18n="[title]Probability" class="text_pole wideMax100px margin0" type="number" name="probability" placeholder="" min="0" max="100" />
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <i class="menu_button move_entry_button fa-solid fa-right-left" title="Move/Copy Entry to Another Lorebook" data-i18n="[title]Move/Copy Entry to Another Lorebook"></i>
+                            <i class="menu_button duplicate_entry_button fa-solid fa-paste" title="Duplicate world info entry" data-i18n="[title]Duplicate world info entry" type="submit" value=""></i>
+                            <i class="menu_button delete_entry_button fa-solid fa-trash-can" title="Delete world info entry" data-i18n="[title]Delete world info entry" type="submit" value=""></i>
+                        </div>
+                        <div class="inline-drawer-content inline-drawer-outlet flex-container paddingBottom5px wide100p ">
+                            <!-- Outlet for world_entry_edit -->
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div id="character_template" class="template_element">
+            <div class="character_select entity_block flex-container wide100p alignitemsflexstart" chid="" id="">
+                <div class="avatar" title="">
+                    <img src="">
+                </div>
+                <div class="flex-container wide100pLess70px character_select_container">
+                    <div class="wide100p character_name_block">
+                        <span class="ch_name"></span>
+                        <small class="ch_additional_info ch_add_placeholder">+++</small>
+                        <small class="ch_assistant" title="This character will be used as a welcome page assistant." data-i18n="[title]This character will be used as a welcome page assistant.">
+                            <i class="fa-solid fa-sm fa-user-graduate"></i>
+                        </small>
+                        <small class="ch_additional_info character_version"></small>
+                        <small class="ch_additional_info ch_avatar_url"></small>
+                    </div>
+                    <i class="ch_fav_icon fa-solid fa-star"></i>
+                    <input class="ch_fav" value="" hidden />
+                    <div class="ch_description"></div>
+                    <div class="tags tags_inline"></div>
+                </div>
+            </div>
+        </div>
+        <div id="tag_template" class="template_element">
+            <span id="" class="tag">
+                <span class="tag_name"></span>
+                <i class="fa-solid fa-circle-xmark tag_remove"></i>
+            </span>
+        </div>
+        <div id="openai_logit_bias_template" class="template_element">
+            <div class="openai_logit_bias_form">
+                <span class="drag-handle">☰</span>
+                <input class="openai_logit_bias_text text_pole" data-i18n="[placeholder]Text or token ids" placeholder="Text or [token ids]" />
+                <input class="openai_logit_bias_value text_pole" type="number" min="-100" value="0" max="100" />
+                <i class="menu_button fa-solid fa-xmark openai_logit_bias_remove"></i>
+            </div>
+        </div>
+        <div id="logit_bias_template" class="template_element">
+            <div class="logit_bias_form">
+                <span class="drag-handle">☰</span>
+                <input class="logit_bias_text text_pole" data-i18n="[placeholder]Type here..." placeholder="type here..." />
+                <input class="logit_bias_value text_pole" type="number" min="-100" value="0" max="100" step="0.01" />
+                <i class="menu_button fa-solid fa-xmark logit_bias_remove"></i>
+            </div>
+        </div>
+        <div id="completion_prompt_manager_popup" class="drawer-content" style="display:none;">
+            <div id="completion_prompt_manager_popup_inspect">
+                <h3>Inspect</h3>
+                <div class="completion_prompt_manager_popup_entry">
+                    <form class="completion_prompt_manager_popup_entry_form">
+                        <div class="completion_prompt_manager_popup_entry_form_control">
+                            <div class="completion_prompt_manager_popup_header">
+                                <label for="completion_prompt_manager_popup_entry_form_prompt">
+                                    <span>Prompt List</span>
+                                </label>
+                                <a id="completion_prompt_manager_popup_close_button" title="close" data-i18n="[title]close" class="fa-solid fa-close menu_button"></a>
+                            </div>
+                            <div class="text_muted">The list of prompts associated with this marker.</div>
+                            <div id="completion_prompt_manager_popup_entry_form_inspect_list"></div>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            <div id="completion_prompt_manager_popup_edit">
+                <h3 data-i18n="prompt_manager_edit">Edit</h3>
+                <div class="completion_prompt_manager_popup_entry">
+                    <form class="completion_prompt_manager_popup_entry_form">
+                        <div class="flex-container gap10px">
+                            <div class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_name">
+                                    <span data-i18n="prompt_manager_name">Name</span>
+                                </label>
+                                <input id="completion_prompt_manager_popup_entry_form_name" class="text_pole" type="text" name="name" />
+                                <div class="text_muted" data-i18n="A name for this prompt.">A name for this prompt.</div>
+                            </div>
+                            <div class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_role">
+                                    <span data-i18n="Role">Role</span>
+                                </label>
+                                <select id="completion_prompt_manager_popup_entry_form_role" class="text_pole" name="role">
+                                    <option data-i18n="System" value="system">System</option>
+                                    <option data-i18n="User" value="user">User</option>
+                                    <option data-i18n="AI Assistant" value="assistant">AI Assistant</option>
+                                </select>
+                                <div class="text_muted" data-i18n="To whom this message will be attributed.">To whom this message will be attributed.</div>
+                            </div>
+                            <div class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_injection_trigger">
+                                    <span data-i18n="Triggers">Triggers</span>
+                                </label>
+                                <select id="completion_prompt_manager_popup_entry_form_injection_trigger" class="text_pole" name="injection_trigger" multiple>
+                                    <option data-i18n="Normal" value="normal">Normal</option>
+                                    <option data-i18n="Continue" value="continue">Continue</option>
+                                    <option data-i18n="Impersonate" value="impersonate">Impersonate</option>
+                                    <option data-i18n="Swipe" value="swipe">Swipe</option>
+                                    <option data-i18n="Regenerate" value="regenerate">Regenerate</option>
+                                    <option data-i18n="Quiet" value="quiet">Quiet</option>
+                                </select>
+                                <div class="text_muted" data-i18n="Filter to specific generation types.">
+                                    Filter to specific generation types.
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex-container gap10px">
+                            <div class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_injection_position">
+                                    <span data-i18n="prompt_manager_position">Position</span>
+                                </label>
+                                <select id="completion_prompt_manager_popup_entry_form_injection_position" class="text_pole" name="injection_position">
+                                    <option data-i18n="prompt_manager_relative" value="0">Relative</option>
+                                    <option data-i18n="prompt_manager_in_chat" value="1">In-chat</option>
+                                </select>
+                                <div class="text_muted" data-i18n="Relative (to other prompts in prompt manager) or In-chat @ Depth.">Relative (to other prompts in prompt manager) or In-chat @ Depth.</div>
+                            </div>
+                            <div id="completion_prompt_manager_depth_block" class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_injection_depth">
+                                    <span data-i18n="prompt_manager_depth">Depth</span>
+                                </label>
+                                <input id="completion_prompt_manager_popup_entry_form_injection_depth" class="text_pole" type="number" name="injection_depth" min="0" max="9999" value="4" />
+                                <div class="text_muted" data-i18n="0 = after the last message, 1 = before the last message, etc.">0 = after the last message, 1 = before the last message, etc.</div>
+                            </div>
+                            <div id="completion_prompt_manager_order_block" class="completion_prompt_manager_popup_entry_form_control flex1">
+                                <label for="completion_prompt_manager_popup_entry_form_injection_order">
+                                    <span data-i18n="prompt_manager_order">Order</span>
+                                    <i class="fas fa-info-circle" title="Prompt injections from other sources (World Info, Author's Note, etc.) always have a default order of 100." data-i18n="[title]prompt_manager_order_note"></i>
+                                </label>
+                                <input id="completion_prompt_manager_popup_entry_form_injection_order" class="text_pole" type="number" name="injection_order" min="0" max="9999" value="100" />
+                                <div class="text_muted" data-i18n="Ordered from low/top to high/bottom, and at same order: Assistant, User, System.">Ordered from low/top to high/bottom, and at same order: Assistant, User, System.</div>
+                            </div>
+                        </div>
+                        <div class="completion_prompt_manager_popup_entry_form_control">
+                            <div class="flex-container alignItemsCenter" data-i18n="[external_piece_text]The content of this prompt is pulled from elsewhere and cannot be edited here." external_piece_text="The content of this prompt is pulled from elsewhere and cannot be edited here.">
+                                <div class="flex1">
+                                    <label for="completion_prompt_manager_popup_entry_form_prompt">
+                                        <span data-i18n="Prompt">Prompt</span>
+                                    </label>
+                                </div>
+                                <div id="completion_prompt_manager_forbid_overrides_block">
+                                    <label class="checkbox_label" for="completion_prompt_manager_popup_entry_form_forbid_overrides" title="This prompt cannot be overridden by character cards, even if overrides are preferred." data-i18n="[title]This prompt cannot be overridden by character cards, even if overrides are preferred.">
+                                        <input type="checkbox" id="completion_prompt_manager_popup_entry_form_forbid_overrides" name="forbid_overrides" />
+                                        <span data-i18n="prompt_manager_forbid_overrides">Forbid Overrides</span>
+                                    </label>
+                                </div>
+                            </div>
+                            <div id="completion_prompt_manager_popup_entry_source_block">
+                                <b data-i18n="Source:">Source:</b>
+                                <span>&nbsp;</span>
+                                <span id="completion_prompt_manager_popup_entry_source"></span>
+                            </div>
+                            <textarea id="completion_prompt_manager_popup_entry_form_prompt" class="text_pole" name="prompt" data-macros data-macros-autocomplete="always" data-macros-autocomplete-style="expanded" placeholder="The prompt to be sent." data-i18n="[placeholder]The prompt to be sent."></textarea>
+                        </div>
+                        <div class="completion_prompt_manager_popup_entry_form_footer">
+                            <a id="completion_prompt_manager_popup_entry_form_close" title="Close" data-i18n="[title]close" class="fa-solid fa-close menu_button"></a>
+                            <a id="completion_prompt_manager_popup_entry_form_reset" title="Reset" data-i18n="[title]reset" class="fa-solid fa-undo menu_button"></a>
+                            <a id="completion_prompt_manager_popup_entry_form_save" title="Save" data-i18n="[title]save" class="fa-solid fa-save menu_button" data-pm-prompt=""></a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+        <div id="message_template" class="template_element">
+            <div class="mes" mesid="" ch_name="" is_user="" is_system="" bookmark_link="">
+                <div class="for_checkbox"></div><input type="checkbox" class="del_checkbox">
+                <div class="mesAvatarWrapper">
+                    <div class="avatar">
+                        <img src="">
+                    </div>
+                    <div class="mesIDDisplay"></div>
+                    <div class="mes_timer"></div>
+                    <div class="tokenCounterDisplay"></div>
+                </div>
+                <div class="swipe_left fa-solid fa-chevron-left"></div>
+                <div class="mes_block">
+                    <div class="ch_name flex-container justifySpaceBetween">
+                        <div class="flex-container flex1 alignitemscenter">
+                            <div class="flex-container alignItemsBaseline">
+                                <span class="name_text">${characterName}</span>
+                                <i class="mes_ghost fa-solid fa-ghost" title="This message is invisible for the AI" data-i18n="[title]This message is invisible for the AI"></i>
+                                <small class="timestamp"></small>
+                            </div>
+                        </div>
+                        <div class="mes_buttons">
+                            <div title="Message Actions" class="mes_button extraMesButtonsHint fa-solid fa-ellipsis" data-i18n="[title]Message Actions"></div>
+                            <div class="extraMesButtons">
+                                <div title="Translate message" class="mes_button mes_translate fa-solid fa-language" data-i18n="[title]Translate message"></div>
+                                <div title="Generate Image" class="mes_button sd_message_gen fa-solid fa-paintbrush" data-i18n="[title]Generate Image"></div>
+                                <div title="Narrate" class="mes_button mes_narrate fa-solid fa-bullhorn" data-i18n="[title]Narrate"></div>
+                                <div title="Prompt" class="mes_button mes_prompt fa-solid fa-square-poll-horizontal " data-i18n="[title]Prompt" style="display: none;"></div>
+                                <div title="Exclude message from prompts" class="mes_button mes_hide fa-solid fa-eye" data-i18n="[title]Exclude message from prompts"></div>
+                                <div title="Include message in prompts" class="mes_button mes_unhide fa-solid fa-eye-slash" data-i18n="[title]Include message in prompts"></div>
+                                <div title="Toggle media display style" class="mes_button mes_media_gallery fa-solid fa-photo-film" data-i18n="[title]Toggle media display style"></div>
+                                <div title="Toggle media display style" class="mes_button mes_media_list fa-solid fa-table-cells-large" data-i18n="[title]Toggle media display style"></div>
+                                <div title="Embed file or image" class="mes_button mes_embed fa-solid fa-paperclip" data-i18n="[title]Embed file or image"></div>
+                                <div title="Jump to swipe history" class="mes_button mes_swipe_picker fa-solid fa-bookmark" data-i18n="[title]Jump to swipe history" style="display: none;"></div>
+                                <div title="Create checkpoint" class="mes_button mes_create_bookmark fa-regular fa-solid fa-flag-checkered" data-i18n="[title]Create checkpoint"></div>
+                                <div title="Create branch" class="mes_button mes_create_branch fa-regular fa-code-branch" data-i18n="[title]Create Branch"></div>
+                                <div title="Copy" class="mes_button mes_copy fa-solid fa-copy " data-i18n="[title]Copy"></div>
+                            </div>
+                            <div data-tooltip="Click to open checkpoint chat&#10;Shift+Click to replace the existing checkpoint with a new one" class="mes_button mes_bookmark fa-solid fa-flag" data-i18n="[data-tooltip]Open checkpoint chat&#10;Shift+Click to replace the existing checkpoint with a new one"></div>
+                            <div title="Edit" class="mes_button mes_edit fa-solid fa-pencil " data-i18n="[title]Edit"></div>
+                        </div>
+                        <div class="mes_edit_buttons">
+                            <div class="mes_edit_done menu_button  fa-solid fa-check" title="Confirm" data-i18n="[title]Confirm"></div>
+                            <div class="mes_edit_copy menu_button  fa-solid fa-copy" title="Copy this message" data-i18n="[title]Copy this message"></div>
+                            <div class="mes_edit_add_reasoning menu_button fa-solid fa-lightbulb" title="Add a reasoning block" data-i18n="[title]Add a reasoning block"></div>
+                            <div class="mes_edit_delete menu_button  fa-solid fa-trash-can" title="Delete this message" data-i18n="[title]Delete this message"></div>
+                            <div class="mes_edit_up menu_button  fa-solid fa-chevron-up " title="Move message up" data-i18n="[title]Move message up"></div>
+                            <div class="mes_edit_down menu_button  fa-solid fa-chevron-down" title="Move message down" data-i18n="[title]Move message down"></div>
+                            <div class="mes_edit_cancel menu_button  fa-solid fa-xmark" title="Cancel" data-i18n="[title]Cancel"></div>
+                        </div>
+                    </div>
+                    <details class="mes_reasoning_details">
+                        <summary class="mes_reasoning_summary flex-container">
+                            <div class="mes_reasoning_header_block flex-container">
+                                <div class="mes_reasoning_header flex-container">
+                                    <span class="mes_reasoning_header_title" data-i18n="思考">思考</span>
+                                </div>
+                            </div>
+                            <div class="mes_reasoning_actions flex-container">
+                                <div class="mes_reasoning_copy mes_button fa-solid fa-copy" title="复制思考" data-i18n="[title]复制思考"></div>
+                            </div>
+                        </summary>
+                        <div class="mes_reasoning"></div>
+                    </details>
+                    <div class="mes_text"></div>
+                    <div class="mes_media_wrapper"></div>
+                    <div class="mes_file_wrapper"></div>
+                    <div class="mes_bias"></div>
+                </div>
+                <div class="flex-container swipeRightBlock flexFlowColumn flexNoGap">
+                    <div class="swipe_right fa-solid fa-chevron-right"></div>
+                    <div class="swipes-counter"></div>
+                </div>
+            </div>
+        </div>
+        
+
+        <div id="onboarding_template" class="template_element">
+            <div class="onboarding">
+                <h3>欢迎来到 tavern</h3>
+                <p class="justifyLeft margin-bot-10px">为你在故事中的角色取一个名字。</p>
+                <h4>名字</h4>
+            </div>
+        </div>
+        
+        
+        <div id="bogus_folder_template" class="template_element">
+            <div class="bogus_folder_select entity_block flex-container wide100p alignitemsflexstart">
+                <div class="avatar flex alignitemscenter textAlignCenter">
+                    <i class="bogus_folder_icon fa-solid fa-xl"></i>
+                </div>
+                <div class="flex-container wide100pLess70px character_select_container">
+                    <div class="wide100p character_name_block">
+                        <span class="ch_name"></span>
+                        <small class="ch_additional_info bogus_folder_counter"></small>
+                    </div>
+                    <small class="character_name_block_sub_line bogus_folder_hidden_counter"></small>
+                    <div class="bogus_folder_avatars_block avatars_inline avatars_inline_small tags tags_inline"></div>
+                </div>
+            </div>
+        </div>
+        <div id="bogus_folder_back_template" class="template_element">
+            <div class="bogus_folder_select bogus_folder_select_back flex-container wide100p alignitemsflexstart" id="BogusFolderBack" tagid="back">
+                <div class="avatar flex alignitemscenter textAlignCenter">
+                    <i class="bogus_folder_icon fa-solid fa-xl fa-right-from-bracket fa-flip-horizontal"></i>
+                </div>
+                <div class="bogus_folder_back_placeholder flex alignitemscenter textAlignCenter">
+                    <i class="bogus_folder_icon fa-solid fa-xl fa-right-from-bracket fa-flip-horizontal"></i>
+                </div>
+                <div class="flex-container wide100pLess70px character_select_container height100p alignitemscenter">
+                    <div class="wide100p character_name_block">
+                        <span class="ch_name" data-i18n="Go back">Go back</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="inline_avatar_template" class="template_element">
+            <div class="avatar inline_avatar flex alignitemscenter textAlignCenter">
+                <img src="">
+            </div>
+        </div>
+        <div id="alternate_greetings_template" class="template_element">
+            <div class="alternate_grettings flexFlowColumn flex-container">
+                <div class="title_restorable">
+                    <h3><span data-i18n="Alternate Greetings" class="mdhotkey_location">Alternate Greetings</span></h3>
+                    <div class="menu_button menu_button_icon add_alternate_greeting">
+                        <i class="fa-solid fa-plus"></i>
+                        <span data-i18n="Add">Add</span>
+                    </div>
+                </div>
+                <small class="justifyLeft" data-i18n="Alternate_Greetings_desc">
+                    These will be displayed as swipes on the first message when starting a new chat.
+                </small>
+                <hr>
+                <div class="alternate_greetings_list flexFlowColumn flex-container wide100p">
+                    <strong class="alternate_grettings_hint margin-bot-10px">
+                        <span data-i18n="alternate_greetings_hint_1">Click the</span> <i class="fa-solid fa-plus"></i> <span data-i18n="alternate_greetings_hint_2">button to get started!</span>
+                    </strong>
+                </div>
+            </div>
+        </div>
+        <div id="alternate_greeting_form_template" class="template_element">
+            <div class="alternate_greeting">
+                <details open>
+                    <summary>
+                        <div class="title_restorable gap5px">
+                            <div class="flex-container alignItemsCenter">
+                                <strong><span data-i18n="Alternate Greeting #">Alternate Greeting #</span><span class="greeting_index"></span></strong>
+                                <i class="editor_maximize fa-solid fa-maximize right_menu_button" title="Expand the editor" data-i18n="[title]Expand the editor"></i>
+                            </div>
+                            <span class="expander"></span>
+                            <div class="menu_button menu_button_icon move_up_alternate_greeting" title="Move up" data-i18n="[title]Move up">
+                                <i class="fa-solid fa-chevron-up"></i>
+                            </div>
+                            <div class="menu_button menu_button_icon move_down_alternate_greeting" title="Move down" data-i18n="[title]Move down">
+                                <i class="fa-solid fa-chevron-down"></i>
+                            </div>
+                            <div class="menu_button menu_button_icon delete_alternate_greeting">
+                                <i class="fa-solid fa-trash-alt"></i>
+                                <span data-i18n="Delete">Delete</span>
+                            </div>
+                        </div>
+                    </summary>
+                    <textarea data-macros name="alternate_greetings" data-i18n="[placeholder](This will be the first message from the character that starts every chat)" placeholder="(This will be the first message from the character that starts every chat)" class="text_pole textarea_compact alternate_greeting_text mdHotkeys" value="" autocomplete="off" rows="12"></textarea>
+                </details>
+            </div>
+        </div>
+
+        <!-- Media Templates -->
+        <div id="message_file_template" class="template_element">
+            <div class="mes_media_container mes_file_container">
+                <div class="fa-lg fa-solid fa-file-alt mes_file_icon"></div>
+                <div class="mes_file_name"></div>
+                <div class="mes_file_size"></div>
+                <div class="right_menu_button mes_file_open fa-solid fa-magnifying-glass" title="View contents" data-i18n="[title]View contents"></div>
+                <div class="right_menu_button mes_file_delete fa-solid fa-trash-can" title="Remove the file" data-i18n="[title]Remove the file"></div>
+            </div>
+        </div>
+
+        <div id="message_image_template" class="template_element">
+            <div class="mes_media_container mes_img_container">
+                <div class="mes_img_controls">
+                    <div title="Expand and zoom" class="right_menu_button fa-lg fa-solid fa-magnifying-glass mes_media_enlarge" data-i18n="[title]Expand and zoom"></div>
+                    <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
+                    <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
+                </div>
+                <img class="mes_img" src="" />
+            </div>
+        </div>
+
+        <div id="message_video_template" class="template_element">
+            <div class="mes_media_container mes_video_container">
+                <div class="mes_video_controls">
+                    <div title="Expand and zoom" class="right_menu_button fa-lg fa-solid fa-magnifying-glass mes_media_enlarge" data-i18n="[title]Expand and zoom"></div>
+                    <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
+                    <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
+                </div>
+                <video class="mes_video" controls preload="metadata"></video>
+            </div>
+        </div>
+
+        <div id="message_gallery_controls" class="template_element">
+            <div class="mes_img_swipes">
+                <div title="Swipe left" class="right_menu_button fa-lg fa-solid fa-chevron-left mes_img_swipe_left" data-i18n="[title]Swipe left"></div>
+                <div class="mes_img_swipe_counter">1/1</div>
+                <div title="Swipe right" class="right_menu_button fa-lg fa-solid fa-chevron-right mes_img_swipe_right" data-i18n="[title]Swipe right"></div>
+            </div>
+        </div>
+
+        <div id="message_audio_template" class="template_element">
+            <div class="mes_media_container mes_audio_container audio-player">
+                <audio class="mes_audio" preload="auto" hidden></audio>
+                <div class="audio-player-header">
+                    <div class="audio-player-title">Audio</div>
+                    <div class="right_menu_button mes_media_delete fa-fw fa-solid fa-trash-can" title="Delete" data-i18n="[title]Delete"></div>
+                </div>
+                <div class="audio-player-controls">
+                    <button class="audio-player-play-pause right_menu_button fa-fw fa-solid fa-play" title="Play" data-i18n="[title]Play"></button>
+                    <div class="audio-player-time">
+                        <span class="audio-player-current-time">0:00</span>
+                        <span class="audio-player-time-separator">/</span>
+                        <span class="audio-player-total-time">0:00</span>
+                    </div>
+                    <div class="audio-player-progress">
+                        <div class="audio-player-progress-bar"></div>
+                    </div>
+                    <div class="audio-player-volume-control">
+                        <button class="audio-player-volume right_menu_button fa-fw fa-solid fa-volume-high" title="Mute" data-i18n="[title]Mute"></button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+        <div id="sheld" class="nora-headless-chat-host" hidden aria-hidden="true">
+        <div id="chat"></div>
+        <div id="form_sheld" class="nora-headless-command-host">
+            <form id="file_form" hidden>
+                <input id="file_form_input" type="file" multiple hidden>
+                <input id="embed_file_input" type="file" multiple hidden>
+                <button id="file_form_reset" type="reset" hidden aria-hidden="true"></button>
+            </form>
+            <div id="send_form" class="no-connection" hidden>
+                <textarea id="send_textarea" name="text" hidden autocomplete="off"></textarea>
+            </div>
+        </div>
+    </div>
+    <!-- popups live outside sheld to avoid blur conflicts -->
+    
+
+    <!-- Script includes -->
+    <script>
+        globalThis.__NORA_BOOT_METRICS__.milestones.push({
+            name: 'parser-reached-script-block',
+            at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+        });
+    </script>
+    <script>
+        globalThis.__NORA_BOOT_METRICS__.milestones.push({
+            name: 'runtime-script-requested',
+            at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+        });
+    </script>
+    <script src="{{NORA_ASSET_BASE}}/dist/nora/legacy.js"></script>
+    <script>
+        globalThis.__NORA_MODULE_BOOTSTRAP_PROMISE__ = globalThis.__NORA_INLINE_MANIFEST_PROMISE__.then(async (manifest) => {
+            const assetBase = globalThis.__NORA_ASSET_BASE__;
+            globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                name: 'legacy-libs-loaded',
+                at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                source: manifest.legacy,
+            });
+            const imports = {
+                '/lib.js': `${assetBase}/lib.js`,
+                '/lib/': `${assetBase}/lib/`,
+                '/scripts/': `${assetBase}/scripts/`,
+            };
+
+            for (const [modulePath, dataUrl] of Object.entries(manifest.modules || {})) {
+                const aliasUrl = manifest.aliases?.[modulePath];
+                if (!aliasUrl) throw new Error(`Nora module alias is missing: ${modulePath}`);
+                imports[`nora-module/${modulePath}`] = dataUrl;
+                imports[`/${modulePath}`] = aliasUrl;
+                imports[`${assetBase}/${modulePath}`] = aliasUrl;
+            }
+            for (const [modulePath, assetPath] of Object.entries(manifest.compiled || {})) {
+                imports[`nora-module/${modulePath}`] = `${assetBase}/${assetPath}`;
+            }
+            for (const modulePath of manifest.network || []) {
+                imports[`nora-module/${modulePath}`] = `${assetBase}/${modulePath}`;
+            }
+
+            const importMap = document.createElement('script');
+            importMap.type = 'importmap';
+            importMap.textContent = JSON.stringify({ imports });
+            document.head.append(importMap);
+
+            const compatibilityPrelude = document.createElement('script');
+            compatibilityPrelude.type = 'module';
+            let resolveCompatibilityPrelude;
+            let rejectCompatibilityPrelude;
+            const compatibilityPreludeReady = new Promise((resolve, reject) => {
+                resolveCompatibilityPrelude = resolve;
+                rejectCompatibilityPrelude = reject;
+            });
+            globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__ = resolveCompatibilityPrelude;
+            compatibilityPrelude.textContent = [
+                "import 'nora-module/lib/structured-clone/monkey-patch.js';",
+                "import 'nora-module/lib/swiped-events.js';",
+                "import 'nora-module/lib/eventemitter.js';",
+                "import 'nora-module/scripts/i18n.js';",
+                "globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__?.();",
+            ].join('\n');
+            compatibilityPrelude.addEventListener('error', () => {
+                rejectCompatibilityPrelude(new Error('Nora compatibility prelude failed to evaluate.'));
+            }, { once: true });
+            document.body.append(compatibilityPrelude);
+            await compatibilityPreludeReady;
+            delete globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__;
+
+            const entry = document.createElement('script');
+            entry.id = 'nora-runtime-entry';
+            entry.type = 'module';
+            entry.src = `${assetBase}/dist/nora/entry.js`;
+            document.body.append(entry);
+
+            globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                name: 'module-runtime-requested',
+                at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+            });
+        }).catch((error) => {
+            document.body.classList.add('nora-runtime-failed');
+            globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                name: 'module-runtime-failed',
+                at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                message: String(error?.message || error),
+            });
+            console.error('[Nora Runtime] Module bootstrap failed', error);
+            throw error;
+        });
+    </script>
+    <script>
+        window.addEventListener('load', (event) => {
+            const documentHeight = () => {
+                const doc = document.documentElement;
+                doc.style.setProperty('--doc-height', `${window.innerHeight}px`);
+            }
+            window.addEventListener('resize', documentHeight);
+            documentHeight();
+        });
+    </script>
+</body>
+
+</html>
