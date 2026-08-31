@@ -79,13 +79,16 @@ flowchart LR
 
 The operational sequence is:
 
-1. `ops/hooks/tavern-liveware-register` waits for the relevant gateway,
-   Liveware, tunnel, and ClawChat activation conditions.
-2. `ops/scripts/provision.sh` creates or reuses one Liveware application and
-   records its identifier in `tavern-state/apps.json`.
-3. `ops/scripts/bringup-native.sh` asks `runtime.sh` to start the production run,
-   configures the model, logs in to Liveware, and binds the public application to
-   `http://127.0.0.1:8799`.
+1. Explicit first installation uses `provision.sh`; it alone may create missing
+   Tavern / Story Profile App identities. Queries fail closed and confirmed IDs
+   are persisted separately. Ordinary upgrade and startup never create Apps.
+2. `ops/hooks/tavern-liveware-register` and `bringup-native.sh` use the shared
+   installation lock and existing-only `liveware_integration.py` path. An
+   unfinished update blocks startup. They do not synchronize model settings.
+3. Upgrades reconcile the two saved IDs within the update journal. Tavern binds
+   to the local root; Story Profile binds to `/_liveware/story-profile`. Launcher
+   metadata and local role-specific HTML/icons are checked separately from
+   actual external routing, which the installed CLI cannot independently read.
 4. `app/native_lifecycle.py` verifies the pinned engine contract, prepares Node
    dependencies, renders configuration, installs the repository-owned native
    extensions into the user data tree, and launches `node server.js`.

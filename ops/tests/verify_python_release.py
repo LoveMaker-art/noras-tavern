@@ -106,9 +106,9 @@ def main():
                         json.dumps(fixture['productions'], ensure_ascii=False)], check=True)
         before = {name: trees.fingerprint(home / name, state=name == 'tavern-state')
                   for name in ('apps/tavern-runtime', 'tavern-state', 'memories', 'config.yaml', 'AGENTS.md')}
-        # Bootstrap legitimately refreshes its own skill before review. All
-        # other original skills must be restored byte-for-byte on rollback.
-        before.update({name: trees.fingerprint(home / name) for name in old_skills if name != 'skills/system/tavern-updater'})
+        # Bootstrap stages its private engine; every original skill, including
+        # the updater itself, must be restored byte-for-byte on rollback.
+        before.update({name: trees.fingerprint(home / name) for name in old_skills})
         original_profile = json.loads((state / 'story_profile.json').read_text())
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -194,12 +194,9 @@ def main():
                 else:
                     again = updater.review(args.release_dir, manifest_hash, candidate=True)
                     updater.apply(again['transaction'], again['planDigest'])
-                second = json.loads((Path(again['transaction']) / 'migration.json').read_text())
-                assert second['migration'] is False, 'Existing Node data must not run a version conversion'
-                if args.via_bootstrap:
-                    subprocess.run(legacy_cli + ['rollback', '--confirm'], check=True)
-                else:
-                    updater.rollback(again['transaction'], again['planDigest'])
+                second = json.loads((Path(again['transaction']) / 'receipt.json').read_text())
+                assert second['status'] == 'already-installed', 'Identical release must not enter maintenance again'
+                assert not (Path(again['transaction']) / 'migration.json').exists(), 'No-op must not repeat migration'
                 assert updater.lifecycle.runtime().status()['health']['ok']
                 assert get('/api/nora-worlds-v2/worlds/prod_fixture/snapshot')['snapshot']['chat']['messages'] == snapshot['chat']['messages']
             if args.via_bootstrap:
@@ -212,11 +209,11 @@ def main():
             with socket.socket() as probe:
                 assert probe.connect_ex(('127.0.0.1', port)) != 0, 'Rollback unexpectedly started a service'
             print(json.dumps({'oldCommit': old_commit, 'newSourceDigest': manifest['sourceDigest'],
-                'pythonToNode': True, 'sourceLayout': args.source_layout, 'originalSkillsRestored': len(old_skills) - 1,
+                'pythonToNode': True, 'sourceLayout': args.source_layout, 'originalSkillsRestored': len(old_skills),
                 'worlds': 2, 'messages': 32, 'independentCharacters': 2,
                 'profileContentPreserved': True, 'fullStateRollback': True, 'pythonRestoredOffline': True,
                 'newMcp': installed['verification']['newMcpProcess'], 'modelsCalled': 0,
-                'viaBootstrap': args.via_bootstrap, 'runningNodeUpdateAndRollback': args.repeat_update,
+                'viaBootstrap': args.via_bootstrap, 'identicalNodeReleaseNoop': args.repeat_update,
                 'legacyAssetHttpVerified': True, 'livewareDeployment': False, 'port': port}, ensure_ascii=False, indent=2))
         finally:
             if started or (old_app / 'native-runtime.json').exists():

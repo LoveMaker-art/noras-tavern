@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+echo '[tavern-updater] 检查 Python 环境并下载经过校验的更新器' >&2
 # Select once, before downloads or skill changes. Never install into the system
 # Python: Hermes already owns the required PyYAML dependency in its virtualenv.
 python_ready() {
@@ -46,8 +47,8 @@ cleanup() {
     rmdir "$TAVERN_BOOTSTRAP_WORK"
 }
 trap cleanup EXIT HUP INT TERM
-curl -fsSL "$TAVERN_BOOTSTRAP_DOWNLOAD/bootstrap-manifest.json" -o "$TAVERN_BOOTSTRAP_WORK/bootstrap-manifest.json"
-curl -fsSL "$TAVERN_BOOTSTRAP_DOWNLOAD/tavern-updater-bootstrap.py" -o "$TAVERN_BOOTSTRAP_WORK/tavern-updater-bootstrap.py"
+curl -fsSL --connect-timeout 15 --max-time 120 "$TAVERN_BOOTSTRAP_DOWNLOAD/bootstrap-manifest.json" -o "$TAVERN_BOOTSTRAP_WORK/bootstrap-manifest.json"
+curl -fsSL --connect-timeout 15 --max-time 120 "$TAVERN_BOOTSTRAP_DOWNLOAD/tavern-updater-bootstrap.py" -o "$TAVERN_BOOTSTRAP_WORK/tavern-updater-bootstrap.py"
 "$TAVERN_PYTHON" -B - "$TAVERN_BOOTSTRAP_WORK" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
@@ -55,4 +56,4 @@ manifest = json.loads((root / 'bootstrap-manifest.json').read_text())
 if manifest.get('scope') != 'tavern-updater-bootstrap' or hashlib.sha256((root / 'tavern-updater-bootstrap.py').read_bytes()).hexdigest() != manifest.get('sha256'):
     raise SystemExit('Bootstrap checksum mismatch')
 PY
-"$TAVERN_PYTHON" -B "$TAVERN_BOOTSTRAP_WORK/tavern-updater-bootstrap.py" "$@"
+"$TAVERN_PYTHON" -u -B "$TAVERN_BOOTSTRAP_WORK/tavern-updater-bootstrap.py" "$@"

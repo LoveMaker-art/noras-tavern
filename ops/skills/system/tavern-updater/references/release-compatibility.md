@@ -33,8 +33,9 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 Publish that installer, `bootstrap-manifest.json` and `tavern-updater-bootstrap.py`
 beside the full bundle. Bootstrap validates hashes, stages the target updater
-privately, refreshes only its skill, and returns a pinned review/apply command.
-App/MCP/data/AGENTS stay unchanged until apply. Old `apply --plan <id>` resolves
+privately and returns a transaction-bound review/apply command. It does not
+refresh an active skill before apply. App/MCP/data/AGENTS and all active skills
+stay unchanged until apply. Old `apply --plan <id>` resolves
 only the pinned Bootstrap review, never a freshly recomputed digest. SHA-256 is
 integrity binding, not an independent publisher signature.
 
@@ -48,6 +49,7 @@ python scripts/update.py --hermes-home /opt/data fetch --tag <approved-tag> --de
 python scripts/update.py --hermes-home /opt/data review --release-dir <directory> --manifest-sha256 <sha256>
 python scripts/update.py --hermes-home /opt/data apply --transaction <review-path> --expected-plan <digest> --confirm
 python scripts/update.py --hermes-home /opt/data rollback --transaction <review-path> --expected-plan <digest> --confirm
+python scripts/update.py --hermes-home /opt/data status --transaction <review-path>
 ```
 
 Review checks archives, per-file hashes, traversal, symlinks, duplicate members,
@@ -56,6 +58,12 @@ Whole app/MCP/ops and managed skill directories are replaced after preparation.
 Review lists unknown files leaving active paths; they stay in recovery. Supported
 custom server/frontend plugin locations are preserved explicitly. Inspect local
 code customizations before approving.
+
+Each new review owns a private engine snapshot whose complete file inventory is
+bound to the plan digest. Apply/rollback route to that engine before maintaining
+the installation; replacing installed ops cannot change the transaction engine.
+The skill never executes a historical global Bootstrap pointer. If installed ops
+are absent, use the explicitly returned Bootstrap command, not a guessed version.
 
 The desired inventory includes unchanged AGENTS and skill files. Updater 2.0.0
 could mistake unchanged AGENTS for a retired file during a second update; use
@@ -68,6 +76,14 @@ Plans, backups and receipts live under `tavern-updates-v2/review-*`, outside ski
 discovery. `receipt.json` records file intents so interrupted operations can use
 the matching rollback command. Recovery includes configuration; keep it private
 and retain the latest usable backup until acceptance.
+
+New releases have one directory-transaction writer. Legacy file receipts retain a
+recovery-only adapter, not another apply path. `status` does not acquire maintenance,
+start services, repair PID files or mutate receipts. It reports the latest
+review/attempt unless an exact transaction is selected, and samples the current
+owned process/health endpoint separately. An old `rolled-back` receipt does not
+prove the server is still running now. `liveware: not-verified` and gateway
+activation states must not be presented as verified by a local HTTP/MCP probe.
 
 The updater restarts Tavern through its Node lifecycle and probes a fresh
 read-only MCP process. It does not restart the Hermes process executing the

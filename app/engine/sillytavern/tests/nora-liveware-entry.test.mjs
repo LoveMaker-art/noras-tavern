@@ -61,13 +61,11 @@ test('separate Liveware roots identify the correct app without relying on forwar
     assert.equal((await fetch(base + STORY_PROFILE_UPSTREAM_PATH + '-other/')).status, 404, 'prefix must match a whole path segment');
 });
 
-test('production entry routing precedes shared security and the binding selects the profile entry', () => {
+test('production entry routing precedes shared security and selects independent entry metadata', () => {
     const server = readFileSync(new URL('../src/server-main.js', import.meta.url), 'utf8');
     assert.ok(server.indexOf('app.use(createLivewareEntryMiddleware())') > 0);
     assert.ok(server.indexOf('app.use(createLivewareEntryMiddleware())') < server.indexOf('app.use(helmet('));
     assert.match(server, /createLivewareIndexHandler\(\{[\s\S]*tavernHtml: indexHtml,[\s\S]*storyProfileHtml:/);
-    const bringup = readFileSync(new URL('../../../../ops/scripts/bringup-native.sh', import.meta.url), 'utf8');
-    assert.ok(bringup.includes(`"$ACTOR_APP_ID" "http://127.0.0.1:$NATIVE_PORT${STORY_PROFILE_UPSTREAM_PATH}"`));
-    const provision = readFileSync(new URL('../../../../ops/scripts/provision.sh', import.meta.url), 'utf8');
-    assert.ok(provision.includes('url = "https://%s/" % e["domain"]'));
+    // Platform binding/registration behavior is exercised through the shared
+    // integration interface by ops/tests/test_liveware_integration.py.
 });

@@ -23,8 +23,6 @@ const projectRoot = path.resolve(appRoot, '..');
 const storyProfileRuntimeRoot = path.join(appRoot, 'story_profile_runtime');
 const storyProfileCoreRoot = path.join(storyProfileRuntimeRoot, 'core');
 const panelSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/panel-controller.js'), 'utf8');
-const provisionSource = fs.readFileSync(path.join(projectRoot, 'ops/scripts/provision.sh'), 'utf8');
-const bringupSource = fs.readFileSync(path.join(projectRoot, 'ops/scripts/bringup-native.sh'), 'utf8');
 const endpointSource = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/src/endpoints/nora-story-profile.js'), 'utf8');
 const noraUiSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/index.js'), 'utf8');
 const profileMemorySource = fs.readFileSync(path.join(projectRoot, 'ops/scripts/profile_memory.py'), 'utf8');
@@ -397,16 +395,4 @@ test('Nora send lifecycle and Story Profile maintenance use the new checkpoint s
     assert.match(noraUiSource, /\/api\/nora-story-profile\/checkpoint/);
     assert.doesNotMatch(profileMemorySource, /\/api\/event/);
     assert.doesNotMatch(profileMemorySource, /HermesModelClient|refresh_taste_profile/);
-});
-
-test('provisioning preserves the existing Story Profile app and native bringup binds both apps', () => {
-    assert.match(provisionSource, /ACTOR_APP_NAME/);
-    assert.match(provisionSource, /ensure\("actor"/);
-    assert.match(provisionSource, /url = "https:\/\/%s\/" % e\["domain"\]/);
-    assert.doesNotMatch(provisionSource, /unregister_app\(retired_id\)/);
-    assert.match(bringupSource, /ACTOR_APP_ID/);
-    assert.match(bringupSource, /tunnel bind "\$APP_ID" "http:\/\/127\.0\.0\.1:\$NATIVE_PORT"/);
-    assert.match(bringupSource, /tunnel bind "\$ACTOR_APP_ID" "http:\/\/127\.0\.0\.1:\$NATIVE_PORT\/_liveware\/story-profile"/);
-    assert.doesNotMatch(provisionSource, /STORY_PROFILE_SKILL_SOURCE=/);
-    assert.doesNotMatch(provisionSource, /cp .*profile_memory\.py/);
 });

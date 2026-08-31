@@ -22,30 +22,8 @@ if [ "$#" -eq 0 ]; then
   set -- status
 fi
 command=$1
-if [ "$command" = restart ]; then
-  shift
-  run_id=production
-  expect_run_id=0
-  for arg do
-    if [ "$expect_run_id" -eq 1 ]; then
-      run_id=$arg
-      expect_run_id=0
-      break
-    fi
-    if [ "$arg" = --run-id ]; then
-      expect_run_id=1
-    fi
-  done
-  if [ "$expect_run_id" -eq 1 ]; then
-    echo "--run-id requires a value" >&2
-    exit 2
-  fi
-  "$PYTHON" "$LIFECYCLE" stop --run-id "$run_id"
-  exec "$PYTHON" "$LIFECYCLE" start "$@"
-fi
-
 case "$command" in
-  install|prepare|start|stop|status|sync)
+  install|prepare|start|stop|restart|status|sync)
     exec "$PYTHON" "$LIFECYCLE" "$@"
     ;;
   *)

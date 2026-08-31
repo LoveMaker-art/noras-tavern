@@ -1,5 +1,8 @@
 # 原 Python 酒馆 → Node Tavern：实现与验收
 
+本文保留数据迁移的历史实现证据；其中更新入口及 `/reload-mcp` 激活流程已由
+[更新器实现](UPDATER-IMPLEMENTATION-20260831.md)替代，不作为当前升级操作指令。
+
 ## 授权与范围
 
 用户确认：只处理 Python 用户进入 Node，不做 Node 不同版本的数据升级；允许补齐

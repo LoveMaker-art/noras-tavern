@@ -2,7 +2,6 @@
 """Review/apply/rollback a pinned full release; Python data is migrated on a copy."""
 import argparse
 from contextlib import contextmanager
-import fcntl
 import importlib.util
 import json
 import os
@@ -11,9 +10,12 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
+
+# Status and transaction snapshots must not write bytecode into active ops.
+sys.dont_write_bytecode = True
 
 from bundle import PARTS, digest, download_release, extract_bundle, read_bundle, relative
+from runtime_lock import installation_lock
 
 
 def module_at(name, file):
@@ -68,7 +70,7 @@ def plan_digest(plan):
     return digest(json.dumps(plan, sort_keys=True, separators=(",", ":")).encode())
 
 
-class Updater:
+class ReleaseReview:
     def __init__(self, home, *, lifecycle=None):
         self.home = safe(Path(home).expanduser().absolute())
         explicit_installation = (os.environ.get('HERMES_HOME') == str(self.home)
@@ -84,10 +86,7 @@ class Updater:
 
     @contextmanager
     def lock(self):
-        safe(self.root / "lock")
-        self.root.mkdir(parents=True, exist_ok=True)
-        with (self.root / "lock").open("a") as stream:
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with installation_lock(self.home):
             yield
 
     def _target(self, name):
@@ -99,6 +98,8 @@ class Updater:
             # The only host configuration owned by this updater is an explicit
             # skill file, the merged AGENTS, the Nora MCP entry and engine deps.
             if str(rel) not in ("AGENTS.md", "config.yaml", "tavern-state/native-runtime/dependencies.json",
+                                "hooks/tavern-liveware-register/HOOK.yaml", "hooks/tavern-liveware-register/handler.py",
+                                "hooks/tavern-liveware-register/run.sh",
                                 "plugins/tavern-update-activation/__init__.py", "plugins/tavern-update-activation/plugin.yaml") and not (
                 str(rel).startswith("skills/") or str(rel).startswith("tavern-state/native/default-user/extensions/")):
                 raise ValueError("Invalid managed host path: " + name)
@@ -148,35 +149,14 @@ class Updater:
                 except (ValueError, OSError) as error:
                     raise ValueError("World record requires review before updating: " + str(file)) from error
 
-    def _check_space(self, transaction, plan, *, preparing):
-        changed = [c for c in plan["changes"] if c["before"] != c["after"]]
-        backup_bytes = sum(self._target(c["name"]).stat().st_size for c in changed if c["before"] is not None)
-        replacement_bytes = sum((transaction / c["source"]).stat().st_size for c in changed if c["source"])
-        # npm's expanded size is not present in the release manifest. This is
-        # a conservative preparation reserve, not a claimed exact prediction.
-        reserve = 1024 ** 3 if preparing else 64 * 1024 ** 2
-        required = backup_bytes + replacement_bytes + reserve
-        locations = {self.root, self.apps, self.home, self.state}
-        for location in locations:
-            safe(location)
-            while not location.exists():
-                location = location.parent
-            if shutil.disk_usage(location).free < required:
-                raise ValueError(f"Insufficient disk space at {location}: need at least {required} bytes; no files switched")
-
-    def _mcp_config(self, *, activation=False):
+    def _mcp_config(self, *, retire_activation=False):
         import yaml  # Hermes' Python environment already owns this dependency.
         path = self.home / "config.yaml"
         raw = content(path) or b""
         value = yaml.safe_load(raw) or {}
         original = json.loads(json.dumps(value))
-        if activation:
-            plugins = value.setdefault('plugins', {})
-            enabled = plugins.setdefault('enabled', [])
-            if not isinstance(enabled, list) or not isinstance(plugins.get('disabled', []), list):
-                raise ValueError('Hermes plugin configuration requires review')
-            if 'tavern-update-activation' not in plugins.get('disabled', []) and 'tavern-update-activation' not in enabled:
-                enabled.append('tavern-update-activation')
+        if retire_activation and 'plugins' in value and 'enabled' in value['plugins']:
+            value['plugins']['enabled'] = [name for name in value['plugins']['enabled'] if name != 'tavern-update-activation']
         servers = value.setdefault("mcp_servers", {})
         old = servers.get("nora", {})
         current = json.loads(json.dumps(old))
@@ -211,12 +191,16 @@ class Updater:
         self.root.mkdir(parents=True, exist_ok=True)
         transaction = Path(tempfile.mkdtemp(prefix="review-", dir=self.root))
         transaction.chmod(0o700)
+        from engine_snapshot import capture
+        engine = capture(transaction, Path(__file__).resolve().parent)
         stage = transaction / "source"
         extract_bundle(directory, stage, manifest)
         desired = {name: stage / name for name in manifest["artifacts"]}
         installer = module_at("release_skill_installer", stage / "ops/scripts/install-hermes-skills.py")
         generated = transaction / "generated"
         generated.mkdir()
+        baseline = self.root / "installed.json"
+        previous = json.loads(baseline.read_text()) if baseline.exists() else {"files": {}}
 
         def generated_file(name, data):
             file = generated / str(len(desired))
@@ -242,26 +226,27 @@ class Updater:
         for name in manifest["artifacts"]:
             if name.startswith("ops/hooks/tavern-liveware-register/") or name == "ops/eslint-owned.cjs":
                 desired["home/skills/creative/tavern/" + name[len("ops/"):]] = stage / name
+            if name.startswith("ops/hooks/tavern-liveware-register/"):
+                official = {'HOOK.yaml': 'ea86052934fb13ba4112210f620c1472d4f6af93ebaa3230f83cb2cc9c31ee8a',
+                            'handler.py': '4f04c3e8a4fb3ec02627d7b3ce7fcd91463248842779785aa810fd897cc401c7',
+                            'run.sh': 'ae3e02b7600c2d1c6a00834e69da8b85724f9daf84ab25b11f51f4164dade4b1'}
+                target_name = 'home/' + name[len('ops/'):]
+                if Path(name).name not in official:
+                    raise ValueError('Unrecognized startup hook file')
+                current = sha(safe(self._target(target_name)))
+                if current not in (None, official[Path(name).name], previous['files'].get(target_name), sha(stage / name)):
+                    raise ValueError('Modified startup hook; preserve and review: ' + target_name)
+                desired[target_name] = stage / name
         # Copy only shipped extension files. Extra user files remain untouched;
         # future removals use the installed managed-file baseline below.
         for name in manifest["artifacts"]:
             prefix = "app/native-extensions/"
             if name.startswith(prefix):
                 desired["home/tavern-state/native/default-user/extensions/" + name[len(prefix):]] = stage / name
-        activation_files = ('__init__.py', 'plugin.yaml')
-        activation = all('ops/updater/hermes-plugin/' + name in manifest['artifacts'] for name in activation_files)
-        if activation:
-            old_baseline = json.loads((self.root / 'installed.json').read_text()) if (self.root / 'installed.json').exists() else {}
-            for name in activation_files:
-                managed = 'home/plugins/tavern-update-activation/' + name
-                source = stage / 'ops/updater/hermes-plugin' / name
-                existing = sha(self._target(managed))
-                if existing not in (None, sha(source), old_baseline.get('files', {}).get(managed)):
-                    raise ValueError('Modified activation plugin; preserve and review: ' + managed)
-                desired[managed] = source
-        generated_file("home/config.yaml", self._mcp_config(activation=activation))
-        baseline = self.root / "installed.json"
-        previous = json.loads(baseline.read_text()) if baseline.exists() else {"files": {}}
+        from activation_retirement import review as retirement_review
+        retirement = retirement_review(self.home)
+        desired.update({name: None for name in retirement['files']})
+        generated_file("home/config.yaml", self._mcp_config(retire_activation=retirement['owned']))
         for name, old_sha in previous["files"].items():
             if name not in desired:
                 if name in ("home/AGENTS.md", "home/config.yaml"):
@@ -285,12 +270,13 @@ class Updater:
         plan = {"schema": 2, "home": str(self.home), "manifestSha256": expected, "commit": manifest["commit"],
                 "sourceDigest": manifest["sourceDigest"], "candidate": manifest["candidate"],
                 "versions": manifest["versions"], "changes": changes, "files": inventory,
-                "previousBaseline": sha(baseline)}
+                "previousBaseline": sha(baseline), "engine": engine, "activationRetirement": retirement}
         json_write(transaction / "plan.json", plan)
         return {"status": "reviewed", "transaction": str(transaction), "planDigest": plan_digest(plan),
-                "versions": plan["versions"], "changedFiles": sum(c["before"] != c["after"] for c in changes),
+                "versions": plan["versions"], "engine": {'entry': engine['entry'], 'sha256': engine['sha256']},
+                "changedFiles": sum(c["before"] != c["after"] for c in changes),
                 "candidate": plan["candidate"], "preserves": ["worlds", "chats", "model keys", "unrelated skills", "AGENTS outside managed block"],
-                "activation": "Tavern restart, then Hermes /reload-mcp and fresh session for skill/AGENTS context"}
+                "activation": "After successful installation, send /restart in ClawChat; gateway activation is separately verified"}
 
     def _load_plan(self, transaction, expected):
         transaction = safe(Path(transaction).absolute())
@@ -299,8 +285,6 @@ class Updater:
         plan = json.loads((transaction / "plan.json").read_text())
         if plan_digest(plan) != expected or plan["home"] != str(self.home):
             raise ValueError("Plan changed or belongs to another installation")
-        if (plan.get('isolatedClean') or plan.get('cleanTransaction')) and type(self) is Updater:
-            raise ValueError('Use the clean updater for this transaction; legacy file apply is not permitted')
         for change in plan["changes"]:
             self._target(change["name"])
             if change["source"]:
@@ -308,6 +292,9 @@ class Updater:
         return transaction, plan
 
     def _preconditions(self, transaction, plan):
+        if plan.get('engine'):
+            from engine_snapshot import verify
+            verify(transaction, plan['engine'])
         # Block application, not recovery: an affected old transaction must
         # still be able to restore its backed-up AGENTS through rollback.
         protected = {"home/AGENTS.md", "home/config.yaml"}
@@ -324,103 +311,6 @@ class Updater:
             if change["source"] and sha(transaction / change["source"]) != change["after"]:
                 raise ValueError("Staged source changed: " + change["name"])
 
-    def apply(self, transaction, expected):
-        with self.lock():
-            for file in self.root.glob("review-*/receipt.json"):
-                status = json.loads(file.read_text()).get("status")
-                if status not in ("rolled-back", "installed-awaiting-hermes-reload"):
-                    raise ValueError("Unfinished update requires recovery first: " + str(file.parent))
-            transaction, plan = self._load_plan(transaction, expected)
-            if (transaction / "receipt.json").exists():
-                raise ValueError("Transaction already attempted; inspect receipt/recovery")
-            self._preconditions(transaction, plan)
-            self._check_space(transaction, plan, preparing=True)
-            # Download/install dependencies before interrupting the live process.
-            self.lifecycle.prepare(transaction)
-            self._preconditions(transaction, plan)
-            self._check_space(transaction, plan, preparing=False)
-            backup = transaction / "backup"
-            backup.mkdir()
-            actual = [c for c in plan["changes"] if c["before"] != c["after"]]
-            for i, change in enumerate(actual):
-                old = content(self._target(change["name"]))
-                if old is not None:
-                    atomic(backup / str(i), old, change["mode"])
-            old_baseline = content(self.root / "installed.json")
-            if old_baseline is not None:
-                atomic(backup / "baseline.json", old_baseline)
-            receipt = {"status": "applying", "planDigest": expected, "applied": [], "actual": actual,
-                       "versions": plan["versions"], "commit": plan["commit"], "startedAt": int(time.time())}
-            json_write(transaction / "receipt.json", receipt)
-            try:
-                self.lifecycle.stop()
-                for i, change in enumerate(actual):
-                    target = self._target(change["name"])
-                    if sha(target) != change["before"]:
-                        raise ValueError("Concurrent file change: " + change["name"])
-                    # Journal intent before replacement; recovery handles both
-                    # before and after values if interrupted between these writes.
-                    receipt["applied"].append(i)
-                    json_write(transaction / "receipt.json", receipt)
-                    data = content(transaction / change["source"]) if change["source"] else None
-                    atomic(target, data, change["mode"])
-                self.lifecycle.activate(transaction)
-                for name, value in plan["files"].items():
-                    if sha(self._target(name)) != value:
-                        raise ValueError("Installed content differs: " + name)
-                verification = self.lifecycle.verify(transaction)
-                json_write(self.root / "installed.json", {"manifestSha256": plan["manifestSha256"], "commit": plan["commit"],
-                           "transaction": transaction.name, "sourceDigest": plan["sourceDigest"], "versions": plan["versions"], "files": plan["files"]})
-                receipt.update(status="installed-awaiting-hermes-reload", verification=verification,
-                               hermesReloadRequired=True, freshSessionRequired=True)
-                from completion import installation_guidance
-                receipt.update(installation_guidance(receipt))
-                json_write(transaction / "receipt.json", receipt)
-                return {k: v for k, v in receipt.items() if k not in ("actual", "applied")}
-            except BaseException as error:
-                receipt["error"] = str(error)
-                json_write(transaction / "receipt.json", receipt)
-                self._restore(transaction, receipt)
-                raise
-
-    def _restore(self, transaction, receipt):
-        # Preflight the whole recovery so a hotfix cannot cause a partial restore.
-        for i in reversed(receipt["applied"]):
-            change = receipt["actual"][i]
-            target = self._target(change["name"])
-            if sha(target) not in (change["after"], change["before"]):
-                receipt["status"] = "recovery-blocked-concurrent-change"
-                json_write(transaction / "receipt.json", receipt)
-                raise ValueError("Recovery preserved a concurrent modification: " + change["name"])
-            old = content(transaction / "backup" / str(i)) if change["before"] is not None else None
-            if (digest(old) if old is not None else None) != change["before"]:
-                raise ValueError("Recovery backup checksum mismatch")
-        self.lifecycle.stop()
-        for i in reversed(receipt["applied"]):
-            change = receipt["actual"][i]
-            target = self._target(change["name"])
-            old = content(transaction / "backup" / str(i)) if change["before"] is not None else None
-            atomic(target, old, change["mode"])
-        self.lifecycle.restore(transaction)
-        atomic(self.root / "installed.json", content(transaction / "backup/baseline.json"))
-        receipt.update(status="rolled-back", hermesReloadRequired=True, freshSessionRequired=True)
-        json_write(transaction / "receipt.json", receipt)
-        return receipt
-
-    def rollback(self, transaction, expected):
-        with self.lock():
-            transaction, plan = self._load_plan(transaction, expected)
-            receipt = json.loads((transaction / "receipt.json").read_text())
-            if receipt["status"] == "rolled-back":
-                return receipt
-            baseline = self.root / "installed.json"
-            if baseline.exists() and receipt["status"] == "installed-awaiting-hermes-reload":
-                if json.loads(baseline.read_text()).get("transaction") != transaction.name:
-                    raise ValueError("A newer transaction is installed; refusing stale rollback")
-            if baseline.exists() and json.loads(baseline.read_text()).get("manifestSha256") not in (plan["manifestSha256"], None):
-                if sha(baseline) != plan["previousBaseline"]:
-                    raise ValueError("A different release was installed; refusing stale rollback")
-            return self._restore(transaction, receipt)
 
 
 class NativeLifecycle:
@@ -449,33 +339,14 @@ class NativeLifecycle:
     def stop(self):
         self.runtime().stop_run("production")
 
-    def activate(self, transaction):
-        journal = []
-        for part, rel in (("app", "engine/sillytavern"), ("nora-mcp", ".")):
-            target = self.u.targets[part] / rel / "node_modules"
-            old = transaction / "backup" / (part + "-node_modules")
-            source = transaction / "source" / part / rel / "node_modules"
-            safe(target)
-            journal.append({"target": str(target), "backup": str(old), "source": str(source), "hadOld": target.exists()})
-            json_write(transaction / "dependencies.json", journal)
-            if target.exists():
-                os.replace(target, old)
-            os.replace(source, target)
-        runtime = self.runtime()
-        atomic(transaction / "backup/dependency-marker", content(runtime.dependencies_marker))
-        json_write(runtime.dependencies_marker, {"schema": 1, "node_major": runtime.node_major(), "lock_sha256": runtime.lock_digest()})
-        runtime.start(port=self.port, assets_prepared=True)
-
     def verify(self, transaction):
         runtime = self.runtime()
         status = runtime.status()
         if not status["processes"]["native"] or not status["health"]["ok"]:
             raise ValueError("New Tavern process health failed")
-        for route in ("/", "/_liveware/story-profile/"):
-            import urllib.request
-            with urllib.request.urlopen(f"http://127.0.0.1:{self.port}" + route, timeout=10) as response:
-                if response.status != 200:
-                    raise ValueError("Application route not ready: " + route)
+        from liveware_integration import local_entry, ROLES
+        for title, prefix in ROLES.values():
+            local_entry(f"http://127.0.0.1:{self.port}" + prefix + '/', title)
         # Probe a NEW stdio process. This is deliberately not represented as a
         # reload of the gateway's already-running MCP process.
         env = {**os.environ, "NORA_MCP_STATE_ROOT": str(self.u.state), "NORA_MCP_MODE": "read-only"}
@@ -489,23 +360,12 @@ class NativeLifecycle:
         return {"nativePid": status["native_pid"], "tavernHealth": True, "storyProfileRoute": True,
                 "newMcpProcess": mcp, "gatewayMcpReloaded": False}
 
-    def restore(self, transaction):
-        # The reviewed lifecycle can boot either schema-2 source snapshot; do
-        # not run an older start() that rewrites operator config on rollback.
-        self.module_path = transaction / "source/app/native_lifecycle.py"
-        journal = transaction / "dependencies.json"
-        if journal.exists():
-            for entry in reversed(json.loads(journal.read_text())):
-                target, old, source = (Path(entry[k]) for k in ("target", "backup", "source"))
-                # If the source still exists the dependency switch never finished.
-                if not source.exists() and target.exists():
-                    os.replace(target, source)
-                if old.exists():
-                    os.replace(old, target)
-        marker = transaction / "backup/dependency-marker"
-        if marker.exists():
-            atomic(self.runtime().dependencies_marker, marker.read_bytes())
-        self.runtime().start(port=self.port, assets_prepared=True)
+
+
+def Updater(home, *, lifecycle=None):
+    """Compatibility import: all new transactions use the directory engine."""
+    from clean_update import CleanUpdater
+    return CleanUpdater(home, lifecycle=lifecycle)
 
 
 def main():
@@ -520,7 +380,9 @@ def main():
     review.add_argument("--release-dir", type=Path, required=True)
     review.add_argument("--manifest-sha256", required=True)
     review.add_argument("--allow-candidate", action="store_true")
-    activation = sub.add_parser('activation', help='Request owner confirmation or inspect activation; never confirms/restarts from the CLI')
+    status = sub.add_parser('status', help='Read transaction evidence and current runtime status; never repairs or restarts')
+    status.add_argument('--transaction', type=Path)
+    activation = sub.add_parser('activation', help='Read historical activation status; request is retired and never restarts the gateway')
     activation.add_argument('operation', choices=('request', 'status'))
     for name in ("apply", "rollback"):
         child = sub.add_parser(name)
@@ -532,8 +394,10 @@ def main():
     if args.command == 'activation':
         if args.isolated_test_port is not None:
             raise ValueError('Rehearsals cannot activate a real gateway')
-        from activation import command
-        print(json.dumps(command(args.hermes_home, args.operation), ensure_ascii=False, indent=2))
+        if args.operation != 'status':
+            raise ValueError('Activation bridge is retired; after successful install, the owner sends /restart in ClawChat')
+        from activation_retirement import status
+        print(json.dumps(status(args.hermes_home), ensure_ascii=False, indent=2))
         return
     if args.command in ('apply', 'rollback'):
         home = safe(Path(args.hermes_home).absolute())
@@ -558,6 +422,24 @@ def main():
     else:
         from clean_update import CleanUpdater
         updater = CleanUpdater(args.hermes_home, port=args.isolated_test_port)
+        if args.command == 'status':
+            from update_status import inspect
+            print(json.dumps(inspect(updater, args.transaction), ensure_ascii=False, indent=2))
+            return
+        if args.command in ('apply', 'rollback'):
+            transaction, plan = updater._load_plan(args.transaction, args.expected_plan)
+            if plan.get('engine'):
+                from engine_snapshot import verify
+                pinned = verify(transaction, plan['engine'])
+                if pinned.parent != Path(__file__).resolve().parent:
+                    # Execute from stable transaction-owned modules even when
+                    # this operation is about to replace installed ops itself.
+                    selected = ['--hermes-home', str(updater.home)]
+                    if args.isolated_test_port is not None:
+                        selected += ['--isolated-test-port', str(args.isolated_test_port)]
+                    selected += [args.command, '--transaction', str(transaction),
+                                 '--expected-plan', args.expected_plan, '--confirm']
+                    os.execv(sys.executable, [sys.executable, '-B', '-u', str(pinned), *selected])
         if args.command == 'rollback':
             # Old file-level receipts still need their original recovery path.
             # New installs never use that writer, only the whole-tree transaction.
@@ -565,15 +447,27 @@ def main():
             if not plan.get('cleanTransaction'):
                 if plan.get('isolatedClean'):
                     raise ValueError('Recover this experimental receipt with its original updater version')
-                updater = Updater(args.hermes_home)
-        if args.command == "review":
-            result = updater.review(args.release_dir, args.manifest_sha256, candidate=args.allow_candidate)
-        else:
-            result = getattr(updater, args.command)(args.transaction, args.expected_plan)
+                from legacy_recovery import LegacyRecovery
+                updater = LegacyRecovery(args.hermes_home)
+        from feedback import step
+        try:
+            if args.command == "review":
+                result = step('review', '校验发布包、安装布局和更新计划', updater.review,
+                              args.release_dir, args.manifest_sha256, candidate=args.allow_candidate)
+            else:
+                result = getattr(updater, args.command)(args.transaction, args.expected_plan)
+        except Exception as error:
+            error.update_transaction = getattr(args, 'transaction', None)
+            raise
     print(json.dumps(result, ensure_ascii=False, indent=2))
     if args.command == 'apply' and result.get('restartCommand'):
         print(result['next_step'], file=sys.stderr)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as error:
+        from feedback import emit, failure_report
+        emit(failure_report(error, getattr(error, 'update_transaction', None)))
+        raise SystemExit(1)

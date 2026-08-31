@@ -15,6 +15,12 @@ import bootstrap
 
 
 class BootstrapTests(unittest.TestCase):
+    def test_review_preserves_all_active_skills_byte_for_byte(self):
+        self.fixture.write('skills/system/tavern-updater/SKILL.md', 'existing updater skill')
+        before = self.fixture.snapshot()
+        result = self.run_bootstrap('--allow-candidate')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.fixture.snapshot(), before)
     def test_account_home_requires_explicit_existing_hermes_installation(self):
         with patch.object(Path, 'home', return_value=self.home), patch.dict(os.environ, self.env):
             self.assertEqual(installation_home(self.home), self.home)
@@ -44,19 +50,22 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse((self.home / 'tavern-updates-v2').exists())
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
-    def test_review_adopts_updater_but_preserves_app_state_and_agents(self):
+    def test_review_stages_engine_and_leaves_active_installation_unchanged(self):
         before = self.fixture.snapshot()
         result = self.run_bootstrap('--allow-candidate')
         self.assertEqual(result.returncode, 0, result.stderr)
         review = json.loads(result.stdout)
-        self.assertTrue(review['updater_installed'])
+        self.assertFalse(review['updater_installed'])
+        self.assertTrue(review['updater_staged'])
         self.assertNotIn('restartCommand', review)
         self.assertNotIn('/restart', review['next_step'])
         after = self.fixture.snapshot()
         for name, value in before.items():
             self.assertEqual(after[name], value, name)
-        launcher = self.home / 'skills/system/tavern-updater/scripts/update.py'
-        wrong = subprocess.run([sys.executable, str(launcher), 'apply', '--plan', 'wrong-plan', '--confirm'],
+        self.assertEqual(after, before)
+        launcher = Path(review['review']['engine']['entry'])
+        self.assertIn(str(launcher), review['applyCommand'])
+        wrong = subprocess.run([sys.executable, '-B', str(launcher), '--hermes-home', str(self.home), 'apply', '--plan', 'wrong-plan', '--confirm'],
                                env=self.env, capture_output=True, text=True)
         self.assertNotEqual(wrong.returncode, 0)
         self.assertIn('differs from the pinned', wrong.stderr)
@@ -64,7 +73,7 @@ class BootstrapTests(unittest.TestCase):
         plan = json.loads((transaction / 'plan.json').read_text())
         plan['commit'] = 'changed-after-review'
         (transaction / 'plan.json').write_text(json.dumps(plan))
-        changed = subprocess.run([sys.executable, str(launcher), 'apply', '--plan', review['report']['plan_id'], '--confirm'],
+        changed = subprocess.run([sys.executable, '-B', str(launcher), '--hermes-home', str(self.home), 'apply', '--plan', review['report']['plan_id'], '--confirm'],
                                  env=self.env, capture_output=True, text=True)
         self.assertNotEqual(changed.returncode, 0)
         self.assertIn('Plan changed', changed.stderr)
@@ -77,18 +86,39 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn('checksum', result.stderr)
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
+    def test_repeated_review_does_not_modify_skills_or_reuse_unreviewed_code(self):
+        before = self.fixture.snapshot()
+        first = self.run_bootstrap('--allow-candidate')
+        self.assertEqual(first.returncode, 0, first.stderr)
+        second = self.run_bootstrap('--allow-candidate')
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertNotEqual(json.loads(first.stdout)['review']['transaction'], json.loads(second.stdout)['review']['transaction'])
+        self.assertEqual(self.fixture.snapshot(), before)
+        digest = fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes())
+        staged = self.home / 'tavern-updates-v2' / ('bootstrap-' + digest)
+        (staged / 'ops/updater/unreviewed.py').write_text('raise RuntimeError("not part of release")\n')
+        changed = self.run_bootstrap('--allow-candidate')
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn('unreviewed files', changed.stderr)
+        self.assertEqual(self.fixture.snapshot(), before)
+
     def test_apply_requires_explicit_confirmation(self):
         result = self.run_bootstrap('--apply')
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('--apply requires --confirm', result.stderr)
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
-    def completed_bootstrap(self, *, status='installed-awaiting-hermes-reload', returncode=0, isolated=False):
+    def completed_bootstrap(self, *, status='installed-awaiting-hermes-reload', returncode=0, isolated=False, check_progress=False):
         """Real bundle/adoption; substitute only the child review/apply processes."""
         transaction = self.home / 'tavern-updates-v2/review-completion'
-        review = {'transaction': str(transaction), 'planDigest': 'fixture-digest'}
+        review = {'transaction': str(transaction), 'planDigest': 'fixture-digest',
+                  'engine': {'entry': str(transaction / 'engine/update.py')}}
         def apply(command, **_kwargs):
+            if 'review' in command:
+                return subprocess.CompletedProcess(command, 0, json.dumps(review), '')
             self.assertIn('apply', command)
+            if check_progress:
+                self.assertIn('[tavern-updater]', notice.getvalue(), 'Show progress before waiting for apply')
             transaction.mkdir(parents=True, exist_ok=True)
             (transaction / 'receipt.json').write_text(json.dumps({'status': status, 'commit': 'a' * 40}))
             return subprocess.CompletedProcess(command, returncode, 'npm progress\n', 'fixture apply error' if returncode else '')
@@ -100,13 +130,16 @@ class BootstrapTests(unittest.TestCase):
         output = io.StringIO()
         notice = io.StringIO()
         with patch.object(sys, 'argv', args), patch.dict(os.environ, self.env), \
-             patch.object(bootstrap.subprocess, 'check_output', return_value=json.dumps(review)), \
-             patch.object(bootstrap.subprocess, 'run', side_effect=apply) as applied, \
+             patch.object(bootstrap, 'run_cli', side_effect=apply) as applied, \
              redirect_stdout(output), redirect_stderr(notice):
             bootstrap.main()
-        self.assertEqual(applied.call_count, 1, 'Bootstrap must not execute a restart')
+        self.assertEqual(applied.call_count, 2, 'Only review and apply; no restart or retry')
         result = json.loads(output.getvalue())
-        self.assertEqual(notice.getvalue(), '' if isolated else result['next_step'] + '\n')
+        self.assertIn('[tavern-updater]', notice.getvalue())
+        if isolated:
+            self.assertNotIn('/restart', notice.getvalue())
+        else:
+            self.assertTrue(notice.getvalue().endswith(result['next_step'] + '\n'))
         return result
 
     def test_successful_apply_replaces_stale_review_prompt_with_restart_command(self):
@@ -129,24 +162,34 @@ class BootstrapTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Update did not complete'):
             self.completed_bootstrap(returncode=1)
 
+    def test_apply_failure_reports_cause_instead_of_asking_agent_to_read_logs(self):
+        with self.assertRaisesRegex(ValueError, 'fixture apply error'):
+            self.completed_bootstrap(status='rolled-back', returncode=1)
+
+    def test_progress_is_visible_before_apply_returns(self):
+        self.completed_bootstrap(check_progress=True)
+
     def test_downloaded_standalone_bootstrap_resolves_completion_after_stage_moves(self):
         # Reproduce curl's single-file download, without repo sys.path or cached
         # completion imports from this test runner. Only child processes are stubbed.
         script = r'''
-import importlib.util, json, pathlib, sys
+import importlib.util, json, pathlib, subprocess, sys
 from unittest.mock import patch
 source, target, bundle, digest = sys.argv[1:]
 spec = importlib.util.spec_from_file_location('downloaded_bootstrap', source)
 bootstrap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bootstrap)
 transaction = pathlib.Path(target) / 'tavern-updates-v2/review-completion'
-review = {'transaction': str(transaction), 'planDigest': 'fixture-digest'}
+review = {'transaction': str(transaction), 'planDigest': 'fixture-digest',
+          'engine': {'entry': str(transaction / 'engine/update.py')}}
 def apply(command, **kwargs):
+    if 'review' in command:
+        return subprocess.CompletedProcess(command, 0, json.dumps(review), '')
     transaction.mkdir(parents=True)
     (transaction / 'receipt.json').write_text(json.dumps({'status': 'installed-awaiting-hermes-reload', 'commit': 'a' * 40}))
-    return bootstrap.subprocess.CompletedProcess(command, 0, '', '')
+    return subprocess.CompletedProcess(command, 0, '', '')
 sys.argv = [source, '--data-root', target, '--release-dir', bundle, '--manifest-sha256', digest, '--apply', '--confirm']
-with patch.object(bootstrap.subprocess, 'check_output', return_value=json.dumps(review)), patch.object(bootstrap.subprocess, 'run', side_effect=apply):
+with patch.object(bootstrap, 'run_cli', side_effect=apply):
     bootstrap.main()
 '''
         downloaded = self.fixture.root / 'tavern-updater-bootstrap.py'

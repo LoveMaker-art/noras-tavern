@@ -1,6 +1,7 @@
 """Non-generating Python process for real stop/restart ownership tests only."""
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import sys
+import argparse
 
 
 class Health(BaseHTTPRequestHandler):
@@ -15,4 +16,8 @@ class Health(BaseHTTPRequestHandler):
         pass
 
 
-HTTPServer(('127.0.0.1', int(sys.argv[1])), Health).serve_forever()
+parser = argparse.ArgumentParser()
+parser.add_argument('legacy_port', nargs='?', type=int)
+parser.add_argument('--port', type=int)
+arguments = parser.parse_args()
+HTTPServer(('127.0.0.1', arguments.port or arguments.legacy_port), Health).serve_forever()

@@ -11,7 +11,7 @@ import tempfile
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS / "updater"))
 from bundle import digest, extract_bundle, read_bundle
-from update import NativeLifecycle, Updater, atomic, module_at
+from clean_update import CleanUpdater, MARKER
 
 
 def main():
@@ -33,6 +33,8 @@ def main():
         (home / "apps").mkdir()
         shutil.copytree(stage / "app", home / "apps/tavern-runtime")
         shutil.copytree(stage / "nora-mcp", home / "apps/nora-mcp")
+        shutil.copytree(stage / "ops", home / "apps/tavern-ops")
+        (home / MARKER).write_text(json.dumps({'schema': 1, 'home': str(home), 'purpose': 'isolated-update-test'}))
         # A harmless code-only difference proves the real rollback restores the
         # former tree. No user's existing world/state/ports are used.
         old_marker = home / "apps/tavern-runtime/.tavern-release-version"
@@ -42,9 +44,8 @@ def main():
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        updater = Updater(home)
-        lifecycle = NativeLifecycle(updater, port=port)
-        updater.lifecycle = lifecycle
+        updater = CleanUpdater(home, port=port)
+        lifecycle = updater.lifecycle
         runtime = lifecycle.runtime()
         runtime.install()
         cfg = runtime.config_path.read_bytes() + b"\n# operator setting must survive update\n"

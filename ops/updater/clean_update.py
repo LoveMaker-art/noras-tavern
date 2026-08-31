@@ -5,10 +5,13 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import time
 
 from bundle import PARTS
 from completion import installation_guidance
-from update import Updater, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
+from update_status import receipt_result
+from feedback import phase, step, public_reason
+from update import ReleaseReview, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
 from python_model import load_python_model
 from python_installation import python_installation
 from service_manager import ManagedService
@@ -27,7 +30,7 @@ def require_isolation(home):
         raise ValueError("Explicit isolated-copy marker is required")
 
 
-class CleanUpdater(Updater):
+class CleanUpdater(ReleaseReview):
     def __init__(self, home, *, lifecycle=None, port=None):
         super().__init__(home, lifecycle=lifecycle)
         self.test_mode = port is not None
@@ -35,6 +38,8 @@ class CleanUpdater(Updater):
             require_isolation(self.home)
         self.isolated_port = port or 8799
         self.lifecycle = lifecycle or CleanLifecycle(self, port=self.isolated_port)
+        from liveware_integration import Integration
+        self.integration = Integration(self.home, port=self.isolated_port, isolated=self.test_mode)
 
     def _python_source(self):
         return python_installation(self.targets['app']) is not None
@@ -91,6 +96,7 @@ class CleanUpdater(Updater):
                 extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
                                              for rel, item in old.items() if 'sha256' in item and rel not in new)
         plan.update(cleanTransaction=True, testMode=self.test_mode, port=self.isolated_port, groups=groups, extensionRetirements=extension_retirements,
+                    liveware=self.integration.review(),
                     sourceRuntime='python' if self._python_source() else 'node',
                     pythonSource=python_installation(self.targets['app']))
         if isinstance(self.lifecycle, CleanLifecycle):
@@ -99,6 +105,9 @@ class CleanUpdater(Updater):
             plan['service'] = service.descriptor if service else None
         json_write(transaction / 'plan.json', plan)
         result.update(planDigest=plan_digest(plan), mode='clean-directory',
+                      liveware={'status': plan['liveware']['status'],
+                                'externalEntryVerified': False,
+                                'recoveryLimitation': 'Original tunnel target is not exposed by the installed CLI; a changed binding may require owner recovery'},
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
                       inactiveExtensionFiles=extension_retirements,
@@ -112,6 +121,11 @@ class CleanUpdater(Updater):
         if not plan.get('cleanTransaction') or plan.get('testMode') != self.test_mode or plan.get('port') != self.isolated_port:
             raise ValueError('Clean transaction mode/port differs from review')
         super()._preconditions(transaction, plan)
+        if 'liveware' in plan:
+            self.integration.check(plan['liveware'])
+        from activation_retirement import review as retirement_review
+        if plan.get('activationRetirement') != retirement_review(self.home):
+            raise ValueError('Activation state changed since review')
         if plan.get('pythonSource') != python_installation(self.targets['app']):
             raise ValueError('Python source layout changed since review')
         if isinstance(self.lifecycle, CleanLifecycle) and 'service' in plan:
@@ -204,62 +218,129 @@ class CleanUpdater(Updater):
             entries.append({'name': change['name'], 'target': str(target), 'source': str(source),
                             'backup': str(transaction / 'backup/host' / str(len(entries))), 'hadOld': target.exists(),
                             'before': trees.fingerprint(target), 'after': trees.fingerprint(source), 'state': False})
+        for request in plan.get('activationRetirement', {}).get('requests', []):
+            target = safe(request['path'])
+            source = prepared / ('retirement-' + str(len(entries)))
+            json_write(source, request['after'])
+            entries.append({'name': 'activation-retirement:' + target.parent.name, 'target': str(target),
+                'source': str(source), 'backup': str(transaction / 'backup/activation' / target.parent.name),
+                'hadOld': True, 'before': trees.fingerprint(target), 'after': trees.fingerprint(source), 'state': False})
         return entries
+
+    def _phase(self, transaction, receipt, name, message):
+        def record(event):
+            receipt['progress'] = {**event, 'observedAt': time.time()}
+            try:
+                json_write(transaction / 'receipt.json', receipt)
+            except OSError:
+                # Persist the intent before a new operation. An ENOSPC during
+                # recovery/reporting must not suppress the recovery itself.
+                if event['status'] == 'started' and name != 'recovery':
+                    raise
+        return phase(name, message, record=record)
+
+    def _step(self, transaction, receipt, name, message, operation, *args, **kwargs):
+        with self._phase(transaction, receipt, name, message):
+            return operation(*args, **kwargs)
 
     def apply(self, transaction, expected):
         with self.lock():
             if self.test_mode:
                 require_isolation(self.home)
             for receipt in self.root.glob('review-*/receipt.json'):
-                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload'):
+                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload', 'refused-before-maintenance', 'already-installed'):
                     raise ValueError('Unfinished update requires recovery first')
             transaction, plan = self._load_plan(transaction, expected)
             if (transaction / 'receipt.json').exists():
                 raise ValueError('Transaction already attempted')
-            self._preconditions(transaction, plan)
-            self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
-            self._space(transaction)
-            self.lifecycle.prepare(transaction)
-            self._preconditions(transaction, plan)
-            self._space(transaction, prepared=True)
-            atomic(transaction / 'backup/baseline.json', content(self.root / 'installed.json'))
-            receipt = {'status': 'preparing', 'planDigest': expected, 'entries': [], 'applied': [], 'restored': [],
-                       'versions': plan['versions'], 'commit': plan['commit'], 'cleanTransaction': True}
+            receipt = {'status': 'inspecting', 'planDigest': expected, 'entries': [], 'applied': [], 'restored': [],
+                       'versions': plan['versions'], 'commit': plan['commit'], 'cleanTransaction': True,
+                       'engineSha256': plan.get('engine', {}).get('sha256'), 'startedAt': time.time()}
+            json_write(transaction / 'receipt.json', receipt)
+            def run(name, message, operation, *args, **kwargs):
+                return self._step(transaction, receipt, name, message, operation, *args, **kwargs)
+            try:
+                run('preflight', '检查更新条件', self._preconditions, transaction, plan)
+                self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
+                run('space-budget', '检查完整备份和依赖所需空间', self._space, transaction)
+                baseline = json.loads((self.root / 'installed.json').read_text()) if (self.root / 'installed.json').exists() else {}
+                if (baseline.get('manifestSha256') == plan['manifestSha256']
+                        and all(c['before'] == c['after'] for c in plan['changes'])
+                        and not any(g['inactiveFiles'] for g in plan['groups'])
+                        and not plan.get('extensionRetirements')
+                        and not plan.get('activationRetirement', {}).get('requests')):
+                    receipt['status'] = 'already-installed'
+                    receipt.update(installation_guidance(receipt, isolated=self.test_mode))
+                    json_write(transaction / 'receipt.json', receipt)
+                    return receipt_result(receipt)
+                run('dependencies', '准备新版依赖，旧版暂不停止', self.lifecycle.prepare, transaction)
+                run('recheck', '准备依赖后复核安装与平台状态', self._preconditions, transaction, plan)
+                run('space-budget', '复核切换所需空间', self._space, transaction, prepared=True)
+                atomic(transaction / 'backup/baseline.json', content(self.root / 'installed.json'))
+            except BaseException as error:
+                receipt.update(status='refused-before-maintenance', failure={
+                    'phase': getattr(error, 'update_phase', 'preflight'), 'reason': public_reason(error)})
+                json_write(transaction / 'receipt.json', receipt)
+                raise
+            receipt['status'] = 'preparing'
             json_write(transaction / 'receipt.json', receipt)
             try:
-                self.lifecycle.pause(transaction)
+                run('stop-runtime', '核验并停止旧版酒馆', self.lifecycle.pause, transaction)
                 self.lifecycle.require_offline()
-                entries = self._prepare(transaction, plan)
-                self._preconditions(transaction, plan)
+                entries = run('prepare-state', '备份并准备数据副本，转换 Python 数据或验证 Node 数据', self._prepare, transaction, plan)
+                run('recheck', '切换前复核文件与平台状态', self._preconditions, transaction, plan)
                 self.lifecycle.require_offline()
                 if trees.fingerprint(self.state, state=True) != entries[len(plan['groups'])]['before']:
                     raise ValueError('State changed after snapshot')
                 receipt.update(status='applying', entries=entries)
                 json_write(transaction / 'receipt.json', receipt)
-                for i, entry in enumerate(entries):
-                    if trees.fingerprint(Path(entry['target']), state=entry['state']) != entry['before']:
-                        raise ValueError('Concurrent modification before switch: ' + entry['name'])
-                    receipt['applied'].append(i)  # Journal BEFORE either rename.
-                    json_write(transaction / 'receipt.json', receipt)
-                    trees.switch(entry)
-                self.lifecycle.activate(transaction)
-                verification = self.lifecycle.verify(transaction)
+                with self._phase(transaction, receipt, 'switch', '切换经过校验的程序、数据和受管配置'):
+                    for i, entry in enumerate(entries):
+                        if trees.fingerprint(Path(entry['target']), state=entry['state']) != entry['before']:
+                            raise ValueError('Concurrent modification before switch: ' + entry['name'])
+                        receipt['applied'].append(i)  # Journal BEFORE either rename.
+                        json_write(transaction / 'receipt.json', receipt)
+                        trees.switch(entry)
+                run('start-runtime', '启动新版酒馆', self.lifecycle.activate, transaction)
+                verification = run('verify', '检查酒馆、故事档案和新 MCP 进程', self.lifecycle.verify, transaction)
                 for name, expected_hash in plan['files'].items():
                     if sha(self._target(name)) != expected_hash:
                         raise ValueError('Installed file mismatch: ' + name)
+                receipt['livewareJournal'] = {}
+                receipt['liveware'] = run('reconcile-liveware', '对齐既有 Tavern / Story Profile 入口',
+                    self.integration.apply, plan.get('liveware', {'status': 'not-configured'}),
+                    receipt['livewareJournal'], lambda: json_write(transaction / 'receipt.json', receipt),
+                    refresh=plan.get('sourceRuntime') == 'python')
                 receipt['accepted'] = {str(i): trees.fingerprint(Path(e['target']), state=e['state']) for i, e in enumerate(entries)}
                 json_write(self.root / 'installed.json', {'transaction': transaction.name, 'manifestSha256': plan['manifestSha256'],
                            'commit': plan['commit'], 'files': plan['files'], 'planDigest': expected,
                            'testPort': self.isolated_port if self.test_mode else None})
                 receipt.update(status='installed-awaiting-hermes-reload', verification=verification,
-                               hermesReloadRequired=True, freshSessionRequired=True)
+                               hermesReloadRequired=True, contextActivation='owner-restart-unverified')
                 receipt.update(installation_guidance(receipt, isolated=self.test_mode))
                 json_write(transaction / 'receipt.json', receipt)
-                return {k: v for k, v in receipt.items() if k not in ('entries', 'applied', 'restored', 'accepted')}
-            except BaseException:
+                return {**{k: v for k, v in receipt.items() if k not in ('entries', 'applied', 'restored', 'accepted')},
+                        **receipt_result(receipt)}
+            except BaseException as error:
+                receipt['failure'] = {'phase': getattr(error, 'update_phase', 'apply'), 'reason': public_reason(error)}
+                try:
+                    json_write(transaction / 'receipt.json', receipt)
+                except OSError:
+                    pass
                 # A failed receipt write (e.g. ENOSPC) must not skip recovery.
-                self._recover(transaction, receipt, automatic=True)
+                try:
+                    run('recovery', '更新失败，恢复原版本和数据', self._recover, transaction, receipt, automatic=True)
+                except BaseException as recovery_error:
+                    self._record_recovery_failure(transaction, receipt, recovery_error)
+                    raise
                 raise
+
+    def _record_recovery_failure(self, transaction, receipt, error):
+        receipt['recoveryFailure'] = {'phase': getattr(error, 'update_phase', 'recovery'), 'reason': public_reason(error)}
+        try:
+            json_write(transaction / 'receipt.json', receipt)
+        except OSError:
+            pass  # Keep the existing durable intents; terminal output remains explicit.
 
     def _recover(self, transaction, receipt, *, automatic=False):
         if isinstance(self.lifecycle, CleanLifecycle):
@@ -270,7 +351,7 @@ class CleanUpdater(Updater):
                     trees.recovery_check(receipt['entries'][i], allow_state_change=automatic,
                                          accepted=receipt.get('accepted', {}).get(str(i)))
         preflight()
-        if receipt['applied']:
+        if any(i not in receipt['restored'] for i in receipt['applied']):
             self.lifecycle.stop()
         preflight()
         for i in reversed(receipt['applied']):
@@ -288,9 +369,16 @@ class CleanUpdater(Updater):
         receipt['status'] = 'files-restored'
         json_write(transaction / 'receipt.json', receipt)
         self.lifecycle.restore(transaction)
+        if not self.integration.recover(receipt.get('livewareJournal', {}),
+                                        lambda: json_write(transaction / 'receipt.json', receipt)):
+            receipt['status'] = 'integration-pending'
+            receipt['liveware'] = {'status': 'integration-pending', 'externalEntryVerified': False,
+                                  'reason': 'Local release restored; original tunnel target is not queryable. Owner must review binding.'}
+            json_write(transaction / 'receipt.json', receipt)
+            raise ValueError('Local recovery finished; original Liveware binding cannot be automatically verified or restored')
         receipt['status'] = 'rolled-back'
         json_write(transaction / 'receipt.json', receipt)
-        return {'status': receipt['status'], 'cleanTransaction': True}
+        return {**receipt_result(receipt), 'cleanTransaction': True}
 
     def rollback(self, transaction, expected):
         with self.lock():
@@ -303,13 +391,30 @@ class CleanUpdater(Updater):
             self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
             if not receipt.get('cleanTransaction'):
                 raise ValueError('Use original updater for legacy transaction recovery')
+            if receipt['status'] in ('inspecting', 'refused-before-maintenance', 'already-installed'):
+                if receipt['applied'] or receipt['entries']:
+                    raise ValueError('Pre-maintenance receipt unexpectedly contains switch intents')
+                if receipt['status'] == 'inspecting':
+                    receipt.update(status='refused-before-maintenance', failure={
+                        'phase': receipt.get('progress', {}).get('phase', 'preflight'),
+                        'reason': 'Preparation was interrupted; no maintenance or directory switch was entered'})
+                    json_write(transaction / 'receipt.json', receipt)
+                return receipt_result(receipt)
             if receipt['status'] == 'rolled-back':
-                return {'status': 'rolled-back', 'cleanTransaction': True}
+                return {**receipt_result(receipt), 'cleanTransaction': True}
             baseline = self.root / 'installed.json'
             if receipt['status'] == 'installed-awaiting-hermes-reload' and (not baseline.exists()
                     or json.loads(baseline.read_text()).get('transaction') != transaction.name):
                 raise ValueError('A newer transaction is installed; stale rollback refused')
-            return self._recover(transaction, receipt, automatic=receipt['status'] != 'installed-awaiting-hermes-reload')
+            if receipt['status'] == 'integration-pending' and content(baseline) != content(transaction / 'backup/baseline.json'):
+                raise ValueError('Local baseline changed after partial external recovery; stale rollback refused')
+            try:
+                self._step(transaction, receipt, 'recovery', '恢复已审查事务', self._recover,
+                           transaction, receipt, automatic=receipt['status'] != 'installed-awaiting-hermes-reload')
+                return {**receipt_result(json.loads((transaction / 'receipt.json').read_text())), 'cleanTransaction': True}
+            except BaseException as error:
+                self._record_recovery_failure(transaction, receipt, error)
+                raise
 
 
 class CleanLifecycle(NativeLifecycle):
@@ -327,8 +432,12 @@ class CleanLifecycle(NativeLifecycle):
                 value = Path(os.environ[key]).resolve()
                 if self.u.home not in value.parents:
                     raise ValueError('External Hermes path requires explicit mapping: ' + key)
-        if not self.u._python_source() and any(self.runtime().status()['processes'].values()):
-            raise ValueError('Tavern restarted during maintenance; stop its supervisor before retrying')
+        if not self.u._python_source():
+            status = self.runtime().status()
+            if status.get('inspection_error'):
+                raise ValueError('Cannot verify the runtime is offline: ' + status['inspection_error'])
+            if any(status['processes'].values()):
+                raise ValueError('Tavern restarted during maintenance; no directory was switched')
         if self.u._python_source():
             from maintenance import python_processes
             if python_processes(self.u.targets['app']):

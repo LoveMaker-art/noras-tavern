@@ -12,6 +12,20 @@ import tree_transaction as trees
 
 
 class CleanUpdateTests(unittest.TestCase):
+    def test_pause_failure_receipt_keeps_original_reason_after_recovery(self):
+        review = self.fixture.review()
+        before = self.fixture.snapshot()
+        reason = 'Tavern did not stop or its supervisor restarted it; no directory was switched'
+        with patch.object(self.fixture.service, 'pause', side_effect=ValueError(reason)):
+            with self.assertRaisesRegex(ValueError, 'Tavern did not stop'):
+                self.fixture.apply(review)
+        receipt = json.loads((Path(review['transaction']) / 'receipt.json').read_text())
+        self.assertEqual(receipt['status'], 'rolled-back')
+        self.assertEqual(receipt['applied'], [])
+        self.assertEqual(receipt['failure']['phase'], 'stop-runtime')
+        self.assertEqual(receipt['failure']['reason'], reason)
+        self.assertEqual(self.fixture.snapshot(), before)
+
     def test_live_apply_receipt_tells_owner_to_restart_without_running_restart(self):
         self.fixture.u = CleanUpdater(self.home, lifecycle=self.fixture.service)
         result = self.fixture.apply(self.fixture.review())
@@ -27,16 +41,16 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertNotIn('restartCommand', result)
         self.assertNotIn('/restart', result['next_step'])
 
-    def test_activation_plugin_is_reviewed_installed_and_rolled_back(self):
+    def test_new_install_does_not_install_or_enable_activation_bridge(self):
         import yaml
         before = self.fixture.snapshot()
         review = self.fixture.review()
         self.assertEqual(self.fixture.snapshot(), before)
         self.fixture.apply(review)
         plugin = self.home / 'plugins/tavern-update-activation/__init__.py'
-        self.assertEqual(plugin.read_bytes(), (fixtures.OPS / 'updater/hermes-plugin/__init__.py').read_bytes())
+        self.assertFalse(plugin.exists())
         config = yaml.safe_load((self.home / 'config.yaml').read_text())
-        self.assertIn('tavern-update-activation', config['plugins']['enabled'])
+        self.assertNotIn('tavern-update-activation', config.get('plugins', {}).get('enabled', []))
         self.assertIn('other', config['mcp_servers'])
         self.u.rollback(review['transaction'], review['planDigest'])
         self.assertEqual(self.fixture.snapshot(), before)
@@ -54,13 +68,6 @@ class CleanUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Modified activation plugin'):
             self.fixture.review()
         self.assertEqual(self.fixture.snapshot(), before)
-
-    def test_unchanged_nora_config_still_enables_new_bridge(self):
-        import yaml
-        (self.home / 'config.yaml').write_bytes(self.u._mcp_config())
-        (self.home / 'config.yaml').write_bytes(self.u._mcp_config(activation=True))
-        config = yaml.safe_load((self.home / 'config.yaml').read_text())
-        self.assertIn('tavern-update-activation', config['plugins']['enabled'])
 
     def setUp(self):
         self.fixture = fixtures.FullUpdateTests()
@@ -108,8 +115,9 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
 
     def test_three_updates_then_latest_rollback_preserve_context_and_state(self):
-        for _ in range(3):
-            review = self.fixture.review()
+        for number in range(3):
+            release, _ = self.fixture.bundle('release-' + str(number), {'app/hello.js': str(number).encode()})
+            review = self.fixture.review(release)
             before = self.fixture.snapshot()
             self.fixture.apply(review)
             self.assertIn('Keep my instructions', (self.home / 'AGENTS.md').read_text())
@@ -245,7 +253,7 @@ CleanUpdater(sys.argv[3], lifecycle=service, port=54321).apply(sys.argv[4], sys.
     def test_normal_updater_cannot_apply_an_isolated_clean_plan(self):
         review = self.fixture.review()
         ordinary = fixtures.Updater(self.home, lifecycle=self.fixture.service)
-        with self.assertRaisesRegex(ValueError, 'clean updater'):
+        with self.assertRaisesRegex(ValueError, 'mode/port differs'):
             ordinary.apply(review['transaction'], review['planDigest'])
 
     def test_non_temporary_home_is_rejected_before_any_operation(self):

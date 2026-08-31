@@ -28,15 +28,16 @@ The installation receipt alone remains evidence of installation, not activation.
 
 ## Existing bridge requests: compatibility only
 
-The release still supports the previously installed `activation request/status`
-commands. They are not the default post-update instruction. A newly installed or
-changed bridge cannot activate itself in an already-running gateway. Do not tell
-the owner that replying “确定” will work without a matching live bridge handshake.
+New releases do not install or enable the old bridge. `activation request` is
+retired; `activation status` only reads retained historical records. There is no
+Tavern command that resets a session or reloads/restarts the gateway.
 
-For an already pending request, `activation status` reads its transaction-bound
-`activation.json`. Only the owner's matching session/message can approve it;
-the CLI has no confirm operation. Never edit receipts or bypass owner checks.
-Successful native `/restart` does not fabricate a bridge `active` receipt.
+Upgrade recognizes unchanged official/previously managed plugin files and retires
+them inside the reviewed transaction. Queued confirmations are marked superseded;
+an in-progress/interrupted reset blocks retirement for owner review. Modified
+plugin files and unrelated plugins are preserved, not silently deleted. Recovery
+restores the corresponding files, configuration and request state. Successful
+native `/restart` does not fabricate a bridge `active` receipt.
 
 If a bridge operation failed/interrupted, inspect its record and gateway logs
 before retrying; never automatically repeat a session reset. An active operation

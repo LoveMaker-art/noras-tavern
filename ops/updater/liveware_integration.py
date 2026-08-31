@@ -1,0 +1,348 @@
+"""Existing-app integration. Queries fail closed; updating never creates Apps.
+
+Liveware's installed CLI exposes backend mode, but not a tunnel's local URL.
+Consequently an acknowledged bind is NOT independently observed routing and we
+cannot automatically restore an unknown prior binding. This limitation remains
+explicit in receipts instead of inventing a tunnel-status endpoint.
+"""
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+import urllib.request
+from html.parser import HTMLParser
+
+ROLES = {'console': ('Tavern', ''), 'actor': ('Story Profile', '/_liveware/story-profile')}
+
+
+def rows(value, key=None):
+    if key:
+        value = value.get(key) if isinstance(value, dict) else None
+    if not isinstance(value, list) or any(not isinstance(row, dict) for row in value):
+        raise ValueError('Platform query failed or returned an unsupported schema')
+    return value
+
+
+def launcher_record(value):
+    return {key: value[key] for key in ('app_id', 'name', 'url')} if value is not None else None
+
+
+class Platform:
+    def __init__(self, home):
+        self.home = Path(home)
+        self.binary = os.environ.get('LIVEWARE_BIN') or shutil.which('liveware') or str(self.home / 'clawchat/liveware/liveware')
+        self.plugin = Path(os.environ.get('CLAWCHAT_PLUGIN_DIR') or self.home / 'plugins/clawchat')
+
+    def cli(self, *args):
+        result = subprocess.run([self.binary, *args], capture_output=True, text=True, timeout=45)
+        if result.returncode:
+            # CLI stderr may contain auth material; keep errors categorical.
+            raise ValueError('Liveware command failed: ' + ' '.join(args[:2]))
+        return result.stdout
+
+    def apps(self):
+        return rows(json.loads(self.cli('app', 'list', '--json')))
+
+    def backends(self, app_id):
+        return rows(json.loads(self.cli('backend', 'list', app_id, '--json')))
+
+    def launcher(self, operation, **parameters):
+        if operation not in ('list_apps', 'register_app', 'unregister_app'):
+            raise ValueError('Unsupported launcher operation')
+        code = ('import asyncio,json,sys; sys.path.insert(0,sys.argv[1]); '
+                'from clawchat_gateway import tools; '
+                'print(json.dumps(asyncio.run(getattr(tools,sys.argv[2])(**json.load(sys.stdin)))))')
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(self.plugin), operation],
+            input=json.dumps(parameters), capture_output=True, text=True, timeout=45,
+            env={**os.environ, 'HERMES_HOME': str(self.home)})
+        if result.returncode:
+            raise ValueError('ClawChat launcher command failed: ' + operation)
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict) or value.get('error') or value.get('ok') is False or value.get('success') is False:
+            raise ValueError('ClawChat launcher rejected: ' + operation)
+        return value
+
+    def registrations(self):
+        return rows(self.launcher('list_apps'), 'apps')
+
+    def bind(self, app_id, target):
+        self.cli('tunnel', 'bind', app_id, target)
+
+
+def identities(home, platform):
+    from update import safe
+    document = json.loads(safe(Path(home) / 'tavern-state/apps.json').read_text())
+    available = platform.apps()  # Failure must never become an empty list.
+    result = {}
+    for role in ROLES:
+        saved = document.get(role, {})
+        app_id, domain = saved.get('app_id'), saved.get('domain')
+        if not isinstance(app_id, str) or not re.fullmatch(r'app-[A-Za-z0-9-]+', app_id):
+            raise ValueError('Missing or invalid existing App identity: ' + role)
+        matches = [a for a in available if a.get('appId') == app_id and a.get('status') == 'active']
+        if len(matches) != 1 or matches[0].get('domain') != domain:
+            raise ValueError('Existing App is missing, inactive, ambiguous or changed: ' + role)
+        if not isinstance(domain, str) or not re.fullmatch(r'[A-Za-z0-9.-]+\.apps\.clawling\.io', domain):
+            raise ValueError('Unsupported App domain: ' + role)
+        result[role] = {'app_id': app_id, 'domain': domain}
+    if result['console']['app_id'] == result['actor']['app_id']:
+        raise ValueError('Tavern and Story Profile must use distinct App IDs')
+    return result
+
+
+def registrations(platform, ids):
+    listed = platform.registrations()
+    result = {}
+    for role, app in ids.items():
+        matching = [r for r in listed if r.get('app_id') == app['app_id']]
+        if len(matching) > 1:
+            raise ValueError('Duplicate launcher registrations: ' + role)
+        result[role] = launcher_record(matching[0]) if matching else None
+    return result
+
+
+class Integration:
+    def __init__(self, home, *, port=8799, platform=None, isolated=False):
+        self.home, self.port = Path(home), port
+        self.platform = platform or Platform(home)
+        self.isolated = isolated
+
+    def review(self, *, allow_unbound=False):
+        if self.isolated:
+            return {'status': 'isolated-not-connected'}
+        if not (self.home / 'tavern-state/apps.json').exists():
+            return {'status': 'not-configured'}
+        ids = identities(self.home, self.platform)
+        registered = registrations(self.platform, ids)
+        backends = {}
+        for role, app in ids.items():
+            value = self.platform.backends(app['app_id'])
+            if allow_unbound and not value:
+                backends[role] = None
+                continue
+            if len(value) != 1 or value[0].get('mode') != 'tunnel' or value[0].get('route') != '/*':
+                raise ValueError('Only a single existing root tunnel is supported: ' + role)
+            backends[role] = {key: value[0].get(key) for key in ('mode', 'route', 'targetUrl', 'upstreamId')}
+        return {'status': 'reviewed', 'apps': ids, 'registrations': registered, 'backends': backends,
+                'priorTunnelTarget': 'not-exposed-by-cli', 'allowUnbound': allow_unbound}
+
+    def check(self, reviewed):
+        if self.review(allow_unbound=reviewed.get('allowUnbound', False)) != reviewed:
+            raise ValueError('Liveware identities, backend or registrations changed since review')
+
+    def apply(self, reviewed, journal, save, *, refresh=False):
+        if reviewed['status'] != 'reviewed':
+            return {'status': reviewed['status'], 'externalEntryVerified': False}
+        self.check(reviewed)
+        journal.update(status='applying', before=reviewed, actions=[])
+        save()
+        for role in ROLES:
+            app = reviewed['apps'][role]
+            title, prefix = ROLES[role]
+            target = f'http://127.0.0.1:{self.port}' + prefix
+            # Check role-specific local metadata and the actual icon BEFORE any
+            # remote mutation. App ownership was already checked for both roles.
+            local_entry(target + '/', title)
+        for role in ROLES:
+            app = reviewed['apps'][role]
+            title, prefix = ROLES[role]
+            action = {'role': role, 'kind': 'bind', 'status': 'intent'}
+            journal['actions'].append(action)
+            save()
+            self.platform.bind(app['app_id'], f'http://127.0.0.1:{self.port}' + prefix)
+            backend = self.platform.backends(app['app_id'])
+            if len(backend) != 1 or backend[0].get('mode') != 'tunnel' or backend[0].get('route') != '/*':
+                raise ValueError('Tunnel mode not confirmed after binding: ' + role)
+            action['status'] = 'acknowledged'
+            save()
+            desired = {'app_id': app['app_id'], 'name': title, 'url': 'https://' + app['domain'] + '/'}
+            current = registrations(self.platform, reviewed['apps'])[role]
+            if current != reviewed['registrations'][role]:
+                raise ValueError('Launcher changed during update: ' + role)
+            if current != desired or refresh:
+                action = {'role': role, 'kind': 'registration', 'before': current, 'after': desired, 'status': 'intent'}
+                journal['actions'].append(action)
+                save()
+                if current:
+                    self.platform.launcher('unregister_app', app_id=app['app_id'])
+                # If a write times out, stop. Recovery queries the actual state;
+                # it never blindly repeats an uncertain registration request.
+                self.platform.launcher('register_app', **desired)
+                if registrations(self.platform, reviewed['apps'])[role] != desired:
+                    raise ValueError('Launcher metadata did not converge: ' + role)
+                action['status'] = 'verified'
+                save()
+        journal['status'] = 'binding-acknowledged'
+        save()
+        return {'status': 'binding-acknowledged', 'localEntriesVerified': True, 'launcherMetadataVerified': True,
+                'externalEntryVerified': False,
+                'limitation': 'CLI cannot read local tunnel targets; authenticated ClawChat entry/UI still needs owner verification'}
+
+    def recover(self, journal, save):
+        if not journal.get('actions'):
+            return True
+        before = journal['before']
+        if identities(self.home, self.platform) != before['apps']:
+            raise ValueError('App identities changed; external recovery refused')
+        pending = False
+        for action in reversed(journal['actions']):
+            if action.get('status') == 'restored':
+                continue
+            if action['kind'] == 'bind':
+                # No public getter for original upstream: do not guess one or
+                # overwrite a possible concurrent operator binding.
+                pending = True
+                continue
+            role = action['role']
+            actual = registrations(self.platform, before['apps'])[role]
+            if actual not in (None, action['before'], action['after']):
+                raise ValueError('Concurrent launcher edit; external recovery refused: ' + role)
+            if actual != action['before']:
+                app_id = before['apps'][role]['app_id']
+                if actual:
+                    self.platform.launcher('unregister_app', app_id=app_id)
+                if action['before']:
+                    self.platform.launcher('register_app', **action['before'])
+                if registrations(self.platform, before['apps'])[role] != action['before']:
+                    raise ValueError('Launcher restoration could not be verified: ' + role)
+            action['status'] = 'restored'
+            save()
+        journal['status'] = 'integration-pending' if pending else 'restored'
+        save()
+        return not pending
+
+
+def local_entry(url, title):
+    """Only loopback HTTP, no proxy/redirect, capped HTML and image reads."""
+    class Metadata(HTMLParser):
+        icon = None
+        application = None
+        title = ''
+        in_title = False
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == 'title':
+                self.in_title = True
+            if tag == 'meta' and values.get('name') == 'application-name':
+                self.application = values.get('content')
+            if tag == 'link' and 'icon' in values.get('rel', '').split():
+                self.icon = values.get('href')
+        def handle_endtag(self, tag):
+            if tag == 'title':
+                self.in_title = False
+        def handle_data(self, value):
+            if self.in_title:
+                self.title += value
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    def read(address, maximum):
+        with opener.open(address, timeout=10) as response:
+            value = response.read(maximum + 1)
+            if response.status != 200 or len(value) > maximum:
+                raise ValueError('Local entry response is invalid')
+            return value
+    metadata = Metadata()
+    metadata.feed(read(url, 2 * 1024 * 1024).decode('utf-8'))
+    if metadata.title.strip() != title or (metadata.application and metadata.application != title) or not metadata.icon or not re.fullmatch(r'/[A-Za-z0-9_./-]+\.png', metadata.icon):
+        raise ValueError('Local entry metadata differs from release: ' + title)
+    from urllib.parse import urlsplit
+    origin = urlsplit(url)
+    icon = read(origin.scheme + '://' + origin.netloc + metadata.icon, 8 * 1024 * 1024)
+    if not icon.startswith(b'\x89PNG\r\n\x1a\n'):
+        raise ValueError('Local entry icon is not a PNG: ' + title)
+
+
+def initialize(home, platform):
+    """Explicit first-install command only. Never retry uncertain App creation."""
+    from update import safe, json_write
+    home = Path(home)
+    path = safe(home / 'tavern-state/apps.json')
+    document = json.loads(path.read_text()) if path.exists() else {}
+    intent_path = safe(home / 'tavern-updates-v2/liveware-initialization.json')
+    journal = json.loads(intent_path.read_text()) if intent_path.exists() else {}
+    available = platform.apps()
+    platform.registrations()  # Check authentication/schema before creating anything.
+    selected = {}
+    for role, (title, _) in ROLES.items():
+        saved = document.get(role, {}).get('app_id')
+        candidates = [a for a in available if a.get('status') == 'active' and
+                      (a.get('appId') == saved if saved else a.get('name', '').casefold() == title.casefold())]
+        if len(candidates) > 1 or (saved and len(candidates) != 1):
+            raise ValueError('Ambiguous or missing existing App; initialization stopped: ' + role)
+        if not candidates and journal.get(role):
+            raise ValueError('Previous App creation is uncertain; do not repeat creation: ' + role)
+        selected[role] = candidates[0] if candidates else None
+    chosen = [a['appId'] for a in selected.values() if a]
+    if len(chosen) != len(set(chosen)):
+        raise ValueError('Tavern and Story Profile must use distinct App IDs')
+    for role, (title, _) in ROLES.items():
+        app = selected[role]
+        if app is None:
+            journal[role] = {'status': 'create-intent', 'name': title}
+            json_write(intent_path, journal)
+            platform.cli('app', 'create', title, '--agent-type', 'hermes')
+            matches = [a for a in platform.apps() if a.get('status') == 'active' and a.get('name') == title]
+            if len(matches) != 1:
+                raise ValueError('Creation not uniquely confirmed; no automatic retry: ' + role)
+            app = matches[0]
+        document[role] = {'app_id': app['appId'], 'domain': app['domain'], 'name': title, 'liveware_name': title}
+        json_write(path, document)  # Persist each confirmed identity independently.
+        journal[role] = {'status': 'resolved', 'app_id': app['appId']}
+        json_write(intent_path, journal)
+    return identities(home, platform)
+
+
+def require_idle(home):
+    from update import safe
+    for path in (Path(home) / 'tavern-updates-v2').glob('review-*/receipt.json'):
+        value = json.loads(safe(path).read_text())
+        if value.get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload', 'already-installed', 'refused-before-maintenance'):
+            raise ValueError('Unfinished update requires recovery; startup will not change runtime or Liveware')
+
+
+def main():
+    import argparse
+    from update import module_at, json_write, safe
+    from runtime_lock import installation_lock
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--home', required=True, type=Path)
+    parser.add_argument('operation', choices=('initialize', 'recover-existing', 'inspect'))
+    args = parser.parse_args()
+    home = safe(args.home.absolute())
+    integration = Integration(home)
+    if args.operation == 'inspect':
+        print(json.dumps(integration.review(), ensure_ascii=False))
+        return
+    with installation_lock(home):
+        require_idle(home)
+        journal_path = safe(home / 'tavern-updates-v2/liveware-recovery.json')
+        if journal_path.exists() and json.loads(journal_path.read_text()).get('status') != 'binding-acknowledged':
+            raise ValueError('Previous Liveware operation is unfinished; automatic startup retry refused')
+        if args.operation == 'initialize':
+            initialize(home, integration.platform)
+        reviewed = integration.review(allow_unbound=args.operation == 'initialize')
+        if reviewed['status'] != 'reviewed':
+            raise ValueError('Existing App IDs are required; run explicit initialization first')
+        # Recovery starts only the existing local runtime. It never provisions,
+        # initializes profiles, synchronizes models, or restarts Hermes.
+        app = safe(home / 'apps/tavern-runtime')
+        module = module_at('liveware_native_runtime', app / 'native_lifecycle.py')
+        contract = module.RuntimeContract.from_dict(json.loads((app / 'native-runtime.json').read_text()))
+        module.NativeRuntime(home, app, home / 'tavern-state', contract).start()
+        journal = {}
+        result = integration.apply(reviewed, journal, lambda: json_write(journal_path, journal))
+        print(json.dumps(result, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        from feedback import public_reason
+        print(json.dumps({'ok': False, 'error': public_reason(error), 'noAutomaticRetry': True}), file=sys.stderr)
+        raise SystemExit(1)

@@ -1,5 +1,10 @@
 # Owner-confirmed updater activation — local verification
 
+Historical bridge implementation only. The bridge is now retired; current
+behavior and remaining verification limits are documented in
+[Updater implementation](UPDATER-IMPLEMENTATION-20260831.md). Do not use the
+activation commands below for new releases.
+
 ## Implemented scope
 
 The release installs an opt-in Hermes plugin from `ops/updater/hermes-plugin`.

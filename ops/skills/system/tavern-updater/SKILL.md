@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, upgrade, activate and roll back Tavern releases.
-version: 2.1.0-rc.1
+version: 2.1.0-rc.2
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -26,7 +26,11 @@ does not authorize installation, a restart or executing downloaded code.
 
 ## Prerequisites
 
-Read [release compatibility](references/release-compatibility.md) to resolve the
+For an owner-supplied, explicitly approved project updater command, follow
+**Execute and report** below. The script performs its own environment/release
+checks; a routine execution request is not a request to investigate the codebase.
+When choosing a release or planning an upgrade, read
+[release compatibility](references/release-compatibility.md) to resolve the
 installed layout, trusted source, first updater adoption and activation steps.
 Use Hermes' Python environment, Node 20+ and npm. Preserve the existing MCP
 permission mode and tool allowlist.
@@ -37,11 +41,39 @@ Python productions → Node Worlds; existing Node data is validated, not migrate
 
 ## How to Run
 
-Use Hermes `terminal` and this skill's `scripts/update.py`. Inspect its `--help`.
+Use Hermes `terminal` and this skill's `scripts/update.py`. Inspect its `--help`
+only when constructing a command, not before executing an approved exact command.
 For first adoption, use the verified Bootstrap described in release compatibility.
-It refreshes only the updater before review; app/data/AGENTS remain unchanged.
+It stages the updater privately. Review leaves all active skills, app, MCP,
+data and AGENTS unchanged; they switch together only during approved apply.
 A GitHub branch is source, not a release asset. A tag without the full bundle and
 Bootstrap assets is not an available upgrade.
+
+## Execute and report
+
+1. Say that the approved update script is starting, then execute that command
+   once with `terminal`. The script performs the update without model calls.
+2. If the terminal returns a running session, wait/poll that same session for its
+   exit code and new output. Relay the latest `[tavern-updater]` phase and elapsed
+   time when available. Terminal output is not necessarily streamed into ClawChat;
+   silence alone is not a failure and never authorizes a second update command.
+3. When the command exits, immediately report the result and end the turn:
+   - Success: installed version/status and the script's owner `/restart` instruction.
+     Installation does not mean the current gateway has reloaded.
+   - Failure: failed phase, concrete `error`, `status`/`recovery`, and transaction
+     or error-log path. `rolled-back` is recovery, not a successful upgrade.
+     Unknown/partial recovery, including `integration-pending`, must be stated as unconfirmed.
+   - Older scripts without a useful error: say the script failed and the cause
+     is not yet known; ask whether the owner wants diagnosis.
+4. Diagnosis or another attempt starts only after separate owner approval. A
+   routine update request does not authorize reading successive logs/source files,
+   repairing process supervision, killing processes or retrying after failure.
+   The updater's own transaction recovery remains automatic; wait for it to finish.
+
+Use the command's structured result directly. Do not perform extra log/receipt
+reads merely to repeat evidence already in that result. If a timeout/disconnect
+leaves execution state unknown, report that uncertainty and retain the session ID;
+do not claim failure, success or rollback without evidence.
 
 ## Quick Reference
 
@@ -49,6 +81,7 @@ Bootstrap assets is not an available upgrade.
 | --- | --- |
 | `fetch` | Explicit approved tag; downloads only from the project GitHub release |
 | `review` | Pinned manifest SHA-256; returns transaction and plan digest; live files unchanged |
+| `status` | Requested read-only inspection; separates receipt-time results from current local runtime |
 | `apply` | Owner approval, same transaction and expected plan digest, `--confirm` |
 | `rollback` | Matching transaction, original plan digest, owner approval and `--confirm` |
 
@@ -77,11 +110,15 @@ Bootstrap assets is not an available upgrade.
 
 ## Pitfalls
 
-Review leaves active files unchanged (Bootstrap separately refreshes the updater).
+Review leaves active files unchanged, including the updater skill itself.
+The installed skill invokes installed ops; historical global Bootstrap pointers
+are not used. Apply/recovery verify and run the engine pinned in that transaction.
 Apply prepares dependencies, verifies/stops the owned process, copies and converts
 state, then switches reviewed code/state trees and host files. Durable intent
 precedes every rename. Failure recovery restores original trees and the prior
-running/offline condition; inspect any recovery error.
+running/offline condition; report any recovery error immediately.
+New updates use only directory transactions. The legacy file-level adapter can
+recover existing receipts but cannot review or apply a new release.
 
 Preflight budgets complete state/code copies plus estimated dependency space and
 requires one filesystem for directory switching. Unknown code leaves active paths
@@ -91,13 +128,20 @@ writers must honor the maintenance window.
 
 Worlds, chats, keys, custom skills and instructions outside the managed AGENTS
 block are preserved. USER.md/MEMORY.md participate in recovery. The updater does
-not re-register Liveware, replace the whole Hermes home or restore executable
-card scripts discarded by the Python importer. Recovery contains private
+not create/delete Liveware Apps, replace the whole Hermes home or restore executable
+card scripts discarded by the Python importer. It reconciles the two existing
+App IDs, checks their local entry metadata/icons and corrects launcher registrations.
+`binding-acknowledged` means the CLI accepted the bind, not that the external
+ClawChat entry was observed. The current CLI cannot query a tunnel's original
+local target: after an uncertain bind, recovery reports `integration-pending`
+instead of guessing the old target or claiming complete recovery. Recovery contains private
 configuration: keep it on the host outside skills discovery.
 
 ## Verification
 
-Require the receipt, matching installed hashes, new Tavern process health,
-Story Profile route and fresh read-only MCP discovery. Then verify Hermes' reloaded
+The script verifies the receipt, matching installed hashes, new Tavern process
+health, Story Profile route and fresh read-only MCP discovery; report its evidence
+without rerunning the same checks. After a separately requested activation check,
+verify Hermes' reloaded
 MCP and four unique skills (`tavern`, `tavern-ops`, `tavern-updater`, `nora-cardforge`)
 in the gateway. Pending reload or failed recovery is not completion.

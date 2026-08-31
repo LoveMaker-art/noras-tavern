@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 import time
 import xmlrpc.client
+from runtime_process import command_matches
 
 
 def digest(data):
@@ -90,8 +91,7 @@ class ManagedService:
                 values = document[section]
                 directory = Path(values.get('directory', '/')).resolve()
                 args = shlex.split(values.get('command', ''))
-                matches = args and Path(args[0]).name.startswith(('python', 'node')) and any(
-                    (directory / arg).resolve() in scripts for arg in args[1:] if not arg.startswith('-'))
+                matches = any(command_matches(args, directory, script) for script in scripts)
                 if not matches:
                     continue
                 if len(document.sections()) != 1 or not Path(file).is_relative_to(home / '.clawling/supervisord'):

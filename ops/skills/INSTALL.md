@@ -70,7 +70,8 @@ unchanged installation is a no-op. Do not replace whole skill folders.
 4. Check the existing Tavern service and MCP identity without model calls.
 
 File discovery does not refresh a cached system prompt in an ongoing agent
-session. Validate routing in a fresh owner-authorized session; do not clear chat
-history or restart the gateway to force it. `/reload-mcp` is not an AGENTS reload.
+session. After a full release update, the owner sends `/restart` in ClawChat;
+validate actual gateway registration and context afterward. The installer never
+clears history or restarts the gateway itself. `/reload-mcp` alone is not an AGENTS reload.
 A successful document load is technical validation, not an end-to-end guarantee
 that a model will follow every workflow. Record that remaining validation level.

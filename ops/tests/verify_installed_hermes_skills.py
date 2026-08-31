@@ -32,6 +32,8 @@ def main():
         if provision.exists():
             files.append(provision)
         for file in files:
+            if not file.exists():
+                continue
             target = home / file.relative_to(live)
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(install.safe_file(file), target)
@@ -54,7 +56,7 @@ def main():
             name = rel.split("/")[-1]
             directory = home / "skills" / rel
             main_text = (directory / "SKILL.md").read_text()
-            assert _validate_frontmatter(main_text, new_skill=True) is None, name
+            assert _validate_frontmatter(main_text) is None, name
             assert names.count(name) == 1, f"Index ambiguity: {name}"
             loaded = json.loads(skill_view(name=name))
             assert loaded.get("success"), f"Cannot load {name}: {loaded.get('error')}"
@@ -64,17 +66,19 @@ def main():
                 result = json.loads(skill_view(name=name, file_path=relative))
                 assert result.get("success"), f"Cannot load {name}/{relative}"
                 refs.append(relative)
-            assert len(refs) == {"tavern": 5, "tavern-ops": 2, "tavern-updater": 1, "nora-cardforge": 7}[name], refs
+            expected = {str(p.relative_to(source / rel)) for p in (source / rel / 'references').glob('*.md')}
+            assert set(refs) == expected, 'Installed references differ from release: ' + name
             checked[name] = {"frontmatter": True, "unique": True, "references": sorted(refs)}
         assert not set(install.RETIRED).intersection(names), "Retired skills remain in index"
         context = build_context_files_prompt(cwd=str(home), skip_soul=True)
         assert install.BEGIN in context, "AGENTS block not loaded"
-        assert not any(heading in context for heading in install.LEGACY_SECTIONS), "Old AGENTS routing remains"
+        outside = context.split(install.BEGIN, 1)[0] + context.split(install.END, 1)[1]
+        assert not any(heading in outside.splitlines() for heading in install.LEGACY_SECTIONS), "Old AGENTS routing remains"
         # Block has no unresolved reference to an old specialist.
         assert not any(re.search(r"`" + re.escape(name) + r"`", context) for name in install.RETIRED)
         assert all(install.read_optional(path) == data for path, data in before.items()), "Live files changed"
         print(json.dumps({
-            "isolation": True, "installedHermesBuild": (args.hermes_source / ".hermes_build_sha").read_text().strip(),
+            "isolation": True, "hermesSource": str(args.hermes_source),
             "skills": checked, "retiredSkillsAbsent": True, "agentsLoaded": True,
             "liveFilesUnchanged": True, "livePlanDigest": install.plan_summary(live_plan)["digest"],
             "livePlannedChanges": len(live_plan), "modelCalls": 0, "servicesRestarted": False,

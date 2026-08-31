@@ -6,9 +6,6 @@ Unknown processes, supervisors or external writers fail closed; never kill by na
 import json
 import os
 from pathlib import Path
-import shlex
-import signal
-import socket
 import subprocess
 import time
 import urllib.request
@@ -16,106 +13,38 @@ import urllib.request
 from update import atomic, json_write, safe
 from python_installation import python_script
 from service_manager import ManagedService
-
-
-def process_record(pid, script):
-    if not isinstance(pid, int) or pid <= 1:
-        raise ValueError('Invalid Tavern PID')
-    proc = Path('/proc') / str(pid)
-    if Path('/proc/self').exists():
-        try:
-            if proc.stat().st_uid != os.getuid():
-                raise ValueError('Tavern PID belongs to another user')
-            stat = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
-            if stat[0] == 'Z':
-                return None
-            argv = (proc / 'cmdline').read_bytes().decode().strip('\0').split('\0')
-            # Linux can exit between the state and command reads. A vanished
-            # command is not proof of PID reuse; recheck before classifying it.
-            if not argv[0]:
-                after = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
-                if after[0] in ('Z', 'X'):
-                    return None
-            cwd = str((proc / 'cwd').resolve())
-            identity = stat[19]
-        except FileNotFoundError:
-            return None
-    else:
-        result = subprocess.run(['ps', '-p', str(pid), '-o', 'stat=,lstart=,command='], capture_output=True, text=True)
-        if result.returncode == 1 or result.stdout.lstrip().startswith('Z'):
-            return None
-        if result.returncode:
-            raise ValueError('Cannot verify Tavern process identity')
-        parts = result.stdout.strip().split(None, 6)
-        identity = ' '.join(parts[1:6])
-        argv = shlex.split(parts[6])
-        names = subprocess.run(['lsof', '-a', '-p', str(pid), '-d', 'cwd', '-Fn'], capture_output=True, text=True)
-        if names.returncode:
-            # SIGTERM can complete between ps and lsof. Recheck liveness;
-            # permission errors or a live replacement PID still fail closed.
-            after = subprocess.run(['ps', '-p', str(pid), '-o', 'stat='], capture_output=True, text=True)
-            if after.returncode == 1 or after.stdout.lstrip().startswith('Z'):
-                return None
-            raise ValueError('Cannot verify live Tavern process working directory')
-        cwd = next((line[1:] for line in names.stdout.splitlines() if line.startswith('n')), '')
-    executable = Path(argv[0]).name.lower()
-    expected = 'python' if script.suffix == '.py' else 'node'
-    if not executable.startswith(expected) or not cwd or not any(str((Path(cwd) / arg).resolve()) == str(script.resolve()) for arg in argv[1:] if not arg.startswith('-')):
-        if Path('/proc/self').exists():
-            try:
-                if (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0] in ('Z', 'X'):
-                    return None
-            except FileNotFoundError:
-                return None
-        raise ValueError('PID does not execute the reviewed Tavern program')
-    return {'pid': pid, 'identity': identity, 'argv': argv, 'cwd': cwd}
-
-
-def port_open(port):
-    with socket.socket() as sock:
-        sock.settimeout(0.3)
-        return sock.connect_ex(('127.0.0.1', port)) == 0
+from runtime_process import (process_record, same_process, find_processes, port_open,
+                             stop_process, require_listener, ProcessError)
 
 
 def python_processes(app):
-    """Find only same-user processes executing this exact reviewed Python file.
-
-    Containers can restart with an old persisted PID file. Never kill by name or
-    trust that PID alone; reuse the same cwd/argv/owner checks as normal shutdown.
-    """
-    script = python_script(app)
-    if Path('/proc/self').exists():
-        candidates = []
-        for entry in Path('/proc').iterdir():
-            if not entry.name.isdigit():
-                continue
-            try:
-                if entry.stat().st_uid != os.getuid():
-                    continue
-                args = (entry / 'cmdline').read_bytes().decode().strip('\0').split('\0')
-                if args and Path(args[0]).name.startswith('python') and any(Path(arg).name == 'server.py' for arg in args[1:]):
-                    candidates.append(int(entry.name))
-            except FileNotFoundError:
-                continue
-    else:
-        lines = subprocess.check_output(['ps', '-axo', 'pid=,uid=,comm='], text=True).splitlines()
-        candidates = [int(parts[0]) for line in lines if len(parts := line.split(None, 2)) == 3
-                      and int(parts[1]) == os.getuid() and Path(parts[2]).name.lower().startswith('python')]
-    result = []
-    for pid in candidates:
-        try:
-            record = process_record(pid, script)
-        except ValueError as error:
-            if str(error) == 'PID does not execute the reviewed Tavern program':
-                continue
-            raise
-        if record:
-            result.append(record)
-    return result
+    return find_processes(python_script(app))
 
 
 def managed_service(lifecycle):
     return ManagedService.discover(lifecycle.u.home, lifecycle.u.targets['app'])
+
+
+def verify_restored(lifecycle, process, script):
+    """Recovery uses the same identity-bound health evidence on every path."""
+    route, field = ('/api/health', 'ok') if lifecycle.source_runtime == 'python' else ('/csrf-token', 'token')
+    deadline = time.monotonic() + 20
+    while time.monotonic() < deadline:
+        current = process_record(process['pid'], script)
+        if not same_process(current, process):
+            raise ValueError('Restored Tavern process exited or changed before verification')
+        if port_open(lifecycle.port):
+            require_listener(current, script, lifecycle.port)
+            try:
+                with urllib.request.urlopen(f'http://127.0.0.1:{lifecycle.port}' + route, timeout=3) as response:
+                    healthy = bool(json.load(response).get(field))
+                require_listener(current, script, lifecycle.port)
+                if healthy:
+                    return
+            except (OSError, ValueError):
+                pass
+        time.sleep(0.1)
+    raise ValueError('Restored Tavern process did not become healthy')
 
 
 def pause(lifecycle, transaction):
@@ -125,6 +54,11 @@ def pause(lifecycle, transaction):
     script = python_script(u.targets['app']) if python else u.targets['app'] / 'engine/sillytavern/server.js'
     service = managed_service(lifecycle)
     managed_pid = service.pid() if service else None
+    if not python and not service:
+        status = lifecycle.runtime().status()
+        if status.get('inspection_error'):
+            raise ValueError('Cannot inspect Node source before maintenance: ' + status['inspection_error'])
+        managed_pid = status.get('native_pid')
     current = process_record(managed_pid, script) if managed_pid else (
         process_record(int(pid_file.read_text().strip()), script) if not service and pid_file.exists() else None)
     if python:
@@ -135,6 +69,8 @@ def pause(lifecycle, transaction):
             current = found[0]
     if not current and port_open(lifecycle.port):
         raise ValueError('Tavern port has an unowned process; no service was stopped')
+    if current and port_open(lifecycle.port):
+        require_listener(current, script, lifecycle.port)
     record = {'schema': 1, 'sourceRuntime': lifecycle.source_runtime, 'script': str(script),
               'wasRunning': bool(current), 'process': current, 'paused': False}
     if service:
@@ -153,17 +89,15 @@ def pause(lifecycle, transaction):
         record['environment'] = dict(item.split('=', 1) for item in environment.read_bytes().decode().split('\0') if '=' in item) if environment.exists() else dict(os.environ)
     json_write(transaction / 'maintenance.json', record)
     if current:
-        if process_record(current['pid'], script) != current:
+        if not same_process(process_record(current['pid'], script), current):
             raise ValueError('Tavern process changed before maintenance')
-        if service:
-            service.stop()
-        else:
-            os.kill(current['pid'], signal.SIGTERM)
-        deadline = time.monotonic() + 20
-        while time.monotonic() < deadline and process_record(current['pid'], script):
-            time.sleep(0.1)
-        if process_record(current['pid'], script) or port_open(lifecycle.port):
-            raise ValueError('Tavern did not stop or its supervisor restarted it; no directory was switched')
+        try:
+            record['stopEvidence'] = stop_process(current, script, port=lifecycle.port,
+                                                  stop=service.stop if service else None)
+        except ProcessError as error:
+            record['stopFailure'] = {'code': error.code, 'evidence': error.evidence}
+            json_write(transaction / 'maintenance.json', record)
+            raise
     record['paused'] = True
     json_write(transaction / 'maintenance.json', record)
 
@@ -189,6 +123,7 @@ def resume(lifecycle, transaction):
             raise ValueError('Restored managed service does not match the original program')
         if record['sourceRuntime'] == 'python':
             atomic(lifecycle.u.state / 'server.pid', str(pid).encode())
+        verify_restored(lifecycle, process, expected)
         return
     if not record['wasRunning']:
         return  # Do not start an originally offline Python source and trigger jobs.
@@ -201,8 +136,9 @@ def resume(lifecycle, transaction):
     old = record['process']
     current = process_record(old['pid'], script)
     if current:
-        if current != old:
+        if not same_process(current, old):
             raise ValueError('Original PID was reused; source restart requires review')
+        verify_restored(lifecycle, current, script)
         return
     # Recover older receipts after their manager already restarted the exact
     # original service. Never accept an arbitrary listener based only on health.
@@ -210,23 +146,19 @@ def resume(lifecycle, transaction):
     if service and service.pid():
         replacement = process_record(service.pid(), script)
         if replacement and replacement['argv'] == old['argv'] and replacement['cwd'] == old['cwd']:
-            with urllib.request.urlopen(f'http://127.0.0.1:{lifecycle.port}/api/health', timeout=10) as response:
-                if json.load(response).get('ok') is not True:
-                    raise ValueError('Restored managed source is not healthy')
+            verify_restored(lifecycle, replacement, script)
             atomic(lifecycle.u.state / 'server.pid', str(replacement['pid']).encode())
             return
     if port_open(lifecycle.port):
         raise ValueError('Source restart port is occupied; no process was replaced')
     log_path = safe(lifecycle.u.state / 'server.log')
+    environment = dict(record.get('environment') or os.environ)
+    environment.pop('TAVERN_MAINTENANCE_FD', None)
     with log_path.open('ab') as log:
-        child = subprocess.Popen(old['argv'], cwd=old['cwd'], env=record.get('environment') or os.environ,
+        child = subprocess.Popen(old['argv'], cwd=old['cwd'], env=environment,
                                  stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     atomic(lifecycle.u.state / 'server.pid', str(child.pid).encode())
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        if child.poll() is not None:
-            raise ValueError('Restored Python process exited; inspect its private server.log')
-        if port_open(lifecycle.port):
-            return
-        time.sleep(0.1)
-    raise ValueError('Restored Python process did not become available')
+    process = process_record(child.pid, script)
+    if not process or process['argv'] != old['argv'] or process['cwd'] != old['cwd']:
+        raise ValueError('Restored Python instance differs from the reviewed source')
+    verify_restored(lifecycle, process, script)

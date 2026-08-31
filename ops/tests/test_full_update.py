@@ -13,7 +13,8 @@ from unittest.mock import patch
 OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS / "updater"))
 from bundle import PARTS, digest, extract_bundle, read_bundle
-from update import NativeLifecycle, Updater, plan_digest
+from update import Updater, plan_digest
+from legacy_recovery import LegacyRecovery
 
 
 class Service:
@@ -26,6 +27,15 @@ class Service:
 
     def stop(self):
         self.calls.append("stop")
+
+    def pause(self, _transaction):
+        self.stop()
+
+    def require_offline(self):
+        pass  # Fixture services never bind a port.
+
+    def migrate(self, _transaction, _state):
+        return {'fixtureAdapter': True}
 
     def activate(self, _transaction):
         self.calls.append("activate")
@@ -65,6 +75,7 @@ class FullUpdateTests(unittest.TestCase):
         self.write("AGENTS.md", "# Personal\nKeep my instructions.\n")
         self.write("skills/custom/SKILL.md", "---\nname: custom\n---\nKeep")
         self.write("apps/tavern-runtime/custom-plugin.js", "user plugin")
+        self.write("apps/tavern-runtime/engine/sillytavern/plugins/custom.js", "supported plugin")
         self.initial = self.snapshot()
         self.service = Service()
         self.u = Updater(self.home, lifecycle=self.service)
@@ -168,12 +179,15 @@ class FullUpdateTests(unittest.TestCase):
             self.u.rollback(review["transaction"], review["planDigest"])
         self.assertEqual((self.home / "apps/tavern-runtime/hello.js").read_text(), "user hotfix")
 
-    def test_prunes_only_previously_managed_files(self):
+    def test_replaces_code_tree_and_preserves_supported_plugins(self):
         release, _ = self.bundle("first", {"app/obsolete.js": b"managed old file"})
         self.apply(self.review(release))
-        self.apply(self.review())
+        review = self.review()
+        self.apply(review)
         self.assertFalse((self.home / "apps/tavern-runtime/obsolete.js").exists())
-        self.assertEqual((self.home / "apps/tavern-runtime/custom-plugin.js").read_text(), "user plugin")
+        self.assertFalse((self.home / "apps/tavern-runtime/custom-plugin.js").exists())
+        self.assertEqual((self.home / "apps/tavern-runtime/engine/sillytavern/plugins/custom.js").read_text(), "supported plugin")
+        self.assertEqual((Path(review['transaction']) / 'backup/trees/0/obsolete.js').read_text(), 'managed old file')
 
     def test_repeated_updates_preserve_complete_agents_not_only_changed_block(self):
         first = self.review()
@@ -232,6 +246,9 @@ class FullUpdateTests(unittest.TestCase):
         transaction = Path(review["transaction"])
         file = transaction / "plan.json"
         plan = json.loads(file.read_text())
+        # This fixture represents a receipt created BEFORE directory updates.
+        for key in ('cleanTransaction', 'testMode', 'port', 'groups', 'engine'):
+            plan.pop(key, None)
         del plan["files"]["home/AGENTS.md"]
         change = next(c for c in plan["changes"] if c["name"] == "home/AGENTS.md")
         change.update(after=None, source=None)
@@ -245,9 +262,17 @@ class FullUpdateTests(unittest.TestCase):
         (transaction / "receipt.json").write_text(json.dumps({
             "status": "applying", "actual": [change], "applied": [0], "planDigest": plan_digest(plan),
         }))
-        result = self.u.rollback(transaction, plan_digest(plan))
+        result = LegacyRecovery(self.home, lifecycle=self.service).rollback(transaction, plan_digest(plan))
         self.assertEqual(result["status"], "rolled-back")
         self.assertEqual(self.snapshot(), self.initial)
+
+    def test_legacy_adapter_cannot_create_or_apply_new_transactions(self):
+        adapter = LegacyRecovery(self.home, lifecycle=self.service)
+        with self.assertRaisesRegex(ValueError, 'recovery receipts only'):
+            adapter.review(self.release, 'unused')
+        with self.assertRaisesRegex(ValueError, 'retired'):
+            adapter.apply('unused', 'unused')
+        self.assertEqual(self.service.calls, [])
 
     def test_disk_shortage_blocks_before_prepare_or_stop(self):
         review = self.review()
@@ -299,12 +324,25 @@ class FullUpdateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Custom"):
                 self.review()
 
-    def test_stale_rollback_of_identical_release_is_rejected(self):
+    def test_stale_rollback_after_a_new_release_is_rejected(self):
         first = self.review()
         self.apply(first)
-        self.apply(self.review())
+        release, _ = self.bundle('newer-release', {'app/hello.js': b'newer-app'})
+        self.apply(self.review(release))
         with self.assertRaisesRegex(ValueError, "newer transaction"):
             self.u.rollback(first["transaction"], first["planDigest"])
+
+    def test_same_release_is_noop_without_invalidating_last_recovery(self):
+        first = self.review()
+        self.apply(first)
+        calls = list(self.service.calls)
+        second = self.review()
+        self.assertEqual(self.apply(second)['status'], 'already-installed')
+        self.assertEqual(self.service.calls, calls)
+        installed = json.loads((self.u.root / 'installed.json').read_text())
+        self.assertEqual(installed['transaction'], Path(first['transaction']).name)
+        self.u.rollback(first['transaction'], first['planDigest'])
+        self.assertEqual(self.snapshot(), self.initial)
 
     def test_missing_archive_blocks_full_update(self):
         del self.manifest["archives"]["nora-mcp"]
@@ -326,8 +364,8 @@ class FullUpdateTests(unittest.TestCase):
         installed = self.snapshot()
         transaction = Path(review["transaction"])
         receipt = json.loads((transaction / "receipt.json").read_text())
-        index = next(i for i, c in enumerate(receipt["actual"]) if c["before"] is not None)
-        (transaction / "backup" / str(index)).write_bytes(b"corrupt")
+        app_entry = next(e for e in receipt['entries'] if e['name'] == 'app')
+        (Path(app_entry['backup']) / 'hello.js').write_bytes(b'corrupt')
         with self.assertRaisesRegex(ValueError, "backup checksum"):
             self.u.rollback(review["transaction"], review["planDigest"])
         self.assertEqual(self.snapshot(), installed)

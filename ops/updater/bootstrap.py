@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Adopt a pinned full-release updater through the Python-era bootstrap URL.
 
-Review refreshes only the updater skill. App, MCP, data and AGENTS switch together
+Review stages only a private updater. All active skills, app, MCP, data and AGENTS switch together
 only on a separately confirmed apply. Requires Hermes' existing PyYAML; never
 installs dependencies into the system Python.
 """
@@ -11,15 +11,46 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
-import shutil
-import subprocess
 import sys
 import tarfile
 import tempfile
 import urllib.request
 
+sys.dont_write_bytecode = True
+
 REPO = 'LoveMaker-art/noras-tavern'
 ASSETS = ('release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz', 'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz')
+
+
+def notice(message):
+    # Standalone Bootstrap cannot import updater modules until hashes are verified.
+    print('[tavern-updater] ' + message, file=sys.stderr, flush=True)
+
+
+def run_cli(command, **kwargs):
+    from feedback import run_cli as run
+    return run(command, **kwargs)
+
+
+class UpdateFailure(ValueError):
+    def __init__(self, result):
+        self.result = result
+        super().__init__('Update did not complete: ' + result['error'] + '; status=' + result['status'])
+
+
+def checked_cli(command, *, env, log, transaction=None):
+    from feedback import failure_report
+    result = run_cli(command, env=env, log=log)
+    if result.returncode:
+        try:
+            failure = json.loads(result.stderr)
+            if not isinstance(failure, dict) or failure.get('event') != 'failure':
+                raise ValueError('No structured failure')
+        except (ValueError, TypeError):
+            failure = failure_report(ValueError(result.stderr or '更新子进程异常退出，退出码 ' + str(result.returncode)), transaction)
+        failure['errorLog'] = str(log)
+        raise UpdateFailure(failure)
+    return result
 
 
 def sha(data):
@@ -81,7 +112,7 @@ def installation_home(value):
 
 
 def main():
-    # Direct invocations must fail before refreshing skills too. The shell entry
+    # Direct invocations must fail before staging. The shell entry
     # selects Hermes' interpreter; Bootstrap preserves it for the reviewed CLI.
     try:
         import yaml  # noqa: F401
@@ -100,6 +131,7 @@ def main():
     args = parser.parse_args()
     if args.apply and not args.confirm:
         raise ValueError('--apply requires --confirm')
+    notice('开始执行更新脚本；进度写入终端，不需要模型参与更新。')
     home = installation_home(args.home)
     update_root = home / 'tavern-updates-v2'
     if update_root.is_symlink():
@@ -121,6 +153,7 @@ def main():
             bundle = work / 'bundle'
             bundle.mkdir()
             for name in ASSETS:
+                notice('下载发布文件：' + name)
                 (bundle / name).write_bytes(fetch(f'https://github.com/{REPO}/releases/download/{tag}/{name}'))
             sums = {line.split()[1]: line.split()[0] for line in (bundle / 'SHA256SUMS').read_text().splitlines() if line.strip()}
             expected = sums.get('release-manifest.json')
@@ -128,9 +161,10 @@ def main():
             raise ValueError('Local review requires --manifest-sha256')
         stage = work / 'verified'
         stage.mkdir()
+        notice('校验发布包及文件摘要')
         manifest = stage_ops(bundle, stage, expected, args.allow_candidate)
         # Import only the hash-verified updater, then verify ALL release archives
-        # before refreshing any installed skill file.
+        # before invoking the staged engine. Active skills belong to apply only.
         sys.path.insert(0, str(stage / 'ops/updater'))
         from bundle import read_bundle, extract_bundle
         from update import atomic, json_write, safe
@@ -140,7 +174,12 @@ def main():
         installed = update_root / ('bootstrap-' + expected)
         safe(installed)
         if installed.exists():
-            inventory(installed, state=True)
+            if any(installed.rglob('__pycache__')):
+                raise ValueError('Previously staged bootstrap contains unreviewed bytecode')
+            staged_files = {name for name, item in inventory(installed, state=True).items() if 'sha256' in item}
+            expected_files = {name for name in manifest['artifacts'] if name.startswith('ops/')}
+            if staged_files != expected_files:
+                raise ValueError('Previously staged bootstrap contains unreviewed files')
             for name, digest in manifest['artifacts'].items():
                 if name.startswith('ops/') and sha((installed / name).read_bytes()) != digest:
                     raise ValueError('Previously staged bootstrap was modified')
@@ -150,43 +189,35 @@ def main():
         # Later imports must follow the verified tree after its durable move.
         sys.path.insert(0, str(installed / 'ops/updater'))
         entry = installed / 'ops/updater/update.py'
-        target = safe(home / 'skills/system/tavern-updater')
-        backup = work / 'previous-updater'
-        if target.exists():
-            inventory(target, state=True)  # Reject internal links before copying private files.
-            # Keep the original updater outside skill discovery for recovery.
-            backup = update_root / ('bootstrap-updater-backup-' + expected)
-            if not backup.exists():
-                shutil.copytree(target, backup)
-        source = installed / 'ops/skills/system/tavern-updater'
-        for file in source.rglob('*'):
-            if file.is_file():
-                atomic(safe(target / file.relative_to(source)), file.read_bytes(), 0o644)
-        json_write(update_root / 'bootstrap-runtime.json', {'schema': 1, 'entry': str(entry),
-                   'sha256': sha(entry.read_bytes()), 'manifestSha256': expected})
-        command = [sys.executable, str(entry), '--hermes-home', str(home)]
+        command = [sys.executable, '-B', '-u', str(entry), '--hermes-home', str(home)]
         if args.isolated_test_port is not None:
             command += ['--isolated-test-port', str(args.isolated_test_port)]
         env = {**os.environ, 'HERMES_HOME': str(home)}
-        review = json.loads(subprocess.check_output(command + ['review', '--release-dir', str(bundle),
-                            '--manifest-sha256', expected] + (['--allow-candidate'] if args.allow_candidate else []), env=env, text=True))
+        notice('审查目标机器与更新计划')
+        review = json.loads(checked_cli(command + ['review', '--release-dir', str(bundle),
+                            '--manifest-sha256', expected] + (['--allow-candidate'] if args.allow_candidate else []),
+                            env=env, log=update_root / 'bootstrap-review.log').stdout)
         json_write(update_root / 'bootstrap-review.json', {'transaction': review['transaction'], 'planDigest': review['planDigest'],
                    'testPort': args.isolated_test_port})
-        apply_command = command + ['apply', '--transaction', review['transaction'], '--expected-plan', review['planDigest'], '--confirm']
-        result = {'bootstrap_schema': 2, 'updater_installed': True, 'commit': manifest['commit'],
+        # The reviewed engine owns this transaction, even after installed ops
+        # are replaced. Never depend on a global last-Bootstrap pointer.
+        apply_command = [sys.executable, '-B', '-u', review['engine']['entry'], *command[4:]]
+        apply_command += ['apply', '--transaction', review['transaction'], '--expected-plan', review['planDigest'], '--confirm']
+        result = {'bootstrap_schema': 2, 'updater_installed': False, 'updater_staged': True, 'commit': manifest['commit'],
                   'review': review, 'report': {'plan_id': Path(review['transaction']).name}, 'applyCommand': apply_command,
                   'next_step': 'Review migration and inactive-file lists; apply only this pinned plan after approval.'}
         if args.apply:
-            applied = subprocess.run(apply_command, env=env, capture_output=True, text=True)
-            if applied.returncode:
-                atomic(Path(review['transaction']) / 'apply-error.log', applied.stderr.encode(), 0o600)
-                raise ValueError('Update did not complete; inspect the private transaction receipt and apply-error.log.')
+            notice('开始应用更新；耗时阶段每 10 秒报告一次状态')
+            checked_cli(apply_command, env=env, log=Path(review['transaction']) / 'apply-error.log',
+                        transaction=Path(review['transaction']))
             # npm/lifecycle may emit progress before the CLI result. The durable
             # receipt, not incidental stdout formatting, is the source of truth.
             receipt = json.loads((Path(review['transaction']) / 'receipt.json').read_text())
             from completion import installation_guidance
+            from update_status import receipt_result
             result.update(installation_guidance(receipt, isolated=args.isolated_test_port is not None))
-            result['apply'] = {'status': receipt['status'], 'commit': receipt['commit']}
+            result['apply'] = {**receipt_result(receipt), 'commit': receipt['commit']}
+            result['updater_installed'] = True
         print(json.dumps(result, ensure_ascii=False))
         if result.get('restartCommand'):
             # Keep stdout machine-readable; make the owner's last terminal
@@ -198,5 +229,6 @@ if __name__ == '__main__':
     try:
         main()
     except Exception as error:
-        print(json.dumps({'ok': False, 'error': str(error)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps(getattr(error, 'result', {'ok': False, 'error': str(error),
+              'next_step': '本次执行已停止，请直接报告结果；排查或重试需要用户另行同意。'}), ensure_ascii=False), file=sys.stderr, flush=True)
         raise SystemExit(1)

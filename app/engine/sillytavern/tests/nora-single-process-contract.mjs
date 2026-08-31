@@ -47,10 +47,9 @@ for (const removedPath of [
 assert.doesNotMatch(runtime, /legacy|server\.py|runtime-mode|MODE=/i, 'runtime.sh must delegate only to the Node lifecycle');
 assert.match(runtime, /native_lifecycle\.py/, 'runtime.sh must preserve the Node lifecycle entry point');
 assert.doesNotMatch(bringup, /server\.py/i, 'bringup must not restore the legacy Python server');
-assert.match(bringup, /runtime\.sh" start --run-id production/, 'bringup must start exactly the Nora Node lifecycle');
-assert.match(bringup, /ACTOR_APP_ID/, 'the Story Profile entry must share the Nora Node process');
+assert.match(bringup, /liveware_integration\.py".*recover-existing/, 'bringup must delegate to the existing-installation path');
 assert.doesNotMatch(provision, /server\.py/i, 'provisioning must not restore the legacy Python server');
-assert.match(provision, /ensure\("actor"/, 'provisioning must preserve the Story Profile app identity');
+assert.match(provision, /liveware_integration\.py".*initialize/, 'only explicit provisioning may initialize App identities');
 for (const retired of ['tavern_cli.py', 'native_tavern.py']) {
     assert.equal(fs.existsSync(path.join(opsRoot, 'scripts', retired)), false, 'retired direct-operation CLIs must not return');
 }

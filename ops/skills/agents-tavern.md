@@ -14,6 +14,10 @@
   migrated user data and Hermes MCP/context activation. For post-update activation,
   follow its owner-activation reference and relay the native `/restart` instruction
   after successful installation; do not restart on the owner's behalf.
+  Execute an approved update command once and report its structured outcome.
+  A failed command ends that attempt; diagnosis, repair or another attempt requires
+  separate approval. Installation, Liveware integration and gateway activation are
+  distinct results; an old receipt is not current runtime health.
 
 Choose by the requested outcome, not by a technical word appearing in an error.
 Ordinary plugin errors do not authorize service restarts or source changes.

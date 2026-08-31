@@ -10,6 +10,7 @@ from unittest.mock import patch, Mock
 
 import test_full_update  # Makes the reviewed updater modules importable.
 import maintenance
+import signal
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -47,10 +48,12 @@ class MaintenanceTests(unittest.TestCase):
             'sourceRuntime': 'python', 'process': self.record}))
         with patch.object(maintenance, 'managed_service', return_value=service), \
              patch.object(maintenance, 'process_record', side_effect=[None, replacement]), \
+             patch.object(maintenance, 'verify_restored') as verify, \
              patch.object(maintenance.urllib.request, 'urlopen', return_value=self.health(0)), \
              patch.object(maintenance.subprocess, 'Popen') as spawn:
             maintenance.resume(self.lifecycle, self.transaction)
         spawn.assert_not_called()
+        verify.assert_called_once_with(self.lifecycle, replacement, self.home / 'app/backend/server.py')
         self.assertEqual(int((self.state / 'server.pid').read_text()), replacement['pid'])
 
     def setUp(self):
@@ -69,6 +72,20 @@ class MaintenanceTests(unittest.TestCase):
         processes.start()
         self.addCleanup(processes.stop)
         self.record = {'pid': 87654321, 'identity': 'test', 'argv': ['python3', str(self.home / 'app/backend/server.py')], 'cwd': str(self.home)}
+        # Process observation/stop has its own real subprocess tests. These
+        # tests exercise durable maintenance intent and manager delegation.
+        def stopped(record, script, *, port, stop=None):
+            if stop:
+                stop()
+            else:
+                maintenance.os.kill(record['pid'], signal.SIGTERM)
+            return {'pid': record['pid'], 'originalAlive': False, 'listenerPids': [], 'port': port}
+        stopping = patch.object(maintenance, 'stop_process', side_effect=stopped)
+        stopping.start()
+        self.addCleanup(stopping.stop)
+        listener = patch.object(maintenance, 'require_listener')
+        listener.start()
+        self.addCleanup(listener.stop)
 
     def health(self, running):
         return io.BytesIO(json.dumps({'ok': True, 'background_jobs': {'running': running, 'queued': 0}}).encode())
@@ -86,7 +103,7 @@ class MaintenanceTests(unittest.TestCase):
              patch.object(maintenance.os, 'kill') as kill:
             maintenance.pause(self.lifecycle, self.transaction)
         self.assertTrue(all(call.args[1] == script for call in check.call_args_list))
-        kill.assert_called_once_with(record['pid'], maintenance.signal.SIGTERM)
+        kill.assert_called_once_with(record['pid'], signal.SIGTERM)
         journal = json.loads((self.transaction / 'maintenance.json').read_text())
         self.assertEqual(journal['script'], str(script))
         self.assertEqual(journal['process'], record)
@@ -99,13 +116,13 @@ class MaintenanceTests(unittest.TestCase):
         kill.assert_not_called()
 
     def test_process_exit_between_ps_and_cwd_is_normal_shutdown(self):
-        running = subprocess.CompletedProcess([], 0, 'S Mon Aug 31 10:00:00 2026 node server.js\n')
+        running = subprocess.CompletedProcess([], 0, f'{maintenance.os.getuid()} 87654321 S Mon Aug 31 10:00:00 2026 node server.js\n')
         gone = subprocess.CompletedProcess([], 1, '')
         with patch.object(Path, 'exists', return_value=False), patch.object(maintenance.subprocess, 'run', side_effect=[running, gone, gone]):
             self.assertIsNone(maintenance.process_record(87654321, self.home / 'server.js'))
 
     def test_unreadable_cwd_of_still_running_process_is_not_ignored(self):
-        running = subprocess.CompletedProcess([], 0, 'S Mon Aug 31 10:00:00 2026 node server.js\n')
+        running = subprocess.CompletedProcess([], 0, f'{maintenance.os.getuid()} 87654321 S Mon Aug 31 10:00:00 2026 node server.js\n')
         unknown = subprocess.CompletedProcess([], 1, '')
         with patch.object(Path, 'exists', return_value=False), patch.object(maintenance.subprocess, 'run', side_effect=[running, unknown, running]):
             with self.assertRaisesRegex(ValueError, 'working directory'):

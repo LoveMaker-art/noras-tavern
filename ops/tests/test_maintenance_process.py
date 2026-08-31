@@ -19,6 +19,12 @@ import maintenance
 
 class MaintenanceProcessTests(unittest.TestCase):
     def test_flat_relative_entry_stale_pid_stop_and_restore(self):
+        self.exercise(False)
+
+    def test_absolute_entry_unrelated_cwd_stale_pid_stop_and_restore(self):
+        self.exercise(True)
+
+    def exercise(self, absolute):
         with tempfile.TemporaryDirectory(prefix='python-process-test-') as temporary:
             home = Path(temporary).resolve()
             app = home / 'app'
@@ -32,7 +38,9 @@ class MaintenanceProcessTests(unittest.TestCase):
                 port = sock.getsockname()[1]
             lifecycle = SimpleNamespace(source_runtime='python', port=port,
                 u=SimpleNamespace(home=home, state=state, targets={'app': app}))
-            child = subprocess.Popen([sys.executable, '-B', 'server.py', str(port)], cwd=app,
+            command = ([sys.executable, str(app / 'server.py'), '--port', str(port)] if absolute
+                       else [sys.executable, '-B', 'server.py', str(port)])
+            child = subprocess.Popen(command, cwd=home if absolute else app,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             restarted = []
             original_popen = subprocess.Popen

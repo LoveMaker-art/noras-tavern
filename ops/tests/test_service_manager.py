@@ -50,6 +50,11 @@ class ServiceManagerTests(unittest.TestCase):
         self.file.write_text(self.file.read_text().replace('server.py', 'another.py'))
         self.assertIsNone(self.discover())
 
+    def test_script_name_in_inline_python_arguments_is_not_owned(self):
+        self.file.write_text(self.file.read_text().replace('python3 server.py --port 8799',
+            'python3 -c "import time; time.sleep(60)" server.py'))
+        self.assertIsNone(self.discover())
+
     def test_other_configuration_change_blocks_reload(self):
         service = self.discover()
         saved = service.snapshot()
@@ -95,6 +100,8 @@ class ServiceManagerTests(unittest.TestCase):
         with patch.object(runtime, 'managed_service', return_value=service), \
              patch.object(runtime, 'verify_install'), patch.object(runtime, 'health', return_value={'ok': False}), \
              patch.object(runtime, 'wait_for_health', return_value={'ok': True}), \
+             patch.object(runtime.process_module(), 'process_record', return_value={'pid': 123}), \
+             patch.object(runtime.process_module(), 'require_listener'), \
              patch.object(runtime, 'stop_run') as stop, patch.object(runtime, 'spawn') as spawn:
             self.assertTrue(runtime.start(port=54321, assets_prepared=True)['health']['ok'])
         stop.assert_not_called()

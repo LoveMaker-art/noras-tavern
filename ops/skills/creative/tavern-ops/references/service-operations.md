@@ -27,11 +27,14 @@ Load `clawchat-liveware` for current platform procedures. Keep `clawchat-core`
 for platform operations it owns. Tavern's maintained scripts remain under
 `$HERMES_HOME/skills/creative/tavern/scripts`:
 
-- `provision.sh` reconciles/creates and registers the two app entries. This
-  writes instance/platform state and can consume app quota if entries are absent.
-- `bringup-native.sh` starts the runtime, reconciles native model configuration,
-  logs in and binds Tavern and Story Profile to their respective backend paths.
-  It is not just a status check or a binding-only command.
+- `provision.sh` is explicit first initialization. It may create missing Apps,
+  records each confirmed identity, starts the runtime and aligns its two entries.
+  Authenticate with the platform first. A failed query is never an empty list;
+  an uncertain creation is recorded and cannot be blindly repeated.
+- `bringup-native.sh` starts the existing runtime and binds the two saved App IDs.
+  It does not create Apps, synchronize models, log in or restart Hermes.
+  It is not a read-only check. Startup hooks use this same existing-only path;
+  a maintenance lock or unfinished update stops them before runtime changes.
 
 Use those scripts only when all their effects are approved and dependencies
 are present. For a narrower binding repair prefer the platform's supported
@@ -39,6 +42,9 @@ operation rather than running full provisioning. Reuse existing App IDs.
 Read only needed apps.json fields; preserve names/icons/access policy unless
 the request includes changing them. Recheck bindings and public response;
 registration success does not prove the user's launcher has refreshed.
+The installed Liveware CLI cannot read the original local tunnel target.
+`binding-acknowledged` is therefore limited evidence. `integration-pending`
+requires explicit platform review, not another blind provision/recovery run.
 
 ## Configuration and recovery boundaries
 
