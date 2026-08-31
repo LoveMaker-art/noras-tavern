@@ -34,6 +34,13 @@ OLD_PROFILE_HELPERS = (
     "creative/tavern-story-profile/scripts/profile_memory.py",
     "creative/tavern/specialists/tavern-story-profile/scripts/profile_memory.py",
 )
+# Verified against v1.24.12 tavern-skill.tar.gz and its skill-manifest.json;
+# source: skills/tavern-story-profile/scripts/profile_memory.py at aaa1afce.
+# A previous official implementation need not equal the new implementation.
+# Only exact known bytes (or an already-current copy) can retire automatically.
+OFFICIAL_LEGACY_PROFILE_HELPERS = {
+    "78c4be78d47b7dd46c4ea74e5fccc86fc9ef1f7b7f2a3ba0b648abd65e76de04",
+}
 BEGIN, END = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
 LEGACY_SECTIONS = {
     # Exact official Python v1.24.12 routing section; preserve/review local edits.
@@ -160,7 +167,7 @@ def build_plan(source, home, agents_path=None, *, full_release=False, include_un
     put(root / PROFILE_HELPER, helper)
     for rel in OLD_PROFILE_HELPERS:
         old = read_optional(root / rel)
-        if old is not None and old != helper:
+        if old is not None and old != helper and digest(old) not in OFFICIAL_LEGACY_PROFILE_HELPERS:
             raise ValueError(f"Modified legacy profile helper; preserve and review: {rel}")
         put(root / rel, None)
     for file in sorted((root / "creative").glob(".tavern-pre-*/SKILL.md")):

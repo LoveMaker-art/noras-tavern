@@ -32,6 +32,21 @@ class CleanUpdateTests(unittest.TestCase):
         recovery = Path(review["transaction"]) / "backup"
         self.assertTrue(any(p.read_bytes() == b"user plugin" for p in recovery.rglob("custom-plugin.js")))
 
+    def test_official_python_profile_helper_moves_with_transaction_and_rolls_back(self):
+        original = (fixtures.OPS / 'tests/fixtures/profile-helper-v1.24.12.txt').read_bytes()
+        old = 'skills/creative/tavern-story-profile/scripts/profile_memory.py'
+        self.fixture.write(old, original.decode())
+        self.fixture.write('skills/creative/tavern-story-profile/SKILL.md', '---\nname: tavern-story-profile\n---\nOld official skill\n')
+        before = self.fixture.snapshot()
+        review = self.fixture.review()
+        self.assertEqual(self.fixture.snapshot(), before)
+        self.fixture.apply(review)
+        self.assertFalse((self.home / old).exists())
+        self.assertEqual((self.home / 'skills/creative/tavern/scripts/profile_memory.py').read_bytes(),
+                         (fixtures.OPS / 'scripts/profile_memory.py').read_bytes())
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+
     def test_failed_startup_restores_full_story_state(self):
         def fail(_transaction):
             self.fixture.write("tavern-state/native/default-user/chats/story.jsonl", "startup rewrote data")

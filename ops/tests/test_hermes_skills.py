@@ -76,6 +76,27 @@ class SkillInstallationTests(unittest.TestCase):
         self.assertEqual(modified.read_text(), "custom implementation")
         self.assertFalse((self.home / "skills" / installer.PROFILE_HELPER).exists())
 
+    def test_official_python_release_helper_is_not_a_user_customization(self):
+        original = (OPS / 'tests/fixtures/profile-helper-v1.24.12.txt').read_bytes()
+        self.assertEqual(installer.digest(original), '78c4be78d47b7dd46c4ea74e5fccc86fc9ef1f7b7f2a3ba0b648abd65e76de04')
+        paths = [self.write('skills/' + rel, original.decode()) for rel in installer.OLD_PROFILE_HELPERS]
+        plan = self.plan()
+        self.assertTrue(all(file.read_bytes() == original for file in paths), 'Review must remain read-only')
+        result = self.apply(plan)
+        self.assertTrue(all(not file.exists() for file in paths))
+        self.assertEqual((self.home / 'skills' / installer.PROFILE_HELPER).read_bytes(),
+                         (OPS / 'scripts/profile_memory.py').read_bytes())
+        self.assertIn(original, [file.read_bytes() for file in Path(result['backup']).glob('*.bak')])
+        self.assertEqual(self.plan(), [])
+
+    def test_even_a_small_edit_to_the_official_old_helper_still_blocks(self):
+        original = (OPS / 'tests/fixtures/profile-helper-v1.24.12.txt').read_text()
+        helper = self.write('skills/' + installer.OLD_PROFILE_HELPERS[0], original + '\n# user customization\n')
+        with self.assertRaisesRegex(ValueError, 'Modified legacy profile helper'):
+            self.plan()
+        self.assertEqual(helper.read_text(), original + '\n# user customization\n')
+        self.assertFalse((self.home / 'skills' / installer.PROFILE_HELPER).exists())
+
     def test_retirement_preserves_scripts_custom_skills_and_recoverable_bytes(self):
         old = "---\nname: tavern\ndescription: old\n---\nold content\n"
         duplicate = self.write("skills/creative/.tavern-pre-20260827-203039/SKILL.md", old)

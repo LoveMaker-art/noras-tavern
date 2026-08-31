@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import yaml
 
 OPS = Path(__file__).resolve().parents[1]
 REPOSITORY = OPS.parent
@@ -50,7 +51,7 @@ def main():
         extract_bundle(args.release_dir, stage, manifest)
         historical = home.parent / 'historical'
         historical.mkdir()
-        archive = subprocess.check_output(['git', 'archive', '--format=tar', old_commit, 'app'], cwd=REPOSITORY)
+        archive = subprocess.check_output(['git', 'archive', '--format=tar', old_commit, 'app', 'skills'], cwd=REPOSITORY)
         subprocess.run(['tar', '-x', '-C', str(historical)], input=archive, check=True)
         old_app = home / 'apps/tavern-runtime'
         old_app.parent.mkdir()
@@ -65,6 +66,18 @@ def main():
             web = old_app / 'frontend'
         entry = (backend / 'server.py').relative_to(old_app)
         assert (old_app / entry).is_file() and not (old_app / 'native-runtime.json').exists(), 'Expected original Python source'
+        # Real upgrades start with the original installed skills, not an empty
+        # skills directory. Read categories as data; never execute old helpers.
+        old_skills = []
+        for skill in (historical / 'skills').iterdir():
+            header = (skill / 'SKILL.md').read_text().split('---', 2)[1]
+            metadata = yaml.safe_load(header)
+            category = metadata['metadata']['hermes']['category']
+            if category not in ('creative', 'system') or metadata['name'] != skill.name:
+                raise ValueError('Unrecognized historical skill installation path')
+            rel = 'skills/' + category + '/' + skill.name
+            shutil.copytree(skill, home / rel)
+            old_skills.append(rel)
         original_agents = subprocess.check_output(['git', 'show', old_commit + ':integrations/hermes/AGENTS.md'], cwd=REPOSITORY, text=True)
         (home / 'AGENTS.md').write_text(original_agents + '\n## Personal instructions\nKeep my instructions.\n')
         (home / 'config.yaml').write_text('model: {provider: qa-no-real-model}\n')
@@ -93,6 +106,9 @@ def main():
                         json.dumps(fixture['productions'], ensure_ascii=False)], check=True)
         before = {name: trees.fingerprint(home / name, state=name == 'tavern-state')
                   for name in ('apps/tavern-runtime', 'tavern-state', 'memories', 'config.yaml', 'AGENTS.md')}
+        # Bootstrap legitimately refreshes its own skill before review. All
+        # other original skills must be restored byte-for-byte on rollback.
+        before.update({name: trees.fingerprint(home / name) for name in old_skills if name != 'skills/system/tavern-updater'})
         original_profile = json.loads((state / 'story_profile.json').read_text())
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0))
@@ -190,7 +206,8 @@ def main():
             with socket.socket() as probe:
                 assert probe.connect_ex(('127.0.0.1', port)) != 0, 'Rollback unexpectedly started a service'
             print(json.dumps({'oldCommit': old_commit, 'newSourceDigest': manifest['sourceDigest'],
-                'pythonToNode': True, 'sourceLayout': args.source_layout, 'worlds': 2, 'messages': 32, 'independentCharacters': 2,
+                'pythonToNode': True, 'sourceLayout': args.source_layout, 'originalSkillsRestored': len(old_skills) - 1,
+                'worlds': 2, 'messages': 32, 'independentCharacters': 2,
                 'profileContentPreserved': True, 'fullStateRollback': True, 'pythonRestoredOffline': True,
                 'newMcp': installed['verification']['newMcpProcess'], 'modelsCalled': 0,
                 'viaBootstrap': args.via_bootstrap, 'runningNodeUpdateAndRollback': args.repeat_update,
