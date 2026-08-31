@@ -128,7 +128,9 @@ class ManagedService:
             raise ValueError('Managed Tavern did not stop')
 
     def start(self):
-        if not self.pid():
+        # STARTING may briefly have pid=0. It is still owned by the manager;
+        # issuing a second start races with its first start operation.
+        if str(self.info().get('statename', '')).lower() not in ('running', 'starting'):
             self.rpc.startProcess(self.name, True)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:

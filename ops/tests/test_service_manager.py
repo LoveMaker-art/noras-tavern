@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import test_full_update
+from update import module_at
 from service_manager import ManagedService, digest
 
 
@@ -71,6 +72,33 @@ class ServiceManagerTests(unittest.TestCase):
             {'name': service.name, 'pid': 0, 'statename': 'Stopped'}]
         service.stop()
         self.rpc.stopProcess.assert_called_once_with('tavern-runtime', True)
+
+    def test_start_waits_for_an_existing_start_instead_of_starting_twice(self):
+        service = self.discover()
+        self.rpc.getProcessInfo.side_effect = [
+            {'name': service.name, 'pid': 0, 'statename': 'Starting'},
+            {'name': service.name, 'pid': 123, 'statename': 'Running'}]
+        self.assertEqual(service.start(), 123)
+        self.rpc.startProcess.assert_not_called()
+
+    def test_native_start_does_not_stop_a_managed_process_during_warmup(self):
+        module = module_at('managed_native_test', test_full_update.OPS.parent / 'app/native_lifecycle.py')
+        from types import SimpleNamespace
+        runtime = module.NativeRuntime(self.home, self.app, self.home / 'state',
+            SimpleNamespace(source_dir='engine/sillytavern', commit='a' * 40))
+        service = Mock(name='service')
+        service.name = 'tavern-runtime'
+        service.pid.return_value = 123
+        service.start.return_value = 123
+        import shlex
+        service.descriptor = {'command': shlex.join(runtime.node_command(54321, runtime.native_data_root))}
+        with patch.object(runtime, 'managed_service', return_value=service), \
+             patch.object(runtime, 'verify_install'), patch.object(runtime, 'health', return_value={'ok': False}), \
+             patch.object(runtime, 'wait_for_health', return_value={'ok': True}), \
+             patch.object(runtime, 'stop_run') as stop, patch.object(runtime, 'spawn') as spawn:
+            self.assertTrue(runtime.start(port=54321, assets_prepared=True)['health']['ok'])
+        stop.assert_not_called()
+        spawn.assert_not_called()
 
 
 if __name__ == '__main__':

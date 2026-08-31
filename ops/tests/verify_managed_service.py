@@ -20,6 +20,7 @@ OPS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(OPS / 'updater'))
 import maintenance
 from service_manager import ManagedService, digest
+from update import module_at
 
 
 def main():
@@ -35,7 +36,7 @@ def main():
         for p in (app, state, conf, tx): p.mkdir(parents=True)
         shutil.copyfile(OPS / 'tests/fixtures/maintenance-server.py', app / 'server.py')
         engine = app / 'engine/sillytavern'; engine.mkdir(parents=True)
-        (engine / 'server.js').write_text("require('http').createServer((q,r)=>{r.setHeader('Content-Type','application/json');r.end(JSON.stringify({ok:true,runtime:'node'}))}).listen(Number(process.argv[2]),'127.0.0.1');")
+        (engine / 'server.js').write_text("setTimeout(()=>require('http').createServer((q,r)=>{r.setHeader('Content-Type','application/json');r.end(JSON.stringify({ok:true,token:'fixture',runtime:'node'}))}).listen(Number(process.argv[process.argv.indexOf('--port')+1]),'127.0.0.1'),1500);")
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
         service_file = conf / 'tavern.conf'
@@ -68,12 +69,16 @@ def main():
                 maintenance.pause(lifecycle,tx)
                 assert not maintenance.port_open(port)
                 record=json.loads((tx/'maintenance.json').read_text())
-                node=service.node_text([shutil.which('node'),'server.js',str(port)],engine)
+                module=module_at('qa_native_runtime',OPS.parent/'app/native_lifecycle.py')
+                runtime=module.NativeRuntime(home,app,state,SimpleNamespace(source_dir='engine/sillytavern',commit='a'*40))
+                runtime.verify_install=lambda: None
+                runtime.managed_service=discover
+                node=service.node_text(runtime.node_command(port,runtime.native_data_root),engine)
                 record['nodeServiceHash']=digest(node.encode()); (tx/'maintenance.json').write_text(json.dumps(record))
                 service.install_text(node,accepted_hash=record['service']['descriptor']['sha256'])
-                service.start(); health('node')
-                service.stop(); assert not maintenance.port_open(port)
-                service.start(); health('node')
+                runtime.start(port=port,assets_prepared=True); health('node')
+                runtime.stop_run(); assert not maintenance.port_open(port)
+                runtime.start(port=port,assets_prepared=True); health('node')
                 maintenance.resume(lifecycle,tx); health()
                 assert service_file.read_bytes()==original
                 assert service.rpc.getProcessInfo('sentinel')['pid']==sentinel

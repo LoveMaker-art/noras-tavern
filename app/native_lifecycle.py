@@ -411,14 +411,10 @@ class NativeRuntime:
             raise NativeLifecycleError('Managed service cannot use a different data root')
         if service and service.descriptor['command'] != shlex.join(self.node_command(port, native_data)):
             raise NativeLifecycleError('Managed start command differs; migrate it through the updater first')
-        native_pid = service.pid() if service else self._read_pid(run_dir / "native.pid", "server.js")
+        native_pid = None if service else self._read_pid(run_dir / "native.pid", "server.js")
         if native_pid:
             current = self.health(port)
             if current["ok"]:
-                if service:
-                    _atomic_text(run_dir / 'native.pid', str(native_pid) + '\n')
-                    _atomic_text(run_dir / 'run.json', json.dumps({'schema': 1, 'run_id': run_id,
-                        'port': port, 'native_pid': native_pid, 'manager': service.name}) + '\n')
                 return {
                     "schema": 1,
                     "run_id": run_id,
