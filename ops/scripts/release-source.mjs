@@ -31,7 +31,7 @@ export function assertSafeReleaseContent(relative, bytes) {
         const modelField = /^(?:.*_model|model_.*|model|models|modelProfiles|hermesModel|activeModel|api_server(?:_.*)?|apiUrl|apiKey|api_key|custom_url|reverse_proxy|proxy_password|api_url_.*|secretId|connectionProfiles|selectedProfile)$/;
         const empty = value => value == null || value === '' || value === false
             || (typeof value === 'object' && Object.keys(value).length === 0);
-        function inspect(value, location = '') {
+        const inspect = (value, location = '') => {
             if (!value || typeof value !== 'object') return;
             for (const [key, item] of Object.entries(value)) {
                 const field = location ? `${location}.${key}` : key;
@@ -40,7 +40,7 @@ export function assertSafeReleaseContent(relative, bytes) {
                 }
                 inspect(item, field);
             }
-        }
+        };
         inspect(JSON.parse(content));
     }
     if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(content)
