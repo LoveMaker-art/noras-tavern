@@ -9,6 +9,20 @@ import time
 import urllib.request
 
 
+def data_import_result(report, transaction, state):
+    """Data compatibility is separate from successful program installation."""
+    if not report.get('pythonMigration'):
+        return {'status': 'unchanged', 'migration': False}
+    return {'status': report['status'], 'migration': True,
+            'worldsImported': len(report['worlds']), 'cardsImported': report['cards'],
+            'worldbooksImported': report['worldbooks'], 'profile': report.get('profile'),
+            'deferredCount': len(report.get('deferred', [])), 'warnings': report.get('warnings', []),
+            'archivedAuxiliaryCount': len(report.get('archived', [])),
+            'reportPath': str(transaction / 'migration.json'),
+            'archivePath': str(state / 'python-source'),
+            'backupPath': str(transaction / 'backup/state')}
+
+
 def receipt_result(receipt):
     """Shared by CLI failure output and status; preserve legacy receipt statuses."""
     receipt = receipt or {}
@@ -33,6 +47,9 @@ def receipt_result(receipt):
         result['next_step'] = '已恢复原版本；本次没有安装成功。需要再次更新或排查时请另行授权。'
     if receipt.get('liveware'):
         result['liveware'] = {**receipt['liveware'], 'historical': True}
+    if receipt.get('dataImport'):
+        result['dataImport'] = {**receipt['dataImport'], 'historical': True,
+                              'active': status == 'installed-awaiting-hermes-reload'}
     # A new MCP subprocess is not the gateway's current process. Likewise a
     # local Story Profile route is not proof of its external Liveware binding.
     verification = receipt.get('verification', {})

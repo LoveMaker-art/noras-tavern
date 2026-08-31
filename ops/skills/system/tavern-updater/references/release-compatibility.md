@@ -20,8 +20,31 @@ Supported source: Python `apps/tavern-runtime/backend/server.py`, or current Nod
 `native-runtime.json` schema 2; state in `tavern-state`, loopback port 8799. Python
 runtime_cast schema 3/Profile schema 1 are converted and validated on a copy.
 Node requires its existing `native-runtime/config.yaml`; World v1 conversion is
-outside scope. Custom paths, mixed/corrupt data and broken references fail closed.
+outside scope. Custom paths, unsafe filesystem entries and mixed Node/Python
+ownership require review. Individual incompatible Python records do not block
+installation: compatible records import and the rest stay archived with reasons.
 Old `/assets/` images are read from the reviewed Python frontend before switching.
+
+## Data outcome
+
+Program installation and Python data import have separate results. After a full
+state snapshot, import each card/book and each complete World independently.
+Missing or incompatible dependencies defer the World; no partial runtime card,
+chat, manifest or lore binding becomes active. An unusable ledger stays archived
+while its valid raw chat imports without compression. Ordinary auxiliary files
+are retained, never parsed as active records.
+
+`dataImport` reports imported counts, deferred count, backup and report paths.
+The report lists each `archiveFile` relative to `tavern-state`. Original namespace
+bytes remain under `python-source`; unsupported Profile files are retained under
+`python-source-profile`. Valid Profile files and original model configuration
+are preserved. Only the target machine supplies model credentials.
+The transaction's `backup/state` is the complete pre-update data tree.
+`partial` is a successful installation with pending conversion, not data loss
+or a reason to run rollback. Archived Python chat JSON is not necessarily a card
+file supported by the current import UI; use the report to arrange conversion.
+Disk/copy errors, unsafe paths and generated-state validation failures still stop
+the transaction. No blanket exception suppression is used.
 
 ## First adoption
 

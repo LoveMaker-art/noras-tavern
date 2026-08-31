@@ -14,6 +14,41 @@ import signal
 
 
 class MaintenanceTests(unittest.TestCase):
+    def test_recovery_retry_recognizes_verified_standalone_replacement(self):
+        script = self.home / 'app/backend/server.py'
+        journal = self.transaction / 'maintenance.json'
+        journal.write_text(json.dumps({'schema': 1, 'sourceRuntime': 'python', 'script': str(script),
+                                      'wasRunning': True, 'process': self.record, 'paused': True}))
+        replacement = {**self.record, 'pid': self.record['pid'] + 1, 'identity': 'restarted'}
+        with patch.object(maintenance, 'managed_service', return_value=None), \
+             patch.object(maintenance, 'process_record', side_effect=lambda pid, _: replacement if pid == replacement['pid'] else None), \
+             patch.object(maintenance, 'python_processes', return_value=[replacement]), \
+             patch.object(maintenance, 'verify_restored', side_effect=[ValueError('health not ready'), None]) as verify, \
+             patch.object(maintenance, 'port_open', return_value=True), \
+             patch.object(maintenance.subprocess, 'Popen') as start:
+            with self.assertRaisesRegex(ValueError, 'health not ready'):
+                maintenance.resume(self.lifecycle, self.transaction)
+            self.assertEqual(json.loads(journal.read_text())['restoredProcess'], replacement)
+            maintenance.resume(self.lifecycle, self.transaction)
+        self.assertEqual(verify.call_count, 2)
+        start.assert_not_called()
+        self.assertEqual((self.state / 'server.pid').read_text(), str(replacement['pid']))
+
+    def test_standalone_recovery_never_adopts_different_arguments_or_multiple_processes(self):
+        journal = self.transaction / 'maintenance.json'
+        journal.write_text(json.dumps({'schema': 1, 'sourceRuntime': 'python', 'wasRunning': True,
+                                      'process': self.record, 'paused': True}))
+        for found in ([{**self.record, 'pid': 1234, 'argv': ['python3', 'other.py']}],
+                      [{**self.record, 'pid': 1234}, {**self.record, 'pid': 1235}]):
+            with self.subTest(found=found), patch.object(maintenance, 'managed_service', return_value=None), \
+                 patch.object(maintenance, 'process_record', return_value=None), \
+                 patch.object(maintenance, 'python_processes', return_value=found), \
+                 patch.object(maintenance, 'port_open', return_value=True), \
+                 patch.object(maintenance.subprocess, 'Popen') as start:
+                with self.assertRaises(ValueError):
+                    maintenance.resume(self.lifecycle, self.transaction)
+                start.assert_not_called()
+
     def test_linux_exit_between_stat_and_cmdline_is_normal_shutdown(self):
         running = '87654321 (python3) S ' + '0 ' * 30
         zombie = '87654321 (python3) Z ' + '0 ' * 30

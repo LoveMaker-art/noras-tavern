@@ -45,11 +45,14 @@ a real Node startup. This is distinct from a later successful manual rollback.
 
 ## Limits to report
 
-- Broken references, unsupported cast/Profile schemas, mixed native/Python data
-  or changed outputs refuse conversion. Do not delete records to bypass validation.
+- Broken references and unsupported cast/Profile schemas defer the affected
+  records with original bytes and report paths retained. Valid Worlds still
+  import; an entirely incompatible set yields an empty usable World list.
+  Mixed native/Python ownership and changed outputs still refuse conversion.
 - Python exclusion-key combinations compile to ST native regex keys. Old `/assets/`
   images are read from the reviewed frontend and archived with migrated images.
-  Missing images/unsafe paths stop conversion. World covers remain archive-only.
+  Missing images defer the affected World. Unsafe paths remain safety blockers.
+  World covers remain archive-only.
 - Old Python imports discarded some executable scripts and images. Conversion
   cannot restore absent MVU/Regex/Tavern Helper code; re-import original cards only
   with separate user authorization.

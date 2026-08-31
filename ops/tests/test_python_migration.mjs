@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { convertPythonState } from '../updater/python-state.mjs';
 import { validateState } from '../updater/validate-state.mjs';
+import { ImportPlan, DeferredData } from '../updater/python-import-plan.mjs';
 import { createNoraWorldCore } from '../../app/engine/sillytavern/src/nora-world-core/index.js';
 import { buildStoryProfileCard } from '../../app/engine/sillytavern/src/nora-story-profile.js';
 import { WorldStore } from '../../app/engine/sillytavern/src/nora-world-core/store.js';
@@ -197,11 +198,13 @@ test('unconfigured target stays unconfigured without a built-in fallback', async
     assert.ok(report.warnings.some(item => item.code === 'MODEL_CONFIGURATION_REQUIRED'));
 });
 
-test('unknown selected model and conflicting native output refuse without modifying Python records', async t => {
-    const { state } = await setup(t);
+test('unknown selected model is reported without blocking Worlds or inventing credentials', async t => {
+    const { state, root } = await setup(t);
     await fs.writeFile(path.join(state, 'model_configs.json'), JSON.stringify({ configs: [], active: 'missing' }));
-    await assert.rejects(convertPythonState(state, app), /Selected Python custom model is missing/);
-    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+    const report = await convertPythonState(state, app);
+    assert.equal(report.worlds.length, 2);
+    assert.ok(report.deferred.some(item => item.kind === 'model-selection'));
+    assert.deepEqual((await readJson(path.join(root, 'secrets.json'))).api_key_custom, []);
 });
 
 test('replay refuses changed native history or missing output instead of silently creating another World', async t => {
@@ -215,10 +218,103 @@ test('replay refuses changed native history or missing output instead of silentl
     await assert.rejects(convertPythonState(state, app), { code: 'ENOENT' });
 });
 
-test('broken references reject the whole import before writing native output', async t => {
-    const { state } = await setup(t, data => data.productions[0].worldbook_ids.push('wb_missing'));
-    await assert.rejects(convertPythonState(state, app), /Missing Python worldbook/);
-    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+test('broken references defer the entire World, never leave partial bindings, and preserve originals', async t => {
+    const { state, root, fixture } = await setup(t, data => data.productions[0].worldbook_ids.push('wb_missing'));
+    const report = await convertPythonState(state, app);
+    assert.deepEqual(report.worlds.map(world => world.id), ['prod_empty']);
+    assert.deepEqual(report.users[0].active, ['prod_empty']);
+    assert.ok(report.deferred.some(item => item.id === 'prod_fixture'));
+    assert.equal((await fs.readdir(path.join(root, 'characters'))).length, fixture.cards.length + 1);
+    assert.equal((await fs.readdir(path.join(root, 'chats'))).length, 1);
+    assert.deepEqual(await readJson(path.join(state, 'python-source/productions/prod_fixture.json')), fixture.productions[0]);
+    await validateState(state, app);
+});
+
+test('backup files, malformed JSON and unsupported unattached lore do not block compatible records', async t => {
+    const { state } = await setup(t, data => data.worldbooks.push({ id: 'wb_st', entries: { 0: { content: '旧书' } } }));
+    await fs.writeFile(path.join(state, 'cards/card_old.json.bak_agefix'), 'untouched backup');
+    await fs.writeFile(path.join(state, 'productions/prod_broken.json'), '{bad');
+    const report = await convertPythonState(state, app);
+    assert.equal(report.worlds.length, 2);
+    assert.equal(report.status, 'partial');
+    assert.equal(report.deferred.length, 2);
+    assert.equal(report.archived.length, 1);
+    assert.equal(await fs.readFile(path.join(state, 'python-source/cards/card_old.json.bak_agefix'), 'utf8'), 'untouched backup');
+    assert.equal(await fs.readFile(path.join(state, 'python-source/productions/prod_broken.json'), 'utf8'), '{bad');
+    assert.equal((await convertPythonState(state, app)).repeated, true);
+    await validateState(state, app);
+});
+
+test('backup-only directories are successful imports, not data failures requiring user conversion', async t => {
+    const { state } = await setup(t);
+    await fs.writeFile(path.join(state, 'cards/old.json.bak'), 'old backup');
+    const report = await convertPythonState(state, app);
+    assert.equal(report.status, 'complete');
+    assert.equal(report.deferred.length, 0);
+    assert.equal(report.archived.length, 1);
+    assert.equal(await fs.readFile(path.join(state, report.archived[0].archiveFile), 'utf8'), 'old backup');
+});
+
+test('malformed profile is archived byte-for-byte', async t => {
+    const { state } = await setup(t);
+    await fs.writeFile(path.join(state, 'story_profile.json'), '{broken profile');
+    const report = await convertPythonState(state, app);
+    assert.equal(report.profile, null);
+    assert.ok(report.deferred.some(item => item.kind === 'profile'));
+    assert.equal(await fs.readFile(path.join(state, 'python-source-profile/story_profile.json'), 'utf8'), '{broken profile');
+    await assert.rejects(fs.stat(path.join(state, 'story_profile.json')), { code: 'ENOENT' });
+    await validateState(state, app);
+});
+
+test('compatible profile history, eras and custom configuration remain byte-identical', async t => {
+    const { state } = await setup(t);
+    const originals = {
+        'story_profile.json': JSON.stringify({ schema_version: 1, preferences: [{ text: '历史口味' }], recent_timeline: [], shared_story_memory: [], custom: '保留' }),
+        'profile_eras.json': '[{"title":"旧时代"}]\n',
+        'profile_events.jsonl': '{"event":"历史"}\n',
+        'model_configs.json': '{"configs":[],"active":"builtin"}\n',
+    };
+    for (const [file, content] of Object.entries(originals)) await fs.writeFile(path.join(state, file), content);
+    const report = await convertPythonState(state, app);
+    assert.equal(report.profile.preserved, true);
+    for (const [file, content] of Object.entries(originals)) assert.equal(await fs.readFile(path.join(state, file), 'utf8'), content);
+});
+
+test('all incompatible Worlds result in an empty usable World list with an explicit report', async t => {
+    const { state } = await setup(t, data => data.productions.forEach(world => { world.story = 'not messages'; }));
+    const report = await convertPythonState(state, app);
+    assert.deepEqual(report.users[0].active, []);
+    assert.equal(report.deferred.filter(item => item.kind === 'world').length, 2);
+    const validated = await validateState(state, app);
+    assert.equal(validated.users[0].after, 0);
+    for (const item of report.deferred) assert.ok((await fs.stat(path.join(state, item.archiveFile))).isFile());
+});
+
+test('malformed messages, card fields and optional ledger are isolated at their own record boundaries', async t => {
+    for (const [kind, mutate] of [
+        ['world', data => { data.productions[0].story[0] = null; }],
+        ['card', data => { data.cards[0].entry = { first_message: {} }; }],
+        ['ledger', data => { data.productions[0].story_state.facts = 'wrong'; }],
+    ]) {
+        const { state } = await setup(t, mutate);
+        const report = await convertPythonState(state, app);
+        assert.ok(report.deferred.some(item => item.kind === kind), kind);
+        assert.ok(report.worlds.some(world => world.id === 'prod_empty'));
+        if (kind === 'ledger') assert.equal(report.worlds.find(world => world.id === 'prod_fixture').messages, 32);
+        await validateState(state, app);
+    }
+});
+
+test('record boundaries defer known data errors only, never programming or disk errors', async () => {
+    const plan = new ImportPlan();
+    await plan.record('world', 'broken', 'productions/broken.json', () => {
+        plan.put('native/orphan.json', {});
+        throw new DeferredData('incompatible');
+    });
+    assert.equal(plan.outputs.size, 0);
+    for (const error of [new TypeError('bug'), new ReferenceError('bug'), Object.assign(new Error('full'), { code: 'ENOSPC' })]) {
+        await assert.rejects(plan.record('world', 'bad', 'productions/bad.json', () => { throw error; }), value => value === error);
+    }
 });
 
 test('Python combined lore conditions retain primary, secondary and exclusions with native regex keys', async t => {
@@ -283,14 +379,16 @@ test('a symlink inside the legacy frontend cannot import files outside its asset
     await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
 });
 
-test('missing legacy image leaves original records intact and creates no native output', async t => {
+test('missing legacy image defers its World without blocking other Worlds', async t => {
     const { state } = await setup(t, data => {
         data.productions[0].ui = { version: 1, assets: { background: '/assets/missing.png' } };
     });
     const source = await fs.readFile(path.join(state, 'productions/prod_fixture.json'));
-    await assert.rejects(convertPythonState(state, app, { legacyApp: path.join(state, 'old-app') }), { code: 'ENOENT' });
-    assert.deepEqual(await fs.readFile(path.join(state, 'productions/prod_fixture.json')), source);
-    await assert.rejects(fs.stat(path.join(state, 'native')), { code: 'ENOENT' });
+    const report = await convertPythonState(state, app, { legacyApp: path.join(state, 'old-app') });
+    assert.deepEqual(report.worlds.map(world => world.id), ['prod_empty']);
+    assert.ok(report.deferred.some(item => item.id === 'prod_fixture'));
+    assert.deepEqual(await fs.readFile(path.join(state, 'python-source/productions/prod_fixture.json')), source);
+    await validateState(state, app);
 });
 
 test('stale old ledger keeps full raw history without inventing activation', async t => {

@@ -68,6 +68,13 @@ class MaintenanceProcessTests(unittest.TestCase):
                 resumed = int((state / 'server.pid').read_text())
                 self.assertNotEqual(resumed, child.pid)
                 self.assertEqual(maintenance.process_record(resumed, app / 'server.py')['argv'], journal['process']['argv'])
+                # A lost health response/receipt write must not make the next
+                # recovery reject this live replacement or spawn another one.
+                (state / 'server.pid').write_text(str(child.pid))
+                maintenance.resume(lifecycle, transaction)
+                self.assertEqual(int((state / 'server.pid').read_text()), resumed)
+                maintenance.verify_source_running(lifecycle, transaction)
+                self.assertEqual(len(maintenance.python_processes(app)), 1)
                 with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/health', timeout=3) as response:
                     self.assertTrue(json.load(response)['ok'])
             finally:

@@ -9,7 +9,7 @@ import time
 
 from bundle import PARTS
 from completion import installation_guidance
-from update_status import receipt_result
+from update_status import receipt_result, data_import_result
 from feedback import phase, step, public_reason
 from update import ReleaseReview, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
 from python_model import load_python_model
@@ -247,12 +247,12 @@ class CleanUpdater(ReleaseReview):
         with self.lock():
             if self.test_mode:
                 require_isolation(self.home)
-            for receipt in self.root.glob('review-*/receipt.json'):
-                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload', 'refused-before-maintenance', 'already-installed'):
-                    raise ValueError('Unfinished update requires recovery first')
             transaction, plan = self._load_plan(transaction, expected)
             if (transaction / 'receipt.json').exists():
                 raise ValueError('Transaction already attempted')
+            for receipt in self.root.glob('review-*/receipt.json'):
+                if json.loads(receipt.read_text()).get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload', 'refused-before-maintenance', 'already-installed'):
+                    self._close_pre_switch_recovery(receipt)
             receipt = {'status': 'inspecting', 'planDigest': expected, 'entries': [], 'applied': [], 'restored': [],
                        'versions': plan['versions'], 'commit': plan['commit'], 'cleanTransaction': True,
                        'engineSha256': plan.get('engine', {}).get('sha256'), 'startedAt': time.time()}
@@ -288,6 +288,7 @@ class CleanUpdater(ReleaseReview):
                 run('stop-runtime', '核验并停止旧版酒馆', self.lifecycle.pause, transaction)
                 self.lifecycle.require_offline()
                 entries = run('prepare-state', '备份并准备数据副本，转换 Python 数据或验证 Node 数据', self._prepare, transaction, plan)
+                receipt['dataImport'] = data_import_result(json.loads((transaction / 'migration.json').read_text()), transaction, self.state)
                 run('recheck', '切换前复核文件与平台状态', self._preconditions, transaction, plan)
                 self.lifecycle.require_offline()
                 if trees.fingerprint(self.state, state=True) != entries[len(plan['groups'])]['before']:
@@ -334,6 +335,40 @@ class CleanUpdater(ReleaseReview):
                     self._record_recovery_failure(transaction, receipt, recovery_error)
                     raise
                 raise
+
+    def _close_pre_switch_recovery(self, receipt_path):
+        """A healthy, untouched source needs no old-engine rollback or downtime.
+
+        Only pre-switch directory receipts are eligible. Actual rename intents,
+        platform writes and altered source code remain explicit recovery work.
+        """
+        receipt = json.loads(receipt_path.read_text())
+        if (receipt.get('status') not in ('preparing', 'files-restored')
+                or not receipt.get('cleanTransaction') or receipt.get('entries')
+                or receipt.get('applied') or receipt.get('restored')
+                or receipt.get('livewareJournal', {}).get('actions')):
+            raise ValueError('Unfinished update requires recovery first')
+        transaction, plan = self._load_plan(receipt_path.parent, receipt.get('planDigest'))
+        if (plan.get('sourceRuntime') != 'python' or plan.get('port') != self.isolated_port
+                or plan.get('testMode') != self.test_mode
+                or plan.get('pythonSource') != python_installation(self.targets['app'])
+                or sha(self.root / 'installed.json') != plan.get('previousBaseline')):
+            raise ValueError('Pending recovery no longer matches the current installation')
+        for group in plan['groups']:
+            if trees.fingerprint(Path(group['target'])) != group['before']:
+                raise ValueError('Pending recovery source code changed; explicit recovery required')
+        for change in plan['changes']:
+            if sha(self._target(change['name'])) != change['before']:
+                raise ValueError('Pending recovery managed files changed; explicit recovery required')
+        from maintenance import verify_source_running
+        previous_runtime = getattr(self.lifecycle, 'source_runtime', 'node')
+        try:
+            self.lifecycle.source_runtime = 'python'
+            verify_source_running(self.lifecycle, transaction)
+        finally:
+            self.lifecycle.source_runtime = previous_runtime
+        receipt.update(status='rolled-back', recoveryResolution='unchanged-source-verified-before-next-update')
+        json_write(receipt_path, receipt)
 
     def _record_recovery_failure(self, transaction, receipt, error):
         receipt['recoveryFailure'] = {'phase': getattr(error, 'update_phase', 'recovery'), 'reason': public_reason(error)}

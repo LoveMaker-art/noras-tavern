@@ -12,6 +12,59 @@ import tree_transaction as trees
 
 
 class CleanUpdateTests(unittest.TestCase):
+    def test_verified_pre_switch_python_receipt_can_be_closed_before_next_update(self):
+        (self.home / 'apps/tavern-runtime/native-runtime.json').unlink()
+        self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
+        (self.home / 'tavern-state/productions').mkdir()
+        old = self.fixture.review()
+        receipt_path = Path(old['transaction']) / 'receipt.json'
+        from update import json_write
+        json_write(receipt_path, {'status': 'files-restored', 'cleanTransaction': True,
+                                 'planDigest': old['planDigest'], 'applied': [], 'restored': [], 'entries': []})
+        next_review = self.fixture.review()
+        with patch('maintenance.verify_source_running') as verify:
+            result = self.fixture.apply(next_review)
+        verify.assert_called_once()
+        self.assertEqual(json.loads(receipt_path.read_text())['status'], 'rolled-back')
+        self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
+
+    def test_pre_switch_recovery_never_closes_modified_source_or_real_switch_intents(self):
+        (self.home / 'apps/tavern-runtime/native-runtime.json').unlink()
+        script = self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
+        (self.home / 'tavern-state/productions').mkdir()
+        old = self.fixture.review()
+        receipt_path = Path(old['transaction']) / 'receipt.json'
+        from update import json_write
+        receipt = {'status': 'files-restored', 'cleanTransaction': True, 'planDigest': old['planDigest'],
+                   'applied': [], 'restored': [], 'entries': []}
+        json_write(receipt_path, receipt)
+        script.write_text('# owner changed version')
+        with patch('maintenance.verify_source_running') as verify:
+            with self.assertRaisesRegex(ValueError, 'source code changed'):
+                self.u._close_pre_switch_recovery(receipt_path)
+        verify.assert_not_called()
+        script.write_text('# legacy fixture')
+        json_write(receipt_path, {**receipt, 'applied': [0]})
+        with self.assertRaisesRegex(ValueError, 'recovery first'):
+            self.u._close_pre_switch_recovery(receipt_path)
+        self.assertEqual(json.loads(receipt_path.read_text())['status'], 'files-restored')
+
+    def test_partial_import_is_installed_with_separate_data_outcome_and_archive(self):
+        self.fixture.service.migrate = lambda transaction, state: {
+            'pythonMigration': True, 'status': 'partial', 'cards': 2, 'worldbooks': 1,
+            'worlds': [{'id': 'world_ok'}], 'profile': {'preserved': True},
+            'deferred': [{'kind': 'world', 'file': 'productions/bad.json', 'code': 'PENDING_CONVERSION'}],
+            'warnings': [], 'archive': 'python-source'}
+        result = self.fixture.apply(self.fixture.review())
+        self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
+        self.assertEqual(result['dataImport']['status'], 'partial')
+        self.assertEqual(result['dataImport']['worldsImported'], 1)
+        self.assertEqual(result['dataImport']['deferredCount'], 1)
+        self.assertTrue(Path(result['dataImport']['reportPath']).is_file())
+        self.assertTrue(Path(result['dataImport']['backupPath']).is_dir())
+        self.assertIn('待转换', result['next_step'])
+        self.assertNotIn('restore', self.fixture.service.calls)
+
     def test_pause_failure_receipt_keeps_original_reason_after_recovery(self):
         review = self.fixture.review()
         before = self.fixture.snapshot()

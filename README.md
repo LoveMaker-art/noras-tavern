@@ -154,8 +154,10 @@ testing and `--allow-candidate`. Backups/receipts are private and remain on the
 installation host. Worlds, chats, keys and unrelated host configuration are not
 release payloads. The default updater replaces whole reviewed program directories
 and project state. Python productions are converted on a private copy; current
-Node data is validated without a version migration. Nonstandard instance paths,
-unknown data formats and broken references require reconciliation before apply.
+Node data is validated without a version migration. Incompatible Python records
+are preserved with a pending-conversion report, not a veto on program installation.
+A World imports only with valid dependencies and history. Backup/checksum failures,
+unsafe paths, ambiguous installations and unknown process ownership still stop apply.
 
 A successful install reports `installed-awaiting-hermes-reload`: the owner sends
 `/restart` in ClawChat, then verifies the MCP and skill/AGENTS context after

@@ -11,7 +11,11 @@ import yaml
 def load_python_model(home):
     home = Path(home)
     choices = home / 'tavern-state/model_configs.json'
-    selected = json.loads(choices.read_text()).get('active', 'builtin') if choices.exists() else 'builtin'
+    try:
+        choices_value = json.loads(choices.read_text()) if choices.exists() else {}
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None  # Copied-state importer preserves and reports the bad record.
+    selected = choices_value.get('active', 'builtin') if isinstance(choices_value, dict) else 'builtin'
     # "builtin" now means the target Hermes primary model. Do not manufacture
     # a Python builtin or inherit an operator/developer process's environment.
     if not isinstance(selected, str) or not selected.startswith('clawling:'):

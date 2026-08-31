@@ -36,6 +36,11 @@ class PythonProfileTests(unittest.TestCase):
         self.assertIsNone(normalize_empty_placeholder(self.state))
         self.assertEqual(self.file.read_bytes(), original)
 
+    def test_invalid_json_is_left_for_nonblocking_record_import(self):
+        self.file.write_bytes(b'{invalid')
+        self.assertIsNone(normalize_empty_placeholder(self.state))
+        self.assertEqual(self.file.read_bytes(), b'{invalid')
+
     def test_live_state_cannot_be_normalized(self):
         with self.assertRaisesRegex(ValueError, 'prepared state'):
             normalize_empty_placeholder(self.state.parent)

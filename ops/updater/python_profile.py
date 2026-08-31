@@ -2,7 +2,7 @@
 
 The historical loader checked only schema_version, so an empty installer seed
 could survive despite using noncanonical field names. Populated unknown formats
-remain rejected: this adapter never guesses the meaning of user content.
+are left for the record importer to archive, without guessing their meaning.
 """
 import json
 from pathlib import Path
@@ -17,7 +17,10 @@ def normalize_empty_placeholder(state):
     if not file.exists():
         return None
     raw = file.read_bytes()
-    value = json.loads(raw)
+    try:
+        value = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None  # The record importer archives unsupported content explicitly.
     if not isinstance(value, dict) or value.get('schema_version') != 1:
         return None
     fields = ('preferences', 'recent_timeline', 'shared_story_memory')
@@ -29,9 +32,14 @@ def normalize_empty_placeholder(state):
     if not all(key in value and value[key] == empty for key, empty in (
             ('preferences', {}), ('recent', []), ('taste', {}), ('shared_facts', []))):
         return None
+    if not isinstance(value.get('stats', {}), dict):
+        return None
     eras = state / 'profile_eras.json'
     events = state / 'profile_events.jsonl'
-    if (eras.exists() and json.loads(eras.read_text()) != []) or (events.exists() and events.read_text().strip()):
+    try:
+        if (eras.exists() and json.loads(eras.read_text()) != []) or (events.exists() and events.read_text().strip()):
+            return None
+    except (json.JSONDecodeError, UnicodeDecodeError):
         return None
     archive = state / 'python-source-profile/story_profile.json'
     if archive.exists():

@@ -102,6 +102,21 @@ def pause(lifecycle, transaction):
     json_write(transaction / 'maintenance.json', record)
 
 
+def verify_source_running(lifecycle, transaction):
+    """Close pre-switch recovery only from live evidence; never start/stop here."""
+    record = json.loads((transaction / 'maintenance.json').read_text())
+    script = python_script(lifecycle.u.targets['app'])
+    if record.get('sourceRuntime') != 'python' or record.get('script', str(script)) != str(script):
+        raise ValueError('Pending recovery does not describe the current Python entry')
+    found = python_processes(lifecycle.u.targets['app'])
+    if record.get('wasRunning') is False and not found and not port_open(lifecycle.port):
+        return
+    old = record.get('process') or {}
+    if len(found) != 1 or found[0]['argv'] != old.get('argv') or found[0]['cwd'] != old.get('cwd'):
+        raise ValueError('Pending recovery requires one verified original Python process')
+    verify_restored(lifecycle, found[0], script)
+
+
 def resume(lifecycle, transaction):
     journal = transaction / 'maintenance.json'
     if not journal.exists():
@@ -134,11 +149,26 @@ def resume(lifecycle, transaction):
     if record.get('script', str(script)) != str(script):
         raise ValueError('Restored Python entry differs from the paused process')
     old = record['process']
+    def accept(process):
+        # Persist the replacement identity before health verification: a timeout
+        # must be retryable without starting a second server or trusting a PID file.
+        record['restoredProcess'] = process
+        json_write(journal, record)
+        atomic(lifecycle.u.state / 'server.pid', str(process['pid']).encode())
+        verify_restored(lifecycle, process, script)
+
+    restored = record.get('restoredProcess')
+    if restored:
+        current = process_record(restored['pid'], script)
+        if (same_process(current, restored) and current['argv'] == old['argv']
+                and current['cwd'] == old['cwd']):
+            accept(current)
+            return
     current = process_record(old['pid'], script)
     if current:
         if not same_process(current, old):
             raise ValueError('Original PID was reused; source restart requires review')
-        verify_restored(lifecycle, current, script)
+        accept(current)
         return
     # Recover older receipts after their manager already restarted the exact
     # original service. Never accept an arbitrary listener based only on health.
@@ -146,9 +176,17 @@ def resume(lifecycle, transaction):
     if service and service.pid():
         replacement = process_record(service.pid(), script)
         if replacement and replacement['argv'] == old['argv'] and replacement['cwd'] == old['cwd']:
-            verify_restored(lifecycle, replacement, script)
-            atomic(lifecycle.u.state / 'server.pid', str(replacement['pid']).encode())
+            accept(replacement)
             return
+    # Includes old receipts with no restoredProcess field and a stale server.pid.
+    # Discovery checks executable, owner and entry path; additionally require the
+    # exact reviewed argv/cwd and a unique instance. Health binds to its listener.
+    found = python_processes(lifecycle.u.targets['app'])
+    if found:
+        if len(found) != 1 or found[0]['argv'] != old['argv'] or found[0]['cwd'] != old['cwd']:
+            raise ValueError('Restored Python process is ambiguous or differs from the reviewed source')
+        accept(found[0])
+        return
     if port_open(lifecycle.port):
         raise ValueError('Source restart port is occupied; no process was replaced')
     log_path = safe(lifecycle.u.state / 'server.log')
@@ -161,4 +199,4 @@ def resume(lifecycle, transaction):
     process = process_record(child.pid, script)
     if not process or process['argv'] != old['argv'] or process['cwd'] != old['cwd']:
         raise ValueError('Restored Python instance differs from the reviewed source')
-    verify_restored(lifecycle, process, script)
+    accept(process)

@@ -305,6 +305,7 @@ class Integration:
         self.check(reviewed)
         journal.update(status='applying', before=reviewed, actions=[])
         save()
+        pending = []
         for role in ROLES:
             app = reviewed['apps'][role]
             title, prefix = ROLES[role]
@@ -344,13 +345,19 @@ class Integration:
             action = {'role': role, 'kind': 'external-entry', 'url': desired['url'], 'status': 'intent'}
             journal['actions'].append(action)
             save()
-            action['evidence'] = public_entry(desired['url'], title)
-            action['status'] = 'verified'
+            try:
+                action['evidence'] = public_entry(desired['url'], title)
+                action['status'] = 'verified'
+            except (ValueError, OSError):
+                # Public transport/authentication is an independent observation,
+                # not grounds to undo healthy binaries and verified App IDs.
+                action['status'] = 'unverified'
+                pending.append({'role': role, 'reason': 'Public entry could not be verified; check ClawChat access and network'})
             save()
-        journal['status'] = 'external-entry-verified'
+        journal['status'] = 'external-entry-unverified' if pending else 'external-entry-verified'
         save()
-        return {'status': 'external-entry-verified', 'localEntriesVerified': True, 'launcherMetadataVerified': True,
-                'externalEntryVerified': True}
+        return {'status': journal['status'], 'localEntriesVerified': True, 'launcherMetadataVerified': True,
+                'externalEntryVerified': not pending, 'pending': pending}
 
     def recover(self, journal, save):
         if not journal.get('actions'):

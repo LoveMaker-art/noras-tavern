@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: full-directory-python-upgrade-20260831
+    revision: nonblocking-python-data-import-20260901
     requires_tools: [terminal]
 ---
 
@@ -66,6 +66,9 @@ needed; otherwise wait for the result without intermediate narration.
 3. When the command exits, send one concise final summary and end the turn:
    - Success: installed version/status and the script's owner `/restart` instruction.
      Installation does not mean the current gateway has reloaded.
+     Report `dataImport.status=partial` as installed with preserved pending data,
+     including counts and the report/backup paths. `external-entry-unverified`
+     means installed with public access still unverified, not rolled back.
    - Failure: failed phase, concrete `error`, `status`/`recovery`, and transaction
      or error-log path. `rolled-back` is recovery, not a successful upgrade.
      Unknown/partial recovery, including `integration-pending`, must be stated as unconfirmed.
@@ -98,9 +101,11 @@ exact command follows **Execute and report**, without an extra planning narrativ
 
 1. Resolve the exact Hermes home and source runtime. Python namespaces are converted
    on a private state copy, retaining Worlds, cast, messages, ledger, Profile and
-   credentials. Current Node data is validated only. Mixed data, unknown schemas,
-   missing references/assets and modified legacy AGENTS require reconciliation;
-   report them rather than deleting records or weakening validation.
+   credentials. Current Node data is validated only. Incompatible Python records,
+   backup files and missing references/assets are preserved and listed for later
+   conversion. A dependent World imports entirely or stays pending; it must not
+   become a half-imported World. Unsafe paths, mixed Node/Python ownership and
+   modified managed host files remain safety blockers.
 2. Fetch the approved tag or use a verified local bundle. Run `review` with its
    directory and manifest SHA-256. Candidate bundles require explicit test
    authorization and `--allow-candidate`; never present them as stable releases.
@@ -126,6 +131,10 @@ Apply prepares dependencies, verifies/stops the owned process, copies and conver
 state, then switches reviewed code/state trees and host files. Durable intent
 precedes every rename. Failure recovery restores original trees and the prior
 running/offline condition; report any recovery error immediately.
+Before another update, the script can close a pre-switch Python receipt only
+after proving no switch/platform writes occurred, source files are unchanged,
+and the original service is healthy (or originally offline). It does not replay
+an old rollback over an active newer installation.
 New updates use only directory transactions. The legacy file-level adapter can
 recover existing receipts but cannot review or apply a new release.
 
@@ -145,6 +154,8 @@ ClawChat entry was observed. The current CLI cannot query a tunnel's original
 local target: after an uncertain bind, recovery reports `integration-pending`
 instead of guessing the old target or claiming complete recovery. Recovery contains private
 configuration: keep it on the host outside skills discovery.
+Once bindings and launcher metadata are confirmed, an unavailable public entry
+is reported independently and does not roll back the healthy local install.
 
 ## Verification
 

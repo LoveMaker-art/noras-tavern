@@ -93,17 +93,19 @@ class LivewareTests(unittest.TestCase):
         self.assertEqual(result['liveware']['status'], 'external-entry-verified')
         self.assertTrue(result['liveware']['externalEntryVerified'])
 
-    def test_public_entry_failure_does_not_report_success(self):
+    def test_public_entry_failure_does_not_rollback_healthy_install_or_claim_reachability(self):
         review = self.fixture.review()
         with patch('liveware_integration.local_entry'), \
              patch('liveware_integration.public_entry', side_effect=ValueError('public route unhealthy')):
-            with self.assertRaisesRegex(ValueError, 'original Liveware binding'):
-                self.fixture.apply(review)
+            result = self.fixture.apply(review)
         receipt = json.loads((__import__('pathlib').Path(review['transaction']) / 'receipt.json').read_text())
-        self.assertNotEqual(receipt['status'], 'installed-awaiting-hermes-reload')
-        self.assertIn(receipt['status'], ('rolled-back', 'integration-pending'))
-        self.assertEqual(receipt['failure']['phase'], 'reconcile-liveware')
-        self.assertEqual(receipt['failure']['reason'], 'public route unhealthy')
+        self.assertEqual(receipt['status'], 'installed-awaiting-hermes-reload')
+        self.assertEqual(result['liveware']['status'], 'external-entry-unverified')
+        self.assertFalse(result['liveware']['externalEntryVerified'])
+        self.assertTrue(result['liveware']['launcherMetadataVerified'])
+        self.assertEqual(len(result['liveware']['pending']), 2)
+        self.assertNotIn('failure', receipt)
+        self.assertIn('公网入口', result['next_step'])
 
     def test_local_entry_failure_does_not_touch_platform_and_restores_local(self):
         before = self.fixture.snapshot()
