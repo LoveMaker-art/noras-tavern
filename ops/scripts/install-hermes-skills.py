@@ -108,7 +108,7 @@ def skill_name(path):
     return match.group(1) if match else None
 
 
-def build_plan(source, home, agents_path=None, *, full_release=False):
+def build_plan(source, home, agents_path=None, *, full_release=False, include_unchanged=False):
     source, home = Path(source).absolute(), Path(home).absolute()
     root = home / "skills"
     if source == root or root in source.parents:
@@ -118,7 +118,7 @@ def build_plan(source, home, agents_path=None, *, full_release=False):
     def put(path, new):
         path = safe_file(path)
         old = read_optional(path)
-        if old != new:
+        if old != new or include_unchanged:
             changes[str(path)] = {"path": str(path), "old": old, "new": new,
                                   "mode": path.stat().st_mode & 0o777 if path.exists() else 0o644}
 

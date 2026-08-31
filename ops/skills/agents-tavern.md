@@ -10,7 +10,8 @@
 - Use `tavern-ops` for service/log/connection diagnosis and authorized restoration
   of the current installation, including when Nora MCP is unavailable.
 - Use `tavern-updater` for full-release review, authorized upgrades and rollback;
-  require its receipt, then distinguish installed files from Hermes MCP/context activation.
+  require its compatibility checks and receipt; distinguish installed files,
+  migrated user data and Hermes MCP/context activation.
 
 Choose by the requested outcome, not by a technical word appearing in an error.
 Ordinary plugin errors do not authorize service restarts or source changes.

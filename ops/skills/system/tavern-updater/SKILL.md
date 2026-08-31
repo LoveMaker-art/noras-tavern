@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, upgrade and roll back verified Tavern releases.
-version: 2.0.0
+version: 2.0.1
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: full-release-v2-20260831
+    revision: full-release-v2-guards-20260831
     requires_tools: [terminal]
 ---
 
@@ -49,8 +49,10 @@ release asset. If a tag has no full bundle, report that missing input.
 
 ## Procedure
 
-1. Resolve the exact Hermes home and app/MCP versions. Verify the Node schema-2
-   layout. Legacy Python installations need a separate data migration.
+1. Resolve the exact Hermes home and app/MCP versions. The engine schema-2 marker
+   does not prove user-data compatibility. The updater checks for Python data,
+   World v1 remnants and unknown World schemas; stop on these findings and report
+   the required migration/reconciliation. These guards do not perform migration.
 2. Fetch the approved tag or use a verified local bundle. Run `review` with its
    directory and manifest SHA-256. Candidate bundles require explicit test
    authorization and `--allow-candidate`; never present them as stable releases.
@@ -69,6 +71,12 @@ Review creates private staging but leaves active files unchanged. Apply prepares
 npm dependencies before stopping Tavern, backs up managed files, then installs
 and checks health. Failures restore the prior release; inspect any recovery error.
 Concurrent modifications block rollback instead of overwriting them.
+
+The preflight reserves space for managed-file backups/replacements and an
+estimated 1 GiB for dependency preparation. It checks again before stopping the
+service. This is not a guarantee against disk exhaustion or a full data backup.
+The updater retains unknown old code and has no complete user-state rollback;
+do not use it as a clean-install or universal old-data migration tool.
 
 Worlds, chats, keys, custom skills and instructions outside the managed AGENTS
 block are preserved. The updater does not re-register Liveware, replace the whole

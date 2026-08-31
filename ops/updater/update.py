@@ -111,6 +111,54 @@ class Updater:
         marker = self.targets["app"] / "native-runtime.json"
         if not marker.exists() or json.loads(marker.read_text()).get("schema") != 2:
             raise ValueError("This updater adopts existing Node Tavern installations, not legacy Python data")
+        self._check_data_layout()
+
+    def _check_data_layout(self):
+        # An engine contract is NOT a user-data schema. Mixed installations
+        # can contain the new engine marker while their worlds remain Python.
+        for namespace in ("productions", "cards", "worldbooks"):
+            directory = safe(self.state / namespace)
+            if directory.exists() and any(directory.iterdir()):
+                raise ValueError("Legacy Python data needs a verified migration before updating: " + namespace)
+        native = safe(self.state / "native")
+        if not native.exists():
+            return
+        for user in native.iterdir():
+            safe(user)
+            if not user.is_dir() or user.name.startswith("_"):
+                continue
+            legacy = safe(user / "nora-worlds")
+            if legacy.exists() and any(legacy.iterdir()):
+                raise ValueError("World v1 records require migration/reconciliation before this updater can proceed: " + str(legacy))
+            worlds = safe(user / "nora-world-core/worlds")
+            if not worlds.exists():
+                continue
+            for file in worlds.iterdir():
+                safe(file)
+                try:
+                    if not file.is_file() or file.suffix != ".json":
+                        raise ValueError("unexpected file type")
+                    record = json.loads(file.read_text())
+                    if not isinstance(record, dict) or record.get("schema_version") != 2:
+                        raise ValueError("unsupported schema")
+                except (ValueError, OSError) as error:
+                    raise ValueError("World record requires review before updating: " + str(file)) from error
+
+    def _check_space(self, transaction, plan, *, preparing):
+        changed = [c for c in plan["changes"] if c["before"] != c["after"]]
+        backup_bytes = sum(self._target(c["name"]).stat().st_size for c in changed if c["before"] is not None)
+        replacement_bytes = sum((transaction / c["source"]).stat().st_size for c in changed if c["source"])
+        # npm's expanded size is not present in the release manifest. This is
+        # a conservative preparation reserve, not a claimed exact prediction.
+        reserve = 1024 ** 3 if preparing else 64 * 1024 ** 2
+        required = backup_bytes + replacement_bytes + reserve
+        locations = {self.root, self.apps, self.home, self.state}
+        for location in locations:
+            safe(location)
+            while not location.exists():
+                location = location.parent
+            if shutil.disk_usage(location).free < required:
+                raise ValueError(f"Insufficient disk space at {location}: need at least {required} bytes; no files switched")
 
     def _mcp_config(self):
         import yaml  # Hermes' Python environment already owns this dependency.
@@ -163,7 +211,7 @@ class Updater:
             file.chmod(0o600)
             desired[name] = file
 
-        for change in installer.build_plan(stage / "ops/skills", self.home, full_release=True):
+        for change in installer.build_plan(stage / "ops/skills", self.home, full_release=True, include_unchanged=True):
             name = "home/" + str(Path(change["path"]).relative_to(self.home))
             if change["new"] is None:
                 desired[name] = None
@@ -192,6 +240,8 @@ class Updater:
         previous = json.loads(baseline.read_text()) if baseline.exists() else {"files": {}}
         for name, old_sha in previous["files"].items():
             if name not in desired:
+                if name in ("home/AGENTS.md", "home/config.yaml"):
+                    raise ValueError("Host configuration is missing from the desired inventory; refusing deletion: " + name)
                 if sha(self._target(name)) not in (None, old_sha):
                     raise ValueError("Locally modified retired managed file; preserve and review: " + name)
                 desired[name] = None
@@ -232,6 +282,14 @@ class Updater:
         return transaction, plan
 
     def _preconditions(self, transaction, plan):
+        # Block application, not recovery: an affected old transaction must
+        # still be able to restore its backed-up AGENTS through rollback.
+        protected = {"home/AGENTS.md", "home/config.yaml"}
+        if not protected.issubset(plan["files"]) or any(
+            c["name"] in protected and c["after"] is None for c in plan["changes"]
+        ):
+            raise ValueError("Unsafe legacy plan could delete host configuration; review the release again")
+        self._configured_paths()
         if sha(self.root / "installed.json") != plan["previousBaseline"]:
             raise ValueError("Installed release changed; review again")
         for change in plan["changes"]:
@@ -250,9 +308,11 @@ class Updater:
             if (transaction / "receipt.json").exists():
                 raise ValueError("Transaction already attempted; inspect receipt/recovery")
             self._preconditions(transaction, plan)
+            self._check_space(transaction, plan, preparing=True)
             # Download/install dependencies before interrupting the live process.
             self.lifecycle.prepare(transaction)
             self._preconditions(transaction, plan)
+            self._check_space(transaction, plan, preparing=False)
             backup = transaction / "backup"
             backup.mkdir()
             actual = [c for c in plan["changes"] if c["before"] != c["after"]]

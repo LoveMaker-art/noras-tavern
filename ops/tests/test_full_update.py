@@ -166,6 +166,89 @@ class FullUpdateTests(unittest.TestCase):
         self.assertFalse((self.home / "apps/tavern-runtime/obsolete.js").exists())
         self.assertEqual((self.home / "apps/tavern-runtime/custom-plugin.js").read_text(), "user plugin")
 
+    def test_repeated_updates_preserve_complete_agents_not_only_changed_block(self):
+        first = self.review()
+        self.apply(first)
+        agents = self.home / "AGENTS.md"
+        expected = agents.read_bytes()
+        for _ in range(2):
+            review = self.review()
+            plan = json.loads((Path(review["transaction"]) / "plan.json").read_text())
+            change = next(c for c in plan["changes"] if c["name"] == "home/AGENTS.md")
+            self.assertIsNotNone(change["after"], "Unchanged AGENTS must remain in the complete desired inventory")
+            self.apply(review)
+            self.assertEqual(agents.read_bytes(), expected)
+            self.assertIn(b"Keep my instructions", agents.read_bytes())
+
+    def test_mixed_python_data_is_not_mistaken_for_a_node_installation(self):
+        self.write("tavern-state/productions/old-world.json", '{"id":"old-world","story":[]}')
+        with self.assertRaisesRegex(ValueError, "Python data"):
+            self.review()
+        self.assertEqual(self.service.calls, [])
+
+    def test_unmigrated_node_world_v1_blocks_upgrade(self):
+        self.write("tavern-state/native/default-user/nora-worlds/old.json", '{"schema":"nora-world/v1"}')
+        with self.assertRaisesRegex(ValueError, "World v1"):
+            self.review()
+
+    def test_unknown_or_corrupt_world_schema_blocks_upgrade(self):
+        file = self.write("tavern-state/native/default-user/nora-world-core/worlds/new.json", '{"schema_version":3}')
+        for data in ('{"schema_version":3}', '{broken', '[]'):
+            file.write_text(data)
+            with self.assertRaisesRegex(ValueError, "World record"):
+                self.review()
+
+    def test_data_layout_is_checked_again_before_apply(self):
+        review = self.review()
+        self.write("tavern-state/productions/old.json", '{"id":"old"}')
+        with self.assertRaisesRegex(ValueError, "Python data"):
+            self.apply(review)
+        self.assertEqual(self.service.calls, [])
+
+    def test_old_buggy_plan_cannot_be_applied_by_the_fixed_updater(self):
+        review = self.review()
+        file = Path(review["transaction"]) / "plan.json"
+        plan = json.loads(file.read_text())
+        del plan["files"]["home/AGENTS.md"]
+        change = next(c for c in plan["changes"] if c["name"] == "home/AGENTS.md")
+        change.update(after=None, source=None)
+        file.write_text(json.dumps(plan))
+        with self.assertRaisesRegex(ValueError, "Unsafe legacy plan"):
+            self.u.apply(review["transaction"], plan_digest(plan))
+        self.assertEqual(self.service.calls, [])
+        self.assertEqual(self.snapshot(), self.initial)
+
+    def test_already_affected_legacy_transaction_can_still_restore_agents(self):
+        review = self.review()
+        transaction = Path(review["transaction"])
+        file = transaction / "plan.json"
+        plan = json.loads(file.read_text())
+        del plan["files"]["home/AGENTS.md"]
+        change = next(c for c in plan["changes"] if c["name"] == "home/AGENTS.md")
+        change.update(after=None, source=None)
+        file.write_text(json.dumps(plan))
+        # Reproduce the previous updater's deletion only in this private fixture.
+        backup = transaction / "backup"
+        backup.mkdir()
+        agents = self.home / "AGENTS.md"
+        (backup / "0").write_bytes(agents.read_bytes())
+        agents.unlink()
+        (transaction / "receipt.json").write_text(json.dumps({
+            "status": "applying", "actual": [change], "applied": [0], "planDigest": plan_digest(plan),
+        }))
+        result = self.u.rollback(transaction, plan_digest(plan))
+        self.assertEqual(result["status"], "rolled-back")
+        self.assertEqual(self.snapshot(), self.initial)
+
+    def test_disk_shortage_blocks_before_prepare_or_stop(self):
+        review = self.review()
+        usage = shutil.disk_usage(self.home)
+        with patch("update.shutil.disk_usage", return_value=type(usage)(usage.total, usage.used, 0)):
+            with self.assertRaisesRegex(ValueError, "Insufficient disk"):
+                self.apply(review)
+        self.assertEqual(self.service.calls, [])
+        self.assertEqual(self.snapshot(), self.initial)
+
     def test_modified_retired_file_is_not_deleted(self):
         release, _ = self.bundle("first", {"app/obsolete.js": b"managed old file"})
         self.apply(self.review(release))

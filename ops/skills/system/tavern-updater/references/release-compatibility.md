@@ -13,8 +13,11 @@ not a publisher signature.
 
 Supported existing layout: `apps/tavern-runtime/native-runtime.json` schema 2,
 state in `tavern-state`, engine config in `tavern-state/native-runtime/config.yaml`,
-loopback port 8799. Custom paths and old Python data are rejected before apply;
-do not force them through by changing environment variables.
+loopback port 8799. Custom paths, Python state directories, remaining World v1
+registry records and unknown/corrupt World record schemas are rejected at review
+and checked again before apply. A retained v1 registry may already have been
+migrated, but requires reconciliation evidence; never delete it just to bypass
+the guard. A World v2 schema check is not a full resource-binding validation.
 
 ## First adoption
 
@@ -43,6 +46,11 @@ Only previously managed obsolete files are pruned; unknown user files remain.
 First adoption lists every overwrite but cannot infer whether a same-name source
 file is a user hotfix: inspect unexpected changes before approving.
 
+The desired inventory includes unchanged AGENTS and skill files. Updater 2.0.0
+could mistake unchanged AGENTS for a retired file during a second update; use
+2.0.1 or later. Existing transaction plans made by the flawed version must be
+reviewed again, not applied unchanged.
+
 ## Recovery and activation
 
 Plans, backups and receipts live under `tavern-updates-v2/review-*`, outside skill
@@ -55,3 +63,13 @@ read-only MCP process. It does not restart the Hermes process executing the
 update. `installed-awaiting-hermes-reload` requires owner `/reload-mcp` and a fresh
 session for skills/AGENTS. These are distinct activation checks. Liveware bindings,
 cookies, account settings and user data are not release assets and stay in place.
+
+## Limits of this recovery
+
+The current backup covers managed program/configuration files, not the complete
+world/chat/Profile state. Startup-time data changes are therefore not covered by
+file rollback. There is no complete writer-drain or clean-directory switch yet.
+Preparing npm requires variable disk space; the preflight allowance is an
+estimate and is checked again before interruption. Keep an independently verified
+data backup and an agreed maintenance window for any authorized runtime test.
+Do not distribute this candidate as an automatic migration for Python users.
