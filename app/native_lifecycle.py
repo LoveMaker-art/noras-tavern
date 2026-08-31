@@ -11,11 +11,13 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
 import shutil
+import shlex
 import signal
 import subprocess
 import sys
@@ -371,6 +373,32 @@ class NativeRuntime:
         finally:
             log.close()
 
+    def service_module(self):
+        source = Path(__file__).resolve().parents[1] / 'ops/updater/service_manager.py'
+        if not source.is_file():
+            source = self.app_root.parent / 'tavern-ops/updater/service_manager.py'
+        spec = importlib.util.spec_from_file_location('tavern_native_service', source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def managed_service(self):
+        # Standalone/local runtimes need no dependency on installed operations.
+        try:
+            args = Path('/proc/1/cmdline').read_bytes().split(b'\0')
+        except FileNotFoundError:
+            return None
+        if Path(os.fsdecode(args[0])).name != 'supervisord':
+            return None
+        return self.service_module().ManagedService.discover(self.data_root, self.app_root)
+
+    def node_command(self, port, native_data):
+        node = shutil.which('node')
+        if not node:
+            raise NativeLifecycleError('Node executable is unavailable')
+        return [node, 'server.js', '--configPath', str(self.config_path), '--port', str(port),
+                '--dataRoot', str(native_data), '--listen', 'false', '--whitelist', 'false']
+
     def start(self, run_id="production", port=8799, data_root=None, *, assets_prepared=False):
         self.verify_install()
         native_data = Path(data_root or self.native_data_root)
@@ -378,10 +406,19 @@ class NativeRuntime:
             self.sync_assets(native_data)
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
-        native_pid = self._read_pid(run_dir / "native.pid", "server.js")
+        service = self.managed_service() if run_id == 'production' else None
+        if service and data_root is not None and Path(data_root).resolve() != self.native_data_root:
+            raise NativeLifecycleError('Managed service cannot use a different data root')
+        if service and service.descriptor['command'] != shlex.join(self.node_command(port, native_data)):
+            raise NativeLifecycleError('Managed start command differs; migrate it through the updater first')
+        native_pid = service.pid() if service else self._read_pid(run_dir / "native.pid", "server.js")
         if native_pid:
             current = self.health(port)
             if current["ok"]:
+                if service:
+                    _atomic_text(run_dir / 'native.pid', str(native_pid) + '\n')
+                    _atomic_text(run_dir / 'run.json', json.dumps({'schema': 1, 'run_id': run_id,
+                        'port': port, 'native_pid': native_pid, 'manager': service.name}) + '\n')
                 return {
                     "schema": 1,
                     "run_id": run_id,
@@ -398,25 +435,15 @@ class NativeRuntime:
             "TAVERN_PERSONALITY_FILE",
             str(Path(env.get("HERMES_HOME") or Path.home() / ".hermes") / "SOUL.md"),
         )
-        native = self.spawn(
-            [
-                "node", "server.js",
-                "--configPath", str(self.config_path),
-                "--port", str(port),
-                "--dataRoot", str(native_data),
-                "--listen", "false",
-                "--whitelist", "false",
-            ],
-            env,
-            run_dir / "native.log",
-        )
-        _atomic_text(run_dir / "native.pid", str(native.pid) + "\n")
+        native_pid = service.start() if service else self.spawn(
+            self.node_command(port, native_data), env, run_dir / "native.log").pid
+        _atomic_text(run_dir / "native.pid", str(native_pid) + "\n")
         metadata = {
             "schema": 1,
             "run_id": run_id,
             "port": port,
             "data_root": str(native_data),
-            "native_pid": native.pid,
+            "native_pid": native_pid,
             "started_at": int(time.time()),
             "contract_commit": self.contract.commit,
         }
@@ -510,6 +537,11 @@ class NativeRuntime:
 
     def stop_run(self, run_id="production"):
         run_dir = self.run_dir(run_id)
+        service = self.managed_service() if run_id == 'production' else None
+        if service:
+            service.stop()
+            (run_dir / 'native.pid').unlink(missing_ok=True)
+            return {'ok': True, 'run_id': run_id, 'stopped': ['native'], 'manager': service.name}
         stopped = []
         for name in ("native",):
             pid_path = run_dir / f"{name}.pid"
@@ -536,9 +568,12 @@ class NativeRuntime:
             metadata = json.loads((run_dir / "run.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):
             metadata = {"run_id": run_id, "port": 8799}
-        processes = {
-            "native": bool(self._read_pid(run_dir / "native.pid", "server.js")),
-        }
+        service = self.managed_service() if run_id == 'production' else None
+        pid = service.pid() if service else self._read_pid(run_dir / 'native.pid', 'server.js')
+        if service:
+            metadata['native_pid'] = pid
+            metadata['manager'] = service.name
+        processes = {"native": bool(pid and self._pid_alive(pid, 'server.js'))}
         health = self.health(int(metadata.get("port", 8799))) if any(processes.values()) else {
             "ok": False,
             "checks": {},

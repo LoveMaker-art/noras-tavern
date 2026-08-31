@@ -15,6 +15,7 @@ import urllib.request
 
 from update import atomic, json_write, safe
 from python_installation import python_script
+from service_manager import ManagedService
 
 
 def process_record(pid, script):
@@ -29,6 +30,12 @@ def process_record(pid, script):
             if stat[0] == 'Z':
                 return None
             argv = (proc / 'cmdline').read_bytes().decode().strip('\0').split('\0')
+            # Linux can exit between the state and command reads. A vanished
+            # command is not proof of PID reuse; recheck before classifying it.
+            if not argv[0]:
+                after = (proc / 'stat').read_text().rsplit(')', 1)[1].split()
+                if after[0] in ('Z', 'X'):
+                    return None
             cwd = str((proc / 'cwd').resolve())
             identity = stat[19]
         except FileNotFoundError:
@@ -54,6 +61,12 @@ def process_record(pid, script):
     executable = Path(argv[0]).name.lower()
     expected = 'python' if script.suffix == '.py' else 'node'
     if not executable.startswith(expected) or not cwd or not any(str((Path(cwd) / arg).resolve()) == str(script.resolve()) for arg in argv[1:] if not arg.startswith('-')):
+        if Path('/proc/self').exists():
+            try:
+                if (proc / 'stat').read_text().rsplit(')', 1)[1].split()[0] in ('Z', 'X'):
+                    return None
+            except FileNotFoundError:
+                return None
         raise ValueError('PID does not execute the reviewed Tavern program')
     return {'pid': pid, 'identity': identity, 'argv': argv, 'cwd': cwd}
 
@@ -101,12 +114,19 @@ def python_processes(app):
     return result
 
 
+def managed_service(lifecycle):
+    return ManagedService.discover(lifecycle.u.home, lifecycle.u.targets['app'])
+
+
 def pause(lifecycle, transaction):
     u = lifecycle.u
     python = lifecycle.source_runtime == 'python'
     pid_file = safe(u.state / 'server.pid') if python else lifecycle.runtime().run_dir('production') / 'native.pid'
     script = python_script(u.targets['app']) if python else u.targets['app'] / 'engine/sillytavern/server.js'
-    current = process_record(int(pid_file.read_text().strip()), script) if pid_file.exists() else None
+    service = managed_service(lifecycle)
+    managed_pid = service.pid() if service else None
+    current = process_record(managed_pid, script) if managed_pid else (
+        process_record(int(pid_file.read_text().strip()), script) if not service and pid_file.exists() else None)
     if python:
         found = python_processes(u.targets['app'])
         if len(found) > 1 or (current and found and current != found[0]):
@@ -117,6 +137,10 @@ def pause(lifecycle, transaction):
         raise ValueError('Tavern port has an unowned process; no service was stopped')
     record = {'schema': 1, 'sourceRuntime': lifecycle.source_runtime, 'script': str(script),
               'wasRunning': bool(current), 'process': current, 'paused': False}
+    if service:
+        if current and current['pid'] != managed_pid:
+            raise ValueError('Tavern process is not owned by the reviewed manager')
+        record['service'] = service.snapshot()
     if current and python:
         with urllib.request.urlopen(f'http://127.0.0.1:{lifecycle.port}/api/health', timeout=10) as response:
             health = json.load(response)
@@ -131,7 +155,10 @@ def pause(lifecycle, transaction):
     if current:
         if process_record(current['pid'], script) != current:
             raise ValueError('Tavern process changed before maintenance')
-        os.kill(current['pid'], signal.SIGTERM)
+        if service:
+            service.stop()
+        else:
+            os.kill(current['pid'], signal.SIGTERM)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline and process_record(current['pid'], script):
             time.sleep(0.1)
@@ -146,6 +173,23 @@ def resume(lifecycle, transaction):
     if not journal.exists():
         return  # Failure happened before maintenance; leave the source untouched.
     record = json.loads(journal.read_text())
+    saved = record.get('service')
+    if saved:
+        service = ManagedService(saved['descriptor'])
+        service.stop()
+        service.install_text(saved['text'], accepted_hash=record.get('nodeServiceHash', saved['descriptor']['sha256']), mode=saved['mode'])
+        # reload can autostart the restored config. Preserve original offline state.
+        if not record['wasRunning']:
+            service.stop()
+            return
+        pid = service.start()
+        expected = Path(record['script'])
+        process = process_record(pid, expected)
+        if not process or process['argv'] != record['process']['argv'] or process['cwd'] != record['process']['cwd']:
+            raise ValueError('Restored managed service does not match the original program')
+        if record['sourceRuntime'] == 'python':
+            atomic(lifecycle.u.state / 'server.pid', str(pid).encode())
+        return
     if not record['wasRunning']:
         return  # Do not start an originally offline Python source and trigger jobs.
     if record['sourceRuntime'] != 'python':
@@ -160,6 +204,17 @@ def resume(lifecycle, transaction):
         if current != old:
             raise ValueError('Original PID was reused; source restart requires review')
         return
+    # Recover older receipts after their manager already restarted the exact
+    # original service. Never accept an arbitrary listener based only on health.
+    service = managed_service(lifecycle)
+    if service and service.pid():
+        replacement = process_record(service.pid(), script)
+        if replacement and replacement['argv'] == old['argv'] and replacement['cwd'] == old['cwd']:
+            with urllib.request.urlopen(f'http://127.0.0.1:{lifecycle.port}/api/health', timeout=10) as response:
+                if json.load(response).get('ok') is not True:
+                    raise ValueError('Restored managed source is not healthy')
+            atomic(lifecycle.u.state / 'server.pid', str(replacement['pid']).encode())
+            return
     if port_open(lifecycle.port):
         raise ValueError('Source restart port is occupied; no process was replaced')
     log_path = safe(lifecycle.u.state / 'server.log')

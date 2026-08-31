@@ -10,6 +10,7 @@ from bundle import PARTS
 from update import Updater, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
 from python_model import load_python_model
 from python_installation import python_installation
+from service_manager import ManagedService
 import tree_transaction as trees
 
 MARKER = ".tavern-isolated-update.json"
@@ -91,6 +92,10 @@ class CleanUpdater(Updater):
         plan.update(cleanTransaction=True, testMode=self.test_mode, port=self.isolated_port, groups=groups, extensionRetirements=extension_retirements,
                     sourceRuntime='python' if self._python_source() else 'node',
                     pythonSource=python_installation(self.targets['app']))
+        if isinstance(self.lifecycle, CleanLifecycle):
+            self.lifecycle.module_path = transaction / 'source/app/native_lifecycle.py'
+            service = ManagedService.discover(self.home, self.targets['app'])
+            plan['service'] = service.descriptor if service else None
         json_write(transaction / 'plan.json', plan)
         result.update(planDigest=plan_digest(plan), mode='clean-directory',
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
@@ -107,6 +112,10 @@ class CleanUpdater(Updater):
         super()._preconditions(transaction, plan)
         if plan.get('pythonSource') != python_installation(self.targets['app']):
             raise ValueError('Python source layout changed since review')
+        if isinstance(self.lifecycle, CleanLifecycle) and 'service' in plan:
+            service = ManagedService.discover(self.home, self.targets['app'])
+            if (service.descriptor if service else None) != plan['service']:
+                raise ValueError('Service ownership/configuration changed since review')
         for group in plan['groups']:
             if trees.fingerprint(safe(group['target'])) != group['before']:
                 raise ValueError('Target changed since review: ' + group['name'])
@@ -389,6 +398,16 @@ for (const name of Object.values(PUBLIC_DIRECTORIES)) {
     def activate(self, transaction):
         runtime = self.runtime()
         json_write(runtime.dependencies_marker, {'schema': 1, 'node_major': runtime.node_major(), 'lock_sha256': runtime.lock_digest()})
+        journal = transaction / 'maintenance.json'
+        record = json.loads(journal.read_text())
+        if record.get('service'):
+            saved = record['service']
+            module = runtime.service_module()
+            service = module.ManagedService(saved['descriptor'])
+            text = service.node_text(runtime.node_command(self.port, runtime.native_data_root), runtime.engine_root)
+            record['nodeServiceHash'] = module.digest(text.encode())
+            json_write(journal, record)  # Persist restoration authority before config mutation.
+            service.install_text(text, accepted_hash=saved['descriptor']['sha256'], mode=saved['mode'])
         runtime.start(port=self.port, assets_prepared=True)
 
     def pause(self, transaction):

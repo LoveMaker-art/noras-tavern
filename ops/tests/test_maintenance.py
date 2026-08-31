@@ -6,13 +6,53 @@ import tempfile
 import subprocess
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import test_full_update  # Makes the reviewed updater modules importable.
 import maintenance
 
 
 class MaintenanceTests(unittest.TestCase):
+    def test_linux_exit_between_stat_and_cmdline_is_normal_shutdown(self):
+        running = '87654321 (python3) S ' + '0 ' * 30
+        zombie = '87654321 (python3) Z ' + '0 ' * 30
+        with patch.object(Path, 'exists', return_value=True), \
+             patch.object(Path, 'stat', return_value=SimpleNamespace(st_uid=maintenance.os.getuid())), \
+             patch.object(Path, 'read_text', side_effect=[running, zombie]), \
+             patch.object(Path, 'read_bytes', return_value=b''):
+            self.assertIsNone(maintenance.process_record(87654321, self.home / 'server.py'))
+
+    def test_managed_stop_never_signals_child_directly(self):
+        service = Mock()
+        service.pid.return_value = self.record['pid']
+        service.snapshot.return_value = {'descriptor': {'name': 'tavern-runtime'}, 'text': 'private', 'mode': 384}
+        with patch.object(maintenance, 'managed_service', return_value=service), \
+             patch.object(maintenance, 'process_record', side_effect=[self.record, self.record, None, None]), \
+             patch.object(maintenance, 'python_processes', return_value=[self.record]), \
+             patch.object(maintenance.urllib.request, 'urlopen', return_value=self.health(0)), \
+             patch.object(maintenance, 'port_open', return_value=False), \
+             patch.object(maintenance.os, 'kill') as kill:
+            maintenance.pause(self.lifecycle, self.transaction)
+        service.stop.assert_called_once()
+        kill.assert_not_called()
+        saved = json.loads((self.transaction / 'maintenance.json').read_text())
+        self.assertTrue(saved['paused'])
+        self.assertEqual(saved['service']['descriptor']['name'], 'tavern-runtime')
+
+    def test_legacy_receipt_recovers_restarted_managed_source(self):
+        service = Mock()
+        service.pid.return_value = self.record['pid'] + 1
+        replacement = {**self.record, 'pid': self.record['pid'] + 1, 'identity': 'new'}
+        (self.transaction / 'maintenance.json').write_text(json.dumps({'wasRunning': True,
+            'sourceRuntime': 'python', 'process': self.record}))
+        with patch.object(maintenance, 'managed_service', return_value=service), \
+             patch.object(maintenance, 'process_record', side_effect=[None, replacement]), \
+             patch.object(maintenance.urllib.request, 'urlopen', return_value=self.health(0)), \
+             patch.object(maintenance.subprocess, 'Popen') as spawn:
+            maintenance.resume(self.lifecycle, self.transaction)
+        spawn.assert_not_called()
+        self.assertEqual(int((self.state / 'server.pid').read_text()), replacement['pid'])
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='tavern-maintenance-test-')
         self.addCleanup(temporary.cleanup)
