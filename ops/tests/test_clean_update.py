@@ -104,6 +104,29 @@ class CleanUpdateTests(unittest.TestCase):
         self.u.rollback(review['transaction'], review['planDigest'])
         self.assertEqual(self.fixture.snapshot(), before)
 
+    def test_official_python_startup_hook_is_replaced_and_restored(self):
+        # Exact upstream v1.24.12 bytes, also observed on the failed rc.4 host.
+        original = (fixtures.OPS / 'tests/fixtures/startup-hook-v1.24.12.sh.txt').read_bytes()
+        self.assertEqual(fixtures.digest(original), '52960f374d813fc9b4b46c704062680d2cd76b092f1805991a2ca66b21127f1a')
+        hook = 'hooks/tavern-liveware-register/run.sh'
+        self.fixture.write(hook, original.decode())
+        before = self.fixture.snapshot()
+        review = self.fixture.review()
+        self.assertEqual(self.fixture.snapshot(), before, 'Review must not replace the old hook')
+        self.fixture.apply(review)
+        self.assertEqual((self.home / hook).read_bytes(), (fixtures.OPS / hook).read_bytes())
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual(self.fixture.snapshot(), before)
+
+    def test_modified_python_startup_hook_still_requires_owner_review(self):
+        original = (fixtures.OPS / 'tests/fixtures/startup-hook-v1.24.12.sh.txt').read_text()
+        self.fixture.write('hooks/tavern-liveware-register/run.sh', original + '\n# Owner customization\n')
+        before = self.fixture.snapshot()
+        with self.assertRaisesRegex(ValueError, 'Modified startup hook'):
+            self.fixture.review()
+        self.assertEqual(self.fixture.snapshot(), before)
+        self.assertEqual(self.fixture.service.calls, [], 'Refused review must not stop or start the runtime')
+
     def test_failed_startup_restores_full_story_state(self):
         def fail(_transaction):
             self.fixture.write("tavern-state/native/default-user/chats/story.jsonl", "startup rewrote data")

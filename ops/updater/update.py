@@ -18,6 +18,20 @@ from bundle import PARTS, digest, download_release, extract_bundle, read_bundle,
 from runtime_lock import installation_lock
 
 
+# Exact upstream bytes from skills/tavern/hooks/tavern-liveware-register/
+# at v1.24.12 (aaa1afce), and ops/hooks/tavern-liveware-register/ at
+# v2.0.0-rc.2 (f9e95a06). A filename or an installed version is not proof
+# of ownership: locally customized hooks still require manual review.
+OFFICIAL_STARTUP_HOOK_HASHES = {
+    'HOOK.yaml': frozenset({'ea86052934fb13ba4112210f620c1472d4f6af93ebaa3230f83cb2cc9c31ee8a'}),
+    'handler.py': frozenset({'4f04c3e8a4fb3ec02627d7b3ce7fcd91463248842779785aa810fd897cc401c7'}),
+    'run.sh': frozenset({
+        '52960f374d813fc9b4b46c704062680d2cd76b092f1805991a2ca66b21127f1a',  # Python v1.24.12
+        'ae3e02b7600c2d1c6a00834e69da8b85724f9daf84ab25b11f51f4164dade4b1',  # Node v2.0.0-rc.2
+    }),
+}
+
+
 def module_at(name, file):
     spec = importlib.util.spec_from_file_location(name, file)
     module = importlib.util.module_from_spec(spec)
@@ -227,14 +241,12 @@ class ReleaseReview:
             if name.startswith("ops/hooks/tavern-liveware-register/") or name == "ops/eslint-owned.cjs":
                 desired["home/skills/creative/tavern/" + name[len("ops/"):]] = stage / name
             if name.startswith("ops/hooks/tavern-liveware-register/"):
-                official = {'HOOK.yaml': 'ea86052934fb13ba4112210f620c1472d4f6af93ebaa3230f83cb2cc9c31ee8a',
-                            'handler.py': '4f04c3e8a4fb3ec02627d7b3ce7fcd91463248842779785aa810fd897cc401c7',
-                            'run.sh': 'ae3e02b7600c2d1c6a00834e69da8b85724f9daf84ab25b11f51f4164dade4b1'}
                 target_name = 'home/' + name[len('ops/'):]
-                if Path(name).name not in official:
+                official = OFFICIAL_STARTUP_HOOK_HASHES.get(Path(name).name)
+                if official is None:
                     raise ValueError('Unrecognized startup hook file')
                 current = sha(safe(self._target(target_name)))
-                if current not in (None, official[Path(name).name], previous['files'].get(target_name), sha(stage / name)):
+                if current not in official and current not in (None, previous['files'].get(target_name), sha(stage / name)):
                     raise ValueError('Modified startup hook; preserve and review: ' + target_name)
                 desired[target_name] = stage / name
         # Copy only shipped extension files. Extra user files remain untouched;
