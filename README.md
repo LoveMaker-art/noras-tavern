@@ -1,6 +1,19 @@
-# Nora Tavern
+# Tavern
 
-Nora's product layer and deployment runtime for complex Tavern cards.
+World-centered Tavern runtime for complex cards, with Story Profile, MCP,
+Hermes skills and the full-bundle updater maintained together on `main`.
+
+## Version 2.0.0
+
+`main` contains the reconstructed Node project, replacing the former Python
+application source. Python-to-Node data migration remains part of the updater;
+the legacy online application is not a second runtime in this source tree.
+
+The source version is `2.0.0`. **The stable GitHub Release is not yet published:**
+the dependency audit and target-environment workflow gates remain outstanding.
+Until that publication, GitHub `releases/latest` still selects the old release.
+Do not use the commands below expecting a 2.0.0 update before the release exists.
+See [2.0.0 release status](docs/releases/v2.0.0.md).
 
 ## Layout
 
@@ -96,6 +109,26 @@ a persistent directory outside it; lifecycle commands are provided by
 
 ## Full updates
 
+The updater's canonical source is `ops/updater/` on `main`; it is not maintained
+on a separate updater or release branch. After the 2.0.0 stable Release is
+published, the main-branch entrypoint is:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/LoveMaker-art/noras-tavern/main/ops/updater/install.sh | sh -s -- --apply --confirm
+```
+
+The published-asset entrypoint is equivalent for the matching release:
+
+```sh
+curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
+```
+
+Both select the latest **stable published bundle**, not an arbitrary checkout
+of main. They do not require an RC tag or `--allow-candidate`. The main script
+selects Hermes' existing Python environment and verifies the downloaded
+Bootstrap; the Bootstrap pins the release manifest and archive checksums.
+Pushing source to main does not update an installed machine.
+
 `tavern-release/v2` binds all three archives and five delivery concerns to one
 source commit/digest: Tavern, Story Profile, MCP, skills and managed AGENTS.
 Use Hermes' Python interpreter (PyYAML is required), Node 20+ and npm:
@@ -113,9 +146,11 @@ and project state. Python productions are converted on a private copy; current
 Node data is validated without a version migration. Nonstandard instance paths,
 unknown data formats and broken references require reconciliation before apply.
 
-A successful install reports `installed-awaiting-hermes-reload`: use Hermes'
-`/reload-mcp`, then a fresh session for skill/AGENTS context, and verify there.
-The updater does not re-register Liveware or restart its own parent Hermes.
+A successful install reports `installed-awaiting-hermes-reload`: the owner sends
+`/restart` in ClawChat, then verifies the MCP and skill/AGENTS context after
+Hermes restarts. The updater does not restart its own parent Hermes. It retains
+the two existing Liveware App IDs and updates their binding/launcher metadata;
+an update does not create a second Tavern or Story Profile App.
 See [compatibility and recovery](ops/skills/system/tavern-updater/references/release-compatibility.md).
 
 Pushing this branch does not publish a GitHub Release. Packaging also emits the
