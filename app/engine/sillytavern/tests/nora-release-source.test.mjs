@@ -44,6 +44,9 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'ops/skills/INSTALL.md', 'ops/skills/agents-tavern.md',
         'ops/skills/creative/tavern/SKILL.md', 'ops/skills/creative/tavern/references/story-profile.md',
         'ops/skills/creative/tavern-ops/SKILL.md', 'ops/skills/system/tavern-updater/references/release-compatibility.md',
+        'ops/skills/system/tavern-updater/scripts/update.py', 'ops/updater/update.py',
+        'ops/skills/creative/nora-cardforge/src/cli/main.js', 'ops/skills/creative/nora-cardforge/SKILL.md',
+        'nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md',
     ];
     const excluded = [
         'ops/scripts/tavern_cli.py', 'ops/scripts/native_tavern.py', 'ops/scripts/package-release.mjs',
@@ -51,8 +54,10 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'ops/scripts/index-project.mjs', 'ops/tests/test-install.py', 'ops/specialists/retired/SKILL.md',
         'ops/skills/creative/retired/SKILL.md', 'ops/skills/creative/tavern/scripts/retired.py',
         'app/engine/sillytavern/tests/nora-world-theme.test.mjs',
+        'nora-mcp/src/server.ts', 'nora-mcp/tests/discovery.test.mjs',
+        'ops/skills/creative/nora-cardforge/tests/smoke.js', 'ops/skills/creative/nora-cardforge/agents/openai.yaml',
     ];
-    const generated = ['app/engine/sillytavern/public/dist/nora/entry.js', 'app/engine/sillytavern/dist/_webpack/output/vendor.js'];
+    const generated = ['app/engine/sillytavern/public/dist/nora/entry.js', 'app/engine/sillytavern/dist/_webpack/output/vendor.js', 'nora-mcp/dist/server.js'];
     for (const file of [...retained, ...excluded, ...generated]) {
         fs.mkdirSync(path.dirname(path.join(stage, file)), { recursive: true });
         fs.writeFileSync(path.join(stage, file), '// fixture');

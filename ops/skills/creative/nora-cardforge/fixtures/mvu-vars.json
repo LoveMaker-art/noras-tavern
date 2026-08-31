@@ -1,0 +1,7 @@
+{
+  "variables": [
+    { "group": "主角", "field": "境界", "type": "string", "default": "练气一层", "description": "update when cultivation realm changes" },
+    { "group": "主角", "field": "灵力", "type": "number", "default": "0", "min": 0, "max": 100, "clamp": true },
+    { "group": "世界", "field": "地点", "type": "string", "default": "未知" }
+  ]
+}

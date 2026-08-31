@@ -1,0 +1,30 @@
+{
+  "name": "nora-mcp",
+  "version": "0.3.1",
+  "private": true,
+  "type": "module",
+  "description": "Single MCP control plane for Nora Tavern, including Nora product controls and SillyTavern core controls.",
+  "bin": {
+    "nora-mcp": "./dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:integration": "npm run build && node --test tests/integration/*.test.mjs"
+  },
+  "files": ["dist", "README.md", "npm-shrinkwrap.json"],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "yaml": "2.9.0",
+    "zod": "3.25.76"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.1",
+    "typescript": "5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

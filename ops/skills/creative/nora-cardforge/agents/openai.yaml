@@ -1,0 +1,7 @@
+interface:
+  display_name: "Nora CardForge"
+  short_description: "Build and validate SillyTavern character cards"
+  default_prompt: "Use $nora-cardforge to create and validate a SillyTavern character card from my brief."
+
+policy:
+  allow_implicit_invocation: true

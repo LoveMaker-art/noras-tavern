@@ -9,7 +9,9 @@ Nora's product layer and deployment runtime for complex Tavern cards.
 - `local-state/`: private, Git-ignored runtime snapshot used to reproduce the current worlds and installed extensions locally.
 - `release/`: generated, Git-ignored production archives and their integrity manifest.
 - `story-profile/`: authoritative Story Profile source synchronized into the Tavern release snapshot; included in this repository, not a submodule.
-- `../st-mcp/`: independent MCP control and indexing project for the embedded SillyTavern engine.
+- `nora-mcp/`: the Hermes-facing MCP source, locked dependencies and integration tests; no sibling repository required.
+- `ops/skills/`: four canonical Hermes skills, CardForge source, and the managed Tavern AGENTS block.
+- `ops/updater/`: pinned full-bundle review, installation, recovery and MCP discovery checks.
 
 ## Development Rules
 
@@ -78,7 +80,7 @@ checks production dependency advisories, runs tests/lint/build/contracts and the
 workflow gate, then archives explicit file lists. A nonzero security audit blocks
 stable packaging; unresolved advisories are not silently accepted.
 
-Each uniquely named directory under `release/` contains app/ops archives, a
+Each uniquely named directory under `release/` contains app/ops/nora-mcp archives, a
 source/artifact manifest and SHA-256 checksums. Runtime data, ignored private
 files, installed dependencies and tests are not packaged. Path/content checks
 reject common secret formats; they are not a guarantee against every possible
@@ -91,3 +93,29 @@ Runtime data and model credentials are intentionally separate from source.
 Set `TAVERN_APP_DIR` to the installed `app` directory and `TAVERN_STATE_DIR` to
 a persistent directory outside it; lifecycle commands are provided by
 `app/native_lifecycle.py`. Never distribute an author's live state directory.
+
+## Full updates
+
+`tavern-release/v2` binds all three archives and five delivery concerns to one
+source commit/digest: Tavern, Story Profile, MCP, skills and managed AGENTS.
+Use Hermes' Python interpreter (PyYAML is required), Node 20+ and npm:
+
+```sh
+python3 ops/updater/update.py --hermes-home /opt/data review --release-dir /path/to/bundle --manifest-sha256 <sha256>
+python3 ops/updater/update.py --hermes-home /opt/data apply --transaction <review-path> --expected-plan <digest> --confirm
+```
+
+Review is required before apply. Candidate bundles require explicitly authorized
+testing and `--allow-candidate`. Backups/receipts are private and remain on the
+installation host. Worlds, chats, keys and unrelated host configuration are not
+release payloads. Node schema-2 installations use the full updater; old Python
+data and nonstandard instance paths require a separately reviewed migration.
+
+A successful install reports `installed-awaiting-hermes-reload`: use Hermes'
+`/reload-mcp`, then a fresh session for skill/AGENTS context, and verify there.
+The updater does not re-register Liveware or restart its own parent Hermes.
+See [compatibility and recovery](ops/skills/system/tavern-updater/references/release-compatibility.md).
+
+Pushing this branch does not publish a GitHub Release or enable an old updater to
+download new artifacts. The initial adoption entrypoint is this repository's
+reviewed `ops/updater/update.py`; later installs use the installed updater skill.

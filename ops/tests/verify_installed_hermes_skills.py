@@ -64,7 +64,7 @@ def main():
                 result = json.loads(skill_view(name=name, file_path=relative))
                 assert result.get("success"), f"Cannot load {name}/{relative}"
                 refs.append(relative)
-            assert len(refs) == {"tavern": 4, "tavern-ops": 2, "tavern-updater": 1}[name], refs
+            assert len(refs) == {"tavern": 5, "tavern-ops": 2, "tavern-updater": 1, "nora-cardforge": 7}[name], refs
             checked[name] = {"frontmatter": True, "unique": True, "references": sorted(refs)}
         assert not set(install.RETIRED).intersection(names), "Retired skills remain in index"
         context = build_context_files_prompt(cwd=str(home), skip_soul=True)

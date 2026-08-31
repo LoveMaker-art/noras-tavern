@@ -1,0 +1,17 @@
+{
+  "name": "nora-cardforge",
+  "version": "0.3.0",
+  "noraAdapterRevision": "hermes-mcp-20260831",
+  "description": "Hermes-native no-UI character card forge for Nora.",
+  "license": "GPL-3.0-or-later",
+  "type": "commonjs",
+  "bin": {
+    "nora-cardforge": "scripts/nora-cardforge.js"
+  },
+  "scripts": {
+    "test": "node tests/smoke.js && node --test tests/prepare-import.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

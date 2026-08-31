@@ -51,6 +51,9 @@ function classifyRole(path) {
     if (path === 'CONTEXT.md' || path.startsWith('docs/adr/') || path.startsWith('docs/architecture/')) return 'architecture-documentation';
     if (path.includes('/tests/') || path.startsWith('tests/')) return 'test';
     if (path.startsWith('story-profile/')) return 'story-profile-source';
+    if (path.startsWith('nora-mcp/')) return 'nora-mcp-source';
+    if (path.startsWith('ops/skills/')) return 'hermes-skill-source';
+    if (path.startsWith('ops/updater/')) return 'full-release-updater';
     if (path.startsWith('app/story_profile_runtime/')) return 'generated-profile-runtime';
     if (path.startsWith('app/engine/sillytavern/public/dist/nora/') || path === 'app/engine/sillytavern/public/lib-core.js') return 'generated-runtime';
     if (path.startsWith('app/engine/sillytavern/build/') || path.endsWith('webpack.nora.config.mjs') || path.endsWith('webpack.config.js')) return 'build-tool';

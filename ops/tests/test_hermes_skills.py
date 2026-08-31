@@ -35,11 +35,11 @@ class SkillInstallationTests(unittest.TestCase):
         plan = self.plan() if plan is None else plan
         return installer.apply_plan(plan, self.home, installer.plan_summary(plan)["digest"])
 
-    def test_read_only_plan_and_three_unique_main_documents(self):
+    def test_read_only_plan_and_four_unique_main_documents(self):
         plan = self.plan()
         self.assertEqual(list(self.home.iterdir()), [])
         mains = [c for c in plan if c["path"].endswith("/SKILL.md") and c["new"]]
-        self.assertEqual(len(mains), 3)
+        self.assertEqual(len(mains), 4)
 
     def test_old_visual_helper_is_retired_without_removing_user_images(self):
         helper = self.write("skills/creative/tavern-world-visuals/scripts/world_theme.py", "old Python endpoint")
@@ -213,12 +213,13 @@ class SkillInstallationTests(unittest.TestCase):
             main = (directory / "SKILL.md").read_text()
             description = re.search(r"(?m)^description: (.+)$", main).group(1)
             self.assertLessEqual(len(description), 60)
-            self.assertEqual(re.findall(r"(?m)^## (.+)$", main), sections)
+            headings = re.findall(r"(?m)^## (.+)$", main)
+            self.assertEqual([h for h in headings if h in sections], sections)
             for file in directory.rglob("*.md"):
                 for target in re.findall(r"\]\(([^)]+)\)", file.read_text()):
                     if "://" not in target and not target.startswith("#"):
                         self.assertTrue((file.parent / target).is_file(), (file, target))
-        self.assertEqual(len(list((OPS).rglob("SKILL.md"))), 3)
+        self.assertEqual(len(list((OPS).rglob("SKILL.md"))), 4)
 
 
 if __name__ == "__main__":

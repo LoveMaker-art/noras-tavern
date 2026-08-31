@@ -1,33 +1,57 @@
-# Release compatibility before execution
+# Full-release contract
 
-The existing `scripts/update.py` is a retained legacy implementation, not a
-guarantee that this Node-era installation can use its apply/rollback commands.
-Inspect it without invoking commands that download, stage, stop or replace files.
+The trusted repository is `LoveMaker-art/noras-tavern`. An explicit GitHub Release
+tag must have `release-manifest.json`, `SHA256SUMS` and all three archives. A branch
+push does not create these assets. SHA-256 binds review to selected bytes; it is
+not a publisher signature.
 
-At the 2026-08-30 skill migration, the concrete mismatches were:
+| Archive | Target below HERMES_HOME |
+| --- | --- |
+| nora-tavern-app.tar.gz | apps/tavern-runtime, including Story Profile |
+| nora-tavern-nora-mcp.tar.gz | apps/nora-mcp |
+| nora-tavern-ops.tar.gz | apps/tavern-ops; installs managed skills and AGENTS block |
 
-- The updater expected manifest.json + tavern-release.tar.gz and
-  skill-manifest.json + tavern-skill.tar.gz. The current repository packager
-  produces release-manifest.json + nora-tavern-app.tar.gz + nora-tavern-ops.tar.gz.
-- Its target set did not include the independently installed nora-mcp package.
-- Its old official-skill set and AGENTS template described retired specialist
-  workflows. Applying them would undo the three-skill routing.
-- Previous instructions disagreed on the GitHub repository. A legacy default
-  is not owner confirmation of the right channel.
-- Its local_version fallback reads tavern/SKILL.md when the runtime marker is
-  missing. Keep that skill version separate from evidence about application code.
+Supported existing layout: `apps/tavern-runtime/native-runtime.json` schema 2,
+state in `tavern-state`, engine config in `tavern-state/native-runtime/config.yaml`,
+loopback port 8799. Custom paths and old Python data are rejected before apply;
+do not force them through by changing environment variables.
 
-These are observable compatibility checks, not a permanent ban on updates.
-Before lifting the gate, establish all of the following from the actual target:
+## First adoption
 
-1. Owner-approved source and a verified manifest/artifact format accepted by
-   the installed updater; file hashes alone do not establish a trusted source.
-2. Coherent Tavern/MCP versions and a recovery plan covering both when required.
-3. The current three-skill installation map, with no retired duplicate SKILL.md
-   files, and an AGENTS update preserving unrelated owner instructions.
-4. User data and platform skills excluded from replacement; approved scope only.
-5. Applicable backup, lifecycle and health/identity validation demonstrated for
-   this layout. A backup for a Python-era deployment is not automatically valid.
+Obtain the approved repository commit through the normal trusted source channel.
+Use Hermes' Python interpreter (includes PyYAML) to run `ops/updater/update.py`
+from that reviewed checkout, outside active skill directories. Use the same
+fetch/review/apply process below. This installs the skill entrypoint and versioned
+ops implementation together. Old updater recovery records remain untouched.
+The old Python archive format is never treated as compatible.
 
-Until these checks pass, provide inspection findings and the missing prerequisite.
-Do not invent a working latest version or treat a successful --help as validation.
+## Commands
+
+Global `--hermes-home /exact/home` goes before the operation. The source and skill
+entrypoints accept the same arguments:
+
+```sh
+python scripts/update.py --hermes-home /opt/data fetch --tag <approved-tag> --destination <new-private-directory>
+python scripts/update.py --hermes-home /opt/data review --release-dir <directory> --manifest-sha256 <sha256>
+python scripts/update.py --hermes-home /opt/data apply --transaction <review-path> --expected-plan <digest> --confirm
+python scripts/update.py --hermes-home /opt/data rollback --transaction <review-path> --expected-plan <digest> --confirm
+```
+
+Review checks archives, per-file hashes, traversal, symlinks, duplicate members,
+size limits, the full inventory and current target hashes. Apply checks again.
+Only previously managed obsolete files are pruned; unknown user files remain.
+First adoption lists every overwrite but cannot infer whether a same-name source
+file is a user hotfix: inspect unexpected changes before approving.
+
+## Recovery and activation
+
+Plans, backups and receipts live under `tavern-updates-v2/review-*`, outside skill
+discovery. `receipt.json` records file intents so interrupted operations can use
+the matching rollback command. Recovery includes configuration; keep it private
+and retain the latest usable backup until acceptance.
+
+The updater restarts Tavern through its Node lifecycle and probes a fresh
+read-only MCP process. It does not restart the Hermes process executing the
+update. `installed-awaiting-hermes-reload` requires owner `/reload-mcp` and a fresh
+session for skills/AGENTS. These are distinct activation checks. Liveware bindings,
+cookies, account settings and user data are not release assets and stay in place.

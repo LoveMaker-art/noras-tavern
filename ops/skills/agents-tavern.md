@@ -9,8 +9,8 @@
   installed plugins/scripts/MVU and Story Profile. Read only its relevant reference.
 - Use `tavern-ops` for service/log/connection diagnosis and authorized restoration
   of the current installation, including when Nora MCP is unavailable.
-- Use `tavern-updater` for version review, authorized upgrades and rollback;
-  establish release compatibility before executing updater code.
+- Use `tavern-updater` for full-release review, authorized upgrades and rollback;
+  require its receipt, then distinguish installed files from Hermes MCP/context activation.
 
 Choose by the requested outcome, not by a technical word appearing in an error.
 Ordinary plugin errors do not authorize service restarts or source changes.

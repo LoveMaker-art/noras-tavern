@@ -48,7 +48,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
             if (!fs.existsSync(source) && candidate) continue;
             const stat = fs.lstatSync(source);
             if (!stat.isFile()) throw new Error(`Release source must be a regular file: ${relative}`);
-            if (['app/', 'ops/', 'story-profile/'].some(prefix => relative.startsWith(prefix))) assertSafeReleasePath(relative);
+            if (['app/', 'ops/', 'story-profile/', 'nora-mcp/'].some(prefix => relative.startsWith(prefix))) assertSafeReleasePath(relative);
             const bytes = fs.readFileSync(source);
             assertSafeReleaseContent(relative, bytes);
             hashes[relative] = digest(bytes);
@@ -58,7 +58,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
                 fs.writeFileSync(target, bytes, { mode: stat.mode & 0o777 });
             }
         }
-        return { stage, files: Object.keys(hashes), identity: { schema: 'tavern-release/v1', commit, candidate, dirty,
+        return { stage, files: Object.keys(hashes), identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes } };
     } catch (error) {
         fs.rmSync(stage, { recursive: true, force: true });
@@ -80,10 +80,17 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/skills/INSTALL.md',
         'ops/skills/agents-tavern.md',
     ]);
-    const skillRoots = ['ops/skills/creative/tavern/', 'ops/skills/creative/tavern-ops/', 'ops/skills/system/tavern-updater/'];
+    const skillRoots = ['ops/skills/creative/tavern/', 'ops/skills/creative/tavern-ops/', 'ops/skills/system/tavern-updater/', 'ops/skills/creative/nora-cardforge/'];
     const selected = new Set(sourceFiles.filter(file => (
         file.startsWith('app/') || operationFiles.has(file)
-        || skillRoots.some(root => file.startsWith(root) && (file === `${root}SKILL.md` || file.startsWith(`${root}references/`)))
+        || file.startsWith('ops/updater/')
+        || file.startsWith('ops/hooks/tavern-liveware-register/') || file === 'ops/eslint-owned.cjs'
+        || ['nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md'].includes(file)
+        || skillRoots.some(root => file.startsWith(root) && (
+            file === `${root}SKILL.md` || file.startsWith(`${root}references/`)
+            || (root.includes('nora-cardforge/') && !['tests/', 'agents/'].some(exclude => file.startsWith(root + exclude)))
+            || file === 'ops/skills/system/tavern-updater/scripts/update.py'
+        ))
     )
         && !file.startsWith('app/engine/sillytavern/tests/')
         && !file.startsWith('app/tests/')
@@ -99,6 +106,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     }
     visit('app/engine/sillytavern/public/dist/nora');
     visit('app/engine/sillytavern/dist/_webpack/output');
+    visit('nora-mcp/dist');
     for (const relative of selected) {
         assertSafeReleasePath(relative);
         assertSafeReleaseContent(relative, fs.readFileSync(path.join(stage, relative)));

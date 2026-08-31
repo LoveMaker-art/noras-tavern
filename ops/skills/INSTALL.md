@@ -1,6 +1,6 @@
 # Hermes skill installation
 
-This is the canonical source of three skills, not a directory to unpack beneath
+This is the canonical source of four skills, not a directory to unpack beneath
 an already installed `tavern` skill. Hermes recursively discovers `SKILL.md`;
 hidden backup directories and nested specialists can create ambiguous names.
 
@@ -9,18 +9,23 @@ hidden backup directories and nested specialists can create ambiguous names.
 | creative/tavern | skills/creative/tavern |
 | creative/tavern-ops | skills/creative/tavern-ops |
 | system/tavern-updater | skills/system/tavern-updater |
+| creative/nora-cardforge | skills/creative/nora-cardforge (instructions, scripts, source and licenses) |
 | agents-tavern.md | managed Tavern block in AGENTS.md |
 | ../scripts/profile_memory.py | skills/creative/tavern/scripts/profile_memory.py |
 
-The existing Tavern/MCP application, updater implementation, platform/custom
-skills and user data stay in place. The offline profile maintenance helper is
-relocated to one canonical script; daily agent operations still use MCP. This
-does not install a fresh application. Old updater compatibility remains gated
-in its skill.
+For a complete application update use `ops/updater/update.py` and a pinned v2
+bundle: it installs Tavern/Story Profile, MCP, ops, all four skills and merged
+AGENTS in one transaction. It also installs the new updater entrypoint and its
+implementation together. See the updater skill's release-compatibility reference.
+
+The standalone skills installer below updates instructions, CardForge and the
+profile helper only; it is not a full application installer. It retains an old
+updater entrypoint until the new ops implementation exists. Platform/custom
+skills and user data stay in place.
 
 ## Inspect, then explicitly apply
 
-On the target host, stage `ops/skills` and `ops/scripts/profile_memory.py` with
+On the target host, stage the complete `ops/skills` and `ops/scripts/profile_memory.py` with
 their sibling layout outside every active skill discovery root.
 Resolve HERMES_HOME and the gateway's **logical** working directory first; do not
 infer AGENTS lookup from the process cwd. On the inspected installation those
@@ -39,7 +44,7 @@ changes, use the same command with `--apply --expected-plan <returned-digest>`.
 Re-plan if any source or target has changed. A custom AGENTS location can be
 selected with `--agents-path`, after confirming the installed loader reads it.
 
-The installer replaces only its explicit instruction files and recognized
+The installer replaces only its explicit skill files and recognized
 legacy Tavern sections. It retires the six old specialist entry points, the
 nested Story Profile entry and known `.tavern-pre-*` duplicate entries. The two
 old `profile_memory.py` copies under the retired Story Profile skill directories
@@ -56,8 +61,8 @@ unchanged installation is a no-op. Do not replace whole skill folders.
 
 ## Verify the installed host, not just Markdown
 
-1. Use the installed Hermes frontmatter validator on the three main documents.
-2. Check `skills_list` and `skill_view`: each of the three names resolves once,
+1. Use the installed Hermes frontmatter validator on the four main documents.
+2. Check `skills_list` and `skill_view`: each of the four names resolves once,
    old entry names are absent, and each referenced file loads successfully.
 3. Inspect context loading at the resolved gateway cwd: the Tavern managed block
    must appear and unrelated instructions must remain. Do not dump identity or

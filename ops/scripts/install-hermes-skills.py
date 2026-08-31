@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install Tavern's three instruction skills and canonical profile maintenance helper; default is a read-only plan."""
+"""Install Tavern's four skills and helpers; default is a read-only plan."""
 
 import argparse
 import hashlib
@@ -10,7 +10,7 @@ import re
 import tempfile
 
 
-SKILLS = ("creative/tavern", "creative/tavern-ops", "system/tavern-updater")
+SKILLS = ("creative/tavern", "creative/tavern-ops", "system/tavern-updater", "creative/nora-cardforge")
 RETIRED = (
     "tavern-world", "tavern-runtime-plugins", "tavern-continuity",
     "tavern-story-profile", "tavern-frontend", "tavern-world-visuals",
@@ -108,7 +108,7 @@ def skill_name(path):
     return match.group(1) if match else None
 
 
-def build_plan(source, home, agents_path=None):
+def build_plan(source, home, agents_path=None, *, full_release=False):
     source, home = Path(source).absolute(), Path(home).absolute()
     root = home / "skills"
     if source == root or root in source.parents:
@@ -128,10 +128,18 @@ def build_plan(source, home, agents_path=None):
             raise ValueError(f"Missing canonical skill: {rel}")
         if skill_name(directory / "SKILL.md") != rel.split("/")[-1]:
             raise ValueError(f"Canonical skill name mismatch: {rel}")
-        for file in sorted(directory.rglob("*.md")):
+        for file in sorted(directory.rglob("*")):
+            if not file.is_file():
+                continue
+            if (rel == "system/tavern-updater" and file.relative_to(directory).as_posix() == "scripts/update.py"
+                    and not full_release and not (home / "apps/tavern-ops/updater/update.py").is_file()):
+                # A skills-only refresh cannot install a launcher whose runtime
+                # is absent. First full-release adoption installs both together.
+                continue
             # macOS archives can carry AppleDouble ._*.md sidecars; they are
             # metadata, never instructions or supporting references.
-            if any(part.startswith(".") for part in file.relative_to(directory).parts):
+            if any(part.startswith(".") or part in ("tests", "agents", "node_modules", "__pycache__")
+                   for part in file.relative_to(directory).parts):
                 continue
             if file.name == "SKILL.md" and file != directory / "SKILL.md":
                 raise ValueError(f"Nested canonical skill: {file}")

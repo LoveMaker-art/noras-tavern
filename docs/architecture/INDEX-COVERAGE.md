@@ -8,7 +8,8 @@ ordinary source, not a submodule. See [the current audit](MONOREPO-RELEASE-20260
 The dated sections below are historical evidence, not the current deployment state.
 
 Codebase MCP project `nora-release-20260831` was rebuilt in full mode against the
-isolated candidate: 247333 nodes / 329871 edges at the code refresh. Generated
+full-delivery candidate: 248582 nodes / 334721 edges at the code refresh. It now
+includes same-repository Nora MCP, CardForge and the full-release updater. Generated
 bundles, installed dependencies and the managed Helper/MVU vendor trees remain
 excluded. Graph totals include third-party code and do not prove semantic coverage
 of every file or arbitrary card script. Exact source searches supplement the graph.
@@ -16,7 +17,7 @@ of every file or arbitrary card script. Exact source searches supplement the gra
 The retired `ops/scripts/tavern_cli.py` and `native_tavern.py` definitions are absent
 from the refreshed graph and filesystem; negative tests still name them intentionally.
 `project-index.json` is regenerated for the candidate and now classifies canonical
-Story Profile source and its generated Python/adapter snapshot separately. The
+Story Profile, MCP, Hermes skills and updater source separately. The
 snapshot manifest remains authoritative for generated Actor UI files.
 
 

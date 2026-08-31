@@ -1,0 +1,32 @@
+{
+  "spec": "chara_card_v2",
+  "spec_version": "2.0",
+  "data": {
+    "name": "测试角色",
+    "description": "这是一个用于 Nora CardForge CLI 烟测的角色。她拥有足够长的描述字段，方便基础诊断通过最低长度检查。",
+    "personality": "冷静，直接，重视约定。",
+    "scenario": "测试场景。",
+    "first_mes": "你推开门时，她已经坐在桌边等你。桌面上放着一张写满变量路径的纸。",
+    "mes_example": "",
+    "creator_notes": "",
+    "system_prompt": "",
+    "post_history_instructions": "",
+    "tags": [],
+    "creator": "nora",
+    "character_version": "1.0",
+    "alternate_greetings": [],
+    "extensions": {
+      "talkativeness": "0.5",
+      "fav": false,
+      "world": "",
+      "depth_prompt": { "prompt": "", "depth": 4, "role": "system" },
+      "regex_scripts": [],
+      "tavern_helper": { "scripts": [], "variables": {} }
+    },
+    "group_only_greetings": [],
+    "character_book": {
+      "name": "",
+      "entries": []
+    }
+  }
+}

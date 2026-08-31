@@ -336,10 +336,13 @@ class NativeRuntime:
             target = extension_target / name
             shutil.rmtree(target, ignore_errors=True)
             shutil.copytree(source, target)
-        config = render_native_config(
-            (self.engine_root / "default/config.yaml").read_text(encoding="utf-8")
-        )
-        _atomic_text(self.config_path, config, mode=0o600)
+        # Initial installation owns defaults; subsequent starts/updates preserve
+        # the operator's settings instead of silently resetting config.yaml.
+        if not self.config_path.exists():
+            config = render_native_config(
+                (self.engine_root / "default/config.yaml").read_text(encoding="utf-8")
+            )
+            _atomic_text(self.config_path, config, mode=0o600)
         return {
             "extensions": list(MANAGED_EXTENSIONS),
             "engine": str(self.engine_root),
@@ -368,10 +371,11 @@ class NativeRuntime:
         finally:
             log.close()
 
-    def start(self, run_id="production", port=8799, data_root=None):
+    def start(self, run_id="production", port=8799, data_root=None, *, assets_prepared=False):
         self.verify_install()
         native_data = Path(data_root or self.native_data_root)
-        self.sync_assets(native_data)
+        if not assets_prepared:
+            self.sync_assets(native_data)
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         native_pid = self._read_pid(run_dir / "native.pid", "server.js")

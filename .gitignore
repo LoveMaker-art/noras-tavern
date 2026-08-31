@@ -19,6 +19,8 @@ local-state/**
 *.token
 *.pyc
 __pycache__/
+nora-mcp/dist/
+nora-mcp/docs/upstream-st-index.*
 .env
 .env.*
 secrets.json*

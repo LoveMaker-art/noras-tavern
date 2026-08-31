@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <style>
+    body { margin: 0; padding: 0; }
+    .panel { font-family: sans-serif; border: 1px solid #999; padding: 8px; }
+  </style>
+  <script type="module">
+    function populateCharacterData() {
+      const all_variables = getAllVariables();
+      $("#realm").text(_.get(all_variables, "stat_data.主角.境界", "--"));
+      $("#mana").text(_.get(all_variables, "stat_data.主角.灵力", 0));
+      $("#place").text(_.get(all_variables, "stat_data.世界.地点", "--"));
+    }
+    async function init() {
+      await waitGlobalInitialized("Mvu");
+      populateCharacterData();
+      eventOn(Mvu.events.VARIABLE_UPDATE_ENDED, populateCharacterData);
+    }
+    $(errorCatched(init));
+  </script>
+</head>
+<body>
+  <div class="panel">
+    <span id="realm">--</span>
+    <span id="mana">0</span>
+    <span id="place">--</span>
+  </div>
+</body>
+</html>

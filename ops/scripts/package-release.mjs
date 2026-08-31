@@ -21,6 +21,13 @@ try {
     // must not silently bypass unresolved production dependency advisories.
     if (!candidate) run('npm', ['audit', '--omit=dev', '--audit-level=moderate']);
     run('npm', ['run', 'check:story-profile-source']);
+    const mcp = path.join(stage, 'nora-mcp');
+    run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
+    run('npm', ['test'], mcp);
+    run('npm', ['run', 'test:integration'], mcp, { NORA_TAVERN_SOURCE: engine });
+    run('npm', ['test'], path.join(stage, 'ops/skills/creative/nora-cardforge'));
+    run('python3', ['-m', 'unittest', 'discover', '-s', 'ops/tests'], stage, { PYTHONDONTWRITEBYTECODE: '1' });
+    if (!candidate) run('npm', ['audit', '--omit=dev', '--audit-level=moderate'], mcp);
     run('python3', ['-m', 'unittest', 'discover', '-s', 'story-profile/tests'], stage,
         { PYTHONDONTWRITEBYTECODE: '1' });
     run('npm', ['run', 'test:nora']);
@@ -36,16 +43,27 @@ try {
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
     const checksums = [];
-    for (const part of ['app', 'ops']) {
+    identity.archives = {};
+    for (const part of ['app', 'ops', 'nora-mcp']) {
         const list = path.join(stage, `${part}-members.txt`);
         fs.writeFileSync(list, members.filter(file => file.startsWith(`${part}/`)).join('\n') + '\n');
         const name = `nora-tavern-${part}.tar.gz`;
         run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
-        checksums.push(`${digest(fs.readFileSync(path.join(release, name)))}  ${name}`);
+        const sha256 = digest(fs.readFileSync(path.join(release, name)));
+        identity.archives[part] = { name, sha256 };
+        checksums.push(`${sha256}  ${name}`);
     }
     const profile = JSON.parse(fs.readFileSync(path.join(stage, 'app/story_profile_runtime/manifest.json')));
     identity.storyProfile = { sourceRevision: profile.sourceRevision, manifestSha256: digest(JSON.stringify(profile)) };
     identity.generatedAt = new Date().toISOString();
+    identity.versions = {
+        tavern: fs.readFileSync(path.join(stage, 'app/.tavern-release-version'), 'utf8').trim(),
+        mcp: JSON.parse(fs.readFileSync(path.join(mcp, 'package.json'))).version,
+        storyProfile: profile.sourceRevision,
+        skills: Object.fromEntries(['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
+            .map(name => [name, digest(fs.readFileSync(path.join(stage, 'ops/skills', name, 'SKILL.md')))])),
+        agents: digest(fs.readFileSync(path.join(stage, 'ops/skills/agents-tavern.md'))),
+    };
     identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);

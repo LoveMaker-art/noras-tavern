@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Review, upgrade and roll back verified Tavern releases.
-version: 1.24.11
+version: 2.0.0
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -9,82 +9,75 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: mcp-workflows-20260830
+    revision: full-release-v2-20260831
     requires_tools: [terminal]
 ---
 
-# Tavern Updater Skill
+# Tavern Updater
 
-Handle version review, authorized upgrades and release rollback. For restoration
-of the current running installation use `tavern-ops`. For daily product operations
-use `tavern`. Checking a version does not authorize updating this skill or executing
-a downloaded bootstrap.
+Update Node Tavern as one reviewed release: Tavern (including Story Profile),
+Nora MCP, operational scripts, four skills and the managed Tavern AGENTS block.
+Use `tavern-ops` for restoring the current version without upgrading.
 
 ## When to Use
 
-Use for requested version checks, release review, upgrade or release rollback,
-not for ordinary plugin toggles or restarting the current version.
+Use for requested release review, upgrade or rollback. Version inspection alone
+does not authorize installation, a restart or executing downloaded code.
 
 ## Prerequisites
 
-Read [release compatibility](references/release-compatibility.md) before any
-updater command. The installed legacy updater is not yet verified against the
-current Node Tavern + independent Nora MCP release layout. Keep its code and
-recovery records, but do not run apply/rollback on this installation merely
-because those subcommands exist. Report the concrete mismatch as blocked.
-
-Use the existing Hermes `read_file`, `search_files` and `terminal` tools and the
-installed updater, not an invented MCP deployment tool. An owner-approved
-release source and compatible artifacts are prerequisites to applying a version.
+Read [release compatibility](references/release-compatibility.md) to resolve the
+installed layout, trusted source, first updater adoption and activation steps.
+Use Hermes' Python environment, Node 20+ and npm. Preserve the existing MCP
+permission mode and tool allowlist.
 
 ## How to Run
 
-Load with `skill_view(name="tavern-updater")` or `/tavern-updater <request>`.
-Inspect the installed updater and release metadata through `read_file` and
-`search_files`. After compatibility is established, invoke supported updater
-commands through `terminal`. Until then, perform inspection only; neither
-`check` nor `review` is a harmless --help equivalent: both download artifacts.
+Use Hermes `terminal` and this skill's `scripts/update.py`. Inspect its `--help`.
+An old Python-era updater is not this implementation; use the reviewed repository's
+`ops/updater/update.py` once to adopt it. A GitHub branch is source, not a published
+release asset. If a tag has no full bundle, report that missing input.
 
 ## Quick Reference
 
-| Request | Required result before proceeding |
+| Operation | Required evidence |
 | --- | --- |
-| Check/review | Trusted source, distinct installed versions and compatible release format |
-| Apply | Reviewed unchanged target plus explicit authorization and usable recovery |
-| Roll back | Backup matching this installation and all affected components |
+| `fetch` | Explicit approved tag; downloads only from the project GitHub release |
+| `review` | Pinned manifest SHA-256; returns transaction and plan digest; live files unchanged |
+| `apply` | Owner approval, same transaction and expected plan digest, `--confirm` |
+| `rollback` | Matching transaction, original plan digest, owner approval and `--confirm` |
 
 ## Procedure
 
-1. Identify the installed application, MCP and skill revisions separately;
-   a skill frontmatter version is not evidence of the application's version.
-2. Establish the owner-approved release source and verify the target manifest,
-   artifacts, checksums and current/target format compatibility. If sources
-   conflict or coverage is incomplete, stop before running release code.
-3. With a compatible updater, use its existing review/report procedure. Summarize
-   versions, affected components, conflicts, data preservation and recovery path.
-   Review may download artifacts/create staging; disclose that if relevant.
-4. Wait for explicit approval of the actual version-changing operation. Reuse
-   only the reviewed, unchanged target and installation state.
-
-5. For approved apply/rollback, follow the transaction and verification below.
+1. Resolve the exact Hermes home and app/MCP versions. Verify the Node schema-2
+   layout. Legacy Python installations need a separate data migration.
+2. Fetch the approved tag or use a verified local bundle. Run `review` with its
+   directory and manifest SHA-256. Candidate bundles require explicit test
+   authorization and `--allow-candidate`; never present them as stable releases.
+3. Summarize versions, changed files, downtime, preserved data and recovery path.
+   Pause chats before authorized apply. Reuse the returned transaction and digest;
+   if preconditions changed, review again instead of overwriting new local work.
+4. Read the receipt. `installed-awaiting-hermes-reload` means installed files and
+   a fresh MCP probe passed, not that the gateway switched its existing MCP process.
+5. Have the owner run Hermes `/reload-mcp`, including its confirmation. Verify
+   tools through the actual gateway. Use a fresh session for changed skills and
+   AGENTS context; preserve history. Report these activation checks separately.
 
 ## Pitfalls
 
-Once compatibility and authorization are established, use the verified updater's
-native transaction: targeted backup, installation, health/identity checks and
-its defined recovery. A failed recovery must be reported, not called successful.
-Rollback must match the actual installed version and backup scope; it cannot
-restore only Tavern while leaving an incompatible MCP or older skill routing.
+Review creates private staging but leaves active files unchanged. Apply prepares
+npm dependencies before stopping Tavern, backs up managed files, then installs
+and checks health. Failures restore the prior release; inspect any recovery error.
+Concurrent modifications block rollback instead of overwriting them.
 
-Preserve user data, identity, credentials, unrelated skills and host configuration.
-No git pull, downloaded shell pipeline or generic filesystem replacement is a
-fallback for an unsupported release format. Adapting the release machinery is
-separate engineering work, not an implicit step of checking for updates.
+Worlds, chats, keys, custom skills and instructions outside the managed AGENTS
+block are preserved. The updater does not re-register Liveware, replace the whole
+Hermes home or migrate Python data. Recovery contains private configuration: keep
+it on the host outside skills discovery.
 
 ## Verification
 
-Read the installed updater's receipt and verify the actual application/MCP
-versions, health, instance identity and three-skill loading after a compatible
-transaction. A help command or successful download proves none of those effects.
-When the compatibility gate fails, report that no update was applied and the
-specific unmet check; do not claim this skill makes the old updater compatible.
+Require the receipt, matching installed hashes, new Tavern process health,
+Story Profile route and fresh read-only MCP discovery. Then verify Hermes' reloaded
+MCP and four unique skills (`tavern`, `tavern-ops`, `tavern-updater`, `nora-cardforge`)
+in the gateway. Pending reload or failed recovery is not completion.
