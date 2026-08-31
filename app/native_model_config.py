@@ -147,8 +147,13 @@ class NativeSettingsClient:
         return secret_id
 
 
-def configure(config_path, settings_path, marker_path, base_url):
-    config = load_model_config(config_path)
+def configure(config_path, settings_path, marker_path, base_url, *, allow_unconfigured=False):
+    try:
+        config = load_model_config(config_path)
+    except (NativeModelConfigError, FileNotFoundError):
+        if not allow_unconfigured:
+            raise
+        return {"ok": True, "changed": False, "configured": False, "reason": "target-model-unconfigured"}
     fingerprint = public_fingerprint(config)
     marker_path = Path(marker_path)
     try:
@@ -180,9 +185,11 @@ def main():
     parser.add_argument("--settings", required=True)
     parser.add_argument("--marker", required=True)
     parser.add_argument("--base-url", default="http://127.0.0.1:8799")
+    parser.add_argument("--allow-unconfigured", action="store_true",
+                        help="Allow startup without inventing a model when the target has no complete configuration")
     args = parser.parse_args()
     print(json.dumps(configure(
-        args.config, args.settings, args.marker, args.base_url
+        args.config, args.settings, args.marker, args.base_url, allow_unconfigured=args.allow_unconfigured
     ), ensure_ascii=False))
 
 

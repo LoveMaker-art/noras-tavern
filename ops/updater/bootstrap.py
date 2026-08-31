@@ -181,8 +181,14 @@ def main():
             # npm/lifecycle may emit progress before the CLI result. The durable
             # receipt, not incidental stdout formatting, is the source of truth.
             receipt = json.loads((Path(review['transaction']) / 'receipt.json').read_text())
+            from completion import installation_guidance
+            result.update(installation_guidance(receipt, isolated=args.isolated_test_port is not None))
             result['apply'] = {'status': receipt['status'], 'commit': receipt['commit']}
         print(json.dumps(result, ensure_ascii=False))
+        if result.get('restartCommand'):
+            # Keep stdout machine-readable; make the owner's last terminal
+            # instruction visible without requiring them to decode the receipt.
+            print(result['next_step'], file=sys.stderr)
 
 
 if __name__ == '__main__':

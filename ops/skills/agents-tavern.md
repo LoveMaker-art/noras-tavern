@@ -12,7 +12,8 @@
 - Use `tavern-updater` for full-release review, authorized upgrades and rollback;
   require its compatibility checks and receipt; distinguish installed files,
   migrated user data and Hermes MCP/context activation. For post-update activation,
-  follow its owner-confirmation reference; a generic “确定” is not update authority.
+  follow its owner-activation reference and relay the native `/restart` instruction
+  after successful installation; do not restart on the owner's behalf.
 
 Choose by the requested outcome, not by a technical word appearing in an error.
 Ordinary plugin errors do not authorize service restarts or source changes.

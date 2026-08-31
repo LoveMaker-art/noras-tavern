@@ -60,7 +60,7 @@ fi
   --config "${HERMES_CONFIG_PATH:-$HERMES_HOME/config.yaml}" \
   --settings "$TAVERN_STATE/native/default-user/settings.json" \
   --marker "$TAVERN_STATE/native-runtime/model-config.json" \
-  --base-url "http://127.0.0.1:$NATIVE_PORT"
+  --base-url "http://127.0.0.1:$NATIVE_PORT" --allow-unconfigured
 
 cd "$PLUGIN"
 HERMES_HOME="$HERMES_HOME" "$PY" -c \

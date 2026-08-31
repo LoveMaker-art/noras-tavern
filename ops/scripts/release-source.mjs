@@ -12,9 +12,10 @@ export function assertSafeReleasePath(relative) {
         throw new Error(`Unsafe release path: ${relative}`);
     }
     const defaultTemplate = ['app/engine/sillytavern/default/config.yaml', 'app/engine/sillytavern/default/content/settings.json'].includes(relative);
-    if (parts.some(part => ['.git', 'node_modules', 'local-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
+    if (parts.some(part => ['.git', 'node_modules', 'local-state', 'tavern-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
         || parts.some(part => /^\.env(?:\.|$)/.test(part))
         || (!defaultTemplate && /(?:^|\/)(?:secrets\.json|config\.yaml|settings\.json|cookie-secret\.txt|apps\.json)$/.test(relative))
+        || /(?:^|\/)(?:model_configs\.json|model-input\.json|secrets\.json)(?:\.[^/]*)?$/.test(relative)
         || /\.(?:log|pyc|pem|key)$/.test(relative)) {
         throw new Error(`Private/runtime file is forbidden in a release: ${relative}`);
     }
@@ -23,6 +24,25 @@ export function assertSafeReleasePath(relative) {
 export function assertSafeReleaseContent(relative, bytes) {
     if (!/\.(?:js|mjs|cjs|json|ya?ml|py|sh|env|md|txt)$/.test(relative)) return;
     const content = bytes.toString('utf8');
+    if (relative === 'app/engine/sillytavern/default/content/settings.json') {
+        // Inspect the template itself, not only key prefixes: private provider
+        // keys need not look like sk-*. Generation parameters and API support
+        // code are not saved account/model selections and remain available.
+        const modelField = /^(?:.*_model|model_.*|model|models|modelProfiles|hermesModel|activeModel|api_server(?:_.*)?|apiUrl|apiKey|api_key|custom_url|reverse_proxy|proxy_password|api_url_.*|secretId|connectionProfiles|selectedProfile)$/;
+        const empty = value => value == null || value === '' || value === false
+            || (typeof value === 'object' && Object.keys(value).length === 0);
+        function inspect(value, location = '') {
+            if (!value || typeof value !== 'object') return;
+            for (const [key, item] of Object.entries(value)) {
+                const field = location ? `${location}.${key}` : key;
+                if (modelField.test(key) && !empty(item)) {
+                    throw new Error(`Model configuration is forbidden in release defaults: ${field}`);
+                }
+                inspect(item, field);
+            }
+        }
+        inspect(JSON.parse(content));
+    }
     if (/-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/.test(content)
         || /\b(?:sk-[A-Za-z0-9_-]{32,}|ghp_[A-Za-z0-9]{30,})\b/.test(content)) {
         throw new Error(`Potential credential in release file: ${relative}`);
@@ -48,7 +68,9 @@ export function createReleaseSource(root, { candidate = false } = {}) {
             if (!fs.existsSync(source) && candidate) continue;
             const stat = fs.lstatSync(source);
             if (!stat.isFile()) throw new Error(`Release source must be a regular file: ${relative}`);
-            if (['app/', 'ops/', 'story-profile/', 'nora-mcp/'].some(prefix => relative.startsWith(prefix))) assertSafeReleasePath(relative);
+            // GitHub source exports must be as clean as runtime archives. The
+            // sole local-state member is documentation, never installation data.
+            if (relative !== 'local-state/README.md') assertSafeReleasePath(relative);
             const bytes = fs.readFileSync(source);
             assertSafeReleaseContent(relative, bytes);
             hashes[relative] = digest(bytes);

@@ -1,12 +1,12 @@
 {
     "firstRun": true,
     "username": "User",
-    "api_server": "http://127.0.0.1:5000/api",
+    "api_server": "",
     "preset_settings": "RecoveredRuins",
     "user_avatar": "user-default.png",
     "amount_gen": 350,
     "max_context": 8192,
-    "main_api": "koboldhorde",
+    "main_api": "openai",
     "world_info_settings": {
         "world_info": {
             "globalSelect": []
@@ -206,8 +206,12 @@
         }
     },
     "extension_settings": {
-        "apiUrl": "http://localhost:5100",
+        "apiUrl": "",
         "apiKey": "",
+        "nora_ui": {
+            "modelProfiles": [],
+            "activeModel": ""
+        },
         "autoConnect": false,
         "disabledExtensions": [],
         "expressionOverrides": [],
@@ -412,7 +416,7 @@
         "top_a": 0.08,
         "typical_p": 0.975,
         "min_length": 1,
-        "model_novel": "clio-v1",
+        "model_novel": "",
         "preset_settings_novel": "Talker-Chat-Clio",
         "streaming_novel": true,
         "preamble": "[ Style: chat, complex, sensory, visceral ]",
@@ -620,12 +624,14 @@
             ]
         },
         "wi_format": "{0}",
-        "openai_model": "gpt-4-turbo",
-        "claude_model": "claude-sonnet-4-5",
-        "ai21_model": "jamba-large",
-        "openrouter_model": "OR_Website",
+        "openai_model": "",
+        "claude_model": "",
+        "ai21_model": "",
+        "openrouter_model": "",
+        "custom_model": "",
+        "custom_url": "",
         "reverse_proxy": "",
-        "chat_completion_source": "openai",
+        "chat_completion_source": "custom",
         "max_context_unlocked": false,
         "api_url_scale": "",
         "show_external_models": false,

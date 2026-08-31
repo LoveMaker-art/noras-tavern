@@ -161,6 +161,42 @@ test('an explicit Python builtin selection does not silently switch to a differe
     assert.equal(secrets.api_key_custom.find(secret => secret.active).value, 'old-test-key');
 });
 
+test('default selection uses only target Hermes configuration, never a generated Python builtin', async t => {
+    const { state, root } = await setup(t);
+    await convertPythonState(state, app, {
+        legacyModel: { provider: 'Python builtin', base_url: 'https://old.invalid/v1', api_key: 'old-key', model: 'old-model' },
+        hermesModel: { provider: 'target', base_url: 'https://target.invalid/v1', api_key: 'target-key', model: 'target-model', context: 200000, max_tokens: 10000 },
+    });
+    const settings = await readJson(path.join(root, 'settings.json'));
+    assert.deepEqual(settings.extension_settings.nora_ui.modelProfiles, []);
+    assert.equal(settings.extension_settings.nora_ui.activeModel, '');
+    assert.equal(settings.oai_settings.custom_model, 'target-model');
+    const secrets = await readJson(path.join(root, 'secrets.json'));
+    assert.deepEqual(secrets.api_key_custom.map(item => item.value), ['target-key']);
+});
+
+test('explicit old provider identical to target Hermes does not create a duplicate choice or secret', async t => {
+    const { state, root } = await setup(t);
+    await fs.writeFile(path.join(state, 'model_configs.json'), JSON.stringify({ configs: [], active: 'clawling:target-model' }));
+    const model = { provider: 'clawling', base_url: 'https://target.invalid/v1', api_key: 'target-key', model: 'target-model', context: 200000, max_tokens: 10000 };
+    await convertPythonState(state, app, { hermesModel: model, legacyModel: { ...model, base_url: model.base_url + '/' } });
+    const settings = await readJson(path.join(root, 'settings.json'));
+    assert.deepEqual(settings.extension_settings.nora_ui.modelProfiles, []);
+    assert.equal(settings.oai_settings.custom_model, 'target-model');
+    assert.equal((await readJson(path.join(root, 'secrets.json'))).api_key_custom.length, 1);
+});
+
+test('unconfigured target stays unconfigured without a built-in fallback', async t => {
+    const { state, root } = await setup(t);
+    const report = await convertPythonState(state, app);
+    const settings = await readJson(path.join(root, 'settings.json'));
+    assert.deepEqual(settings.extension_settings.nora_ui.modelProfiles, []);
+    assert.equal(settings.extension_settings.nora_ui.hermesModel, undefined);
+    assert.deepEqual(settings.oai_settings, {});
+    assert.deepEqual((await readJson(path.join(root, 'secrets.json'))).api_key_custom, []);
+    assert.ok(report.warnings.some(item => item.code === 'MODEL_CONFIGURATION_REQUIRED'));
+});
+
 test('unknown selected model and conflicting native output refuse without modifying Python records', async t => {
     const { state } = await setup(t);
     await fs.writeFile(path.join(state, 'model_configs.json'), JSON.stringify({ configs: [], active: 'missing' }));

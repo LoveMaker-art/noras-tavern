@@ -7,6 +7,7 @@ import subprocess
 import tempfile
 
 from bundle import PARTS
+from completion import installation_guidance
 from update import Updater, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
 from python_model import load_python_model
 from python_installation import python_installation
@@ -102,7 +103,8 @@ class CleanUpdater(Updater):
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
                       inactiveExtensionFiles=extension_retirements,
                       migration='Python productions -> Node Worlds on copied state; current Node state is only validated, never migrated',
-                      activation='Files install first; request transaction-bound owner activation through the Hermes bridge (first bridge load requires owner gateway activation)',
+                      activation=('Isolated rehearsal; do not restart the live gateway' if self.test_mode else
+                                  'After successful installation, send /restart in ClawChat and wait for the Hermes restart notification'),
                       maintenance='Pause chats before apply; active Python background work blocks maintenance')
         return result
 
@@ -250,8 +252,8 @@ class CleanUpdater(Updater):
                            'commit': plan['commit'], 'files': plan['files'], 'planDigest': expected,
                            'testPort': self.isolated_port if self.test_mode else None})
                 receipt.update(status='installed-awaiting-hermes-reload', verification=verification,
-                               hermesReloadRequired=True, freshSessionRequired=True,
-                               activationCommand='activation request', activationStatusCommand='activation status')
+                               hermesReloadRequired=True, freshSessionRequired=True)
+                receipt.update(installation_guidance(receipt, isolated=self.test_mode))
                 json_write(transaction / 'receipt.json', receipt)
                 return {k: v for k, v in receipt.items() if k not in ('entries', 'applied', 'restored', 'accepted')}
             except BaseException:

@@ -1,10 +1,23 @@
 import './helpers/nora-locale-fixture.mjs';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { projectTextModelChoices, projectTextModelDisplay } from '../../../native-extensions/nora-ui/model-display.js';
+import { createModelProfiles } from '../public/scripts/nora-adapters/model-profiles.js';
+
+test('a clean release template exposes no configured model in UI or model controls', () => {
+    const defaults = JSON.parse(readFileSync(new URL('../default/content/settings.json', import.meta.url), 'utf8'));
+    const uiSettings = defaults.extension_settings.nora_ui;
+    assert.deepEqual(projectTextModelChoices(uiSettings), []);
+    assert.deepEqual(projectTextModelDisplay({ nativeModel: defaults.oai_settings, uiSettings }), {
+        configured: false, source: 'none', label: '尚未配置模型', model: '',
+    });
+    const controls = createModelProfiles({ model: {}, settings: () => uiSettings, persist: async () => {} });
+    assert.deepEqual(controls.list(), []);
+});
 
 test('Hermes remains a selectable non-deletable option after custom models are added', () => {
     assert.deepEqual(projectTextModelChoices({

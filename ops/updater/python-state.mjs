@@ -244,10 +244,17 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     const configs = [...modelConfigs.configs];
     const legacyId = 'python-builtin-' + hash(selectedLegacy).slice(0, 16);
     const isLegacySelected = selectedLegacy === 'builtin' || selectedLegacy.startsWith('clawling:');
-    if (legacyModel && isLegacySelected) configs.push({ id: legacyId, name: legacyModel.provider,
+    const explicitLegacy = selectedLegacy.startsWith('clawling:') && legacyModel;
+    const legacyName = explicitLegacy ? selectedLegacy.slice(9) : '';
+    const sameAsHermes = explicitLegacy && hermesModel
+        && String(legacyModel.base_url).trim().replace(/\/+$/, '') === String(hermesModel.base_url).trim().replace(/\/+$/, '')
+        && legacyModel.api_key === hermesModel.api_key && legacyName === hermesModel.model;
+    // Generic "builtin" follows the target Hermes model. Preserve a distinct
+    // explicitly selected old provider, but do not copy an identical default.
+    if (explicitLegacy && !sameAsHermes) configs.push({ id: legacyId, name: legacyModel.provider,
         base: legacyModel.base_url, key: legacyModel.api_key,
-        model: selectedLegacy.startsWith('clawling:') ? selectedLegacy.slice(9) : legacyModel.model });
-    const selected = isLegacySelected && legacyModel ? legacyId : selectedLegacy;
+        model: legacyName });
+    const selected = explicitLegacy && !sameAsHermes ? legacyId : selectedLegacy;
     const profiles = [], secrets = [];
     for (const config of configs) {
         if (!pythonId(config.id) || profiles.some(profile => profile.id === config.id)

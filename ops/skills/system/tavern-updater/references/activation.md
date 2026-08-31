@@ -1,46 +1,44 @@
 # Owner activation
 
-Installation and activation have separate receipts. After a successful apply,
-run the skill entrypoint with `activation request` in the owner's ClawChat DM.
-Use the same `--hermes-home` as installation. Hermes supplies message/session
-identity to the terminal; preserve it rather than constructing identity flags.
+## Default: Hermes' native restart command
 
-The loaded gateway module sends the prompt after the current assistant turn
-finishes. Tell the user to wait for that prompt, then end the turn. Their next
-“确定” authorizes MCP reload, skill refresh and a new session with old history
-retained. The gateway consumes this message directly. Other replies cancel the
-pending confirmation; another user/session and duplicate messages cannot approve.
-Consent expires after ten minutes. `activation status` inspects progress.
+After a successful `apply`, read the durable `receipt.json`. Only
+`installed-awaiting-hermes-reload` permits the installation-success prompt:
 
-The CLI has no confirm operation. Never fabricate the owner's response, edit a
-receipt, turn off Hermes approvals, unset its self-restart protection or invoke
-a process signal as a substitute. Request again after cancellation/expiry only
-when the owner asks to proceed. Activation is not an application reinstallation.
+> Tavern 更新已安装。请在 ClawChat 与若棠的对话中发送 `/restart`，
+> 重启 Hermes 并重新加载 MCP 和技能；等待重启成功通知后继续使用。
 
-## First installation
+The owner sends this in the ClawChat conversation, not in a terminal. The agent
+ends its turn after giving the instruction. Do not automatically restart Hermes,
+invoke process signals or fabricate the owner's command. Isolated rehearsals
+must not request a restart of the live gateway.
 
-The release installs `plugins/tavern-update-activation` and enables it without
-altering other plugins. An explicitly disabled plugin stays disabled. A running
-gateway cannot load a newly installed plugin just because its files appeared.
-`activation request` checks the live module handshake and fails if it is absent,
-stale or not the installed implementation. Have the owner activate the gateway
-from its normal management surface once, or use native `/reload-mcp` plus `/new`
-for this update. Do not promise the one-word flow on an uninitialized gateway.
-Ordinary later releases with the same bridge need no gateway restart. A changed
-bridge implementation requires the same first-load check again.
+`/restart` is Hermes' native gateway command and does not depend on the Tavern
+activation plugin already being loaded. It restarts the gateway; new gateway
+initialization reads the installed MCP configuration and skills. It retains the
+existing conversation rather than doing `/new` or deleting history.
 
-## Evidence and recovery
+Wait for Hermes' successful restart notification. Then check the actual gateway
+Nora MCP tool registry and the four canonical skills (`tavern`, `tavern-ops`,
+`tavern-updater`, `nora-cardforge`) before claiming activation verified. A healthy
+Tavern process, installed files, or a standalone MCP probe is insufficient.
+If restart fails or no notification arrives, inspect gateway logs and its actual
+service manager through `tavern-ops`; do not silently change process supervision.
+The installation receipt alone remains evidence of installation, not activation.
 
-`activation.json` is stored beside the installed transaction's `receipt.json`.
-`active` requires a fresh gateway Nora MCP connection (not the old connection
-with a matching version), the actual version/tool registry,
-all four canonical skill paths and a different Hermes session ID. It is not
-inferred from a standalone MCP probe. The next user turn builds the fresh AGENTS
-context; this receipt is not evidence of a completed model response or Tavern UI
-acceptance. `notified: true` additionally requires successful platform delivery.
+## Existing bridge requests: compatibility only
 
-If failed/interrupted, inspect this record and gateway logs before retrying.
-The updater does not automatically repeat a session reset after interruption.
-Successful activation with `notified: false` must not be activated again merely
-to deliver a message; report its existing result in the original conversation.
-If files were rolled back or superseded, the old confirmation is unusable.
+The release still supports the previously installed `activation request/status`
+commands. They are not the default post-update instruction. A newly installed or
+changed bridge cannot activate itself in an already-running gateway. Do not tell
+the owner that replying “确定” will work without a matching live bridge handshake.
+
+For an already pending request, `activation status` reads its transaction-bound
+`activation.json`. Only the owner's matching session/message can approve it;
+the CLI has no confirm operation. Never edit receipts or bypass owner checks.
+Successful native `/restart` does not fabricate a bridge `active` receipt.
+
+If a bridge operation failed/interrupted, inspect its record and gateway logs
+before retrying; never automatically repeat a session reset. An active operation
+with failed notification delivery must not be activated again just to resend a
+message. Rolled-back or superseded transactions cannot be approved.

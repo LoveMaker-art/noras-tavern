@@ -1,6 +1,8 @@
 """Old Bootstrap adoption reaches the new pinned CLI without touching runtime data."""
 import json
+import io
 import os
+from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 import subprocess
 import sys
@@ -9,6 +11,7 @@ from unittest.mock import patch
 
 import test_full_update as fixtures
 from bootstrap import installation_home
+import bootstrap
 
 
 class BootstrapTests(unittest.TestCase):
@@ -47,6 +50,8 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         review = json.loads(result.stdout)
         self.assertTrue(review['updater_installed'])
+        self.assertNotIn('restartCommand', review)
+        self.assertNotIn('/restart', review['next_step'])
         after = self.fixture.snapshot()
         for name, value in before.items():
             self.assertEqual(after[name], value, name)
@@ -77,6 +82,52 @@ class BootstrapTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('--apply requires --confirm', result.stderr)
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
+
+    def completed_bootstrap(self, *, status='installed-awaiting-hermes-reload', returncode=0, isolated=False):
+        """Real bundle/adoption; substitute only the child review/apply processes."""
+        transaction = self.home / 'tavern-updates-v2/review-completion'
+        review = {'transaction': str(transaction), 'planDigest': 'fixture-digest'}
+        def apply(command, **_kwargs):
+            self.assertIn('apply', command)
+            transaction.mkdir(parents=True, exist_ok=True)
+            (transaction / 'receipt.json').write_text(json.dumps({'status': status, 'commit': 'a' * 40}))
+            return subprocess.CompletedProcess(command, returncode, 'npm progress\n', 'fixture apply error' if returncode else '')
+        args = ['bootstrap.py', '--data-root', str(self.home), '--release-dir', str(self.fixture.release),
+                '--manifest-sha256', fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes()),
+                '--apply', '--confirm']
+        if isolated:
+            args += ['--isolated-test-port', '54321']
+        output = io.StringIO()
+        notice = io.StringIO()
+        with patch.object(sys, 'argv', args), patch.dict(os.environ, self.env), \
+             patch.object(bootstrap.subprocess, 'check_output', return_value=json.dumps(review)), \
+             patch.object(bootstrap.subprocess, 'run', side_effect=apply) as applied, \
+             redirect_stdout(output), redirect_stderr(notice):
+            bootstrap.main()
+        self.assertEqual(applied.call_count, 1, 'Bootstrap must not execute a restart')
+        result = json.loads(output.getvalue())
+        self.assertEqual(notice.getvalue(), '' if isolated else result['next_step'] + '\n')
+        return result
+
+    def test_successful_apply_replaces_stale_review_prompt_with_restart_command(self):
+        result = self.completed_bootstrap()
+        self.assertEqual(result['restartCommand'], '/restart')
+        self.assertIn('ClawChat', result['next_step'])
+        self.assertIn('/restart', result['next_step'])
+        self.assertNotIn('Review migration', result['next_step'])
+
+    def test_isolated_success_does_not_tell_owner_to_restart_live_gateway(self):
+        result = self.completed_bootstrap(isolated=True)
+        self.assertNotIn('restartCommand', result)
+        self.assertNotIn('/restart', result['next_step'])
+
+    def test_zero_exit_without_success_receipt_does_not_report_success(self):
+        with self.assertRaises(ValueError):
+            self.completed_bootstrap(status='rolled-back')
+
+    def test_failed_apply_does_not_emit_success_or_restart_prompt(self):
+        with self.assertRaisesRegex(ValueError, 'Update did not complete'):
+            self.completed_bootstrap(returncode=1)
 
     def test_existing_skill_symlink_is_rejected_before_copy(self):
         skill = self.home / 'skills/system/tavern-updater'

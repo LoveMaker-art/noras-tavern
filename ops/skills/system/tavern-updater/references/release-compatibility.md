@@ -72,10 +72,15 @@ and retain the latest usable backup until acceptance.
 The updater restarts Tavern through its Node lifecycle and probes a fresh
 read-only MCP process. It does not restart the Hermes process executing the
 update. `installed-awaiting-hermes-reload` requires [owner activation](activation.md):
-the gateway handles a transaction-bound confirmation, reloads MCP/skills and opens
-a fresh session without deleting history. First bridge loading is a separate
-owner gateway action. These are distinct activation checks. Liveware bindings,
-cookies, account settings and user data are not release assets and stay in place.
+tell the owner to send `/restart` in ClawChat and wait for Hermes' restart
+notification. It reloads the gateway without requiring an already loaded Tavern
+bridge and retains the conversation. Installation and activation are distinct
+checks. Liveware registration/bindings, cookies, account settings and user data
+are not release assets. In particular, unchanged Liveware bindings are not proof
+of correct entry routing after a Python-to-Node upgrade: the original two root
+bindings relied on forwarded-host routing, whereas Node's Story Profile entry
+uses `/_liveware/story-profile`. Verify both actual app entries independently;
+a local `/actor.html` HTTP 200 does not establish correct Liveware routing.
 
 ## Limits of this recovery
 

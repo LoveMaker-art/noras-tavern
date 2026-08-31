@@ -24,4 +24,7 @@ nora-mcp/docs/upstream-st-index.*
 .env
 .env.*
 secrets.json*
+model_configs.json*
+model-input.json*
+tavern-state/
 cookie-secret.txt

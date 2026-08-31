@@ -68,11 +68,12 @@ Bootstrap assets is not an available upgrade.
    if preconditions changed, review again instead of overwriting new local work.
 4. Read the receipt. `installed-awaiting-hermes-reload` means installed files and
    a fresh MCP probe passed, not that the gateway switched its existing MCP process.
-5. Read [owner activation](references/activation.md), then request activation in
-   the owner's ClawChat conversation. The loaded gateway bridge sends the consent
-   prompt and handles the owner's next “确定”; the agent cannot confirm it.
-   First bridge installation or a changed bridge implementation requires owner
-   gateway activation once. Report that prerequisite instead of claiming success.
+5. Follow [owner activation](references/activation.md). After successful installation,
+   tell the owner to send `/restart` in their ClawChat conversation and wait for
+   Hermes' restart notification. This is a chat command, not a terminal command;
+   the updater/agent must not execute it on the owner's behalf. Do not default
+   to the older “确定” activation-bridge flow. Isolated rehearsals require no
+   restart of the live gateway.
 
 ## Pitfalls
 

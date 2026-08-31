@@ -373,6 +373,8 @@ class Updater:
                            "transaction": transaction.name, "sourceDigest": plan["sourceDigest"], "versions": plan["versions"], "files": plan["files"]})
                 receipt.update(status="installed-awaiting-hermes-reload", verification=verification,
                                hermesReloadRequired=True, freshSessionRequired=True)
+                from completion import installation_guidance
+                receipt.update(installation_guidance(receipt))
                 json_write(transaction / "receipt.json", receipt)
                 return {k: v for k, v in receipt.items() if k not in ("actual", "applied")}
             except BaseException as error:
@@ -569,6 +571,8 @@ def main():
         else:
             result = getattr(updater, args.command)(args.transaction, args.expected_plan)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == 'apply' and result.get('restartCommand'):
+        print(result['next_step'], file=sys.stderr)
 
 
 if __name__ == "__main__":

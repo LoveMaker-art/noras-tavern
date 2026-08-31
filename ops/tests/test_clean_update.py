@@ -12,6 +12,21 @@ import tree_transaction as trees
 
 
 class CleanUpdateTests(unittest.TestCase):
+    def test_live_apply_receipt_tells_owner_to_restart_without_running_restart(self):
+        self.fixture.u = CleanUpdater(self.home, lifecycle=self.fixture.service)
+        result = self.fixture.apply(self.fixture.review())
+        self.assertEqual(result['restartCommand'], '/restart')
+        self.assertIn('/restart', result['next_step'])
+        self.assertNotIn('activationCommand', result)
+        self.assertEqual(self.fixture.service.calls, ['prepare', 'activate', 'verify'])
+        receipt = next((self.home / 'tavern-updates-v2').glob('review-*/receipt.json'))
+        self.assertEqual(json.loads(receipt.read_text())['restartCommand'], '/restart')
+
+    def test_isolated_apply_receipt_does_not_request_live_restart(self):
+        result = self.fixture.apply(self.fixture.review())
+        self.assertNotIn('restartCommand', result)
+        self.assertNotIn('/restart', result['next_step'])
+
     def test_activation_plugin_is_reviewed_installed_and_rolled_back(self):
         import yaml
         before = self.fixture.snapshot()
