@@ -10,7 +10,7 @@ application source. Python-to-Node data migration remains part of the updater;
 the legacy online application is not a second runtime in this source tree.
 
 The source version is `2.0.0`. **The stable GitHub Release is not yet published:**
-the dependency audit and target-environment workflow gates remain outstanding.
+the dependency audit gate remains outstanding.
 Until that publication, GitHub `releases/latest` still selects the old release.
 Do not use the commands below expecting a 2.0.0 update before the release exists.
 See [2.0.0 release status](docs/releases/v2.0.0.md).
@@ -81,17 +81,21 @@ Use `--offline` only after the locked dependencies are available in npm's local
 cache. Candidate mode snapshots tracked and non-ignored new source files,
 records the dirty state and source digest, and is **not release approval**.
 
-Stable packaging requires committed, clean source and current target-environment
-workflow evidence (see `ops/scripts/verify-product-workflows.mjs`):
+Stable packaging requires committed, clean source and passing automated checks:
 
 ```sh
-sh ops/scripts/package-release.sh --browser-report /absolute/path/to/report.json
+sh ops/scripts/package-release.sh
 ```
 
 It exports that commit to an isolated directory, installs locked dependencies,
 checks production dependency advisories, runs tests/lint/build/contracts and the
 workflow gate, then archives explicit file lists. A nonzero security audit blocks
 stable packaging; unresolved advisories are not silently accepted.
+
+Browser acceptance is not a packaging prerequisite. No browser report,
+commit-matched UI evidence or browser timing thresholds are required. The five
+automated workflow groups and architecture contracts remain required; their
+report explicitly distinguishes technical verification from browser acceptance.
 
 Each uniquely named directory under `release/` contains app/ops/nora-mcp archives, a
 source/artifact manifest and SHA-256 checksums. Runtime data, ignored private

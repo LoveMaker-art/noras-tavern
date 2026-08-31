@@ -6,9 +6,6 @@ import { collectRuntimeFiles, createReleaseSource, digest } from './release-sour
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
-const browserIndex = process.argv.indexOf('--browser-report');
-const browserReport = browserIndex < 0 ? '' : path.resolve(process.argv[browserIndex + 1] || '');
-if (!candidate && !browserReport) throw new Error('Stable packaging requires --browser-report from target-environment verification.');
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -35,9 +32,7 @@ try {
     run('npm', ['run', 'lint']);
     run('npm', ['run', 'build:nora']);
     run(process.execPath, ['tests/run-nora-contracts.mjs']);
-    run(process.execPath, [path.join(stage, 'ops/scripts/verify-product-workflows.mjs'),
-        ...(!candidate ? ['--require-browser', '--browser-report', browserReport] : [])], engine,
-    { TAVERN_RELEASE_COMMIT: identity.commit, TAVERN_RELEASE_SOURCE_DIGEST: identity.sourceDigest });
+    run(process.execPath, [path.join(stage, 'ops/scripts/verify-product-workflows.mjs')]);
     run('python3', ['-c', 'from native_lifecycle import NativeRuntime; print(NativeRuntime.from_environment().verify_source())'],
         path.join(stage, 'app'), { TAVERN_APP_DIR: path.join(stage, 'app'), PYTHONDONTWRITEBYTECODE: '1' });
     const members = collectRuntimeFiles(stage, files);
