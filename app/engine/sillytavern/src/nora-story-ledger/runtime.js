@@ -7,6 +7,7 @@ import { createStoryLedger, LedgerConflict } from './core.js';
 import { ledgerStatePath } from './state-file.js';
 import { requestStoryProjection } from './profile-projection.js';
 import { scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
+import { storyEntityBindings } from '../../public/scripts/nora-worlds/story-context.js';
 
 const runtimes = new Map();
 function jsonl(filePath) {
@@ -32,7 +33,8 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             if (scopeKey(scopeOf(data[0]?.chat_metadata)) !== scopeKey(scope)) {
                 throw new LedgerConflict('Story Session identity is missing or changed.', 'NORA_LEDGER_STORAGE_CONFLICT');
             }
-            return { messages: data.slice(1), entities: ['__user__'], playerName: binding.playerName, language: binding.language };
+            return { messages: data.slice(1), entities: Object.keys(binding.entityBindings), entityBindings: binding.entityBindings,
+                playerName: binding.playerName, language: binding.language };
         },
         readState: scope => fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null,
         writeState: (scope, state) => {
@@ -43,7 +45,8 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             const previous = fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null;
             fs.mkdirSync(root, { recursive: true });
             writeFileAtomicSync(statePath(scope), JSON.stringify(state), 'utf8');
-            if (state.active?.id && previous?.active?.id !== state.active.id) void requestStoryProjection(directories);
+            if ((state.active?.id && previous?.active?.id !== state.active.id)
+                || (previous?.imported?.id && !state.imported)) void requestStoryProjection(directories);
         },
         merge: input => import('./model.js').then(module => module.mergeWithActiveModel(directories, input)),
         report: (event, details) => console.info('[Story Ledger]', event, details),
@@ -60,7 +63,9 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         if (expectedPath && path.resolve(filePath) !== path.resolve(expectedPath)) {
             throw new LedgerConflict('Story Session does not own this chat.', 'NORA_LEDGER_SESSION_MISMATCH');
         }
-        const binding = { filePath, language: 'zh', playerName: String(world.persona?.name || '') };
+        const playerName = String(world.persona?.name || '');
+        const binding = { filePath, language: world.story_context?.language || 'zh', playerName,
+            entityBindings: storyEntityBindings(world.story_context, playerName) };
         bindings.set(scopeKey(scope), binding);
         return binding;
     }

@@ -39,6 +39,13 @@ execution on a page. The agent must not mark capabilities READY itself.
 
 ## Change the current world's card
 
+First inspect the World. A Python-migrated World may contain independent
+`story_context.characters`. Its Runtime Card is a narrator resource, not any one
+of those characters. The card-field controls below do not edit that cast.
+Independent cast editing currently uses the Tavern UI/World Core service; this
+MCP has no cast-write schema. Report that boundary instead of changing the
+narrator's description and claiming the participating character was updated.
+
 Use the live-page control protocol in SKILL.md:
 
 1. `cards.inspect` reads the world's runtime card and revision.

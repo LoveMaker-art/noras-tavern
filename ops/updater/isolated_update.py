@@ -12,6 +12,7 @@ import tempfile
 
 from bundle import PARTS
 from update import Updater, NativeLifecycle, atomic, content, json_write, module_at, plan_digest, safe, sha
+from python_model import load_python_model
 import tree_transaction as trees
 
 MARKER = ".tavern-isolated-update.json"
@@ -34,12 +35,22 @@ class IsolatedUpdater(Updater):
         self.isolated_port = port or 8799  # The default is used only by injected file-test adapters.
         self.lifecycle = lifecycle or IsolatedLifecycle(self, port=port)
 
+    def _python_source(self):
+        return (self.targets['app'] / 'backend/server.py').is_file() and not (self.targets['app'] / 'native-runtime.json').exists()
+
+    def _configured_paths(self):
+        if not self._python_source():
+            return super()._configured_paths()
+        expected = {'TAVERN_DATA_ROOT': self.home, 'TAVERN_APP_DIR': self.targets['app'], 'TAVERN_STATE_DIR': self.state}
+        for key, target in expected.items():
+            if os.environ.get(key) and Path(os.environ[key]).resolve() != target:
+                raise ValueError('Custom Python installation path requires explicit mapping: ' + key)
+        self._check_data_layout()
+
     def _check_data_layout(self):
         require_isolation(self.home)
-        for name in ("productions", "cards", "worldbooks"):
-            directory = safe(self.state / name)
-            if directory.exists() and any(directory.iterdir()):
-                raise ValueError("Python data migration is not verified; original files preserved: " + name)
+        if self._python_source() and not (self.state / 'productions').is_dir():
+            raise ValueError('Python productions directory is required')
         trees.inventory(self.state, state=True)  # Refuse unsafe state links before copying.
 
     def _groups(self, installer):
@@ -75,13 +86,14 @@ class IsolatedUpdater(Updater):
                 new = trees.inventory(extension) or {}
                 extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
                                              for rel, item in old.items() if 'sha256' in item and rel not in new)
-        plan.update(isolatedClean=True, groups=groups, extensionRetirements=extension_retirements)
+        plan.update(isolatedClean=True, groups=groups, extensionRetirements=extension_retirements,
+                    sourceRuntime='python' if self._python_source() else 'node')
         json_write(transaction / 'plan.json', plan)
         result.update(planDigest=plan_digest(plan), mode='isolated-clean',
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
                       inactiveExtensionFiles=extension_retirements,
-                      migration='Node World v1/v2 on a copied state; unsupported/broken data blocks',
+                      migration='Python productions -> Node Worlds on copied state; current Node state is only validated, never migrated',
                       activation='Isolated process only; no Liveware binding or Hermes gateway reload')
         return result
 
@@ -187,6 +199,7 @@ class IsolatedUpdater(Updater):
             if (transaction / 'receipt.json').exists():
                 raise ValueError('Transaction already attempted')
             self._preconditions(transaction, plan)
+            self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
             self.lifecycle.require_offline()
             self._space(transaction)
             self.lifecycle.prepare(transaction)
@@ -259,6 +272,7 @@ class IsolatedUpdater(Updater):
             require_isolation(self.home)
             transaction, plan = self._load_plan(transaction, expected)
             receipt = json.loads((transaction / 'receipt.json').read_text())
+            self.lifecycle.source_runtime = plan.get('sourceRuntime', 'node')
             if not receipt.get('isolatedClean'):
                 raise ValueError('Use original updater for legacy transaction recovery')
             if receipt['status'] == 'rolled-back':
@@ -285,8 +299,12 @@ class IsolatedLifecycle(NativeLifecycle):
                 value = Path(os.environ[key]).resolve()
                 if self.u.home not in value.parents:
                     raise ValueError('External Hermes path is not allowed in an isolated rehearsal: ' + key)
-        if any(self.runtime().status()['processes'].values()):
+        if not self.u._python_source() and any(self.runtime().status()['processes'].values()):
             raise ValueError('Stop the isolated Tavern and all its writers before migration')
+        if self.u._python_source():
+            commands = subprocess.check_output(['ps', '-axo', 'command='], text=True)
+            if any(str(self.u.targets['app'] / 'backend/server.py') in line for line in commands.splitlines()):
+                raise ValueError('Stop the isolated Python server before migration; no process was stopped')
         with socket.socket() as probe:
             if probe.connect_ex(('127.0.0.1', self.port)) == 0:
                 raise ValueError('Isolated port is occupied; no process was stopped')
@@ -303,12 +321,49 @@ class IsolatedLifecycle(NativeLifecycle):
         return module.NativeRuntime(self.u.home, app, self.u.state, contract)
 
     def migrate(self, transaction, state):
-        result = subprocess.run(['node', str(transaction / 'source/ops/updater/migrate-state.mjs'),
+        if (state / 'productions').is_dir():
+            model_module = module_at('python_migration_model', transaction / 'source/app/native_model_config.py')
+            try:
+                model = model_module.load_model_config(self.u.home / 'config.yaml')
+            except (model_module.NativeModelConfigError, FileNotFoundError):
+                model = None
+            json_write(transaction / 'prepared/model-input.json', {'hermesModel': model, 'legacyModel': load_python_model(self.u.home)})
+        result = subprocess.run(['node', str(transaction / 'source/ops/updater/prepare-state.mjs'),
                                  str(state), str(transaction / 'source/app')],
                                 capture_output=True, text=True, timeout=180)
         if result.returncode:
             raise ValueError('Copied-state migration refused: ' + result.stderr[-4000:])
+        if getattr(self, 'source_runtime', 'node') == 'python':
+            module = module_at('python_migration_native', transaction / 'source/app/native_lifecycle.py')
+            app = transaction / 'source/app'
+            contract = module.RuntimeContract.from_dict(json.loads((app / 'native-runtime.json').read_text()))
+            module.NativeRuntime(self.u.home, app, state, contract).sync_assets()
         return json.loads(result.stdout)
+
+    def prepare(self, transaction):
+        if getattr(self, 'source_runtime', 'node') != 'python':
+            super().prepare(transaction)
+        else:
+            self.module_path = transaction / 'source/app/native_lifecycle.py'
+            for part, relative in (('app', 'engine/sillytavern'), ('nora-mcp', '.')):
+                subprocess.run(['npm', 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'],
+                               cwd=transaction / 'source' / part / relative, check=True)
+            if self.runtime().node_major() < 20:
+                raise ValueError('Node.js 20+ required')
+        # ST creates these empty public directories at startup. Materialize the
+        # exact reviewed contract before tree fingerprints, not after activation.
+        # Otherwise an empty backups/ directory falsely looks like a concurrent
+        # code edit and prevents automatic recovery of a failed first startup.
+        subprocess.run(['node', '--input-type=module', '-e', """
+import fs from 'node:fs';
+import path from 'node:path';
+import { PUBLIC_DIRECTORIES } from './src/constants.js';
+for (const name of Object.values(PUBLIC_DIRECTORIES)) {
+    const resolved = path.resolve(name);
+    if (!resolved.startsWith(process.cwd() + path.sep)) throw new Error('Unsafe startup directory');
+    fs.mkdirSync(resolved, { recursive: true });
+}
+"""], cwd=transaction / 'source/app/engine/sillytavern', check=True)
 
     def activate(self, transaction):
         runtime = self.runtime()
@@ -348,4 +403,10 @@ class IsolatedLifecycle(NativeLifecycle):
         return result
 
     def restore(self, transaction):
+        if getattr(self, 'source_runtime', 'node') == 'python':
+            # The required source state was OFFLINE. Preserve that state; starting
+            # the Python main() would schedule billable backlog work implicitly.
+            if not self.u._python_source() or not (self.u.state / 'productions').is_dir():
+                raise ValueError('Original Python installation was not restored')
+            return
         self.runtime().start(port=self.port, assets_prepared=True)

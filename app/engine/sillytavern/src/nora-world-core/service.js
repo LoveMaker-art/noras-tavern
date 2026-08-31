@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 
 import { createActivationPlan } from './activation-plan.js';
 import {
@@ -257,7 +258,7 @@ export class NoraWorldCore {
         await this.#initialize();
         const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
         if (!patch || Array.isArray(patch) || typeof patch !== 'object'
-            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona'].includes(key))) invalid('Only World name and persona may be edited.');
+            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships'].includes(key))) invalid('Unsupported World edit.');
         if ('name' in patch && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.length > 500)) invalid('Invalid World name.');
         if ('persona' in patch) {
             if (!patch.persona || Array.isArray(patch.persona) || typeof patch.persona !== 'object'
@@ -267,7 +268,17 @@ export class NoraWorldCore {
         const world = await this.#store.update(worldId, current => {
             if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
             if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before editing.');
+            let context = current.story_context;
+            try {
+                if ('character' in patch) context = editStoryCharacter(context, patch.character);
+                if ('relationships' in patch) context = normalizeStoryContext({ ...context, relationships: patch.relationships });
+                if (context && patch.persona) {
+                    context = normalizeStoryContext(context);
+                    context.player.profile.identity = { ...context.player.profile.identity, ...patch.persona };
+                }
+            } catch (error) { invalid(error.message); }
             return { ...current, ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+                ...(context ? { story_context: context } : {}),
                 persona: { ...current.persona, ...patch.persona }, updated_at: this.#now() };
         });
         if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');

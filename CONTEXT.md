@@ -20,6 +20,10 @@ _Avoid_: Chat file, chat ID, conversation file
 A character present in a World's scene or prompt context without independently owning the World or triggering a separate generation.
 _Avoid_: Runtime Card
 
+**World Cast Snapshot**:
+The World's current independent character profiles, persistent states and relationships, distinct from reusable library templates. The player has a reserved identity and is never interchangeable with a participating character.
+_Avoid_: Library Card, narrator, MVU data
+
 ## Story Resources
 
 **Runtime Card Resource**:

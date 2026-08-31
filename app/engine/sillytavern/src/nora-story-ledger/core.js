@@ -28,16 +28,21 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
     const initial = () => ({ version: 1, enabled: true, active: null, pending: null, lastError: null });
     const load = scope => ({ ...initial(), ...readState(scope) });
     const run = (scope, operation) => locks.run(scopeKey(scope), operation);
+    function discardStaleCandidates(state, messages) {
+        let changed = false;
+        for (const key of ['pending', 'imported']) if (state[key] && !valid(state[key], messages)) {
+            state[key] = null;
+            changed = true;
+        }
+        return changed;
+    }
     function checked(scope) {
         const state = load(scope);
         const chat = readChat(scope);
         if (state.active && !valid(state.active, chat.messages)) {
             throw new LedgerConflict('Active story ledger no longer matches stored history.', 'NORA_LEDGER_STORAGE_CONFLICT');
         }
-        if (state.pending && !valid(state.pending, chat.messages)) {
-            state.pending = null;
-            writeState(scope, state);
-        }
+        if (discardStaleCandidates(state, chat.messages)) writeState(scope, state);
         return { state, chat };
     }
     function projection(scope, state, chat) {
@@ -85,13 +90,13 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
                 const count = coveredMessageCount(chat.messages, end);
                 return { previous, end, count, signature: signature(chat.messages, count),
                     segments: batchSegments(chat.messages, covered + 1, end), entities: chat.entities || ['__user__'],
-                    playerName: chat.playerName || '', language: chat.language || 'zh' };
+                    playerName: chat.playerName || '', entityBindings: chat.entityBindings, language: chat.language || 'zh' };
             });
             if (!input) return;
             let ledger = input.previous?.ledger || {};
             for (const segment of input.segments) {
                 ledger = normalizeLedger(await merge({ previous: ledger, segment, entities: input.entities,
-                    playerName: input.playerName, language: input.language }), ledger, input.entities);
+                    playerName: input.playerName, entityBindings: input.entityBindings, language: input.language }), ledger, input.entities);
             }
             const published = await run(scope, () => {
                 const { state, chat } = checked(scope);
@@ -142,10 +147,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
             assertWritable(scope, state, messages);
             // Writer is synchronous: no interleaving between guard and JSONL commit.
             const result = writer();
-            if (state.pending && !valid(state.pending, messages)) {
-                state.pending = null;
-                writeState(scope, state);
-            }
+            if (discardStaleCandidates(state, messages)) writeState(scope, state);
             return result;
         });
     }
@@ -171,7 +173,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
             if (Array.isArray(messages[messageId].swipes)) messages[messageId].swipes[messages[messageId].swipe_id || 0] = text;
             assertWritable(scope, state, messages);
             writer(messages);
-            if (state.pending && !valid(state.pending, messages)) state.pending = null;
+            discardStaleCandidates(state, messages);
             state.lastError = null;
             writeState(scope, state);
         });
@@ -205,6 +207,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
                 if (!valid(record, chat.messages)) throw new LedgerConflict('History changed during generation.');
                 if (!state.active || state.active.coveredTurns < record.coveredTurns) {
                     state.active = { ...record, activatedAt: now() };
+                    if (state.imported) state.imported = null;
                     if (state.pending?.coveredTurns <= record.coveredTurns) state.pending = null;
                     writeState(scope, state);
                     report('activated', { ...scope, coveredTurns: record.coveredTurns });

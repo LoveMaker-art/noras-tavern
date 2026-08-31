@@ -84,6 +84,7 @@ export function buildStoryProfileCard({
     const characterByAvatar = new Map(characters.map(character => [text(character?.avatar), character]));
     const roleAvatars = new Set();
     const rolesPlayed = new Map();
+    const roleNames = new Map();
     const specialties = [];
     let totalTurns = 0;
     let totalWords = 0;
@@ -91,7 +92,15 @@ export function buildStoryProfileCard({
 
     for (const world of worlds) {
         const avatar = worldAvatar(world);
-        if (avatar) roleAvatars.add(avatar);
+        const cast = world.story_context?.characters;
+        const roles = cast ? cast.map(character => ({ id: 'cast:' + character.id,
+            name: character.profile.identity.name, tags: character.tags || [] }))
+            : avatar ? [{ id: avatar, name: text(characterByAvatar.get(avatar)?.name) || '角色',
+                tags: characterTags(characterByAvatar.get(avatar)) }] : [];
+        for (const role of roles) {
+            roleAvatars.add(role.id);
+            roleNames.set(role.id, role.name);
+        }
         const createdAt = Date.parse(text(world?.created_at));
         if (Number.isFinite(createdAt) && (debutAt === null || createdAt < debutAt)) debutAt = createdAt;
 
@@ -101,11 +110,9 @@ export function buildStoryProfileCard({
         const worldTurns = stats.turns;
         totalTurns += stats.turns;
         totalWords += stats.words;
-        if (avatar) rolesPlayed.set(avatar, (rolesPlayed.get(avatar) ?? 0) + worldTurns);
-
-        const character = characterByAvatar.get(avatar);
-        for (const tag of characterTags(character)) {
-            if (!specialties.includes(tag)) specialties.push(tag);
+        for (const role of roles) {
+            rolesPlayed.set(role.id, (rolesPlayed.get(role.id) ?? 0) + worldTurns);
+            for (const tag of role.tags) if (!specialties.includes(tag)) specialties.push(tag);
         }
     }
 
@@ -139,7 +146,7 @@ export function buildStoryProfileCard({
         specialties: specialties.slice(0, 8),
         roles_played: [...rolesPlayed.entries()]
             .map(([avatar, turns]) => ({
-                name: text(characterByAvatar.get(avatar)?.name) || '角色',
+                name: roleNames.get(avatar) || '角色',
                 turns,
             }))
             .sort((left, right) => right.turns - left.turns),
@@ -191,7 +198,9 @@ export async function loadStoryProfileReflectionContext({
     const snapshot = await resolveStoryStatistics(directories).read(world, { includeMessages: true });
     const avatar = worldAvatar(world);
     const character = await getCharacterFn(directories, avatar);
-    const characterName = text(character?.data?.name ?? character?.name) || '角色';
+    const characterName = world.story_context
+        ? world.story_context.characters.map(member => member.profile.identity.name).join('、') || '故事旁白'
+        : text(character?.data?.name ?? character?.name) || '角色';
     const story = snapshot.messages
         .map((message, index) => ({
             id: text(message?.send_date) || String(index),

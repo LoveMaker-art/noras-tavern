@@ -117,9 +117,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     function currentCharacter() {
         return uiStore.read().currentCharacter;
     }
-    function activeWorldModel() {
-        return uiStore.read().activeWorld;
-    }
+    const activeWorldModel = () => uiStore.read().activeWorld;
 
     function currentWorldPersona() {
         return uiStore.read().persona;
@@ -349,6 +347,8 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     refresh,
                     isCharacterInWorld: character => worlds.usesRuntimeCard?.(character) || false,
                     createWorldFromCard: async (character, control) => (await ensureWorldCreationController()).createFromLibrary(character, control),
+                    activeWorldModel,
+                    updateWorld: (...args) => worlds.updateActive(...args),
                 });
                 return characterController;
             });

@@ -1,4 +1,5 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { storyCharacterView } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 export function createCharacterController({
     cards,
     operations,
@@ -18,7 +19,13 @@ export function createCharacterController({
     refresh,
     isCharacterInWorld = () => false,
     createWorldFromCard,
+    activeWorldModel = () => null,
+    updateWorld,
 }) {
+    function worldCharacter(key) {
+        if (typeof key !== 'string' || !key.startsWith('world-character:')) return null;
+        return activeWorldModel()?.storyContext?.characters.find(item => item.id === key.slice(16)) || null;
+    }
     const desktopLibraryPageSize = 8;
     const mobileLibraryPageSize = 4;
     let libraryPage = 0;
@@ -163,7 +170,8 @@ export function createCharacterController({
     }
 
     function openSheet(characterId = readState().activeCharacterId, backToLibrary = false) {
-        const character = readState().characters?.[characterId];
+        const member = worldCharacter(characterId);
+        const character = member ? storyCharacterView(member, activeWorldModel().storyContext) : readState().characters?.[characterId];
         if (!character) return;
         const fields = [[tr("角色介绍"), characterField(character, 'description')], [tr("性格"), characterField(character, 'personality')], [tr("场景"), characterField(character, 'scenario')], [tr("开场内容"), characterField(character, 'first_mes')], [tr("示例对话"), characterField(character, 'mes_example')], [tr("创作者备注"), characterField(character, 'creator_notes')]].filter(([, value]) => String(value || '').trim());
         const capabilities = characterCapabilities(character);
@@ -172,7 +180,8 @@ export function createCharacterController({
         const capabilitiesEnabled = (!capabilities.regexScripts.length || capabilities.regexAllowed)
             && (!capabilities.helperScripts.length || capabilities.helperAllowed);
         const rules = capabilityCount ? `<div class="nora-character-rules ${capabilitiesEnabled ? 'enabled' : ''}"><div><strong>${tr("角色扩展能力")}</strong><span>${t`${capabilities.regexScripts.length} 条显示规则 · ${capabilities.helperScripts.length} 个脚本 · ${capabilitiesEnabled ? tr("已启用") : tr("未启用")}`}</span></div>${capabilitiesEnabled ? '' : `<button data-enable-character-capabilities type="button">${tr("启用")}</button>`}</div>` : '';
-        const overview = `<div class="nora-character-overview"><img src="/thumbnail?type=avatar&amp;file=${encodeURIComponent(character.avatar)}" alt=""><div><p class="nora-provenance">${escapeHtml(characterField(character, 'creator') || tr("角色资料"))}</p><p>${t`${worldbookCount} 条世界书 · ${capabilities.regexScripts.length} 条显示规则 · ${capabilities.helperScripts.length} 个脚本`}</p></div></div>`;
+        const portrait = character.avatar ? `<img src="/thumbnail?type=avatar&amp;file=${encodeURIComponent(character.avatar)}" alt="">` : '';
+        const overview = `<div class="nora-character-overview">${portrait}<div><p class="nora-provenance">${escapeHtml(characterField(character, 'creator') || tr("角色资料"))}</p><p>${t`${worldbookCount} 条世界书 · ${capabilities.regexScripts.length} 条显示规则 · ${capabilities.helperScripts.length} 个脚本`}</p></div></div>`;
         const back = backToLibrary ? `<button class="nora-sheet-back" data-back-character-library type="button">${tr("‹ 返回角色卡库")}</button>` : '';
         const empty = fields.length ? '' : `<p class="nora-sheet-empty">${tr("该卡主要由内置世界书和扩展脚本构成。")}</p>`;
         const createAction = backToLibrary ? `<div class="nora-sheet-actions"><button class="nora-primary" data-card-create-world type="button">${tr("开启新世界")}</button></div>` : '';
@@ -203,7 +212,10 @@ export function createCharacterController({
     }
 
     function openEditor(characterId = readState().activeCharacterId) {
-        const character = readState().characters?.[characterId];
+        const member = worldCharacter(characterId);
+        const world = member ? activeWorldModel() : null;
+        const character = member ? { ...storyCharacterView(member), data: { description: member.profile.identity.description || '',
+            personality: member.profile.personality?.summary || '' } } : readState().characters?.[characterId];
         if (!character) return;
         const modal = dialogs.open(tr("编辑常驻角色"), `<form id="nora-character-form" class="nora-form" autocomplete="off"><label>${tr("名字")}<input name="name" required value="${escapeHtml(character.name || '')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label><label>${tr("角色介绍")}<textarea name="description" rows="9" placeholder="${tr("身份、外貌、背景和在故事中的位置。")}">${escapeHtml(characterField(character, 'description'))}</textarea></label><label>${tr("性格")}<textarea name="personality" rows="7" placeholder="${tr("性格、行为方式和表达习惯。")}">${escapeHtml(characterField(character, 'personality'))}</textarea></label><p class="nora-model-note">${tr("只更新这些角色资料，不会改动角色卡内的脚本、正则或世界书。")}</p><button class="nora-primary" type="submit">${tr("保存角色资料")}</button></form>`, 'nora-character-editor-modal nora-plain-sheet');
         select('#nora-character-form', modal).addEventListener('submit', async (event) => {
@@ -219,12 +231,17 @@ export function createCharacterController({
             let persisted = false;
             try {
                 await operations.run('world', async () => {
-                    await cards.updateCharacter({
+                    const changes = {
                         avatar: character.avatar,
                         name: String(data.get('name') || '').trim(),
                         description: String(data.get('description') || '').trim(),
                         personality: String(data.get('personality') || '').trim(),
-                    });
+                    };
+                    if (member) {
+                        if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
+                        const patch = { name: changes.name, description: changes.description, personality: changes.personality };
+                        await updateWorld({ character: { id: member.id, patch } }, { expectedRevision: world.revision });
+                    } else await cards.updateCharacter(changes);
                     persisted = true;
                     await reloadWorlds();
                     refresh();

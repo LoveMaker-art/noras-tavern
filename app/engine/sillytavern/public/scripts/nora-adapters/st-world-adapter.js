@@ -1,4 +1,5 @@
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
+import { renderStoryContext } from '../nora-worlds/story-context.js';
 function requireRuntime(getContext) {
     const current = getContext();
     const required = ['selectCharacterById', 'updateChatMetadata', 'saveMetadata'];
@@ -27,6 +28,14 @@ function uniqueNames(values) {
 }
 
 export function createStWorldAdapter(getContext) {
+    let hasStoryContext = false;
+    function applyStoryContext(context) {
+        const current = requireRuntime(getContext);
+        if (!context && !hasStoryContext) return;
+        if (typeof current.setExtensionPrompt !== 'function') throw new Error('World story context is unavailable.');
+        current.setExtensionPrompt('nora_world_story_context', renderStoryContext(context), 0, 4, false, 0);
+        hasStoryContext = Boolean(context);
+    }
     function read() {
         const current = requireRuntime(getContext);
         const activeCharacterId = normalizeCharacterId(current.characterId);
@@ -97,6 +106,7 @@ export function createStWorldAdapter(getContext) {
             throw new Error('故事运行核心缺少聚合世界快照能力。');
         }
         await current.activateNoraWorldSnapshot(characterId, snapshot);
+        applyStoryContext(snapshot.plan?.story_context);
         return read();
     }
 
@@ -131,8 +141,10 @@ export function createStWorldAdapter(getContext) {
         if (typeof current.closeCurrentChat !== 'function') {
             throw new Error('故事运行核心缺少当前世界关闭能力。');
         }
-        return current.closeCurrentChat();
+        const result = await current.closeCurrentChat();
+        applyStoryContext(null);
+        return result;
     }
 
-    return Object.freeze({ read, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, activate, activateSnapshot, saveMetadata, savePersona, deleteChat, closeChat });
+    return Object.freeze({ read, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
 }

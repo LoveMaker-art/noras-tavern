@@ -79,6 +79,7 @@ export function createWorldCoreRuntime(runtime, {
             revision: manifest.revision,
             name: manifest.name,
             persona: { ...manifest.persona },
+            storyContext: manifest.story_context,
             ui: manifest.ui,
             persistent: true,
             available: lifecycleReady && characterId >= 0,
@@ -316,6 +317,7 @@ export function createWorldCoreRuntime(runtime, {
         if (runtime.read().metadata?.nora_world?.id === worldId) {
             try {
                 if (patch.persona) await runtime.savePersona(world.persona);
+                if (world.story_context) runtime.applyStoryContext(world.story_context);
                 runtimeApplied = true;
             } catch (error) {
                 emit();

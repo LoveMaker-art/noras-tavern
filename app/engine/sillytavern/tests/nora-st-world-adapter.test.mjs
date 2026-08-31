@@ -3,6 +3,23 @@ import test from 'node:test';
 
 import { createStWorldAdapter } from '../public/scripts/nora-adapters/st-world-adapter.js';
 
+test('World-owned context is injected once and cleared on ordinary World activation and close', async () => {
+    const prompts = [];
+    const runtime = { characters: [], chat: [], chatMetadata: {}, powerUserSettings: {},
+        selectCharacterById() {}, updateChatMetadata() {}, saveMetadata() {},
+        async activateNoraWorldSnapshot() {}, async closeCurrentChat() {},
+        setExtensionPrompt(...args) { prompts.push(args); } };
+    const adapter = createStWorldAdapter(() => runtime);
+    const context = { schema_version: 1, characters: [], relationships: [], player: { profile: {}, persistent_status: {} }, author_note: 'isolate-world', language: 'en' };
+    await adapter.activateSnapshot(0, { plan: { story_context: context } });
+    assert.match(prompts.at(-1)[1], /isolate-world/);
+    await adapter.activateSnapshot(1, { plan: {} });
+    assert.equal(prompts.at(-1)[1], '');
+    adapter.applyStoryContext(context);
+    await adapter.closeChat();
+    assert.equal(prompts.at(-1)[1], '');
+});
+
 test('saves the World persona without hydrating the hidden ST persona UI', async () => {
     const calls = [];
     const runtime = {

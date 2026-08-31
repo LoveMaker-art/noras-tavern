@@ -1,0 +1,1063 @@
+{
+  "cards": [
+    {
+      "spec": "tavern_card_v1",
+      "spec_version": "1",
+      "source_format": "v1",
+      "name": "阿岚",
+      "description": "航海者",
+      "personality": "坚定",
+      "scenario": "港口",
+      "first_mes": "你终于来了。",
+      "mes_example": "你好。",
+      "system_prompt": "",
+      "post_history_instructions": "",
+      "creator": "",
+      "character_version": "",
+      "nickname": "",
+      "creator_notes": "",
+      "alternate_greetings": [],
+      "group_only_greetings": [],
+      "tags": [],
+      "source": "",
+      "source_urls": [],
+      "assets": [],
+      "creator_notes_multilingual": {},
+      "creation_date": null,
+      "modification_date": null,
+      "extensions": {},
+      "source_unknown": {},
+      "profile": {
+        "identity": {
+          "name": "阿岚",
+          "aliases": [],
+          "description": "航海者",
+          "gender": "",
+          "age": "",
+          "species": "",
+          "occupation": "",
+          "affiliations": [],
+          "story_role": ""
+        },
+        "appearance": {
+          "summary": "",
+          "features": [],
+          "attire": []
+        },
+        "personality": {
+          "summary": "坚定",
+          "traits": [],
+          "values": [],
+          "motivation": "",
+          "fears": [],
+          "boundaries": []
+        },
+        "expression": {
+          "speech_style": "",
+          "habits": [],
+          "mannerisms": []
+        },
+        "capabilities": {
+          "skills": [],
+          "powers": [],
+          "limitations": []
+        },
+        "background": {
+          "summary": "",
+          "key_history": []
+        }
+      },
+      "entry": {
+        "initial_scenario": "港口",
+        "first_message": "你终于来了。",
+        "example_dialogue": "你好。"
+      },
+      "performance": {
+        "system_prompt": "",
+        "post_history_instructions": ""
+      },
+      "id": "card_2faffbae6c6e"
+    },
+    {
+      "spec": "tavern_card_v1",
+      "spec_version": "1",
+      "source_format": "v1",
+      "name": "清夏",
+      "description": "医生",
+      "personality": "坚定",
+      "scenario": "港口",
+      "first_mes": "你终于来了。",
+      "mes_example": "你好。",
+      "system_prompt": "",
+      "post_history_instructions": "",
+      "creator": "",
+      "character_version": "",
+      "nickname": "",
+      "creator_notes": "",
+      "alternate_greetings": [],
+      "group_only_greetings": [],
+      "tags": [],
+      "source": "",
+      "source_urls": [],
+      "assets": [],
+      "creator_notes_multilingual": {},
+      "creation_date": null,
+      "modification_date": null,
+      "extensions": {},
+      "source_unknown": {},
+      "profile": {
+        "identity": {
+          "name": "清夏",
+          "aliases": [],
+          "description": "医生",
+          "gender": "",
+          "age": "",
+          "species": "",
+          "occupation": "",
+          "affiliations": [],
+          "story_role": ""
+        },
+        "appearance": {
+          "summary": "",
+          "features": [],
+          "attire": []
+        },
+        "personality": {
+          "summary": "坚定",
+          "traits": [],
+          "values": [],
+          "motivation": "",
+          "fears": [],
+          "boundaries": []
+        },
+        "expression": {
+          "speech_style": "",
+          "habits": [],
+          "mannerisms": []
+        },
+        "capabilities": {
+          "skills": [],
+          "powers": [],
+          "limitations": []
+        },
+        "background": {
+          "summary": "",
+          "key_history": []
+        }
+      },
+      "entry": {
+        "initial_scenario": "港口",
+        "first_message": "你终于来了。",
+        "example_dialogue": "你好。"
+      },
+      "performance": {
+        "system_prompt": "",
+        "post_history_instructions": ""
+      },
+      "id": "card_481a9c5cc541"
+    }
+  ],
+  "productions": [
+    {
+      "id": "prod_fixture",
+      "name": "迁移故事",
+      "created_at": 1785542400,
+      "status": "active",
+      "card_ids": [
+        "card_2faffbae6c6e",
+        "card_481a9c5cc541"
+      ],
+      "worldbook_ids": [
+        "wb_fixture"
+      ],
+      "persona": {
+        "name": "玩家",
+        "description": "船长"
+      },
+      "response_language": "en",
+      "author_note": "保持因果一致",
+      "story": [
+        {
+          "id": "msg_1_user",
+          "role": "user",
+          "text": "第1轮输入",
+          "ts": 1785542401,
+          "alts": [
+            "第1轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_1_char",
+          "role": "char",
+          "text": "第1轮回复",
+          "ts": 1785542401,
+          "alts": [
+            "第1轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_2_user",
+          "role": "user",
+          "text": "第2轮输入",
+          "ts": 1785542402,
+          "alts": [
+            "第2轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_2_char",
+          "role": "char",
+          "text": "第2轮回复",
+          "ts": 1785542402,
+          "alts": [
+            "第2轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_3_user",
+          "role": "user",
+          "text": "第3轮输入",
+          "ts": 1785542403,
+          "alts": [
+            "第3轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_3_char",
+          "role": "char",
+          "text": "第3轮回复",
+          "ts": 1785542403,
+          "alts": [
+            "第3轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_4_user",
+          "role": "user",
+          "text": "第4轮输入",
+          "ts": 1785542404,
+          "alts": [
+            "第4轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_4_char",
+          "role": "char",
+          "text": "第4轮回复",
+          "ts": 1785542404,
+          "alts": [
+            "第4轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_5_user",
+          "role": "user",
+          "text": "第5轮输入",
+          "ts": 1785542405,
+          "alts": [
+            "第5轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_5_char",
+          "role": "char",
+          "text": "第5轮回复",
+          "ts": 1785542405,
+          "alts": [
+            "第5轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_6_user",
+          "role": "user",
+          "text": "第6轮输入",
+          "ts": 1785542406,
+          "alts": [
+            "第6轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_6_char",
+          "role": "char",
+          "text": "第6轮回复",
+          "ts": 1785542406,
+          "alts": [
+            "第6轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_7_user",
+          "role": "user",
+          "text": "第7轮输入",
+          "ts": 1785542407,
+          "alts": [
+            "第7轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_7_char",
+          "role": "char",
+          "text": "第7轮回复",
+          "ts": 1785542407,
+          "alts": [
+            "第7轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_8_user",
+          "role": "user",
+          "text": "第8轮输入",
+          "ts": 1785542408,
+          "alts": [
+            "第8轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_8_char",
+          "role": "char",
+          "text": "第8轮回复",
+          "ts": 1785542408,
+          "alts": [
+            "第8轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_9_user",
+          "role": "user",
+          "text": "第9轮输入",
+          "ts": 1785542409,
+          "alts": [
+            "第9轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_9_char",
+          "role": "char",
+          "text": "第9轮回复",
+          "ts": 1785542409,
+          "alts": [
+            "第9轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_10_user",
+          "role": "user",
+          "text": "第10轮输入",
+          "ts": 1785542410,
+          "alts": [
+            "第10轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_10_char",
+          "role": "char",
+          "text": "第10轮回复",
+          "ts": 1785542410,
+          "alts": [
+            "第10轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_11_user",
+          "role": "user",
+          "text": "第11轮输入",
+          "ts": 1785542411,
+          "alts": [
+            "第11轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_11_char",
+          "role": "char",
+          "text": "第11轮回复",
+          "ts": 1785542411,
+          "alts": [
+            "第11轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_12_user",
+          "role": "user",
+          "text": "第12轮输入",
+          "ts": 1785542412,
+          "alts": [
+            "第12轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_12_char",
+          "role": "char",
+          "text": "第12轮回复",
+          "ts": 1785542412,
+          "alts": [
+            "第12轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_13_user",
+          "role": "user",
+          "text": "第13轮输入",
+          "ts": 1785542413,
+          "alts": [
+            "第13轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_13_char",
+          "role": "char",
+          "text": "第13轮回复",
+          "ts": 1785542413,
+          "alts": [
+            "第13轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_14_user",
+          "role": "user",
+          "text": "第14轮输入",
+          "ts": 1785542414,
+          "alts": [
+            "第14轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_14_char",
+          "role": "char",
+          "text": "第14轮回复",
+          "ts": 1785542414,
+          "alts": [
+            "第14轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_15_user",
+          "role": "user",
+          "text": "第15轮输入",
+          "ts": 1785542415,
+          "alts": [
+            "第15轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_15_char",
+          "role": "char",
+          "text": "第15轮回复",
+          "ts": 1785542415,
+          "alts": [
+            "第15轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_16_user",
+          "role": "user",
+          "text": "第16轮输入",
+          "ts": 1785542416,
+          "alts": [
+            "第16轮输入",
+            "备选回复"
+          ],
+          "active_alt": 0
+        },
+        {
+          "id": "msg_16_char",
+          "role": "char",
+          "text": "第16轮回复",
+          "ts": 1785542416,
+          "alts": [
+            "第16轮回复",
+            "备选回复"
+          ],
+          "active_alt": 0
+        }
+      ],
+      "runtime_cast": {
+        "schema_version": 3,
+        "applied_turn": 0,
+        "revision": 1,
+        "characters": [
+          {
+            "spec": "tavern_card_v1",
+            "spec_version": "1",
+            "source_format": "v1",
+            "name": "阿岚",
+            "description": "航海者",
+            "personality": "坚定",
+            "scenario": "港口",
+            "first_mes": "你终于来了。",
+            "mes_example": "你好。",
+            "system_prompt": "",
+            "post_history_instructions": "",
+            "creator": "",
+            "character_version": "",
+            "nickname": "",
+            "creator_notes": "",
+            "alternate_greetings": [],
+            "group_only_greetings": [],
+            "tags": [],
+            "source": "",
+            "source_urls": [],
+            "assets": [],
+            "creator_notes_multilingual": {},
+            "creation_date": null,
+            "modification_date": null,
+            "extensions": {},
+            "source_unknown": {},
+            "profile": {
+              "identity": {
+                "name": "阿岚",
+                "aliases": [],
+                "description": "航海者",
+                "gender": "",
+                "age": "",
+                "species": "",
+                "occupation": "已晋升的大副",
+                "affiliations": [],
+                "story_role": ""
+              },
+              "appearance": {
+                "summary": "",
+                "features": [],
+                "attire": []
+              },
+              "personality": {
+                "summary": "坚定",
+                "traits": [],
+                "values": [],
+                "motivation": "",
+                "fears": [],
+                "boundaries": []
+              },
+              "expression": {
+                "speech_style": "",
+                "habits": [],
+                "mannerisms": []
+              },
+              "capabilities": {
+                "skills": [],
+                "powers": [],
+                "limitations": []
+              },
+              "background": {
+                "summary": "",
+                "key_history": []
+              }
+            },
+            "entry": {
+              "initial_scenario": "港口",
+              "first_message": "你终于来了。",
+              "example_dialogue": "你好。"
+            },
+            "performance": {
+              "system_prompt": "",
+              "post_history_instructions": ""
+            },
+            "id": "card_2faffbae6c6e",
+            "source_card_id": "card_2faffbae6c6e",
+            "origin_profile": {
+              "identity": {
+                "name": "阿岚",
+                "aliases": [],
+                "description": "航海者",
+                "gender": "",
+                "age": "",
+                "species": "",
+                "occupation": "",
+                "affiliations": [],
+                "story_role": ""
+              },
+              "appearance": {
+                "summary": "",
+                "features": [],
+                "attire": []
+              },
+              "personality": {
+                "summary": "坚定",
+                "traits": [],
+                "values": [],
+                "motivation": "",
+                "fears": [],
+                "boundaries": []
+              },
+              "expression": {
+                "speech_style": "",
+                "habits": [],
+                "mannerisms": []
+              },
+              "capabilities": {
+                "skills": [],
+                "powers": [],
+                "limitations": []
+              },
+              "background": {
+                "summary": "",
+                "key_history": []
+              }
+            },
+            "persistent_status": {
+              "life_status": "",
+              "identity_status": "",
+              "physical_condition": "左臂受伤"
+            },
+            "profile_updated_turn": 0,
+            "status_updated_turn": 0
+          },
+          {
+            "spec": "tavern_card_v1",
+            "spec_version": "1",
+            "source_format": "v1",
+            "name": "清夏",
+            "description": "医生",
+            "personality": "坚定",
+            "scenario": "港口",
+            "first_mes": "你终于来了。",
+            "mes_example": "你好。",
+            "system_prompt": "",
+            "post_history_instructions": "",
+            "creator": "",
+            "character_version": "",
+            "nickname": "",
+            "creator_notes": "",
+            "alternate_greetings": [],
+            "group_only_greetings": [],
+            "tags": [],
+            "source": "",
+            "source_urls": [],
+            "assets": [],
+            "creator_notes_multilingual": {},
+            "creation_date": null,
+            "modification_date": null,
+            "extensions": {},
+            "source_unknown": {},
+            "profile": {
+              "identity": {
+                "name": "清夏",
+                "aliases": [],
+                "description": "医生",
+                "gender": "",
+                "age": "",
+                "species": "",
+                "occupation": "",
+                "affiliations": [],
+                "story_role": ""
+              },
+              "appearance": {
+                "summary": "",
+                "features": [],
+                "attire": []
+              },
+              "personality": {
+                "summary": "坚定",
+                "traits": [],
+                "values": [],
+                "motivation": "",
+                "fears": [],
+                "boundaries": []
+              },
+              "expression": {
+                "speech_style": "",
+                "habits": [],
+                "mannerisms": []
+              },
+              "capabilities": {
+                "skills": [],
+                "powers": [],
+                "limitations": []
+              },
+              "background": {
+                "summary": "",
+                "key_history": []
+              }
+            },
+            "entry": {
+              "initial_scenario": "港口",
+              "first_message": "你终于来了。",
+              "example_dialogue": "你好。"
+            },
+            "performance": {
+              "system_prompt": "",
+              "post_history_instructions": ""
+            },
+            "id": "card_481a9c5cc541",
+            "source_card_id": "card_481a9c5cc541",
+            "origin_profile": {
+              "identity": {
+                "name": "清夏",
+                "aliases": [],
+                "description": "医生",
+                "gender": "",
+                "age": "",
+                "species": "",
+                "occupation": "",
+                "affiliations": [],
+                "story_role": ""
+              },
+              "appearance": {
+                "summary": "",
+                "features": [],
+                "attire": []
+              },
+              "personality": {
+                "summary": "坚定",
+                "traits": [],
+                "values": [],
+                "motivation": "",
+                "fears": [],
+                "boundaries": []
+              },
+              "expression": {
+                "speech_style": "",
+                "habits": [],
+                "mannerisms": []
+              },
+              "capabilities": {
+                "skills": [],
+                "powers": [],
+                "limitations": []
+              },
+              "background": {
+                "summary": "",
+                "key_history": []
+              }
+            },
+            "persistent_status": {
+              "life_status": "",
+              "identity_status": "",
+              "physical_condition": ""
+            },
+            "profile_updated_turn": 0,
+            "status_updated_turn": 0
+          }
+        ],
+        "relationships": [
+          {
+            "id": "rel_fixture",
+            "participants": [
+              "card_2faffbae6c6e",
+              "card_481a9c5cc541"
+            ],
+            "description": "互相信任"
+          }
+        ],
+        "updated_at": 1785542400,
+        "user_profile": {
+          "identity": {
+            "name": "玩家",
+            "aliases": [],
+            "description": "船长",
+            "gender": "",
+            "age": "",
+            "species": "",
+            "occupation": "",
+            "affiliations": [],
+            "story_role": ""
+          },
+          "appearance": {
+            "summary": "",
+            "features": [],
+            "attire": []
+          },
+          "personality": {
+            "summary": "",
+            "traits": [],
+            "values": [],
+            "motivation": "",
+            "fears": [],
+            "boundaries": []
+          },
+          "expression": {
+            "speech_style": "",
+            "habits": [],
+            "mannerisms": []
+          },
+          "capabilities": {
+            "skills": [],
+            "powers": [],
+            "limitations": []
+          },
+          "background": {
+            "summary": "",
+            "key_history": []
+          }
+        },
+        "origin_user_profile": {
+          "identity": {
+            "name": "玩家",
+            "aliases": [],
+            "description": "船长",
+            "gender": "",
+            "age": "",
+            "species": "",
+            "occupation": "",
+            "affiliations": [],
+            "story_role": ""
+          },
+          "appearance": {
+            "summary": "",
+            "features": [],
+            "attire": []
+          },
+          "personality": {
+            "summary": "",
+            "traits": [],
+            "values": [],
+            "motivation": "",
+            "fears": [],
+            "boundaries": []
+          },
+          "expression": {
+            "speech_style": "",
+            "habits": [],
+            "mannerisms": []
+          },
+          "capabilities": {
+            "skills": [],
+            "powers": [],
+            "limitations": []
+          },
+          "background": {
+            "summary": "",
+            "key_history": []
+          }
+        },
+        "user_profile_updated_turn": 0,
+        "user_status": {
+          "life_status": "",
+          "identity_status": "",
+          "physical_condition": ""
+        },
+        "user_status_updated_turn": 0
+      },
+      "story_state": {
+        "timeline": [
+          "抵达港口"
+        ],
+        "facts": [
+          {
+            "id": "fact_1",
+            "content": "清夏知道航线",
+            "known_by": [
+              "card_481a9c5cc541"
+            ]
+          }
+        ],
+        "open_threads": [
+          "寻找失踪船只"
+        ],
+        "objects": [
+          {
+            "id": "obj_1",
+            "name": "罗盘",
+            "status": "完好",
+            "holder": "card_2faffbae6c6e",
+            "location": "船上"
+          }
+        ],
+        "secrets": [],
+        "scene": {
+          "time": "夜晚",
+          "place": "港口",
+          "participants": [
+            {
+              "character_id": "card_2faffbae6c6e",
+              "location": "码头",
+              "activity": "等待",
+              "condition": "受伤"
+            }
+          ]
+        },
+        "style_notes": [],
+        "turns": 15,
+        "source_tokens": 1000,
+        "updated_at": 1785542416,
+        "covered_signature": "e4976616fc519bd055b6ed7fac2c5fd84b4796e6a6026b024bd9a1bb4141fea2"
+      }
+    },
+    {
+      "id": "prod_empty",
+      "name": "空世界",
+      "created_at": 1785542400,
+      "status": "active",
+      "card_ids": [],
+      "worldbook_ids": [],
+      "persona": {
+        "name": "玩家",
+        "description": "船长"
+      },
+      "response_language": "en",
+      "author_note": "保持因果一致",
+      "story": [],
+      "runtime_cast": {
+        "schema_version": 3,
+        "applied_turn": 0,
+        "revision": 1,
+        "characters": [],
+        "relationships": [],
+        "updated_at": 1785542400,
+        "user_profile": {
+          "identity": {
+            "name": "玩家",
+            "aliases": [],
+            "description": "船长",
+            "gender": "",
+            "age": "",
+            "species": "",
+            "occupation": "",
+            "affiliations": [],
+            "story_role": ""
+          },
+          "appearance": {
+            "summary": "",
+            "features": [],
+            "attire": []
+          },
+          "personality": {
+            "summary": "",
+            "traits": [],
+            "values": [],
+            "motivation": "",
+            "fears": [],
+            "boundaries": []
+          },
+          "expression": {
+            "speech_style": "",
+            "habits": [],
+            "mannerisms": []
+          },
+          "capabilities": {
+            "skills": [],
+            "powers": [],
+            "limitations": []
+          },
+          "background": {
+            "summary": "",
+            "key_history": []
+          }
+        },
+        "origin_user_profile": {
+          "identity": {
+            "name": "玩家",
+            "aliases": [],
+            "description": "船长",
+            "gender": "",
+            "age": "",
+            "species": "",
+            "occupation": "",
+            "affiliations": [],
+            "story_role": ""
+          },
+          "appearance": {
+            "summary": "",
+            "features": [],
+            "attire": []
+          },
+          "personality": {
+            "summary": "",
+            "traits": [],
+            "values": [],
+            "motivation": "",
+            "fears": [],
+            "boundaries": []
+          },
+          "expression": {
+            "speech_style": "",
+            "habits": [],
+            "mannerisms": []
+          },
+          "capabilities": {
+            "skills": [],
+            "powers": [],
+            "limitations": []
+          },
+          "background": {
+            "summary": "",
+            "key_history": []
+          }
+        },
+        "user_profile_updated_turn": 0,
+        "user_status": {
+          "life_status": "",
+          "identity_status": "",
+          "physical_condition": ""
+        },
+        "user_status_updated_turn": 0
+      },
+      "story_state": {}
+    }
+  ],
+  "worldbooks": [
+    {
+      "id": "wb_fixture",
+      "name": "港口设定",
+      "entries": [
+        {
+          "id": 0,
+          "keys": [
+            "港口"
+          ],
+          "content": "禁止夜航",
+          "constant": true
+        }
+      ]
+    }
+  ]
+}

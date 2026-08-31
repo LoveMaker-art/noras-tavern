@@ -1,55 +1,61 @@
-# Isolated clean-update rehearsal
+# Isolated Python → Node rehearsal
 
-Use only for explicit approval to test migration on a disposable copy. The
-default updater and all live services stay unchanged. `--isolated-test-port`
-selects the clean transaction implementation; both the marked temporary home and
-a separate port are required. Ports 8799/8809 and non-temporary homes are refused.
+Use only after explicit authorization to test on a disposable copy. Never target
+the live installation or remove the temporary-home restriction. The default
+file updater still refuses Python data. Ports 8799 and 8809 are reserved.
 
-The repository harness `ops/tests/verify_clean_release.py` creates its own marked
-temporary home. Pass an approved local candidate bundle and an explicit historical
-Node commit with `--release-dir` and `--old-ref`. It installs dependencies, starts
-the historical instance, stops it, creates sanitized legacy data, upgrades, checks
-the running World snapshots and then restores the old code and state. It performs
-no generation/model call. Its source fixtures and harness are development tools,
-not part of the runtime archive.
+The repository harness `ops/tests/verify_python_release.py` accepts
+`--release-dir <approved-candidate>` and `--old-ref <reviewed-python-commit>`.
+It creates a marked temporary home, extracts the actual historical Python app,
+uses that app's serializer to generate synthetic data, then runs the new Node
+process and a fresh read-only MCP probe. It does not start the old Python server,
+invoke generation, reload Hermes or register Liveware. Read the result before
+claiming success. Its source and fixture are development files, not runtime data.
+Run the same harness with `--fail-after-start` to verify automatic recovery after
+a real Node startup. This is distinct from a later successful manual rollback.
 
-## Transaction contract
+## Transaction
 
-- Review still verifies pinned archives, installer output, AGENTS merge and MCP
-  configuration. It also identifies inactive old code and preserved custom plugins.
-- All writers must be stopped before apply. Offline checks are not graceful
-  draining: production writer coordination remains a separate release gate.
-- Prepare copies complete program directories and project state. Migration runs
-  only on that state copy; checks cover World manifests, bindings, conversation
-  contents, existing identities and recognized Profile formats. Broken or unknown
-  records fail instead of being silently discarded or regenerated.
-- Switch app/ops/MCP, managed skill directories, state and reviewed host files
-  with recorded rename intents. Old trees remain outside active discovery paths.
-  Third-party frontend extensions retain their existing directories. Custom
-  server-plugin files are preserved in the reviewed plugin location. Unknown
-  files elsewhere in owned code directories remain in recovery, not active code.
-- State recovery includes `tavern-state` and exactly `memories/USER.md` and
-  `memories/MEMORY.md`, plus reviewed host configuration. It is not a backup of
-  the entire Hermes home. PID/log files are recreated, not treated as story data.
-- Interrupted or failed activation restores prior trees. A later rollback refuses
-  changes made after acceptance, including new dialogue and shared memory edits;
-  it must never erase newer activity to make an older version start.
+1. Review pinned archives, installed code, managed skills/AGENTS and MCP config.
+   Report old code that will leave active directories and preserved custom plugins.
+2. Require an offline source. Copy the complete project state. Convert only that
+   copy through `prepare-state.mjs`; existing current Node data is validated only.
+   No Node v1→v2 conversion is performed by this updater.
+   Prepare the native public-directory contract before taking code fingerprints;
+   startup-created empty directories must not masquerade as concurrent code edits.
+3. Convert Python productions to stable-ID Worlds/Sessions, retaining all raw
+   messages and alternatives. Library templates are distinct from World-owned
+   cast profiles, player state and relationships. Native activation consumes the
+   cast; ledger compression receives the same actor IDs.
+4. Validate old ledger coverage/signature. Valid ledgers remain pending until a
+   Node dispatch accepts their context; do not invent an activation or edit lock.
+   Their prior shared-memory projection is preserved. Invalid coverage leaves raw
+   history intact and is reported rather than activating stale memory.
+5. Preserve recognized Profile files and custom model credentials. Resolve the
+   original Python built-in model separately from the Hermes primary model.
+   Never log keys or contact a model to migrate data.
+6. Switch complete code trees, state and reviewed host files with a durable rename
+   journal. Original Python data namespaces are archived inside the copied state
+   under `python-source`; old executable code stays outside active paths in the
+   transaction backup. USER.md/MEMORY.md are included; the entire Hermes home is not.
+7. On failure restore original trees. Python was required offline and remains
+   offline after rollback: starting its main() could trigger billable backlog.
+   Later rollback must refuse newer conversations/edits instead of erasing them.
 
-## Evidence and limits
+## Limits to report
 
-`isolated-installed` means the isolated transaction passed its checks. It is not
-`installed-awaiting-hermes-reload` and does not request a real gateway reload or
-Liveware re-registration. Read `migration.json`, the receipt and the harness result.
-
-Supported migration: validated Node World v1 → v2; existing valid v2 Worlds retain
-their identities, and existing Profile schema-1 files retain their bytes. Repeated
-migration must not duplicate Worlds. Full Python production/runtime_cast/ledger
-migration is not implemented and is explicitly refused. A schema marker alone is
-not migration evidence. Custom plugin files being retained does not prove plugin
-behavior in every historical environment.
-
-After rehearsal, report the tested old commit, data scope and recovery result.
-Live deployment, production maintenance/draining, Python conversion and stable
-release approval remain separate work. Keep failed rehearsal artifacts private;
-never upload copied user data in a release bundle or create markers to bypass the
-temporary-home restriction.
+- Broken references, unsupported cast/Profile schemas, mixed native/Python data
+  or changed outputs refuse conversion. Do not delete records to bypass validation.
+- Python-specific exclusion-key lore requires explicit semantic mapping; old
+  `/assets/` images require their source mapping. Such inputs stop the transaction.
+  World covers are archived but are not displayed by the current UI.
+- Old Python imports discarded some executable scripts and images. Conversion
+  cannot restore absent MVU/Regex/Tavern Helper code; re-import original cards only
+  with separate user authorization.
+- Saved character state is preserved and used. The Python background character
+  state-generation algorithm is not reinstated; newer conversation/ledger governs
+  subsequent narrative, with current MVU handling unchanged.
+- `isolated-installed` proves only the reported fixture/HTTP checks. Production
+  writer draining, real user-data reconciliation, Liveware/UI acceptance and
+  gateway activation remain separate gates. Do not distribute this as a universal
+  automatic Python upgrade or claim visual compatibility from API tests.

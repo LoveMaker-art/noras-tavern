@@ -1,5 +1,6 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { projectTextModelDisplay } from './model-display.js';
+import { storyCharacterView } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 import { buildCuratorReviewLink, storyProfileHref } from './story-profile-controller.js';
 
 export function createPanelController({
@@ -43,6 +44,9 @@ export function createPanelController({
 
     function currentCast() {
         const world = activeWorldModel();
+        if (world?.storyContext) return world.storyContext.characters.map(character => ({
+            character: storyCharacterView(character), index: `world-character:${character.id}`,
+        }));
         const character = currentCharacter();
         const characterId = readState().activeCharacterId;
         if (!world || !hasCharacterProfile(character) || !Number.isInteger(characterId) || characterId < 0) return [];
@@ -120,10 +124,10 @@ export function createPanelController({
         selectAll('[data-cast-edit]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
             closeDrawers();
-            openCharacterEditor(Number(button.dataset.castEdit));
+            openCharacterEditor(button.dataset.castEdit.startsWith('world-character:') ? button.dataset.castEdit : Number(button.dataset.castEdit));
         }));
         selectAll('[data-cast-character]', body).forEach((card) => {
-            const open = () => { closeDrawers(); openCharacterSheet(Number(card.dataset.castCharacter)); };
+            const open = () => { closeDrawers(); openCharacterSheet(card.dataset.castCharacter.startsWith('world-character:') ? card.dataset.castCharacter : Number(card.dataset.castCharacter)); };
             card.addEventListener('click', open);
             card.addEventListener('keydown', (event) => {
                 if (!['Enter', ' '].includes(event.key)) return;

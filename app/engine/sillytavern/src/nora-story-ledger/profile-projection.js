@@ -23,8 +23,11 @@ export async function collectStoryProductions(directories, listWorlds, notify = 
             const statePath = ledgerStatePath(directories.root, scope);
             let state;
             try { state = JSON.parse(await fs.readFile(statePath, 'utf8')); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-            const active = state.active;
-            if (!active?.activatedAt) continue; // candidate/failed requests are not memories
+            // Python's validated ledger can preserve its existing projection before
+            // the first Node dispatch. This is NOT an activated edit lock.
+            const imported = state.imported?.source === 'python-validated' ? state.imported : null;
+            const active = state.active?.activatedAt ? state.active : imported;
+            if (!active) continue; // ordinary candidates/failed requests are not memories
             const avatar = String(world.runtime_card?.binding?.avatar || '');
             const chatId = session.binding?.chat_id;
             if (!avatar || path.basename(avatar) !== avatar || !chatId) throw new Error('Invalid projection Session binding.');
@@ -35,7 +38,8 @@ export async function collectStoryProductions(directories, listWorlds, notify = 
                 notify('invalid-history-skipped', scope);
                 continue;
             }
-            if (!latest || active.activatedAt > latest.activatedAt) latest = active;
+            const projected = { ...active, projectedAt: active.activatedAt || active.createdAt };
+            if (!latest || projected.projectedAt > latest.projectedAt) latest = projected;
         }
         if (latest) productions.push({
             id: world.world_id,
@@ -44,7 +48,7 @@ export async function collectStoryProductions(directories, listWorlds, notify = 
                 turns: latest.coveredTurns,
                 timeline: latest.ledger.timeline,
                 open_threads: latest.ledger.open_threads,
-                updated_at: Math.floor(latest.activatedAt / 1000),
+                updated_at: Math.floor(latest.projectedAt / 1000),
             },
         });
     }

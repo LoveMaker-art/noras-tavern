@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 import { normalizeWorldTheme } from '../../public/scripts/nora-worlds/world-theme.js';
 
 import { NoraWorldCoreError } from './errors.js';
@@ -362,6 +363,7 @@ export function validateWorldManifest(value) {
         schema_version: WORLD_SCHEMA_VERSION,
         world_id: requireId(manifest.world_id, 'manifest.world_id'),
         ...(manifest.ui === undefined ? {} : { ui: normalizeWorldTheme(manifest.ui) }),
+        ...(manifest.story_context === undefined ? {} : { story_context: normalizeStoryContext(manifest.story_context) }),
         revision,
         name: requireString(manifest.name, 'manifest.name'),
         persona: {

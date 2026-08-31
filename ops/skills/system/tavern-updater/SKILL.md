@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: isolated-clean-rehearsal-20260831
+    revision: python-to-node-rehearsal-20260831
     requires_tools: [terminal]
 ---
 
@@ -33,6 +33,7 @@ permission mode and tool allowlist.
 For explicitly authorized isolated migration rehearsals, first read
 [isolated clean transactions](references/isolated-rehearsal.md). This experimental
 path cannot target the live installation and is not the default update mode.
+Its conversion is Python productions → Node Worlds, not Node-version migration.
 
 ## How to Run
 
@@ -83,7 +84,8 @@ do not use it as a clean-install or universal old-data migration tool.
 
 Worlds, chats, keys, custom skills and instructions outside the managed AGENTS
 block are preserved. The updater does not re-register Liveware, replace the whole
-Hermes home or migrate Python data. Recovery contains private configuration: keep
+Hermes home or migrate Python data in default mode. The isolated Python converter
+does not enable production migration. Recovery contains private configuration: keep
 it on the host outside skills discovery.
 
 ## Verification

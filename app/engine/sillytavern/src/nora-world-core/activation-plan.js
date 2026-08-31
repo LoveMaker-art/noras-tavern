@@ -24,6 +24,7 @@ export function createActivationPlan(value) {
         world_revision: world.revision,
         name: world.name,
         persona: cloneJson(world.persona),
+        ...(world.story_context ? { story_context: cloneJson(world.story_context) } : {}),
         ...(world.ui === undefined ? {} : { ui: cloneJson(world.ui) }),
         runtime_card: cloneJson(world.runtime_card),
         session: cloneJson(session),

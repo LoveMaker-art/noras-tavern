@@ -1,6 +1,7 @@
 // Chinese source keys follow ST's translate()/t template convention.
 // Display text only: never use this catalog to rewrite user or model content.
 export const english = Object.freeze({
+    '当前世界已改变，请重新打开编辑。': 'The active world has changed. Reopen the editor.',
     '这段历史已被剧情账本保护，无法编辑。若正在发送，请等发送结束后重试。': 'This history is protected by the story ledger. If a reply is being sent, wait for it to finish and retry.',
     '对话已发生变化，请重新加载后再编辑，原记录未被修改。': 'The conversation has changed. Reload before editing; the saved history has not been modified.',
     '复制思考': 'Copy reasoning',
