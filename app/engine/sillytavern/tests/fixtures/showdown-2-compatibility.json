@@ -1,0 +1,695 @@
+{
+  "baseline": "showdown 2.1.0 with current ST unhashHTMLSpans and underscore extensions",
+  "cases": [
+    {
+      "text": "普通中文与 English。\n下一行",
+      "options": {},
+      "html": "<p>普通中文与 English。\n下一行</p>"
+    },
+    {
+      "text": "**粗体** *斜体* ~~删除~~ _单下划线_ 😀",
+      "options": {},
+      "html": "<p><strong>粗体</strong> <em>斜体</em> ~~删除~~ <em>单下划线</em> 😀</p>"
+    },
+    {
+      "text": "# 标题\n\n> 引用\n\n- 第一项\n- 第二项",
+      "options": {},
+      "html": "<h1 id=\"\">标题</h1>\n<blockquote>\n  <p>引用</p>\n</blockquote>\n<ul>\n<li>第一项</li>\n<li>第二项</li>\n</ul>"
+    },
+    {
+      "text": "| 属性 | 值 |\n| --- | --- |\n| 时间 | 08:30 |",
+      "options": {},
+      "html": "<p>| 属性 | 值 |\n| --- | --- |\n| 时间 | 08:30 |</p>"
+    },
+    {
+      "text": "[链接](https://example.com/path \"标题\")",
+      "options": {},
+      "html": "<p><a href=\"https://example.com/path\" title=\"标题\">链接</a></p>"
+    },
+    {
+      "text": "[a](<https://example.com/a(b).png> \"title\")",
+      "options": {},
+      "html": "<p><a href=\"https://example.com/a(b).png\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "[a [b] c](url)",
+      "options": {},
+      "html": "<p><a href=\"url\">a [b] c</a></p>"
+    },
+    {
+      "text": "[a [[b] c](url)",
+      "options": {},
+      "html": "<p><a href=\"url\">a [[b] c</a></p>"
+    },
+    {
+      "text": "[a][id]\n\n[id]: https://example.com \"title\"",
+      "options": {},
+      "html": "<p><a href=\"https://example.com\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "[hello]\n\n[hello]: /local",
+      "options": {},
+      "html": "<p><a href=\"/local\">hello</a></p>"
+    },
+    {
+      "text": "[a]() [a]( ) [a](\"title\")",
+      "options": {},
+      "html": "<p>[a]() [a]( ) <a href=\"\">a</a></p>"
+    },
+    {
+      "text": "[a](one(two)three) [b](../x)",
+      "options": {},
+      "html": "<p><a href=\"one(two)three\">a</a> <a href=\"../x\">b</a></p>"
+    },
+    {
+      "text": "[a]\n [id]\n\n[id]: /x",
+      "options": {},
+      "html": "<p><a href=\"/x\">a</a></p>"
+    },
+    {
+      "text": "[a](url 'title')",
+      "options": {},
+      "html": "<p><a href=\"url\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "![角色](img.png =100x200 \"图\")",
+      "options": {},
+      "html": "<p><img src=\"img.png\" alt=\"角色\" title=\"图\" width=\"100\" height=\"200\" /></p>"
+    },
+    {
+      "text": "```html\n<button>选择</button>\n```",
+      "options": {},
+      "html": "<pre><code class=\"html language-html\">&lt;button&gt;选择&lt;/button&gt;\n</code></pre>"
+    },
+    {
+      "text": "<details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details>",
+      "options": {},
+      "html": "<p><details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details></p>"
+    },
+    {
+      "text": "<style>.card {color:red}</style><div class=\"card\">正文</div>",
+      "options": {},
+      "html": "<style>.card {color:red}</style>\n<div class=\"card\">正文</div>"
+    },
+    {
+      "text": "<div><span>one</span> <span>two</span></div>",
+      "options": {},
+      "html": "<div><span>one</span> <span>two</span></div>"
+    },
+    {
+      "text": "\\[非链接](url) `_[代码]_`",
+      "options": {},
+      "html": "<p>[非链接](url) <code>_[代码]_</code></p>"
+    },
+    {
+      "text": "---\ntitle: 普通标题 & subtitle\n---\n正文",
+      "options": {},
+      "html": "<hr />\n<h2 id=\"titlesubtitle\">title: 普通标题 &amp; subtitle</h2>\n<p>正文</p>"
+    },
+    {
+      "text": "[[[broken\nnext\n\nend",
+      "options": {},
+      "html": "<p>[[[broken\nnext</p>\n<p>end</p>"
+    },
+    {
+      "text": "[a](url \"tit'le\")",
+      "options": {},
+      "html": "<p><a href=\"url\" title=\"tit'le\">a</a></p>"
+    },
+    {
+      "text": "普通中文与 English。\n下一行",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p>普通中文与 English。<br />\n下一行</p>"
+    },
+    {
+      "text": "**粗体** *斜体* ~~删除~~ _单下划线_ 😀",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><strong>粗体</strong> <em>斜体</em> <del>删除</del> <em>单下划线</em> 😀</p>"
+    },
+    {
+      "text": "# 标题\n\n> 引用\n\n- 第一项\n- 第二项",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<h1 id=\"\">标题</h1>\n<blockquote>\n  <p>引用</p>\n</blockquote>\n<ul>\n<li>第一项</li>\n<li>第二项</li>\n</ul>"
+    },
+    {
+      "text": "| 属性 | 值 |\n| --- | --- |\n| 时间 | 08:30 |",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<table>\n<thead>\n<tr>\n<th>属性</th>\n<th>值</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>时间</td>\n<td>08:30</td>\n</tr>\n</tbody>\n</table>"
+    },
+    {
+      "text": "[链接](https://example.com/path \"标题\")",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"https://example.com/path\" title=\"标题\">链接</a></p>"
+    },
+    {
+      "text": "[a](<https://example.com/a(b).png> \"title\")",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"https://example.com/a(b).png\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "[a [b] c](url)",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"url\">a [b] c</a></p>"
+    },
+    {
+      "text": "[a [[b] c](url)",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"url\">a [[b] c</a></p>"
+    },
+    {
+      "text": "[a][id]\n\n[id]: https://example.com \"title\"",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"https://example.com\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "[hello]\n\n[hello]: /local",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"/local\">hello</a></p>"
+    },
+    {
+      "text": "[a]() [a]( ) [a](\"title\")",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p>[a]() [a]( ) <a href=\"\">a</a></p>"
+    },
+    {
+      "text": "[a](one(two)three) [b](../x)",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"one(two)three\">a</a> <a href=\"../x\">b</a></p>"
+    },
+    {
+      "text": "[a]\n [id]\n\n[id]: /x",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"/x\">a</a></p>"
+    },
+    {
+      "text": "[a](url 'title')",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"url\" title=\"title\">a</a></p>"
+    },
+    {
+      "text": "![角色](img.png =100x200 \"图\")",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><img src=\"img.png\" alt=\"角色\" title=\"图\" width=\"100\" height=\"200\" /></p>"
+    },
+    {
+      "text": "```html\n<button>选择</button>\n```",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<pre><code class=\"html language-html\">&lt;button&gt;选择&lt;/button&gt;\n</code></pre>"
+    },
+    {
+      "text": "<details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details>",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details></p>"
+    },
+    {
+      "text": "<style>.card {color:red}</style><div class=\"card\">正文</div>",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<style>.card {color:red}</style>\n<div class=\"card\">正文</div>"
+    },
+    {
+      "text": "<div><span>one</span> <span>two</span></div>",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<div><span>one</span> <span>two</span></div>"
+    },
+    {
+      "text": "\\[非链接](url) `_[代码]_`",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p>[非链接](url) <code>_[代码]_</code></p>"
+    },
+    {
+      "text": "---\ntitle: 普通标题 & subtitle\n---\n正文",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<hr />\n<h2 id=\"titlesubtitle\">title: 普通标题 &amp; subtitle</h2>\n<p>正文</p>"
+    },
+    {
+      "text": "[[[broken\nnext\n\nend",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p>[[[broken<br />\nnext</p>\n<p>end</p>"
+    },
+    {
+      "text": "[a](url \"tit'le\")",
+      "options": {
+        "emoji": true,
+        "literalMidWordUnderscores": true,
+        "parseImgDimensions": true,
+        "tables": true,
+        "underline": true,
+        "simpleLineBreaks": true,
+        "strikethrough": true,
+        "disableForced4SpacesIndentedSublists": true
+      },
+      "html": "<p><a href=\"url\" title=\"tit'le\">a</a></p>"
+    },
+    {
+      "text": "普通中文与 English。\n下一行",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p>普通中文与 English。\n下一行</p>\n</body>\n</html>"
+    },
+    {
+      "text": "**粗体** *斜体* ~~删除~~ _单下划线_ 😀",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><strong>粗体</strong> <em>斜体</em> ~~删除~~ <em>单下划线</em> 😀</p>\n</body>\n</html>"
+    },
+    {
+      "text": "# 标题\n\n> 引用\n\n- 第一项\n- 第二项",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<h1 id=\"\">标题</h1>\n<blockquote>\n  <p>引用</p>\n</blockquote>\n<ul>\n<li>第一项</li>\n<li>第二项</li>\n</ul>\n</body>\n</html>"
+    },
+    {
+      "text": "| 属性 | 值 |\n| --- | --- |\n| 时间 | 08:30 |",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<table>\n<thead>\n<tr>\n<th id=\"属性\">属性</th>\n<th id=\"值\">值</th>\n</tr>\n</thead>\n<tbody>\n<tr>\n<td>时间</td>\n<td>08:30</td>\n</tr>\n</tbody>\n</table>\n</body>\n</html>"
+    },
+    {
+      "text": "[链接](https://example.com/path \"标题\")",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"https://example.com/path\" title=\"标题\" rel=\"noopener noreferrer\" target=\"_blank\">链接</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a](<https://example.com/a(b).png> \"title\")",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"https://example.com/a(b).png\" title=\"title\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a [b] c](url)",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"url\" rel=\"noopener noreferrer\" target=\"_blank\">a [b] c</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a [[b] c](url)",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"url\" rel=\"noopener noreferrer\" target=\"_blank\">a [[b] c</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a][id]\n\n[id]: https://example.com \"title\"",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"https://example.com\" title=\"title\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[hello]\n\n[hello]: /local",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"/local\" rel=\"noopener noreferrer\" target=\"_blank\">hello</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a]() [a]( ) [a](\"title\")",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p>[a]() [a]( ) <a href=\"\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a](one(two)three) [b](../x)",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"one(two)three\" rel=\"noopener noreferrer\" target=\"_blank\">a</a> <a href=\"../x\" rel=\"noopener noreferrer\" target=\"_blank\">b</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a]\n [id]\n\n[id]: /x",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"/x\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a](url 'title')",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"url\" title=\"title\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    },
+    {
+      "text": "![角色](img.png =100x200 \"图\")",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><img src=\"img.png\" alt=\"角色\" title=\"图\" width=\"100\" height=\"200\" /></p>\n</body>\n</html>"
+    },
+    {
+      "text": "```html\n<button>选择</button>\n```",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<pre><code class=\"html language-html\">&lt;button&gt;选择&lt;/button&gt;\n</code></pre>\n</body>\n</html>"
+    },
+    {
+      "text": "<details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details>",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><details><summary>变量</summary><div data-mvu=\"clock\">09:00</div></details></p>\n</body>\n</html>"
+    },
+    {
+      "text": "<style>.card {color:red}</style><div class=\"card\">正文</div>",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<style>.card {color:red}</style>\n<div class=\"card\">正文</div>\n</body>\n</html>"
+    },
+    {
+      "text": "<div><span>one</span> <span>two</span></div>",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<div><span>one</span> <span>two</span></div>\n</body>\n</html>"
+    },
+    {
+      "text": "\\[非链接](url) `_[代码]_`",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p>[非链接](url) <code>_[代码]_</code></p>\n</body>\n</html>"
+    },
+    {
+      "text": "---\ntitle: 普通标题 & subtitle\n---\n正文",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<title>普通标题 &amp; subtitle</title>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p>正文</p>\n</body>\n</html>"
+    },
+    {
+      "text": "[[[broken\nnext\n\nend",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p>[[[broken\nnext</p>\n<p>end</p>\n</body>\n</html>"
+    },
+    {
+      "text": "[a](url \"tit'le\")",
+      "options": {
+        "tables": true,
+        "tablesHeaderId": true,
+        "openLinksInNewWindow": true,
+        "metadata": true,
+        "completeHTMLDocument": true
+      },
+      "html": "<!DOCTYPE HTML>\n<html>\n<head>\n<meta charset=\"utf-8\">\n</head>\n<body>\n<p><a href=\"url\" title=\"tit'le\" rel=\"noopener noreferrer\" target=\"_blank\">a</a></p>\n</body>\n</html>"
+    }
+  ]
+}

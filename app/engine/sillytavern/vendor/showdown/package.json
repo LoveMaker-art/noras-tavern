@@ -1,0 +1,8 @@
+{
+  "name": "showdown",
+  "version": "2.1.0-tavern.1",
+  "description": "Tavern's reviewed security backport of Showdown 2.1.0",
+  "main": "index.cjs",
+  "license": "MIT",
+  "files": ["index.cjs", "LICENSE", "SECURITY.md"]
+}

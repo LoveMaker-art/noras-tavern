@@ -10,7 +10,8 @@ application source. Python-to-Node data migration remains part of the updater;
 the legacy online application is not a second runtime in this source tree.
 
 The source version is `2.0.0`. **The stable GitHub Release is not yet published:**
-the dependency audit gate remains outstanding.
+the release bundle has not yet been published. The two dependency security
+backports are documented below; publishing still requires the complete checks.
 Until that publication, GitHub `releases/latest` still selects the old release.
 Do not use the commands below expecting a 2.0.0 update before the release exists.
 See [2.0.0 release status](docs/releases/v2.0.0.md).
@@ -91,6 +92,12 @@ It exports that commit to an isolated directory, installs locked dependencies,
 checks production dependency advisories, runs tests/lint/build/contracts and the
 workflow gate, then archives explicit file lists. A nonzero security audit blocks
 stable packaging; unresolved advisories are not silently accepted.
+
+`image-size` and `showdown` resolve to pinned, MIT-licensed security backports in
+`app/engine/sillytavern/vendor/`. Their `SECURITY.md` files record upstream source,
+changes and limitations. The mandatory dependency regression tests complement
+registry audit, which does not inspect local fork source. These are not claimed
+to be new upstream releases or proof that all vulnerabilities have been removed.
 
 Browser acceptance is not a packaging prerequisite. No browser report,
 commit-matched UI evidence or browser timing thresholds are required. The five
