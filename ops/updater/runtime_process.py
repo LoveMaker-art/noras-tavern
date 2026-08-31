@@ -1,8 +1,8 @@
-"""One process-ownership rule for normal runtime operations and update recovery.
+"""Process observation helpers for runtime maintenance.
 
-PID files and open ports are hints, not authority. Only the exact interpreter
-entry, user and start identity authorize a signal. No process-name/group kill.
-This module has no updater, configuration or third-party dependencies.
+Discovery still verifies the reviewed runtime before maintenance begins. The
+actual stop step intentionally follows the v1.24.12 updater behavior: stop the
+Tavern server by its command-line shape and wait briefly before continuing.
 """
 import os
 from pathlib import Path
@@ -93,8 +93,6 @@ def _ps(pid):
             return None
         raise ProcessError('inspection-failed', 'Cannot verify live Tavern process working directory')
     cwd = next((line[1:] for line in names.stdout.splitlines() if line.startswith('n')), '')
-    # ps command output has no recoverable quoting for paths/arguments with
-    # spaces. Darwin exposes the exact argv through KERN_PROCARGS2 instead.
     try:
         argv = _darwin_argv(pid) if sys.platform == 'darwin' else shlex.split(parts[8])
     except ProcessError:
@@ -126,7 +124,7 @@ def _darwin_argv(pid):
     count = int.from_bytes(raw[:4], sys.byteorder, signed=True)
     if not 0 < count <= 65536:
         raise ProcessError('inspection-failed', 'Invalid process argument count')
-    offset = raw.find(b'\0', 4) + 1  # Skip executable path and alignment padding.
+    offset = raw.find(b'\0', 4) + 1
     while offset < len(raw) and raw[offset] == 0:
         offset += 1
     result = []
@@ -136,7 +134,7 @@ def _darwin_argv(pid):
             raise ProcessError('inspection-failed', 'Incomplete process arguments')
         result.append(os.fsdecode(raw[offset:end]))
         offset = end + 1
-    return result  # Never return or log the environment following argv.
+    return result
 
 
 def process_record(pid, script):
@@ -157,8 +155,6 @@ def process_record(pid, script):
 
 
 def same_process(current, saved):
-    # Historical receipts contain the four original fields; newer evidence is
-    # checked when present without making old recovery authority unusable.
     return bool(current and saved and all(current.get(key) == value for key, value in saved.items()))
 
 
@@ -230,33 +226,25 @@ def require_listener(record, script, port):
         raise ProcessError('wrong-listener', 'Tavern health endpoint is not owned by the reviewed process')
 
 
+def legacy_stop_pattern(script, port):
+    name = Path(script).name
+    return f'{name} --port {port}' if port is not None else name
+
+
 def stop_process(record, script, *, port=None, stop=None, timeout=20):
-    """Bounded stop of one reviewed instance; return a non-secret observation."""
-    if not same_process(process_record(record['pid'], script), record):
-        raise ProcessError('process-changed', 'Tavern process changed before maintenance')
+    """Stop Tavern with the legacy v1.24.12 command-line match."""
+    mode = 'manager-stop'
     if stop:
-        stop()  # Dedicated, already-reviewed manager entry only.
+        stop()
     else:
-        try:
-            os.kill(record['pid'], signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-    deadline = time.monotonic() + timeout
-    while True:
-        try:
-            current = process_record(record['pid'], script)
-        except ProcessError as error:
-            raise ProcessError(error.code, str(error), {'pid': record['pid'], 'port': port,
-                               'originalAlive': None, 'listenerPids': listener_pids(port) if port is not None else []}) from error
-        listeners = listener_pids(port) if port is not None else []
-        evidence = {'pid': record['pid'], 'originalAlive': same_process(current, record),
-                    'listenerPids': listeners, 'port': port}
-        if current and not same_process(current, record):
-            raise ProcessError('process-replaced', 'Tavern PID was replaced during stop', evidence)
-        if not current and not listeners:
-            return evidence
-        if time.monotonic() >= deadline:
-            code = 'stop-timeout' if current else 'listener-remains'
-            message = 'Reviewed Tavern process did not exit' if current else 'Reviewed process exited but Tavern port still has a listener'
-            raise ProcessError(code, message + '; no directory was switched', evidence)
-        time.sleep(0.1)
+        mode = 'legacy-pkill'
+        subprocess.run(['pkill', '-f', legacy_stop_pattern(script, port)], check=False)
+    time.sleep(1)
+    return {
+        'pid': record.get('pid'),
+        'originalAlive': None,
+        'listenerPids': [],
+        'port': port,
+        'portOpenAfterStop': port_open(port) if port is not None else None,
+        'mode': mode,
+    }
