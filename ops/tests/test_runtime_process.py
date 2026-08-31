@@ -1,4 +1,4 @@
-"""Linux observation and stop failure classification at the shared interface."""
+"""Runtime process identity checks and legacy stop behavior."""
 import os
 from pathlib import Path
 from types import SimpleNamespace
@@ -52,37 +52,39 @@ class RuntimeProcessTests(unittest.TestCase):
                 processes.process_record(12345, self.script)
         self.assertEqual(caught.exception.code, 'process-changed')
 
-    def test_reused_pid_is_never_signalled(self):
-        with patch.object(processes, 'process_record', return_value={**self.record, 'identity': 'new'}), \
-             patch.object(os, 'kill') as kill:
-            with self.assertRaises(processes.ProcessError) as caught:
-                processes.stop_process(self.record, self.script, timeout=0)
-        self.assertEqual(caught.exception.code, 'process-changed')
-        kill.assert_not_called()
+    def test_legacy_stop_uses_name_matched_pkill(self):
+        with patch.object(processes.subprocess, 'run') as run, \
+             patch.object(processes.time, 'sleep') as sleep, \
+             patch.object(processes, 'port_open', return_value=True):
+            result = processes.stop_process(self.record, self.script, port=8799, timeout=0)
+        run.assert_called_once_with(['pkill', '-f', 'server.py --port 8799'], check=False)
+        sleep.assert_called_once_with(1)
+        self.assertEqual(result['mode'], 'legacy-pkill')
+        self.assertIsNone(result['originalAlive'])
+        self.assertEqual(result['listenerPids'], [])
+        self.assertTrue(result['portOpenAfterStop'])
 
-    def test_alive_timeout_differs_from_replacement_listener(self):
-        for current, owners, expected in ((self.record, [12345], 'stop-timeout'),
-                                           (None, [54321], 'listener-remains')):
-            with self.subTest(expected=expected), \
-                 patch.object(processes, 'process_record', side_effect=[self.record, current]), \
-                 patch.object(processes, 'listener_pids', return_value=owners), \
-                 patch.object(os, 'kill') as kill, patch.object(os, 'killpg') as group:
-                with self.assertRaises(processes.ProcessError) as caught:
-                    processes.stop_process(self.record, self.script, port=54321, timeout=0)
-                self.assertEqual(caught.exception.code, expected)
-                self.assertEqual(caught.exception.evidence['listenerPids'], owners)
-                kill.assert_called_once_with(12345, processes.signal.SIGTERM)
-                group.assert_not_called()
+    def test_legacy_stop_does_not_recheck_listener_ownership(self):
+        with patch.object(processes.subprocess, 'run'), \
+             patch.object(processes.time, 'sleep'), \
+             patch.object(processes, 'port_open', return_value=False), \
+             patch.object(processes, 'listener_pids') as listener_pids, \
+             patch.object(processes, 'process_record') as process_record:
+            result = processes.stop_process(self.record, self.script, port=8799, timeout=0)
+        listener_pids.assert_not_called()
+        process_record.assert_not_called()
+        self.assertFalse(result['portOpenAfterStop'])
 
     def test_manager_stop_uses_only_the_reviewed_manager(self):
-        with patch.object(processes, 'process_record', side_effect=[self.record, None]), \
-             patch.object(processes, 'listener_pids', return_value=[]), \
-             patch.object(os, 'kill') as kill:
+        with patch.object(processes.subprocess, 'run') as run, \
+             patch.object(processes.time, 'sleep') as sleep, \
+             patch.object(processes, 'port_open', return_value=False):
             calls = []
             result = processes.stop_process(self.record, self.script, stop=lambda: calls.append('stop'), timeout=0)
-        self.assertFalse(result['originalAlive'])
         self.assertEqual(calls, ['stop'])
-        kill.assert_not_called()
+        run.assert_not_called()
+        sleep.assert_called_once_with(1)
+        self.assertEqual(result['mode'], 'manager-stop')
 
     def test_historical_receipt_still_matches_new_observation(self):
         self.assertTrue(processes.same_process({**self.record, 'uid': os.getuid(), 'pgid': 12345}, self.record))
