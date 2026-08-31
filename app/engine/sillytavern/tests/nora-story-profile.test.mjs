@@ -117,7 +117,8 @@ test('archive chat reads only the World v2 default Session binding', async (t) =
 test('story profile restores the original actor surface through Nora adapters', () => {
     assert.equal(storyProfileHref('https://example.test/'), '/actor?from=console&return=https%3A%2F%2Fexample.test%2F');
     const upstreamFiles = {
-        'actor.html': 'c13c09c4068b858efdfe0621579c67be52eeab1547d07f60933f374e61f4f5ab',
+        // Approved branding-only change: title and three metadata values use Story Profile.
+        'actor.html': 'f4a24948cbae5a060739a681207213dc9ff8428ce83b1c5af8343f4154989062',
         'actor.js': '6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359',
         'security.js': '90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965',
     };
