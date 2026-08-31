@@ -103,6 +103,20 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/skills/agents-tavern.md',
     ]);
     const skillRoots = ['ops/skills/creative/tavern/', 'ops/skills/creative/tavern-ops/', 'ops/skills/system/tavern-updater/', 'ops/skills/creative/nora-cardforge/'];
+    // Upstream sample content and text fonts remain in the source reference,
+    // not the installed product. Nora uses system fonts. Font Awesome is an
+    // icon dependency (including extension controls), not a text-font choice.
+    const engineRoot = 'app/engine/sillytavern/';
+    const omittedRoots = [
+        `${engineRoot}default/content/backgrounds/`,
+        `${engineRoot}default/content/Seraphina/`,
+        `${engineRoot}public/webfonts/NotoSans/`,
+        `${engineRoot}public/webfonts/NotoSansMono/`,
+    ];
+    const omittedFiles = new Set([
+        `${engineRoot}default/content/default_Seraphina.png`,
+        `${engineRoot}default/content/Eldoria.json`,
+    ]);
     const selected = new Set(sourceFiles.filter(file => (
         file.startsWith('app/') || operationFiles.has(file)
         || file.startsWith('ops/updater/')
@@ -114,6 +128,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
             || file === 'ops/skills/system/tavern-updater/scripts/update.py'
         ))
     )
+        && !omittedRoots.some(root => file.startsWith(root)) && !omittedFiles.has(file)
         && !file.startsWith('app/engine/sillytavern/tests/')
         && !file.startsWith('app/tests/')
         && !file.startsWith('app/engine/sillytavern/public/dist/nora/')
@@ -129,6 +144,17 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     visit('app/engine/sillytavern/public/dist/nora');
     visit('app/engine/sillytavern/dist/_webpack/output');
     visit('nora-mcp/dist');
+    // Never ship an index that asks first startup to copy absent resources.
+    const contentRoot = `${engineRoot}default/content/`;
+    if (selected.has(`${contentRoot}index.json`)) {
+        const index = JSON.parse(fs.readFileSync(path.join(stage, contentRoot, 'index.json'), 'utf8'));
+        for (const item of index) {
+            const target = contentRoot + item.filename;
+            if (!selected.has(target) && ![...selected].some(file => file.startsWith(`${target}/`))) {
+                throw new Error(`Default content index references an omitted release asset: ${item.filename}`);
+            }
+        }
+    }
     for (const relative of selected) {
         assertSafeReleasePath(relative);
         assertSafeReleaseContent(relative, fs.readFileSync(path.join(stage, relative)));

@@ -391,18 +391,8 @@
             "chara": []
         }
     },
-    "tags": [
-        {
-            "id": "1345561466591",
-            "name": "ST Default",
-            "color": "rgba(108, 32, 32, 1)"
-        }
-    ],
-    "tag_map": {
-        "default_Seraphina.png": [
-            "1345561466591"
-        ]
-    },
+    "tags": [],
+    "tag_map": {},
     "nai_settings": {
         "temperature": 1.5,
         "repetition_penalty": 2.25,

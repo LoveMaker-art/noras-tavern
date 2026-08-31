@@ -77,6 +77,9 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
     const retained = [
         'app/engine/sillytavern/src/nora-story-statistics.js',
+        'app/engine/sillytavern/public/webfonts/fa-solid-900.woff2',
+        'app/engine/sillytavern/public/webfonts/fa-brands-400.woff2',
+        'app/engine/sillytavern/src/tokenizers/llama3.json',
         'ops/scripts/runtime.sh', 'ops/scripts/bringup-native.sh', 'ops/scripts/provision.sh',
         'ops/scripts/profile_memory.py', 'ops/scripts/install-hermes-skills.py',
         'ops/scripts/analyze-boot-metrics.mjs', 'ops/scripts/analyze-runtime-phases.mjs',
@@ -88,6 +91,13 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md',
     ];
     const excluded = [
+        'app/engine/sillytavern/default/content/backgrounds/sample.png',
+        'app/engine/sillytavern/default/content/default_Seraphina.png',
+        'app/engine/sillytavern/default/content/Seraphina/joy.png',
+        'app/engine/sillytavern/default/content/Eldoria.json',
+        'app/engine/sillytavern/public/webfonts/NotoSans/stylesheet.css',
+        'app/engine/sillytavern/public/webfonts/NotoSans/NotoSans-Regular.woff2',
+        'app/engine/sillytavern/public/webfonts/NotoSansMono/noto-sans-mono-v30-regular.woff2',
         'ops/scripts/tavern_cli.py', 'ops/scripts/native_tavern.py', 'ops/scripts/package-release.mjs',
         'ops/scripts/verify-product-workflows.mjs', 'ops/scripts/migrate-nora-worlds-v2.mjs',
         'ops/scripts/index-project.mjs', 'ops/tests/test-install.py', 'ops/specialists/retired/SKILL.md',
@@ -104,4 +114,37 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     const delivery = collectRuntimeFiles(stage, [...retained, ...excluded]);
     assert.deepEqual(delivery, [...retained, ...generated].sort());
     for (const file of excluded) assert.ok(fs.existsSync(path.join(stage, file)), `${file} remains available to source/build tests`);
+});
+
+test('default content index cannot reference assets excluded from the installed product', t => {
+    const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'tavern-content-index-fixture-'));
+    t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
+    for (const dir of ['app/engine/sillytavern/public/dist/nora', 'app/engine/sillytavern/dist/_webpack/output', 'nora-mcp/dist']) {
+        fs.mkdirSync(path.join(stage, dir), { recursive: true });
+    }
+    const indexPath = 'app/engine/sillytavern/default/content/index.json';
+    const background = 'app/engine/sillytavern/default/content/backgrounds/sample.png';
+    fs.mkdirSync(path.dirname(path.join(stage, background)), { recursive: true });
+    fs.writeFileSync(path.join(stage, background), 'fixture');
+    fs.writeFileSync(path.join(stage, indexPath), JSON.stringify([{ filename: 'backgrounds/sample.png', type: 'background' }]));
+    assert.throws(() => collectRuntimeFiles(stage, [indexPath, background]), /index references an omitted release asset/);
+    fs.writeFileSync(path.join(stage, indexPath), '[]');
+    assert.deepEqual(collectRuntimeFiles(stage, [indexPath, background]), [indexPath]);
+});
+
+test('new installations have no sample character, background or dangling default tags', () => {
+    const index = JSON.parse(fs.readFileSync(new URL('../default/content/index.json', import.meta.url)));
+    assert.ok(index.every(item => !['background', 'character', 'sprites'].includes(item.type)));
+    assert.ok(index.every(item => item.filename !== 'Eldoria.json'));
+    const settings = JSON.parse(fs.readFileSync(new URL('../default/content/settings.json', import.meta.url)));
+    assert.deepEqual(settings.tags, []);
+    assert.deepEqual(settings.tag_map, {});
+    const backgrounds = fs.readFileSync(new URL('../public/scripts/backgrounds.js', import.meta.url), 'utf8');
+    const declaration = backgrounds.match(/export let background_settings = (\{[\s\S]*?\n\});/)[1];
+    const defaults = new Function('BG_SORT_OPTIONS', `return (${declaration});`)({ AZ: 'az' });
+    assert.equal(defaults.name, '');
+    assert.equal(defaults.url, 'none');
+    const indexHtml = fs.readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    assert.doesNotMatch(indexHtml, /webfonts\/NotoSans/);
+    assert.match(indexHtml, /css\/solid\.min\.css/);
 });

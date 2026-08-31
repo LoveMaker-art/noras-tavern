@@ -86,8 +86,8 @@ let lazyLoadObserver = null;
 let cachedSystemBackgrounds = [];
 
 export let background_settings = {
-    name: '__transparent.png',
-    url: generateUrlParameter('__transparent.png', false),
+    name: '',
+    url: 'none',
     fitting: 'classic',
     animation: false,
     sortOrder: BG_SORT_OPTIONS.AZ,
