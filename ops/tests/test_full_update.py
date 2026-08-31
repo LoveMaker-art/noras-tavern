@@ -41,6 +41,15 @@ class Service:
 
 
 class FullUpdateTests(unittest.TestCase):
+    def test_explicit_existing_hermes_installation_can_be_account_home(self):
+        with patch.object(Path, 'home', return_value=self.home), \
+             patch.dict('os.environ', {'HERMES_HOME': str(self.home)}):
+            self.assertEqual(Updater(self.home).home, self.home)
+        with patch.object(Path, 'home', return_value=self.root), \
+             patch.dict('os.environ', {'HERMES_HOME': str(self.root)}):
+            with self.assertRaisesRegex(ValueError, 'exact Hermes'):
+                Updater(self.root)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="nora-full-update-test-")
         self.addCleanup(self.temp.cleanup)

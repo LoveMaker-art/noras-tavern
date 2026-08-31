@@ -71,7 +71,10 @@ def plan_digest(plan):
 class Updater:
     def __init__(self, home, *, lifecycle=None):
         self.home = safe(Path(home).expanduser().absolute())
-        if str(self.home) == "/" or self.home == Path.home():
+        explicit_installation = (os.environ.get('HERMES_HOME') == str(self.home)
+            and (self.home / 'config.yaml').is_file() and (self.home / 'skills').is_dir()
+            and (self.home / 'apps/tavern-runtime').is_dir())
+        if str(self.home) == "/" or (self.home == Path.home() and not explicit_installation):
             raise ValueError("Use the exact Hermes installation directory, not a broad home/root")
         self.state = self.home / "tavern-state"
         self.root = self.home / "tavern-updates-v2"
