@@ -4,16 +4,16 @@ import { requestStoryProjection } from '../nora-story-ledger/profile-projection.
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
+import {
+    adaptCardForMvuRuntime,
+    inspectMvuCompatibility,
+    normalizeTavernHelperScripts,
+} from '../../public/scripts/nora-compat/mvu-compatibility.js';
 import { cloneJson, sha256, stableStringify } from './domain.js';
 import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 import { createStCardCodec } from './st-card-codec.js';
 
-const MVU_ENTRY_MARKER = /\[(?:initvar|mvu_update|mvu_plot)\]/i;
-const MVU_VARIABLE_MARKER = /(?:<status_current_variables>|{{(?:format|get)_message_variable::stat_data(?:[.}]|}}))/i;
-const MVU_UPDATE_MARKER = /(?:<UpdateVariable>|<JSONPatch>)/i;
-const MVU_RUNTIME_SCRIPT = /MagicalAstrogy\/MagVarUpdate(?:@[^/'"\s]+)?\/artifact\/bundle\.js/i;
-const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource\/dist\/util\/mvu_zod\.js/i;
 const INTERNAL_BLANK_RUNTIME_BASE = 'Nora_Blank_World--nora-internal';
 
 const ENTRY_DEFAULTS = Object.freeze({
@@ -66,36 +66,11 @@ function cardData(card) {
     return record(card?.data && typeof card.data === 'object' ? card.data : card);
 }
 
-function helperScripts(card) {
-    const scripts = cardData(card).extensions?.tavern_helper?.scripts;
-    if (!Array.isArray(scripts)) return [];
-    return scripts.flatMap(item => item?.type === 'script' ? [item] : (Array.isArray(item?.scripts) ? item.scripts : []));
-}
-
-function worldbookEntries(book) {
-    const entries = book?.entries || book || {};
-    return Array.isArray(entries) ? entries : Object.values(entries);
-}
-
-function mvuInspection(card, books) {
-    const scripts = helperScripts(card);
-    const declaredInBook = books.some(book => worldbookEntries(book).some(entry => {
-        const comment = String(entry?.comment || '');
-        const content = String(entry?.content || '');
-        return MVU_ENTRY_MARKER.test(comment)
-            || (MVU_VARIABLE_MARKER.test(content) && MVU_UPDATE_MARKER.test(content));
-    }));
-    const embedded = scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
-    const schema = scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
-    const declared = declaredInBook || embedded || schema;
-    return { declared, runtimeSource: !declared ? 'none' : (embedded ? 'embedded' : 'managed') };
-}
-
 function capabilityInspection(card, books) {
     const data = cardData(card);
     const regexScripts = Array.isArray(data.extensions?.regex_scripts) ? data.extensions.regex_scripts : [];
-    const scripts = helperScripts(card);
-    const mvu = mvuInspection(card, books);
+    const scripts = normalizeTavernHelperScripts(card);
+    const mvu = inspectMvuCompatibility({ card, books, helperScripts: scripts });
     const declared = [];
     if (mvu.declared) declared.push('mvu');
     if (regexScripts.length) declared.push('regex');
@@ -105,7 +80,14 @@ function capabilityInspection(card, books) {
         items: {
             regex: { script_count: regexScripts.length },
             tavern_helper: { script_count: scripts.length },
-            mvu: { declared: mvu.declared, runtime_source: mvu.runtimeSource },
+            mvu: {
+                declared: mvu.declared,
+                runtime_source: mvu.runtimeSource,
+                update_protocol: mvu.updateProtocol,
+                split_model_supported: mvu.splitModelSupported,
+                update_entry_ids: [...mvu.updateEntryIds],
+                reasons: [...mvu.reasons],
+            },
         },
     };
 }
@@ -267,7 +249,9 @@ export function inspectStCard(card) {
         : null;
     const books = embeddedBook ? [embeddedBook] : [];
     const capabilities = capabilityInspection(card, books);
-    const worldbooks = books.map((book, index) => {
+    const adaptation = adaptCardForMvuRuntime(card);
+    const projectedBook = cardData(adaptation.card).character_book;
+    const worldbooks = (projectedBook ? [projectedBook] : []).map((book, index) => {
         const converted = convertEmbeddedBook(book);
         return {
             source_key: `embedded-worldbook:${index}`,
@@ -589,7 +573,14 @@ export function createStBackendMaterializer({
             if (!Buffer.isBuffer(decoded?.runtimeCardBuffer)) {
                 throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The ST card codec did not produce a Runtime Card artifact.');
             }
+            const adaptation = adaptCardForMvuRuntime(decoded.card);
             const report = inspectStCard(decoded.card);
+            const runtimeCardBuffer = adaptation.changed && typeof cardCodec.encodeRuntimeCard === 'function'
+                ? await cardCodec.encodeRuntimeCard({
+                    card: adaptation.card,
+                    sourceBuffer: decoded.runtimeCardBuffer,
+                })
+                : decoded.runtimeCardBuffer;
             const timestamp = isoDate(now());
             const created = [];
             try {
@@ -599,7 +590,7 @@ export function createStBackendMaterializer({
                     : `${safeEngineName(report.character_name, 'Character')}--nora-${sha256(worldId).slice(0, 10)}`;
                 const avatar = `${runtimeBase}.png`;
                 const runtimePath = path.join(roots.characters, avatar);
-                const runtimePersisted = await ensureFile(runtimePath, decoded.runtimeCardBuffer);
+                const runtimePersisted = await ensureFile(runtimePath, runtimeCardBuffer);
                 if (runtimePersisted.created) created.push({ filePath: runtimePath, digest: runtimePersisted.digest });
                 await checkpoint('RUNTIME_CARD_CREATED');
 

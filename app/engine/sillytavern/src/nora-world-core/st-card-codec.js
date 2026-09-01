@@ -27,6 +27,10 @@ async function encodeCard(card, avatar, serverRoot) {
 
 export function createStCardCodec({ serverRoot = process.cwd() } = {}) {
     return Object.freeze({
+        async encodeRuntimeCard({ card, sourceBuffer }) {
+            validateCard(card);
+            return encodeCard(card, sourceBuffer, serverRoot);
+        },
         async decode({ buffer, format }) {
             const normalizedFormat = String(format || '').trim().toLowerCase();
             if (normalizedFormat === 'png') {

@@ -37,6 +37,9 @@ export function createMvuModelAdapter({
             declarationChecked: Boolean(worldCapabilities) || Boolean(liveStatus?.declarationChecked),
             supported: declared || Boolean(liveStatus?.supported) || Boolean(liveStatus?.initialized),
             runtimeReady,
+            updateProtocol: capability?.evidence?.update_protocol ?? liveStatus?.updateProtocol ?? 'none',
+            updateOperational: capability?.evidence?.update_operational ?? liveStatus?.updateOperational ?? null,
+            splitModelSupported: capability?.evidence?.split_model_supported ?? liveStatus?.splitModelSupported ?? false,
             capabilityStatus: capability?.status || null,
             capabilityError: capability?.error || null,
         };
@@ -54,12 +57,11 @@ export function createMvuModelAdapter({
 
     async function inspect(worldCapabilities = null) {
         const api = readApi();
-        if (worldCapabilities) return status(worldCapabilities);
-        if (typeof api?.inspectCurrentCard !== 'function') return status();
+        if (typeof api?.inspectCurrentCard !== 'function') return status(worldCapabilities);
         try {
-            return project(await api.inspectCurrentCard());
+            return project(await api.inspectCurrentCard(), worldCapabilities);
         } catch {
-            return status();
+            return status(worldCapabilities);
         }
     }
 

@@ -1,40 +1,11 @@
-function embeddedHelperScripts(character) {
-    const scripts = character?.data?.extensions?.tavern_helper?.scripts;
-    if (!Array.isArray(scripts)) return [];
-    return scripts.flatMap((item) => item?.type === 'script' ? [item] : (Array.isArray(item?.scripts) ? item.scripts : []));
-}
+import {
+    inspectMvuCompatibility,
+    normalizeTavernHelperScripts,
+} from '../nora-compat/mvu-compatibility.js';
 
-const MVU_ENTRY_MARKER = /\[(?:initvar|mvu_update|mvu_plot)\]/i;
-const MVU_VARIABLE_MARKER = /(?:<status_current_variables>|{{(?:format|get)_message_variable::stat_data(?:[.}]|}}))/i;
-const MVU_UPDATE_MARKER = /(?:<UpdateVariable>|<JSONPatch>)/i;
-const MVU_RUNTIME_SCRIPT = /MagicalAstrogy\/MagVarUpdate(?:@[^/'"\s]+)?\/artifact\/bundle\.js/i;
-const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource\/dist\/util\/mvu_zod\.js/i;
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
 const MVU_EXTENSION = 'third-party/nora-mvu';
 const REGEX_EXTENSION = 'regex';
-
-function worldbookEntries(book) {
-    const entries = book?.entries || book || {};
-    return Array.isArray(entries) ? entries : Object.values(entries);
-}
-
-function hasMvuDeclaration(books) {
-    return books.some(book => worldbookEntries(book)
-        .some((entry) => {
-            const comment = String(entry?.comment || '');
-            const content = String(entry?.content || '');
-            return MVU_ENTRY_MARKER.test(comment)
-                || (MVU_VARIABLE_MARKER.test(content) && MVU_UPDATE_MARKER.test(content));
-        }));
-}
-
-function hasMvuRuntimeScript(scripts) {
-    return scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
-}
-
-function hasMvuSchemaScript(scripts) {
-    return scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
-}
 
 function hasInitializedMvuData(runtime) {
     try {
@@ -62,15 +33,25 @@ export function inspectCharacterRuntime(character, books = []) {
     const regexScripts = Array.isArray(character?.data?.extensions?.regex_scripts)
         ? character.data.extensions.regex_scripts
         : [];
-    const helperScripts = embeddedHelperScripts(character);
+    const helperScripts = normalizeTavernHelperScripts(character);
     const availableBooks = [character?.data?.character_book, ...books].filter(Boolean);
-    const hasEmbeddedMvuRuntime = hasMvuRuntimeScript(helperScripts);
-    const mvuDeclared = hasMvuDeclaration(availableBooks) || hasEmbeddedMvuRuntime || hasMvuSchemaScript(helperScripts);
-    const mvuRuntimeSource = !mvuDeclared ? 'none' : (hasEmbeddedMvuRuntime ? 'embedded' : 'managed');
+    const mvu = inspectMvuCompatibility({ card: character, books: availableBooks, helperScripts });
+    const mvuDeclared = mvu.declared;
+    const mvuRuntimeSource = mvu.runtimeSource;
     const extensions = [];
     if (helperScripts.length || mvuDeclared) extensions.push(HELPER_EXTENSION);
     if (mvuRuntimeSource === 'managed') extensions.push(MVU_EXTENSION);
-    return Object.freeze({ regexScripts, helperScripts, mvuDeclared, mvuRuntimeSource, extensions: Object.freeze(extensions) });
+    return Object.freeze({
+        regexScripts,
+        helperScripts,
+        mvuDeclared,
+        mvuRuntimeSource,
+        mvuUpdateProtocol: mvu.updateProtocol,
+        mvuSplitModelSupported: mvu.splitModelSupported,
+        mvuUpdateEntryIds: mvu.updateEntryIds,
+        mvuReasons: mvu.reasons,
+        extensions: Object.freeze(extensions),
+    });
 }
 
 async function waitForExposedMvuRuntime({ timeoutMs = 5000, intervalMs = 25 } = {}) {
@@ -250,6 +231,11 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
             api_visible: true,
             runtime_ready: true,
             data_initialized: hasInitializedMvuData(visibleRuntime),
+            update_protocol: inspection.mvuUpdateProtocol,
+            split_model_supported: inspection.mvuSplitModelSupported,
+            update_operational: null,
+            update_entry_count: inspection.mvuUpdateEntryIds.length,
+            inspection_reasons: [...inspection.mvuReasons],
         });
     }
 

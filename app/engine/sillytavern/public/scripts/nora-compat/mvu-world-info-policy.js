@@ -1,5 +1,7 @@
-const MVU_UPDATE_COMMENT_MARKER = /\[mvu_update\]/i;
-const MVU_UPDATE_CONTENT_MARKER = /<\s*(?:UpdateVariable|JSONPatch)\b/i;
+import {
+    inspectMvuCompatibility,
+    isMvuUpdateInstructionEntry,
+} from './mvu-compatibility.js';
 
 export function isNoraMvuVariableModelEnabled(settings = {}) {
     return settings?.['更新方式'] === '额外模型解析'
@@ -7,8 +9,7 @@ export function isNoraMvuVariableModelEnabled(settings = {}) {
 }
 
 export function isNoraMvuUpdateInstructionEntry(entry = {}) {
-    return MVU_UPDATE_COMMENT_MARKER.test(String(entry?.comment || ''))
-        || MVU_UPDATE_CONTENT_MARKER.test(String(entry?.content || ''));
+    return isMvuUpdateInstructionEntry(entry);
 }
 
 export function isNoraMvuExtraAnalysisRunning(runtime = globalThis.Mvu) {
@@ -19,9 +20,28 @@ export function isNoraMvuExtraAnalysisRunning(runtime = globalThis.Mvu) {
     }
 }
 
-export function shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, { extensionSettings = {}, mvuRuntime = globalThis.Mvu } = {}) {
+export function shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
+    extensionSettings = {},
+    mvuRuntime = globalThis.Mvu,
+    lorebookEntries = null,
+    primaryLorebookName = null,
+} = {}) {
     const settings = extensionSettings?.mvu_settings ?? extensionSettings;
+    let primary = String(primaryLorebookName || '').trim();
+    if (!primary) {
+        try {
+            primary = String(globalThis.TavernHelper?.getCurrentCharPrimaryLorebook?.() || '').trim();
+        } catch {
+            primary = '';
+        }
+    }
+    const candidates = lorebookEntries || [entry];
+    const protocolEntries = primary
+        ? candidates.filter(candidate => String(candidate?.world || '') === primary)
+        : candidates;
+    const plan = inspectMvuCompatibility({ books: [protocolEntries] });
     return isNoraMvuVariableModelEnabled(settings)
         && !isNoraMvuExtraAnalysisRunning(mvuRuntime)
+        && plan.splitModelSupported
         && isNoraMvuUpdateInstructionEntry(entry);
 }

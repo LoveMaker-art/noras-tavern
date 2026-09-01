@@ -11,6 +11,7 @@ import {
     inspectStCard,
 } from '../src/nora-world-core/st-backend-materializer.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
+import { adaptCardForMvuRuntime } from '../public/scripts/nora-compat/mvu-compatibility.js';
 
 async function harness(t, options = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-st-materializer-'));
@@ -103,6 +104,47 @@ test('preflights a complex card without creating resources', () => {
     assert.equal(report.worldbooks[0].entry_count, 1);
     assert.deepEqual(report.declared_capabilities, ['mvu', 'regex', 'tavern_helper']);
     assert.equal(report.capabilities.mvu.runtime_source, 'embedded');
+});
+
+test('normalizes legacy TavernHelper script wrappers before capability inspection', () => {
+    const card = complexCard();
+    const script = card.data.extensions.tavern_helper.scripts[0];
+    delete card.data.extensions.tavern_helper;
+    card.data.extensions.TavernHelper_scripts = [{ type: 'script', value: { ...script, id: 'legacy-mvu' } }];
+
+    const report = inspectStCard(card);
+
+    assert.equal(report.capabilities.tavern_helper.script_count, 1);
+    assert.equal(report.capabilities.mvu.runtime_source, 'embedded');
+    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
+});
+
+test('classifies legacy inline MVU books without claiming split-model support', () => {
+    const card = complexCard({ content: '<status_current_variables>\nReturn <UpdateVariable> commands.' });
+    card.data.character_book.entries[0].comment = '[InitVar]';
+
+    const report = inspectStCard(card);
+
+    assert.equal(report.capabilities.mvu.declared, true);
+    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
+    assert.deepEqual(report.capabilities.mvu.update_entry_ids, [0]);
+});
+
+test('projects legacy MVU metadata only into the Runtime Card and leaves the source card untouched', () => {
+    const card = complexCard({ content: '<status_current_variables>\nReturn <UpdateVariable> commands.' });
+    card.data.character_book.entries[0].comment = '变量规则';
+    const source = structuredClone(card);
+
+    const adapted = adaptCardForMvuRuntime(card);
+
+    assert.equal(adapted.changed, true);
+    assert.equal(adapted.plan.updateProtocol, 'legacy-adaptable');
+    assert.deepEqual(card, source, 'the imported source card must remain byte-semantically unchanged');
+    assert.match(adapted.card.data.character_book.entries[0].comment, /^\[mvu_update\]/i);
+    assert.deepEqual(adapted.card.data.character_book.entries[0].extensions.nora_mvu_compatibility, {
+        schema: 1,
+        source: 'legacy-update-content',
+    });
 });
 
 test('materializes one Runtime Card, collision-safe Worldbook and canonical initial Session without a browser', async (t) => {

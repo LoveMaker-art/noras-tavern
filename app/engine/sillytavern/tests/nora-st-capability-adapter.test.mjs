@@ -134,6 +134,11 @@ test('proves embedded MVU readiness only when its public variable-data interface
         api_visible: true,
         runtime_ready: true,
         data_initialized: true,
+        update_protocol: 'initialization-only',
+        split_model_supported: false,
+        update_operational: null,
+        update_entry_count: 0,
+        inspection_reasons: ['initvar', 'embedded-runtime'],
     });
 });
 

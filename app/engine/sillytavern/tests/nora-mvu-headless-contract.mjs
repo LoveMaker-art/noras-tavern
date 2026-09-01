@@ -14,6 +14,7 @@ const lifecycle = fs.readFileSync(path.join(root, 'native_lifecycle.py'), 'utf8'
 const script = fs.readFileSync(path.join(root, 'engine/sillytavern/public/script.js'), 'utf8');
 const extensions = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/extensions.js'), 'utf8');
 const cardAdapter = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-adapters/st-card-adapter.js'), 'utf8');
+const mvuCompatibility = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-compat/mvu-compatibility.js'), 'utf8');
 const worldController = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/world-controller.js'), 'utf8');
 const worldCoreRuntime = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js'), 'utf8');
 const helperRoot = path.join(root, 'native-extensions/JS-Slash-Runner');
@@ -55,8 +56,11 @@ assert.match(script, /criticalExtensionNames\s*=\s*\[['"]regex['"]\]/);
 assert.doesNotMatch(script, /timedBootStep\(['"]mvu-runtime['"]/, 'MVU must not block ordinary-card startup');
 assert.match(extensions, /NORA_PRODUCT_DEFERRED_EXTENSIONS[\s\S]*third-party\/JS-Slash-Runner[\s\S]*third-party\/nora-mvu/);
 assert.match(cardAdapter, /inspectCharacterRuntime/);
-assert.match(cardAdapter, /MVU_ENTRY_MARKER\s*=\s*\/\\\[\(\?:initvar\|mvu_update\|mvu_plot\)\\\]\/i/);
-assert.match(cardAdapter, /MagicalAstrogy\\\/MagVarUpdate/);
+assert.match(cardAdapter, /inspectMvuCompatibility/);
+assert.match(mvuCompatibility, /INIT_COMMENT_MARKER\s*=\s*\/\\\[initvar\\\]\/i/);
+assert.match(mvuCompatibility, /UPDATE_COMMENT_MARKER\s*=\s*\/\\\[mvu_update\\\]\/i/);
+assert.match(mvuCompatibility, /PLOT_COMMENT_MARKER\s*=\s*\/\\\[mvu_plot\\\]\/i/);
+assert.match(mvuCompatibility, /MagicalAstrogy\\\/MagVarUpdate/);
 assert.match(cardAdapter, /__NORA_ENSURE_MVU_READY__/);
 assert.match(
     worldCoreRuntime,

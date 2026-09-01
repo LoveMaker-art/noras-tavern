@@ -4662,6 +4662,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
             if (shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
                 extensionSettings: extension_settings,
                 mvuRuntime: globalThis.Mvu,
+                lorebookEntries: sortedEntries,
             })) {
                 log('suppressed from Nora main prompt while MVU variable model is enabled');
                 continue;
@@ -5054,6 +5055,7 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
         if (shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
             extensionSettings: extension_settings,
             mvuRuntime: globalThis.Mvu,
+            lorebookEntries: sortedEntries,
         })) {
             allActivatedEntries.delete(key);
             console.debug(`[WI] Entry ${entry.uid}`, 'suppressed from Nora main prompt while MVU variable model is enabled', entry);

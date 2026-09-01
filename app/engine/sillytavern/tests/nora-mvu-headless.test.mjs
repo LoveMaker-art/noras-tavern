@@ -18,6 +18,7 @@ import {
     waitForMvuRuntime,
 } from '../../../native-extensions/nora-mvu/runtime.js';
 import { createManagedMvuRuntimeLoader } from '../../../native-extensions/nora-mvu/index.js';
+import { createMvuUpdateObserver } from '../../../native-extensions/nora-mvu/update-observer.js';
 
 test('MVU managed script is installed before TavernHelper activates', () => {
     const context = { extensionSettings: {} };
@@ -53,6 +54,59 @@ test('MVU runtime data requires both stat_data and schema', () => {
     assert.equal(hasInitializedMvuData({ stat_data: {} }), false);
     assert.equal(hasInitializedMvuData({ schema: {} }), false);
     assert.equal(hasInitializedMvuData(null), false);
+});
+
+test('MVU update observation distinguishes initialization, no-command runs and parsed updates', () => {
+    const listeners = new Map();
+    const eventSource = {
+        on: (event, handler) => listeners.set(event, handler),
+        off: (event) => listeners.delete(event),
+    };
+    const events = {
+        VARIABLE_UPDATE_STARTED: 'started',
+        COMMAND_PARSED: 'commands',
+        VARIABLE_UPDATE_ENDED: 'ended',
+    };
+    let chatId = 'world-a';
+    let clock = 10;
+    const observer = createMvuUpdateObserver({ eventSource, events, identity: () => chatId, now: () => ++clock });
+
+    assert.equal(observer.status().updateOperational, null);
+    listeners.get('started')({ stat_data: { score: 0 } });
+    listeners.get('commands')({}, []);
+    listeners.get('ended')({ stat_data: { score: 0 } }, { stat_data: { score: 0 } });
+    assert.deepEqual(observer.status(), {
+        updateOperational: false,
+        updatePhase: 'no-command',
+        lastUpdateAt: 12,
+        lastUpdateError: 'NO_UPDATE_COMMAND',
+        lastUpdateCommandCount: 0,
+        stateChanged: false,
+    });
+
+    listeners.get('started')({ stat_data: { score: 0 } });
+    listeners.get('commands')({}, [{ type: 'set' }]);
+    listeners.get('ended')({ stat_data: { score: 1 } }, { stat_data: { score: 0 } });
+    assert.equal(observer.status().updateOperational, true);
+    assert.equal(observer.status().stateChanged, true);
+    assert.equal(observer.status().lastUpdateCommandCount, 1);
+
+    listeners.get('started')({ stat_data: { score: 1 } });
+    listeners.get('commands')({}, [{ type: 'set' }]);
+    listeners.get('ended')({ stat_data: { score: 1 } }, { stat_data: { score: 1 } });
+    assert.deepEqual(observer.status(), {
+        updateOperational: false,
+        updatePhase: 'no-change',
+        lastUpdateAt: 16,
+        lastUpdateError: 'NO_STATE_CHANGE',
+        lastUpdateCommandCount: 1,
+        stateChanged: false,
+    });
+
+    chatId = 'world-b';
+    assert.equal(observer.status().updateOperational, null, 'telemetry from another World must not leak');
+    observer.dispose();
+    assert.equal(listeners.size, 0);
 });
 
 test('MVU model adapter degrades to a hidden status when the runtime is unavailable', async () => {
@@ -104,6 +158,28 @@ test('MVU model adapter projects the active World capability before live variabl
     assert.equal(status.declared, true);
     assert.equal(status.runtimeReady, true);
     assert.equal(status.initialized, false);
+});
+
+test('MVU model inspection merges the live card protocol with persisted World readiness', async () => {
+    const adapter = createMvuModelAdapter({
+        readApi: () => ({
+            status: () => ({ supported: true, initialized: true }),
+            inspectCurrentCard: async () => ({
+                supported: true,
+                initialized: true,
+                updateProtocol: 'legacy-adaptable',
+                splitModelSupported: false,
+            }),
+        }),
+    });
+    const inspected = await adapter.inspect({
+        declared: ['mvu'],
+        items: { mvu: { status: 'READY', evidence: { runtime_ready: true } } },
+    });
+
+    assert.equal(inspected.updateProtocol, 'legacy-adaptable');
+    assert.equal(inspected.splitModelSupported, false);
+    assert.equal(inspected.runtimeReady, true);
 });
 
 test('MVU independent model adapter stores credentials through the backend only', async () => {
@@ -214,7 +290,10 @@ test('MVU variable model suppresses update instructions only from the story mode
 
     assert.equal(isNoraMvuUpdateInstructionEntry(updateRule), true);
     assert.equal(isNoraMvuUpdateInstructionEntry(variableReference), false);
-    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, { extensionSettings }), true);
+    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, {
+        extensionSettings,
+        lorebookEntries: [updateRule],
+    }), true);
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(variableReference, { extensionSettings }), false);
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, {
         extensionSettings,
@@ -230,10 +309,62 @@ test('MVU variable model suppresses update instructions only from the story mode
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, { extensionSettings: disabledSettings }), false);
 });
 
+test('legacy MVU update rules stay in the story prompt when upstream split mode is unsupported', () => {
+    const init = { uid: 0, comment: '[InitVar]', content: '角色:\n  好感度: 0', disable: true };
+    const updateRule = {
+        uid: 1,
+        comment: '变量规则',
+        content: '<status_current_variables>\nReturn <UpdateVariable> commands.',
+        disable: false,
+    };
+    const extensionSettings = {
+        mvu_settings: createHeadlessMvuSettings({
+            '更新方式': '额外模型解析',
+            '额外模型解析配置': { '启用自动请求': true },
+        }),
+    };
+
+    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, {
+        extensionSettings,
+        lorebookEntries: [init, updateRule],
+    }), false);
+});
+
+test('MVU prompt routing follows the primary lorebook exactly like the pinned upstream runtime', () => {
+    const legacyRule = {
+        uid: 1,
+        world: 'Primary legacy book',
+        comment: '变量规则',
+        content: '<status_current_variables>\nReturn <UpdateVariable> commands.',
+    };
+    const unrelatedSplitRule = {
+        uid: 2,
+        world: 'Global helper book',
+        comment: '[mvu_update] helper',
+        content: '<UpdateVariable>',
+    };
+    const extensionSettings = { mvu_settings: createHeadlessMvuSettings({}) };
+
+    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(legacyRule, {
+        extensionSettings,
+        lorebookEntries: [legacyRule, unrelatedSplitRule],
+        primaryLorebookName: 'Primary legacy book',
+    }), false);
+    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(unrelatedSplitRule, {
+        extensionSettings,
+        lorebookEntries: [legacyRule, unrelatedSplitRule],
+        primaryLorebookName: 'Global helper book',
+    }), true);
+});
+
 test('model UI is hidden for ordinary cards and labels MVU state precisely', () => {
     assert.equal(renderMvuModelSection({ supported: false }, escapeHtml), '');
     assert.match(renderMvuModelSection({ supported: true, runtimeReady: true, initialized: false, variableModel: '与插头相同' }, escapeHtml), /运行时已加载[\s\S]*跟随文本模型[\s\S]*data-mvu-config/);
-    assert.match(renderMvuModelSection({ supported: true, initialized: true, variableModel: '自定义', variableModelName: '<fast>' }, escapeHtml), /已启用[\s\S]*&lt;fast&gt;/);
+    assert.match(renderMvuModelSection({ supported: true, initialized: true, variableModel: '自定义', variableModelName: '<fast>' }, escapeHtml), /已初始化[\s\S]*&lt;fast&gt;/);
+    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateOperational: true, variableModel: '与插头相同' }, escapeHtml), /更新正常/);
+    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateOperational: false, variableModel: '与插头相同' }, escapeHtml), /更新未生效/);
+    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'legacy-adaptable', variableModel: '与插头相同' }, escapeHtml), /兼容模式/);
+    assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'initialization-only', variableModel: '与插头相同' }, escapeHtml), /仅初始化/);
     assert.match(renderMvuModelSection({ supported: true, enabled: false, variableModel: '自定义' }, escapeHtml, { model: 'mvu-fast' }), /已关闭[\s\S]*独立模型[\s\S]*mvu-fast/);
     assert.match(renderMvuModelSection({ supported: true, enabled: true, variableModel: '与插头相同' }, escapeHtml), /data-mvu-enabled[\s\S]*checked/);
 });
