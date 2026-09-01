@@ -218,6 +218,9 @@ if (!preservationOnly) {
     assert.match(worldInfo, /export function initWorldInfo\(\)\s*{\s*\/\/ Nora owns the worldbook editor; scanning and slash commands initialize through settings\.\s*}/);
     const worldInfoSettings = getNamedFunction('public/scripts/world-info.js', 'setWorldInfoSettings');
     assert.doesNotMatch(worldInfoSettings, /\$\(|world_editor_select|chat_lorebook_button/);
+    assert.match(worldInfoSettings, /Array\.isArray\(configuredWorldInfo\.globalSelect\)/);
+    assert.match(worldInfoSettings, /world_info = \{ \.\.\.configuredWorldInfo, globalSelect: configuredGlobalSelect \}/);
+    assert.match(worldInfoSettings, /world_info\.globalSelect = selected_world_info/);
 
     const personas = read('public/scripts/personas.js');
     assert.match(personas, /export async function initPersonas\(\)\s*{\s*await migrateNonPersonaUser\(\);\s*registerPersonaSlashCommands\(\);\s*eventSource\.on\(event_types\.CHAT_CHANGED, loadPersonaForCurrentChat\);\s*}/);

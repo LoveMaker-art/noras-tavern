@@ -321,7 +321,7 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     }
     if (!active) report.warnings.push({ code: 'MODEL_CONFIGURATION_REQUIRED' });
     const settings = { main_api: 'openai', extension_settings: { nora_ui: nora },
-        world_info_settings: { world_info: { charLore }, world_info_recursive: true, world_info_max_recursion_steps: 2 },
+        world_info_settings: { world_info: { globalSelect: [], charLore }, world_info_recursive: true, world_info_max_recursion_steps: 2 },
         oai_settings: active ? { chat_completion_source: 'custom', custom_url: active.base, custom_model: active.model,
             openai_max_context: active.context, openai_max_tokens: active.tokens, max_context_unlocked: true, stream_openai: true } : {} };
     put('native/default-user/settings.json', settings);

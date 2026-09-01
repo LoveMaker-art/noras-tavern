@@ -980,12 +980,17 @@ export function setWorldInfoSettings(settings, data) {
         selected_world_info = existingWorldInfo;
     }
 
-    world_info = settings.world_info ?? {};
+    const configuredWorldInfo = settings.world_info ?? {};
+    const configuredGlobalSelect = Array.isArray(configuredWorldInfo.globalSelect)
+        ? configuredWorldInfo.globalSelect
+        : [];
+    world_info = { ...configuredWorldInfo, globalSelect: configuredGlobalSelect };
 
     world_names = data.world_names?.length ? data.world_names : [];
 
     // Add to existing selected WI if it exists
-    selected_world_info = selected_world_info.concat(settings.world_info?.globalSelect?.filter((e) => world_names.includes(e)) ?? []);
+    selected_world_info = selected_world_info.concat(configuredGlobalSelect.filter((e) => world_names.includes(e)));
+    world_info.globalSelect = selected_world_info;
 
     eventSource.on(event_types.CHAT_CHANGED, async () => {
         // Pre-cache the world info data for the chat for quicker first prompt generation
