@@ -30,6 +30,7 @@ router.get('/bootstrap', async (request, response) => {
         return response.json(await createBootstrapPayload({
             csrfToken,
             directories: request.user.directories,
+            assetRelease: request.app.get('noraAssetRelease'),
             listCharactersFn: listCharacters,
             readRuntimeSettingsFn: directories => readSettingsPayload(directories, 'runtime'),
             readSecretStateFn: readSecretState,

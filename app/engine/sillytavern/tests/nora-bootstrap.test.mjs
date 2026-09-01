@@ -10,6 +10,7 @@ test('bootstrap exposes only authoritative World v2 startup data', async () => {
     const pending = createBootstrapPayload({
         csrfToken: 'token',
         directories: { characters: '/characters', chats: '/chats' },
+        assetRelease: '0123456789abcdef',
         listCharactersFn: async directories => {
             started.push(['characters', directories]);
             await gate;
@@ -45,6 +46,7 @@ test('bootstrap exposes only authoritative World v2 startup data', async () => {
     assert.equal(typeof result.fetchedAt, 'number');
     assert.deepEqual({ ...result, fetchedAt: 0 }, {
         schema: 6,
+        assetRelease: '0123456789abcdef',
         csrfToken: 'token',
         characters: [{ name: 'Nora' }],
         runtimeSettings: { settings: '{"main_api":"openai"}' },

@@ -2,14 +2,52 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
+import urllib.request
+from urllib.parse import urlencode
 
 ROLES = {
     "console": ("Tavern", ""),
     "actor": ("Story Profile", "/_liveware/story-profile"),
 }
+ASSET_RELEASE_PATTERN = re.compile(r"^[a-f0-9]{12,64}$", re.IGNORECASE)
+LIVEWARE_DOMAIN_PATTERN = re.compile(r"^[A-Za-z0-9-]+\.apps\.clawling\.io$")
+
+
+def runtime_asset_release(port=8799):
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{port}/version",
+        headers={"Accept": "application/json", "Cache-Control": "no-store"},
+    )
+    with opener.open(request, timeout=10) as response:
+        payload = response.read(65537)
+        if response.status != 200 or len(payload) > 65536:
+            raise RuntimeError("Tavern 资源版本接口不可用")
+    value = json.loads(payload)
+    release = value.get("assetRelease") if isinstance(value, dict) else None
+    if not isinstance(release, str) or not ASSET_RELEASE_PATTERN.fullmatch(release):
+        raise RuntimeError("Tavern 未返回有效的资源版本")
+    return release.lower()
+
+
+def release_launcher_url(domain, release):
+    if not isinstance(domain, str) or not LIVEWARE_DOMAIN_PATTERN.fullmatch(domain):
+        raise ValueError("Liveware App 域名无效")
+    if not isinstance(release, str) or not ASSET_RELEASE_PATTERN.fullmatch(release):
+        raise ValueError("Tavern 资源版本无效")
+    return f"https://{domain}/?{urlencode({'release': release.lower()})}"
+
+
+def listed_apps(home):
+    value = launcher(home, "list_apps")
+    value = value.get("apps", value.get("data", [])) if isinstance(value, dict) else value
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise RuntimeError("ClawChat 返回了未知的 App 列表")
+    return value
 
 
 def binary(home):
@@ -67,7 +105,10 @@ def launcher(home, operation, **parameters):
         timeout=45,
         check=True,
     )
-    return json.loads(result.stdout)
+    value = json.loads(result.stdout)
+    if isinstance(value, dict) and (value.get("error") or value.get("ok") is False or value.get("success") is False):
+        raise RuntimeError("ClawChat 启动器操作失败：" + operation)
+    return value
 
 
 def refresh(home, port=8799):
@@ -76,12 +117,10 @@ def refresh(home, port=8799):
     if not path.is_file():
         return {"status": "not-configured", "warnings": ["未找到既有 Liveware App；需要首次初始化"]}
     document = json.loads(path.read_text(encoding="utf-8"))
+    release = runtime_asset_release(port)
     warnings = []
     try:
-        listed = launcher(home, "list_apps")
-        listed = listed.get("apps", listed.get("data", [])) if isinstance(listed, dict) else listed
-        if not isinstance(listed, list):
-            raise RuntimeError("ClawChat 返回了未知的 App 列表")
+        listed = listed_apps(home)
     except Exception as error:
         listed = None
         warnings.append("无法刷新 ClawChat 启动器：" + str(error))
@@ -93,19 +132,36 @@ def refresh(home, port=8799):
             continue
         try:
             cli(home, "tunnel", "bind", app_id, f"http://127.0.0.1:{port}{prefix}")
-            desired = {"app_id": app_id, "name": title, "url": f"https://{domain}/"}
+            desired = {"app_id": app_id, "name": title, "url": release_launcher_url(domain, release)}
             if listed is not None:
                 matches = [item for item in listed if item.get("app_id") == app_id]
                 current = {key: matches[0].get(key) for key in desired} if len(matches) == 1 else None
-                if len(matches) > 1:
-                    warnings.append(title + " 存在重复启动器记录，未自动继续添加")
-                elif current != desired:
-                    if current:
+                if current != desired:
+                    if matches:
                         launcher(home, "unregister_app", app_id=app_id)
-                    launcher(home, "register_app", **desired)
+                    try:
+                        launcher(home, "register_app", **desired)
+                    except Exception:
+                        for previous in matches:
+                            restore = {key: previous.get(key) for key in desired}
+                            if all(restore.values()):
+                                try:
+                                    launcher(home, "register_app", **restore)
+                                except Exception:
+                                    pass
+                        raise
+                    listed = listed_apps(home)
+                    matches = [item for item in listed if item.get("app_id") == app_id]
+                    verified = {key: matches[0].get(key) for key in desired} if len(matches) == 1 else None
+                    if verified != desired:
+                        raise RuntimeError(title + " 启动器资源版本未更新")
         except Exception as error:
             warnings.append(f"{title} 刷新失败：{error}")
-    return {"status": "updated" if not warnings else "local-installed-liveware-pending", "warnings": warnings}
+    return {
+        "status": "updated" if not warnings else "local-installed-liveware-pending",
+        "warnings": warnings,
+        "assetRelease": release,
+    }
 
 
 def initialize(home, port=8799):

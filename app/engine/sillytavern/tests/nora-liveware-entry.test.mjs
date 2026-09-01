@@ -39,7 +39,9 @@ test('separate Liveware roots identify the correct app without relying on forwar
         const html = await response.text();
         assert.ok(html.includes(`<title>${title}</title>`), route);
         assert.match(html, new RegExp(`<link[^>]*rel="icon"[^>]*${icon.replaceAll('.', '\\.')}[^>]*>`));
-        if (title === 'Story Profile') assert.equal(response.headers.get('cache-control'), 'no-store');
+        assert.equal(response.headers.get('cache-control'), 'no-store', route);
+        assert.equal(response.headers.get('pragma'), null, route);
+        assert.equal(response.headers.get('expires'), null, route);
     }
     for (const prefix of ['', STORY_PROFILE_UPSTREAM_PATH]) {
         const legacy = await fetch(base + prefix + '/actor', { redirect: 'manual' });

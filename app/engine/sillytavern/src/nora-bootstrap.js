@@ -1,6 +1,7 @@
 export async function createBootstrapPayload({
     csrfToken,
     directories,
+    assetRelease,
     listCharactersFn,
     readRuntimeSettingsFn,
     readSecretStateFn,
@@ -9,6 +10,9 @@ export async function createBootstrapPayload({
 }) {
     if (typeof listCharactersFn !== 'function') {
         throw new TypeError('Nora bootstrap data readers are required.');
+    }
+    if (typeof assetRelease !== 'string' || !/^[a-f0-9]{12,64}$/i.test(assetRelease)) {
+        throw new TypeError('Nora bootstrap requires a valid asset release.');
     }
     const [characters, runtimeSettings, secretState, version, agentUserId] = await Promise.all([
         listCharactersFn(directories),
@@ -19,6 +23,7 @@ export async function createBootstrapPayload({
     ]);
     return {
         schema: 6,
+        assetRelease,
         csrfToken,
         characters,
         runtimeSettings,

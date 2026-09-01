@@ -128,6 +128,7 @@ http.globalAgent = new http.Agent({ keepAlive: cliArgs.enableKeepAlive });
 https.globalAgent = new https.Agent({ keepAlive: cliArgs.enableKeepAlive });
 
 const app = express();
+app.set('noraAssetRelease', staticAssetRelease);
 app.use(createLivewareEntryMiddleware());
 app.use(helmet({
     contentSecurityPolicy: false,

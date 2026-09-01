@@ -161,8 +161,8 @@
             });
         };
         recordAssetCacheMilestone('shell-bootstrap-requested');
-        globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__ = fetch('/api/nora-boot/bootstrap?max=250&metadata=true', {
-            cache: 'no-cache',
+        const bootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap?max=250&metadata=true', {
+            cache: 'no-store',
             credentials: 'same-origin',
             priority: 'high',
             headers: { 'X-Nora-Trace-Id': globalThis.__NORA_BOOT_METRICS__.sessionId },
@@ -171,6 +171,23 @@
             recordAssetCacheMilestone('shell-bootstrap-response', { status: response.status });
             return response.json();
         });
+        globalThis.__NORA_RELEASE_GUARD_PROMISE__ = bootstrapNetworkPromise.then(async (bootstrap) => {
+            const embeddedRelease = globalThis.__NORA_ASSET_RELEASE__;
+            const currentRelease = String(bootstrap.assetRelease || '');
+            if (!/^[a-f0-9]{12,64}$/i.test(currentRelease)) {
+                throw new Error('Nora bootstrap response has no valid asset release.');
+            }
+            if (currentRelease === embeddedRelease) return bootstrap;
+
+            const target = new URL(location.href);
+            if (target.searchParams.get('release') === currentRelease) {
+                throw new Error(`Nora shell release mismatch after reload (${embeddedRelease} != ${currentRelease}).`);
+            }
+            target.searchParams.set('release', currentRelease);
+            location.replace(target.href);
+            return await new Promise(() => {});
+        });
+        globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__ = globalThis.__NORA_RELEASE_GUARD_PROMISE__;
         globalThis.__NORA_INLINE_MANIFEST_PROMISE__ = fetch(globalThis.__NORA_INLINE_MANIFEST_URL__, {
                 cache: 'force-cache',
                 credentials: 'same-origin',

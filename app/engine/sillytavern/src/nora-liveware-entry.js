@@ -1,4 +1,4 @@
-import { NO_STORE_CACHE_CONTROL, REVALIDATED_ASSET_CACHE_CONTROL } from './nora-static-assets.js';
+import { NO_STORE_CACHE_CONTROL } from './nora-static-assets.js';
 
 // Bind the Story Profile app to this upstream path. The Tunnel Agent prepends
 // it to every request; the public app still uses ordinary root-relative URLs.
@@ -32,7 +32,7 @@ export function createLivewareEntryMiddleware() {
 export function createLivewareIndexHandler({ tavernHtml, storyProfileHtml }) {
     return (_request, response) => {
         const isStoryProfile = response.locals[storyProfileEntry] === true;
-        response.setHeader('Cache-Control', isStoryProfile ? NO_STORE_CACHE_CONTROL : REVALIDATED_ASSET_CACHE_CONTROL);
+        response.setHeader('Cache-Control', NO_STORE_CACHE_CONTROL);
         return response.type('html').send(isStoryProfile ? storyProfileHtml : tavernHtml);
     };
 }

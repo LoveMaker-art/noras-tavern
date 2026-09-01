@@ -83,7 +83,9 @@ assert.match(index, /<script\s+src="\{\{NORA_ASSET_BASE\}\}\/dist\/nora\/legacy\
 assert.match(index, /manifest\.legacy/, 'startup metrics must identify the standalone legacy asset');
 assert.match(index, /id="third-party_nora-ui-css"/, 'the Nora UI stylesheet must share the extension loader identity and load once');
 assert.match(extensions, /if \(existingStyle\.length > 0\)\s*\{\s*return Promise\.resolve\(\);/, 'an existing extension stylesheet must resolve without injecting a duplicate or hanging');
-const headBootstrapStart = index.indexOf("globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__ = fetch('/api/nora-boot/bootstrap?max=250&metadata=true'");
+const headBootstrapStart = index.indexOf(
+    'const bootstrapNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/bootstrap?max=250&metadata=true' + singleQuote,
+);
 const manifestNetworkYield = index.indexOf('await globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__.catch(() => undefined)');
 const manifestNetworkStart = index.indexOf('globalThis.__NORA_INLINE_MANIFEST_PROMISE__ = fetch(globalThis.__NORA_INLINE_MANIFEST_URL__');
 const bodyBootstrapReuse = index.indexOf('const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__');
@@ -93,6 +95,14 @@ assert.notEqual(manifestNetworkStart, -1, 'the module manifest must retain its n
 assert.notEqual(bodyBootstrapReuse, -1, 'the early shell must reuse the head bootstrap request');
 assert.ok(headBootstrapStart < manifestNetworkStart, 'bootstrap must start before the parallel runtime manifest request');
 assert.ok(manifestNetworkStart < bodyBootstrapReuse, 'the body must reuse the already-started shell bootstrap request');
+assert.match(index, /globalThis\.__NORA_RELEASE_GUARD_PROMISE__\s*=\s*bootstrapNetworkPromise\.then/, 'the existing bootstrap response must enforce shell/backend release coherence');
+assert.match(index, /globalThis\.__NORA_SHELL_BOOTSTRAP_PROMISE__\s*=\s*globalThis\.__NORA_RELEASE_GUARD_PROMISE__/, 'product data must wait for the release guard');
+assert.match(index, /target\.searchParams\.set\('release', currentRelease\)[\s\S]*location\.replace\(target\.href\)/, 'a stale shell must navigate once to the current release URL');
+assert.doesNotMatch(
+    index.slice(manifestNetworkStart, bodyBootstrapReuse),
+    /__NORA_RELEASE_GUARD_PROMISE__|bootstrapNetworkPromise|Promise\.all/,
+    'release validation must not serialize immutable manifest parsing behind bootstrap',
+);
 assert.match(
     index.slice(headBootstrapStart, manifestNetworkStart),
     /credentials:\s*'same-origin'[\s\S]*priority:\s*'high'/,
