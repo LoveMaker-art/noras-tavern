@@ -27,6 +27,7 @@ childProcess.execFileSync = (command, args) => {
     }
     if (command === 'tar') return Buffer.alloc(0);
     if (command === 'npm' && args[0] === 'ci') return Buffer.alloc(0);
+    if (command === 'npm' && args.join(' ') === 'run check:story-profile-source') return Buffer.alloc(0);
     if (command === 'npm' && args.join(' ') === 'audit --omit=dev --audit-level=moderate') {
         throw new Error('TEST_AUDIT_REFUSED');
     }

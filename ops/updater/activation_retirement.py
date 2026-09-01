@@ -32,16 +32,21 @@ def review(home):
     owned = bool(files) or any(k.startswith('home/plugins/' + PLUGIN + '/') for k in baseline.get('files', {}))
     if PLUGIN in enabled and not owned:
         raise ValueError('Activation bridge is enabled without ownership evidence; review required')
-    requests = []
     for path in root.glob('review-*/activation.json'):
         safe(path)
-        record = json.loads(path.read_text())
+        try:
+            record = json.loads(path.read_text())
+        except (OSError, ValueError):
+            # Old activation files are immutable audit artifacts. A damaged
+            # historical record cannot authorize a gateway mutation and is
+            # preserved byte-for-byte instead of blocking bridge retirement.
+            continue
         if record.get('resetReviewRequired') or record.get('status') in ('activating', 'resetting', 'interrupted-review-required'):
             raise ValueError('Interrupted activation requires owner review before bridge retirement')
-        if record.get('status') in ('queued', 'awaiting-confirmation'):
-            requests.append({'path': str(path), 'before': sha(path),
-                             'after': {**record, 'status': 'superseded', 'retiredBy': 'native-owner-restart'}})
-    return {'owned': owned, 'files': files, 'requests': requests}
+    # Historical owner requests are audit records, not live configuration.
+    # Retiring the bridge removes its owned code/config only and leaves records
+    # immutable even if their informational status changes after review.
+    return {'owned': owned, 'files': files}
 
 
 def status(home):

@@ -529,8 +529,11 @@ class NativeRuntime:
             pid = int(path.read_text(encoding='utf-8').strip())
         except FileNotFoundError:
             pid = None
-        except ValueError as error:
-            raise NativeLifecycleError('Invalid Tavern PID file; review it before modifying the runtime') from error
+        except ValueError:
+            # PID files are restart hints, not ownership authority. A unique
+            # process still has to pass script, argv, cwd, uid and run metadata
+            # checks below before it is accepted.
+            pid = None
         processes = self.process_module()
         script = self.engine_root / 'server.js'
         process = processes.process_record(pid, script) if pid else None
@@ -546,8 +549,8 @@ class NativeRuntime:
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text())
             saved = metadata.get('process')
-            if saved and not processes.same_process(process, saved):
-                raise NativeLifecycleError('Tavern process identity differs from the saved runtime')
+            if saved and not processes.same_runtime(process, saved):
+                raise NativeLifecycleError('Tavern runtime ownership differs from the saved configuration')
             if metadata.get('data_root') and metadata.get('port'):
                 args = process['argv']
                 expected = {'--configPath': str(self.config_path), '--dataRoot': str(metadata['data_root']),
@@ -582,8 +585,8 @@ class NativeRuntime:
         if not process:
             raise NativeLifecycleError('Tavern process exited during inspection; inspect again')
         saved = metadata.get('process')
-        if saved and not service and not processes.same_process(process, saved):
-            raise NativeLifecycleError('Tavern process identity differs from the saved runtime')
+        if saved and not service and not processes.same_runtime(process, saved):
+            raise NativeLifecycleError('Tavern runtime ownership differs from the saved configuration')
         evidence = processes.stop_process(process, script, port=port,
                                           stop=service.stop if service else None)
         child = self._children.pop(pid, None)

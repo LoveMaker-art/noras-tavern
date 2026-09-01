@@ -314,7 +314,14 @@ class ReleaseReview:
                 relative(change["source"])
         return transaction, plan
 
-    def _preconditions(self, transaction, plan):
+    def _preconditions(self, transaction, plan, *, replaceable_roots=()):
+        """Verify immutable inputs and user-owned host files.
+
+        A clean native update may deliberately replace code trees whose live
+        contents changed after review. Those roots are snapshotted after the
+        runtime stops and checked again at the atomic switch. Staged release
+        sources and host configuration are never exempt.
+        """
         if plan.get('engine'):
             from engine_snapshot import verify
             verify(transaction, plan['engine'])
@@ -328,8 +335,11 @@ class ReleaseReview:
         self._configured_paths()
         if sha(self.root / "installed.json") != plan["previousBaseline"]:
             raise ValueError("Installed release changed; review again")
+        replaceable_roots = tuple(str(root).rstrip('/') for root in replaceable_roots)
         for change in plan["changes"]:
-            if sha(self._target(change["name"])) != change["before"]:
+            replaceable = any(change['name'] == root or change['name'].startswith(root + '/')
+                              for root in replaceable_roots)
+            if not replaceable and sha(self._target(change["name"])) != change["before"]:
                 raise ValueError("Target changed since review: " + change["name"])
             if change["source"] and sha(transaction / change["source"]) != change["after"]:
                 raise ValueError("Staged source changed: " + change["name"])

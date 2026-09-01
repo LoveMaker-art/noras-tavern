@@ -100,7 +100,7 @@ def switch(entry):
         rename(source, target)
 
 
-def recovery_check(entry, *, allow_state_change=False, accepted=None):
+def recovery_check(entry, *, allow_state_change=False, allow_replaceable_change=False, accepted=None):
     target, source, backup = (Path(entry[k]) for k in ("target", "source", "backup"))
     state = entry.get("state", False)
     current = fingerprint(target, state=state)
@@ -111,12 +111,15 @@ def recovery_check(entry, *, allow_state_change=False, accepted=None):
             if source.exists():
                 raise ValueError("Ambiguous recovery paths: " + entry["name"])
             expected = accepted if accepted is not None else entry["after"]
-            if not (state and allow_state_change) and current != expected:
+            mutable = (state and allow_state_change) or (entry.get("replaceable") and allow_replaceable_change)
+            if not mutable and current != expected:
                 raise ValueError("Recovery preserved a concurrent modification: " + entry["name"])
     elif entry["hadOld"]:
         if current != entry["before"]:
             raise ValueError("Missing recovery backup: " + entry["name"])
-    elif not source.exists() and target.exists() and current != entry["after"] and not (state and allow_state_change):
+    elif (not source.exists() and target.exists() and current != entry["after"]
+          and not (state and allow_state_change)
+          and not (entry.get("replaceable") and allow_replaceable_change)):
         raise ValueError("Recovery preserved a concurrent modification: " + entry["name"])
 
 

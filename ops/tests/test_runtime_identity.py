@@ -105,6 +105,24 @@ class RuntimeIdentityTests(unittest.TestCase):
         self.assertFalse(result['processes']['native'])
         self.assertTrue(pid_file.exists(), 'a read-only inspection must preserve the stale evidence')
 
+    def test_invalid_pid_file_is_only_a_hint_when_runtime_is_unambiguous(self):
+        shutil.copyfile(Path(__file__).parent / 'fixtures/native-server.js', self.script)
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        with patch.object(self.runtime, 'verify_install'):
+            started = self.runtime.start('test', port, assets_prepared=True)
+        (self.run / 'native.pid').write_text('interrupted-write')
+        try:
+            status = self.runtime.status('test')
+            self.assertEqual(status['native_pid'], started['native_pid'])
+            self.assertTrue(status['processes']['native'])
+            self.assertTrue(status['health']['ok'])
+            self.assertNotIn('inspection_error', status)
+        finally:
+            (self.run / 'native.pid').write_text(str(started['native_pid']))
+            self.runtime.stop_run('test')
+
     def test_same_script_with_different_state_root_is_not_our_run(self):
         command = self.runtime.node_command(54321, self.home / 'other-state')
         process = self.child(command, self.engine)
@@ -164,6 +182,31 @@ class RuntimeIdentityTests(unittest.TestCase):
         finally:
             self.runtime.stop_run('test')
         self.assertFalse(self.runtime.process_module().port_open(port))
+
+    def test_status_accepts_owned_runtime_after_container_identity_drift(self):
+        """A restored Liveware container may change /proc start ticks in place."""
+        shutil.copyfile(Path(__file__).parent / 'fixtures/native-server.js', self.script)
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0))
+            port = sock.getsockname()[1]
+        with patch.object(self.runtime, 'verify_install'):
+            started = self.runtime.start('test', port, assets_prepared=True)
+        metadata_path = self.run / 'run.json'
+        metadata = json.loads(metadata_path.read_text())
+        metadata['process']['identity'] = 'identity-before-liveware-restore'
+        metadata_path.write_text(json.dumps(metadata))
+        (self.run / 'native.pid').write_text('87654321')
+        try:
+            status = self.runtime.status('test')
+            self.assertEqual(status['native_pid'], started['native_pid'])
+            self.assertTrue(status['processes']['native'])
+            self.assertTrue(status['health']['ok'])
+            self.assertNotIn('inspection_error', status)
+            self.assertEqual((self.run / 'native.pid').read_text(), '87654321')
+            self.assertTrue(self.runtime.stop_run('test')['ok'])
+        finally:
+            if self.runtime.process_module().port_open(port):
+                self.runtime.stop_run('test')
 
     def test_occupied_port_never_starts_a_second_node(self):
         with socket.socket() as sock:

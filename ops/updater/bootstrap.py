@@ -173,17 +173,26 @@ def main():
         extract_bundle(bundle, work / 'complete-check', checked)
         installed = update_root / ('bootstrap-' + expected)
         safe(installed)
+        cached_valid = False
         if installed.exists():
-            if any(installed.rglob('__pycache__')):
-                raise ValueError('Previously staged bootstrap contains unreviewed bytecode')
-            staged_files = {name for name, item in inventory(installed, state=True).items() if 'sha256' in item}
-            expected_files = {name for name in manifest['artifacts'] if name.startswith('ops/')}
-            if staged_files != expected_files:
-                raise ValueError('Previously staged bootstrap contains unreviewed files')
-            for name, digest in manifest['artifacts'].items():
-                if name.startswith('ops/') and sha((installed / name).read_bytes()) != digest:
-                    raise ValueError('Previously staged bootstrap was modified')
-        else:
+            try:
+                staged_files = {name for name, item in inventory(installed, state=True).items() if 'sha256' in item}
+                expected_files = {name for name in manifest['artifacts'] if name.startswith('ops/')}
+                cached_valid = (not any(installed.rglob('__pycache__'))
+                                and staged_files == expected_files
+                                and all(sha((installed / name).read_bytes()) == digest
+                                        for name, digest in manifest['artifacts'].items()
+                                        if name.startswith('ops/')))
+            except (OSError, ValueError, KeyError):
+                cached_valid = False
+        if installed.exists() and not cached_valid:
+            # This is updater-owned cache, not user data. Preserve suspicious
+            # bytes for diagnosis, then replace them with the just-downloaded,
+            # hash-verified updater instead of blocking the release.
+            quarantine = Path(tempfile.mkdtemp(prefix='bootstrap-invalid-', dir=update_root))
+            quarantine.rmdir()
+            os.replace(installed, quarantine)
+        if not cached_valid:
             os.replace(stage, installed)
         # The standalone downloaded Bootstrap has no sibling updater modules.
         # Later imports must follow the verified tree after its durable move.

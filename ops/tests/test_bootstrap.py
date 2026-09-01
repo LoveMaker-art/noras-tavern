@@ -92,7 +92,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn('checksum', result.stderr)
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
-    def test_repeated_review_does_not_modify_skills_or_reuse_unreviewed_code(self):
+    def test_repeated_review_rebuilds_modified_bootstrap_cache_from_verified_bundle(self):
         before = self.fixture.snapshot()
         first = self.run_bootstrap('--allow-candidate')
         self.assertEqual(first.returncode, 0, first.stderr)
@@ -104,8 +104,11 @@ class BootstrapTests(unittest.TestCase):
         staged = self.home / 'tavern-updates-v2' / ('bootstrap-' + digest)
         (staged / 'ops/updater/unreviewed.py').write_text('raise RuntimeError("not part of release")\n')
         changed = self.run_bootstrap('--allow-candidate')
-        self.assertNotEqual(changed.returncode, 0)
-        self.assertIn('unreviewed files', changed.stderr)
+        self.assertEqual(changed.returncode, 0, changed.stderr)
+        self.assertFalse((staged / 'ops/updater/unreviewed.py').exists())
+        quarantines = list((self.home / 'tavern-updates-v2').glob('bootstrap-invalid-*'))
+        self.assertEqual(len(quarantines), 1)
+        self.assertTrue((quarantines[0] / 'ops/updater/unreviewed.py').is_file())
         self.assertEqual(self.fixture.snapshot(), before)
 
     def test_apply_requires_explicit_confirmation(self):

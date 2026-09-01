@@ -143,6 +143,18 @@ class MaintenanceTests(unittest.TestCase):
         self.assertEqual(journal['script'], str(script))
         self.assertEqual(journal['process'], record)
 
+    def test_invalid_legacy_pid_file_is_only_a_discovery_hint(self):
+        (self.state / 'server.pid').write_text('interrupted-write')
+        with patch.object(maintenance, 'python_processes', return_value=[self.record]), \
+             patch.object(maintenance, 'process_record', side_effect=[self.record, None, None]), \
+             patch.object(maintenance, 'port_open', return_value=False), \
+             patch.object(maintenance.urllib.request, 'urlopen', return_value=self.health(0)), \
+             patch.object(maintenance.os, 'kill') as kill:
+            maintenance.pause(self.lifecycle, self.transaction)
+        kill.assert_called_once_with(self.record['pid'], signal.SIGTERM)
+        saved = json.loads((self.transaction / 'maintenance.json').read_text())
+        self.assertEqual(saved['process'], self.record)
+
     def test_two_matching_python_processes_are_never_stopped(self):
         with patch.object(maintenance, 'python_processes', return_value=[self.record, {**self.record, 'pid': 87654322}]), \
              patch.object(maintenance.os, 'kill') as kill:

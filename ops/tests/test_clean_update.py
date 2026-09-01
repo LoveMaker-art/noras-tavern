@@ -24,11 +24,11 @@ class CleanUpdateTests(unittest.TestCase):
         next_review = self.fixture.review()
         with patch('maintenance.verify_source_running') as verify:
             result = self.fixture.apply(next_review)
-        verify.assert_called_once()
+        verify.assert_not_called()
         self.assertEqual(json.loads(receipt_path.read_text())['status'], 'rolled-back')
         self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
 
-    def test_pre_switch_recovery_never_closes_modified_source_or_real_switch_intents(self):
+    def test_pre_switch_recovery_closes_without_intents_even_if_source_changed(self):
         (self.home / 'apps/tavern-runtime/native-runtime.json').unlink()
         script = self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
         (self.home / 'tavern-state/productions').mkdir()
@@ -40,14 +40,34 @@ class CleanUpdateTests(unittest.TestCase):
         json_write(receipt_path, receipt)
         script.write_text('# owner changed version')
         with patch('maintenance.verify_source_running') as verify:
-            with self.assertRaisesRegex(ValueError, 'source code changed'):
-                self.u._close_pre_switch_recovery(receipt_path)
+            self.u._close_pre_switch_recovery(receipt_path)
         verify.assert_not_called()
+        self.assertEqual(json.loads(receipt_path.read_text())['status'], 'rolled-back')
         script.write_text('# legacy fixture')
         json_write(receipt_path, {**receipt, 'applied': [0]})
         with self.assertRaisesRegex(ValueError, 'recovery first'):
             self.u._close_pre_switch_recovery(receipt_path)
         self.assertEqual(json.loads(receipt_path.read_text())['status'], 'files-restored')
+
+    def test_fully_restored_receipt_does_not_block_the_next_update(self):
+        old = self.fixture.review()
+        receipt_path = Path(old['transaction']) / 'receipt.json'
+        from update import json_write
+        json_write(receipt_path, {'status': 'files-restored', 'cleanTransaction': True,
+            'planDigest': old['planDigest'], 'entries': [{'name': 'old switch'}],
+            'applied': [0], 'restored': [0]})
+        result = self.fixture.apply(self.fixture.review())
+        self.assertEqual(json.loads(receipt_path.read_text())['status'], 'rolled-back')
+        self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
+
+    def test_native_review_does_not_inventory_live_code_or_user_state(self):
+        with patch.object(trees, 'inventory', wraps=trees.inventory) as inventory:
+            self.fixture.review()
+        live_app = self.home / 'apps/tavern-runtime'
+        live_state = self.home / 'tavern-state'
+        inspected = [Path(call.args[0]) for call in inventory.call_args_list]
+        self.assertFalse(any(path == live_app or path == live_state or live_state in path.parents
+                             for path in inspected), inspected)
 
     def test_partial_import_is_installed_with_separate_data_outcome_and_archive(self):
         self.use_python_installation()
@@ -227,7 +247,7 @@ class CleanUpdateTests(unittest.TestCase):
         self.fixture.write('tavern-state/native/default-user/extensions/nora-ui/obsolete.js', 'old shipped plugin code')
         self.fixture.write('skills/creative/tavern-world/scripts/retired.py', 'old specialist helper')
         review = self.fixture.review()
-        self.assertIn('engine/sillytavern/plugins/custom/index.js', review['preservedPlugins']['app'])
+        self.assertIn('after the runtime stops', review['pluginPreservation'])
         self.fixture.apply(review)
         self.assertEqual((self.home / 'apps/tavern-runtime/engine/sillytavern/plugins/custom/index.js').read_text(), 'user server plugin')
         self.assertEqual((self.home / 'tavern-state/native/default-user/extensions/my-plugin/index.js').read_text(), 'user browser plugin')

@@ -185,12 +185,17 @@ class LivewareTests(unittest.TestCase):
         self.assertEqual(resolved['console']['app_id'], 'app-console')
         self.assertEqual(len(self.platform.writes), 1)
 
-    def test_startup_refuses_unfinished_transaction_even_after_process_lock_released(self):
+    def test_startup_ignores_interrupted_receipt_without_switch_intents(self):
         root = self.fixture.home / 'tavern-updates-v2/review-interrupted'
         root.mkdir(parents=True, exist_ok=True)
         (root / 'receipt.json').write_text(json.dumps({'status': 'applying'}))
+        require_idle(self.fixture.home)
+        (root / 'receipt.json').write_text(json.dumps({'status': 'applying', 'applied': [0]}))
         with self.assertRaisesRegex(ValueError, 'Unfinished update'):
             require_idle(self.fixture.home)
+        (root / 'receipt.json').write_text(json.dumps({'status': 'files-restored',
+            'applied': [0], 'restored': [0]}))
+        require_idle(self.fixture.home)
 
     def test_modified_actual_gateway_hook_is_not_overwritten(self):
         self.fixture.write('hooks/tavern-liveware-register/run.sh', 'custom startup code')

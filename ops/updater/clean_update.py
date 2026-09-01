@@ -83,33 +83,43 @@ class CleanUpdater(ReleaseReview):
         result = super().review(directory, expected, candidate=candidate)
         transaction = Path(result['transaction'])
         plan = json.loads((transaction / 'plan.json').read_text())
+        python_source = self._python_source()
         groups = []
         installer = module_at('isolated_release_installer', transaction / 'source/ops/scripts/install-hermes-skills.py')
         for name, target in self._groups(installer):
-            old = trees.inventory(target) or {}
+            # Native code is explicitly replaceable. Inventory it only after
+            # the runtime is stopped so transient runtime output cannot
+            # invalidate the review. Legacy adoption still inventories the
+            # exact old tree because it converts that installation.
+            # The live Tavern app is the runtime-written tree. Other managed
+            # code still receives a read-only safety inventory during review
+            # so unsafe symlinks/special files fail before maintenance, while
+            # its content snapshot remains deferred to the stopped runtime.
+            old = (trees.inventory(target) or {}) if python_source or name != 'app' else {}
             extras = [rel for rel, item in old.items() if 'sha256' in item and name + '/' + rel not in plan['files']
                       and 'node_modules' not in Path(rel).parts]
             # User-installed server plugins are a supported extension location,
             # not unowned application files. Preserve them as an explicit overlay.
             plugins = [rel for rel in extras if name == 'app' and rel.startswith('engine/sillytavern/plugins/')]
             groups.append({'name': name, 'target': str(target),
-                           'before': trees.fingerprint(target) if self._python_source() else None,
+                           'before': trees.fingerprint(target) if python_source else None,
                            'hadOld': target.exists(), 'preservedPluginFiles': plugins,
                            'inactiveFiles': [rel for rel in extras if rel not in plugins]})
         extension_retirements = []
-        native = self.state / 'native'
-        for user in native.iterdir() if native.exists() else []:
-            if not user.is_dir() or user.name.startswith('_'):
-                continue
-            for extension in (transaction / 'source/app/native-extensions').iterdir():
-                old = trees.inventory(user / 'extensions' / extension.name, state=True) or {}
-                new = trees.inventory(extension) or {}
-                extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
-                                             for rel, item in old.items() if 'sha256' in item and rel not in new)
+        if python_source:
+            native = self.state / 'native'
+            for user in native.iterdir() if native.exists() else []:
+                if not user.is_dir() or user.name.startswith('_'):
+                    continue
+                for extension in (transaction / 'source/app/native-extensions').iterdir():
+                    old = trees.inventory(user / 'extensions' / extension.name, state=True) or {}
+                    new = trees.inventory(extension) or {}
+                    extension_retirements.extend(str((user / 'extensions' / extension.name / rel).relative_to(self.state))
+                                                 for rel, item in old.items() if 'sha256' in item and rel not in new)
         plan.update(cleanTransaction=True, testMode=self.test_mode, port=self.isolated_port, groups=groups, extensionRetirements=extension_retirements,
                     liveware=(self.integration.review() if self._python_source()
                               else {'status': 'preserved-existing-registration'}),
-                    sourceRuntime='python' if self._python_source() else 'node',
+                    sourceRuntime='python' if python_source else 'node',
                     pythonSource=python_installation(self.targets['app']))
         if isinstance(self.lifecycle, CleanLifecycle):
             self.lifecycle.module_path = transaction / 'source/app/native_lifecycle.py'
@@ -125,6 +135,9 @@ class CleanUpdater(ReleaseReview):
                                                        'Existing App identities and bindings are preserved without platform mutation')},
                       inactiveCode={g['name']: g['inactiveFiles'] for g in groups if g['inactiveFiles']},
                       preservedPlugins={g['name']: g['preservedPluginFiles'] for g in groups if g['preservedPluginFiles']},
+                      pluginPreservation=('Server plugins are inventoried and overlaid after the runtime stops'
+                                          if plan['sourceRuntime'] == 'node' else
+                                          'Legacy server plugins are listed from the reviewed Python source'),
                       inactiveExtensionFiles=extension_retirements,
                       migration=('Python productions -> Node Worlds on copied state'
                                  if plan['sourceRuntime'] == 'python' else
@@ -137,7 +150,9 @@ class CleanUpdater(ReleaseReview):
     def _preconditions(self, transaction, plan):
         if not plan.get('cleanTransaction') or plan.get('testMode') != self.test_mode or plan.get('port') != self.isolated_port:
             raise ValueError('Clean transaction mode/port differs from review')
-        super()._preconditions(transaction, plan)
+        replaceable = ([group['name'] for group in plan['groups']]
+                       if plan.get('sourceRuntime') == 'node' else [])
+        super()._preconditions(transaction, plan, replaceable_roots=replaceable)
         if plan.get('sourceRuntime') == 'python' and 'liveware' in plan:
             self.integration.check(plan['liveware'])
         from activation_retirement import review as retirement_review
@@ -182,7 +197,17 @@ class CleanUpdater(ReleaseReview):
             name = group['name']
             if name in PARTS:
                 shutil.copytree(transaction / 'source' / name, source, symlinks=True)
-                for rel in group['preservedPluginFiles']:
+                preserved_plugins = set(group['preservedPluginFiles'])
+                if name == 'app':
+                    # Review is not the ownership boundary for user plugins.
+                    # Re-inventory the stopped runtime so a plugin added while
+                    # dependencies were prepared is preserved as user data.
+                    old = trees.inventory(Path(group['target'])) or {}
+                    preserved_plugins.update(
+                        rel for rel, item in old.items()
+                        if 'sha256' in item and rel.startswith('engine/sillytavern/plugins/')
+                        and name + '/' + rel not in plan['files'])
+                for rel in sorted(preserved_plugins):
                     target = source / rel
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(Path(group['target']) / rel, target)
@@ -194,7 +219,8 @@ class CleanUpdater(ReleaseReview):
                       if plan.get('sourceRuntime') == 'node' else group['before'])
             entries.append({**group, 'before': before, 'source': str(source),
                             'backup': str(transaction / 'backup/trees' / str(i)),
-                            'after': trees.fingerprint(source), 'state': False})
+                            'after': trees.fingerprint(source), 'state': False,
+                            'replaceable': True})
         return entries
 
     def _prepare_host_entries(self, transaction, plan, prepared, entries, excluded_prefixes):
@@ -209,14 +235,6 @@ class CleanUpdater(ReleaseReview):
             entries.append({'name': change['name'], 'target': str(target), 'source': str(source),
                             'backup': str(transaction / 'backup/host' / str(len(entries))), 'hadOld': target.exists(),
                             'before': trees.fingerprint(target), 'after': trees.fingerprint(source), 'state': False})
-        for request in plan.get('activationRetirement', {}).get('requests', []):
-            target = safe(request['path'])
-            source = prepared / ('retirement-' + str(len(entries)))
-            json_write(source, request['after'])
-            entries.append({'name': 'activation-retirement:' + target.parent.name, 'target': str(target),
-                'source': str(source), 'backup': str(transaction / 'backup/activation' / target.parent.name),
-                'hadOld': True, 'before': trees.fingerprint(target), 'after': trees.fingerprint(source), 'state': False})
-
     def _prepare_native(self, transaction, plan):
         """Prepare code only; never copy, parse or switch native user data."""
         prepared = transaction / 'prepared'
@@ -238,7 +256,8 @@ class CleanUpdater(ReleaseReview):
                 entries.append({'name': name, 'target': str(target), 'source': str(source),
                                 'backup': str(transaction / 'backup/extensions' / str(len(entries))),
                                 'hadOld': target.exists(), 'before': trees.fingerprint(target),
-                                'after': trees.fingerprint(source), 'state': False})
+                                'after': trees.fingerprint(source), 'state': False,
+                                'replaceable': True})
         group_names = [g['name'] + '/' for g in plan['groups']]
         self._prepare_host_entries(transaction, plan, prepared, entries, group_names + extension_prefixes)
         json_write(transaction / 'migration.json', {'pythonMigration': False, 'status': 'not-run',
@@ -330,8 +349,7 @@ class CleanUpdater(ReleaseReview):
                 if (baseline.get('manifestSha256') == plan['manifestSha256']
                         and all(c['before'] == c['after'] for c in plan['changes'])
                         and not any(g['inactiveFiles'] for g in plan['groups'])
-                        and not plan.get('extensionRetirements')
-                        and not plan.get('activationRetirement', {}).get('requests')):
+                        and not plan.get('extensionRetirements')):
                     receipt['status'] = 'already-installed'
                     receipt.update(installation_guidance(receipt, isolated=self.test_mode))
                     json_write(transaction / 'receipt.json', receipt)
@@ -374,11 +392,19 @@ class CleanUpdater(ReleaseReview):
                         receipt['applied'].append(i)  # Journal BEFORE either rename.
                         json_write(transaction / 'receipt.json', receipt)
                         trees.switch(entry)
-                run('start-runtime', '启动新版酒馆', self.lifecycle.activate, transaction)
-                verification = run('verify', '检查酒馆、故事档案和新 MCP 进程', self.lifecycle.verify, transaction)
+                # Check immutable release bytes while the runtime is offline.
+                # Startup may legitimately create or update runtime output in
+                # managed trees; that must not undo a healthy installation.
                 for name, expected_hash in plan['files'].items():
                     if sha(self._target(name)) != expected_hash:
                         raise ValueError('Installed file mismatch: ' + name)
+                # The stopped-runtime switch result is the accepted release
+                # state. Do not inventory live code after startup: generated
+                # files can appear or vanish while Tavern is healthy.
+                receipt['accepted'] = {str(i): entry['after'] for i, entry in enumerate(entries)}
+                json_write(transaction / 'receipt.json', receipt)
+                run('start-runtime', '启动新版酒馆', self.lifecycle.activate, transaction)
+                verification = run('verify', '检查酒馆、故事档案和新 MCP 进程', self.lifecycle.verify, transaction)
                 receipt['livewareJournal'] = {}
                 if plan.get('sourceRuntime') == 'python':
                     receipt['liveware'] = run('reconcile-liveware', '对齐既有 Tavern / Story Profile 入口',
@@ -387,7 +413,6 @@ class CleanUpdater(ReleaseReview):
                 else:
                     receipt['liveware'] = {'status': 'preserved-existing-registration',
                                            'externalEntryVerified': False}
-                receipt['accepted'] = {str(i): trees.fingerprint(Path(e['target']), state=e['state']) for i, e in enumerate(entries)}
                 json_write(self.root / 'installed.json', {'transaction': transaction.name, 'manifestSha256': plan['manifestSha256'],
                            'commit': plan['commit'], 'files': plan['files'], 'planDigest': expected,
                            'testPort': self.isolated_port if self.test_mode else None})
@@ -415,43 +440,19 @@ class CleanUpdater(ReleaseReview):
                 raise
 
     def _close_pre_switch_recovery(self, receipt_path):
-        """A healthy, untouched source needs no old-engine rollback or downtime.
+        """Close an interrupted receipt that has no unrecovered active effect.
 
-        Only pre-switch directory receipts are eligible. Actual rename intents,
-        platform writes and altered source code remain explicit recovery work.
+        Prepared files are transaction-private and do not affect the active
+        installation. Only unrestored rename intents or external writes need
+        explicit recovery before another update.
         """
+        from update_status import has_unrecovered_effects
         receipt = json.loads(receipt_path.read_text())
-        if (receipt.get('status') not in ('preparing', 'files-restored')
-                or not receipt.get('cleanTransaction') or receipt.get('entries')
-                or receipt.get('applied') or receipt.get('restored')
-                or receipt.get('livewareJournal', {}).get('actions')):
+        if (receipt.get('status') not in ('inspecting', 'preparing', 'files-restored')
+                or not receipt.get('cleanTransaction')
+                or has_unrecovered_effects(receipt)):
             raise ValueError('Unfinished update requires recovery first')
-        transaction, plan = self._load_plan(receipt_path.parent, receipt.get('planDigest'))
-        if (plan.get('port') != self.isolated_port or plan.get('testMode') != self.test_mode
-                or plan.get('pythonSource') != python_installation(self.targets['app'])
-                or sha(self.root / 'installed.json') != plan.get('previousBaseline')):
-            raise ValueError('Pending recovery no longer matches the current installation')
-        if plan.get('sourceRuntime') == 'node':
-            for change in plan['changes']:
-                if sha(self._target(change['name'])) != change['before']:
-                    raise ValueError('Pending recovery source code changed; explicit recovery required')
-            receipt.update(status='rolled-back', recoveryResolution='unchanged-native-code-before-switch')
-            json_write(receipt_path, receipt)
-            return
-        for group in plan['groups']:
-            if trees.fingerprint(Path(group['target'])) != group['before']:
-                raise ValueError('Pending recovery source code changed; explicit recovery required')
-        for change in plan['changes']:
-            if sha(self._target(change['name'])) != change['before']:
-                raise ValueError('Pending recovery managed files changed; explicit recovery required')
-        from maintenance import verify_source_running
-        previous_runtime = getattr(self.lifecycle, 'source_runtime', 'node')
-        try:
-            self.lifecycle.source_runtime = 'python'
-            verify_source_running(self.lifecycle, transaction)
-        finally:
-            self.lifecycle.source_runtime = previous_runtime
-        receipt.update(status='rolled-back', recoveryResolution='unchanged-source-verified-before-next-update')
+        receipt.update(status='rolled-back', recoveryResolution='no-unrecovered-active-effects')
         json_write(receipt_path, receipt)
 
     def _record_recovery_failure(self, transaction, receipt, error):
@@ -468,6 +469,7 @@ class CleanUpdater(ReleaseReview):
             for i in reversed(receipt['applied']):
                 if i not in receipt['restored']:
                     trees.recovery_check(receipt['entries'][i], allow_state_change=automatic,
+                                         allow_replaceable_change=automatic,
                                          accepted=receipt.get('accepted', {}).get(str(i)))
         preflight()
         if any(i not in receipt['restored'] for i in receipt['applied']):

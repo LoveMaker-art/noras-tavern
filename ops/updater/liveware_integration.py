@@ -495,9 +495,11 @@ def initialize(home, platform):
 
 def require_idle(home):
     from update import safe
+    from update_status import TERMINAL_RECEIPT_STATUSES, has_unrecovered_effects
     for path in (Path(home) / 'tavern-updates-v2').glob('review-*/receipt.json'):
         value = json.loads(safe(path).read_text())
-        if value.get('status') not in ('rolled-back', 'installed-awaiting-hermes-reload', 'already-installed', 'refused-before-maintenance'):
+        if (value.get('status') not in TERMINAL_RECEIPT_STATUSES
+                and has_unrecovered_effects(value)):
             raise ValueError('Unfinished update requires recovery; startup will not change runtime or Liveware')
 
 

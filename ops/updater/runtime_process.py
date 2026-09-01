@@ -1,8 +1,8 @@
-"""Process observation helpers for runtime maintenance.
+"""Process observation and ownership rules for runtime maintenance.
 
-Discovery still verifies the reviewed runtime before maintenance begins. The
-actual stop step intentionally follows the v1.24.12 updater behavior: stop the
-Tavern server by its command-line shape and wait briefly before continuing.
+Kernel identity protects one bounded inspect/stop operation. Durable ownership
+uses stable program/configuration evidence so Liveware checkpoint/restore does
+not turn a healthy Tavern into an unrelated process. PID files are hints only.
 """
 import os
 from pathlib import Path
@@ -155,7 +155,26 @@ def process_record(pid, script):
 
 
 def same_process(current, saved):
+    """Compare two observations made inside one bounded operation.
+
+    The kernel identity is intentionally included here. Callers use this only
+    to detect PID reuse or exec/session changes between inspection and signal.
+    """
     return bool(current and saved and all(current.get(key) == value for key, value in saved.items()))
+
+
+def same_runtime(current, saved):
+    """Match durable runtime ownership without volatile kernel coordinates.
+
+    Liveware may restore a container with the same owned process/configuration
+    but a different /proc start tick, process group or session. Those values
+    are valid race evidence inside one operation, but are not durable runtime
+    identity. The executed command, working directory and OS owner are.
+    """
+    if not current or not saved or not saved.get('argv') or not saved.get('cwd'):
+        return False
+    return all(key not in saved or current.get(key) == saved[key]
+               for key in ('argv', 'cwd', 'uid'))
 
 
 def find_processes(script):

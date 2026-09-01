@@ -9,6 +9,36 @@ import time
 import urllib.request
 
 
+TERMINAL_RECEIPT_STATUSES = frozenset({
+    'rolled-back', 'installed-awaiting-hermes-reload', 'already-installed',
+    'refused-before-maintenance',
+})
+
+
+def has_unrecovered_effects(receipt):
+    """Return whether a nonterminal receipt still owns an active mutation.
+
+    Preparing directories and recording a planned entry do not modify the live
+    installation. A journaled switch that has not been restored, or an external
+    Liveware action that has not been restored, does.
+    """
+    applied = receipt.get('applied') or []
+    restored = receipt.get('restored') or []
+    if not isinstance(applied, list) or not isinstance(restored, list):
+        return True
+    try:
+        pending_switches = set(applied) - set(restored)
+    except TypeError:
+        return True
+    if pending_switches:
+        return True
+    actions = receipt.get('livewareJournal', {}).get('actions') or []
+    if not isinstance(actions, list):
+        return True
+    return any(not isinstance(action, dict) or action.get('status') != 'restored'
+               for action in actions)
+
+
 def data_import_result(report, transaction, state):
     """Data compatibility is separate from successful program installation."""
     if not report.get('pythonMigration'):

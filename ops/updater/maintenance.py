@@ -13,7 +13,7 @@ import urllib.request
 from update import atomic, json_write, safe
 from python_installation import python_script
 from service_manager import ManagedService
-from runtime_process import (process_record, same_process, find_processes, port_open,
+from runtime_process import (process_record, same_process, same_runtime, find_processes, port_open,
                              stop_process, require_listener, ProcessError)
 
 
@@ -31,7 +31,8 @@ def verify_restored(lifecycle, process, script):
     deadline = time.monotonic() + 20
     while time.monotonic() < deadline:
         current = process_record(process['pid'], script)
-        if not same_process(current, process):
+        if (not same_runtime(current, process)
+                or current.get('pid') != process.get('pid')):
             raise ValueError('Restored Tavern process exited or changed before verification')
         if port_open(lifecycle.port):
             require_listener(current, script, lifecycle.port)
@@ -59,8 +60,14 @@ def pause(lifecycle, transaction):
         if status.get('inspection_error'):
             raise ValueError('Cannot inspect Node source before maintenance: ' + status['inspection_error'])
         managed_pid = status.get('native_pid')
+    hinted_pid = None
+    if not service and pid_file.exists():
+        try:
+            hinted_pid = int(pid_file.read_text().strip())
+        except (OSError, ValueError):
+            pass  # PID files are discovery hints; ownership comes from process evidence below.
     current = process_record(managed_pid, script) if managed_pid else (
-        process_record(int(pid_file.read_text().strip()), script) if not service and pid_file.exists() else None)
+        process_record(hinted_pid, script) if hinted_pid else None)
     if python:
         found = python_processes(u.targets['app'])
         if len(found) > 1 or (current and found and current != found[0]):
@@ -160,14 +167,14 @@ def resume(lifecycle, transaction):
     restored = record.get('restoredProcess')
     if restored:
         current = process_record(restored['pid'], script)
-        if (same_process(current, restored) and current['argv'] == old['argv']
+        if (same_runtime(current, restored) and current['argv'] == old['argv']
                 and current['cwd'] == old['cwd']):
             accept(current)
             return
     current = process_record(old['pid'], script)
     if current:
-        if not same_process(current, old):
-            raise ValueError('Original PID was reused; source restart requires review')
+        if not same_runtime(current, old):
+            raise ValueError('Original PID now belongs to a different runtime; source restart requires review')
         accept(current)
         return
     # Recover older receipts after their manager already restarted the exact

@@ -93,6 +93,16 @@ class RuntimeProcessTests(unittest.TestCase):
     def test_historical_receipt_still_matches_new_observation(self):
         self.assertTrue(processes.same_process({**self.record, 'uid': os.getuid(), 'pgid': 12345}, self.record))
 
+    def test_durable_runtime_match_ignores_container_kernel_identity_drift(self):
+        restored = {**self.record, 'identity': 'new-host-ticks', 'pgid': 54321, 'session': 54321}
+        self.assertTrue(processes.same_runtime(restored, self.record))
+
+    def test_durable_runtime_match_rejects_different_command_or_directory(self):
+        self.assertFalse(processes.same_runtime({**self.record, 'argv': ['python3', '/other/server.py']}, self.record))
+        self.assertFalse(processes.same_runtime({**self.record, 'cwd': '/other'}, self.record))
+        self.assertFalse(processes.same_runtime({**self.record, 'uid': os.getuid() + 1},
+                                                {**self.record, 'uid': os.getuid()}))
+
 
 if __name__ == '__main__':
     unittest.main()

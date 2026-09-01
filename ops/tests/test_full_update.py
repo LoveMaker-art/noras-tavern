@@ -15,6 +15,7 @@ sys.path.insert(0, str(OPS / "updater"))
 from bundle import PARTS, digest, extract_bundle, read_bundle
 from update import Updater, plan_digest
 from legacy_recovery import LegacyRecovery
+import tree_transaction as trees
 
 
 class Service:
@@ -159,10 +160,19 @@ class FullUpdateTests(unittest.TestCase):
         receipt = json.loads((Path(review["transaction"]) / "receipt.json").read_text())
         self.assertEqual(receipt["status"], "rolled-back")
 
-    def test_target_change_prevents_shutdown(self):
+    def test_native_managed_code_change_is_backed_up_and_replaced(self):
         review = self.review()
         self.write("apps/tavern-runtime/hello.js", "new local edit")
-        with self.assertRaisesRegex(ValueError, "Target changed"):
+        self.apply(review)
+        self.assertEqual((self.home / "apps/tavern-runtime/hello.js").read_text(), "new-app")
+        backup = Path(review["transaction"]) / "backup"
+        self.assertTrue(any(path.read_text() == "new local edit"
+                            for path in backup.rglob("hello.js")))
+
+    def test_concurrent_host_configuration_change_still_prevents_shutdown(self):
+        review = self.review()
+        self.write("config.yaml", "model:\n  api_key: changed-after-review\n")
+        with self.assertRaisesRegex(ValueError, "Target changed.*home/config.yaml"):
             self.apply(review)
         self.assertEqual(self.service.calls, [])
 
@@ -172,6 +182,50 @@ class FullUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Staged source changed"):
             self.apply(review)
         self.assertEqual(self.service.calls, [])
+
+    def test_runtime_generated_managed_code_after_start_does_not_undo_install(self):
+        original = self.service.activate
+        def activate(transaction):
+            original(transaction)
+            self.write('apps/tavern-runtime/hello.js', 'runtime-generated')
+        self.service.activate = activate
+        result = self.apply(self.review())
+        self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
+        self.assertEqual((self.home / 'apps/tavern-runtime/hello.js').read_text(), 'runtime-generated')
+
+    def test_success_path_does_not_inventory_live_code_after_start(self):
+        started = False
+        original_activate = self.service.activate
+        original_fingerprint = trees.fingerprint
+        def activate(transaction):
+            nonlocal started
+            original_activate(transaction)
+            started = True
+        def fingerprint(path, *args, **kwargs):
+            if started and Path(path) == self.home / 'apps/tavern-runtime':
+                raise FileNotFoundError('simulated transient runtime file')
+            return original_fingerprint(path, *args, **kwargs)
+        self.service.activate = activate
+        with patch.object(trees, 'fingerprint', side_effect=fingerprint):
+            result = self.apply(self.review())
+        self.assertEqual(result['status'], 'installed-awaiting-hermes-reload')
+
+    def test_failed_start_with_runtime_generated_code_still_restores_old_release(self):
+        before = self.snapshot()
+        def activate(_transaction):
+            self.service.calls.append('activate')
+            self.write('apps/tavern-runtime/hello.js', 'failed-runtime-generated')
+            raise RuntimeError('simulated health failure after runtime output')
+        self.service.activate = activate
+        with self.assertRaisesRegex(RuntimeError, 'simulated health failure'):
+            self.apply(self.review())
+        self.assertEqual(self.snapshot(), before)
+
+    def test_plugin_added_after_review_is_preserved(self):
+        review = self.review()
+        plugin = self.write("apps/tavern-runtime/engine/sillytavern/plugins/new-user-plugin/index.js", "user plugin")
+        self.apply(review)
+        self.assertEqual(plugin.read_text(), "user plugin")
 
     def test_rollback_preserves_concurrent_code_change(self):
         review = self.review()
