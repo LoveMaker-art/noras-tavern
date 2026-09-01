@@ -1,9 +1,13 @@
 # Full-release contract
 
-The default CLI uses whole-directory transactions. An explicit apply approval
-includes the reviewed maintenance interruption, Python data conversion and code
-replacement. [Isolated rehearsals](isolated-rehearsal.md) exercise the same code;
-they do not establish target-host UI or gateway acceptance.
+The updater has two explicit paths. Python installations use a one-time full
+state-copy transaction for data conversion and code replacement. Existing Node
+2.x installations use a native code-replacement transaction: release code,
+official extensions, managed skills, MCP configuration and AGENTS are backed up
+and replaced, while Worlds, chats, model configuration, Story Profile data and
+Liveware registrations remain in place and are not update preconditions.
+[Isolated rehearsals](isolated-rehearsal.md) exercise the selected path; they do
+not establish target-host UI or gateway acceptance.
 
 The trusted repository is `LoveMaker-art/noras-tavern`. An explicit GitHub Release
 tag must have `release-manifest.json`, `SHA256SUMS` and all three archives. A branch
@@ -19,9 +23,9 @@ not a publisher signature.
 Supported source: Python `apps/tavern-runtime/backend/server.py`, or current Node
 `native-runtime.json` schema 2; state in `tavern-state`, loopback port 8799. Python
 runtime_cast schema 3/Profile schema 1 are converted and validated on a copy.
-Node requires its existing `native-runtime/config.yaml`; World v1 conversion is
-outside scope. Custom paths, unsafe filesystem entries and mixed Node/Python
-ownership require review. Individual incompatible Python records do not block
+Node requires its existing `native-runtime/config.yaml`. Native data schemas are
+owned by the running application and are not parsed or migrated by ordinary 2.x
+updates. Custom paths and mixed Node/Python ownership require review. Individual incompatible Python records do not block
 installation: compatible records import and the rest stay archived with reasons.
 Old `/assets/` images are read from the reviewed Python frontend before switching.
 
@@ -76,8 +80,9 @@ python scripts/update.py --hermes-home /opt/data status --transaction <review-pa
 ```
 
 Review checks archives, per-file hashes, traversal, symlinks, duplicate members,
-size limits, the full inventory and current target hashes. Apply checks again.
-Whole app/MCP/ops and managed skill directories are replaced after preparation.
+size limits and managed target hashes. Apply checks them again. Native updates
+replace whole app/MCP/ops and managed skill directories after preparation, but
+do not inventory, copy, fingerprint or switch `tavern-state` or memory files.
 Review lists unknown files leaving active paths; they stay in recovery. Supported
 custom server/frontend plugin locations are preserved explicitly. Inspect local
 code customizations before approving.

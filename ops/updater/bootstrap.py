@@ -194,10 +194,15 @@ def main():
             command += ['--isolated-test-port', str(args.isolated_test_port)]
         env = {**os.environ, 'HERMES_HOME': str(home)}
         from liveware_integration import prepare_update
+        from python_installation import python_installation
         from feedback import phase, failure_report
         try:
-            with phase('liveware-auth', '检查目标机器 Liveware 登录状态'):
-                prepare_update(home, allow_login=args.apply and args.confirm, isolated=args.isolated_test_port is not None)
+            # Existing native installations keep their two App identities and
+            # bindings. Liveware login/reconciliation belongs only to the
+            # one-time Python adoption path.
+            if python_installation(home / 'apps/tavern-runtime') is not None:
+                with phase('liveware-auth', '检查目标机器 Liveware 登录状态'):
+                    prepare_update(home, allow_login=args.apply and args.confirm, isolated=args.isolated_test_port is not None)
         except Exception as error:
             failure = failure_report(error)
             failure.update(status='refused-before-maintenance',

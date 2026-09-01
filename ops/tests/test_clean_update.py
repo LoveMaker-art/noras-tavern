@@ -50,6 +50,7 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(json.loads(receipt_path.read_text())['status'], 'files-restored')
 
     def test_partial_import_is_installed_with_separate_data_outcome_and_archive(self):
+        self.use_python_installation()
         self.fixture.service.migrate = lambda transaction, state: {
             'pythonMigration': True, 'status': 'partial', 'cards': 2, 'worldbooks': 1,
             'worlds': [{'id': 'world_ok'}], 'profile': {'preserved': True},
@@ -135,6 +136,15 @@ class CleanUpdateTests(unittest.TestCase):
         self.fixture.u = self.u
         self.fixture.initial = self.fixture.snapshot()
 
+    def use_python_installation(self):
+        """Select the one-time legacy migration path for migration tests."""
+        (self.home / 'apps/tavern-runtime/native-runtime.json').unlink()
+        self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
+        (self.home / 'tavern-state/productions').mkdir(exist_ok=True)
+        self.u = CleanUpdater(self.home, lifecycle=self.fixture.service, port=54321)
+        self.fixture.u = self.u
+        self.fixture.initial = self.fixture.snapshot()
+
     def test_unknown_old_program_is_not_in_the_active_release(self):
         review = self.fixture.review()
         self.fixture.apply(review)
@@ -181,6 +191,7 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(self.fixture.service.calls, [], 'Refused review must not stop or start the runtime')
 
     def test_failed_startup_restores_full_story_state(self):
+        self.use_python_installation()
         def fail(_transaction):
             self.fixture.write("tavern-state/native/default-user/chats/story.jsonl", "startup rewrote data")
             self.fixture.write("tavern-state/new-migration.json", '{"created":true}')
@@ -201,14 +212,14 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(self.fixture.snapshot(), before)
         self.assertEqual(self.u.rollback(review['transaction'], review['planDigest'])['status'], 'rolled-back')
 
-    def test_new_user_dialogue_blocks_later_data_rollback(self):
+    def test_native_code_rollback_preserves_new_user_dialogue(self):
         review = self.fixture.review()
         self.fixture.apply(review)
         self.fixture.write('tavern-state/native/default-user/chats/story.jsonl', 'new user conversation')
-        before = self.fixture.snapshot()
-        with self.assertRaisesRegex(ValueError, 'concurrent modification'):
-            self.u.rollback(review['transaction'], review['planDigest'])
-        self.assertEqual(self.fixture.snapshot(), before)
+        self.u.rollback(review['transaction'], review['planDigest'])
+        self.assertEqual((self.home / 'tavern-state/native/default-user/chats/story.jsonl').read_text(),
+                         'new user conversation')
+        self.assertEqual((self.home / 'apps/tavern-runtime/hello.js').read_text(), 'old-app')
 
     def test_custom_server_and_frontend_plugins_are_preserved(self):
         self.fixture.write('apps/tavern-runtime/engine/sillytavern/plugins/custom/index.js', 'user server plugin')
@@ -239,6 +250,7 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
 
     def test_corrupt_state_backup_blocks_all_recovery(self):
+        self.use_python_installation()
         review = self.fixture.review()
         self.fixture.apply(review)
         backup = Path(review['transaction']) / 'backup/state/native/default-user/chats/story.jsonl'
@@ -254,13 +266,17 @@ class CleanUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'marker'):
             self.fixture.apply(review)
 
-    def test_unknown_file_changed_after_review_blocks_switch(self):
+    def test_unknown_inactive_code_changed_after_review_is_backed_up_and_removed(self):
         review = self.fixture.review()
         self.fixture.write('apps/tavern-runtime/custom-plugin.js', 'new custom edit')
-        with self.assertRaisesRegex(ValueError, 'Target changed'):
-            self.fixture.apply(review)
+        self.fixture.apply(review)
+        self.assertFalse((self.home / 'apps/tavern-runtime/custom-plugin.js').exists())
+        backup = Path(review['transaction']) / 'backup'
+        self.assertTrue(any(p.read_text() == 'new custom edit'
+                            for p in backup.rglob('custom-plugin.js')))
 
     def test_migration_failure_does_not_touch_original_data(self):
+        self.use_python_installation()
         def migrate(transaction, state):
             (state / 'migration-error.json').write_text('{}')
             raise ValueError('invalid data mapping')
@@ -270,6 +286,7 @@ class CleanUpdateTests(unittest.TestCase):
         self.assertEqual(self.fixture.snapshot(), self.fixture.initial)
 
     def test_profile_markdown_projections_restore_after_failed_startup(self):
+        self.use_python_installation()
         self.fixture.write('memories/USER.md', 'personal content\noriginal profile')
         before = self.fixture.snapshot()
         def fail(transaction):

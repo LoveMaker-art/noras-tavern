@@ -52,6 +52,11 @@ class LivewareTests(unittest.TestCase):
         self.fixture = fixtures.FullUpdateTests()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
+        # Liveware reconciliation is part of one-time Python adoption. Native
+        # 2.x updates deliberately preserve registrations without querying it.
+        (self.fixture.home / 'apps/tavern-runtime/native-runtime.json').unlink()
+        self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
+        (self.fixture.home / 'tavern-state/productions').mkdir(exist_ok=True)
         self.platform = FakePlatform()
         self.fixture.write('tavern-state/apps.json', json.dumps({role: {
             'app_id': 'app-' + role, 'domain': 'app-' + role + '.apps.clawling.io'} for role in ('console', 'actor')}))

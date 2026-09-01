@@ -133,6 +133,8 @@ class FullUpdateTests(unittest.TestCase):
         self.assertEqual(self.snapshot(), self.initial, "review may stage but cannot alter live files")
         result = self.apply(review)
         self.assertEqual(result["status"], "installed-awaiting-hermes-reload")
+        self.assertNotIn("dataImport", result)
+        self.assertEqual(result["liveware"]["status"], "preserved-existing-registration")
         self.assertFalse(result["verification"]["gatewayMcpReloaded"])
         self.assertEqual((self.home / "apps/tavern-runtime/hello.js").read_text(), "new-app")
         self.assertEqual((self.home / "apps/nora-mcp/dist/server.js").read_text(), "new-mcp")
@@ -203,30 +205,43 @@ class FullUpdateTests(unittest.TestCase):
             self.assertEqual(agents.read_bytes(), expected)
             self.assertIn(b"Keep my instructions", agents.read_bytes())
 
-    def test_mixed_python_data_is_not_mistaken_for_a_node_installation(self):
+    def test_native_update_preserves_unrecognized_legacy_namespace_without_parsing_it(self):
         self.write("tavern-state/productions/old-world.json", '{"id":"old-world","story":[]}')
-        with self.assertRaisesRegex(ValueError, "Python data"):
-            self.review()
-        self.assertEqual(self.service.calls, [])
+        before = (self.home / "tavern-state/productions/old-world.json").read_bytes()
+        review = self.review()
+        self.assertEqual(review["mode"], "native-code-replacement")
+        self.apply(review)
+        self.assertEqual((self.home / "tavern-state/productions/old-world.json").read_bytes(), before)
 
-    def test_unmigrated_node_world_v1_blocks_upgrade(self):
+    def test_native_update_does_not_parse_world_v1_records(self):
         self.write("tavern-state/native/default-user/nora-worlds/old.json", '{"schema":"nora-world/v1"}')
-        with self.assertRaisesRegex(ValueError, "World v1"):
-            self.review()
+        review = self.review()
+        self.apply(review)
+        self.assertEqual((self.home / "tavern-state/native/default-user/nora-worlds/old.json").read_text(),
+                         '{"schema":"nora-world/v1"}')
 
-    def test_unknown_or_corrupt_world_schema_blocks_upgrade(self):
+    def test_native_review_does_not_parse_corrupt_world_records(self):
         file = self.write("tavern-state/native/default-user/nora-world-core/worlds/new.json", '{"schema_version":3}')
         for data in ('{"schema_version":3}', '{broken', '[]'):
             file.write_text(data)
-            with self.assertRaisesRegex(ValueError, "World record"):
-                self.review()
+            review = self.review()
+            self.assertEqual(review["mode"], "native-code-replacement")
+            self.assertEqual(file.read_text(), data)
 
-    def test_data_layout_is_checked_again_before_apply(self):
+    def test_state_changes_after_review_do_not_block_native_apply(self):
         review = self.review()
-        self.write("tavern-state/productions/old.json", '{"id":"old"}')
-        with self.assertRaisesRegex(ValueError, "Python data"):
-            self.apply(review)
-        self.assertEqual(self.service.calls, [])
+        state = self.write("tavern-state/productions/old.json", '{"id":"old"}')
+        transient = self.write("tavern-state/native/default-user/settings.json.1778046006", 'temporary')
+        transient.unlink()
+        self.apply(review)
+        self.assertEqual(state.read_text(), '{"id":"old"}')
+
+    def test_native_update_never_queries_or_mutates_liveware(self):
+        self.u.integration.review = lambda: (_ for _ in ()).throw(AssertionError('reviewed Liveware'))
+        self.u.integration.check = lambda _review: (_ for _ in ()).throw(AssertionError('checked Liveware'))
+        self.u.integration.apply = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError('mutated Liveware'))
+        result = self.apply(self.review())
+        self.assertEqual(result['liveware']['status'], 'preserved-existing-registration')
 
     def test_old_buggy_plan_cannot_be_applied_by_the_fixed_updater(self):
         review = self.review()

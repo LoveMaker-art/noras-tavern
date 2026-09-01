@@ -42,6 +42,12 @@ class BootstrapTests(unittest.TestCase):
             '--release-dir', str(f.release), '--manifest-sha256', fixtures.digest((f.release / 'release-manifest.json').read_bytes()),
             *extra], env=self.env, capture_output=True, text=True)
 
+    def use_python_installation(self):
+        """Turn the disposable native fixture into a legacy Python source."""
+        (self.home / 'apps/tavern-runtime/native-runtime.json').unlink()
+        self.fixture.write('apps/tavern-runtime/server.py', '# legacy fixture')
+        (self.home / 'tavern-state/productions').mkdir(exist_ok=True)
+
     def test_missing_yaml_fails_before_any_bootstrap_state_or_skill_change(self):
         result = subprocess.run([sys.executable, '-S', str(fixtures.OPS / 'updater/bootstrap.py'),
                                  '--data-root', str(self.home)], env=self.env, capture_output=True, text=True)
@@ -109,12 +115,14 @@ class BootstrapTests(unittest.TestCase):
         self.assertFalse((self.home / 'skills/system/tavern-updater').exists())
 
     def test_auth_preparation_requires_confirmed_apply_and_precedes_review(self):
+        self.use_python_installation()
         with patch('liveware_integration.prepare_update') as prepare:
             self.completed_bootstrap()
         prepare.assert_called_once_with(self.home, allow_login=True, isolated=False)
 
     def test_failed_login_stops_before_review_or_service_changes(self):
         from liveware_integration import PlatformError
+        self.use_python_installation()
         before = self.fixture.snapshot()
         with patch('liveware_integration.prepare_update', side_effect=PlatformError('AUTH', 'synthetic auth failure')), \
              self.assertRaises(bootstrap.UpdateFailure) as raised:
@@ -124,6 +132,7 @@ class BootstrapTests(unittest.TestCase):
         self.assertEqual(self.fixture.snapshot(), before)
 
     def test_review_only_checks_auth_without_logging_in(self):
+        self.use_python_installation()
         args = ['bootstrap.py', '--data-root', str(self.home), '--release-dir', str(self.fixture.release),
                 '--manifest-sha256', fixtures.digest((self.fixture.release / 'release-manifest.json').read_bytes())]
         def review(*args, **kwargs):
@@ -134,6 +143,11 @@ class BootstrapTests(unittest.TestCase):
              patch.object(bootstrap, 'run_cli', side_effect=review), \
              redirect_stderr(io.StringIO()), self.assertRaisesRegex(RuntimeError, 'review boundary'):
             bootstrap.main()
+
+    def test_native_update_never_requires_liveware_authentication(self):
+        with patch('liveware_integration.prepare_update') as prepare:
+            self.completed_bootstrap()
+        prepare.assert_not_called()
 
     def completed_bootstrap(self, *, status='installed-awaiting-hermes-reload', returncode=0, isolated=False, check_progress=False):
         """Real bundle/adoption; substitute only the child review/apply processes."""
