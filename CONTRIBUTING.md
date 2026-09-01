@@ -79,6 +79,29 @@ The packager exports the commit into an isolated directory, installs locked depe
 
 Each uniquely named directory under `release/` contains the app, ops, and Nora MCP archives, the release manifest, and SHA-256 checksums. Runtime data, user models, credentials, ignored private files, installed dependencies, and tests are excluded from release payloads.
 
+## Fast packaging after targeted tests
+
+Small fixes do not need to repeat the complete repository gate during the
+publishing phase. First run the tests that exercise the changed behavior and
+its directly affected module. After those tests pass, commit the change and use:
+
+```sh
+sh ops/scripts/package-release.sh --fast-after-test
+```
+
+This mode still requires a clean committed tree, installs locked build
+dependencies, checks Story Profile source parity, rebuilds required Tavern and
+MCP artifacts, rejects private/runtime files, and emits the same full archives,
+manifest, Bootstrap files, and SHA-256 checksums as a normal release. It does
+not rerun dependency audits, repository-wide tests, lint, architecture
+contracts, or product workflow tests.
+
+The manifest records `verification.mode=fast-after-external-test` and does not
+claim that the packager executed tests. Use normal stable packaging for broad,
+cross-module, dependency, migration, or architecture changes. Packaging never
+pushes a branch, creates a tag, publishes a GitHub Release, or updates a host;
+those remain separately authorized actions.
+
 The pinned `image-size` and `showdown` security backports live under `app/engine/sillytavern/vendor/`. Their `SECURITY.md` files record upstream provenance, changes, licenses, and limitations.
 
 ## Release and deployment rules
