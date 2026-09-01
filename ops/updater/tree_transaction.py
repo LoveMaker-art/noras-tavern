@@ -12,35 +12,50 @@ def _read_reviewed_link(root, path, name, *, state=False):
     return os.readlink(path)
 
 
-def inventory(root, *, state=False):
+def _walk(root, *, state=False, tolerate_missing=False):
     root = Path(root)
     if root.is_symlink():
         raise ValueError("Symlink root requires review: " + str(root))
     if not root.exists():
-        return None
-    result = {}
+        return
     pending = [(root, "")]
     while pending:
         path, name = pending.pop()
-        info = path.lstat()
-        if "__pycache__" in Path(name).parts:
-            continue
-        if state and (name == "native-runtime/runs" or name.startswith("native-runtime/runs/")):
-            continue  # Process IDs/logs are recreated; not conversation state.
+        try:
+            info = path.lstat()
+            if "__pycache__" in Path(name).parts:
+                continue
+            if state and (name == "native-runtime/runs" or name.startswith("native-runtime/runs/")):
+                continue  # Process IDs/logs are recreated; not conversation state.
+            link = _read_reviewed_link(root, path, name, state=state) if stat.S_ISLNK(info.st_mode) else None
+            children = sorted(path.iterdir()) if stat.S_ISDIR(info.st_mode) else ()
+            if not (link is not None or children or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+                raise ValueError("Special file requires review: " + str(path))
+            yield path, name, info, link
+            pending.extend((child, (name + "/" if name else "") + child.name) for child in children)
+        except FileNotFoundError:
+            if tolerate_missing:
+                continue
+            raise
+
+
+def inventory(root, *, state=False):
+    root = Path(root)
+    if not root.exists() and not root.is_symlink():
+        return None
+    result = {}
+    for path, name, info, link in _walk(root, state=state):
         mode = info.st_mode & 0o777
-        if stat.S_ISLNK(info.st_mode):
-            result[name] = {"link": _read_reviewed_link(root, path, name, state=state)}
+        if link is not None:
+            result[name] = {"link": link}
         elif stat.S_ISDIR(info.st_mode):
             result[name] = {"directory": True, "mode": mode}
-            pending.extend((child, (name + "/" if name else "") + child.name) for child in sorted(path.iterdir()))
-        elif stat.S_ISREG(info.st_mode):
+        else:
             h = hashlib.sha256()
             with path.open("rb") as stream:
                 for block in iter(lambda: stream.read(1024 * 1024), b""):
                     h.update(block)
             result[name] = {"sha256": h.hexdigest(), "size": info.st_size, "mode": mode}
-        else:
-            raise ValueError("Special file requires review: " + str(path))
     return result
 
 
@@ -56,33 +71,10 @@ def size(root):
     entry that vanished after listing; later stopped-runtime inventories and
     fingerprints remain strict and verify the exact transaction snapshot.
     """
-    root = Path(root)
-    if root.is_symlink():
-        raise ValueError("Symlink root requires review: " + str(root))
-    if not root.exists():
-        return 0
-    total = 0
-    pending = [(root, "")]
-    while pending:
-        path, name = pending.pop()
-        try:
-            info = path.lstat()
-            if "__pycache__" in Path(name).parts:
-                continue
-            if stat.S_ISLNK(info.st_mode):
-                _read_reviewed_link(root, path, name)
-            elif stat.S_ISDIR(info.st_mode):
-                pending.extend((child, (name + "/" if name else "") + child.name)
-                               for child in sorted(path.iterdir()))
-            elif stat.S_ISREG(info.st_mode):
-                total += info.st_size
-            else:
-                raise ValueError("Special file requires review: " + str(path))
-        except FileNotFoundError:
-            # Online atomic writers can rename a temporary entry between
-            # iterdir() and lstat()/readlink(). It no longer consumes space.
-            continue
-    return total
+    # Online atomic writers can rename a temporary entry between iterdir() and
+    # lstat()/readlink(). It no longer consumes space and can be omitted here.
+    return sum(info.st_size for _path, _name, info, _link in _walk(root, tolerate_missing=True)
+               if stat.S_ISREG(info.st_mode))
 
 
 def rename(source, target):
