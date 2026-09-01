@@ -267,20 +267,30 @@ class WebTokenizer {
     }
 }
 
-const spp_llama = new SentencePieceTokenizer('src/tokenizers/llama.model');
-const spp_nerd = new SentencePieceTokenizer('src/tokenizers/nerdstash.model');
-const spp_nerd_v2 = new SentencePieceTokenizer('src/tokenizers/nerdstash_v2.model');
-const spp_mistral = new SentencePieceTokenizer('src/tokenizers/mistral.model');
-const spp_yi = new SentencePieceTokenizer('src/tokenizers/yi.model');
-const spp_gemma = new SentencePieceTokenizer('src/tokenizers/gemma.model');
-const spp_jamba = new SentencePieceTokenizer('src/tokenizers/jamba.model');
-const claude_tokenizer = new WebTokenizer('src/tokenizers/claude.json');
-const llama3_tokenizer = new WebTokenizer('src/tokenizers/llama3.json');
-const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz', 'src/tokenizers/llama3.json');
-const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz', 'src/tokenizers/llama3.json');
-const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz', 'src/tokenizers/llama3.json');
-const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz', 'src/tokenizers/llama3.json');
-const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz', 'src/tokenizers/llama3.json');
+function createOptionalSentencePieceTokenizer(model) {
+    return fs.existsSync(model) ? new SentencePieceTokenizer(model) : null;
+}
+
+function createOptionalWebTokenizer(model) {
+    return fs.existsSync(model) ? new WebTokenizer(model) : null;
+}
+
+const spp_llama = createOptionalSentencePieceTokenizer('src/tokenizers/llama.model');
+const spp_nerd = createOptionalSentencePieceTokenizer('src/tokenizers/nerdstash.model');
+const spp_nerd_v2 = createOptionalSentencePieceTokenizer('src/tokenizers/nerdstash_v2.model');
+const spp_mistral = createOptionalSentencePieceTokenizer('src/tokenizers/mistral.model');
+const spp_yi = createOptionalSentencePieceTokenizer('src/tokenizers/yi.model');
+const spp_gemma = createOptionalSentencePieceTokenizer('src/tokenizers/gemma.model');
+const spp_jamba = createOptionalSentencePieceTokenizer('src/tokenizers/jamba.model');
+const optionalLlama3Model = 'src/tokenizers/llama3.json';
+const claude_tokenizer = createOptionalWebTokenizer('src/tokenizers/claude.json');
+const optionalLlama3Fallback = fs.existsSync(optionalLlama3Model) ? optionalLlama3Model : undefined;
+const llama3_tokenizer = createOptionalWebTokenizer(optionalLlama3Model);
+const commandRTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-r.json.gz', optionalLlama3Fallback);
+const commandATokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/command-a.json.gz', optionalLlama3Fallback);
+const qwen2Tokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/qwen2.json.gz', optionalLlama3Fallback);
+const nemoTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/nemo.json.gz', optionalLlama3Fallback);
+const deepseekTokenizer = new WebTokenizer('https://github.com/SillyTavern/SillyTavern-Tokenizers/raw/main/deepseek.json.gz', optionalLlama3Fallback);
 
 export const sentencepieceTokenizers = [
     'llama',
@@ -712,7 +722,9 @@ function createWebTokenizerEncodingHandler(tokenizer) {
 
             const text = request.body.text || '';
             const instance = await tokenizer?.get();
-            if (!instance) throw new Error('Failed to load the Web tokenizer');
+            if (!instance) {
+                return response.send({ ids: [], count: guesstimate(text), chunks: [] });
+            }
             const tokens = Array.from(instance.encode(text));
             const chunks = getWebTokenizersChunks(instance, tokens);
             return response.send({ ids: tokens, count: tokens.length, chunks });

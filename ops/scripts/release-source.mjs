@@ -112,11 +112,19 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         `${engineRoot}default/content/Seraphina/`,
         `${engineRoot}public/webfonts/NotoSans/`,
         `${engineRoot}public/webfonts/NotoSansMono/`,
+        `${engineRoot}src/tokenizers/`,
     ];
     const omittedFiles = new Set([
         `${engineRoot}default/content/default_Seraphina.png`,
         `${engineRoot}default/content/Eldoria.json`,
+        `${engineRoot}public/lib/pdf.min.mjs`,
+        `${engineRoot}public/lib/pdf.worker.min.mjs`,
+        `${engineRoot}public/lib/epub.min.js`,
+        `${engineRoot}public/lib/jszip.min.js`,
     ]);
+    const shippedLocales = new Set(['lang.json', 'en.json', 'zh-cn.json', 'zh-tw.json']);
+    const localeRoot = `${engineRoot}public/locales/`;
+    const isUnshippedLocale = file => file.startsWith(localeRoot) && !shippedLocales.has(file.slice(localeRoot.length));
     const selected = new Set(sourceFiles.filter(file => (
         file.startsWith('app/') || operationFiles.has(file)
         || file.startsWith('ops/updater/')
@@ -128,7 +136,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
             || file === 'ops/skills/system/tavern-updater/scripts/update.py'
         ))
     )
-        && !omittedRoots.some(root => file.startsWith(root)) && !omittedFiles.has(file)
+        && !omittedRoots.some(root => file.startsWith(root)) && !omittedFiles.has(file) && !isUnshippedLocale(file)
         && !file.startsWith('app/engine/sillytavern/tests/')
         && !file.startsWith('app/tests/')
         && !file.startsWith('app/engine/sillytavern/public/dist/nora/')

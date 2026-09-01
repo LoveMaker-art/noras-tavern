@@ -4,15 +4,21 @@ import test from 'node:test';
 
 // Execute the shipped classes with only their filesystem/library dependencies
 // replaced. This catches concurrent callers and partially initialized instances.
-function classes({ resolveModel, web, sentence }) {
+function classes({ resolveModel, web, sentence, exists = () => true }) {
     const source = readFileSync(new URL('../src/endpoints/tokenizers.js', import.meta.url), 'utf8');
     const start = source.indexOf('class SentencePieceTokenizer {');
     const implementation = source.slice(start, source.indexOf('const spp_llama', start));
     return new Function('getPathToTokenizer', 'fs', 'Tokenizer', 'SentencePieceProcessor', 'path', 'console',
-        `${implementation};return { WebTokenizer, SentencePieceTokenizer };`)(resolveModel,
-        { promises: { readFile: async () => Buffer.from('{}') } }, { fromJSON: web }, sentence,
+        `${implementation};return { WebTokenizer, SentencePieceTokenizer, createOptionalWebTokenizer, createOptionalSentencePieceTokenizer };`)(resolveModel,
+        { existsSync: exists, promises: { readFile: async () => Buffer.from('{}') } }, { fromJSON: web }, sentence,
         { parse: () => ({ name: 'fixture' }) }, { info() {}, error() {} });
 }
+
+test('missing packaged tokenizer resources select the approximate-counting adapter', () => {
+    const implementations = classes({ exists: () => false });
+    assert.equal(implementations.createOptionalWebTokenizer('missing.json'), null);
+    assert.equal(implementations.createOptionalSentencePieceTokenizer('missing.model'), null);
+});
 
 test('concurrent cold WebTokenizer callers initialize once, warm callers reuse it', async () => {
     let paths = 0;

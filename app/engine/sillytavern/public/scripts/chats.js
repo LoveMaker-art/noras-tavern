@@ -33,8 +33,6 @@ import { power_user } from './power-user.js';
 import {
     extractTextFromHTML,
     extractTextFromMarkdown,
-    extractTextFromPDF,
-    extractTextFromEpub,
     getBase64Async,
     getStringHash,
     humanFileSize,
@@ -83,10 +81,8 @@ const ATTACHMENT_SOURCE = {
  * @type {Record<string, ConverterFunction>} File converters
  */
 const converters = {
-    'application/pdf': extractTextFromPDF,
     'text/html': extractTextFromHTML,
     'text/markdown': extractTextFromMarkdown,
-    'application/epub+zip': extractTextFromEpub,
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': extractTextFromOffice,
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': extractTextFromOffice,
     'application/vnd.openxmlformats-officedocument.presentationml.presentation': extractTextFromOffice,

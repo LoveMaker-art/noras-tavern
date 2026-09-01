@@ -168,8 +168,6 @@ declare global {
         ai: any;
     }
 
-    var pdfjsLib;
-    var ePub;
     var SillyTavern: {
         getContext(): typeof getContext;
         llm: any;

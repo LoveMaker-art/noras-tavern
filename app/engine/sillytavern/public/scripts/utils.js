@@ -2022,29 +2022,6 @@ export async function getReadableText(document, textSelector = 'body') {
 }
 
 /**
- * Use pdf.js to load and parse text from PDF pages
- * @param {Blob} blob PDF file blob
- * @returns {Promise<string>} A promise that resolves to the parsed text.
- */
-export async function extractTextFromPDF(blob) {
-    if (!('pdfjsLib' in window)) {
-        await import('../lib/pdf.min.mjs');
-        await import('../lib/pdf.worker.min.mjs');
-    }
-
-    const buffer = await getFileBuffer(blob);
-    const pdf = await pdfjsLib.getDocument(buffer).promise;
-    const pages = [];
-    for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const textContent = await page.getTextContent();
-        const text = textContent.items.map(item => item.str).join(' ');
-        pages.push(text);
-    }
-    return postProcessText(pages.join('\n'));
-}
-
-/**
  * Use DOMParser to load and parse text from HTML
  * @param {Blob} blob HTML content blob
  * @returns {Promise<string>} A promise that resolves to the parsed text.
@@ -2065,33 +2042,6 @@ export async function extractTextFromMarkdown(blob) {
     const markdown = await blob.text();
     const text = postProcessText(markdown, false);
     return text;
-}
-
-export async function extractTextFromEpub(blob) {
-    if (!('ePub' in window)) {
-        await import('../lib/jszip.min.js');
-        await import('../lib/epub.min.js');
-    }
-
-    const book = ePub(blob);
-    await book.ready;
-    const sectionPromises = [];
-
-    book.spine.each((section) => {
-        const sectionPromise = (async () => {
-            const chapter = await book.load(section.href);
-            if (!(chapter instanceof Document) || !chapter.body?.textContent) {
-                return '';
-            }
-            return chapter.body.textContent.trim();
-        })();
-
-        sectionPromises.push(sectionPromise);
-    });
-
-    const content = await Promise.all(sectionPromises);
-    const text = content.filter(text => text);
-    return postProcessText(text.join('\n'), false);
 }
 
 /**

@@ -79,7 +79,11 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'app/engine/sillytavern/src/nora-story-statistics.js',
         'app/engine/sillytavern/public/webfonts/fa-solid-900.woff2',
         'app/engine/sillytavern/public/webfonts/fa-brands-400.woff2',
-        'app/engine/sillytavern/src/tokenizers/llama3.json',
+        'app/engine/sillytavern/public/locales/lang.json',
+        'app/engine/sillytavern/public/locales/en.json',
+        'app/engine/sillytavern/public/locales/zh-cn.json',
+        'app/engine/sillytavern/public/locales/zh-tw.json',
+        'app/engine/sillytavern/public/lib/jquery-3.5.1.min.js',
         'ops/scripts/runtime.sh', 'ops/scripts/bringup-native.sh', 'ops/scripts/provision.sh',
         'ops/scripts/profile_memory.py', 'ops/scripts/install-hermes-skills.py',
         'ops/scripts/analyze-boot-metrics.mjs', 'ops/scripts/analyze-runtime-phases.mjs',
@@ -98,6 +102,15 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'app/engine/sillytavern/public/webfonts/NotoSans/stylesheet.css',
         'app/engine/sillytavern/public/webfonts/NotoSans/NotoSans-Regular.woff2',
         'app/engine/sillytavern/public/webfonts/NotoSansMono/noto-sans-mono-v30-regular.woff2',
+        'app/engine/sillytavern/src/tokenizers/llama3.json',
+        'app/engine/sillytavern/src/tokenizers/gemma.model',
+        'app/engine/sillytavern/src/tokenizers/claude.json',
+        'app/engine/sillytavern/public/locales/ru-ru.json',
+        'app/engine/sillytavern/public/locales/fr-fr.json',
+        'app/engine/sillytavern/public/lib/pdf.min.mjs',
+        'app/engine/sillytavern/public/lib/pdf.worker.min.mjs',
+        'app/engine/sillytavern/public/lib/epub.min.js',
+        'app/engine/sillytavern/public/lib/jszip.min.js',
         'ops/scripts/tavern_cli.py', 'ops/scripts/native_tavern.py', 'ops/scripts/package-release.mjs',
         'ops/scripts/verify-product-workflows.mjs', 'ops/scripts/migrate-nora-worlds-v2.mjs',
         'ops/scripts/index-project.mjs', 'ops/tests/test-install.py', 'ops/specialists/retired/SKILL.md',
@@ -114,6 +127,15 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     const delivery = collectRuntimeFiles(stage, [...retained, ...excluded]);
     assert.deepEqual(delivery, [...retained, ...generated].sort());
     for (const file of excluded) assert.ok(fs.existsSync(path.join(stage, file)), `${file} remains available to source/build tests`);
+});
+
+test('installed product exposes only English and Chinese locales and no bundled document converters', () => {
+    const languages = JSON.parse(fs.readFileSync(new URL('../public/locales/lang.json', import.meta.url)));
+    assert.deepEqual(languages.map(item => item.lang), ['zh-cn', 'zh-tw']);
+    const chats = fs.readFileSync(new URL('../public/scripts/chats.js', import.meta.url), 'utf8');
+    const utils = fs.readFileSync(new URL('../public/scripts/utils.js', import.meta.url), 'utf8');
+    assert.doesNotMatch(chats, /application\/(?:pdf|epub\+zip)/);
+    assert.doesNotMatch(utils, /pdf\.min\.mjs|pdf\.worker\.min\.mjs|epub\.min\.js|jszip\.min\.js/);
 });
 
 test('default content index cannot reference assets excluded from the installed product', t => {
