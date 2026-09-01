@@ -137,8 +137,8 @@ class UpdateCheckInstallerTests(unittest.TestCase):
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = str(binary) + os.pathsep + old_path
             try:
-                result = updater.install_update_check(home, ROOT)
-                again = updater.install_update_check(home, ROOT)
+                result = updater.install_update_check(home, ROOT / "ops")
+                again = updater.install_update_check(home, ROOT / "ops")
             finally:
                 os.environ["PATH"] = old_path
 

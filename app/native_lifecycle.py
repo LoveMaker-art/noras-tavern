@@ -487,7 +487,9 @@ class NativeRuntime:
             health = self.wait_for_health(port)
             processes.require_listener(process, script, port)
         except Exception:
-            self.stop_run(run_id)
+            # _start is always called while its owner already holds the
+            # lifecycle lock. Cleanup must stay inside that transaction.
+            self._stop_run(run_id)
             raise
         return {**metadata, "health": health}
 
@@ -656,25 +658,36 @@ def main(argv=None):
 
 
 def execute(runtime, args):
+    """Execute a CLI command while ``main`` owns the lifecycle lock."""
     if args.command == 'restart':
-        runtime.stop_run(args.run_id)
-        return runtime.start(args.run_id, args.port, args.native_data_root)
+        runtime._stop_run(args.run_id)
+        return runtime._start(
+            args.run_id,
+            args.port,
+            args.native_data_root,
+            assets_prepared=False,
+        )
     if args.command == "install":
         result = runtime.install()
     elif args.command == "start":
-        result = runtime.start(args.run_id, args.port, args.native_data_root)
+        result = runtime._start(
+            args.run_id,
+            args.port,
+            args.native_data_root,
+            assets_prepared=False,
+        )
     elif args.command == "stop":
-        result = runtime.stop_run(args.run_id)
+        result = runtime._stop_run(args.run_id)
     elif args.command == "sync":
         result = runtime.sync_assets(args.native_data_root)
     else:
         runtime.install()
         canary_data = runtime.state_root / "native-canary"
-        result = runtime.start("canary", 18801, canary_data)
+        result = runtime._start("canary", 18801, canary_data, assets_prepared=False)
         try:
             result = runtime.write_ready_marker(result["health"])
         finally:
-            runtime.stop_run("canary")
+            runtime._stop_run("canary")
     return result
 
 

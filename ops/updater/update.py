@@ -459,11 +459,12 @@ def configure_update_check_job(home):
     return job
 
 
-def install_update_check(home, source):
+def install_update_check(home, ops_root):
+    """Install the daily checker from an installed or staged operations root."""
     scripts = Path(home) / "scripts"
     scripts.mkdir(parents=True, exist_ok=True)
     for name in UPDATE_CHECK_FILES:
-        origin = Path(source) / "ops/scripts" / name
+        origin = Path(ops_root) / "scripts" / name
         if not origin.is_file():
             raise RuntimeError("发布包缺少更新提醒脚本：" + name)
         atomic(scripts / name, origin.read_bytes(), mode=0o755)
