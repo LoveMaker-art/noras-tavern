@@ -8,6 +8,7 @@ export const REVALIDATED_ASSET_CACHE_CONTROL = 'no-cache, must-revalidate';
 export const NO_STORE_CACHE_CONTROL = 'no-store';
 
 const INDEX_ASSET_BASE_TOKEN = '{{NORA_ASSET_BASE}}';
+const INDEX_EXTENSION_ASSET_BASE_TOKEN = '{{NORA_EXTENSION_ASSET_BASE}}';
 const INDEX_ASSET_RELEASE_TOKEN = '{{NORA_ASSET_RELEASE}}';
 const INDEX_INLINE_MANIFEST_URL_TOKEN = '{{NORA_INLINE_MANIFEST_URL}}';
 
@@ -21,6 +22,7 @@ function normalizeRelativePath(value) {
 
 function appendDirectory(hash, rootPath, label, excludedPaths) {
     if (!fs.existsSync(rootPath)) return;
+    const exclusionList = [...excludedPaths];
 
     const visit = (directory, relativeDirectory = '') => {
         const entries = fs.readdirSync(directory, { withFileTypes: true })
@@ -28,7 +30,8 @@ function appendDirectory(hash, rootPath, label, excludedPaths) {
 
         for (const entry of entries) {
             const relativePath = normalizeRelativePath(path.join(relativeDirectory, entry.name));
-            if (excludedPaths.has(`${label}/${relativePath}`)) continue;
+            const labeledPath = `${label}/${relativePath}`;
+            if (exclusionList.some(excludedPath => labeledPath === excludedPath || labeledPath.startsWith(`${excludedPath}/`))) continue;
 
             const absolutePath = path.join(directory, entry.name);
             if (entry.isDirectory()) {
@@ -76,6 +79,20 @@ export function computeStaticAssetRelease({ roots, files = [], excludedPaths = [
 }
 
 /**
+ * Creates one shell identity from independently cacheable asset namespaces.
+ * @param {string[]} releases
+ * @param {number} [length]
+ * @returns {string}
+ */
+export function computeCompositeAssetRelease(releases, length = 16) {
+    const normalized = releases.map(value => String(value || '').trim());
+    if (!normalized.length || normalized.some(value => !/^[a-f0-9]{12,64}$/i.test(value))) {
+        throw new TypeError('Composite asset releases must be hexadecimal content hashes.');
+    }
+    return crypto.createHash('sha256').update(normalized.join('\0')).digest('hex').slice(0, length);
+}
+
+/**
  * Serves build-time Brotli/Gzip companions for immutable assets.
  * @param {string} rootDirectory
  * @returns {import('express').RequestHandler}
@@ -118,18 +135,22 @@ export function createPrecompressedAssetMiddleware(rootDirectory) {
 /**
  * Replaces the static asset tokens in the HTML shell.
  * @param {string} template
- * @param {string} release
+ * @param {string} release Shell release used by the bootstrap consistency guard.
+ * @param {string} [coreRelease] Core browser asset release.
+ * @param {string} [extensionRelease] Third-party extension asset release.
  * @returns {string}
  */
-export function renderNoraIndex(template, release) {
-    if (!/^[a-f0-9]{12,64}$/i.test(release)) {
+export function renderNoraIndex(template, release, coreRelease = release, extensionRelease = release) {
+    if (![release, coreRelease, extensionRelease].every(value => /^[a-f0-9]{12,64}$/i.test(value))) {
         throw new TypeError('Static asset release must be a hexadecimal content hash.');
     }
 
-    const assetBase = `/assets/${release}`;
+    const assetBase = `/assets/${coreRelease}`;
+    const extensionAssetBase = `/extension-assets/${extensionRelease}`;
     return template
         .replace('{{NORA_LOCALE_BOOTSTRAP}}', () => renderLocaleBootstrap(template))
-        .replaceAll(INDEX_INLINE_MANIFEST_URL_TOKEN, `${assetBase}/dist/nora/inline-modules.json`)
+        .replaceAll(INDEX_INLINE_MANIFEST_URL_TOKEN, `${assetBase}/dist/nora/inline-modules.js`)
+        .replaceAll(INDEX_EXTENSION_ASSET_BASE_TOKEN, extensionAssetBase)
         .replaceAll(INDEX_ASSET_BASE_TOKEN, assetBase)
         .replaceAll(INDEX_ASSET_RELEASE_TOKEN, release);
 }

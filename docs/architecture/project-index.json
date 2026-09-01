@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-31T03:08:24.945Z",
-  "repositoryRoot": "/private/tmp/nora-release-audit.BFtf4E/worktree",
-  "head": "74a1637a2150d77d841be5d401f78798625ba324",
+  "generatedAt": "2026-09-01T16:35:13.744Z",
+  "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
+  "head": "8cf08a7e47754c1e84b28aef7fe083067a8fb333",
   "dirty": true,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
@@ -11,57 +11,58 @@
     "generatedFilesAreNotAuthoritativeSource": true
   },
   "counts": {
-    "files": 1257,
+    "files": 1320,
     "exclusions": 32,
     "byRole": {
-      "architecture-documentation": 50,
-      "asset": 205,
+      "architecture-documentation": 60,
+      "asset": 206,
       "backend-compatibility-engine": 81,
       "backend-nora": 42,
       "build-tool": 6,
-      "configuration-or-manifest": 173,
-      "documentation": 6,
+      "configuration-or-manifest": 175,
+      "documentation": 29,
       "frontend-compatibility-engine": 261,
-      "frontend-nora-runtime": 36,
-      "full-release-updater": 3,
+      "frontend-nora-runtime": 38,
+      "full-release-updater": 14,
       "generated-profile-runtime": 7,
-      "generated-runtime": 22,
+      "generated-runtime": 25,
       "hermes-skill-source": 46,
       "lifecycle": 2,
       "native-compatibility-extension": 11,
       "nora-mcp-source": 19,
-      "nora-mvu-extension": 6,
-      "nora-ui-extension": 29,
-      "operations": 22,
-      "other-source": 64,
+      "nora-mvu-extension": 7,
+      "nora-ui-extension": 30,
+      "operations": 24,
+      "other-source": 69,
       "story-profile-source": 17,
-      "test": 149
+      "test": 151
     },
     "byStatus": {
-      "modified": 17,
-      "tracked": 1174,
-      "untracked": 66
+      "deleted": 3,
+      "modified": 16,
+      "tracked": 1297,
+      "untracked": 4
     },
     "byExtension": {
       ".br": 5,
       ".charx": 1,
-      ".cjs": 3,
+      ".cjs": 5,
       ".css": 47,
       ".gz": 5,
       ".html": 93,
       ".ico": 1,
       ".jpg": 21,
-      ".js": 404,
-      ".json": 206,
+      ".js": 409,
+      ".json": 208,
       ".license": 1,
       ".map": 1,
-      ".md": 82,
-      ".mjs": 127,
+      ".md": 115,
+      ".mjs": 134,
       ".model": 7,
       ".mp3": 2,
-      ".png": 78,
-      ".py": 22,
-      ".sh": 5,
+      ".png": 79,
+      ".py": 28,
+      ".sh": 7,
       ".svg": 58,
       ".ts": 16,
       ".ttf": 2,
@@ -69,21 +70,21 @@
       ".woff": 18,
       ".woff2": 29,
       ".yaml": 3,
-      "[none]": 14
+      "[none]": 16
     },
     "generated": 30,
-    "source": 1227,
-    "totalBytes": 72858897
+    "source": 1287,
+    "totalBytes": 75130973
   },
   "files": [
     {
       "path": ".gitignore",
       "role": "other-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 472,
-      "sha256": "b3b982eceb07e4c51c36be1274a0871f4d3c770ea63f6ef0223bfefbb2cf099d"
+      "size": 524,
+      "sha256": "7773b7684d6acb2c99a644cca0b1e8f2e1e86b7bbc0a4767f4c56a8f760257cc"
     },
     {
       "path": ".nvmrc",
@@ -100,8 +101,8 @@
       "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 12,
-      "sha256": "0ef3e63490a28fa9a8752980c7e4e664a5037e10bfe6f5683e12821c80dd9261"
+      "size": 7,
+      "sha256": "b43889a851b767c2082dc89467e96b56b6d41eb4cc8a14621884fe16f7c1297c"
     },
     {
       "path": "app/actor_self.md",
@@ -187,11 +188,11 @@
     {
       "path": "app/engine/sillytavern/build/generate-nora-runtime-assets.mjs",
       "role": "build-tool",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 10035,
-      "sha256": "c7384555fe461a04ab0c4e5ab6b3aca700cfb6dab963eaaf70bc513383db5957"
+      "size": 10269,
+      "sha256": "50ad14106b2b1c86fc1f025c4e2f85743cffa30f340f4f457bdd2f50dfb9bdad"
     },
     {
       "path": "app/engine/sillytavern/build/sync-story-profile-runtime.mjs",
@@ -505,8 +506,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 16497,
-      "sha256": "db3b41d522453a893dbd5017b37c74a1c7c7f41bbf21b2381681f67cacb29fbd"
+      "size": 13952,
+      "sha256": "cc138de67efc049e0d83483a5351c513dd5f0abcedfb56cb682b0c65c0887456"
     },
     {
       "path": "app/engine/sillytavern/default/content/presets/context/Adventure.json",
@@ -1927,8 +1928,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 28063,
-      "sha256": "6bb8e6594f527825ab052235f79695e942282e3fc939c2ca5b4686bcf3aa58a0"
+      "size": 27889,
+      "sha256": "f9d2165437faf2be84b96ad4ebb803e9176074745dedc941e55623d5eb8d62fd"
     },
     {
       "path": "app/engine/sillytavern/default/content/themes/Azure.json",
@@ -2035,8 +2036,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 344299,
-      "sha256": "7d198cad16c85777aff5afda56195fd8df2612ca1df2bff62a106bfcb4040be9"
+      "size": 343263,
+      "sha256": "de361ed7f95aa3c4c687639f0697e4d72b26d4f5c721821830be43c382b7ca5b"
     },
     {
       "path": "app/engine/sillytavern/package.json",
@@ -2044,8 +2045,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6142,
-      "sha256": "f43bfa5d48dec652a4a88cfbab8056cb02dfdf6ca07db7faee08519095a85908"
+      "size": 6172,
+      "sha256": "9f02cb795ce1a45e50fe77f0db753dc766946cd879329c47eb0f3d908d5d148f"
     },
     {
       "path": "app/engine/sillytavern/plugins/.gitkeep",
@@ -2072,7 +2073,7 @@
       "generated": false,
       "kind": "file",
       "size": 2526,
-      "sha256": "2cb5c28b28e47d96e5d15679d350a5cf21cfbf6734d345e4691aa32c74883fa0"
+      "sha256": "b2468017f93cb2d5fc10497f2ef0e362d1aeded4d81fa69684708be660963738"
     },
     {
       "path": "app/engine/sillytavern/public/actor.js",
@@ -2368,8 +2369,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 9906,
-      "sha256": "4b4a4bbc6d7b48b1eeae83c6d6bdb030ca563bc1527df2f1bf0dca55412c7ea3"
+      "size": 10551,
+      "sha256": "7a1a7cd1f1630b1002289701feb271f21f6440a5711bf8584c5d546477ffab96"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/333.js",
@@ -2377,8 +2378,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 11302,
-      "sha256": "9457523c9fecdd3842184f215c95b5b32cef74dc7b21e28280b246e11b0c7d31"
+      "size": 11630,
+      "sha256": "b00277652b92c860719f06430cadd14792956bcc99c3ed3a269e8183bea0db45"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/77.js",
@@ -2386,8 +2387,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 2385,
-      "sha256": "f74a03896c25796b3531d8804d145e689c4d541128ba467c0539a9512a224eaa"
+      "size": 2604,
+      "sha256": "d28077219abaf696ec62f1db6b4eb76a15ff490773af5afe45da2b57f8362947"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/84.js",
@@ -2404,8 +2405,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 475631,
-      "sha256": "828ce9682a1b189d66abcc18902180297bca45432b883cb5fc67c01a92716375"
+      "size": 481594,
+      "sha256": "d1d0b079a3978eeabd7a7f35215c68b752759c58141fafd49cf2ab9e27d97c1b"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/entry.js.br",
@@ -2413,8 +2414,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 127887,
-      "sha256": "94c1cf28b5e5b4df4a288c6c9777d8e5ace344f146865ebfe681ca634fd79d49"
+      "size": 129547,
+      "sha256": "ec28a81e82830eea676ef40a40972a102f698cc37f8f598a9659f06c94920897"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/entry.js.gz",
@@ -2422,35 +2423,62 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 161177,
-      "sha256": "48ae52617d3a6ab468e9a34dc8c911828d5f3a401dea2e307f6b1bdbfed0cf59"
+      "size": 163214,
+      "sha256": "61cf2b307c87df81ce77b9ec48758ca0eeb5b41f37aee1e637495f0659401c8e"
+    },
+    {
+      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js",
+      "role": "generated-runtime",
+      "status": "untracked",
+      "generated": true,
+      "kind": "file",
+      "size": 2446103,
+      "sha256": "f4ec4f2045088aef359701ad71d44482ada40f256d7d9c5fad1f834cc07fd933"
+    },
+    {
+      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.br",
+      "role": "generated-runtime",
+      "status": "untracked",
+      "generated": true,
+      "kind": "file",
+      "size": 523190,
+      "sha256": "4e73d4a0787725c47927e94f6b390784938c4f2204d90007407794a1156a2bf2"
+    },
+    {
+      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.gz",
+      "role": "generated-runtime",
+      "status": "untracked",
+      "generated": true,
+      "kind": "file",
+      "size": 754080,
+      "sha256": "d59ce1e36a3839f96ca4d1608ff2c7140a26f0ba7220043d43affeca3dab753e"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "deleted",
       "generated": true,
-      "kind": "file",
-      "size": 2441218,
-      "sha256": "8bc74fc1a2ed473a98cfd5f5265bec5893915490f8ccafa640b1bd9277c4f80c"
+      "size": null,
+      "sha256": null,
+      "kind": "missing"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json.br",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "deleted",
       "generated": true,
-      "kind": "file",
-      "size": 522122,
-      "sha256": "97b72fe5f9fbd483d1c8d722b9391444357e9c470ebb49449bde7a451c62dccc"
+      "size": null,
+      "sha256": null,
+      "kind": "missing"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json.gz",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "deleted",
       "generated": true,
-      "kind": "file",
-      "size": 752340,
-      "sha256": "ed95cb3bb9efa28e27992015caa42e03d38fd6d51ea5ef99a5f1337506705693"
+      "size": null,
+      "sha256": null,
+      "kind": "missing"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/legacy.js",
@@ -2482,29 +2510,29 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 803032,
-      "sha256": "59651f4a7b8c502ffe4db2e19fbf27b34dc63fce522101dda5c22ee60aefc021"
+      "size": 803590,
+      "sha256": "d56e85c53452fe3fc89f7ae23909f9b3d9ee3f4412da0739d288dd9e5be93224"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.br",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 204728,
-      "sha256": "44e5d194e7081bc08e3845ddfdd9f2fe30d1b146eb57b68c071cfbd0b5333946"
+      "size": 204766,
+      "sha256": "79cdda342cd2a988a19bab96b313238b01f0f41aaa6ec223c399fdc31f76b6fc"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.gz",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 249929,
-      "sha256": "ce5fd35f328992f7dd96b2e9b96d8182e52c81cf1d9081226ecc93ec3d93458e"
+      "size": 250248,
+      "sha256": "ef15ae627e6d1b774b46d5a81a4a8c83709cbd108ba4c526a2b807f288123069"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.LICENSE.txt",
@@ -2518,29 +2546,29 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 914496,
-      "sha256": "5e8def1fd052297036635722ef890b007155c5fb1a8baf7ed91a106e3b4ff755"
+      "size": 915054,
+      "sha256": "90f882a5a8b24841a1edebe49813af06bf7c383cd68fa83640a00da716d21b54"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js.br",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 233703,
-      "sha256": "f738eb4b5fbc773dbef1a9c4dadb8b0f6827899c65c2219b66758aa5ca78140a"
+      "size": 234125,
+      "sha256": "8c04ee3a1ed2f8914dc01839bcf1a3348b920b4442ab2413a248b1145e7bb78d"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js.gz",
       "role": "generated-runtime",
-      "status": "tracked",
+      "status": "modified",
       "generated": true,
       "kind": "file",
-      "size": 283718,
-      "sha256": "18c5f5de377906ae43e954111ff759e490d87eb7a94aa1ade865594e20cca531"
+      "size": 284028,
+      "sha256": "e7929914e7d70ecbea900609ef1804e09fa24d90be59b4fdf5a737da4dbaf8ed"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js.LICENSE.txt",
@@ -2566,8 +2594,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7812,
-      "sha256": "6c251ae5f1116d8ce90b0c211ee330cd6e8678ad6fd419eaf3e3a26ce9725822"
+      "size": 7780,
+      "sha256": "28b219a4d7f85dd8563faae7bda04ef30b270c810a698fd463d882275e7784ed"
     },
     {
       "path": "app/engine/sillytavern/public/i18n.js",
@@ -3463,11 +3491,11 @@
     {
       "path": "app/engine/sillytavern/public/index.html",
       "role": "frontend-compatibility-engine",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 128903,
-      "sha256": "c62b063d6235ab6c4cda5c4f690503f3faa7a5bbc1a8f32c07693ea7813277e5"
+      "size": 130005,
+      "sha256": "a27cd607b0c683ae580857ed1281b1e258550181fba768f282804c52be42e213"
     },
     {
       "path": "app/engine/sillytavern/public/jsconfig.json",
@@ -3853,8 +3881,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1322,
-      "sha256": "1faeaf44a8b53b13f4233d5e689be86cade57dd2730ecf8c383cc1adc60d302a"
+      "size": 189,
+      "sha256": "b93fe3e137ce6f30dcddcfc2d00053642411106d6356e443f22f0a70a316f2ae"
     },
     {
       "path": "app/engine/sillytavern/public/locales/nl-nl.json",
@@ -4123,8 +4151,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 24602,
-      "sha256": "e5e725d6f5dc4da4eddc31a98e1429dd0dcf5e644f4bed7508ad2d8db1a36fb4"
+      "size": 24543,
+      "sha256": "26225e44c41525d8673b65e9538e799677e27ffbe63421f2afbaf7dad7e05d30"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/bookmarks.js",
@@ -4186,8 +4214,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 86808,
-      "sha256": "b6b57f974ed7f183a01e233c45ce4d90e528707cfa2a45752f50287de9c2f726"
+      "size": 86667,
+      "sha256": "bffbfd949aa7d827e5629193f48dc269a8b00b1c01c5f13152eb9d1839ff7025"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/constants.js",
@@ -5059,8 +5087,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 19174,
-      "sha256": "6543579288ac017717f0e98316e6e23d3cf7a3d44cc741be648acc159d695795"
+      "size": 18134,
+      "sha256": "0f242c99dc6a6e63cc17b1fe5fe8104c1d7d32441eccd8626071beebb1934cd5"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-adapters/st-message-adapter.js",
@@ -5113,8 +5141,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5773,
-      "sha256": "5eb30e5cb22b7bd0fee16ad238c5a0796b05f1d4b3bcf1c7b07cdfdf037d85d3"
+      "size": 6443,
+      "sha256": "8d9f020f52a832323ff1a00ca3804b283222a50e495dbeb97034156fbaa02a82"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-adapters/st-worldbook-adapter.js",
@@ -5144,13 +5172,22 @@
       "sha256": "792aa148d3568c1d370d5e72635db32464dfd2ea9d57e2dbfe9e4ba12f7dcd69"
     },
     {
+      "path": "app/engine/sillytavern/public/scripts/nora-compat/mvu-compatibility.js",
+      "role": "frontend-nora-runtime",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 7288,
+      "sha256": "e3e6cc0671e633a557a5551ca36304ba42f345f52d36382207ea7f57074bf176"
+    },
+    {
       "path": "app/engine/sillytavern/public/scripts/nora-compat/mvu-world-info-policy.js",
       "role": "frontend-nora-runtime",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1106,
-      "sha256": "f1948b08f3dc8b127947adfc28b034389a1b3d59bbf901d292a92d6e870b8648"
+      "size": 1614,
+      "sha256": "667638fa79290a758d134ee1731d06b675c95bea9ab2bfdd13e4fee88b35df2b"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-compat/optional-ui-resources.js",
@@ -5284,8 +5321,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 22475,
-      "sha256": "9f44d7b655695ee38dfb783dda30faf6bb52f21d25e459649c518be5db099850"
+      "size": 22791,
+      "sha256": "67f7c4286d36b2bd8fc430c3464ea08ea74e7198ca46af55bc42a60d0b7633a0"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-runtime/index.js",
@@ -5324,6 +5361,15 @@
       "sha256": "ec552474fdeffa004b365a5e13425aa12711bd7bd060b7f5138810802ae2abd0"
     },
     {
+      "path": "app/engine/sillytavern/public/scripts/nora-worlds/story-context.js",
+      "role": "frontend-nora-runtime",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 5435,
+      "sha256": "9e0d3c6df8112456a0c8459edc533ade3dee2cdfd8b07b0e2749a0cf62ba15b7"
+    },
+    {
       "path": "app/engine/sillytavern/public/scripts/nora-worlds/world-capability-controller.js",
       "role": "frontend-nora-runtime",
       "status": "tracked",
@@ -5347,8 +5393,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 15586,
-      "sha256": "017384036733f6b0640b73455ee97882eca90091ef9db8accfd57813af147243"
+      "size": 15725,
+      "sha256": "54a7a83c336c8ea56bffc5d311fb587a88f6d7d89fb4ede9cf0a27fce1fc6c9d"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-worlds/world-theme.js",
@@ -6436,8 +6482,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 112132,
-      "sha256": "718242adae2ad812c895a509271e8f4306184f44018ac3df5bd2db4fe71b0d8b"
+      "size": 110547,
+      "sha256": "a445c3c8522030d5d7ed151048feac75630ea727f9dcfb13009f1940b7b4e416"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/variables.js",
@@ -6463,8 +6509,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 250171,
-      "sha256": "d3e5519073cf296773f9a43d3ef86a4a7df51d54980fab5d0714391578f4831a"
+      "size": 250534,
+      "sha256": "d604725581b1a6f2b25047bd157b2bdeadd1de1fe881930a64ef006c8e1514a3"
     },
     {
       "path": "app/engine/sillytavern/public/security.js",
@@ -6517,8 +6563,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 143014,
-      "sha256": "32e0f7a269f5b461f7d183d93fade6b804446dec1ad24de5a4ba3b9465899bd1"
+      "size": 143060,
+      "sha256": "8b69fee25f17ceccd8e539727cbfc913d59547dad7f7b925bcd930e5b97d7122"
+    },
+    {
+      "path": "app/engine/sillytavern/public/tavern-icon-dbf4ecbd54ec.png",
+      "role": "asset",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1854320,
+      "sha256": "dbf4ecbd54ec2ed4abb534f133d88c54f44a5d8fa74f78643fb046942c461359"
     },
     {
       "path": "app/engine/sillytavern/public/webfonts/fa-brands-400.ttf",
@@ -7246,8 +7301,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2762,
-      "sha256": "6bfe5a0764ea706225ec5e1493504ebbb0123208fe52eb1ab2f3a39105164451"
+      "size": 2825,
+      "sha256": "0bd4ae9eee3b348e677ec257b59e2b34b340e6b3157309e12cb7aaed81b65b65"
     },
     {
       "path": "app/engine/sillytavern/src/endpoints/nora-controls.js",
@@ -7381,8 +7436,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 39334,
-      "sha256": "36bf44c138403604ed54bd1e2c0dfd7c2953547a8242e7e3902f2c5844303fea"
+      "size": 39844,
+      "sha256": "89201117eafb17a69d609ab613b6432e4be0a564b0ceee4a88f8d0a1548471b6"
     },
     {
       "path": "app/engine/sillytavern/src/endpoints/volcengine.js",
@@ -7552,8 +7607,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1026,
-      "sha256": "3213e2fc19f8d94b4e242dc6a4d5247d8158cbb6948d017308ed2717def50417"
+      "size": 1239,
+      "sha256": "38d3d8005e46389a4e2c6cdba9cab3494376bff9fabe31b1831d01ce6b433499"
     },
     {
       "path": "app/engine/sillytavern/src/nora-character-source.js",
@@ -7579,8 +7634,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1918,
-      "sha256": "72a62fba1326abeefca5679a0c0b28f4e5b1f6223eb1d21d02ad3272f8128d68"
+      "size": 1834,
+      "sha256": "2bfb2d13a26900ab0ca73fc19b5c2d67f52a7dbaed9e8b9822ea4f2566e9829e"
     },
     {
       "path": "app/engine/sillytavern/src/nora-locale-bootstrap.js",
@@ -7612,11 +7667,11 @@
     {
       "path": "app/engine/sillytavern/src/nora-static-assets.js",
       "role": "backend-nora",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 5076,
-      "sha256": "faafaac66b02842a23c9489c1fcc3f13405279b17051d1b35414a315d57504f4"
+      "size": 6370,
+      "sha256": "2972d0cfe17659476ef13034e03c085fb26ab6af5c1924e89fad216c86f29da0"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-ledger/core.js",
@@ -7624,8 +7679,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 12811,
-      "sha256": "bdc024a139fbc21b014c97d12cc2564f10633e552dbaf239751213d7ea474f7e"
+      "size": 13052,
+      "sha256": "e1d92373aa92cf6463d94446ec6d6583f4f5eca88ea1f3e30d355ed2e2fb2a79"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-ledger/model.js",
@@ -7633,8 +7688,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7516,
-      "sha256": "39f2dedfd17cac182b65e6368479b86123e5724e908b7f951a8eca470256c414"
+      "size": 7550,
+      "sha256": "de5c46ea13d13bb451bbf776d6f241141e5e0fb81d152cc2b6e6238623747248"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-ledger/profile-projection.js",
@@ -7642,8 +7697,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5285,
-      "sha256": "037152f4f7b5b09724e25b9a30df5bb569eb7671f59a9fdd5b71d0e4a8feb86a"
+      "size": 5686,
+      "sha256": "729b92223bfa9fd7e9e385ae26edbed0be4c75a8b8cac219b404e692ef139717"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-ledger/runtime.js",
@@ -7651,8 +7706,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6359,
-      "sha256": "00a431dd2b8ef13772addbe13895f1c0a704d1ba4253b9f8d9c73a3201951f0a"
+      "size": 6734,
+      "sha256": "5c43e82f0cb2b15a3abe8ad4b5ca5260d6f2c5c6e5a6c4c52cfeab13d003830b"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-ledger/schema.js",
@@ -7687,8 +7742,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 10105,
-      "sha256": "8d6fa81d4537d8b69002afb4538e4e9d184e69c96747422938cffcb7ebbda428"
+      "size": 10689,
+      "sha256": "8604e003573e7b74f48f7f27491513114da2e92dcb239199e6493841d0b87997"
     },
     {
       "path": "app/engine/sillytavern/src/nora-story-statistics.js",
@@ -7705,8 +7760,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1417,
-      "sha256": "75ed13577c138900a4bbd7b60b8b89c9062ff6ae298d48f73277314c9764a8be"
+      "size": 1508,
+      "sha256": "b073fe2c506e55c25aefc4fa9f213556f12bee24037102f8ec1a52139529b9c1"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/activation-snapshot.js",
@@ -7732,8 +7787,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 23747,
-      "sha256": "474aa4ddd167874fcfea4cd001e006013cbf3ba6a0a686f29062aeddf51b9c2d"
+      "size": 23961,
+      "sha256": "c4954b857ed300c4f2d72faf2d7b9bd1d062d0e97148eb9b4e6db085763a1160"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/errors.js",
@@ -7822,8 +7877,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 26233,
-      "sha256": "b1008d47c994c85733d1b17415a7c7cca637c175460b3f686a8cb94735f40e6b"
+      "size": 27011,
+      "sha256": "213455bd732c50ecc67e9006bd5e7d102ce16151b77ecd6eb53fcee0bc8d4b26"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/st-backend-materializer.js",
@@ -7831,8 +7886,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 30401,
-      "sha256": "f1c6c18b8cc122ff7ca6a68d64c2994a70f2bbfbb4e2c131102c532b074bc999"
+      "size": 29745,
+      "sha256": "ddd5839310f989cb7636f83471b157dfd335ff55a6459e8fee603fc73f53e697"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/st-card-codec.js",
@@ -7840,8 +7895,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3156,
-      "sha256": "eb2e2854368236537569cfbd824952ab7838621c93099e45afd7cdf5fcb71370"
+      "size": 3320,
+      "sha256": "8d91df2ebf4f9e6b4c90d1ec0f657096a90005431357db698de0f8074b7f53c0"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/st-import-staging.js",
@@ -7945,11 +8000,11 @@
     {
       "path": "app/engine/sillytavern/src/server-main.js",
       "role": "backend-compatibility-engine",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 18080,
-      "sha256": "d1590ea0e7a3fc876c30e4ffcde7e17eeed1da3521bdea526cee86ac61272a6e"
+      "size": 18464,
+      "sha256": "a2241abf67ddc31887581f7630e2401dda6d88992d17116a56a68f01a9af74f7"
     },
     {
       "path": "app/engine/sillytavern/src/server-startup.js",
@@ -8222,6 +8277,15 @@
       "sha256": "675e608fe3e05a0cffcf202ba2e687c2039c03feb828447065924ac8230d082d"
     },
     {
+      "path": "app/engine/sillytavern/tests/fixtures/showdown-2-compatibility.json",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 24593,
+      "sha256": "b93c92e8a090ff5615b4b9626279e9852b47de705cde9c7eaf493389a0b1e34f"
+    },
+    {
       "path": "app/engine/sillytavern/tests/frontend/frontent-test-utils.js",
       "role": "test",
       "status": "tracked",
@@ -8380,8 +8444,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2147,
-      "sha256": "33a921026a5691f003a24fc56e9de633792fcf1683fd901843b0c6fdc943314b"
+      "size": 2231,
+      "sha256": "da74f25e9252826e6f507e3b93d57ab8554e120f7b4bcf34fd927440a5ccb5ba"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-brand-surface-contract.mjs",
@@ -8488,8 +8552,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9955,
-      "sha256": "093faf6a75aa80788cac645b6031e161febeef72c4d919e0e228f7a7fc1fb4ba"
+      "size": 10757,
+      "sha256": "3b4b34d6a90c3595563ebe71c3fe8f36cc9cc5c8317a6cd2b90f7256884fadd2"
+    },
+    {
+      "path": "app/engine/sillytavern/tests/nora-dependency-security.test.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 6374,
+      "sha256": "c2d28cfce73cca72b9addc99f58dd208fd0529f1a3a63fb39dbb965e5b47a2d0"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-dialog-controller.test.mjs",
@@ -8515,8 +8588,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 15337,
-      "sha256": "4dba1d15350a998dbae690f1e2234d4bc7326033ae441c69bc7d00ebbe233d89"
+      "size": 15639,
+      "sha256": "6221af8ac690bbe14b3174a19720ac6cf84b0e617f068cb4227e0e514e6d1db9"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-i18n.test.mjs",
@@ -8560,8 +8633,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4710,
-      "sha256": "bc27be2b39d06e4003eae89b08f418df6c78c191f45631d3f846d7aecd4dee9f"
+      "size": 4608,
+      "sha256": "59b8607bd6f990e6b483e292a85ecdefcf5a81c6a9b13d6cf5cf1bac0da55513"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-message-controller.test.mjs",
@@ -8573,13 +8646,22 @@
       "sha256": "e1f9b1d1ea82d1ae824a4e7858c988938a5e700fe06885352507d3d1ab6e3317"
     },
     {
+      "path": "app/engine/sillytavern/tests/nora-mobile-viewport-contract.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3825,
+      "sha256": "9cf3dc826d4cd7ae62cf63fcc603863777aa710ab88960ee062e7c4e71c0dd25"
+    },
+    {
       "path": "app/engine/sillytavern/tests/nora-model-display.test.mjs",
       "role": "test",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5588,
-      "sha256": "eaa307666ba1bf064aed4c9e2136be1dbd7150625948b221b797cc2dba913cfc"
+      "size": 6399,
+      "sha256": "d428c00f9ec38b6dc94466e504272913a176c8aea41507fa1cb453d86b6aaf54"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-model-removal.test.mjs",
@@ -8605,8 +8687,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7821,
-      "sha256": "2500c9c78b31d4ffd0bbbe1740366f29490bdfa4bc015929fa931b1b967e2312"
+      "size": 8166,
+      "sha256": "2cdaa66bd08abe448569181b16450ea1abe6303064c686c2a0012ee08db508ab"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mvu-headless.test.mjs",
@@ -8614,8 +8696,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 17999,
-      "sha256": "d5db9439d69f51d204158d1230de788abb584621796cfafe2594bd0eab09256b"
+      "size": 23618,
+      "sha256": "358248a5bd73b5915504b28dc0c13a1cf9192871cd62be1b7055e8ac30b8ea9b"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mvu-model-config.test.mjs",
@@ -8650,8 +8732,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 834,
-      "sha256": "b7472ab0670c08f1312030dc16587cba66c74ce589fca424c9e5ab1e537764aa"
+      "size": 843,
+      "sha256": "e1d12e34569a04d05c2787a0fdf9532efff933da8e275ceb7fa9a7f4f84fa450"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-no-groups-contract.mjs",
@@ -8746,11 +8828,11 @@
     {
       "path": "app/engine/sillytavern/tests/nora-release-source.test.mjs",
       "role": "test",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4870,
-      "sha256": "dd4d2678475a510ea6f0fcad13fb1de3593a2deb31db015d762b04df9067d8fd"
+      "size": 11962,
+      "sha256": "0f373820af59b33b27dd2d35ab9df81dfc95e5fac3d37fa98dbe3d0b7d476411"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-runtime-adapter.test.mjs",
@@ -8785,8 +8867,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4375,
-      "sha256": "f1063473e7d64fee4fff5787305ec42e0567a494becd8a03bc5fa9519abc9392"
+      "size": 4307,
+      "sha256": "dff7f976fc2fc1c7341e3df67883ffb9d1b6e6b587b33aa1cc7fd31fdf42807e"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-single-workspace-contract.mjs",
@@ -8812,8 +8894,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 17830,
-      "sha256": "e00d431884ff5adcb2317273f696122b8c48081d4b2a126a5b7175d1af459461"
+      "size": 19902,
+      "sha256": "c98ccd0b7201eda80008be2c6242aa53838c7e16d748bc97f3f95ac79c61c61d"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-capability-adapter.test.mjs",
@@ -8821,8 +8903,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9022,
-      "sha256": "1fc36c7f7c7c47ba253c8350629dfaf88414de0a42a93ece82990aa5d47fbc85"
+      "size": 9234,
+      "sha256": "77d4dc7bf1a78cc53398a2ae86e4cb156d19ecb951d6f0995867e7751b2c752f"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-card-codec.test.mjs",
@@ -8830,8 +8912,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3030,
-      "sha256": "88675ee9fa2b4d2f63b27b6827ab611ad1bdfc6a459e7a8b387977dcd6d8d363"
+      "size": 4327,
+      "sha256": "e5e9de3601e6b9daf539755d9261509243b9ed4680c3032e7f9c350ac30aa9ef"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-compatibility-interface-manifest.test.mjs",
@@ -8848,8 +8930,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1838,
-      "sha256": "732cc3fb791222f4331bab697a10a33115136a7dbdeb0801b006de93a700b448"
+      "size": 2848,
+      "sha256": "f440bc858155b4706b9ab6149e7b855ce196a82ce1505edccc13d004dca2b380"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-staging-concurrency.test.mjs",
@@ -8863,11 +8945,11 @@
     {
       "path": "app/engine/sillytavern/tests/nora-startup-asset-budget-contract.mjs",
       "role": "test",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 1476,
-      "sha256": "0459ad2207173c1dc9d95fbed9d80712c06187ff8458f52c36e032ca57f5075e"
+      "size": 1526,
+      "sha256": "32d31e50b03148e737e2ddad5cc7a039e9930eb5903e7cd562e00e03180bde99"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-startup-readiness.test.mjs",
@@ -8881,11 +8963,11 @@
     {
       "path": "app/engine/sillytavern/tests/nora-static-assets.test.mjs",
       "role": "test",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 4455,
-      "sha256": "42f50a136c42059154bd4f4466e34f031628b8d2a881197cbd72b6141cb39723"
+      "size": 6079,
+      "sha256": "44f487d5bd7633bca28d055a3167a5af26a8f82f79ecd4233209c97fb64efc1d"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-story-action-dispatcher.test.mjs",
@@ -8974,8 +9056,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 20450,
-      "sha256": "cfae125282249092bca0dab1e8b87291ac19e498f182600e6ea3048f04f65919"
+      "size": 19553,
+      "sha256": "827f9450a6ff9148e4c8989cc5f46aaadb3ed65394483dc058ad9fa95611514e"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-story-scroller.test.mjs",
@@ -9019,8 +9101,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2302,
-      "sha256": "4ddae392217f7c725e3716df28352585b83c922724dd18c81ae21837d6b96fcd"
+      "size": 2748,
+      "sha256": "6546767405ff502c82755b77c752fcf72271cad05b07f34f88c28c4410396153"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-ui-activation-lifecycle.test.mjs",
@@ -9055,8 +9137,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 32845,
-      "sha256": "6c299717266ec6d423b96ee5b43d8d9808f1f0e4e24bbb2c60431ba44837e99f"
+      "size": 32862,
+      "sha256": "e95a76f9d2d46ba87f1c0a58d3abd4273bfa7705d75b681c256fccfeb3a675e9"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-ui-store.test.mjs",
@@ -9118,8 +9200,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1547,
-      "sha256": "ff98e98612de49dbca902f03f0f936f4cbd57c1aaff95ef3109ae5fca7bc6ce7"
+      "size": 2054,
+      "sha256": "2fe8671ae9694c5bebf56c3694759857c96e596be759f45c6bdc66e9f29a0e36"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-world-core.test.mjs",
@@ -9311,6 +9393,87 @@
       "sha256": "907739034acefea7ff03b62f7a1f1b0b7905c303775449074ef2b561596eb460"
     },
     {
+      "path": "app/engine/sillytavern/vendor/image-size/index.cjs",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 29164,
+      "sha256": "303e30235cb4db9f75de1e8cc7b8abe85406248a3df91a4344eff6f056ab35b1"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/image-size/index.mjs",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 180,
+      "sha256": "d22f99730207f42b8a401dc80162722f464b4e8cde20b062e11d02795120bcbb"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/image-size/LICENSE",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1112,
+      "sha256": "3109783dad7527b490aabc49c3cb148573c19b41b843e70cf9388a93f3d7fccd"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/image-size/package.json",
+      "role": "configuration-or-manifest",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 350,
+      "sha256": "d6f469a797565902da7a9e79e8eee7fbbea77496550e756a29f7ce74c62f36e9"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/image-size/SECURITY.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2071,
+      "sha256": "224d5c0081fc8f454451fa63464188f54fb5ccfac3141d1d6340d7294e82d9c2"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/showdown/index.cjs",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 161481,
+      "sha256": "3033c4452fd93d6dcc099ccb3389dc07b1ef9a7cee3c027dbfc63dc511286d77"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/showdown/LICENSE",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1072,
+      "sha256": "56c14cb3c7835f93abce90f65b7ed58470981e2d768a8e60499ca34bae7764ad"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/showdown/package.json",
+      "role": "configuration-or-manifest",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 225,
+      "sha256": "ef7c7dbeddf63de1418ed7511eb3258131d3ec894802e8fd3712df3e9060ef2e"
+    },
+    {
+      "path": "app/engine/sillytavern/vendor/showdown/SECURITY.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2627,
+      "sha256": "3b3e641cb44730173dbfee9e9a3bbb76bbc4de2ed3e51a8867d98f9f30ab42ce"
+    },
+    {
       "path": "app/engine/sillytavern/webpack.config.js",
       "role": "build-tool",
       "status": "tracked",
@@ -9331,11 +9494,11 @@
     {
       "path": "app/native_lifecycle.py",
       "role": "lifecycle",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 23751,
-      "sha256": "adde0bb725f362a5c209759b6cddee3792d206b1585b8d7441ef03e960c3c4b8"
+      "size": 30364,
+      "sha256": "37f6bf20399eb355dbe1d0f41646f8a20bc3ec535c33d8a1123fb5a97d5dc3cb"
     },
     {
       "path": "app/native_model_config.py",
@@ -9343,8 +9506,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7367,
-      "sha256": "d4d41172254b2a014d56ab850a32a608af56163ef24d20b04a2ab0d85c423c01"
+      "size": 7855,
+      "sha256": "a5e755a082af862f1fd521b3d5fa4e6ec8c64537e50c08408b246b0f7d2bb905"
     },
     {
       "path": "app/native-extensions/JS-Slash-Runner/dist/index.css",
@@ -9451,8 +9614,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6237,
-      "sha256": "c213f69c3a1943d78edc61f11adcb9f8f5f60f7055268294db687ac7b868d138"
+      "size": 7727,
+      "sha256": "323c0dc23c0504735edc91aebc8e753311b7d8049273eb2eaa8212a61325ac7a"
     },
     {
       "path": "app/native-extensions/nora-mvu/manifest.json",
@@ -9471,6 +9634,15 @@
       "kind": "file",
       "size": 9536,
       "sha256": "9bafd908f2902834a9594a9be0f513e7f869d767d12e2fb09249c461ec73638e"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/update-observer.js",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2688,
+      "sha256": "b13c842856d58f9aef5643057c3f2caf97970e6ceef5dcbb8ae330b4da98ef65"
     },
     {
       "path": "app/native-extensions/nora-mvu/UPSTREAM.md",
@@ -9532,8 +9704,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 16416,
-      "sha256": "0dd91e543228412540caf4a926665738eb0d26ff0e57199f8f2ad28813a7e13b"
+      "size": 17766,
+      "sha256": "65eb6101ad1fd1155ac39d64aa202a77eab49229e6d3bcd3efbb468fb5124b6a"
     },
     {
       "path": "app/native-extensions/nora-ui/composer-format-controller.js",
@@ -9559,8 +9731,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 23041,
-      "sha256": "a41c398c3c6002076464d1a192b49e8f4b12bf700d1a6adc9e141592112d545f"
+      "size": 23135,
+      "sha256": "b244a947a780abab7320553452e902a5bd2ed2ace52330aa1bccfa4e1bcab9cf"
     },
     {
       "path": "app/native-extensions/nora-ui/manifest.json",
@@ -9586,8 +9758,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 17755,
-      "sha256": "e3ae8c458a0dd678d9ebbbc1b5c6027fcc49a8257ade63cc3a18195abf656a21"
+      "size": 18217,
+      "sha256": "8e7065e7fee7af6981f0e7b7a6f6febae3cd97fdf4d9653ec53b7377c7f3931e"
     },
     {
       "path": "app/native-extensions/nora-ui/model-display.js",
@@ -9604,8 +9776,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4220,
-      "sha256": "aef40d2fc3dfd34318cc53095f60f812417f7d48cb418726e68d01689faf8f97"
+      "size": 4551,
+      "sha256": "38e97c0e0559068c4ce82c573788c5b2c4078cafd75acf96342ef9be7eb2a4eb"
     },
     {
       "path": "app/native-extensions/nora-ui/panel-controller.js",
@@ -9613,8 +9785,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 15030,
-      "sha256": "8d17774ae1162e94fa004a3c4ad2e06c6d7a2f979f6ab4d544a932c229f956c1"
+      "size": 15508,
+      "sha256": "27886e0f30ea8f8e3987d16c67d0a8c4f4f3f84b7a60e5c693cfc6e862d23a91"
     },
     {
       "path": "app/native-extensions/nora-ui/pending-message-view.js",
@@ -9640,8 +9812,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7021,
-      "sha256": "1fd9ef7dac566cde5be9fb5c210204096aa1fcc5707d02e1efd3d37228a01891"
+      "size": 6948,
+      "sha256": "e93854d2dc6a67bb8b65b07be9576738354a6ea7a19ac61e9734be367ebc9a84"
     },
     {
       "path": "app/native-extensions/nora-ui/smart-reply-controller.js",
@@ -9703,8 +9875,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 61997,
-      "sha256": "1d1af8e847ca349f74b351cb822132f0d03c7b3c4448e2ef8c0c1bfe5d0cd1aa"
+      "size": 62081,
+      "sha256": "8406c8a5d8dd540949164815a98168edf4f6644858b6712313e7b90a444365a7"
     },
     {
       "path": "app/native-extensions/nora-ui/ui-operation-registry.js",
@@ -9723,6 +9895,15 @@
       "kind": "file",
       "size": 1427,
       "sha256": "867e3f024e23b6324d964a91138e3f88612961d243713a6274ebe239b2d706d0"
+    },
+    {
+      "path": "app/native-extensions/nora-ui/viewport-controller.js",
+      "role": "nora-ui-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2218,
+      "sha256": "05930919a3064d2d7f31e0a8b9ccab51df20a9418502736c1c73fc1140d950bd"
     },
     {
       "path": "app/native-extensions/nora-ui/world-controller.js",
@@ -9830,7 +10011,7 @@
       "generated": true,
       "kind": "file",
       "size": 3819,
-      "sha256": "9639293a11e35fed89ba2ccd925048d109cda938819e784e93b56c5ecbe6e4e4"
+      "sha256": "cfd3ea4fab1816bf3ca5756a0b1fba2eef71f7535e866100af24c6395e6c384a"
     },
     {
       "path": "app/story_profile_runtime/package.json",
@@ -9847,8 +10028,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4587,
-      "sha256": "04d7ea2ebd1db7ccc6b63b166bb275c519e80d7e3771ff36c5eb204894f87c5e"
+      "size": 4882,
+      "sha256": "60a10b8e0c80c64dde9544456449103ea8907b0cf71f0f3c756d03f3f098fd72"
+    },
+    {
+      "path": "CONTRIBUTING.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 5751,
+      "sha256": "b18612683c6f70c0ac20370a2ec3a0a196aae72bd2e3236a5c466adb3be0ab08"
     },
     {
       "path": "docs/adr/0001-store-world-identity-with-chat.md",
@@ -9941,6 +10131,42 @@
       "sha256": "4916e055c93b139d3952b0f4baa7cbba123ec1609eadbde859da8968c36e302a"
     },
     {
+      "path": "docs/adr/0011-world-owned-cast-for-python-data.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 747,
+      "sha256": "174b863b3cb9228da50bd0deb0b4d61a1d9f4361edd8e8039e309b0f489b70d5"
+    },
+    {
+      "path": "docs/adr/0012-separate-runtime-ownership-from-process-instance.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1870,
+      "sha256": "ff339d9116a68da79c6020b650a6d04b880e57c96e229cd74be80494a7c48dba"
+    },
+    {
+      "path": "docs/adr/0013-snapshot-replaceable-code-at-maintenance.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2266,
+      "sha256": "5e575590b6ab6443fd69f22cda279e7583083fe3fba574763165c9648e1a8ea3"
+    },
+    {
+      "path": "docs/adr/0014-repair-derived-operational-state.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2490,
+      "sha256": "00e87740dea31c3f42a0fa66027ceaae1e08258b1d9cd2a2d0e8b7db3e517ab4"
+    },
+    {
       "path": "docs/architecture/COMPLEX-CARD-COMPATIBILITY-MATRIX.md",
       "role": "architecture-documentation",
       "status": "tracked",
@@ -9961,7 +10187,7 @@
     {
       "path": "docs/architecture/INDEX-COVERAGE.md",
       "role": "architecture-documentation",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 9802,
@@ -9970,11 +10196,11 @@
     {
       "path": "docs/architecture/MONOREPO-RELEASE-20260831.md",
       "role": "architecture-documentation",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 8827,
-      "sha256": "c989b732016d035aa81d662b759a6d0f26cf2402ad1f864893d00ed34ef209ab"
+      "size": 9491,
+      "sha256": "c963fc2cc2aed6581019c2c70e213ff9ad49f9f057b3272e78e3c7d05d894fa8"
     },
     {
       "path": "docs/architecture/NORA-MCP-HERMES-DEPLOYMENT-20260830.md",
@@ -10105,11 +10331,20 @@
     {
       "path": "docs/architecture/PROJECT-ARCHITECTURE.md",
       "role": "architecture-documentation",
+      "status": "modified",
+      "generated": false,
+      "kind": "file",
+      "size": 18470,
+      "sha256": "984bda80ae467f618d9855adb1dfc998ea7e20326ec8c4bf535712d7552091e9"
+    },
+    {
+      "path": "docs/architecture/PYTHON-TO-NODE-MIGRATION-20260831.md",
+      "role": "architecture-documentation",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18009,
-      "sha256": "bddde621acb42e4a4947222345e2cb8b27e199ad5eb3234c48c88cab51ccd4b2"
+      "size": 12105,
+      "sha256": "e6e8ac5ea75e8c898e770221ca5a9ba35d0f4db25cb818081d430130797aa58c"
     },
     {
       "path": "docs/architecture/RELEASE-BASELINE.md",
@@ -10247,6 +10482,51 @@
       "sha256": "fc9047af22f75bc47ab5d3d72a6d9e86ec3af50199ef65f9832f52e8ddf461af"
     },
     {
+      "path": "docs/architecture/UPDATER-ACTIVATION-LOCAL-VERIFICATION-20260831.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3912,
+      "sha256": "7e319029c2183fe298c1a1f9abf0f6d8bf8f71666a106350e5a5ec270d23ee49"
+    },
+    {
+      "path": "docs/architecture/UPDATER-IMPLEMENTATION-20260831.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 5678,
+      "sha256": "d83dfd88fc81307828a25f99a414f0ad978e1ae6a38295abb76f1d19d4f50833"
+    },
+    {
+      "path": "docs/architecture/UPDATER-ISOLATED-REHEARSAL-20260831.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 4800,
+      "sha256": "a09e2d59ee084e802054768f68cedf4eca581255a6e333ee2551caf893b3ad7b"
+    },
+    {
+      "path": "docs/architecture/UPDATER-NONBLOCKING-DATA-IMPORT-20260901.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 5028,
+      "sha256": "d3c4b2f2b662d2b364d0ef0a38270a49650a9ef15627463c4c5571e9a535c52a"
+    },
+    {
+      "path": "docs/architecture/UPDATER-SAFETY-20260831.md",
+      "role": "architecture-documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3299,
+      "sha256": "f73feeba33f03d2e315f503f826ab0cb314d888cbd888a3e259b9633e113a1a0"
+    },
+    {
       "path": "docs/architecture/WORKSTREAM-B-EXECUTION-REVIEW.md",
       "role": "architecture-documentation",
       "status": "tracked",
@@ -10292,9 +10572,180 @@
       "sha256": "c1c69bf89f3fa33aae4cd521540d91b36e5559dc14b4813cdff7b857aef2d8a8"
     },
     {
+      "path": "docs/releases/2.0.1.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1945,
+      "sha256": "ef805702f37ce9b478d45f26d4a21c514b4ef5ac053ec683f885fb5a560b2d9f"
+    },
+    {
+      "path": "docs/releases/2.0.10.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 958,
+      "sha256": "6a4548dc464ed42d4ccc95ffaf39369b5d6399bc77950d7a23106ae386d75f66"
+    },
+    {
+      "path": "docs/releases/2.0.11.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1184,
+      "sha256": "518d109c814c8f01a0dffa47024e9b4513ce4002e43c79a5884ed296f2599066"
+    },
+    {
+      "path": "docs/releases/2.0.12.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 902,
+      "sha256": "442bbf679bb47270a3a1e81b3805c5cebb15033334b14d1243a3a3be296b611d"
+    },
+    {
+      "path": "docs/releases/2.0.13.md",
+      "role": "documentation",
+      "status": "untracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1103,
+      "sha256": "5ba01a86ce0dee6fd5203fafb09f744552dcd18615a1d36e9dbdaca26feecd7d"
+    },
+    {
+      "path": "docs/releases/2.0.2.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1342,
+      "sha256": "3e5ff00b3b1d322efb93425ca28001f54cd8769962331477fe100456b3e840ec"
+    },
+    {
+      "path": "docs/releases/2.0.3.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1245,
+      "sha256": "87f3bba5e57231b10bca844b4858857fd1d828e5fde9de7dd69b5f24c883682d"
+    },
+    {
+      "path": "docs/releases/2.0.4.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 996,
+      "sha256": "b68dfef92635fa46eaf24de22ea7b4d93b56836037aac0befd31b396c794ce65"
+    },
+    {
+      "path": "docs/releases/2.0.5.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 848,
+      "sha256": "fb2adb1b2a8731dc749f1cf07fba67b0f9349d8e2fe2eee242ff2144fce21484"
+    },
+    {
+      "path": "docs/releases/2.0.6.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1452,
+      "sha256": "aae23c1e0b188c85c2e9218b3eda8e96e0ea8f1b94d9213cd306d271b0b0bfcc"
+    },
+    {
+      "path": "docs/releases/2.0.9.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 862,
+      "sha256": "c3a44bd10a7586b248cdbdbb0a690306d88de39e5fdb17bfb9805b14109efcb1"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.3.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2618,
+      "sha256": "ae2f4ebc8d85688a37dedef350fa211efce0a18276f510247fa2d6eefa611636"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.4.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2360,
+      "sha256": "40b98ae29333e646db2f481343d61c2ed1e7ed2e514e7d668aa0385a0960aba9"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.5.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2227,
+      "sha256": "f36aa9c149f57da5d3f23fe00a20e78e2097987a570a3642e97d8d49db23f9a7"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.6.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2902,
+      "sha256": "403ff962fb85a0cb882998ff1705d102759c674446d50f7d33f5adea3b1ad4f2"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.7.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1875,
+      "sha256": "6c8ab9b9e92200dfd21d77b04a693095f65da3141622a7fb08d241baf6888546"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.8.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 609,
+      "sha256": "ab2ccfa73411002c2f8952e81ee640136cb31458aaa255a6aa84e1d66600a572"
+    },
+    {
+      "path": "docs/releases/v2.0.0-rc.9.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 768,
+      "sha256": "1f03a764f86ebf02e3c22b0b7848311a38dd2790532926de5e748e79ddd36ecb"
+    },
+    {
+      "path": "docs/releases/v2.0.0.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3252,
+      "sha256": "bc10fad8a0a939dee9ac7ada62fff70eba73609b4f38cd3ef74a40dfc022d0cf"
+    },
+    {
       "path": "nora-mcp/.gitignore",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 20,
@@ -10303,7 +10754,7 @@
     {
       "path": "nora-mcp/docs/IMPLEMENTATION-20260830.md",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 5180,
@@ -10312,7 +10763,7 @@
     {
       "path": "nora-mcp/npm-shrinkwrap.json",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 44064,
@@ -10321,7 +10772,7 @@
     {
       "path": "nora-mcp/package.json",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 840,
@@ -10330,7 +10781,7 @@
     {
       "path": "nora-mcp/README.md",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 12266,
@@ -10339,7 +10790,7 @@
     {
       "path": "nora-mcp/scripts/index-upstream-st.mjs",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 17573,
@@ -10348,7 +10799,7 @@
     {
       "path": "nora-mcp/src/config.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3038,
@@ -10357,7 +10808,7 @@
     {
       "path": "nora-mcp/src/errors.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 649,
@@ -10366,7 +10817,7 @@
     {
       "path": "nora-mcp/src/http.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 4559,
@@ -10375,7 +10826,7 @@
     {
       "path": "nora-mcp/src/nora-control-plane.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 21088,
@@ -10384,7 +10835,7 @@
     {
       "path": "nora-mcp/src/server.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 37586,
@@ -10393,7 +10844,7 @@
     {
       "path": "nora-mcp/src/st/bridge-templates.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 9224,
@@ -10402,7 +10853,7 @@
     {
       "path": "nora-mcp/src/st/config.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 2070,
@@ -10411,7 +10862,7 @@
     {
       "path": "nora-mcp/src/st/control-plane.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 118388,
@@ -10420,7 +10871,7 @@
     {
       "path": "nora-mcp/src/st/errors.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 359,
@@ -10429,7 +10880,7 @@
     {
       "path": "nora-mcp/src/st/http.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 140,
@@ -10438,7 +10889,7 @@
     {
       "path": "nora-mcp/src/st/snapshots.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 8330,
@@ -10447,7 +10898,7 @@
     {
       "path": "nora-mcp/src/tool-policy.ts",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 4381,
@@ -10456,7 +10907,7 @@
     {
       "path": "nora-mcp/tests/control.test.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 5360,
@@ -10465,7 +10916,7 @@
     {
       "path": "nora-mcp/tests/discovery.test.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1488,
@@ -10474,7 +10925,7 @@
     {
       "path": "nora-mcp/tests/http.test.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3713,
@@ -10483,7 +10934,7 @@
     {
       "path": "nora-mcp/tests/integration/tavern.test.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 15656,
@@ -10492,7 +10943,7 @@
     {
       "path": "nora-mcp/tests/snapshots.test.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 2074,
@@ -10501,7 +10952,7 @@
     {
       "path": "nora-mcp/tsconfig.json",
       "role": "nora-mcp-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 311,
@@ -10531,8 +10982,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 180,
-      "sha256": "ea86052934fb13ba4112210f620c1472d4f6af93ebaa3230f83cb2cc9c31ee8a"
+      "size": 189,
+      "sha256": "79ab5424640ab3980a22cf3cdd0475f349bcb586b22b596e80757adf690dcfb5"
     },
     {
       "path": "ops/hooks/tavern-liveware-register/run.sh",
@@ -10540,8 +10991,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3367,
-      "sha256": "ae3e02b7600c2d1c6a00834e69da8b85724f9daf84ab25b11f51f4164dade4b1"
+      "size": 580,
+      "sha256": "b26080dafe5d82ed5d116b2aafb08fa7c3522fd7bd25d40a0e9592639d25dc32"
     },
     {
       "path": "ops/scripts/analyze-boot-metrics.mjs",
@@ -10585,13 +11036,13 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2498,
-      "sha256": "9a5a986ca6bfb656b522d6ce5e829ef8f81ccffb07cbdca4c5112546cc5a1de1"
+      "size": 586,
+      "sha256": "d0b64b5ad1dae684249cd81d9acd01d9cf35a67471620038c21883031739fb97"
     },
     {
       "path": "ops/scripts/index-project.mjs",
       "role": "operations",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 8378,
@@ -10600,11 +11051,11 @@
     {
       "path": "ops/scripts/install-hermes-skills.py",
       "role": "operations",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 13131,
-      "sha256": "7868e3a6a203b3b1490905a83f33d89a12fd27982f6a9af8bb059873c8e4653b"
+      "size": 2058,
+      "sha256": "218b606f714d4fd5ff2b4364e87388b951f646e02801b77592225682fe1385da"
     },
     {
       "path": "ops/scripts/migrate-nora-worlds-v2.mjs",
@@ -10616,13 +11067,31 @@
       "sha256": "9eb7a5d16e49d0a69c25ee26545cab9fcd18deefed21099e68ffe35ed2a4a701"
     },
     {
-      "path": "ops/scripts/package-release.mjs",
+      "path": "ops/scripts/nora-tavern-card-send.py",
       "role": "operations",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5161,
-      "sha256": "fab3eb4f439554bcaa140d551b190db947b6dedc9e11d5ea62ec61af753fed63"
+      "size": 4796,
+      "sha256": "4716b4644317667673a1d27de5e846d1a138f056f4bcf9c913525b294bdce5eb"
+    },
+    {
+      "path": "ops/scripts/nora-tavern-update-check.sh",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 4968,
+      "sha256": "d4736d2a6d97561fecc960b61f4ad1d9ac5ab2b0bad68578b732b18e8aad062a"
+    },
+    {
+      "path": "ops/scripts/package-release.mjs",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 4423,
+      "sha256": "c60b3453ae459df02e844d22fbdcf1021fb530dfd351900d274c60600cd9e41b"
     },
     {
       "path": "ops/scripts/package-release.sh",
@@ -10648,17 +11117,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7828,
-      "sha256": "65838a3599bb46dc292878354fc29840db78cf3c01ea775843d918f100dd1c8b"
+      "size": 577,
+      "sha256": "72f92a11a255783246c633674a26fde846a4ade68c734461c0d0e012ddd9a37e"
     },
     {
       "path": "ops/scripts/release-source.mjs",
       "role": "operations",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6420,
-      "sha256": "1ca3e44c8950a567ee1a1e171fe978167ef252834b13757f187ac4e4c3304e8a"
+      "size": 9923,
+      "sha256": "5ee662b5c88e901af71db3d51c4b29b43ceb7e7bf9a22c2c685e9b155662ba4c"
     },
     {
       "path": "ops/scripts/replay-st-interaction-gaps.mjs",
@@ -10675,8 +11144,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1230,
-      "sha256": "310329bbde183aabe2dc637ec49157a6f58c05f36f21921185f7508aac8bf759"
+      "size": 786,
+      "sha256": "189da0dc55a40976e79548f1f684e8567436a5af3d1bd79ef0719b72d48a4c5c"
     },
     {
       "path": "ops/scripts/smoke-st-world-materializer.mjs",
@@ -10702,22 +11171,22 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6521,
-      "sha256": "68e503efe9e8b7b9aa4b1a9c62fb4a9cf706f656c64ea43a701200758d618633"
+      "size": 4102,
+      "sha256": "a8b18b3c39fd62df250f2ae3a4887d40c7d92273bce132c9055de48bc730a0f4"
     },
     {
       "path": "ops/skills/agents-tavern.md",
       "role": "hermes-skill-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1566,
-      "sha256": "a19d5d2deba003802d69a656e7ac48a8c646842b0a0185640fdd5170841c22b3"
+      "size": 2018,
+      "sha256": "ad2b443e3f89d5c0a97b5a56cee82724aed4a212df6cc5872bfd715f94d02268"
     },
     {
       "path": "ops/skills/creative/nora-cardforge/agents/openai.yaml",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 264,
@@ -10726,7 +11195,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/fixtures/empty-v2.json",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1031,
@@ -10735,7 +11204,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/fixtures/mvu-vars.json",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 373,
@@ -10744,7 +11213,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/fixtures/statusbar.html",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 899,
@@ -10753,7 +11222,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/LICENSE",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 35149,
@@ -10762,7 +11231,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/LICENSES/FOREVERSE-CONTENT-CC-BY-4.0.txt",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1384,
@@ -10771,7 +11240,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/LICENSES/FOREVERSE-MIT.txt",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1342,
@@ -10780,7 +11249,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/package.json",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 430,
@@ -10789,7 +11258,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/README.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3595,
@@ -10798,7 +11267,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/advanced-cards.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3046,
@@ -10807,7 +11276,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/card-authoring.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3198,
@@ -10816,7 +11285,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/card-project-format.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 7152,
@@ -10825,7 +11294,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/feature-explanations.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 13577,
@@ -10834,7 +11303,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/import-install.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 4388,
@@ -10843,7 +11312,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/quality-gates.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1443,
@@ -10852,7 +11321,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/references/variable-reference.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 13491,
@@ -10861,7 +11330,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/scripts/nora-cardforge.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 49,
@@ -10870,7 +11339,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/scripts/score_card.py",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 34592,
@@ -10879,7 +11348,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/SKILL.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 8066,
@@ -10888,7 +11357,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/card-md/card-md.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 12090,
@@ -10897,7 +11366,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/cli/main.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 7728,
@@ -10906,7 +11375,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/core/card-io.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 7502,
@@ -10915,7 +11384,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/core/card-model.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 8925,
@@ -10924,7 +11393,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/core/patch-engine.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 4952,
@@ -10933,7 +11402,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/diagnostics/static-checks.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 7018,
@@ -10942,7 +11411,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/install/prepare-import.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 5101,
@@ -10951,7 +11420,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/mvu/mvu-compiler.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 10512,
@@ -10960,7 +11429,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/mvu/var-paths.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1320,
@@ -10969,7 +11438,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/project/project-engine.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 10661,
@@ -10978,7 +11447,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/quality/quality-gate.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 2060,
@@ -10987,7 +11456,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/src/statusbar/statusbar.js",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 3652,
@@ -10996,7 +11465,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/tests/hermes-loader.py",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1769,
@@ -11005,7 +11474,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/tests/mcp-import.integration.mjs",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 9191,
@@ -11014,7 +11483,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/tests/prepare-import.test.js",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 6850,
@@ -11023,7 +11492,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/tests/smoke.js",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 8122,
@@ -11032,7 +11501,7 @@
     {
       "path": "ops/skills/creative/nora-cardforge/THIRD_PARTY_NOTICES.md",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 926,
@@ -11053,8 +11522,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2689,
-      "sha256": "db18efc95b6be5071bc67308998a41509ca1f7ffd9a82a8466ba6faf50907467"
+      "size": 3059,
+      "sha256": "a8f4b3d489b5ee73a1f852914f12198c21a9b2b4a993150c684f50ea3533f8c2"
     },
     {
       "path": "ops/skills/creative/tavern-ops/SKILL.md",
@@ -11107,8 +11576,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6985,
-      "sha256": "ec5843230da63da3621cef6037ae89f524ba007637ac7c40aa5e3ff8775ad165"
+      "size": 7445,
+      "sha256": "1fa7e7addb697980e6786092bcf0a0db73f5c75f87cfc90e96428366639b3dd4"
     },
     {
       "path": "ops/skills/creative/tavern/SKILL.md",
@@ -11122,101 +11591,200 @@
     {
       "path": "ops/skills/INSTALL.md",
       "role": "hermes-skill-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4289,
-      "sha256": "51e7ee2be23a1b9abe5ce9b3bd79b8abc2db7a2af779a948787415c2bb9fa1d9"
+      "size": 1288,
+      "sha256": "29b14c9ae427818ab08bfb525ee81c55575d5d34dbfc1e7cd610378d3fb1b75c"
     },
     {
       "path": "ops/skills/system/tavern-updater/references/release-compatibility.md",
       "role": "hermes-skill-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3073,
-      "sha256": "4cae75d6e8961670015e971fbf307998f48b8686ec20b220f8e70f5ba49a7123"
+      "size": 1354,
+      "sha256": "43b11a13eecdb280961f0db8ec86e2a4835c5c89e2818008f0f17d1d161c2794"
     },
     {
       "path": "ops/skills/system/tavern-updater/scripts/update.py",
       "role": "hermes-skill-source",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 621,
-      "sha256": "e72749e079d263a5c02b2fba15d9fc8ca5a179319164257592d8a751d418f07a"
+      "size": 597,
+      "sha256": "9918dabae333b1e0769860f664fe9291d37f4be01591348e92033020c6213e38"
     },
     {
       "path": "ops/skills/system/tavern-updater/SKILL.md",
       "role": "hermes-skill-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3812,
-      "sha256": "b5e789aef0d8bbedafd0fb41cc8ad2a7b46d4f998e210244eff6eb24ce150a65"
+      "size": 2162,
+      "sha256": "43c01df3ecf63ca91d8aa84fa27341acb97cc2b4307a5162ac78f6f0f5ed9511"
     },
     {
-      "path": "ops/tests/test_full_update.py",
+      "path": "ops/tests/test_liveware_cache_release.py",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 13101,
-      "sha256": "8a94492c99b9c5262e0134ec68413819574a4ce232eb07d82fe173c5f50663b2"
+      "size": 4407,
+      "sha256": "0ab68425df5f267efd59b5495882e011d62f7260fad863b80d02b8767ecaeb70"
     },
     {
-      "path": "ops/tests/test_hermes_skills.py",
+      "path": "ops/tests/test_native_lifecycle_locking.py",
       "role": "test",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 11752,
-      "sha256": "c15e75f277a46c956952955e0577d6e6c091557a69accaf3340a3bc1e743c7fa"
+      "size": 6966,
+      "sha256": "2f2fedca28166d3a3d41db136c7d25352aa87dbec095375ddf638c83eb45eca8"
     },
     {
-      "path": "ops/tests/verify_full_release.py",
+      "path": "ops/tests/test_update_check.py",
       "role": "test",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4125,
-      "sha256": "a616178d19e662acf4f6476b8466afde6d1a42076d47cce8164675bca6cbe4e3"
+      "size": 6980,
+      "sha256": "2ec9f6dd42b34d87aaea9ba2e0ee7e6bef5f1156970248ba32444714f52ceff4"
     },
     {
-      "path": "ops/tests/verify_installed_hermes_skills.py",
-      "role": "test",
-      "status": "modified",
+      "path": "ops/updater/bootstrap.py",
+      "role": "full-release-updater",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4534,
-      "sha256": "b61490b6828e5bcf1ccf44b08907b2abbe9e1e8ae7af10562b10438e927774e2"
+      "size": 5194,
+      "sha256": "43c7e3a47fba57ca5bf5eb476719da12929b5c86579d2792eca0a317853b66ed"
     },
     {
       "path": "ops/updater/bundle.py",
       "role": "full-release-updater",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5816,
-      "sha256": "e1252fb1cb6d20a99c8d001ecc0c27552913d797620cc7fc57e10e86d1810771"
+      "size": 5802,
+      "sha256": "2e2779402064a4beb28af90d41e6292c179f7bb6e3474a86e5f32d98703bf077"
     },
     {
-      "path": "ops/updater/probe-mcp.mjs",
+      "path": "ops/updater/install.sh",
       "role": "full-release-updater",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1193,
-      "sha256": "8f9478a51b49513ea96e2f7cb92f2d9778af99ed7378ebcd0b9ad85f40e1e3df"
+      "size": 1634,
+      "sha256": "7330b80a5ec058cb17f1719e37858726f1c19de464e77ca952f18764037ac28e"
+    },
+    {
+      "path": "ops/updater/liveware_integration.py",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 8608,
+      "sha256": "ff36a313df1c4b9fafff9e17a674a267e4dc837cb98773eb6fb21ffc805c5aa2"
+    },
+    {
+      "path": "ops/updater/prepare-state.mjs",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 761,
+      "sha256": "cd1fd8d774ead54ed6a805e9eac95974d71cd024c344060b845adf06b59cd548"
+    },
+    {
+      "path": "ops/updater/python_model.py",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1632,
+      "sha256": "9a707a642171094f5b8169f79c6485cd81b33f9b32d6c5519e9d86734d1a15a9"
+    },
+    {
+      "path": "ops/updater/python-assets.mjs",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3066,
+      "sha256": "171aba9ccddbcbcf349a9252dbfa55a206c5f8d361ed1b6d5182d892fee18aa3"
+    },
+    {
+      "path": "ops/updater/python-import-plan.mjs",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 4064,
+      "sha256": "c2c0006a180ec4c90451437304db19463ec9073ee2b7663c1878b8742fd3cd54"
+    },
+    {
+      "path": "ops/updater/python-lore.mjs",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2281,
+      "sha256": "e9a747172daabb12bc99769dea654707ca4453d5f2b97bd07321f24e435184bc"
+    },
+    {
+      "path": "ops/updater/python-state.mjs",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 27732,
+      "sha256": "e8faeebad380c5552dcd9f37b1947cc0679058cda38e00ca14bf21138abfcaa0"
+    },
+    {
+      "path": "ops/updater/runtime_lock.py",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 488,
+      "sha256": "b096572192576834306af45426d492b1fe25a608c4d3ef918263ce843ee73ffb"
+    },
+    {
+      "path": "ops/updater/runtime_process.py",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2201,
+      "sha256": "68b4d07d01163417fd030cdd895793a44b287eb75bc613c444b375acd5291fe7"
+    },
+    {
+      "path": "ops/updater/service_manager.py",
+      "role": "full-release-updater",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 6136,
+      "sha256": "cb3649cb7739410bda1e1d3e2e311f23fa82dab36905739c2ba7e5947fff5160"
     },
     {
       "path": "ops/updater/update.py",
       "role": "full-release-updater",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 24357,
-      "sha256": "c0601ba2bb39ec004310132436f4705169fb3f26c361f4f230d3e4e34bb7b8f7"
+      "size": 23881,
+      "sha256": "34973d43a2a7b78b0a085e846505176b6c75594861fe6037e276dfc9dff4429e"
+    },
+    {
+      "path": "README.en.md",
+      "role": "documentation",
+      "status": "modified",
+      "generated": false,
+      "kind": "file",
+      "size": 6196,
+      "sha256": "2038568c32f33d1e3d58a62f57dbde5f462b421793c2c723a83ea5317f27a572"
     },
     {
       "path": "README.md",
@@ -11224,8 +11792,8 @@
       "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 6122,
-      "sha256": "dafd66274ee24f20aa421d8195073be5c0393bb70f23adaf6071372ebd4ad036"
+      "size": 6055,
+      "sha256": "b68ce6c2156f78139b6894abcb47447764c946b214d9de8e0e653be59589456b"
     },
     {
       "path": "story-profile/.gitignore",
@@ -11315,7 +11883,7 @@
       "generated": false,
       "kind": "file",
       "size": 2438,
-      "sha256": "c13c09c4068b858efdfe0621579c67be52eeab1547d07f60933f374e61f4f5ab"
+      "sha256": "f4a24948cbae5a060739a681207213dc9ff8428ce83b1c5af8343f4154989062"
     },
     {
       "path": "story-profile/public/actor.js",

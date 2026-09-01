@@ -135,11 +135,16 @@
     <script>
         globalThis.__NORA_ASSET_RELEASE__ = '{{NORA_ASSET_RELEASE}}';
         globalThis.__NORA_ASSET_BASE__ = '{{NORA_ASSET_BASE}}';
+        globalThis.__NORA_EXTENSION_ASSET_BASE__ = '{{NORA_EXTENSION_ASSET_BASE}}';
         globalThis.__NORA_INLINE_MANIFEST_URL__ = '{{NORA_INLINE_MANIFEST_URL}}';
         globalThis.__NORA_ASSET_URL__ = (assetPath) => {
             const value = String(assetPath || '');
             if (!value || /^(?:[a-z]+:)?\/\//i.test(value) || /^(?:data|blob):/i.test(value)) return value;
-            return `${globalThis.__NORA_ASSET_BASE__}/${value.replace(/^\/+/, '')}`;
+            const normalized = value.replace(/^\/+/, '');
+            const base = normalized.startsWith('scripts/extensions/third-party/')
+                ? globalThis.__NORA_EXTENSION_ASSET_BASE__
+                : globalThis.__NORA_ASSET_BASE__;
+            return `${base}/${normalized}`;
         };
         globalThis.__NORA_BOOT_METRICS__ = {
             instrumentationVersion: '2.17.6',
@@ -226,7 +231,7 @@
     <link href="{{NORA_ASSET_BASE}}/css/solid.min.css" rel="stylesheet">
     <link href="{{NORA_ASSET_BASE}}/css/toastr.min.css" rel="stylesheet">
     <link rel="apple-touch-icon" sizes="1254x1254" href="{{NORA_ASSET_BASE}}/tavern-icon-dbf4ecbd54ec.png" />
-    <link id="third-party_nora-ui-css" rel="stylesheet" type="text/css" href="{{NORA_ASSET_BASE}}/scripts/extensions/third-party/nora-ui/style.css" media="print" onload="this.media='all'">
+    <link id="third-party_nora-ui-css" rel="stylesheet" type="text/css" href="{{NORA_EXTENSION_ASSET_BASE}}/scripts/extensions/third-party/nora-ui/style.css" media="print" onload="this.media='all'">
     <link rel="icon" type="image/png" sizes="1254x1254" href="{{NORA_ASSET_BASE}}/tavern-icon-dbf4ecbd54ec.png">
     <!-- Scripts are loaded at the end of the body to improve page load speed -->
 </head>

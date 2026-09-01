@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+    computeCompositeAssetRelease,
     computeStaticAssetRelease,
     createPrecompressedAssetMiddleware,
     renderNoraIndex,
@@ -62,16 +63,47 @@ test('excluded mutable files do not invalidate the static release', () => {
     }
 });
 
-test('index rendering injects one content-addressed asset namespace', () => {
+test('excluded directories do not invalidate the static release', () => {
+    const { fixture, publicDirectory } = makeFixture();
+    const extensionDirectory = path.join(publicDirectory, 'scripts', 'extensions', 'third-party');
+    fs.mkdirSync(extensionDirectory, { recursive: true });
+    fs.writeFileSync(path.join(extensionDirectory, 'extension.js'), 'export const version = 1;');
+    const options = {
+        roots: [{ label: 'public', path: publicDirectory }],
+        excludedPaths: ['public/scripts/extensions/third-party'],
+    };
+
+    try {
+        const initial = computeStaticAssetRelease(options);
+        fs.writeFileSync(path.join(extensionDirectory, 'extension.js'), 'export const version = 2;');
+        assert.equal(computeStaticAssetRelease(options), initial);
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
+test('composite release changes only when one namespace changes', () => {
+    const initial = computeCompositeAssetRelease(['0123456789abcdef', 'fedcba9876543210']);
+    assert.equal(initial, computeCompositeAssetRelease(['0123456789abcdef', 'fedcba9876543210']));
+    assert.notEqual(initial, computeCompositeAssetRelease(['1123456789abcdef', 'fedcba9876543210']));
+    assert.throws(() => computeCompositeAssetRelease(['not-a-hash']), /hexadecimal content hashes/i);
+});
+
+test('index rendering injects separate content-addressed core and extension namespaces', () => {
     const release = '0123456789abcdef';
+    const coreRelease = '1111111111111111';
+    const extensionRelease = '2222222222222222';
     const rendered = renderNoraIndex(
-        '{{NORA_INLINE_MANIFEST_URL}}\n<script src="{{NORA_ASSET_BASE}}/entry.js">{{NORA_ASSET_RELEASE}}</script>',
+        '{{NORA_INLINE_MANIFEST_URL}}\n{{NORA_EXTENSION_ASSET_BASE}}\n<script src="{{NORA_ASSET_BASE}}/entry.js">{{NORA_ASSET_RELEASE}}</script>',
         release,
+        coreRelease,
+        extensionRelease,
     );
 
     assert.equal(rendered, [
-        `/assets/${release}/dist/nora/inline-modules.json`,
-        `<script src="/assets/${release}/entry.js">${release}</script>`,
+        `/assets/${coreRelease}/dist/nora/inline-modules.js`,
+        `/extension-assets/${extensionRelease}`,
+        `<script src="/assets/${coreRelease}/entry.js">${release}</script>`,
     ].join('\n'));
     assert.throws(() => renderNoraIndex('x', 'manual-version'), /content hash/i);
 });

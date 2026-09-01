@@ -10,7 +10,10 @@ import { minify } from 'terser';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const publicDirectory = path.join(root, 'public');
 const outputDirectory = path.join(publicDirectory, 'dist', 'nora');
-const inlineModulesPath = path.join(outputDirectory, 'inline-modules.json');
+// Liveware only treats known static suffixes as CDN-cacheable. The payload is
+// JSON data, but it deliberately uses a .js suffix so the content-addressed
+// startup asset is cached instead of being rewritten to `no-store` in transit.
+const inlineModulesPath = path.join(outputDirectory, 'inline-modules.js');
 const legacyBundlePath = path.join(outputDirectory, 'legacy.js');
 const localOrigin = 'https://nora.local';
 const compressBrotli = promisify(brotliCompress);

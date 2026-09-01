@@ -55,6 +55,7 @@ import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { createLivewareEntryMiddleware, createLivewareIndexHandler } from './nora-liveware-entry.js';
 import {
+    computeCompositeAssetRelease,
     computeStaticAssetRelease,
     createPrecompressedAssetMiddleware,
     IMMUTABLE_ASSET_CACHE_CONTROL,
@@ -96,13 +97,9 @@ util.inspect.defaultOptions.depth = 4;
 /** @type {import('./command-line.js').CommandLineArguments} */
 const cliArgs = globalThis.COMMAND_LINE_ARGS;
 const publicDirectory = path.join(serverDirectory, 'public');
-const nativeExtensionsDirectory = path.resolve(serverDirectory, '..', '..', 'native-extensions');
-const staticAssetRelease = computeStaticAssetRelease({
+const coreAssetRelease = computeStaticAssetRelease({
     roots: [
         { label: 'public', path: publicDirectory },
-        { label: 'native-extensions-source', path: nativeExtensionsDirectory },
-        { label: 'workspace-extensions', path: getUserDirectories().extensions },
-        { label: 'global-extensions', path: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions) },
     ],
     files: [
         { label: 'package.json', path: path.join(serverDirectory, 'package.json') },
@@ -110,12 +107,25 @@ const staticAssetRelease = computeStaticAssetRelease({
         { label: 'webpack.config.js', path: path.join(serverDirectory, 'webpack.config.js') },
         { label: 'bundled-lib.js', path: path.join(serverDirectory, 'dist', '_webpack', 'output', 'lib.js') },
     ],
-    excludedPaths: ['public/css/user.css'],
+    excludedPaths: [
+        'public/css/user.css',
+        `public/${PUBLIC_DIRECTORIES.globalExtensions.split(path.sep).join('/')}`,
+    ],
 });
-const staticAssetBase = `/assets/${staticAssetRelease}`;
+const extensionAssetRelease = computeStaticAssetRelease({
+    roots: [
+        { label: 'workspace-extensions', path: getUserDirectories().extensions },
+        { label: 'global-extensions', path: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions) },
+    ],
+});
+const staticAssetRelease = computeCompositeAssetRelease([coreAssetRelease, extensionAssetRelease]);
+const staticAssetBase = `/assets/${coreAssetRelease}`;
+const extensionAssetBase = `/extension-assets/${extensionAssetRelease}`;
 const indexHtml = renderNoraIndex(
     fs.readFileSync(path.join(publicDirectory, 'index.html'), 'utf8'),
     staticAssetRelease,
+    coreAssetRelease,
+    extensionAssetRelease,
 );
 
 if (!cliArgs.enableIPv6 && !cliArgs.enableIPv4) {
@@ -266,7 +276,7 @@ app.get('/callback/:source?', (request, response) => {
 const webpackMiddleware = getWebpackServeMiddleware(staticAssetBase);
 app.use(webpackMiddleware);
 app.use(userCssMiddleware);
-app.use(staticAssetBase, createVersionedExtensionsRouter());
+app.use(extensionAssetBase, createVersionedExtensionsRouter());
 app.use(staticAssetBase, createPrecompressedAssetMiddleware(publicDirectory));
 app.use(staticAssetBase, express.static(publicDirectory, {
     etag: true,
@@ -313,7 +323,12 @@ app.use(multerMonkeyPatch);
 app.get('/version', async function (_, response) {
     const data = await getVersion();
     response.setHeader('Cache-Control', NO_STORE_CACHE_CONTROL);
-    response.send({ ...data, assetRelease: staticAssetRelease });
+    response.send({
+        ...data,
+        assetRelease: staticAssetRelease,
+        coreAssetRelease,
+        extensionAssetRelease,
+    });
 });
 
 redirectDeprecatedEndpoints(app);

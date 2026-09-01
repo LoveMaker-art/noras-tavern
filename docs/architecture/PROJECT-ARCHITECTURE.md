@@ -119,10 +119,12 @@ server.js
 ```
 
 `src/server-main.js` synchronously reads
-`public/dist/nora/inline-modules.json` during process initialization. It also
-computes the static release identity from public files, native/workspace/global
-extensions, package metadata, lockfile, and Webpack configuration. The server
-waits for its Webpack middleware compiler before listening.
+`public/dist/nora/inline-modules.js` during process initialization. The body is
+still JSON, but the cacheable JavaScript suffix lets Liveware treat this critical
+bootstrap payload as a static asset. Core files and third-party extensions use
+separate content-addressed release identities, so an extension change does not
+invalidate the full core asset set. The server waits for its Webpack middleware
+compiler before listening.
 
 ### API ownership
 
@@ -260,11 +262,11 @@ Current generated output:
 
 | Asset | Raw bytes | Brotli bytes | Gzip bytes |
 | --- | ---: | ---: | ---: |
-| `entry.js` | 115,224 | 30,585 | 36,230 |
-| `inline-modules.json` | 2,383,386 | 506,290 | 730,344 |
+| `entry.js` | 481,594 | 129,547 | 163,214 |
+| `inline-modules.js` | 2,446,103 | 523,190 | 754,080 |
 | `legacy.js` | 482,417 | 112,679 | 132,899 |
-| `lib-core.js` | 798,757 | 203,337 | 248,225 |
-| `lib.js` | 910,221 | 232,419 | 281,972 |
+| `lib-core.js` | 803,590 | 204,766 | 250,248 |
+| `lib.js` | 915,054 | 234,125 | 284,028 |
 
 The manifest remains substantial because the compatibility engine has 137
 native ESM modules whose cycle semantics have not been replaced by an unverified
