@@ -55,7 +55,13 @@ def json_write(path, value):
 def module_at(name, path):
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
     return module
 
 
@@ -322,13 +328,18 @@ def restore_tree(target, backup_target, failed):
 
 def start_old(home, service, snapshot):
     app = home / "apps/tavern-runtime"
+    if (app / "native_lifecycle.py").is_file():
+        environment = {**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(home)}
+        run([sys.executable, "-B", app / "native_lifecycle.py", "install"], env=environment)
+        if service and snapshot:
+            service.restore(snapshot)
+            service.start()
+        else:
+            run([sys.executable, "-B", app / "native_lifecycle.py", "start"], env=environment)
+        return
     if service and snapshot:
         service.restore(snapshot)
         service.start()
-        return
-    if (app / "native_lifecycle.py").is_file():
-        run([sys.executable, "-B", app / "native_lifecycle.py", "start"],
-            env={**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(home)})
         return
     layout = python_layout(app)
     if layout:
