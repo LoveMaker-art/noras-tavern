@@ -67,6 +67,7 @@
             --nora-brand-ink: #a8521a;
             --nora-brand-tint: rgba(255, 129, 42, .10);
             --nora-vh: 100dvh;
+            --nora-vv-top: 0px;
             --nora-sans: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
         }
         @media (prefers-color-scheme: dark) {
@@ -75,7 +76,7 @@
         body.nora-product { margin: 0 !important; overflow: hidden !important; background: var(--nora-bg) !important; color: var(--nora-ink) !important; font: 15px/1.5 var(--nora-sans) !important; letter-spacing: 0 !important; }
         body.nora-product *, body.nora-product *::before, body.nora-product *::after { box-sizing: border-box; }
         body.nora-product button, body.nora-product textarea { font: inherit; letter-spacing: 0; }
-        #nora-layout { position: fixed; inset: 0; z-index: 1000; display: flex; width: 100%; height: var(--nora-vh); overflow: hidden; background: var(--nora-bg); color: var(--nora-ink); }
+        #nora-layout { position: fixed; top: var(--nora-vv-top); right: 0; bottom: auto; left: 0; z-index: 1000; display: flex; width: 100%; height: var(--nora-vh); overflow: hidden; background: var(--nora-bg); color: var(--nora-ink); }
         .nora-pane { flex: 0 0 auto; min-height: 0; overflow-y: auto; background: var(--nora-surface); }
         .nora-pane-head { padding: 15px 13px 10px; color: var(--nora-muted); font-size: 11px; font-weight: 600; }
         #nora-rail { display: flex; width: 208px; flex-direction: column; padding: 0 10px 14px; border-right: 1px solid var(--nora-line); }

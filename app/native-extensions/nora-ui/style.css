@@ -17,6 +17,7 @@
     --nora-sans: -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     --nora-content: 486px;
     --nora-vh: 100dvh;
+    --nora-vv-top: 0px;
 }
 
 .nora-capability-section {
@@ -114,7 +115,10 @@ body.nora-product > .drawer-content { visibility: hidden !important; pointer-eve
 
 #nora-layout {
     position: fixed;
-    inset: 0;
+    top: var(--nora-vv-top);
+    right: 0;
+    bottom: auto;
+    left: 0;
     z-index: 1000;
     display: flex;
     width: 100%;
