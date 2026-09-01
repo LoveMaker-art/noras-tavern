@@ -33,8 +33,7 @@ for platform operations it owns. Tavern's maintained scripts remain under
   an uncertain creation is recorded and cannot be blindly repeated.
 - `bringup-native.sh` starts the existing runtime and binds the two saved App IDs.
   It does not create Apps, synchronize models, log in or restart Hermes.
-  It is not a read-only check. Startup hooks use this same existing-only path;
-  a maintenance lock or unfinished update stops them before runtime changes.
+  It is not a read-only check. Startup hooks use this same existing-only path.
 
 Use those scripts only when all their effects are approved and dependencies
 are present. For a narrower binding repair prefer the platform's supported
@@ -51,5 +50,5 @@ requires explicit platform review, not another blind provision/recovery run.
 Use currently supported semantic configuration interfaces. Scope credential
 changes separately from UI selections; real model tests may be paid. Maintenance
 does not authorize rewriting world/chat/profile files, deleting broad caches,
-upgrading packages or applying a new application version. Version recovery and
-release rollback belong to `tavern-updater`, not an improvised file restore.
+upgrading packages or applying a new application version. Release backups belong
+to `tavern-updater`; do not improvise a file restore.

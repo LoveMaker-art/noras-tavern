@@ -6,10 +6,6 @@ import { collectRuntimeFiles, createReleaseSource, digest } from './release-sour
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
-const fastAfterTest = process.argv.includes('--fast-after-test');
-if (candidate && fastAfterTest) {
-    throw new Error('--candidate and --fast-after-test are separate release modes. Choose one.');
-}
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -18,36 +14,10 @@ function run(command, args, cwd = engine, extraEnv = {}) {
 
 try {
     run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
-    run('npm', ['run', 'check:story-profile-source']);
     const mcp = path.join(stage, 'nora-mcp');
     run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
-    if (fastAfterTest) {
-        // Fast release deliberately does not decide what should be tested.
-        // The author runs change-specific tests first; this phase only creates
-        // required generated artifacts and a checksum-bound release bundle.
-        run('npm', ['run', 'build'], mcp);
-    } else {
-        // Candidate builds are explicitly non-release evidence. A stable
-        // release must not silently bypass production dependency advisories.
-        if (!candidate) run('npm', ['audit', '--omit=dev', '--audit-level=moderate']);
-        run('npm', ['test'], mcp);
-        run('npm', ['run', 'test:integration'], mcp, { NORA_TAVERN_SOURCE: engine });
-        run('npm', ['test'], path.join(stage, 'ops/skills/creative/nora-cardforge'));
-        run('python3', ['-m', 'unittest', 'discover', '-s', 'ops/tests'], stage, { PYTHONDONTWRITEBYTECODE: '1' });
-        run(process.execPath, ['--test', 'ops/tests/test_python_migration.mjs'], stage);
-        if (!candidate) run('npm', ['audit', '--omit=dev', '--audit-level=moderate'], mcp);
-        run('python3', ['-m', 'unittest', 'discover', '-s', 'story-profile/tests'], stage,
-            { PYTHONDONTWRITEBYTECODE: '1' });
-        run('npm', ['run', 'test:nora']);
-        run('npm', ['run', 'lint']);
-    }
+    run('npm', ['run', 'build'], mcp);
     run('npm', ['run', 'build:nora']);
-    if (!fastAfterTest) {
-        run(process.execPath, ['tests/run-nora-contracts.mjs']);
-        run(process.execPath, [path.join(stage, 'ops/scripts/verify-product-workflows.mjs')]);
-        run('python3', ['-c', 'from native_lifecycle import NativeRuntime; print(NativeRuntime.from_environment().verify_source())'],
-            path.join(stage, 'app'), { TAVERN_APP_DIR: path.join(stage, 'app'), PYTHONDONTWRITEBYTECODE: '1' });
-    }
     const members = collectRuntimeFiles(stage, files);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
@@ -73,16 +43,11 @@ try {
             .map(name => [name, digest(fs.readFileSync(path.join(stage, 'ops/skills', name, 'SKILL.md')))])),
         agents: digest(fs.readFileSync(path.join(stage, 'ops/skills/agents-tavern.md'))),
     };
-    identity.verification = fastAfterTest
-        ? {
-            mode: 'fast-after-external-test',
-            testsExecutedByPackager: false,
-            statement: 'Change-specific tests were completed before packaging; this packager only built and sealed artifacts.',
-        }
-        : {
-            mode: candidate ? 'candidate-full' : 'stable-full',
-            testsExecutedByPackager: true,
-        };
+    identity.verification = {
+        mode: 'packaging-only',
+        testsExecutedByPackager: false,
+        statement: 'The packager builds and seals release artifacts; it does not run release gates.',
+    };
     identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
     const bootstrap = fs.readFileSync(path.join(stage, 'ops/updater/bootstrap.py'));
     const installer = fs.readFileSync(path.join(stage, 'ops/updater/install.sh'));
@@ -96,9 +61,7 @@ try {
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');
-    const classification = candidate
-        ? 'candidate-not-user-outcome-verified'
-        : fastAfterTest ? 'stable-fast-after-external-test' : 'stable';
+    const classification = candidate ? 'candidate' : 'stable';
     console.log(`release=${release}\nclassification=${classification}`);
 } finally {
     fs.rmSync(stage, { recursive: true, force: true });

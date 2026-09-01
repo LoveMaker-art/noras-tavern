@@ -11,6 +11,6 @@ entry = source_ops / "updater/update.py"
 if not entry.is_file():
     entry = home / "apps/tavern-ops/updater/update.py"
 if not entry.is_file():
-    raise SystemExit("Installed updater is missing. Use the verified Bootstrap review/apply command; historical global pointers are not executable authority.")
+    raise SystemExit("Installed updater is missing. Run the published Tavern installer command.")
 sys.path.insert(0, str(entry.parent))
 runpy.run_path(str(entry), run_name="__main__")

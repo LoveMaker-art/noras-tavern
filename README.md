@@ -44,11 +44,11 @@ Tavern 保留复杂卡所依赖的 ST 兼容内核，但 World 身份、会话�
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
 ```
 
-这条命令只选择 GitHub 最新的稳定 Release。它会校验发布清单与文件摘要、审查目标安装、备份现有状态，然后在同一事务内更新 Tavern、Story Profile、Nora MCP、官方技能和 AGENTS 受管内容。
+这条命令只选择 GitHub 最新的稳定 Release。它会校验发布清单与文件摘要、准备依赖、备份现有版本，然后直接更新 Tavern、Story Profile、Nora MCP、官方技能和 AGENTS。
 
 ### 3. 激活 Hermes 侧更新
 
-当终端最终显示 `installed-awaiting-hermes-reload` 后，在 **ClawChat 对话中**发送：
+当终端最终显示 `installed` 后，在 **ClawChat 对话中**发送：
 
 ```text
 /restart
@@ -77,13 +77,12 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 - 无效剧情账本不会覆盖仍然有效的原始聊天。
 - Story Profile 有效数据及目标机器模型配置继续保留。
 
-备份、事务回执和待转换报告位于目标 Hermes 目录下的 `tavern-updates-v2/review-*`。确认新版数据和入口可用前，不要删除最新可用备份。
+完整备份位于目标 Hermes 目录下的 `tavern-backups/<时间>-<版本>-<编号>`。确认新版数据和入口可用前，不要删除最新可用备份。
 
 ## 更新失败时
 
-- 如果状态是 `refused-before-maintenance`，更新在停服和切换目录前已经停止，原 Tavern 不会被替换。
 - 如果结果显示数据导入为 `partial`，表示程序已经安装成功，但部分旧数据等待人工转换；这本身不是回滚理由。
-- 如果提示存在未完成事务，不要反复重新运行命令。保留终端总结和对应 `receipt.json`，先完成该事务的状态检查或恢复。
+- 如果新版 Tavern 确实无法启动，更新器会直接恢复刚才的目录备份，并在最终结果中报告恢复是否成功。
 - 本地健康检查只证明进程和基础接口正常，不等于 Liveware 公网入口、浏览器复杂卡和所有模型供应商均已验收。
 
 更新器的详细兼容与恢复约定见 [Full-release contract](ops/skills/system/tavern-updater/references/release-compatibility.md)。
@@ -96,7 +95,7 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 | `story-profile/` | Story Profile 核心、原版 UI、Nora 适配器和测试 |
 | `nora-mcp/` | 面向 Hermes 的 Nora MCP 源码、工具契约与测试 |
 | `ops/skills/` | Tavern、Tavern Ops、Tavern Updater、CardForge 四个官方技能及 AGENTS 受管块 |
-| `ops/updater/` | 发布下载、审查、备份、迁移、目录切换与恢复事务 |
+| `ops/updater/` | 发布下载、备份、迁移、直接目录替换与启动恢复 |
 | `docs/` | 架构决策、兼容矩阵、执行记录和版本说明 |
 
 运行时数据、模型密钥、日志、缓存和依赖目录不属于发布源码，也不会随发布包分发。Tavern 面向单用户/单 Agent 信任边界；不同用户应使用不同实例和数据目录，而不是共享同一个公网多租户服务。

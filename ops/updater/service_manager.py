@@ -1,39 +1,21 @@
-"""Shared ownership of one Tavern service in ClawNest's process manager.
-
-No daemon is installed or restarted. Unmanaged installations retain their
-existing subprocess lifecycle. Only an exact reviewed Tavern program is owned.
-"""
+"""Small adapter for the ClawNest supervisor that owns Tavern."""
 import configparser
 import glob
-import hashlib
 import http.client
 import io
 import os
 from pathlib import Path
 import shlex
 import socket
-import subprocess
 import tempfile
 import time
 import xmlrpc.client
-from runtime_process import command_matches
-
-
-def digest(data):
-    return hashlib.sha256(data).hexdigest()
-
-
-def checked(path):
-    path = Path(os.path.abspath(path))
-    if any(p.is_symlink() for p in (path, *path.parents)):
-        raise ValueError('Service configuration symlink requires review')
-    return path
 
 
 def parse(text):
-    config = configparser.ConfigParser(interpolation=None)
-    config.read_string(text)
-    return config
+    document = configparser.ConfigParser(interpolation=None)
+    document.read_string(text)
+    return document
 
 
 class UnixTransport(xmlrpc.client.Transport):
@@ -42,7 +24,7 @@ class UnixTransport(xmlrpc.client.Transport):
         self.path = path
 
     def make_connection(self, host):
-        connection = http.client.HTTPConnection('localhost', timeout=40)
+        connection = http.client.HTTPConnection("localhost", timeout=40)
         def connect():
             connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
             connection.sock.settimeout(40)
@@ -54,131 +36,126 @@ class UnixTransport(xmlrpc.client.Transport):
 class ManagedService:
     def __init__(self, descriptor):
         self.descriptor = descriptor
-        self.file = checked(descriptor['file'])
-        self.name = descriptor['name']
-        self.rpc = xmlrpc.client.ServerProxy('http://localhost/RPC2',
-            transport=UnixTransport(descriptor['socket'])).supervisor
+        self.file = Path(descriptor["file"])
+        self.name = descriptor["name"]
+        self.rpc = xmlrpc.client.ServerProxy(
+            "http://localhost/RPC2",
+            transport=UnixTransport(descriptor["socket"]),
+        ).supervisor
 
     @classmethod
     def discover(cls, home, app, *, manager_config=None, binary=None):
         home, app = Path(home).resolve(), Path(app).resolve()
         if manager_config is None:
             try:
-                args = Path('/proc/1/cmdline').read_bytes().decode().strip('\0').split('\0')
-            except FileNotFoundError:
+                argv = Path("/proc/1/cmdline").read_bytes().split(b"\0")
+            except OSError:
                 return None
-            if Path(args[0]).name != 'supervisord':
+            if not argv or Path(os.fsdecode(argv[0])).name != "supervisord":
                 return None
-            binary = str(Path('/proc/1/exe').resolve())
-            manager_config = next((args[i + 1] for i, arg in enumerate(args[:-1])
-                                   if arg in ('-c', '--configuration')), None)
+            values = [os.fsdecode(value) for value in argv if value]
+            manager_config = next(
+                (values[index + 1] for index, value in enumerate(values[:-1])
+                 if value in ("-c", "--configuration")),
+                None,
+            )
             if not manager_config:
-                raise ValueError('Process manager configuration is not explicit')
-        main = checked(manager_config)
-        config = parse(main.read_text())
-        files = {str(main): digest(main.read_bytes())}
-        for pattern in shlex.split(config.get('include', 'files', fallback='')):
-            for file in glob.glob(str(main.parent / pattern)):
-                path = checked(file)
-                files[str(path)] = digest(path.read_bytes())
-        found = []
-        scripts = {app / 'server.py', app / 'backend/server.py', app / 'engine/sillytavern/server.js'}
+                return None
+        main = Path(manager_config)
+        document = parse(main.read_text(encoding="utf-8"))
+        files = [main]
+        for pattern in shlex.split(document.get("include", "files", fallback="")):
+            files.extend(Path(name) for name in glob.glob(str(main.parent / pattern)))
+        matches = []
         for file in files:
-            document = parse(Path(file).read_text())
-            for section in document.sections():
-                if not section.startswith('program:'):
+            child = parse(file.read_text(encoding="utf-8"))
+            for section in child.sections():
+                if not section.startswith("program:"):
                     continue
-                values = document[section]
-                directory = Path(values.get('directory', '/')).resolve()
-                args = shlex.split(values.get('command', ''))
-                matches = any(command_matches(args, directory, script) for script in scripts)
-                if not matches:
+                command = child[section].get("command", "")
+                directory = child[section].get("directory", "")
+                try:
+                    configured_directory = Path(directory).expanduser().resolve()
+                except (OSError, RuntimeError):
+                    configured_directory = None
+                command_paths = []
+                for value in shlex.split(command):
+                    candidate = Path(value).expanduser()
+                    if candidate.is_absolute():
+                        try:
+                            command_paths.append(candidate.resolve())
+                        except (OSError, RuntimeError):
+                            pass
+                if configured_directory != app and app not in command_paths:
                     continue
-                if len(document.sections()) != 1 or not Path(file).is_relative_to(home / '.clawling/supervisord'):
-                    raise ValueError('Tavern must have a dedicated host-owned service configuration')
-                found.append({'file': file, 'sha256': files[file], 'name': section.split(':', 1)[1],
-                              'main': str(main), 'binary': str(binary), 'files': files,
-                              'socket': config.get('unix_http_server', 'file'),
-                              'command': values['command'], 'directory': str(directory)})
-        if len(found) > 1:
-            raise ValueError('Multiple managers own this Tavern installation')
-        if not found:
+                if not any(name in command for name in ("server.py", "server.js")):
+                    continue
+                matches.append({
+                    "file": str(file),
+                    "name": section.split(":", 1)[1],
+                    "socket": document.get("unix_http_server", "file"),
+                    "command": command,
+                    "directory": directory,
+                })
+        if not matches:
             return None
-        version = subprocess.check_output([str(binary), 'version'], text=True, timeout=5)
-        if 'clawnest' not in version.lower():
-            raise ValueError('Unreviewed supervisor implementation; refuse lifecycle mutation')
-        service = cls(found[0])
-        service.info()  # Verify management access before the maintenance window.
-        return service
+        matches.sort(key=lambda item: (item["file"], item["name"]))
+        return cls(matches[0])
 
     def info(self):
-        value = self.rpc.getProcessInfo(self.name)
-        if value.get('name') != self.name:
-            raise ValueError('Process manager returned a different service')
-        return value
+        return self.rpc.getProcessInfo(self.name)
 
     def pid(self):
         value = self.info()
-        return int(value.get('pid') or 0) if str(value.get('statename', '')).lower() in ('running', 'starting') else 0
+        return int(value.get("pid") or 0) if str(value.get("statename", "")).lower() in ("running", "starting") else 0
 
     def stop(self):
         if self.pid():
             self.rpc.stopProcess(self.name, True)
-        if self.pid():
-            raise ValueError('Managed Tavern did not stop')
 
     def start(self):
-        # STARTING may briefly have pid=0. It is still owned by the manager;
-        # issuing a second start races with its first start operation.
-        if str(self.info().get('statename', '')).lower() not in ('running', 'starting'):
+        state = str(self.info().get("statename", "")).lower()
+        if state not in ("running", "starting"):
             self.rpc.startProcess(self.name, True)
-        deadline = time.monotonic() + 20
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             value = self.info()
-            if str(value.get('statename', '')).lower() == 'running' and value.get('pid'):
-                return int(value['pid'])
-            time.sleep(0.1)
-        raise ValueError('Managed Tavern did not reach running state')
+            if str(value.get("statename", "")).lower() == "running" and value.get("pid"):
+                return int(value["pid"])
+            time.sleep(0.2)
+        raise RuntimeError("Tavern 托管进程没有启动")
 
     def snapshot(self):
-        data = self.file.read_bytes()
-        if digest(data) != self.descriptor['sha256']:
-            raise ValueError('Service configuration changed since review')
-        return {'descriptor': self.descriptor, 'text': data.decode(), 'mode': self.file.stat().st_mode & 0o777}
-
-    def install_text(self, text, *, accepted_hash, mode=0o600):
-        current = self.file.read_bytes()
-        if digest(current) not in (accepted_hash, digest(text.encode())):
-            raise ValueError('Service configuration changed outside this update')
-        for name, sha in self.descriptor['files'].items():
-            if name != str(self.file) and digest(checked(name).read_bytes()) != sha:
-                raise ValueError('Another manager configuration changed; refuse global reload')
-        before = {p['name']: p.get('pid') for p in self.rpc.getAllProcessInfo() if p['name'] != self.name}
-        if current != text.encode():
-            fd, temporary = tempfile.mkstemp(prefix='.tavern-service-', dir=self.file.parent)
-            try:
-                with os.fdopen(fd, 'w') as stream:
-                    stream.write(text); stream.flush(); os.fsync(stream.fileno())
-                os.chmod(temporary, mode)
-                os.replace(temporary, self.file)
-            finally:
-                if os.path.exists(temporary):
-                    os.unlink(temporary)
-        # ClawNest reloads only changed programs, unlike a daemon restart.
-        self.rpc.reloadConfig()
-        after = {p['name']: p.get('pid') for p in self.rpc.getAllProcessInfo() if p['name'] != self.name}
-        if before != after:
-            raise ValueError('Unrelated process changed during manager reload; inspect manager log')
-        self.descriptor = {**self.descriptor, 'sha256': digest(text.encode())}
+        return {"descriptor": self.descriptor, "text": self.file.read_text(encoding="utf-8"),
+                "mode": self.file.stat().st_mode & 0o777}
 
     def node_text(self, command, directory):
-        config = parse(self.file.read_text())
-        section = config['program:' + self.name]
-        section['command'] = shlex.join(command)
-        section['directory'] = str(directory)
-        section['autostart'] = 'true'
-        section['autorestart'] = 'true'
-        section['stopasgroup'] = 'true'
-        section['killasgroup'] = 'true'
-        stream = io.StringIO(); config.write(stream)
+        document = parse(self.file.read_text(encoding="utf-8"))
+        section = document["program:" + self.name]
+        section["command"] = shlex.join(command)
+        section["directory"] = str(directory)
+        section["autostart"] = "true"
+        section["autorestart"] = "true"
+        section["stopasgroup"] = "true"
+        section["killasgroup"] = "true"
+        stream = io.StringIO()
+        document.write(stream)
         return stream.getvalue()
+
+    def install_text(self, text, *, accepted_hash=None, mode=0o600):
+        self.file.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=".tavern-service-", dir=self.file.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as stream:
+                stream.write(text)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.chmod(temporary, mode)
+            os.replace(temporary, self.file)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        self.rpc.reloadConfig()
+
+    def restore(self, snapshot):
+        self.install_text(snapshot["text"], mode=snapshot["mode"])

@@ -8,7 +8,6 @@ import { collectPythonAssets } from './python-assets.mjs';
 import { ImportPlan, DeferredData, parseData, object as record, validId as pythonId } from './python-import-plan.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
-const json = file => fs.readFile(file, 'utf8').then(JSON.parse);
 const clone = value => JSON.parse(JSON.stringify(value));
 const iso = value => {
     if (!Number.isFinite(value) || value < 0 || value > 8.64e12) throw new DeferredData('Invalid Python timestamp');
@@ -70,33 +69,19 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
         sourceModels = value;
     });
     const worldAssets = new Map();
-    const sourceAssets = {};
     const assetFailures = new Map();
     for (const [id, production] of productions) {
         try {
             const assets = await collectPythonAssets(state, new Map([[id, production]]), legacyApp, legacyWeb);
             worldAssets.set(id, assets);
-            for (const [name, bytes] of assets.entries) sourceAssets[name] = hash(bytes);
         } catch (error) {
             if (!(error instanceof DeferredData)) throw error;
             assetFailures.set(id, error);
         }
     }
-    const inputHash = hash(JSON.stringify({ sources: imports.sourceDigests, sourceAssets, hermesModel, legacyModel }));
     const root = path.join(state, 'native/default-user');
     const plan = imports.outputs;
     const put = (name, value) => imports.put(name, value);
-    const existingReceipt = path.join(state, 'python-import.json');
-    let receipt;
-    try { receipt = await json(existingReceipt); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (receipt) {
-        if (receipt.sourceDigest !== inputHash) throw new Error('Python source changed after import; refusing to duplicate or overwrite Worlds');
-        for (const [name, expected] of Object.entries(receipt.outputs)) {
-            if (path.isAbsolute(name) || name.split('/').includes('..')) throw new Error('Invalid import receipt');
-            if (hash(await regular(path.join(state, name))) !== expected) throw new Error('Imported data has changed; refusing to overwrite');
-        }
-        return { ...receipt.report, repeated: true };
-    }
     if ((await files(path.join(root, 'nora-world-core/worlds'))).length || (await files(path.join(root, 'nora-worlds'))).length) {
         throw new Error('Mixed Node and Python Worlds require explicit conflict resolution');
     }
@@ -362,8 +347,6 @@ export async function convertPythonState(state, app, { hermesModel = null, legac
     }
     // Only the prepared copy is altered. Byte-identical archives now exist.
     for (const { file } of profileArchive) await fs.unlink(path.join(state, file));
-    await fs.writeFile(existingReceipt, JSON.stringify({ sourceDigest: inputHash,
-        outputs: Object.fromEntries([...plan].map(([name, bytes]) => [name, hash(bytes)])), report }), { flag: 'wx', mode: 0o600 });
     // Archive original data namespaces INSIDE the prepared copy, not old executable code.
     // Subsequent normal Node upgrades must not mistake these audited originals for unmigrated live records.
     if (source === state) {

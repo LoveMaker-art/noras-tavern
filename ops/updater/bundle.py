@@ -31,7 +31,7 @@ def read_bundle(directory, expected, *, candidate=False):
     if len(raw) > 16 * 1024 * 1024:
         raise ValueError("Manifest size limit exceeded")
     if not HEX.fullmatch(expected or "") or digest(raw) != expected:
-        raise ValueError("Release manifest digest differs from the reviewed/pinned digest")
+        raise ValueError("Release manifest digest does not match SHA256SUMS")
     manifest = json.loads(raw)
     if manifest.get("schema") != "tavern-release/v2":
         raise ValueError("Requires tavern-release/v2; legacy Python releases are not compatible")

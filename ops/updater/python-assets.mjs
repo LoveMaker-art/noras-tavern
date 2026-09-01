@@ -24,7 +24,7 @@ async function readWithin(root, relative) {
 }
 
 export async function collectPythonAssets(state, productions, legacyApp, legacyWeb = 'frontend') {
-    if (!['web', 'frontend', 'backend/web'].includes(legacyWeb)) throw new Error('Invalid reviewed Python web root');
+    if (!['web', 'frontend', 'backend/web'].includes(legacyWeb)) throw new Error('Invalid Python web root');
     const result = new Map();
     const archived = path.join(state, 'python-source-assets');
     for (const production of productions.values()) {
@@ -41,7 +41,7 @@ export async function collectPythonAssets(state, productions, legacyApp, legacyW
                 try {
                     if (relative.startsWith('world-assets/')) bytes = await readWithin(state, relative);
                     else {
-                        if (!legacyApp) throw new DeferredData('Python frontend asset requires the reviewed legacy application directory');
+                        if (!legacyApp) throw new DeferredData('Python frontend asset requires the legacy application directory');
                         bytes = await readWithin(path.join(legacyApp, legacyWeb), relative);
                     }
                 } catch (sourceError) {

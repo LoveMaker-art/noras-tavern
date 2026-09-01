@@ -1,6 +1,0 @@
-name: tavern-update-activation
-version: 1.0.0
-description: Owner-confirmed activation of an installed Tavern release.
-provides_hooks:
-  - post_tool_call
-  - pre_gateway_dispatch

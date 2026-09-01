@@ -44,11 +44,11 @@ Run this on the target host, or ask Hermes to execute it exactly:
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
 ```
 
-The command selects the latest stable GitHub Release. It verifies the release manifest and checksums, reviews the target installation, backs up current state, and updates Tavern, Story Profile, Nora MCP, the managed skills, and the managed AGENTS block as one transaction.
+The command selects the latest stable GitHub Release. It verifies the release manifest and checksums, prepares dependencies, backs up the installed version, and directly updates Tavern, Story Profile, Nora MCP, the managed skills, and AGENTS.
 
 ### 3. Reload Hermes
 
-After the terminal reports `installed-awaiting-hermes-reload`, send this in the **ClawChat conversation**:
+After the terminal reports `installed`, send this in the **ClawChat conversation**:
 
 ```text
 /restart
@@ -75,13 +75,12 @@ Program installation and legacy Python data import have separate outcomes:
 - An invalid Story Ledger never replaces valid raw chat history.
 - Valid Story Profile data and the target host's model configuration are preserved.
 
-Backups, receipts, and conversion reports live under `tavern-updates-v2/review-*` in the target Hermes directory. Keep the latest usable backup until the new runtime and data have been accepted.
+The complete backup is stored under `tavern-backups/<time>-<version>-<id>` in the target Hermes directory. Keep it until the new runtime and data have been accepted.
 
 ## If an update stops
 
-- `refused-before-maintenance` means the updater stopped before service maintenance and directory switching; the old Tavern was not replaced.
 - A `partial` data-import result means the program installed successfully while some legacy records still need conversion. It is not, by itself, a rollback reason.
-- Do not repeatedly rerun the command when an unfinished transaction is reported. Keep the terminal summary and its `receipt.json`, then inspect or recover that exact transaction.
+- If the new Tavern genuinely cannot start, the updater directly restores the backup and reports whether recovery succeeded.
 - Local health checks do not prove that public Liveware routing, every complex card, or every model provider has passed browser acceptance.
 
 See the [full release and recovery contract](ops/skills/system/tavern-updater/references/release-compatibility.md) for operational details.
@@ -94,7 +93,7 @@ See the [full release and recovery contract](ops/skills/system/tavern-updater/re
 | `story-profile/` | Story Profile core, original UI, Nora adapter, and tests |
 | `nora-mcp/` | Nora MCP source, tool contracts, and tests |
 | `ops/skills/` | Four managed Hermes skills and the managed Tavern AGENTS block |
-| `ops/updater/` | Release download, review, backup, migration, directory switch, and recovery transaction |
+| `ops/updater/` | Release download, backup, migration, direct directory replacement, and startup recovery |
 | `docs/` | Architecture decisions, compatibility evidence, execution records, and release notes |
 
 Runtime state, model credentials, logs, caches, and installed dependencies are not release source or release payloads. Tavern is intended for one user/Agent trust boundary per instance, not as one shared public multi-tenant service.
