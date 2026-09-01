@@ -16,6 +16,11 @@ The three archives replace `apps/tavern-runtime`, `apps/tavern-ops` and
 archive. Existing native `tavern-state` remains in place, so Worlds, chats,
 model configuration and Story Profile data are not migration inputs.
 
+The updater owns the `mcp_servers.nora` runtime paths and permission mode. It
+sets the official Nora MCP to `operator`; write tools still enforce their own
+explicit confirmation and model-call authorization requirements. Other MCP
+servers and unrelated Hermes configuration remain unchanged.
+
 For a Python-era installation, the updater converts a private state copy.
 Compatible records become Node Worlds. Unsupported records are left in the
 timestamped backup and reported; they do not prevent the program update.

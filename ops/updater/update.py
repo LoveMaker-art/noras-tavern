@@ -243,8 +243,8 @@ def render_mcp(home):
         "NORA_MCP_CONFIG_PATH": str(home / "tavern-state/native-runtime/config.yaml"),
         "NORA_MCP_UPLOAD_ROOT": str(home / "tavern-state/imports"),
         "NORA_MCP_BASE_URL": "http://127.0.0.1:8799",
+        "NORA_MCP_MODE": "operator",
     })
-    env.setdefault("NORA_MCP_MODE", "read-only")
     servers["nora"] = {
         **current,
         "command": shutil.which("node") or "node",

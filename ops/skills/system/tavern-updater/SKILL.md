@@ -42,7 +42,8 @@ The direct updater performs one flow:
    Python-era state when applicable;
 4. stop the current Tavern without comparing it to a previously recorded PID;
 5. replace Tavern, Story Profile, MCP, operations and official skills;
-6. preserve native Worlds, chats, model configuration and Story Profile data;
+6. preserve native Worlds, chats, model configuration and Story Profile data,
+   and configure the official Nora MCP in operator mode;
 7. convert compatible Python data and archive incompatible records;
 8. start Tavern and refresh the two existing Liveware bindings;
 9. ask the owner to send `/restart` so Hermes reloads MCP and skills.
