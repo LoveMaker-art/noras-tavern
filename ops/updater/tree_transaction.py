@@ -6,6 +6,12 @@ from pathlib import Path
 import stat
 
 
+def _read_reviewed_link(root, path, name, *, state=False):
+    if state or "node_modules" not in Path(name).parts or root not in path.resolve().parents:
+        raise ValueError("Unreviewed symlink: " + str(path))
+    return os.readlink(path)
+
+
 def inventory(root, *, state=False):
     root = Path(root)
     if root.is_symlink():
@@ -23,9 +29,7 @@ def inventory(root, *, state=False):
             continue  # Process IDs/logs are recreated; not conversation state.
         mode = info.st_mode & 0o777
         if stat.S_ISLNK(info.st_mode):
-            if state or "node_modules" not in Path(name).parts or root not in path.resolve().parents:
-                raise ValueError("Unreviewed symlink: " + str(path))
-            result[name] = {"link": os.readlink(path)}
+            result[name] = {"link": _read_reviewed_link(root, path, name, state=state)}
         elif stat.S_ISDIR(info.st_mode):
             result[name] = {"directory": True, "mode": mode}
             pending.extend((child, (name + "/" if name else "") + child.name) for child in sorted(path.iterdir()))
@@ -45,7 +49,40 @@ def fingerprint(root, *, state=False):
 
 
 def size(root):
-    return sum(v.get("size", 0) for v in (inventory(root) or {}).values())
+    """Estimate live tree bytes without weakening integrity inventories.
+
+    Runtime atomic writes briefly expose a temporary directory entry and then
+    rename it over its destination. A capacity estimate may safely omit an
+    entry that vanished after listing; later stopped-runtime inventories and
+    fingerprints remain strict and verify the exact transaction snapshot.
+    """
+    root = Path(root)
+    if root.is_symlink():
+        raise ValueError("Symlink root requires review: " + str(root))
+    if not root.exists():
+        return 0
+    total = 0
+    pending = [(root, "")]
+    while pending:
+        path, name = pending.pop()
+        try:
+            info = path.lstat()
+            if "__pycache__" in Path(name).parts:
+                continue
+            if stat.S_ISLNK(info.st_mode):
+                _read_reviewed_link(root, path, name)
+            elif stat.S_ISDIR(info.st_mode):
+                pending.extend((child, (name + "/" if name else "") + child.name)
+                               for child in sorted(path.iterdir()))
+            elif stat.S_ISREG(info.st_mode):
+                total += info.st_size
+            else:
+                raise ValueError("Special file requires review: " + str(path))
+        except FileNotFoundError:
+            # Online atomic writers can rename a temporary entry between
+            # iterdir() and lstat()/readlink(). It no longer consumes space.
+            continue
+    return total
 
 
 def rename(source, target):
