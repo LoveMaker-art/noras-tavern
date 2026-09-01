@@ -13,6 +13,11 @@ The release also replaces the managed Tavern block in `AGENTS.md`, installs Nora
 preserving all unrelated Hermes configuration, and retires the six historical
 Tavern specialist skill directories after placing them in the release backup.
 
+Every successful installation also refreshes the program-only daily release
+checker in `$HERMES_HOME/scripts` and idempotently maintains one no-agent Hermes
+cron job at 09:00 local time. It only sends a ClawChat notice when GitHub has a
+newer stable Tavern release; it never installs updates automatically.
+
 `ops/scripts/install-hermes-skills.py` only prepares the canonical skill trees
 inside the direct updater's private staging directory. It has no review/apply
 mode and is not a standalone host mutation command.

@@ -20,6 +20,11 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
+UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Asia/Shanghai)"
+UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.sh"
+UPDATE_CHECK_SCHEDULE = "0 9 * * *"
+UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py")
+
 
 def log(message):
     print("[tavern-updater] " + message, file=sys.stderr, flush=True)
@@ -382,6 +387,95 @@ def refresh_liveware(home, source):
         return {"status": "pending", "warnings": [str(error)]}
 
 
+def read_cron_jobs(home):
+    path = Path(home) / "cron/jobs.json"
+    if not path.is_file():
+        return []
+    value = json.loads(path.read_text(encoding="utf-8"))
+    jobs = value.get("jobs", []) if isinstance(value, dict) else []
+    if not isinstance(jobs, list):
+        raise RuntimeError("Hermes cron jobs.json 格式无效")
+    return [job for job in jobs if isinstance(job, dict)]
+
+
+def hermes_command():
+    candidates = (
+        Path(sys.executable).with_name("hermes"),
+        Path("/opt/hermes/.venv/bin/hermes"),
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    found = shutil.which("hermes")
+    if found:
+        return Path(found)
+    raise RuntimeError("未找到 Hermes CLI，无法安装更新提醒任务")
+
+
+def update_check_jobs(home):
+    return [
+        job for job in read_cron_jobs(home)
+        if job.get("name") == UPDATE_CHECK_JOB_NAME or job.get("script") == UPDATE_CHECK_SCRIPT
+    ]
+
+
+def configure_update_check_job(home):
+    cli = hermes_command()
+    environment = {**os.environ, "HERMES_HOME": str(home)}
+    existing = update_check_jobs(home)
+    if existing:
+        primary = existing[0]
+        run([
+            cli, "cron", "edit", primary["id"],
+            "--schedule", UPDATE_CHECK_SCHEDULE,
+            "--prompt", "",
+            "--name", UPDATE_CHECK_JOB_NAME,
+            "--deliver", "local",
+            "--clear-skills",
+            "--script", UPDATE_CHECK_SCRIPT,
+            "--no-agent",
+        ], env=environment, capture=True)
+        for duplicate in existing[1:]:
+            run([cli, "cron", "remove", duplicate["id"]], env=environment, capture=True)
+    else:
+        run([
+            cli, "cron", "create", UPDATE_CHECK_SCHEDULE,
+            "--name", UPDATE_CHECK_JOB_NAME,
+            "--deliver", "local",
+            "--script", UPDATE_CHECK_SCRIPT,
+            "--no-agent",
+        ], env=environment, capture=True)
+
+    configured = update_check_jobs(home)
+    if len(configured) != 1:
+        raise RuntimeError(f"更新提醒任务数量异常：{len(configured)}")
+    job = configured[0]
+    schedule = job.get("schedule", {})
+    if (schedule.get("expr") != UPDATE_CHECK_SCHEDULE
+            or job.get("script") != UPDATE_CHECK_SCRIPT
+            or job.get("no_agent") is not True
+            or job.get("deliver") != "local"):
+        raise RuntimeError("更新提醒任务配置未生效")
+    return job
+
+
+def install_update_check(home, source):
+    scripts = Path(home) / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in UPDATE_CHECK_FILES:
+        origin = Path(source) / "ops/scripts" / name
+        if not origin.is_file():
+            raise RuntimeError("发布包缺少更新提醒脚本：" + name)
+        atomic(scripts / name, origin.read_bytes(), mode=0o755)
+    job = configure_update_check_job(home)
+    return {
+        "status": "installed",
+        "jobId": job["id"],
+        "schedule": UPDATE_CHECK_SCHEDULE,
+        "mode": "no-agent",
+    }
+
+
 def install(args):
     home = safe(args.home)
     if not (home / "skills").is_dir():
@@ -461,6 +555,10 @@ def install(args):
                 log("启动新版 Tavern")
                 runtime = install_runtime(home)
                 liveware = refresh_liveware(home, home / "apps/tavern-ops")
+                try:
+                    update_check = install_update_check(home, home / "apps/tavern-ops")
+                except Exception as update_check_error:
+                    update_check = {"status": "pending", "warnings": [str(update_check_error)]}
                 installed = {
                     "schema": 1,
                     "version": version,
@@ -469,6 +567,7 @@ def install(args):
                     "backup": str(backup),
                     "migration": migration,
                     "liveware": liveware,
+                    "updateCheck": update_check,
                 }
                 json_write(update_root / "installed.json", installed)
                 result = {
@@ -478,6 +577,7 @@ def install(args):
                     "dataImport": migration,
                     "runtime": {"pid": runtime.get("native_pid"), "health": runtime.get("health", {}).get("ok")},
                     "liveware": liveware,
+                    "updateCheck": update_check,
                     "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))

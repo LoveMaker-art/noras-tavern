@@ -99,6 +99,8 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/scripts/analyze-boot-metrics.mjs',
         'ops/scripts/analyze-runtime-phases.mjs',
         'ops/scripts/install-hermes-skills.py',
+        'ops/scripts/nora-tavern-update-check.sh',
+        'ops/scripts/nora-tavern-card-send.py',
         'ops/skills/INSTALL.md',
         'ops/skills/agents-tavern.md',
     ]);

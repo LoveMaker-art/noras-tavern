@@ -87,6 +87,7 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'ops/scripts/runtime.sh', 'ops/scripts/bringup-native.sh', 'ops/scripts/provision.sh',
         'ops/scripts/profile_memory.py', 'ops/scripts/install-hermes-skills.py',
         'ops/scripts/analyze-boot-metrics.mjs', 'ops/scripts/analyze-runtime-phases.mjs',
+        'ops/scripts/nora-tavern-update-check.sh', 'ops/scripts/nora-tavern-card-send.py',
         'ops/skills/INSTALL.md', 'ops/skills/agents-tavern.md',
         'ops/skills/creative/tavern/SKILL.md', 'ops/skills/creative/tavern/references/story-profile.md',
         'ops/skills/creative/tavern-ops/SKILL.md', 'ops/skills/system/tavern-updater/references/release-compatibility.md',
