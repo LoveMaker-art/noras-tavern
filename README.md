@@ -4,7 +4,7 @@
 
 Tavern 是面向 Hermes / ClawChat 单用户工作区的 World 核心角色扮演运行时。它复用 SillyTavern 的角色卡、世界书、脚本和扩展兼容能力，同时由 Nora World Core 统一管理世界、会话、资源和长期状态。
 
-当前稳定版本：[v2.0.5](https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.0.5)
+当前稳定版本：[v2.0.6](https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.0.6)
 
 ## 你可以用它做什么
 
@@ -107,7 +107,7 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 进一步资料：
 
-- [v2.0.5 版本说明](docs/releases/2.0.5.md)
+- [v2.0.6 版本说明](docs/releases/2.0.6.md)
 - [复杂卡兼容矩阵](docs/architecture/COMPLEX-CARD-COMPATIBILITY-MATRIX.md)
 - [Nora MCP 能力与边界](nora-mcp/README.md)
 - [Story Profile 项目说明](story-profile/README.md)
