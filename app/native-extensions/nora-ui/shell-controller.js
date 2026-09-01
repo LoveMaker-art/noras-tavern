@@ -1,10 +1,9 @@
 import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { createComposerFormatController } from './composer-format-controller.js';
-import { createViewportController } from './viewport-controller.js';
 
 export function createShellController({ select, selectAll, icons, messageView, exposeMessageApi }) {
+    let resizeObserver;
     const composerFormats = createComposerFormatController();
-    const viewport = createViewportController();
 
     function removeNestedLayoutCopies() {
         selectAll('#nora-layout').filter(layout => layout.parentElement !== document.body).forEach(layout => layout.remove());
@@ -84,7 +83,8 @@ export function createShellController({ select, selectAll, icons, messageView, e
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape') { handlers.closeModal(); closeDrawers(); }
         });
-        viewport.mount();
+        resizeObserver = new ResizeObserver(() => document.documentElement.style.setProperty('--nora-vh', `${window.innerHeight}px`));
+        resizeObserver.observe(document.documentElement);
         document.body.classList.add('nora-ui-hydrated');
     }
 
