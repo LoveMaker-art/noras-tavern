@@ -28,7 +28,22 @@ test('reads character, bounded chat and all Worldbooks concurrently behind one s
             character: async (_directories, avatar) => {
                 started.push(`character:${avatar}`);
                 await gate;
-                return { avatar, name: 'One' };
+                return {
+                    avatar,
+                    name: 'One',
+                    data: {
+                        extensions: {
+                            existing: true,
+                            tavern_helper: {
+                                variables: { stat_data: { hp: 100 } },
+                                scripts: [
+                                    { type: 'script', name: 'Remote MVU loader', enabled: true, content: "import 'https://cdn.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate/artifact/bundle.js'" },
+                                    { type: 'script', name: 'Character schema', enabled: true, content: "import 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js'" },
+                                ],
+                            },
+                        },
+                    },
+                };
             },
             chat: async (_file, options) => {
                 started.push(`chat:${options.limit}`);
@@ -54,9 +69,20 @@ test('reads character, bounded chat and all Worldbooks concurrently behind one s
     const result = await pending;
     assert.equal(result.snapshot.schema, 'nora-world-snapshot/v1');
     assert.equal(result.snapshot.revision, 'revision-one');
+    const extensions = result.snapshot.character.data.extensions;
+    assert.equal(extensions.existing, true);
+    assert.equal(extensions.world, 'One Book');
+    assert.deepEqual(extensions.tavern_helper.variables, { stat_data: { hp: 100 } });
+    assert.equal(extensions.tavern_helper.scripts[0].enabled, false);
+    assert.equal(extensions.tavern_helper.scripts[1].enabled, true);
+    assert.equal(
+        extensions.tavern_helper.scripts[1].content,
+        "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1'",
+    );
+    assert.equal(extensions.nora_mvu_compatibility.managed_runtime, true);
+    assert.equal(extensions.nora_mvu_compatibility.schema_runtime_localized, true);
     assert.deepEqual(result.snapshot.worldbooks.map(book => book.name), ['One Book', 'Shared Book']);
     assert.ok(Number.isFinite(result.timings.character));
     assert.ok(Number.isFinite(result.timings.chat));
     assert.ok(Number.isFinite(result.timings.worldbooks));
 });
-

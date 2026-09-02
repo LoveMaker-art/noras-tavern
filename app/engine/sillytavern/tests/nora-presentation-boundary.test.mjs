@@ -108,6 +108,45 @@ test('Nora collapses reasoning once when a message is first mounted', () => {
     assert.equal(reasoningDetails.open, true);
 });
 
+test('Nora exposes existing alternate replies as a visible pager above the message', () => {
+    const controls = { dataset: {}, innerHTML: '' };
+    const pager = {
+        dataset: {},
+        hidden: true,
+        innerHTML: '',
+        attributes: {},
+        setAttribute(name, value) { this.attributes[name] = value; },
+    };
+    const text = { querySelector: () => null };
+    const message = {
+        dataset: {},
+        classList: { toggle: () => {} },
+        getAttribute: name => ({ mesid: '0', is_system: 'false', is_user: 'false' })[name],
+    };
+    const select = (selector, root) => {
+        if (selector === '.mes_text' && root === message) return text;
+        if (selector === '.nora-message-controls' && root === message) return controls;
+        if (selector === '.nora-message-pager' && root === message) return pager;
+        return null;
+    };
+    const adapter = createStMessageViewAdapter({
+        select,
+        selectAll: selector => selector === '#chat .mes' ? [message] : [],
+        icons: { left: '‹', right: '›', edit: '', suggest: '', repeat: '' },
+        documentRef: { createElement: () => controls },
+        MutationObserverImpl: class {},
+    });
+
+    adapter.decorate([{ swipe_id: 0, swipes: ['first', 'second'] }]);
+    assert.equal(pager.hidden, false);
+    assert.match(pager.innerHTML, /data-message-action="left"[^>]*disabled/);
+    assert.match(pager.innerHTML, />(?:上一页|Previous page)<.*>1 \/ 2<.*>(?:下一页|Next page)</s);
+    assert.doesNotMatch(controls.innerHTML, /data-message-action="(?:left|right)"/);
+
+    adapter.decorate([{ swipe_id: 0, swipes: ['only'] }]);
+    assert.equal(pager.hidden, true);
+});
+
 test('Nora reasoning policy separates think content and preserves Swipe metadata', () => {
     const message = {
         mes: '<think>private plan</think>Visible reply',
@@ -190,4 +229,25 @@ test('the ST message Adapter authorizes only card frames mounted in the active s
     assert.equal(adapter.ownsEmbeddedSource(trustedSource), true);
     assert.equal(adapter.ownsEmbeddedSource({}), false);
     assert.equal(adapter.ownsEmbeddedSource(null), false);
+});
+
+test('the ST message Adapter consumes hidden composer input only from an active card frame', () => {
+    class CardFrameEvent {
+        constructor(target) { this.target = target; }
+    }
+    const adapter = createStMessageViewAdapter({
+        select: () => null,
+        selectAll: selector => selector === '#chat .mes_text iframe'
+            ? [{ contentWindow: { Event: CardFrameEvent } }]
+            : [],
+        icons: {},
+        documentRef: {},
+        MutationObserverImpl: class {},
+    });
+    const input = { id: 'send_textarea', value: '  开启轮回  ' };
+
+    assert.equal(adapter.consumeLegacyInput({ target: input }), null);
+    assert.equal(input.value, '  开启轮回  ');
+    assert.equal(adapter.consumeLegacyInput(new CardFrameEvent(input)), '开启轮回');
+    assert.equal(input.value, '');
 });

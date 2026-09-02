@@ -92,13 +92,19 @@ export function createMvuModelAdapter({
         return requireApi('useStoryModel').useStoryModel();
     }
 
-    async function configureIndependent({ baseUrl, model, apiKey = '' }) {
+    async function configureIndependent({ baseUrl, model, apiKey = '', context = 128000, maxTokens = 20000 }) {
         const saved = await request('configure', {
             base_url: String(baseUrl || '').trim(),
             model: String(model || '').trim(),
+            context: Number(context) || 128000,
+            max_tokens: Number(maxTokens) || 20000,
             api_key: String(apiKey || '').trim(),
         });
-        requireApi('useIndependentModel').useIndependentModel({ model: saved.model });
+        requireApi('useIndependentModel').useIndependentModel({
+            model: saved.model,
+            contextLimit: saved.context,
+            maxTokens: saved.max_tokens,
+        });
         return saved;
     }
 
@@ -107,7 +113,11 @@ export function createMvuModelAdapter({
         if (!saved.base_url || !saved.model || !saved.has_api_key) {
             throw new Error(tr("请先完成独立 MVU 模型配置。"));
         }
-        requireApi('useIndependentModel').useIndependentModel({ model: saved.model });
+        requireApi('useIndependentModel').useIndependentModel({
+            model: saved.model,
+            contextLimit: saved.context,
+            maxTokens: saved.max_tokens,
+        });
         return saved;
     }
 

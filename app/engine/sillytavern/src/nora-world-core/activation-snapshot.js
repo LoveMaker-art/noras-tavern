@@ -6,6 +6,7 @@ import sanitize from 'sanitize-filename';
 
 import { isPathUnderParent } from '../util.js';
 import { NoraWorldCoreError } from './errors.js';
+import { adaptCardForMvuRuntime } from './st-backend-materializer.js';
 
 function safeAvatar(value) {
     const avatar = String(value || '').trim();
@@ -36,6 +37,18 @@ function worldbookFiles(directories, plan) {
         }
         return { name, filePath };
     }).filter(Boolean);
+}
+
+function projectRuntimeWorldbookBinding(character, plan) {
+    const worldbookName = String(plan?.knowledge?.[0]?.binding?.name || '').trim();
+    if (!worldbookName) return character;
+    const projected = structuredClone(character);
+    const data = projected?.data && typeof projected.data === 'object' ? projected.data : projected;
+    const extensions = data?.extensions && typeof data.extensions === 'object' && !Array.isArray(data.extensions)
+        ? data.extensions
+        : {};
+    data.extensions = { ...extensions, world: worldbookName };
+    return projected;
 }
 
 function nowMs() {
@@ -115,6 +128,7 @@ export async function readActivationSnapshot(plan, directories, {
             details: { worldId: plan.world_id },
         });
     }
+    const runtimeCharacter = adaptCardForMvuRuntime(projectRuntimeWorldbookBinding(character, plan)).card;
     const resolvedRevision = revision || await measured(
         'revision',
         () => getActivationSnapshotRevision(plan, directories),
@@ -126,11 +140,10 @@ export async function readActivationSnapshot(plan, directories, {
             schema: 'nora-world-snapshot/v1',
             revision: resolvedRevision,
             plan,
-            character,
+            character: runtimeCharacter,
             chat,
             worldbooks,
         }),
         timings: Object.freeze(timings),
     });
 }
-

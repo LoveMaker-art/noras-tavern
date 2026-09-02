@@ -13,6 +13,8 @@ function publicConfig(request, config = store(request).read()) {
     return {
         base_url: config?.base_url ?? '',
         model: config?.model ?? '',
+        context: config?.context ?? 128000,
+        max_tokens: config?.max_tokens ?? 20000,
         has_api_key: Boolean(readSecret(request.user.directories, SECRET_KEYS.NORA_MVU)),
     };
 }

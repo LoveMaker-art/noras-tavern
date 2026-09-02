@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createManagedMvuRuntimeLoader } from '../../../native-extensions/nora-mvu/index.js';
+import {
+    createManagedMvuRuntimeLoader,
+    MVU_BUNDLE_URL,
+    resolveMvuZodUrl,
+} from '../../../native-extensions/nora-mvu/runtime.js';
 import { createStCardAdapter, inspectCharacterRuntime } from '../public/scripts/nora-adapters/st-card-adapter.js';
 
 function characterWithScripts(scripts, characterBook = null) {
@@ -17,27 +21,41 @@ function characterWithScripts(scripts, characterBook = null) {
     };
 }
 
-test('managed MVU waits for the Runner runtime without importing the bundle in the page realm', async () => {
-    let pageImports = 0;
-    let runtimeWaits = 0;
+test('managed MVU uses the local extension asset from inside the Helper iframe', () => {
+    assert.equal(MVU_BUNDLE_URL, '/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=7fe9ae7cfe01-nora5');
+});
+
+test('managed MVU resolves its pinned Zod runtime from local extension assets', () => {
+    assert.equal(
+        resolveMvuZodUrl('https://example.test/extension-assets/release-a/scripts/extensions/third-party/nora-mvu/runtime.js'),
+        'https://example.test/extension-assets/release-a/scripts/extensions/third-party/nora-mvu/vendor/zod.iife.js?v=4.1.11',
+    );
+});
+
+test('managed MVU waits for Helper, registers its iframe script, then waits for the public API', async () => {
+    const events = [];
     const expected = { getMvuData() {} };
     const load = createManagedMvuRuntimeLoader({
-        waitForHelper: async () => ({}),
-        ensureScript: () => 'unchanged',
-        loadBundle: async () => { pageImports += 1; },
-        loadRuntime: async ({ load: importBundle }) => {
-            await importBundle();
-            return expected;
+        waitForHelper: async () => {
+            events.push('helper-ready');
+            return {};
+        },
+        ensureScript: async () => {
+            events.push('script-registered');
+            return 'unchanged';
         },
         waitForRuntime: async () => {
-            runtimeWaits += 1;
+            events.push('runtime-ready');
             return expected;
         },
     });
 
     assert.equal(await load(), expected);
-    assert.equal(pageImports, 0);
-    assert.equal(runtimeWaits, 1);
+    assert.deepEqual(events, [
+        'helper-ready',
+        'script-registered',
+        'runtime-ready',
+    ]);
 });
 
 test('an embedded MVU Runtime is the sole owner for its card', () => {
@@ -68,7 +86,7 @@ test('an embedded MVU Runtime never calls the managed Runtime ensure path', asyn
     const previousEnsure = globalThis.__NORA_ENSURE_MVU_READY__;
     let managedCalls = 0;
     try {
-        globalThis.Mvu = { getMvuData() {} };
+        globalThis.Mvu = { getMvuData: () => ({ stat_data: {}, schema: {} }) };
         globalThis.__NORA_ENSURE_MVU_READY__ = async () => { managedCalls += 1; };
         const character = characterWithScripts([{
             type: 'script',

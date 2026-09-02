@@ -129,6 +129,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     const isUnshippedLocale = file => file.startsWith(localeRoot) && !shippedLocales.has(file.slice(localeRoot.length));
     const selected = new Set(sourceFiles.filter(file => (
         file.startsWith('app/') || operationFiles.has(file)
+        || file.startsWith('ops/installer/')
         || file.startsWith('ops/updater/')
         || file.startsWith('ops/hooks/tavern-liveware-register/') || file === 'ops/eslint-owned.cjs'
         || ['nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md'].includes(file)

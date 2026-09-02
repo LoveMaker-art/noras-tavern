@@ -1,5 +1,10 @@
 // Narrow adapter to the upstream stores. Do not mutate ST's serialized copy and
 // assume Helper's live reactive store changed with it.
+export function synchronizeHelperRuntimeReadiness(globalStore, { documentRef = globalThis.document } = {}) {
+    if (documentRef?.documentElement?.dataset?.noraAppReadyMs) globalStore.app_ready = true;
+    return Boolean(globalStore.app_ready);
+}
+
 export function createHelperControlAdapter({ globalStore, scopeStore, scopeOwner = () => null, validateSettings, clone, flushScope }) {
     function assign(target, source) {
         for (const [key, value] of Object.entries(source)) {

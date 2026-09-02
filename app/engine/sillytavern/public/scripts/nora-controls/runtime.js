@@ -238,7 +238,29 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             return { saved: true, runtimeApplied: true, appliesTo: 'subsequent-formatting-and-prompts', revision: await revision([source, next]) };
         }
         if (action.startsWith('mvu.')) {
-            if (action === 'mvu.status') return { ...story.mvu.status(), analysisRunning: Boolean(globalRef.Mvu?.isDuringExtraAnalysis?.()), managedRuntimeEnabled: context.extensionSettings.nora_mvu?.managedRuntimeEnabled !== false, scope: 'global', updateSwitch: 'extra-model-parsing-only', cardOverridesMayApply: true };
+            if (action === 'mvu.status') {
+                const managed = globalRef.NoraMvu?.status?.() ?? null;
+                return {
+                    ...story.mvu.status(),
+                    managedPhase: managed?.phase ?? null,
+                    managedError: managed?.error ?? null,
+                    legacyScriptCleanup: managed?.registration ?? null,
+                    updatePhase: managed?.updatePhase ?? 'unobserved',
+                    lastUpdateCode: managed?.lastUpdateCode ?? null,
+                    lastUpdateStage: managed?.lastUpdateStage ?? null,
+                    lastUpdateError: managed?.lastUpdateError ?? null,
+                    lastUpdateCommandCount: managed?.lastUpdateCommandCount ?? null,
+                    lastUpdateValidationErrors: managed?.lastUpdateValidationErrors ?? [],
+                    transactionAttempt: managed?.transactionAttempt ?? null,
+                    transactionDurationMs: managed?.transactionDurationMs ?? null,
+                    lastUpdateAt: managed?.lastUpdateAt ?? null,
+                    analysisRunning: Boolean(globalRef.Mvu?.isDuringExtraAnalysis?.()),
+                    managedRuntimeEnabled: context.extensionSettings.nora_mvu?.managedRuntimeEnabled !== false,
+                    scope: 'global',
+                    updateSwitch: 'extra-model-parsing-only',
+                    cardOverridesMayApply: true,
+                };
+            }
             if (action === 'mvu.settings') return { settings: redact(context.extensionSettings.mvu_settings ?? {}), scope: 'global' };
             if (action === 'mvu.configure') {
                 if (!globalRef.Mvu?.reloadSettings) throw controlError('NORA_MVU_NOT_READY', 'MVU configuration interface is unavailable.');
@@ -264,11 +286,16 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 if (params.enabled && context.extensionSettings.disabledExtensions?.includes('third-party/JS-Slash-Runner')) throw controlError('NORA_CONTROL_DEPENDENCY', 'Enable Tavern Helper and reload the page first.');
                 context.extensionSettings.nora_mvu ??= {};
                 context.extensionSettings.nora_mvu.managedRuntimeEnabled = params.enabled;
-                // Live Helper owns its own settings; only the persistent policy belongs to Nora.
+                // Tavern Helper owns the live script tree. Persist the policy in
+                // Nora, then update and flush the same live store Helper executes.
                 if (globalRef.TavernHelper?.noraControls) {
-                    const api = helper(); const scripts = api.getScriptTrees({ type: 'global' });
+                    const api = helper();
+                    const scripts = api.getScriptTrees({ type: 'global' });
                     const found = findScript(scripts, managedScriptId);
-                    if (found) { found.item.enabled = params.enabled; await api.replaceScriptTrees(scripts, { type: 'global' }); }
+                    if (found) {
+                        found.item.enabled = params.enabled;
+                        await api.replaceScriptTrees(scripts, { type: 'global' });
+                    }
                     if (params.enabled) helperControl().setScopeEnabled('global', true);
                     await saveHelper('global', 'global');
                 }
@@ -280,7 +307,10 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 else {
                     const config = await request('/api/nora-mvu-model/config', {});
                     if (!config.model || !config.base_url || !config.has_api_key) throw controlError('NORA_MVU_MODEL_MISSING', 'Configure independent MVU model first.');
-                    await story.mvu.useIndependentModel({ model: config.model });
+                    const model = { model: config.model };
+                    if (Number.isFinite(Number(config.context))) model.contextLimit = Number(config.context);
+                    if (Number.isFinite(Number(config.max_tokens))) model.maxTokens = Number(config.max_tokens);
+                    await story.mvu.useIndependentModel(model);
                 }
             }
             if (action === 'mvu.retry') {

@@ -20,6 +20,23 @@ function createWindowHarness() {
     };
 }
 
+function createDocumentHarness() {
+    const listeners = new Set();
+    return {
+        addEventListener(type, listener) {
+            if (type === 'input') listeners.add(listener);
+        },
+        removeEventListener(type, listener) {
+            if (type === 'input') listeners.delete(listener);
+        },
+        async dispatch(event) {
+            await Promise.all([...listeners].map(listener => listener(event)));
+            await new Promise(resolve => setImmediate(resolve));
+        },
+        listenerCount: () => listeners.size,
+    };
+}
+
 test('trusted card completion requests enter the canonical story dispatcher exactly once', async () => {
     const trusted = {};
     const commands = [];
@@ -70,10 +87,12 @@ test('untrusted and unrelated frame messages are ignored while unknown card acti
 
 test('gateway installation is idempotent and stop removes its message listener', async () => {
     const windowRef = createWindowHarness();
+    const documentRef = createDocumentHarness();
     const trusted = {};
     let sends = 0;
     const gateway = createCardActionGateway({
         windowRef,
+        documentRef,
         storyActions: {
             execute: async () => { sends += 1; return { status: 'completed' }; },
             cancel: async () => ({ status: 'stopping' }),
@@ -84,11 +103,39 @@ test('gateway installation is idempotent and stop removes its message listener',
     gateway.start();
     gateway.start();
     assert.equal(windowRef.listenerCount(), 1);
+    assert.equal(documentRef.listenerCount(), 1);
     await windowRef.dispatch({ source: trusted, data: { type: 'request_chat_completion', user_input: '继续' } });
     assert.equal(sends, 1);
 
     gateway.stop();
     assert.equal(windowRef.listenerCount(), 0);
+    assert.equal(documentRef.listenerCount(), 0);
+});
+
+test('legacy embedded composer input enters the same story dispatcher once', async () => {
+    const commands = [];
+    const input = { value: '  开启自由模式  ' };
+    const gateway = createCardActionGateway({
+        storyActions: {
+            execute: async command => { commands.push(command); return { status: 'completed' }; },
+            cancel: async () => ({ status: 'stopping' }),
+        },
+        isEmbeddedSource: () => false,
+        consumeLegacyInput: event => {
+            if (event.target !== input) return null;
+            const text = input.value;
+            input.value = '';
+            return text;
+        },
+    });
+
+    const result = await gateway.handleLegacyInput({ target: input });
+
+    assert.equal(result.status, 'completed');
+    assert.equal(input.value, '');
+    assert.deepEqual(commands, [{ type: 'story.send', text: '开启自由模式', origin: 'card.legacy-input' }]);
+    assert.equal((await gateway.handleLegacyInput({ target: input })).status, 'ignored');
+    assert.equal(commands.length, 1);
 });
 
 test('trusted card stop requests cancel the canonical story scope', async () => {

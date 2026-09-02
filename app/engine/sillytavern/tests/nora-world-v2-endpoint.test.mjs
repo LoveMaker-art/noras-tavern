@@ -69,6 +69,20 @@ test('stages one immutable card command per idempotency key', async (t) => {
     await assert.rejects(stageStCardImport(input), error => error?.code === 'NORA_OPERATION_CONFLICT');
 });
 
+test('stages every character import container accepted by the pinned ST importer', async (t) => {
+    const root = await temporaryRoot(t);
+    for (const extension of ['png', 'json', 'yaml', 'yml', 'charx', 'byaf']) {
+        const upload = path.join(root, `upload-${extension}`);
+        await fs.writeFile(upload, Buffer.from(`card-${extension}`));
+        const staged = await stageStCardImport({
+            uploadedFile: { path: upload, originalname: `card.${extension}` },
+            idempotencyKey: `format:${extension}`,
+            stagingRoot: path.join(root, 'staging'),
+        });
+        assert.equal(staged.source.format, extension);
+    }
+});
+
 test('stages one immutable internal Runtime Card for a blank World', async (t) => {
     const stagingRoot = path.join(await temporaryRoot(t), 'staging');
     const input = {

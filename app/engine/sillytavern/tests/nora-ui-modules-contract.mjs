@@ -131,6 +131,7 @@ for (const signal of [
     "const CARD_COMPLETION_REQUEST = 'request_chat_completion';",
     "storyActions.execute({ type: 'story.send', text, origin: 'card.post-message' })",
     'isEmbeddedSource(event.source)',
+    'consumeLegacyInput(event)',
     "error.code = 'NORA_UNSUPPORTED_CARD_ACTION';",
 ]) {
     if (!gatewaySource.includes(signal)) throw new Error(`Card actions must cross the canonical Gateway: ${signal}`);

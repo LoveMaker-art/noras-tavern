@@ -7,8 +7,8 @@ import { createControlBroker } from '../src/nora-control-broker.js';
 import { createRuntimeControls } from '../public/scripts/nora-controls/runtime.js';
 import { CONTROL_ACTIONS, validateControl } from '../public/scripts/nora-controls/contract.js';
 import { createStMvuSettingsAdapter } from '../public/scripts/nora-adapters/st-mvu-settings-adapter.js';
-import { ensureHeadlessMvuScriptInSettings, initializeHeadlessMvuSettings, MVU_SCRIPT_ID } from '../../../native-extensions/nora-mvu/runtime.js';
-import { createHelperControlAdapter } from '../../../native-extensions/JS-Slash-Runner/nora-control-adapter.js';
+import { initializeHeadlessMvuSettings } from '../../../native-extensions/nora-mvu/runtime.js';
+import { createHelperControlAdapter, synchronizeHelperRuntimeReadiness } from '../../../native-extensions/JS-Slash-Runner/nora-control-adapter.js';
 import { createInteractionBridge } from '../public/scripts/nora-compat/interaction-bridge.js';
 import { createTavernHelperActionAdapter } from '../public/scripts/nora-adapters/tavern-helper-action-adapter.js';
 import { createStoryActionDispatcher } from '../../../native-extensions/nora-ui/story-action-dispatcher.js';
@@ -16,6 +16,13 @@ import { createStoryActionDispatcher } from '../../../native-extensions/nora-ui/
 const identity = { clientId: 'fixture-client', worldId: 'world-a', sessionId: 'session-a' };
 const command = (action, params = {}) => ({ ...identity, action, params, idempotencyKey: action, confirm: true, allowModelCall: true, allowScriptExecution: true });
 function temporary(t) { const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-controls-')); t.after(() => fs.rmSync(root, { recursive: true, force: true })); return root; }
+
+test('late-loaded Tavern Helper observes Nora application readiness', () => {
+    const pending = { app_ready: false };
+    assert.equal(synchronizeHelperRuntimeReadiness(pending, { documentRef: { documentElement: { dataset: {} } } }), false);
+    assert.equal(synchronizeHelperRuntimeReadiness(pending, { documentRef: { documentElement: { dataset: { noraAppReadyMs: '15900' } } } }), true);
+    assert.equal(pending.app_ready, true);
+});
 
 test('catalog enforces explicit model/script consent and read/write separation', () => {
     assert.throws(() => validateControl({ ...command('mvu.retry'), allowModelCall: false }), { code: 'NORA_MODEL_CALL_NOT_AUTHORIZED' });
@@ -101,12 +108,54 @@ test('actual MVU adapter distinguishes extra-model switch from managed runtime, 
     assert.equal(disabled.runtimeApplied, false); assert.equal(disabled.reloadRequired, true);
     const restoredContext = { extensionSettings: structuredClone(f.context.extensionSettings) };
     initializeHeadlessMvuSettings(restoredContext);
-    ensureHeadlessMvuScriptInSettings(restoredContext);
-    assert.equal(restoredContext.extensionSettings.tavern_helper.script.scripts.find(script => script.id === MVU_SCRIPT_ID).enabled, false);
+    assert.equal(restoredContext.extensionSettings.nora_mvu.managedRuntimeEnabled, false);
     const data = await f.controls.execute(command('mvu.settings'));
     assert.equal(JSON.stringify(data).includes('fixture-secret'), false);
     f.failSave = true;
     await assert.rejects(f.controls.execute(command('mvu.enabled', { enabled: true })), /save rejected/);
+});
+
+test('MVU status exposes managed-runtime failure evidence without changing settings', async () => {
+    const f = runtimeFixture();
+    const controls = createRuntimeControls({
+        getContext: () => f.context,
+        story: {
+            mvu: createStMvuSettingsAdapter(() => f.context, { readMvuRuntime: () => undefined }),
+            messages: { isGenerating: () => false },
+        },
+        dispatch: () => ({ cancel: async () => {}, execute: async command => ({ status: 'completed', value: await command.run?.() }) }),
+        globalRef: {
+            NoraMvu: { status: () => ({
+                phase: 'failed',
+                error: 'bundle failed',
+                registration: 'removed',
+                updatePhase: 'failed',
+                lastUpdateCode: 'MVU_NO_UPDATE_COMMAND',
+                lastUpdateStage: 'validation',
+                lastUpdateError: 'No valid MVU update command was found.',
+                lastUpdateCommandCount: 0,
+                lastUpdateValidationErrors: [{ commandType: 'unknown', reason: 'missing UpdateVariable block' }],
+                transactionAttempt: 2,
+                transactionDurationMs: 5712,
+                lastUpdateAt: 1788318000000,
+            }) },
+        },
+    });
+
+    const status = await controls.execute(command('mvu.status'));
+
+    assert.equal(status.managedPhase, 'failed');
+    assert.equal(status.managedError, 'bundle failed');
+    assert.equal(status.legacyScriptCleanup, 'removed');
+    assert.equal(status.updatePhase, 'failed');
+    assert.equal(status.lastUpdateCode, 'MVU_NO_UPDATE_COMMAND');
+    assert.equal(status.lastUpdateStage, 'validation');
+    assert.equal(status.lastUpdateError, 'No valid MVU update command was found.');
+    assert.equal(status.lastUpdateCommandCount, 0);
+    assert.deepEqual(status.lastUpdateValidationErrors, [{ commandType: 'unknown', reason: 'missing UpdateVariable block' }]);
+    assert.equal(status.transactionAttempt, 2);
+    assert.equal(status.transactionDurationMs, 5712);
+    assert.equal(status.lastUpdateAt, 1788318000000);
 });
 
 test('script management uses helper API, preserves siblings, rejects stale edits, creates disabled scripts', async () => {

@@ -5,10 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+    attachExtensionCoreBridges,
     attachCompiledModule,
     attachLegacyAsset,
     buildInlineModuleManifest,
     buildLegacyBundle,
+    collectManagedExtensionCoreBridges,
     collectStaticModuleGraph,
     writePrecompressedAsset,
 } from '../build/generate-nora-runtime-assets.mjs';
@@ -65,6 +67,49 @@ test('writes Brotli and Gzip companions without changing source bytes', async ()
     } finally {
         fs.rmSync(fixture, { recursive: true, force: true });
     }
+});
+
+test('discovers managed extension imports that escape back into the ST core', async () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-extension-core-bridges-'));
+    const coreDirectory = path.join(fixture, 'core');
+    fs.mkdirSync(path.join(coreDirectory, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(coreDirectory, 'script.js'), 'export const core = true;');
+    fs.writeFileSync(path.join(coreDirectory, 'scripts', 'openai.js'), 'export const openai = true;');
+    const extensionDirectory = path.join(fixture, 'Example');
+    fs.mkdirSync(path.join(extensionDirectory, 'dist'), { recursive: true });
+    fs.writeFileSync(path.join(extensionDirectory, 'manifest.json'), JSON.stringify({ js: 'dist/index.js' }));
+    fs.writeFileSync(path.join(extensionDirectory, 'dist', 'index.js'), [
+        "import './local.js';",
+        "export const loadOpenAi = () => import('../../../../../scripts/openai.js');",
+    ].join('\n'));
+    fs.writeFileSync(path.join(extensionDirectory, 'dist', 'local.js'), [
+        "export const loadCore = () => import('../../../../../script.js');",
+    ].join('\n'));
+
+    try {
+        assert.deepEqual(await collectManagedExtensionCoreBridges(fixture, coreDirectory), [
+            'script.js',
+            'scripts/openai.js',
+        ]);
+
+        const manifest = {
+            modules: { 'scripts/openai.js': 'data:text/javascript;base64,ZXhwb3J0IHt9' },
+            aliases: { 'scripts/openai.js': 'data:text/javascript;base64,ZXhwb3J0IHt9' },
+            network: [],
+        };
+        attachExtensionCoreBridges(manifest, ['script.js', 'scripts/openai.js']);
+        assert.deepEqual(manifest.extensionCoreBridges, ['script.js', 'scripts/openai.js']);
+        assert.deepEqual(manifest.network, ['script.js']);
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
+test('the managed Tavern Helper extra-model path has every ST core bridge available', async () => {
+    const bridges = await collectManagedExtensionCoreBridges();
+    assert.ok(bridges.includes('scripts/openai.js'));
+    assert.ok(bridges.includes('scripts/power-user.js'));
+    assert.ok(bridges.includes('scripts/group-chats.js'));
 });
 
 test('builds the ordered legacy compatibility bundle', async () => {

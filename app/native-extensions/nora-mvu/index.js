@@ -1,18 +1,17 @@
 import {
     applyMvuSettings,
-    createRetryableMvuLoader,
-    ensureHeadlessMvuScript,
+    createManagedMvuRuntimeLoader,
     ensureHeadlessMvuScriptInSettings,
+    ensureMvuZodRuntime,
     hasInitializedMvuData,
     initializeHeadlessMvuSettings,
     isMvuVariableModelEnabled,
     NORA_MVU_MODEL_PROXY_URL,
     setMvuVariableModelEnabled,
-    waitForTavernHelper,
-    waitForMvuRuntime,
 } from './runtime.js';
-import { inspectMvuCompatibility } from '../../engine/sillytavern/public/scripts/nora-compat/mvu-compatibility.js';
+import { inspectMvuCompatibility } from 'nora-module/scripts/nora-compat/mvu-compatibility.js';
 import { createMvuUpdateObserver } from './update-observer.js';
+import { reportMvuDiagnostic } from './diagnostics-reporter.js';
 
 const state = {
     phase: 'idle',
@@ -21,18 +20,12 @@ const state = {
     updateObserver: null,
 };
 
-export function createManagedMvuRuntimeLoader({
-    waitForHelper = waitForTavernHelper,
-    ensureScript = ensureHeadlessMvuScript,
-    waitForRuntime = waitForMvuRuntime,
-    onRegistration = () => {},
-    timeoutMs = 15000,
-} = {}) {
-    return createRetryableMvuLoader(async () => {
-        const helper = await waitForHelper({ timeoutMs });
-        onRegistration(ensureScript(helper));
-        return waitForRuntime({ timeoutMs });
-    });
+function formatRuntimeError(error) {
+    const name = String(error?.name || 'Error');
+    const message = String(error?.message || error);
+    const summary = `${name}: ${message}`;
+    const stack = String(error?.stack || '');
+    return stack.includes(message) ? stack : [summary, stack].filter(Boolean).join('\n');
 }
 
 const loadManagedRuntime = createManagedMvuRuntimeLoader({
@@ -56,7 +49,21 @@ function runtimeDataInitialized() {
 function statusSnapshot() {
     const settings = context().extensionSettings.mvu_settings ?? {};
     const model = settings['额外模型解析配置'] ?? {};
-    const initialized = runtimeDataInitialized();
+    const updateStatus = state.updateObserver?.status?.() ?? {
+        updateOperational: null,
+        updatePhase: 'unobserved',
+        lastUpdateAt: null,
+        lastUpdateCode: null,
+        lastUpdateStage: null,
+        lastUpdateError: null,
+        lastUpdateCommandCount: null,
+        lastUpdateValidationErrors: [],
+        stateChanged: null,
+        transactionDurationMs: null,
+        transactionAttempt: null,
+        hasPreviousSnapshot: false,
+    };
+    const initialized = runtimeDataInitialized() || updateStatus.hasPreviousSnapshot;
     return {
         ...state,
         runtimeAvailable: typeof globalThis.Mvu?.getMvuData === 'function',
@@ -68,14 +75,7 @@ function statusSnapshot() {
         updateMode: settings['更新方式'] ?? null,
         variableModel: model['模型来源'] ?? null,
         variableModelName: model['模型名称'] ?? null,
-        ...(state.updateObserver?.status?.() ?? {
-            updateOperational: null,
-            updatePhase: 'unobserved',
-            lastUpdateAt: null,
-            lastUpdateError: null,
-            lastUpdateCommandCount: null,
-            stateChanged: null,
-        }),
+        ...updateStatus,
     };
 }
 
@@ -90,13 +90,22 @@ function attachUpdateObserver(runtime) {
     }
     state.updateObserver = createMvuUpdateObserver({
         eventSource: runtimeContext.eventSource,
-        events: runtime.events,
+        events: {
+            ...runtime.events,
+            // These are Nora's pinned MVU transaction event names. Keep the
+            // observer independent of a stale runtime API object so a freshly
+            // loaded bundle still reports the structured root cause.
+            TRANSACTION_STARTED: runtime.events.TRANSACTION_STARTED || 'nora_mvu_transaction_started',
+            TRANSACTION_COMMITTED: runtime.events.TRANSACTION_COMMITTED || 'nora_mvu_transaction_committed',
+            TRANSACTION_FAILED: runtime.events.TRANSACTION_FAILED || 'nora_mvu_transaction_failed',
+        },
         identity: () => String(context().chatId || context().getCurrentChatId?.() || ''),
+        report: reportMvuDiagnostic,
     });
 }
 
 async function inspectCurrentCard() {
-    const snapshot = statusSnapshot();
+    let snapshot = statusSnapshot();
     const helper = globalThis.TavernHelper;
     let declared = false;
     let compatibility = null;
@@ -106,6 +115,12 @@ async function inspectCurrentCard() {
             const entries = await helper.getLorebookEntries(bookName);
             compatibility = inspectMvuCompatibility({ books: [entries] });
             declared = compatibility.declared;
+            if (declared
+                && !snapshot.initialized
+                && typeof globalThis.Mvu?.ensureCurrentChatInitialized === 'function') {
+                await globalThis.Mvu.ensureCurrentChatInitialized();
+                snapshot = statusSnapshot();
+            }
         }
     } catch (error) {
         console.warn('[Nora MVU] Unable to inspect the current card worldbook', error);
@@ -145,7 +160,7 @@ function exposeApi() {
                 '额外模型解析配置': { '模型来源': '与插头相同' },
             });
         },
-        useIndependentModel({ model }) {
+        useIndependentModel({ model, contextLimit = 128000, maxTokens = 20000 }) {
             return applyMvuSettings(context(), {
                 '更新方式': '额外模型解析',
                 '额外模型解析配置': {
@@ -153,6 +168,8 @@ function exposeApi() {
                     'api地址': NORA_MVU_MODEL_PROXY_URL,
                     '密钥': '',
                     '模型名称': String(model || '').trim(),
+                    '最大上下文token数': Math.min(1000000, Math.max(512, Number(contextLimit) || 128000)),
+                    '最大回复token数': Math.min(128000, Math.max(1, Number(maxTokens) || 20000)),
                 },
             });
         },
@@ -183,7 +200,7 @@ function startMvuRuntime() {
         return runtime;
     }).catch((error) => {
         state.phase = 'failed';
-        state.error = String(error?.message || error);
+        state.error = formatRuntimeError(error);
         exposeApi();
         console.error('[Nora MVU] failed to initialize', error);
         throw error;
@@ -204,6 +221,9 @@ export async function activateNoraMvu() {
     try {
         const runtimeContext = context();
         initializeHeadlessMvuSettings(runtimeContext);
+        // Helper copies `z` into every script iframe. Prepare the pinned local
+        // Zod runtime before Helper discovers and executes the managed MVU script.
+        await ensureMvuZodRuntime();
         state.registration = ensureHeadlessMvuScriptInSettings(runtimeContext);
         exposeApi();
         globalThis.__NORA_ENSURE_MVU_READY__ = ensureNoraMvuReady;
@@ -211,7 +231,7 @@ export async function activateNoraMvu() {
         startMvuRuntime();
     } catch (error) {
         state.phase = 'failed';
-        state.error = String(error?.message || error);
+        state.error = formatRuntimeError(error);
         exposeApi();
         console.error('[Nora MVU] failed to initialize', error);
         throw error;

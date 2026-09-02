@@ -49,6 +49,7 @@ export const english = Object.freeze({
     '上一页': 'Previous page',
     '第 ${0} / ${1} 页': 'Page ${0} of ${1}',
     '下一页': 'Next page',
+    '回复分页': 'Reply pages',
     '还没有导入角色卡。': 'No character cards imported yet.',
     '角色卡库': 'Card library',
     '角色资料正在载入，请稍候。': 'Loading character details. Please wait.',

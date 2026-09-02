@@ -5,6 +5,10 @@ const VARIABLE_CONTENT_MARKER = /(?:<status_current_variables>|{{(?:format|get)_
 const UPDATE_CONTENT_MARKER = /(?:<\/?\s*(?:UpdateVariable|JSONPatch)\b|\b_\.set\s*\()/i;
 const MVU_RUNTIME_SCRIPT = /MagicalAstrogy\/MagVarUpdate(?:@[^/'"\s]+)?\/artifact\/bundle\.js/i;
 const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource\/dist\/util\/mvu_zod\.js/i;
+const MVU_SCHEMA_URL = /https?:\/\/[^'"\s]*StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\/mvu_zod\.js(?:\?[^'"\s]*)?/gi;
+// This URL is persisted into adapted cards and may be cached by Liveware for a
+// long time. Keep its revision independent from the main MVU bundle revision.
+const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1';
 const ADAPTATION_SCHEMA = 1;
 
 function record(value) {
@@ -20,14 +24,42 @@ function worldbookEntries(book) {
     return Array.isArray(entries) ? entries : Object.values(entries);
 }
 
-function unwrapScript(item) {
-    if (!item || typeof item !== 'object') return [];
-    if (item.type === 'script' && item.value && typeof item.value === 'object') {
-        return [{ ...item.value, type: 'script' }];
+function normalizeScriptTree(item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    if (item.type === 'script' && item.value && typeof item.value === 'object' && !Array.isArray(item.value)) {
+        return { ...item.value, type: 'script' };
     }
-    if (item.type === 'script') return [item];
-    if (Array.isArray(item.scripts)) return item.scripts.flatMap(unwrapScript);
-    return [];
+    if (item.type === 'folder') {
+        const children = Array.isArray(item.scripts) ? item.scripts : (Array.isArray(item.value) ? item.value : []);
+        const normalized = children.map(normalizeScriptTree).filter(Boolean);
+        const folder = { ...item, type: 'folder', scripts: normalized };
+        delete folder.value;
+        return folder;
+    }
+    if (item.type === 'script' || typeof item.content === 'string') return { ...item, type: 'script' };
+    return null;
+}
+
+function normalizeScriptTrees(value) {
+    return Array.isArray(value) ? value.map(normalizeScriptTree).filter(Boolean) : [];
+}
+
+function flattenScriptTrees(value) {
+    return normalizeScriptTrees(value).flatMap(item => item.type === 'folder'
+        ? flattenScriptTrees(item.scripts)
+        : [item]);
+}
+
+export function normalizeTavernHelperExtension(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (!Array.isArray(value)) return {};
+
+    const entries = value.filter(item => Array.isArray(item)
+        && item.length >= 2
+        && typeof item[0] === 'string'
+        && !['__proto__', 'prototype', 'constructor'].includes(item[0]));
+    if (entries.length !== value.length) return {};
+    return Object.fromEntries(entries);
 }
 
 function scriptIdentity(script) {
@@ -38,14 +70,15 @@ function scriptIdentity(script) {
 
 export function normalizeTavernHelperScripts(card) {
     const extensions = record(cardData(card).extensions);
-    const canonical = Array.isArray(extensions.tavern_helper?.scripts)
-        ? extensions.tavern_helper.scripts.flatMap(unwrapScript)
-        : [];
-    const legacy = Array.isArray(extensions.TavernHelper_scripts)
-        ? extensions.TavernHelper_scripts.flatMap(unwrapScript)
-        : [];
+    const helper = normalizeTavernHelperExtension(extensions.tavern_helper);
+    // Match Tavern Helper's own migration contract: canonical data wins when
+    // both generations are present; legacy fields are only a fallback.
+    const source = Object.hasOwn(extensions, 'tavern_helper')
+        ? helper.scripts
+        : extensions.TavernHelper_scripts;
+    const scripts = flattenScriptTrees(source);
     const seen = new Set();
-    return [...canonical, ...legacy].filter((script) => {
+    return scripts.filter((script) => {
         const identity = scriptIdentity(script);
         if (seen.has(identity)) return false;
         seen.add(identity);
@@ -64,6 +97,7 @@ function isActiveUpdateEntry(entry) {
 }
 
 export function inspectMvuCompatibility({ card = null, books = [], helperScripts = null } = {}) {
+    const data = cardData(card);
     const scripts = helperScripts ?? normalizeTavernHelperScripts(card);
     const entries = books.flatMap(worldbookEntries);
     const hasInit = entries.some(entry => INIT_COMMENT_MARKER.test(String(entry?.comment || '')));
@@ -76,9 +110,10 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     const hasVariableReference = entries.some(entry => VARIABLE_CONTENT_MARKER.test(String(entry?.content || '')));
     const embeddedRuntime = scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
     const schemaRuntime = scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
+    const managedRuntime = record(data.extensions?.nora_mvu_compatibility).managed_runtime === true;
     const declared = hasInit || hasSplitUpdate || hasSplitPlot
         || (hasVariableReference && updateEntryIds.length > 0)
-        || embeddedRuntime || schemaRuntime;
+        || embeddedRuntime || schemaRuntime || managedRuntime;
 
     let updateProtocol = 'none';
     if (declared) {
@@ -95,6 +130,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     if (updateEntryIds.length > 0 && !hasSplitUpdate && !hasSplitPlot) reasons.push('legacy-update-content');
     if (embeddedRuntime) reasons.push('embedded-runtime');
     if (schemaRuntime) reasons.push('schema-runtime');
+    if (managedRuntime) reasons.push('managed-runtime');
 
     return Object.freeze({
         declared,
@@ -104,6 +140,32 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
         updateEntryIds: Object.freeze(updateEntryIds),
         helperScripts: Object.freeze([...scripts]),
         reasons: Object.freeze(reasons),
+    });
+}
+
+function projectManagedMvuScripts(trees) {
+    let runtimeSuppressed = false;
+    let schemaLocalized = false;
+    const project = (script) => {
+        if (script?.type === 'folder') return { ...script, scripts: script.scripts.map(project) };
+        const content = String(script?.content || '');
+        if (script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(content)) {
+            runtimeSuppressed = true;
+            return { ...script, enabled: false };
+        }
+        const localized = content.replace(MVU_SCHEMA_URL, LOCAL_MVU_SCHEMA_URL);
+        if (localized !== content) {
+            schemaLocalized = true;
+            return { ...script, content: localized };
+        }
+        return script;
+    };
+    const projected = trees.map(project);
+    return Object.freeze({
+        scripts: projected,
+        changed: runtimeSuppressed || schemaLocalized,
+        runtimeSuppressed,
+        schemaLocalized,
     });
 }
 
@@ -128,27 +190,60 @@ function adaptBook(book, updateEntryIds) {
 
 export function adaptCardForMvuRuntime(card) {
     const data = cardData(card);
+    const extensions = record(data.extensions);
+    const hasCanonicalHelper = Object.hasOwn(extensions, 'tavern_helper');
+    const helperExtension = normalizeTavernHelperExtension(extensions.tavern_helper);
+    const legacyScripts = extensions.TavernHelper_scripts;
+    const legacyVariables = record(extensions.TavernHelper_characterScriptVariables);
+    const sourceTrees = normalizeScriptTrees(hasCanonicalHelper ? helperExtension.scripts : legacyScripts);
+    const sourceVariables = hasCanonicalHelper
+        ? record(helperExtension.variables)
+        : legacyVariables;
     const book = data.character_book && data.character_book.entries ? data.character_book : null;
-    const scripts = normalizeTavernHelperScripts(card);
-    const plan = inspectMvuCompatibility({ card, books: book ? [book] : [], helperScripts: scripts });
-    const hasLegacyScripts = Array.isArray(data.extensions?.TavernHelper_scripts);
-    const canonicalScripts = data.extensions?.tavern_helper?.scripts;
+    const sourceScripts = flattenScriptTrees(sourceTrees);
+    const sourcePlan = inspectMvuCompatibility({ card, books: book ? [book] : [], helperScripts: sourceScripts });
+    const runtimeScripts = projectManagedMvuScripts(sourceTrees);
+    const hasLegacyScripts = Object.hasOwn(extensions, 'TavernHelper_scripts');
+    const hasLegacyVariables = Object.hasOwn(extensions, 'TavernHelper_characterScriptVariables');
+    const hasSerializedHelperMap = Array.isArray(extensions.tavern_helper);
     const scriptsChanged = hasLegacyScripts
-        || (scripts.length > 0 && JSON.stringify(canonicalScripts || []) !== JSON.stringify(scripts));
-    const bookChanged = plan.updateProtocol === 'legacy-adaptable' && plan.updateEntryIds.length > 0;
-    if (!scriptsChanged && !bookChanged) return Object.freeze({ card, changed: false, plan });
+        || hasLegacyVariables
+        || hasSerializedHelperMap
+        || runtimeScripts.changed
+        || (sourceTrees.length > 0 && JSON.stringify(helperExtension.scripts || []) !== JSON.stringify(sourceTrees));
+    const bookChanged = sourcePlan.updateProtocol === 'legacy-adaptable' && sourcePlan.updateEntryIds.length > 0;
+    if (!scriptsChanged && !bookChanged) return Object.freeze({ card, changed: false, plan: sourcePlan });
 
     const projected = structuredClone(card);
     const projectedData = cardData(projected);
     projectedData.extensions ??= {};
-    if (scripts.length > 0 || projectedData.extensions.tavern_helper) {
+    if (sourceTrees.length > 0 || Object.keys(sourceVariables).length > 0 || hasCanonicalHelper || hasLegacyScripts || hasLegacyVariables) {
         projectedData.extensions.tavern_helper = {
-            ...record(projectedData.extensions.tavern_helper),
-            scripts: structuredClone(scripts),
+            ...helperExtension,
+            variables: structuredClone(sourceVariables),
+            scripts: structuredClone(runtimeScripts.scripts),
         };
     }
     delete projectedData.extensions.TavernHelper_scripts;
-    if (bookChanged) projectedData.character_book = adaptBook(projectedData.character_book, plan.updateEntryIds);
+    delete projectedData.extensions.TavernHelper_characterScriptVariables;
+    if (runtimeScripts.changed) {
+        projectedData.extensions.nora_mvu_compatibility = {
+            ...record(projectedData.extensions.nora_mvu_compatibility),
+            schema: ADAPTATION_SCHEMA,
+            managed_runtime: true,
+            ...(runtimeScripts.runtimeSuppressed ? { embedded_runtime_suppressed: true } : {}),
+            ...(runtimeScripts.schemaLocalized ? { schema_runtime_localized: true } : {}),
+        };
+    }
+    if (bookChanged) projectedData.character_book = adaptBook(projectedData.character_book, sourcePlan.updateEntryIds);
+    const projectedBook = projectedData.character_book && projectedData.character_book.entries
+        ? projectedData.character_book
+        : null;
+    const plan = inspectMvuCompatibility({
+        card: projected,
+        books: projectedBook ? [projectedBook] : [],
+        helperScripts: flattenScriptTrees(runtimeScripts.scripts),
+    });
     return Object.freeze({ card: projected, changed: true, plan });
 }
 

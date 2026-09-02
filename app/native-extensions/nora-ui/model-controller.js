@@ -129,7 +129,7 @@ export function createModelController({ model, settingsDomain, operations, readS
     }
 
     function openMvuConfigForm(config = {}, status = {}) {
-        const modal = dialogs.open(tr("配置 MVU 变量模型"), `<form id="nora-mvu-model-form" class="nora-form nora-model-config-form"><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(config.base_url || '')}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(config.model || status.variableModelName || '')}" placeholder="${tr("填写变量模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${config.has_api_key ? tr("留空沿用已保存密钥") : tr("填写变量模型密钥")}"></label><p class="nora-model-note">${tr("密钥保存在后端，不会写入角色卡、聊天记录或前端设置。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-mvu-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
+        const modal = dialogs.open(tr("配置 MVU 变量模型"), `<form id="nora-mvu-model-form" class="nora-form nora-model-config-form"><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(config.base_url || '')}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(config.model || status.variableModelName || '')}" placeholder="${tr("填写变量模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${config.has_api_key ? tr("留空沿用已保存密钥") : tr("填写变量模型密钥")}"></label><div class="nora-form-grid"><label>${tr("上下文")}<input name="context" type="number" min="512" max="1000000" value="${Number(config.context) || 128000}"></label><label>${tr("最大回复")}<input name="tokens" type="number" min="1" max="128000" value="${Number(config.max_tokens) || 20000}"></label></div><p class="nora-model-note">${tr("密钥保存在后端，不会写入角色卡、聊天记录或前端设置。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-mvu-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
         select('[data-mvu-cancel]', modal).addEventListener('click', open);
         select('#nora-mvu-model-form', modal).addEventListener('submit', saveMvuConfig);
         select('#nora-mvu-model-form input[name="base"]', modal)?.focus();
@@ -148,6 +148,8 @@ export function createModelController({ model, settingsDomain, operations, readS
             await operations.run('mvu-model', () => mvu.configureIndependent({
                 baseUrl: data.get('base'),
                 model: data.get('model'),
+                context: data.get('context'),
+                maxTokens: data.get('tokens'),
                 apiKey: data.get('key'),
             }));
             open();

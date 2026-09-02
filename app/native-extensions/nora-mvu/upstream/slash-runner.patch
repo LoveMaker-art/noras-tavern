@@ -1,0 +1,31 @@
+diff --git a/src/function/generate/generateRaw.ts b/src/function/generate/generateRaw.ts
+--- a/src/function/generate/generateRaw.ts
++++ b/src/function/generate/generateRaw.ts
+@@ -477,7 +477,17 @@ export async function handleCustomPath(
+   processedUserInput: string,
+ ) {
+   const chatCompletion = new ChatCompletion();
+-  chatCompletion.setTokenBudget(oai_settings.openai_max_context, oai_settings.openai_max_tokens);
++  const configuredContext = config.custom_api?.max_context;
++  const configuredOutput = config.custom_api?.max_tokens;
++  const maxContext = typeof configuredContext === 'number' && Number.isFinite(configuredContext) && configuredContext > 0
++    ? configuredContext
++    : oai_settings.openai_max_context;
++  const maxOutput = typeof configuredOutput === 'number' && Number.isFinite(configuredOutput) && configuredOutput > 0
++    ? configuredOutput
++    : oai_settings.openai_max_tokens;
++  chatCompletion.setTokenBudget(maxContext, maxOutput);
+   chatCompletion.reserveBudget(3);
+   const orderArray = config.order || default_order;
+   const positionMap: Record<string, number> = orderArray.reduce((acc: Record<string, number>, item, index) => {
+diff --git a/src/function/generate/types.ts b/src/function/generate/types.ts
+--- a/src/function/generate/types.ts
++++ b/src/function/generate/types.ts
+@@ -76,6 +76,7 @@ export type CustomApiConfig = {
+   key?: string;
+   model?: string;
+   source?: string;
++  max_context?: number;
+   max_tokens?: 'same_as_preset' | 'unset' | number;
+   temperature?: 'same_as_preset' | 'unset' | number;
+   frequency_penalty?: 'same_as_preset' | 'unset' | number;

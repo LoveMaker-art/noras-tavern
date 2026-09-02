@@ -223,6 +223,18 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         if (typeof visibleRuntime?.getMvuData !== 'function') {
             throw capabilityError('NORA_MVU_API_UNAVAILABLE', 'MVU loaded without exposing its variable-data interface.');
         }
+        let initializationConfirmed = null;
+        if (!hasInitializedMvuData(visibleRuntime)
+            && typeof visibleRuntime.ensureCurrentChatInitialized === 'function') {
+            initializationConfirmed = await visibleRuntime.ensureCurrentChatInitialized();
+        }
+        const dataInitialized = initializationConfirmed !== false && hasInitializedMvuData(visibleRuntime);
+        if (!dataInitialized) {
+            throw capabilityError(
+                'NORA_MVU_INITVAR_UNAVAILABLE',
+                'MVU loaded, but the active chat did not produce an initialized variable snapshot.',
+            );
+        }
         return Object.freeze({
             engine: 'sillytavern',
             runtime_source: inspection.mvuRuntimeSource,
@@ -230,7 +242,7 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
             api: 'getMvuData',
             api_visible: true,
             runtime_ready: true,
-            data_initialized: hasInitializedMvuData(visibleRuntime),
+            data_initialized: dataInitialized,
             update_protocol: inspection.mvuUpdateProtocol,
             split_model_supported: inspection.mvuSplitModelSupported,
             update_operational: null,

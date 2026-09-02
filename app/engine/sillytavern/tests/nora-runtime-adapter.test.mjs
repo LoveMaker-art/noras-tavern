@@ -178,7 +178,11 @@ test('the MVU capability activates extensions and awaits the managed runtime rea
     globalThis.__NORA_ENSURE_MVU_READY__ = async () => {
         markStarted();
         await runtimeReady;
-        return { getMvuData() {} };
+        return {
+            getMvuData() {
+                return { schema: { type: 'object' }, stat_data: {} };
+            },
+        };
     };
     try {
         const adapter = createStRuntimeAdapter(() => runtime);
@@ -201,6 +205,7 @@ test('the MVU capability activates extensions and awaits the managed runtime rea
         releaseRuntime();
         const evidence = await pending;
         assert.equal(evidence.runtime_ready, true);
+        assert.equal(evidence.data_initialized, true);
         assert.equal(evidence.runtime_source, 'managed');
     } finally {
         releaseRuntime();

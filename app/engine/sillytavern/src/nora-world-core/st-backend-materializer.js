@@ -14,6 +14,8 @@ import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 import { createStCardCodec } from './st-card-codec.js';
 
+export { adaptCardForMvuRuntime };
+
 const INTERNAL_BLANK_RUNTIME_BASE = 'Nora_Blank_World--nora-internal';
 
 const ENTRY_DEFAULTS = Object.freeze({
@@ -64,6 +66,15 @@ function record(value) {
 
 function cardData(card) {
     return record(card?.data && typeof card.data === 'object' ? card.data : card);
+}
+
+function bindRuntimeCardWorldbook(card, worldbookName) {
+    const name = String(worldbookName || '').trim();
+    if (!name) return card;
+    const projected = cloneJson(card);
+    const data = cardData(projected);
+    data.extensions = { ...record(data.extensions), world: name };
+    return projected;
 }
 
 function capabilityInspection(card, books) {
@@ -235,7 +246,32 @@ export function convertEmbeddedBook(characterBook) {
     return result;
 }
 
-export function inspectStCard(card) {
+function normalizeEmbeddedBook(card) {
+    const data = cardData(card);
+    const book = data.character_book;
+    if (!book?.entries || Array.isArray(book.entries) || typeof book.entries !== 'object') {
+        return { card, changed: false };
+    }
+    const projected = cloneJson(card);
+    const projectedBook = cardData(projected).character_book;
+    projectedBook.entries = Object.entries(projectedBook.entries).map(([key, value], index) => ({
+        ...record(value),
+        id: value?.id ?? (/^-?\d+$/.test(key) ? Number(key) : index),
+    }));
+    return { card: projected, changed: true };
+}
+
+export function prepareStRuntimeCard(card) {
+    const mvu = adaptCardForMvuRuntime(card);
+    const worldbook = normalizeEmbeddedBook(mvu.card);
+    return Object.freeze({
+        card: worldbook.card,
+        changed: mvu.changed || worldbook.changed,
+        mvu: mvu.plan,
+    });
+}
+
+function inspectPreparedStCard(card) {
     const data = cardData(card);
     const name = String(data.name || card?.name || '').trim();
     if (!name) throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The character card has no name.');
@@ -249,8 +285,7 @@ export function inspectStCard(card) {
         : null;
     const books = embeddedBook ? [embeddedBook] : [];
     const capabilities = capabilityInspection(card, books);
-    const adaptation = adaptCardForMvuRuntime(card);
-    const projectedBook = cardData(adaptation.card).character_book;
+    const projectedBook = embeddedBook;
     const worldbooks = (projectedBook ? [projectedBook] : []).map((book, index) => {
         const converted = convertEmbeddedBook(book);
         return {
@@ -271,6 +306,10 @@ export function inspectStCard(card) {
         declared_capabilities: Object.freeze(capabilities.declared),
         capabilities: Object.freeze(capabilities.items),
     });
+}
+
+export function inspectStCard(card) {
+    return inspectPreparedStCard(prepareStRuntimeCard(card).card);
 }
 
 function initialChat({ command, identities, report, avatar, worldbookName, timestamp }) {
@@ -377,7 +416,35 @@ function requireDirectories(directories) {
         if (!path.isAbsolute(value)) throw new NoraWorldCoreError('NORA_WORLD_INVALID', `ST ${name} directory must be absolute.`);
         result[name] = path.resolve(value);
     }
+    const userImages = String(directories?.userImages || '');
+    if (userImages) {
+        if (!path.isAbsolute(userImages)) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST userImages directory must be absolute.');
+        result.userImages = path.resolve(userImages);
+    }
     return result;
+}
+
+function auxiliaryAssetTarget(asset, roots, characterName) {
+    const fileName = `${safeBindingName(asset?.baseName, 'CHARX asset')}.${safeBindingName(asset?.ext || 'png', 'CHARX extension')}`;
+    if (asset?.storageCategory === 'sprite') return path.join(roots.characters, characterName, fileName);
+    if (asset?.storageCategory === 'background') return path.join(roots.characters, characterName, 'backgrounds', fileName);
+    if (asset?.storageCategory === 'misc' && roots.userImages) return path.join(roots.userImages, characterName, fileName);
+    throw new NoraWorldCoreError('NORA_CARD_UNSUPPORTED_ASSETS', 'The CHARX asset has no safe ST storage target.');
+}
+
+async function materializeAuxiliaryAssets(decoded, roots, characterName, created) {
+    const assets = Array.isArray(decoded?.auxiliaryAssets) ? decoded.auxiliaryAssets : [];
+    if (!assets.length) return;
+    if (!(decoded.extractedAssetBuffers instanceof Map)) {
+        throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The CHARX asset payload is unavailable.');
+    }
+    for (const asset of assets) {
+        const buffer = decoded.extractedAssetBuffers.get(asset.zipPath);
+        if (!Buffer.isBuffer(buffer)) throw new NoraWorldCoreError('NORA_CARD_INVALID', `CHARX asset ${asset.zipPath} is missing.`);
+        const filePath = auxiliaryAssetTarget(asset, roots, characterName);
+        const persisted = await ensureFile(filePath, buffer);
+        if (persisted.created) created.push({ filePath, digest: persisted.digest });
+    }
 }
 
 function safeBindingName(value, field, { stripJsonl = false } = {}) {
@@ -573,14 +640,8 @@ export function createStBackendMaterializer({
             if (!Buffer.isBuffer(decoded?.runtimeCardBuffer)) {
                 throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The ST card codec did not produce a Runtime Card artifact.');
             }
-            const adaptation = adaptCardForMvuRuntime(decoded.card);
-            const report = inspectStCard(decoded.card);
-            const runtimeCardBuffer = adaptation.changed && typeof cardCodec.encodeRuntimeCard === 'function'
-                ? await cardCodec.encodeRuntimeCard({
-                    card: adaptation.card,
-                    sourceBuffer: decoded.runtimeCardBuffer,
-                })
-                : decoded.runtimeCardBuffer;
+            const prepared = prepareStRuntimeCard(decoded.card);
+            const report = inspectPreparedStCard(prepared.card);
             const timestamp = isoDate(now());
             const created = [];
             try {
@@ -590,9 +651,6 @@ export function createStBackendMaterializer({
                     : `${safeEngineName(report.character_name, 'Character')}--nora-${sha256(worldId).slice(0, 10)}`;
                 const avatar = `${runtimeBase}.png`;
                 const runtimePath = path.join(roots.characters, avatar);
-                const runtimePersisted = await ensureFile(runtimePath, runtimeCardBuffer);
-                if (runtimePersisted.created) created.push({ filePath: runtimePath, digest: runtimePersisted.digest });
-                await checkpoint('RUNTIME_CARD_CREATED');
 
                 const worldbook = await locks.run(
                     `st-worldbook:${report.worldbooks[0]?.preferred_name || '<none>'}`,
@@ -604,6 +662,30 @@ export function createStBackendMaterializer({
                     }),
                 );
                 await checkpoint('WORLDBOOK_CREATED');
+
+                const projectedCard = bindRuntimeCardWorldbook(prepared.card, worldbook?.name);
+                const requiresEncoding = prepared.changed || Boolean(worldbook);
+                if (requiresEncoding && typeof cardCodec.encodeRuntimeCard !== 'function') {
+                    throw new NoraWorldCoreError(
+                        'NORA_CARD_CODEC_UNAVAILABLE',
+                        'The ST card codec cannot project Runtime Card compatibility metadata.',
+                    );
+                }
+                const runtimeCardBuffer = requiresEncoding
+                    ? await cardCodec.encodeRuntimeCard({
+                        card: projectedCard,
+                        sourceBuffer: decoded.runtimeCardBuffer,
+                    })
+                    : decoded.runtimeCardBuffer;
+                const runtimePersisted = await ensureFile(runtimePath, runtimeCardBuffer);
+                if (runtimePersisted.created) created.push({ filePath: runtimePath, digest: runtimePersisted.digest });
+                await checkpoint('RUNTIME_CARD_CREATED');
+
+                await locks.run(
+                    `st-character-assets:${report.character_name}`,
+                    () => materializeAuxiliaryAssets(decoded, roots, safeEngineName(report.character_name, 'Character'), created),
+                );
+                await checkpoint('AUXILIARY_ASSETS_CREATED');
 
                 const chatId = `nora-${sha256(sessionId).slice(0, 16)}`;
                 const chatPath = path.join(roots.chats, runtimeBase, `${chatId}.jsonl`);

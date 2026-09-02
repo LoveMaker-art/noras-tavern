@@ -10,6 +10,7 @@ import { minify } from 'terser';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const publicDirectory = path.join(root, 'public');
 const outputDirectory = path.join(publicDirectory, 'dist', 'nora');
+const managedExtensionsDirectory = path.resolve(root, '../../native-extensions');
 // Liveware only treats known static suffixes as CDN-cacheable. The payload is
 // JSON data, but it deliberately uses a .js suffix so the content-addressed
 // startup asset is cached instead of being rewritten to `no-store` in transit.
@@ -21,10 +22,18 @@ const compressGzip = promisify(gzip);
 
 const CORE_ENTRY_URLS = [
     '/script.js',
+    '/scripts/user.js',
+    '/scripts/nora-compat/interaction-bridge.js',
     '/lib/structured-clone/monkey-patch.js',
     '/lib/swiped-events.js',
     '/lib/eventemitter.js',
+    '/scripts/extensions/assets/index.js',
+    '/scripts/extensions/attachments/index.js',
+    '/scripts/extensions/connection-manager/index.js',
+    '/scripts/extensions/gallery/index.js',
+    '/scripts/extensions/memory/index.js',
     '/scripts/extensions/regex/index.js',
+    '/scripts/extensions/token-counter/index.js',
 ];
 
 // Webpack compiles this source entry because it contains bare package imports.
@@ -63,6 +72,75 @@ function resolveModuleFile(moduleUrl, rootDirectory) {
         throw new Error(`Module path escapes public directory: ${moduleUrl}`);
     }
     return absolutePath;
+}
+
+function importSpecifier(item, source) {
+    if (typeof item.n === 'string') return item.n;
+    if (item.d < 0) return null;
+    const raw = source.slice(item.s, item.e);
+    if (!raw.startsWith('`') || !raw.endsWith('`') || raw.includes('${')) return null;
+    return raw.slice(1, -1).replace(/\\([\\`$])/g, '$1');
+}
+
+export async function collectManagedExtensionCoreBridges(
+    extensionsDirectory = managedExtensionsDirectory,
+    coreDirectory = publicDirectory,
+) {
+    await init;
+    const bridges = new Set();
+    const extensionEntries = await fs.readdir(extensionsDirectory, { withFileTypes: true });
+
+    for (const entry of extensionEntries) {
+        if (!entry.isDirectory()) continue;
+        const extensionDirectory = path.join(extensionsDirectory, entry.name);
+        const manifestPath = path.join(extensionDirectory, 'manifest.json');
+        let manifest;
+        try {
+            manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+        } catch (error) {
+            if (error?.code === 'ENOENT') continue;
+            throw error;
+        }
+        if (typeof manifest.js !== 'string' || !manifest.js.trim()) continue;
+
+        const extensionRootUrl = `/scripts/extensions/third-party/${entry.name}/`;
+        const resolvedExtensionDirectory = path.resolve(extensionDirectory);
+        const visited = new Set();
+
+        async function visit(relativePath, virtualUrl) {
+            const normalizedRelativePath = decodeURIComponent(relativePath).replace(/^\/+/, '');
+            const absolutePath = path.resolve(resolvedExtensionDirectory, normalizedRelativePath);
+            if (!absolutePath.startsWith(`${resolvedExtensionDirectory}${path.sep}`)) {
+                throw new Error(`Managed extension import escapes its source directory: ${entry.name}/${relativePath}`);
+            }
+            if (visited.has(absolutePath)) return;
+            visited.add(absolutePath);
+
+            const source = await fs.readFile(absolutePath, 'utf8');
+            const [imports] = parse(source);
+            for (const item of imports) {
+                const dependency = resolveLocalModule(importSpecifier(item, source), virtualUrl);
+                if (!dependency) continue;
+                const dependencyUrl = new URL(dependency, localOrigin);
+                if (dependencyUrl.pathname.startsWith(extensionRootUrl)) {
+                    const extensionRelativePath = dependencyUrl.pathname.slice(extensionRootUrl.length);
+                    await visit(extensionRelativePath, dependency);
+                    continue;
+                }
+                try {
+                    await fs.access(resolveModuleFile(dependency, coreDirectory));
+                    bridges.add(dependency.replace(/^\/+/, ''));
+                } catch (error) {
+                    if (error?.code !== 'ENOENT') throw error;
+                }
+            }
+        }
+
+        const entryRelativePath = manifest.js.replace(/^\/+/, '');
+        await visit(entryRelativePath, `${extensionRootUrl}${entryRelativePath}`);
+    }
+
+    return [...bridges].sort();
 }
 
 async function loadStaticModuleGraph(entryUrls, rootDirectory) {
@@ -192,6 +270,18 @@ export function attachCompiledModule(manifest, modulePath, assetPath) {
     return manifest;
 }
 
+export function attachExtensionCoreBridges(manifest, modulePaths) {
+    const bridges = [...new Set((modulePaths || []).map(value => String(value || '').replace(/^\/+/, '')).filter(Boolean))].sort();
+    manifest.extensionCoreBridges = bridges;
+    manifest.network ??= [];
+    for (const modulePath of bridges) {
+        if (manifest.modules?.[modulePath] || manifest.compiled?.[modulePath] || manifest.network.includes(modulePath)) continue;
+        manifest.network.push(modulePath);
+    }
+    manifest.network.sort();
+    return manifest;
+}
+
 export function attachLegacyAsset(manifest, assetPath) {
     const normalizedAssetPath = String(assetPath || '').replace(/^\/+/, '');
     if (!normalizedAssetPath || normalizedAssetPath.includes('..')) throw new TypeError('Legacy asset path is invalid.');
@@ -217,11 +307,13 @@ export async function writePrecompressedAsset(filePath, content) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const [inlineManifest, legacyBundle] = await Promise.all([
+    const [inlineManifest, legacyBundle, extensionCoreBridges] = await Promise.all([
         buildInlineModuleManifest(CORE_ENTRY_URLS),
         buildLegacyBundle(),
+        collectManagedExtensionCoreBridges(),
     ]);
     attachCompiledModule(inlineManifest, 'lib-core.js', 'dist/nora/lib-core.js');
+    attachExtensionCoreBridges(inlineManifest, extensionCoreBridges);
     attachLegacyAsset(inlineManifest, 'dist/nora/legacy.js');
     await fs.mkdir(outputDirectory, { recursive: true });
     const bundleNames = ['entry.js', 'lib-core.js', 'lib.js'];

@@ -51,7 +51,14 @@ export function createTavernHelperActionAdapter({ storyActions, messages = {}, g
         if (!facade) return false;
         globalRef.TavernHelper = facade; return true;
     }
-    async function ready() { attach(); await bridge.ready(); return true; }
+    async function ready() {
+        attach();
+        const facade = await bridge.ready();
+        // Helper may publish before Nora installs its action executor. In that
+        // order the bridge is ready even if the page global was not retained.
+        globalRef.TavernHelper = facade;
+        return true;
+    }
     function start() {
         if (release) return;
         release = bridge.install(invoke, () => {

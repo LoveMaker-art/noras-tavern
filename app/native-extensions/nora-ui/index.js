@@ -279,9 +279,9 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             openModelSheet,
             recordBootMilestone,
         });
-        cardActionGateway = createCardActionGateway({
-            storyActions,
+        cardActionGateway = createCardActionGateway({ storyActions,
             isEmbeddedSource: source => messageView.ownsEmbeddedSource(source),
+            consumeLegacyInput: event => messageView.consumeLegacyInput(event),
             onUnsupported: ({ error }) => {
                 console.warn('[Nora Card Action] Unsupported action:', error);
                 showToast(error.message, { tone: 'error', duration: 4200 });

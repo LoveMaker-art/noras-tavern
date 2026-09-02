@@ -20,6 +20,7 @@ async function harness(t, options = {}) {
         characters: path.join(root, 'characters'),
         chats: path.join(root, 'chats'),
         worlds: path.join(root, 'worlds'),
+        userImages: path.join(root, 'user-images'),
     };
     const stagingRoot = path.join(root, 'staging');
     await Promise.all([...Object.values(directories), stagingRoot].map(directory => fs.mkdir(directory, { recursive: true })));
@@ -30,6 +31,9 @@ async function harness(t, options = {}) {
     const cardCodec = options.cardCodec || {
         async decode() {
             return { card, runtimeCardBuffer: Buffer.from(`runtime:${card.data.name}`) };
+        },
+        async encodeRuntimeCard({ card: runtimeCard }) {
+            return Buffer.from(JSON.stringify(runtimeCard));
         },
     };
     const materializer = createStBackendMaterializer({
@@ -103,7 +107,7 @@ test('preflights a complex card without creating resources', () => {
     assert.equal(report.opening_state, 'message');
     assert.equal(report.worldbooks[0].entry_count, 1);
     assert.deepEqual(report.declared_capabilities, ['mvu', 'regex', 'tavern_helper']);
-    assert.equal(report.capabilities.mvu.runtime_source, 'embedded');
+    assert.equal(report.capabilities.mvu.runtime_source, 'managed');
 });
 
 test('normalizes legacy TavernHelper script wrappers before capability inspection', () => {
@@ -115,8 +119,88 @@ test('normalizes legacy TavernHelper script wrappers before capability inspectio
     const report = inspectStCard(card);
 
     assert.equal(report.capabilities.tavern_helper.script_count, 1);
-    assert.equal(report.capabilities.mvu.runtime_source, 'embedded');
-    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
+    assert.equal(report.capabilities.mvu.runtime_source, 'managed');
+    assert.equal(report.capabilities.mvu.update_protocol, 'native-split');
+});
+
+test('normalizes TavernHelper maps serialized as entry tuples', () => {
+    const card = complexCard();
+    const runtimeScript = card.data.extensions.tavern_helper.scripts[0];
+    card.data.extensions.tavern_helper = [
+        ['scripts', [
+            { ...runtimeScript, id: 'tuple-mvu' },
+            {
+                type: 'script',
+                id: 'tuple-schema',
+                enabled: true,
+                content: "import { registerMvuSchema } from 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js';",
+            },
+        ]],
+        ['variables', { cardOwned: true }],
+    ];
+
+    const report = inspectStCard(card);
+    const adapted = adaptCardForMvuRuntime(card);
+
+    assert.equal(report.capabilities.tavern_helper.script_count, 2);
+    assert.equal(report.capabilities.mvu.runtime_source, 'managed');
+    assert.equal(Array.isArray(adapted.card.data.extensions.tavern_helper), false);
+    assert.deepEqual(adapted.card.data.extensions.tavern_helper.variables, { cardOwned: true });
+    assert.equal(adapted.card.data.extensions.tavern_helper.scripts[0].enabled, false);
+    assert.match(adapted.card.data.extensions.tavern_helper.scripts[1].content, /\/scripts\/extensions\/third-party\/nora-mvu\/mvu-zod\.js/);
+});
+
+test('migrates legacy TavernHelper variables and preserves nested script folders', () => {
+    const card = complexCard();
+    delete card.data.extensions.tavern_helper;
+    card.data.extensions.TavernHelper_scripts = [{
+        type: 'folder',
+        id: 'legacy-folder',
+        name: 'MVU scripts',
+        value: [{
+            type: 'script',
+            value: {
+                id: 'legacy-mvu',
+                name: 'MVU',
+                enabled: true,
+                content: "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate/artifact/bundle.js';",
+            },
+        }],
+    }];
+    card.data.extensions.TavernHelper_characterScriptVariables = { imported: 'kept' };
+
+    const report = inspectStCard(card);
+    const adapted = adaptCardForMvuRuntime(card);
+    const folder = adapted.card.data.extensions.tavern_helper.scripts[0];
+
+    assert.equal(report.capabilities.tavern_helper.script_count, 1);
+    assert.equal(report.capabilities.mvu.runtime_source, 'managed');
+    assert.equal(folder.type, 'folder');
+    assert.equal(folder.id, 'legacy-folder');
+    assert.equal(folder.value, undefined);
+    assert.equal(folder.scripts[0].id, 'legacy-mvu');
+    assert.equal(folder.scripts[0].enabled, false);
+    assert.deepEqual(adapted.card.data.extensions.tavern_helper.variables, { imported: 'kept' });
+    assert.equal(adapted.card.data.extensions.TavernHelper_scripts, undefined);
+    assert.equal(adapted.card.data.extensions.TavernHelper_characterScriptVariables, undefined);
+});
+
+test('uses canonical TavernHelper data when canonical and legacy fields coexist', () => {
+    const card = complexCard();
+    card.data.extensions.tavern_helper.variables = { source: 'canonical' };
+    card.data.extensions.TavernHelper_scripts = [{
+        type: 'script',
+        id: 'stale-legacy',
+        enabled: true,
+        content: 'stale legacy script',
+    }];
+    card.data.extensions.TavernHelper_characterScriptVariables = { source: 'legacy' };
+
+    const adapted = adaptCardForMvuRuntime(card);
+
+    assert.deepEqual(adapted.card.data.extensions.tavern_helper.variables, { source: 'canonical' });
+    assert.equal(adapted.card.data.extensions.tavern_helper.scripts.length, 1);
+    assert.notEqual(adapted.card.data.extensions.tavern_helper.scripts[0].id, 'stale-legacy');
 });
 
 test('classifies legacy inline MVU books without claiming split-model support', () => {
@@ -126,8 +210,28 @@ test('classifies legacy inline MVU books without claiming split-model support', 
     const report = inspectStCard(card);
 
     assert.equal(report.capabilities.mvu.declared, true);
-    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
+    assert.equal(report.capabilities.mvu.update_protocol, 'native-split');
     assert.deepEqual(report.capabilities.mvu.update_entry_ids, [0]);
+});
+
+test('canonicalizes object-shaped embedded Worldbook entries before inspection and encoding', async (t) => {
+    const card = complexCard();
+    const entry = card.data.character_book.entries[0];
+    card.data.character_book.entries = { 42: { ...entry, id: undefined } };
+
+    const report = inspectStCard(card);
+    assert.equal(report.worldbooks[0].entry_count, 1);
+    assert.equal(report.capabilities.mvu.declared, true);
+    assert.equal(report.worldbooks[0].converted.entries[42].uid, 42);
+
+    const current = await harness(t, { card });
+    const result = await current.materializer.materialize(current.command, identities('object-book'));
+    const runtimeCard = JSON.parse(await fs.readFile(
+        path.join(current.directories.characters, result.runtimeCard.binding.avatar),
+        'utf8',
+    ));
+    assert.equal(Array.isArray(runtimeCard.data.character_book.entries), true);
+    assert.equal(runtimeCard.data.character_book.entries[0].id, 42);
 });
 
 test('projects legacy MVU metadata only into the Runtime Card and leaves the source card untouched', () => {
@@ -138,12 +242,46 @@ test('projects legacy MVU metadata only into the Runtime Card and leaves the sou
     const adapted = adaptCardForMvuRuntime(card);
 
     assert.equal(adapted.changed, true);
-    assert.equal(adapted.plan.updateProtocol, 'legacy-adaptable');
+    assert.equal(adapted.plan.updateProtocol, 'native-split');
+    assert.equal(adapted.plan.runtimeSource, 'managed');
     assert.deepEqual(card, source, 'the imported source card must remain byte-semantically unchanged');
+    assert.equal(adapted.card.data.extensions.tavern_helper.scripts[0].enabled, false);
+    assert.deepEqual(adapted.card.data.extensions.nora_mvu_compatibility, {
+        schema: 1,
+        managed_runtime: true,
+        embedded_runtime_suppressed: true,
+    });
     assert.match(adapted.card.data.character_book.entries[0].comment, /^\[mvu_update\]/i);
     assert.deepEqual(adapted.card.data.character_book.entries[0].extensions.nora_mvu_compatibility, {
         schema: 1,
         source: 'legacy-update-content',
+    });
+});
+
+test('keeps card-authored MVU schema code enabled while localizing its runtime dependency', () => {
+    const card = complexCard();
+    card.data.extensions.tavern_helper.scripts.push({
+        type: 'script',
+        id: 'schema',
+        name: 'Character schema',
+        enabled: true,
+        content: "import { registerMvuSchema } from 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js';\nregisterMvuSchema(() => Schema);",
+    });
+    const source = structuredClone(card);
+
+    const adapted = adaptCardForMvuRuntime(card);
+    const scripts = adapted.card.data.extensions.tavern_helper.scripts;
+
+    assert.deepEqual(card, source);
+    assert.equal(scripts[0].enabled, false, 'the embedded MVU runtime must not compete with Nora');
+    assert.equal(scripts[1].enabled, true, 'the card-authored schema must remain active');
+    assert.match(scripts[1].content, /\/scripts\/extensions\/third-party\/nora-mvu\/mvu-zod\.js/);
+    assert.doesNotMatch(scripts[1].content, /https?:\/\//);
+    assert.deepEqual(adapted.card.data.extensions.nora_mvu_compatibility, {
+        schema: 1,
+        managed_runtime: true,
+        embedded_runtime_suppressed: true,
+        schema_runtime_localized: true,
     });
 });
 
@@ -168,13 +306,48 @@ test('materializes one Runtime Card, collision-safe Worldbook and canonical init
     assert.equal(chat[1].mes, '第一句话');
     assert.deepEqual(chat[1].swipes, ['第一句话', '第二种开场']);
 
-    assert.ok((await fs.stat(path.join(current.directories.characters, avatar))).isFile());
+    const runtimeCardPath = path.join(current.directories.characters, avatar);
+    assert.ok((await fs.stat(runtimeCardPath)).isFile());
     assert.ok((await fs.stat(path.join(current.directories.worlds, `${result.knowledge[0].binding.name}.json`))).isFile());
+    const runtimeCard = JSON.parse(await fs.readFile(runtimeCardPath, 'utf8'));
+    assert.equal(runtimeCard.data.extensions.world, result.knowledge[0].binding.name);
+    assert.equal(runtimeCard.data.extensions.tavern_helper.scripts[0].enabled, false);
+    assert.equal(runtimeCard.data.extensions.nora_mvu_compatibility.managed_runtime, true);
 
     const repeated = await current.materializer.materialize(current.command, identities());
     assert.deepEqual(repeated, result);
     assert.equal((await fs.readdir(current.directories.characters)).length, 1);
     assert.equal((await fs.readdir(current.directories.worlds)).length, 1);
+});
+
+test('materializes CHARX auxiliary assets into the ST resource directories', async (t) => {
+    const card = complexCard({ name: 'Asset Character' });
+    const assetBuffer = Buffer.from('sanitized expression image');
+    const cardCodec = {
+        async decode() {
+            return {
+                card,
+                runtimeCardBuffer: Buffer.from('runtime card'),
+                auxiliaryAssets: [{
+                    type: 'expression',
+                    storageCategory: 'sprite',
+                    baseName: 'happy',
+                    ext: 'png',
+                    zipPath: 'assets/happy.png',
+                }],
+                extractedAssetBuffers: new Map([['assets/happy.png', assetBuffer]]),
+            };
+        },
+        async encodeRuntimeCard() { return Buffer.from('runtime card'); },
+    };
+    const current = await harness(t, { card, cardCodec });
+
+    await current.materializer.materialize(current.command, identities('charx-assets'));
+
+    assert.deepEqual(
+        await fs.readFile(path.join(current.directories.characters, 'Asset Character', 'happy.png')),
+        assetBuffer,
+    );
 });
 
 test('reuses one shared internal Runtime Card while blank Worlds keep independent sessions', async (t) => {
@@ -322,6 +495,9 @@ test('does not alias same-name Worldbooks with different content', async (t) => 
         async decode() {
             return { card: secondCard, runtimeCardBuffer: Buffer.from('runtime:second') };
         },
+        async encodeRuntimeCard({ card: runtimeCard }) {
+            return Buffer.from(JSON.stringify(runtimeCard));
+        },
     };
     const secondMaterializer = createStBackendMaterializer({
         directories: first.directories,
@@ -333,6 +509,12 @@ test('does not alias same-name Worldbooks with different content', async (t) => 
 
     assert.notEqual(firstResult.knowledge[0].binding.name, secondResult.knowledge[0].binding.name);
     assert.equal((await fs.readdir(first.directories.worlds)).length, 2);
+    const secondAvatar = secondResult.runtimeCard.binding.avatar;
+    const secondRuntimeCard = JSON.parse(await fs.readFile(
+        path.join(first.directories.characters, secondAvatar),
+        'utf8',
+    ));
+    assert.equal(secondRuntimeCard.data.extensions.world, secondResult.knowledge[0].binding.name);
 });
 
 test('treats an unmarked matching Worldbook as external and never compensates it', async (t) => {

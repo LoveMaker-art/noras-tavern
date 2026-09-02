@@ -25,6 +25,7 @@ import { router as noraBootRouter } from './endpoints/nora-boot.js';
 import { createNoraTraceMiddleware } from './nora-performance-telemetry.js';
 import { router as noraWorldsV2Router } from './endpoints/nora-worlds-v2.js';
 import { router as noraMvuModelRouter } from './endpoints/nora-mvu-model.js';
+import { router as noraMvuDiagnosticsRouter } from './endpoints/nora-mvu-diagnostics.js';
 import { router as noraStoryLedgerRouter } from './endpoints/nora-story-ledger.js';
 import { router as noraControlsRouter } from './endpoints/nora-controls.js';
 import {
@@ -140,6 +141,7 @@ export function setupPrivateEndpoints(app) {
     app.use('/api/nora-boot', noraBootRouter);
     app.use('/api/nora-worlds-v2', noraWorldsV2Router);
     app.use('/api/nora-mvu-model', noraMvuModelRouter);
+    app.use('/api/nora-mvu-diagnostics', noraMvuDiagnosticsRouter);
     app.use('/api/nora-story-ledger', noraStoryLedgerRouter);
     app.use('/api/nora-controls', noraControlsRouter);
     app.use('/api/nora-story-profile', noraStoryProfileRouter);

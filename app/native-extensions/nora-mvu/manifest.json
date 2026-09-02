@@ -8,7 +8,7 @@
     "activate": "activateNoraMvu"
   },
   "author": "Nora Tavern / MagicalAstrogy",
-  "version": "1.0.0-nora.1",
+  "version": "1.0.0-nora.2",
   "auto_update": false,
   "minimum_client_version": "1.18.0"
 }

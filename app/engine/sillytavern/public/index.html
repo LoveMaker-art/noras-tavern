@@ -137,6 +137,12 @@
         globalThis.__NORA_ASSET_BASE__ = '{{NORA_ASSET_BASE}}';
         globalThis.__NORA_EXTENSION_ASSET_BASE__ = '{{NORA_EXTENSION_ASSET_BASE}}';
         globalThis.__NORA_INLINE_MANIFEST_URL__ = '{{NORA_INLINE_MANIFEST_URL}}';
+        globalThis.__NORA_EXTENSION_MODULE_URL__ = (assetPath) => {
+            const value = String(assetPath || '');
+            if (!value || /^(?:[a-z]+:)?\/\//i.test(value) || /^(?:data|blob):/i.test(value)) return value;
+            const normalized = value.replace(/^\/+/, '');
+            return `${globalThis.__NORA_EXTENSION_ASSET_BASE__}/${normalized}`;
+        };
         globalThis.__NORA_ASSET_URL__ = (assetPath) => {
             const value = String(assetPath || '');
             if (!value || /^(?:[a-z]+:)?\/\//i.test(value) || /^(?:data|blob):/i.test(value)) return value;
@@ -1586,6 +1592,7 @@
     <script>
         globalThis.__NORA_MODULE_BOOTSTRAP_PROMISE__ = globalThis.__NORA_INLINE_MANIFEST_PROMISE__.then(async (manifest) => {
             const assetBase = globalThis.__NORA_ASSET_BASE__;
+            const extensionAssetBase = globalThis.__NORA_EXTENSION_ASSET_BASE__;
             globalThis.__NORA_BOOT_METRICS__.milestones.push({
                 name: 'legacy-libs-loaded',
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
@@ -1609,6 +1616,11 @@
             }
             for (const modulePath of manifest.network || []) {
                 imports[`nora-module/${modulePath}`] = `${assetBase}/${modulePath}`;
+            }
+            for (const modulePath of manifest.extensionCoreBridges || []) {
+                const canonicalUrl = imports[`nora-module/${modulePath}`];
+                if (!canonicalUrl) throw new Error(`Nora extension core bridge target is missing: ${modulePath}`);
+                imports[`${extensionAssetBase}/${modulePath}`] = canonicalUrl;
             }
 
             const importMap = document.createElement('script');

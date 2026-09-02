@@ -58,6 +58,26 @@ try {
         checksums.push(`${digest(bytes)}  ${name}`);
     }
     identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer) };
+    const firstBootstrap = fs.readFileSync(path.join(stage, 'ops/installer/bootstrap.py'));
+    const firstInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.sh'));
+    const firstPowerShellInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.ps1'));
+    const firstInstallManifest = Buffer.from(JSON.stringify({ schema: 1, scope: 'nora-tavern-first-install-bootstrap',
+        commit: identity.commit, sha256: digest(firstBootstrap), installerSha256: digest(firstInstaller),
+        powershellInstallerSha256: digest(firstPowerShellInstaller) }, null, 2) + '\n');
+    for (const [name, bytes] of [
+        ['nora-tavern-first-install-bootstrap.py', firstBootstrap],
+        ['install-nora-tavern.sh', firstInstaller],
+        ['install-nora-tavern.ps1', firstPowerShellInstaller],
+        ['first-install-manifest.json', firstInstallManifest],
+    ]) {
+        fs.writeFileSync(path.join(release, name), bytes);
+        checksums.push(`${digest(bytes)}  ${name}`);
+    }
+    identity.firstInstall = {
+        sha256: digest(firstBootstrap),
+        installerSha256: digest(firstInstaller),
+        powershellInstallerSha256: digest(firstPowerShellInstaller),
+    };
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');

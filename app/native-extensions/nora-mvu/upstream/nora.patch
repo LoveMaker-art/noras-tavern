@@ -1,0 +1,650 @@
+diff --git a/src/function/global/index.ts b/src/function/global/index.ts
+index caf3097..bd027b9 100644
+--- a/src/function/global/index.ts
++++ b/src/function/global/index.ts
+@@ -1,6 +1,7 @@
+-import { loadInitVarData } from '@/function/initvar/variable_init';
++import { initCheck, loadInitVarData } from '@/function/initvar/variable_init';
++import { onMessageReceived } from '@/function/update/on_message_received';
+ import { updateVariable, updateVariables } from '@/function/update_variables';
+-import { isValueWithDescription, MvuData, variable_events } from '@/variable_def';
++import { isMvuData, isValueWithDescription, MvuData, variable_events } from '@/variable_def';
+ import { watch } from 'vue';
+ import { useDataStore } from '../../store';
+
+@@ -29,6 +30,17 @@ function createMvu() {
+             return getVariables(options) as MvuData;
+         },
+
++        /**
++         * Ensure that the active chat owns a durable MVU snapshot before Nora
++         * declares the card capability ready. This is idempotent and remains
++         * inside MVU so the host never duplicates InitVar parsing rules.
++         */
++        ensureCurrentChatInitialized: async function (): Promise<boolean> {
++            await initCheck();
++            const variables = getVariables({ type: 'message', message_id: 'latest' });
++            return isMvuData(variables) && !_.isEmpty(variables.stat_data);
++        },
++
+         /**
+          * 完全替换变量表为包含 mvu 数据的 `mvu_data` (但如果没用 parseMessages 自行处理变量, 则更建议监听 mvu 事件来修改 mvu 数据!)
+          *
+@@ -158,6 +170,25 @@ function createMvu() {
+          * @brief 返回当前轮次是否属于额外模型解析轮次。
+          */
+         isDuringExtraAnalysis: () => useDataStore().runtimes.is_during_extra_analysis,
++
++        /** Reload the live Pinia store after Nora changes headless MVU settings. */
++        reloadSettings: () => {
++            useDataStore()._reload_settings();
++        },
++
++        retryLastUpdate: async () => {
++            const message_id = getLastMessageId();
++            const current = getChatMessages(message_id).at(-1);
++            if (!current) throw new Error('No message is available for MVU retry.');
++            const message = current.message.replace(
++                /\s*<UpdateVariable>[\s\S]*?<\/UpdateVariable>\s*$/i,
++                ''
++            );
++            if (message !== current.message) {
++                await setChatMessages([{ message_id, message }], { refresh: 'none' });
++            }
++            await onMessageReceived(message_id, { force: true });
++        },
+     };
+     return mvu;
+ }
+diff --git a/src/function/initvar/variable_init.ts b/src/function/initvar/variable_init.ts
+index c3ddcb5..89d0781 100644
+--- a/src/function/initvar/variable_init.ts
++++ b/src/function/initvar/variable_init.ts
+@@ -4,6 +4,7 @@ import { tr } from '@/i18n';
+ import { useDataStore } from '@/store';
+ import { getLastValidVariable } from '@/util';
+ import {
++    isMvuData,
+     isObjectSchema,
+     MvuData,
+     RootAdditionalProps,
+@@ -21,7 +22,7 @@ type LorebookEntry = {
+
+ export async function initCheck() {
+     if ($('#chat > .welcomePanel').length > 0) {
+-        return;
++        return false;
+     }
+
+     let variables: MvuData & Record<string, any>;
+@@ -28,18 +29,13 @@ export async function initCheck() {
+     //这个函数需要处理 dryRun,因为0层。
+
+     try {
+-        if (SillyTavern.chat.length === 0) {
+-            console.error(tr('runtime.initvar.noMessagesLog'));
+-            toastr.error(
+-                tr('runtime.initvar.greetingRequired'),
+-                tr('runtime.initvar.initializationFailedTitle')
+-            );
+-            return;
++        if (SillyTavern.getCurrentChatId() == null || SillyTavern.chat.length === 0) {
++            return false;
+         }
+         variables = getLastValidVariable(getLastMessageId() + 1) ?? createEmptyGameData();
+     } catch (_error) {
+         console.error(tr('runtime.initvar.noMessagesLog'));
+-        return;
++        return false;
+     }
+
+     // 确保变量结构完整
+@@ -124,7 +120,7 @@ export async function initCheck() {
+     }
+
+     if (!is_updated) {
+-        return;
++        return isMvuData(variables) && !_.isEmpty(variables.stat_data);
+     }
+
+     if (useDataStore().effective_settings.兼容性.更新到聊天变量) {
+@@ -222,6 +218,7 @@ export async function initCheck() {
+
+     // 更新 lorebook 设置
+     await updateLorebookSettings();
++    return isMvuData(variables) && !_.isEmpty(variables.stat_data);
+ }
+
+ /**
+diff --git a/src/function/update/invoke_extra_model.ts b/src/function/update/invoke_extra_model.ts
+index edc468c..68baf40 100644
+--- a/src/function/update/invoke_extra_model.ts
++++ b/src/function/update/invoke_extra_model.ts
+@@ -347,11 +347,51 @@ export async function generateExtraModel(): Promise<string | null> {
+     }
+ }
+
++export class ExtraModelAttemptTimeoutError extends Error {
++    constructor(readonly timeout_ms: number) {
++        super(`MVU extra-model request exceeded ${timeout_ms}ms.`);
++        this.name = 'ExtraModelAttemptTimeoutError';
++    }
++}
++
++export async function invokeExtraModelAttempt({
++    timeout_ms,
++    repair_feedback = '',
++}: {
++    timeout_ms: number;
++    repair_feedback?: string;
++}): Promise<string> {
++    const generation_id = uuidv4();
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    let did_set_extra_analysis_states = false;
++    try {
++        await setExtraAnalysisStates();
++        did_set_extra_analysis_states = true;
++        const timeout = new Promise<never>((_resolve, reject) => {
++            timer = setTimeout(() => {
++                stopGenerationById(generation_id);
++                reject(new ExtraModelAttemptTimeoutError(timeout_ms));
++            }, timeout_ms);
++        });
++        return await Promise.race([
++            invokeExtraModel(generation_id, undefined, repair_feedback),
++            timeout,
++        ]);
++    } finally {
++        if (timer) clearTimeout(timer);
++        if (did_set_extra_analysis_states) await unsetExtraAnalysisStates();
++    }
++}
++
+ // 在点击停止按钮时，会触发异常 `Clicked stop button`: string ,需要专门处理。
+ //仅内部使用，因为一部分状态的初始化是在外面执行的。
+-async function invokeExtraModel(generation_id?: string, batch_id?: string): Promise<string> {
++async function invokeExtraModel(
++    generation_id?: string,
++    batch_id?: string,
++    repair_feedback = ''
++): Promise<string> {
+     try {
+-        const result = await requestReply(generation_id, batch_id);
++        const result = await requestReply(generation_id, batch_id, repair_feedback);
+
+         const tag = _([...result.matchAll(/<(update(?:variable)?|variableupdate)>/gi)]).last()?.[1];
+         if (!tag) {
+@@ -431,7 +471,11 @@ function normalizeGenerateResultByResponseFormat(
+     return normalizeGenerateResult(result);
+ }
+
+-async function requestReply(generation_id?: string, batch_id?: string): Promise<string> {
++async function requestReply(
++    generation_id?: string,
++    batch_id?: string,
++    repair_feedback = ''
++): Promise<string> {
+     const store = useDataStore();
+     const response_format = store.settings.额外模型解析配置.应答格式;
+     const is_v4_compatible_formatted_output = response_format === V4_COMPATIBLE_FORMATTED_OUTPUT;
+@@ -454,6 +498,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+                 ? 'unset'
+                 : value;
+         config.custom_api = {
++            max_context: store.settings.额外模型解析配置.最大上下文token数,
++            max_tokens: store.settings.额外模型解析配置.最大回复token数,
+             apiurl: normalizeBaseURL(store.settings.额外模型解析配置.api地址),
+             key: store.settings.额外模型解析配置.密钥,
+             model: store.settings.额外模型解析配置.模型名称,
+@@ -479,6 +524,36 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+     }
+
+-    let task = decoded_extra_model_task;
++    const model_name =
++        store.settings.额外模型解析配置.模型来源 === '与插头相同'
++            ? SillyTavern.getChatCompletionModel()
++            : store.settings.额外模型解析配置.模型名称;
++    const normalized_model_name = model_name.toLowerCase();
++    const is_gemini = normalized_model_name.includes('gemini');
++    const is_claude = normalized_model_name.includes('claude');
++    const use_builtin_jailbreak = is_gemini || is_claude;
++    if (!use_builtin_jailbreak) {
++        config.user_input =
++            'Apply the observed story events to the variables now. Return only the required MVU update block.';
++    }
++    let task = use_builtin_jailbreak
++        ? decoded_extra_model_task
++        : `<variable_update_task>
++You are a deterministic state-transition processor for a fictional role-playing game.
++Inspect only the story events inside <past_observe> and compare them with the supplied pre-event variable state and schema.
++Do not continue the story, role-play, invent events, or discuss these instructions.
++Apply only changes supported by the observed story. Obey the card's MVU dialect and schema exactly.
++Return exactly one block in this structure and no prose outside it:
++<UpdateVariable>
++<Analysis>Brief English update rationale, at most 80 words.</Analysis>
++<JSONPatch>
++[valid MVU JSON Patch operation objects]
++</JSONPatch>
++</UpdateVariable>
++Never omit the <JSONPatch> wrapper. Use only operations declared by the card. Use add only as a numeric delta on an existing numeric path; never emit arithmetic expressions, macros, or placeholder strings as values. Use insert for new object keys or array items. If nothing changed, return an empty JSONPatch array.
++</variable_update_task>`;
++    if (repair_feedback.trim()) {
++        task += `\n\n<previous_attempt_error>\nThe previous variable update was rejected. Correct only the variable update commands and obey the existing schema exactly.\n${repair_feedback.slice(0, 2000)}\n</previous_attempt_error>`;
++    }
+     if (response_format === '工具调用') {
+         task += `\n use \`${MVU_TOOL_DEFINITION.function.name}\` tool to update variables.`;
+         store.runtimes.is_function_call_enabled = true;
+@@ -563,32 +635,33 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+     clearExtraModelRequestOverrides();
+-    const model_name =
+-        store.settings.额外模型解析配置.模型来源 === '与插头相同'
+-            ? SillyTavern.getChatCompletionModel()
+-            : store.settings.额外模型解析配置.模型名称;
+-    const is_gemini = model_name.toLowerCase().includes('gemini');
+     const rnd_header_prompts =
+         store.settings.额外模型解析配置.随机头部 && is_gemini
+             ? [{ role: 'system' as const, content: batch_id ?? generateRandomHeader() }]
+             : [];
++    const builtin_head_prompts = use_builtin_jailbreak
++        ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_head : decoded_claude_head }]
++        : [];
++    const builtin_tail_prompts = use_builtin_jailbreak
++        ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_tail : decoded_claude_tail }]
++        : [];
+
+     const result = await generateRaw({
+         ...config,
+         ordered_prompts: [
+             ...rnd_header_prompts,
+-            { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
++            ...builtin_head_prompts,
+             { role: 'system', content: '<additional_information>' },
+             'persona_description',
+             'char_description',
+             'world_info_before',
+             'world_info_after',
+             { role: 'system', content: '</additional_information>' },
+             { role: 'system', content: '<past_observe>' },
+             'chat_history',
+             { role: 'system', content: '</past_observe>' },
+             { role: 'system', content: task },
+             'user_input',
+-            { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
++            ...builtin_tail_prompts,
+         ],
+     });
+     return normalizeGenerateResultByResponseFormat(result, response_format);
+ }
+diff --git a/src/function/update/on_message_received.ts b/src/function/update/on_message_received.ts
+index 2f7a0bf..3d76a01 100644
+--- a/src/function/update/on_message_received.ts
++++ b/src/function/update/on_message_received.ts
+@@ -1,9 +1,96 @@
+ import { isExtraModelSupported } from '@/function/is_extra_model_supported';
+ import { isFunctionCallingSupported } from '@/function/is_function_calling_supported';
+-import { invokeExtraModelWithStrategy } from '@/function/update/invoke_extra_model';
+-import { handleVariablesInMessage } from '@/function/update_variables';
++import {
++    ExtraModelAttemptTimeoutError,
++    invokeExtraModelAttempt,
++} from '@/function/update/invoke_extra_model';
++import {
++    getLastVariableUpdateDiagnostics,
++    handleVariablesInMessage,
++    persistVariablesForMessage,
++    updateVariables,
++} from '@/function/update_variables';
+ import { tr } from '@/i18n';
+ import { useDataStore } from '@/store';
++import { getLastValidVariable } from '@/util';
++import { variable_events } from '@/variable_def';
++
++const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 60_000;
++
++function failureFeedback(error: unknown): string {
++    if (error instanceof ExtraModelAttemptTimeoutError) return error.message;
++    if (error instanceof Error) return `${error.name}: ${error.message}`;
++    return String(error);
++}
++
++function diagnosticFeedback(): string {
++    const diagnostics = getLastVariableUpdateDiagnostics();
++    const errors = diagnostics.errors
++        .map(item => `${item.command}: ${item.content}`)
++        .join('\n');
++    if (errors) return errors;
++    if (diagnostics.command_count === 0) return 'No valid MVU update command remained after parsing and schema validation.';
++    return 'The update commands produced no valid state change.';
++}
++
++function diagnosticFailure(): { code: string; stage: string } {
++    const diagnostics = getLastVariableUpdateDiagnostics();
++    if (diagnostics.errors.length > 0) {
++        return { code: 'MVU_COMMAND_VALIDATION_FAILED', stage: 'validation' };
++    }
++    if (diagnostics.command_count === 0) {
++        return { code: 'MVU_NO_UPDATE_COMMAND', stage: 'parsing' };
++    }
++    return { code: 'MVU_NO_STATE_CHANGE', stage: 'validation' };
++}
++
++function exceptionFailure(error: unknown): { code: string; stage: string } {
++    if (error instanceof ExtraModelAttemptTimeoutError) {
++        return { code: 'MVU_EXTRA_MODEL_TIMEOUT', stage: 'request' };
++    }
++    const message = failureFeedback(error);
++    if (/active chat or message changed/i.test(message)) {
++        return { code: 'MVU_STALE_CHAT', stage: 'commit' };
++    }
++    if (/snapshot/i.test(message)) {
++        return { code: 'MVU_SNAPSHOT_MISSING', stage: 'prepare' };
++    }
++    if (/update tag|updatevariable|variableupdate/i.test(message)) {
++        return { code: 'MVU_RESPONSE_PARSE_FAILED', stage: 'parsing' };
++    }
++    return { code: 'MVU_REQUEST_FAILED', stage: 'request' };
++}
++
++async function evaluateAndCommit(
++    message_id: number,
++    original_message: string,
++    original_chat_id: string,
++    update_block: string
++): Promise<boolean> {
++    const request_message_id = message_id === 0 ? 1 : message_id;
++    const variables = getLastValidVariable(request_message_id);
++    if (!variables?.stat_data) throw new Error('No valid MVU snapshot exists before this message.');
++
++    const candidate_message = `${original_message.trimEnd()}\n\n${update_block}`;
++    const modified = await updateVariables(candidate_message, variables);
++    const diagnostics = getLastVariableUpdateDiagnostics();
++    const explicit_noop = /<JSONPatch>\s*\[\s*\]\s*<\/JSONPatch>/i.test(update_block);
++    if (diagnostics.errors.length > 0 || (!modified && !explicit_noop)) return false;
++
++    const current = getChatMessages(message_id).at(-1);
++    if (
++        SillyTavern.getCurrentChatId() !== original_chat_id ||
++        current?.message !== original_message
++    ) {
++        throw new Error('The active chat or message changed while MVU was updating.');
++    }
++
++    if (!explicit_noop) {
++        await setChatMessages([{ message_id, message: candidate_message }], { refresh: 'none' });
++    }
++    await persistVariablesForMessage(message_id, variables);
++    return true;
++}
+
+ export async function onMessageReceived(
+     message_id: number,
+@@ -49,26 +136,75 @@ export async function onMessageReceived(
+         return;
+     }
+
+-    const result = await invokeExtraModelWithStrategy();
+-    if (result !== null) {
+-        const chat_message = getChatMessages(message_id);
++    const original_message = current_chatmsg.message;
++    const original_chat_id = SillyTavern.getCurrentChatId();
++    const started_at = Date.now();
++    let repair_feedback = '';
++    let failure = { code: 'MVU_UPDATE_FAILED', stage: 'update' };
++    let last_attempt = 0;
++    let failure_diagnostics = { command_count: 0, modified: false, errors: [] };
++    const request_message_id = message_id === 0 ? 1 : message_id;
++    const previous_snapshot = getLastValidVariable(request_message_id);
++    await eventEmit(variable_events.TRANSACTION_STARTED, {
++        message_id,
++        started_at,
++        had_snapshot: Boolean(previous_snapshot?.stat_data && previous_snapshot?.schema),
++    });
+
+-        await setChatMessages(
+-            [
+-                {
++    for (let attempt = 1; attempt <= 2; attempt++) {
++        last_attempt = attempt;
++        try {
++            const result = await invokeExtraModelAttempt({
++                timeout_ms: EXTRA_MODEL_ATTEMPT_TIMEOUT_MS,
++                repair_feedback,
++            });
++            if (await evaluateAndCommit(message_id, original_message, original_chat_id, result)) {
++                await eventEmit(variable_events.TRANSACTION_COMMITTED, {
+                     message_id,
+-                    message: chat_message[0].message.trimEnd() + '\n\n' + result,
+-                },
+-            ],
+-            {
+-                refresh: 'none',
++                    attempt,
++                    duration_ms: Date.now() - started_at,
++                    diagnostics: getLastVariableUpdateDiagnostics(),
++                });
++                return;
+             }
+-        );
+-    } else {
+-        toastr.error(
+-            tr('runtime.extraModel.updateFailed'),
+-            tr('runtime.extraModel.updateFailedTitle')
+-        );
++            repair_feedback = diagnosticFeedback();
++            failure = diagnosticFailure();
++            failure_diagnostics = getLastVariableUpdateDiagnostics();
++        } catch (error) {
++            repair_feedback = failureFeedback(error);
++            failure = exceptionFailure(error);
++            failure_diagnostics = failure.stage === 'commit'
++                ? getLastVariableUpdateDiagnostics()
++                : { command_count: 0, modified: false, errors: [] };
++            console.warn(`[MVU transaction] attempt ${attempt} failed`, error);
++            // A repair prompt can correct commands that were returned but failed
++            // parsing or validation. It cannot repair transport errors or timeouts.
++            // Retrying those immediately overlaps the still-running provider request,
++            // duplicates cost, and shortens neither response time nor recovery time.
++            if (!['parsing', 'validation'].includes(failure.stage)) break;
++        }
++    }
++
++    // Keep the last valid snapshot available even when the update model fails.
++    if (
++        SillyTavern.getCurrentChatId() === original_chat_id &&
++        getChatMessages(message_id).at(-1)?.message === original_message
++    ) {
++        if (previous_snapshot?.stat_data) {
++            await persistVariablesForMessage(message_id, previous_snapshot);
++        }
+     }
+-    await handleVariablesInMessage(message_id);
++    await eventEmit(variable_events.TRANSACTION_FAILED, {
++        message_id,
++        duration_ms: Date.now() - started_at,
++        attempt: last_attempt,
++        error_code: failure.code,
++        stage: failure.stage,
++        diagnostics: failure_diagnostics,
++        error: repair_feedback || 'MVU update failed.',
++    });
++    toastr.error(
++        `${tr('runtime.extraModel.updateFailed')} [${failure.code}]: ${(repair_feedback || 'MVU update failed.').slice(0, 300)}`,
++        tr('runtime.extraModel.updateFailedTitle')
++    );
+ }
+diff --git a/src/function/update_variables.ts b/src/function/update_variables.ts
+index e803b3d..06d842b 100644
+--- a/src/function/update_variables.ts
++++ b/src/function/update_variables.ts
+@@ -21,6 +21,22 @@ import { parseString } from '@util/common';
+ import { klona } from 'klona';
+ import * as math from 'mathjs';
+
++export type VariableUpdateDiagnostics = {
++    command_count: number;
++    modified: boolean;
++    errors: Array<{ command: string; content: string }>;
++};
++
++let last_update_diagnostics: VariableUpdateDiagnostics = {
++    command_count: 0,
++    modified: false,
++    errors: [],
++};
++
++export function getLastVariableUpdateDiagnostics(): VariableUpdateDiagnostics {
++    return klona(last_update_diagnostics);
++}
++
+ export function trimQuotesAndBackslashes(str: string): string {
+     if (!_.isString(str)) return str;
+     // Regular expression to match backslashes and quotes (including backticks) at the beginning and end
+@@ -678,6 +694,7 @@ export async function updateVariables(
+     current_message_content: string,
+     variables: MvuData
+ ): Promise<boolean> {
++    last_update_diagnostics = { command_count: 0, modified: false, errors: [] };
+     // 拷贝一份变量，用于提供给 variable_ended
+     const variables_before_update: MvuData = klona(variables);
+     // 深拷贝变量对象，生成状态快照，用于记录显示数据
+@@ -708,6 +725,7 @@ export async function updateVariables(
+             command,
+             content,
+         };
++        last_update_diagnostics.errors.push({ command, content });
+     };
+
+     const schema = variables.schema; // 获取 schema，可能为 undefined
+@@ -742,6 +760,7 @@ export async function updateVariables(
+         commands,
+         current_message_content
+     );
++    last_update_diagnostics.command_count = commands.length;
+
+     pathFixPass(variables, commands, current_message_content);
+
+@@ -1474,6 +1493,7 @@ export async function updateVariables(
+     _.unset(variables.stat_data, '$internal');
+     // 在所有命令执行完毕后，如果数据有任何变动，则执行一次 Schema 调和
+     const is_modified = !_.isEqual(variables.stat_data, variables_before_update.stat_data);
++    last_update_diagnostics.modified = is_modified;
+     if (is_modified) {
+         reconcileAndApplySchema(variables);
+     }
+@@ -1497,26 +1517,10 @@ export async function updateVariables(
+     return is_modified;
+ }
+
+-export async function handleVariablesInMessage(message_id: number) {
++export async function persistVariablesForMessage(message_id: number, variables: MvuData) {
+     const chat_message = getChatMessages(message_id).at(-1);
+-    if (!chat_message) {
+-        return;
+-    }
+-
+-    const message_content = chat_message.message;
+-
+-    if (chat_message.role === 'assistant' && message_content.length < 5) {
+-        return;
+-    }
+-    //在重构后 getLastValidVariable 的语义改编为了 [0, message_id) 区间
+-    const request_message_id = message_id === 0 ? 1 : message_id;
+-    const variables = getLastValidVariable(request_message_id);
++    if (!chat_message) return;
+     const settings = useDataStore().effective_settings;
+-    if (!_.has(variables, 'stat_data')) {
+-        return;
+-    }
+-
+-    await updateVariables(message_content, variables);
+     const latest_chat_message = getChatMessages(message_id).at(-1) ?? chat_message;
+     if (latest_chat_message.role !== 'user') {
+         // updateVariables() emits events and awaits their listeners. Re-read immediately before
+@@ -1577,3 +1581,18 @@ export async function handleVariablesInMessage(message_id: number) {
+         });
+     }
+ }
++
++export async function handleVariablesInMessage(message_id: number) {
++    const chat_message = getChatMessages(message_id).at(-1);
++    if (!chat_message) return;
++    if (chat_message.role === 'assistant' && chat_message.message.length < 5) return;
++
++    //在重构后 getLastValidVariable 的语义改编为了 [0, message_id) 区间
++    const request_message_id = message_id === 0 ? 1 : message_id;
++    const variables = getLastValidVariable(request_message_id);
++    if (!_.has(variables, 'stat_data')) return;
++
++    const is_modified = await updateVariables(chat_message.message, variables);
++    await persistVariablesForMessage(message_id, variables);
++    return is_modified;
++}
+diff --git a/src/variable_def.ts b/src/variable_def.ts
+index a94688c..2bcf166 100644
+--- a/src/variable_def.ts
++++ b/src/variable_def.ts
+@@ -179,6 +179,15 @@ export const variable_events = {
+     /** 某轮变量更新开始时触发的事件 */
+     VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
+
++    /** Nora: a bounded extra-model update transaction started. */
++    TRANSACTION_STARTED: 'nora_mvu_transaction_started',
++
++    /** Nora: a validated update was committed to the current message. */
++    TRANSACTION_COMMITTED: 'nora_mvu_transaction_committed',
++
++    /** Nora: no candidate could be committed within the transaction budget. */
++    TRANSACTION_FAILED: 'nora_mvu_transaction_failed',
++
+     /**
+      * 某轮变量更新过程中, 对文本成功解析了所有更新命令时触发的事件
+      *
+@@ -293,6 +302,9 @@ export interface ListenerType {
+         variables: MvuData,
+         out_is_updated: boolean
+     ) => void;
++    [variable_events.TRANSACTION_STARTED]: (detail: Record<string, unknown>) => void;
++    [variable_events.TRANSACTION_COMMITTED]: (detail: Record<string, unknown>) => void;
++    [variable_events.TRANSACTION_FAILED]: (detail: Record<string, unknown>) => void;
+     [variable_events.COMMAND_PARSED]: (
+         variables: MvuData,
+         commands: CommandInfo[],
+diff --git a/src/main.ts b/src/main.ts
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -1,4 +1,3 @@
+-import { initButtons } from '@/button';
+ import { watchPreferredChatSync } from '@/function/chat_lifecycle';
+ import { initCleanup } from '@/function/cleanup';
+ import { initCharacterSettingsOverride } from '@/function/character_override';
+@@ -8,7 +7,6 @@ import { initNotification } from '@/function/notification';
+ import { initRequest } from '@/function/request';
+ import { initResponse } from '@/function/update';
+ import { tr } from '@/i18n';
+-import { initPanel } from '@/panel';
+ import { useDataStore } from '@/store';
+ import { controlledStoppableEventOn } from '@/util';
+ import { checkMinimumVersion } from '@util/common';
+@@ -33,8 +31,6 @@ $(async () => {
+
+     const stop_list: Stop[] = [];
+
+-    stop_list.push(initPanel());
+-    stop_list.push(initButtons());
+     stop_list.push(initGlobals());
+
+     let chat_level_stop_list: Stop[] = [];
+diff --git a/webpack.config.ts b/webpack.config.ts
+index 76b0425..e3f598e 100644
+--- a/webpack.config.ts
++++ b/webpack.config.ts
+@@ -388,6 +388,9 @@ function config(_env: any, argv: any): webpack.Configuration {
+             if (request in global) {
+                 return callback(null, 'var ' + global[request as keyof typeof global]);
+             }
++            if (process.env.NORA_BUNDLE_DEPENDENCIES === '1') {
++                return callback();
++            }
+             const cdn = {
+                 sass: 'https://jspm.dev/sass',
+             };

@@ -44,6 +44,14 @@ const extensionLoadErrors = new Set();
 const getApiUrl = () => extension_settings.apiUrl;
 const sortManifestsByOrder = (a, b) => parseInt(a.loading_order) - parseInt(b.loading_order) || String(a.display_name).localeCompare(String(b.display_name));
 const getStaticAssetUrl = path => globalThis.__NORA_ASSET_URL__?.(path) ?? path;
+const getExtensionModuleUrl = (path) => {
+    const normalized = String(path || '').replace(/^\/+/, '');
+    if (normalized.startsWith('scripts/extensions/third-party/')) {
+        return globalThis.__NORA_EXTENSION_MODULE_URL__?.(`/${normalized}`) ?? `/${normalized}`;
+    }
+    return `nora-module/${normalized}`;
+};
+const importExtensionModule = url => import(url.startsWith('nora-module/') ? url : new URL(url, location.origin).href);
 
 /**
  * Holds manifest data for each extension.
@@ -323,13 +331,13 @@ async function callExtensionHook(name, hookName) {
         return;
     }
 
-    const url = getStaticAssetUrl(`/scripts/extensions/${name}/${manifest.js}`);
+    const url = getExtensionModuleUrl(`/scripts/extensions/${name}/${manifest.js}`);
     console.debug(`callExtensionHook: Calling hook "${hookName}" (function "${hookFunctionName}") for extension "${name}"`);
 
     try {
         // Inline core modules have a data: base URL, so runtime-computed root paths
         // must be resolved against the document origin before dynamic import.
-        const module = await import(new URL(url, location.origin).href);
+        const module = await importExtensionModule(url);
 
         if (typeof module[hookFunctionName] !== 'function') {
             console.warn(`callExtensionHook: Extension "${name}" hook "${hookName}" references "${hookFunctionName}" which is not an exported function`);
@@ -685,7 +693,7 @@ function addExtensionScript(name, manifest) {
         return Promise.resolve();
     }
 
-    const url = getStaticAssetUrl(`/scripts/extensions/${name}/${manifest.js}`);
+    const url = getExtensionModuleUrl(`/scripts/extensions/${name}/${manifest.js}`);
     const id = sanitizeSelector(`${name}-js`);
     if ($(`script[id="${id}"]`).length > 0) {
         return Promise.resolve();
@@ -697,7 +705,7 @@ function addExtensionScript(name, manifest) {
     marker.dataset.moduleSrc = url;
     document.body.appendChild(marker);
 
-    return import(new URL(url, location.origin).href)
+    return importExtensionModule(url)
         .then(() => undefined)
         .catch((error) => {
             marker.remove();

@@ -3,6 +3,31 @@ import test from 'node:test';
 
 import { createTavernHelperActionAdapter } from '../public/scripts/nora-adapters/tavern-helper-action-adapter.js';
 
+test('late Helper readiness restores the published facade to the page global', async (t) => {
+    const facade = { generate() {}, generateRaw() {} };
+    const globalRef = {};
+    const bridge = {
+        install: () => () => {},
+        publish: candidate => candidate,
+        ready: async () => facade,
+    };
+    const adapter = createTavernHelperActionAdapter({
+        storyActions: {
+            status: () => ({ active: false }),
+            execute: async () => ({ status: 'completed' }),
+            cancel: async () => ({ status: 'cancelled' }),
+        },
+        bridge,
+        globalRef,
+    });
+    adapter.start();
+    t.after(() => adapter.stop());
+
+    await globalRef.__NORA_TAVERN_HELPER_READY__();
+
+    assert.equal(globalRef.TavernHelper, facade);
+});
+
 test('TavernHelper generation keeps its public result while entering the sidecar lifecycle', async (t) => {
     const generated = [];
     const commands = [];

@@ -310,8 +310,14 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 .nora-message-controls button { display: inline-flex; min-width: 0; min-height: 14px; align-items: center; gap: 1px; padding: 0; border: 0; background: transparent; color: inherit; font-size: 7px; line-height: 1; cursor: pointer; }
 .nora-message-controls button:hover { color: var(--nora-brand-ink); }
 .nora-message-controls i { font-size: 6px; }
-.nora-swipe { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; font-variant-numeric: tabular-nums; }
-.nora-swipe button { min-width: 20px; justify-content: center; }
+.nora-message-pager { position: sticky; z-index: 3; top: 8px; display: inline-flex; align-self: flex-end; align-items: center; gap: 6px; margin: 0 0 10px auto; padding: 4px; border: 1px solid var(--nora-line-2); border-radius: 999px; background: color-mix(in srgb, var(--nora-surface) 94%, transparent); box-shadow: 0 4px 14px rgba(40, 30, 15, .08); color: var(--nora-muted); font-variant-numeric: tabular-nums; backdrop-filter: blur(8px); }
+.nora-message-pager[hidden] { display: none !important; }
+.nora-message-pager button { display: inline-flex; min-height: 28px; align-items: center; gap: 5px; padding: 0 9px; border: 0; border-radius: 999px; background: transparent; color: var(--nora-ink-2); font: 11px/1 var(--nora-sans); cursor: pointer; }
+.nora-message-pager button:hover { background: var(--nora-brand-tint); color: var(--nora-brand-ink); }
+.nora-message-pager button:disabled { color: var(--nora-muted); cursor: default; opacity: .42; }
+.nora-message-pager button:disabled:hover { background: transparent; }
+.nora-message-pager button i { font-size: 9px; }
+.nora-message-pager strong { min-width: 34px; color: var(--nora-ink-2); font-size: 11px; font-weight: 600; text-align: center; }
 #nora-chat .mes.nora-rich-message .nora-message-controls { width: min(var(--nora-content), 100%); margin-right: auto; margin-left: auto; }
 #nora-chat #curEditTextarea { display: block !important; width: 100% !important; min-height: 120px; max-height: 50vh; resize: vertical; padding: 10px 12px !important; border: 1px solid var(--nora-brand) !important; border-radius: 10px !important; outline: none !important; background: var(--nora-surface) !important; color: var(--nora-ink) !important; font: 15px/1.68 var(--nora-sans) !important; }
 

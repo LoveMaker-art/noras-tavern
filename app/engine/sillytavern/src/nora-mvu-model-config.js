@@ -14,6 +14,11 @@ export class NoraMvuModelConfigError extends Error {
     }
 }
 
+function boundedInteger(value, fallback, minimum, maximum) {
+    const number = Number(value);
+    return Math.min(maximum, Math.max(minimum, Number.isFinite(number) ? Math.round(number) : fallback));
+}
+
 function requiredText(value, field, maximum = 500) {
     const text = String(value ?? '').trim();
     if (!text) throw new NoraMvuModelConfigError('invalid_mvu_model_config', `${field} is required.`);
@@ -46,9 +51,11 @@ export class NoraMvuModelConfig {
         try {
             const value = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
             return Object.freeze({
-                schema: 'nora-mvu-model/v1',
+                schema: 'nora-mvu-model/v2',
                 base_url: normalizeMvuModelBaseUrl(value?.base_url),
                 model: requiredText(value?.model, 'model'),
+                context: boundedInteger(value?.context, 128000, 512, 1000000),
+                max_tokens: boundedInteger(value?.max_tokens, 20000, 1, 128000),
             });
         } catch (error) {
             if (error instanceof NoraMvuModelConfigError) throw error;
@@ -58,9 +65,11 @@ export class NoraMvuModelConfig {
 
     save(value) {
         const config = {
-            schema: 'nora-mvu-model/v1',
+            schema: 'nora-mvu-model/v2',
             base_url: normalizeMvuModelBaseUrl(value?.base_url),
             model: requiredText(value?.model, 'model'),
+            context: boundedInteger(value?.context, 128000, 512, 1000000),
+            max_tokens: boundedInteger(value?.max_tokens, 20000, 1, 128000),
         };
         writeFileAtomicSync(this.filePath, JSON.stringify(config, null, 4), 'utf8');
         return Object.freeze(config);

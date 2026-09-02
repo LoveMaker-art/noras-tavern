@@ -7,7 +7,7 @@ import { normalizeIdempotencyKey, sha256 } from './domain.js';
 import { NoraWorldCoreError } from './errors.js';
 
 const MAX_CARD_BYTES = 100 * 1024 * 1024;
-const SUPPORTED_FORMATS = new Set(['png', 'json', 'charx']);
+const SUPPORTED_FORMATS = new Set(['png', 'json', 'yaml', 'yml', 'charx', 'byaf']);
 const BLANK_RUNTIME_CARD_NAME = 'Nora 空白世界';
 
 function cardFormat(fileName) {

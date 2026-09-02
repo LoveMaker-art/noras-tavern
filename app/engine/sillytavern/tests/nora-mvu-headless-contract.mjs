@@ -8,7 +8,13 @@ const extensionRoot = path.join(root, 'native-extensions/nora-mvu');
 const read = relative => fs.readFileSync(path.join(extensionRoot, relative), 'utf8');
 
 const manifest = JSON.parse(read('manifest.json'));
+const runtime = read('runtime.js');
 const bundle = read('vendor/bundle.js');
+const noraPatch = read('upstream/nora.patch');
+const slashRunnerPatch = read('upstream/slash-runner.patch');
+const vendorBuilder = read('build-vendor.sh');
+const zodRuntime = read('vendor/zod.iife.js');
+const schemaRuntime = read('mvu-zod.js');
 const upstream = read('UPSTREAM.md');
 const lifecycle = fs.readFileSync(path.join(root, 'native_lifecycle.py'), 'utf8');
 const script = fs.readFileSync(path.join(root, 'engine/sillytavern/public/script.js'), 'utf8');
@@ -27,13 +33,15 @@ const modelAdapter = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/
 const uiEntry = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/index.js'), 'utf8');
 const mvuModelEndpoint = fs.readFileSync(path.join(root, 'engine/sillytavern/src/endpoints/nora-mvu-model.js'), 'utf8');
 const mvuModelConfig = fs.readFileSync(path.join(root, 'engine/sillytavern/src/nora-mvu-model-config.js'), 'utf8');
+const mvuDiagnosticsEndpoint = fs.readFileSync(path.join(root, 'engine/sillytavern/src/endpoints/nora-mvu-diagnostics.js'), 'utf8');
+const mvuUpdateObserver = fs.readFileSync(path.join(root, 'native-extensions/nora-mvu/update-observer.js'), 'utf8');
 
+assert.deepEqual(manifest.dependencies, ['third-party/JS-Slash-Runner']);
 assert.equal(
     manifest.loading_order < helperManifest.loading_order,
     true,
-    'MVU must register its managed script before TavernHelper executes the script tree',
+    'MVU must prepare its managed script and local dependencies before Helper executes the script tree',
 );
-assert.deepEqual(manifest.dependencies, ['third-party/JS-Slash-Runner']);
 assert.equal(manifest.css, undefined, 'headless MVU must not add a settings stylesheet');
 assert.doesNotMatch(bundle, /extensions_settings2|initPanel\(/, 'vendored runtime must not mount the ST settings panel');
 assert.match(
@@ -47,8 +55,34 @@ assert.doesNotMatch(
     'headless MVU must not report an empty startup as an initialization failure',
 );
 assert.doesNotMatch(bundle, /https:\/\/testingcf\.jsdelivr\.net|module-import\s+https?:\/\//, 'MVU runtime dependencies must be bundled locally');
+assert.match(runtime, /new URL\('\$\{MVU_BUNDLE_URL\}', window\.parent\.location\.href\)/, 'Nora MVU must resolve its local bundle against the parent page from an about:srcdoc iframe');
+assert.match(runtime, /NORA_MVU_BUNDLE_REVISION/, 'Nora MVU bundle changes must own an independent cache revision');
+assert.match(runtime, /await import\(mvuBundleUrl\)/, 'Nora MVU must execute inside a managed Helper script iframe');
+assert.match(runtime, /vendor\/zod\.iife\.js\?v=4\.1\.11/, 'Nora MVU must load its pinned Zod runtime locally');
+assert.doesNotMatch(runtime, /testingcf\.jsdelivr\.net|cdn\.jsdelivr\.net/, 'Nora MVU bootstrap must not load dependencies from the network');
+assert.match(zodRuntime, /var Zod=/, 'the local Zod runtime must expose its browser namespace');
+assert.match(zodRuntime, /looseObject/, 'the local Zod runtime must provide the Zod 4 API required by MVU');
+assert.doesNotMatch(runtime, /loadBundle\s*=|import\(resolveMvuBundleUrl/, 'Nora MVU must not execute its Helper-only bundle in the parent page');
+assert.match(schemaRuntime, /export function registerMvuSchema/);
+assert.doesNotMatch(schemaRuntime, /https?:\/\/|^\s*import\b/m, 'MVU schema runtime must not fetch or import external code');
 assert.match(bundle, /reloadSettings/, 'vendored runtime must expose the headless settings reload bridge');
-assert.match(upstream, /0a730cd4a9b99689d1135a49b542c780b977c24c/);
+assert.match(bundle, /MVU_COMMAND_VALIDATION_FAILED/, 'vendored runtime must classify update validation failures');
+assert.match(bundle, /MVU_EXTRA_MODEL_TIMEOUT/, 'vendored runtime must classify bounded request timeouts');
+assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 60_000;/, 'each MVU model attempt must receive the full observed provider budget');
+assert.doesNotMatch(noraPatch, /PRIMARY_ATTEMPT_BUDGET_MS|TRANSACTION_BUDGET_MS/, 'MVU must not split one request budget into guaranteed-short retries');
+assert.match(noraPatch, /if \(!\['parsing', 'validation'\]\.includes\(failure\.stage\)\) break;/, 'MVU transport failures must not trigger an overlapping paid retry');
+assert.match(noraPatch, /const use_builtin_jailbreak = is_gemini \|\| is_claude;/, 'the upstream jailbreak must only be sent to the model families it targets');
+assert.match(noraPatch, /You are a deterministic state-transition processor/, 'other model families must receive the neutral Nora variable task');
+assert.match(noraPatch, /Return exactly one block in this structure and no prose outside it:/, 'non-Gemini and non-Claude models must receive the verified strict MVU response contract');
+assert.match(noraPatch, /If nothing changed, return an empty JSONPatch array\./, 'the MVU response contract must define an explicit no-op form');
+assert.match(noraPatch, /const explicit_noop = \/<JSONPatch>/, 'an empty JSONPatch must be accepted as a successful no-op transaction');
+assert.doesNotMatch(noraPatch, /generation_id,[\s\S]{0,120}max_tokens:/, 'story-model MVU requests must inherit the active text-model output limit');
+assert.match(noraPatch, /config\.custom_api = \{[\s\S]{0,240}\+\s*max_context:[\s\S]{0,160}\+\s*max_tokens:/, 'independent MVU models must retain their own context and output limits');
+assert.match(slashRunnerPatch, /chatCompletion\.setTokenBudget\(maxContext, maxOutput\)/, 'the pinned Slash Runner must apply independent MVU token limits');
+assert.match(vendorBuilder, /bundle\.js\.LICENSE\.txt/, 'the reproducible build must preserve the generated third-party license companion');
+assert.doesNotMatch(bundle, /sourceMappingURL=bundle\.js\.map/, 'the release bundle must not reference an omitted source map');
+assert.equal(fs.existsSync(path.join(extensionRoot, 'vendor/bundle.js.LICENSE.txt')), true, 'the generated third-party license companion must ship with the bundle');
+assert.match(upstream, /7fe9ae7cfe01f13d606f7a2e533a458431fe318c/);
 assert.match(upstream, /MIT/);
 assert.match(upstream, /dependencies are bundled locally/i);
 assert.match(lifecycle, /MANAGED_EXTENSIONS\s*=\s*\([\s\S]*?["']nora-mvu["']/);
@@ -81,6 +115,11 @@ assert.equal(
 );
 assert.equal(fs.existsSync(path.join(helperRoot, 'lib/tailwindcss.LICENSE')), true, 'the Tailwind browser license must ship with the asset');
 assert.equal(helperManifest.auto_update, false, 'the managed helper must not overwrite Nora local dependency redirects');
+assert.match(
+    helperBundle,
+    /synchronizeHelperRuntimeReadiness\(MF\(\)\)/,
+    'late-loaded TavernHelper must initialize its script host from Nora application readiness',
+);
 assert.doesNotMatch(
     helperBundle,
     /https:\/\/testingcf\.jsdelivr\.net\/(?:npm\/(?:vue|vue-router|jquery(?:-ui)?(?:-touch-punch)?|@fortawesome\/fontawesome-free)|gh\/N0VI028\/JS-Slash-Runner\/src\/iframe\/node_modules\/log\.js)/,
@@ -123,5 +162,8 @@ assert.match(modelAdapter, /inspectCurrentCard/);
 assert.match(modelAdapter, /\/api\/nora-mvu-model\/\$\{path\}/);
 assert.match(mvuModelEndpoint, /SECRET_KEYS\.NORA_MVU/);
 assert.doesNotMatch(mvuModelConfig, /api_key\s*:/, 'the non-secret MVU config file must never own an API key');
+assert.match(mvuDiagnosticsEndpoint, /mvuDiagnosticStore\.append/);
+assert.match(mvuUpdateObserver, /reportMvuDiagnostic|report\(diagnostic\)/);
+assert.match(mvuUpdateObserver, /stateChanged: detail\.diagnostics\?\.modified \?\? true/, 'committed no-op updates must not be reported as state changes');
 
 console.log('nora-mvu-headless-contract=PASS');

@@ -17,10 +17,12 @@ function isCardActionType(value) {
 export function createCardActionGateway({
     storyActions,
     isEmbeddedSource,
+    consumeLegacyInput = () => null,
     onUnsupported = () => {},
     onError = () => {},
     onAction = () => {},
     windowRef = globalThis.window,
+    documentRef = globalThis.document,
 } = {}) {
     if (!storyActions?.execute || !storyActions?.cancel) {
         throw new Error('Card action gateway requires the story action dispatcher.');
@@ -65,7 +67,22 @@ export function createCardActionGateway({
         return result;
     }
 
+    async function handleLegacyInput(event = {}) {
+        const text = String(consumeLegacyInput(event) || '').trim();
+        if (!text) return Object.freeze({ status: 'ignored', reason: 'empty-text' });
+        const result = await storyActions.execute({ type: 'story.send', text, origin: 'card.legacy-input' });
+        if (result?.error) {
+            try { onError(result.error); } catch { /* Diagnostics cannot change routing. */ }
+        }
+        try { onAction(Object.freeze({ origin: 'card.legacy-input', requestType: 'legacy-input', result })); } catch { /* Diagnostics never change routing. */ }
+        return result;
+    }
+
     const listener = event => handle(event).catch((error) => {
+        try { onError(error); } catch { /* UI error reporting is best effort. */ }
+        return Object.freeze({ status: 'failed', error });
+    });
+    const legacyInputListener = event => handleLegacyInput(event).catch((error) => {
         try { onError(error); } catch { /* UI error reporting is best effort. */ }
         return Object.freeze({ status: 'failed', error });
     });
@@ -73,15 +90,18 @@ export function createCardActionGateway({
     function start() {
         if (listening) return;
         if (!windowRef?.addEventListener) throw new Error('Card action gateway requires a window event target.');
+        if (!documentRef?.addEventListener) throw new Error('Card action gateway requires a document event target.');
         windowRef.addEventListener('message', listener);
+        documentRef.addEventListener('input', legacyInputListener, true);
         listening = true;
     }
 
     function stop() {
         if (!listening) return;
         windowRef.removeEventListener('message', listener);
+        documentRef.removeEventListener('input', legacyInputListener, true);
         listening = false;
     }
 
-    return Object.freeze({ handle, start, stop });
+    return Object.freeze({ handle, handleLegacyInput, start, stop });
 }

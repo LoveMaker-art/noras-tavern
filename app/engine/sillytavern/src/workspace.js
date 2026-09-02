@@ -9,7 +9,10 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { DEFAULT_USER, PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY, USER_DIRECTORY_TEMPLATE } from './constants.js';
 import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
-import { IMMUTABLE_ASSET_CACHE_CONTROL, REVALIDATED_ASSET_CACHE_CONTROL } from './nora-static-assets.js';
+import {
+    IMMUTABLE_ASSET_CACHE_CONTROL,
+    REVALIDATED_ASSET_CACHE_CONTROL,
+} from './nora-static-assets.js';
 import { color, getConfigValue, invalidateFirefoxCache, isPathUnderParent } from './util.js';
 
 /**
@@ -226,4 +229,8 @@ router.use('/User%20Avatars/*', createRouteHandler(request => request.user.direc
 router.use('/assets/*', createRouteHandler(request => request.user.directories.assets));
 router.use('/user/images/*', createRouteHandler(request => request.user.directories.userImages));
 router.use('/user/files/*', createRouteHandler(request => request.user.directories.files));
-router.use('/scripts/extensions/third-party/*', extensionsEnabledFeatureGuard, createExtensionsRouteHandler(request => request.user.directories.extensions));
+router.use(
+    '/scripts/extensions/third-party/*',
+    extensionsEnabledFeatureGuard,
+    createExtensionsRouteHandler(request => request.user.directories.extensions),
+);

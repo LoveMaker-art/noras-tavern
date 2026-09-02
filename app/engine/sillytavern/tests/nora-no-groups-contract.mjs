@@ -15,7 +15,6 @@ function sourceFiles(directory) {
 }
 
 for (const removedPath of [
-    'public/scripts/group-chats.js',
     'public/css/character-group-overlay.css',
     'src/endpoints/groups.js',
 ]) {
@@ -36,7 +35,6 @@ assert.equal(
 );
 
 const forbidden = [
-    'group-chats.js',
     'groupsRouter',
     'migrateGroupChatsMetadataFormat',
     'createWorldGroup',
@@ -51,6 +49,15 @@ const forbidden = [
     'rm_group_chats_block',
     'newgroupchat_prompt',
 ];
+
+const compatibilityBoundary = fs.readFileSync(path.join(root, 'public/scripts/group-chats.js'), 'utf8');
+assert.match(compatibilityBoundary, /export function getGroupNames\(\)/);
+assert.match(compatibilityBoundary, /return \[\];/);
+assert.equal(
+    compatibilityBoundary.includes('/api/groups'),
+    false,
+    'the compatibility boundary must not restore Group persistence or HTTP behavior',
+);
 
 for (const file of files) {
     const source = fs.readFileSync(file, 'utf8');

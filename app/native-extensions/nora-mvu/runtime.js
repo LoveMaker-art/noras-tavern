@@ -1,11 +1,68 @@
 export const MVU_SCRIPT_ID = 'nora-mvu-headless-runtime';
-export const MVU_UPSTREAM_COMMIT = '0a730cd4a9b99689d1135a49b542c780b977c24c';
-export const NORA_MVU_SETTINGS_VERSION = 1;
+export const MVU_UPSTREAM_COMMIT = '7fe9ae7cfe01f13d606f7a2e533a458431fe318c';
+export const NORA_MVU_SETTINGS_VERSION = 4;
+export const NORA_MVU_BUNDLE_REVISION = 5;
 export const NORA_MVU_MODEL_PROXY_URL = 'https://nora-mvu.invalid/v1';
 
 const MVU_ENTRY_MARKER = /\[(?:initvar|mvu_update|mvu_plot)\]/i;
 
-const BUNDLE_URL = `/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=${MVU_UPSTREAM_COMMIT.slice(0, 12)}`;
+export const MVU_BUNDLE_URL = `/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=${MVU_UPSTREAM_COMMIT.slice(0, 12)}-nora${NORA_MVU_BUNDLE_REVISION}`;
+export const MVU_ZOD_PATH = './vendor/zod.iife.js?v=4.1.11';
+export const MVU_IMPORT_ERROR_KEY = '__NORA_MVU_IMPORT_ERROR__';
+export const MVU_LOADER_VERSION = 2;
+
+export function resolveMvuZodUrl(moduleUrl = import.meta.url) {
+    return new URL(MVU_ZOD_PATH, moduleUrl).href;
+}
+
+const dependencyPromises = new Map();
+function loadClassicDependency({ name, url, read, afterLoad = () => {} }, documentRef) {
+    const current = read();
+    if (current) return Promise.resolve(current);
+    if (dependencyPromises.has(name)) return dependencyPromises.get(name);
+    if (!documentRef?.createElement || !documentRef?.head?.append) {
+        return Promise.reject(new Error(`MVU ${name} dependency cannot be loaded without a document.`));
+    }
+
+    const pending = new Promise((resolve, reject) => {
+        const script = documentRef.createElement('script');
+        script.src = url;
+        script.async = true;
+        script.dataset.noraMvuDependency = name;
+        script.addEventListener('load', () => {
+            afterLoad();
+            const runtime = read();
+            if (runtime) resolve(runtime);
+            else reject(new Error(`MVU ${name} dependency loaded without exposing its runtime.`));
+        }, { once: true });
+        script.addEventListener('error', () => {
+            reject(new Error(`MVU ${name} dependency failed to load: ${url}`));
+        }, { once: true });
+        documentRef.head.append(script);
+    }).catch((error) => {
+        dependencyPromises.delete(name);
+        throw error;
+    });
+    dependencyPromises.set(name, pending);
+    return pending;
+}
+
+export function ensureMvuZodRuntime({
+    read = () => globalThis.z,
+    readUmd = () => globalThis.Zod,
+    publish = runtime => { globalThis.z = runtime; },
+    documentRef = globalThis.document,
+    url = resolveMvuZodUrl(),
+} = {}) {
+    return loadClassicDependency({
+        name: 'Zod',
+        url,
+        read,
+        afterLoad: () => {
+            if (!read()) publish(readUmd());
+        },
+    }, documentRef);
+}
 
 const HEADLESS_DEFAULTS = Object.freeze({
     '通知': {
@@ -24,7 +81,7 @@ const HEADLESS_DEFAULTS = Object.freeze({
         '随机头部': true,
         '启用自动请求': true,
         '请求方式': '依次请求，失败后重试',
-        '请求次数': 3,
+        '请求次数': 1,
         '世界书条目白名单正则': '',
         '世界书条目黑名单正则': '',
         '模型来源': '与插头相同',
@@ -37,7 +94,8 @@ const HEADLESS_DEFAULTS = Object.freeze({
         'top_p': 1,
         'top_k': 0,
         'max_chat_history': 2,
-        '最大回复token数': 4096,
+        '最大上下文token数': 128000,
+        '最大回复token数': 20000,
         'api方案列表': [],
         '当前api方案': '',
     },
@@ -119,7 +177,20 @@ function managedScript(enabled = true) {
         enabled,
         name: 'Nora MVU Runtime',
         id: MVU_SCRIPT_ID,
-        content: `await import('${BUNDLE_URL}');`,
+        content: `
+window.parent.${MVU_IMPORT_ERROR_KEY} = null;
+try {
+    const mvuBundleUrl = new URL('${MVU_BUNDLE_URL}', window.parent.location.href).href;
+    await import(mvuBundleUrl);
+} catch (error) {
+    window.parent.${MVU_IMPORT_ERROR_KEY} = {
+        loaderVersion: ${MVU_LOADER_VERSION},
+        name: String(error?.name || ''),
+        message: String(error?.message || error),
+        stack: String(error?.stack || ''),
+    };
+    throw error;
+}`.trim(),
         info: `Headless MagVarUpdate runtime pinned to ${MVU_UPSTREAM_COMMIT}.`,
         button: { enabled: false, buttons: [] },
         data: {},
@@ -159,14 +230,15 @@ export function ensureHeadlessMvuScriptInSettings(context) {
     return result.registration;
 }
 
-export function ensureHeadlessMvuScript(helper) {
+export async function ensureHeadlessMvuScript(helper, enabled = true) {
     if (typeof helper?.getScriptTrees !== 'function' || typeof helper?.replaceScriptTrees !== 'function') {
         throw new TypeError('TavernHelper script API is unavailable.');
     }
 
     const option = { type: 'global' };
-    const result = reconcileManagedScript(helper.getScriptTrees(option));
-    if (result.registration !== 'unchanged') helper.replaceScriptTrees(result.scripts, option);
+    const scripts = helper.getScriptTrees(option);
+    const result = reconcileManagedScript(Array.isArray(scripts) ? scripts : [], enabled);
+    if (result.registration !== 'unchanged') await helper.replaceScriptTrees(result.scripts, option);
     return result.registration;
 }
 
@@ -188,6 +260,7 @@ export async function waitForTavernHelper({
 
 export async function waitForMvuRuntime({
     read = () => globalThis.Mvu,
+    readImportError = () => globalThis[MVU_IMPORT_ERROR_KEY],
     timeoutMs = 5000,
     intervalMs = 25,
 } = {}) {
@@ -196,6 +269,13 @@ export async function waitForMvuRuntime({
         const runtime = read();
         if (typeof runtime?.getMvuData === 'function') {
             return runtime;
+        }
+        const importError = readImportError();
+        if (importError?.message && importError.loaderVersion === MVU_LOADER_VERSION) {
+            const error = new Error(`MVU bundle import failed: ${importError.message}`);
+            error.name = importError.name || error.name;
+            if (importError.stack) error.stack += `\nCaused by:\n${importError.stack}`;
+            throw error;
         }
         await new Promise(resolve => setTimeout(resolve, intervalMs));
     }
@@ -222,6 +302,20 @@ export function createRetryableMvuLoader(load) {
     };
 }
 
+export function createManagedMvuRuntimeLoader({
+    waitForHelper = waitForTavernHelper,
+    ensureScript = ensureHeadlessMvuScript,
+    waitForRuntime = waitForMvuRuntime,
+    onRegistration = () => {},
+    timeoutMs = 15000,
+} = {}) {
+    return createRetryableMvuLoader(async () => {
+        const helper = await waitForHelper({ timeoutMs });
+        onRegistration(await ensureScript(helper));
+        return waitForRuntime({ timeoutMs });
+    });
+}
+
 export function applyMvuSettings(context, patch = null, { save = true, reloadRuntime = true } = {}) {
     if (!context?.extensionSettings) throw new Error('ST extension settings are unavailable.');
     const current = context.extensionSettings.mvu_settings ?? {};
@@ -237,8 +331,10 @@ export function applyMvuSettings(context, patch = null, { save = true, reloadRun
 export function initializeHeadlessMvuSettings(context) {
     if (!context?.extensionSettings) throw new Error('ST extension settings are unavailable.');
     const marker = context.extensionSettings.nora_mvu ?? {};
-    const isFirstHeadlessActivation = marker.settingsVersion !== NORA_MVU_SETTINGS_VERSION;
-    const patch = isFirstHeadlessActivation ? {
+    const previousVersion = Number(marker.settingsVersion) || 0;
+    const currentContextLimit = context.extensionSettings.mvu_settings?.['额外模型解析配置']?.['最大上下文token数'];
+    const currentTokenLimit = context.extensionSettings.mvu_settings?.['额外模型解析配置']?.['最大回复token数'];
+    const patch = previousVersion === 0 ? {
         '更新方式': '额外模型解析',
         '通知': clone(HEADLESS_DEFAULTS['通知']),
         '额外模型解析配置': {
@@ -246,6 +342,15 @@ export function initializeHeadlessMvuSettings(context) {
             '应答格式': '聊天消息',
             '启用自动请求': true,
             '模型来源': '与插头相同',
+            '请求方式': '依次请求，失败后重试',
+            '请求次数': 1,
+            '最大上下文token数': 128000,
+            '最大回复token数': 20000,
+        },
+    } : previousVersion < 4 ? {
+        '额外模型解析配置': {
+            ...(currentContextLimit === undefined ? { '最大上下文token数': 128000 } : {}),
+            ...(currentTokenLimit === undefined || currentTokenLimit === 4096 ? { '最大回复token数': 20000 } : {}),
         },
     } : null;
     const settings = applyMvuSettings(context, patch, { save: false });

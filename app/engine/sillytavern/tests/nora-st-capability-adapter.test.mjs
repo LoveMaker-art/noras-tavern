@@ -142,7 +142,7 @@ test('proves embedded MVU readiness only when its public variable-data interface
     });
 });
 
-test('reports runtime readiness separately when MVU variable data is not initialized yet', async (t) => {
+test('does not declare MVU ready when its variable snapshot is still missing', async (t) => {
     const previousMvu = globalThis.Mvu;
     t.after(() => {
         if (previousMvu === undefined) delete globalThis.Mvu;
@@ -153,9 +153,36 @@ test('reports runtime readiness separately when MVU variable data is not initial
     const context = runtimeContext(character);
     const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
 
+    await assert.rejects(
+        adapter.ensureCharacterCapability(character, 'mvu'),
+        error => error?.code === 'NORA_MVU_INITVAR_UNAVAILABLE',
+    );
+});
+
+test('asks MVU itself to initialize the active chat before declaring readiness', async (t) => {
+    const previousMvu = globalThis.Mvu;
+    t.after(() => {
+        if (previousMvu === undefined) delete globalThis.Mvu;
+        else globalThis.Mvu = previousMvu;
+    });
+    let variables;
+    let initializationCalls = 0;
+    globalThis.Mvu = {
+        getMvuData: () => variables,
+        async ensureCurrentChatInitialized() {
+            initializationCalls += 1;
+            variables = { stat_data: { day: 1 }, schema: {} };
+            return true;
+        },
+    };
+    const character = characterWithCapabilities();
+    const context = runtimeContext(character);
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
+
     const evidence = await adapter.ensureCharacterCapability(character, 'mvu');
-    assert.equal(evidence.runtime_ready, true);
-    assert.equal(evidence.data_initialized, false);
+
+    assert.equal(initializationCalls, 1);
+    assert.equal(evidence.data_initialized, true);
 });
 
 test('returns a stable error code when a declared capability is not authorized', async () => {
@@ -175,7 +202,9 @@ test('activates only the extension dependencies of the capability being checked'
         if (previousEnsure === undefined) delete globalThis.__NORA_ENSURE_MVU_READY__;
         else globalThis.__NORA_ENSURE_MVU_READY__ = previousEnsure;
     });
-    globalThis.__NORA_ENSURE_MVU_READY__ = async () => ({ getMvuData() {} });
+    globalThis.__NORA_ENSURE_MVU_READY__ = async () => ({
+        getMvuData: () => ({ stat_data: {}, schema: {} }),
+    });
     const character = {
         name: '管理型 MVU 角色',
         avatar: 'managed-mvu.png',
