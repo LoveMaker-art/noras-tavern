@@ -107,7 +107,7 @@ export async function collectManagedExtensionCoreBridges(
         const resolvedExtensionDirectory = path.resolve(extensionDirectory);
         const visited = new Set();
 
-        async function visit(relativePath, virtualUrl) {
+        const visit = async (relativePath, virtualUrl) => {
             const normalizedRelativePath = decodeURIComponent(relativePath).replace(/^\/+/, '');
             const absolutePath = path.resolve(resolvedExtensionDirectory, normalizedRelativePath);
             if (!absolutePath.startsWith(`${resolvedExtensionDirectory}${path.sep}`)) {
@@ -134,7 +134,7 @@ export async function collectManagedExtensionCoreBridges(
                     if (error?.code !== 'ENOENT') throw error;
                 }
             }
-        }
+        };
 
         const entryRelativePath = manifest.js.replace(/^\/+/, '');
         await visit(entryRelativePath, `${extensionRootUrl}${entryRelativePath}`);

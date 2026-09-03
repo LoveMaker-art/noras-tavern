@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-03T07:36:45.693Z",
+  "generatedAt": "2026-09-03T07:49:43.259Z",
   "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
-  "head": "251e09ea99e7a77d11b908ec03f28c6eef762764",
-  "dirty": false,
+  "head": "c84842be4ff2cc880cf53a9eee6a180d4eb9c428",
+  "dirty": true,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
     "includes": "Tracked and untracked project files that participate in source, tests, build, operations, architecture, or shipped generated assets.",
@@ -38,7 +38,8 @@
       "test": 156
     },
     "byStatus": {
-      "tracked": 1350
+      "modified": 1,
+      "tracked": 1349
     },
     "byExtension": {
       ".br": 5,
@@ -73,7 +74,7 @@
     },
     "generated": 30,
     "source": 1320,
-    "totalBytes": 80200948
+    "totalBytes": 80200952
   },
   "files": [
     {
@@ -196,11 +197,11 @@
     {
       "path": "app/engine/sillytavern/build/generate-nora-runtime-assets.mjs",
       "role": "build-tool",
-      "status": "tracked",
+      "status": "modified",
       "generated": false,
       "kind": "file",
-      "size": 14482,
-      "sha256": "fa39dc7f6d458f4080655b317866bb3439bac659b035444a450f0201cd3c7a81"
+      "size": 14486,
+      "sha256": "9d3159fea168e9b64dfa677abb74959078d26d80b6d482098697809fb2f9882d"
     },
     {
       "path": "app/engine/sillytavern/build/sync-story-profile-runtime.mjs",
