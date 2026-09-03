@@ -1,7 +1,7 @@
 export const MVU_SCRIPT_ID = 'nora-mvu-headless-runtime';
 export const MVU_UPSTREAM_COMMIT = '7fe9ae7cfe01f13d606f7a2e533a458431fe318c';
 export const NORA_MVU_SETTINGS_VERSION = 4;
-export const NORA_MVU_BUNDLE_REVISION = 5;
+export const NORA_MVU_BUNDLE_REVISION = 6;
 export const NORA_MVU_MODEL_PROXY_URL = 'https://nora-mvu.invalid/v1';
 
 const MVU_ENTRY_MARKER = /\[(?:initvar|mvu_update|mvu_plot)\]/i;

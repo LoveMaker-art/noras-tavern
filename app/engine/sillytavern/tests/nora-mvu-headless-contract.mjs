@@ -68,7 +68,7 @@ assert.doesNotMatch(schemaRuntime, /https?:\/\/|^\s*import\b/m, 'MVU schema runt
 assert.match(bundle, /reloadSettings/, 'vendored runtime must expose the headless settings reload bridge');
 assert.match(bundle, /MVU_COMMAND_VALIDATION_FAILED/, 'vendored runtime must classify update validation failures');
 assert.match(bundle, /MVU_EXTRA_MODEL_TIMEOUT/, 'vendored runtime must classify bounded request timeouts');
-assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 60_000;/, 'each MVU model attempt must receive the full observed provider budget');
+assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;/, 'each MVU model attempt must receive the full observed provider budget');
 assert.doesNotMatch(noraPatch, /PRIMARY_ATTEMPT_BUDGET_MS|TRANSACTION_BUDGET_MS/, 'MVU must not split one request budget into guaranteed-short retries');
 assert.match(noraPatch, /if \(!\['parsing', 'validation'\]\.includes\(failure\.stage\)\) break;/, 'MVU transport failures must not trigger an overlapping paid retry');
 assert.match(noraPatch, /const use_builtin_jailbreak = is_gemini \|\| is_claude;/, 'the upstream jailbreak must only be sent to the model families it targets');

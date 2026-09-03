@@ -10,7 +10,7 @@ the runtime API. The retry entry point reuses the upstream button's rollback beh
 removes the old update block and restores the previous variable snapshot before requesting a
 replacement. It also restores the original message and variables when the replacement request
 fails. Nora now wraps the upstream parser and persistence logic in one bounded transaction: one
-primary model attempt, at most one targeted parsing/validation repair, a 60-second deadline per
+primary model attempt, at most one targeted parsing/validation repair, a 120-second deadline per
 attempt, validation on a cloned snapshot, a stale-chat guard, and one atomic commit. An invalid
 or late result never replaces the previous valid snapshot. Models outside the upstream Gemini
 and Claude prompt families receive a deterministic MVU-only prompt; formatted-output mode keeps
