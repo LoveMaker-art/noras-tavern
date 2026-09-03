@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-03T07:57:39.682Z",
+  "generatedAt": "2026-09-03T07:59:40.427Z",
   "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
-  "head": "a4a531330a0bbaefd6fb644beefbf4147215d9e3",
+  "head": "89a59acc4037a22b53a37eacfb2932f419e08c03",
   "dirty": false,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
@@ -11,7 +11,7 @@
     "generatedFilesAreNotAuthoritativeSource": true
   },
   "counts": {
-    "files": 1346,
+    "files": 1347,
     "exclusions": 32,
     "byRole": {
       "architecture-documentation": 60,
@@ -20,7 +20,7 @@
       "backend-nora": 44,
       "build-tool": 6,
       "configuration-or-manifest": 175,
-      "documentation": 32,
+      "documentation": 33,
       "frontend-compatibility-engine": 262,
       "frontend-nora-runtime": 38,
       "full-release-updater": 14,
@@ -38,7 +38,7 @@
       "test": 156
     },
     "byStatus": {
-      "tracked": 1346
+      "tracked": 1347
     },
     "byExtension": {
       ".br": 4,
@@ -53,7 +53,7 @@
       ".json": 211,
       ".license": 2,
       ".map": 1,
-      ".md": 120,
+      ".md": 121,
       ".mjs": 140,
       ".model": 7,
       ".mp3": 2,
@@ -72,8 +72,8 @@
       "[none]": 18
     },
     "generated": 26,
-    "source": 1320,
-    "totalBytes": 78767739
+    "source": 1321,
+    "totalBytes": 78769047
   },
   "files": [
     {
@@ -109,8 +109,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7,
-      "sha256": "b43889a851b767c2082dc89467e96b56b6d41eb4cc8a14621884fe16f7c1297c"
+      "size": 6,
+      "sha256": "c89b87c262e9d5ffd20e73aac74a1772adcc9f5a21682cc33adcf5086e5fef5c"
     },
     {
       "path": "app/actor_self.md",
@@ -10877,6 +10877,15 @@
       "sha256": "c3a44bd10a7586b248cdbdbb0a690306d88de39e5fdb17bfb9805b14109efcb1"
     },
     {
+      "path": "docs/releases/2.1.0.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1313,
+      "sha256": "4b28e26cd79d4daf3ff4e839d19941ac6aad2887dff8eb2c02d7aa5502fa50b0"
+    },
+    {
       "path": "docs/releases/v2.0.0-rc.3.md",
       "role": "documentation",
       "status": "tracked",
@@ -12016,8 +12025,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6196,
-      "sha256": "2038568c32f33d1e3d58a62f57dbde5f462b421793c2c723a83ea5317f27a572"
+      "size": 6192,
+      "sha256": "c78ef8ad63c77687d3eef58534fc50ea1259fd8276f5c4a78f52074ae60bb36c"
     },
     {
       "path": "README.md",
