@@ -10,7 +10,6 @@ export default {
     entry: {
         entry: './public/nora-entry.js',
         'lib-core': './public/lib-core.js',
-        lib: './public/lib.js',
     },
     devtool: false,
     experiments: {

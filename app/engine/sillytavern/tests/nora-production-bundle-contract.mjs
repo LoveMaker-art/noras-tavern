@@ -7,9 +7,16 @@ const index = fs.readFileSync(new URL('../public/index.html', import.meta.url), 
 const coreSource = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
 const extensions = fs.readFileSync(new URL('../public/scripts/extensions.js', import.meta.url), 'utf8');
 const runtimeAssetBuilder = fs.readFileSync(new URL('../build/generate-nora-runtime-assets.mjs', import.meta.url), 'utf8');
+const duplicatePublicLibBundle = new URL('../public/dist/nora/lib.js', import.meta.url);
+const canonicalPublicLibBundle = new URL('../dist/_webpack/output/lib.js', import.meta.url);
 
 assert.match(config, /entry:\s*'\.\/public\/nora-entry\.js'/);
 assert.match(config, /'lib-core':\s*'\.\/public\/lib-core\.js'/);
+assert.doesNotMatch(
+    config,
+    /^\s*lib:\s*'\.\/public\/lib\.js'/m,
+    'the standalone /lib.js runtime must not also be emitted into public/dist/nora',
+);
 assert.match(config, /filename:\s*'\[name\]\.js'/);
 assert.doesNotMatch(config, /core:\s*'\.\/public\/script\.js'/);
 assert.doesNotMatch(kernel, /dist\/nora\/core\.js/);
@@ -41,6 +48,13 @@ assert.match(runtimeAssetBuilder, /['"]\/scripts\/extensions\/regex\/index\.js['
 assert.match(runtimeAssetBuilder, /buildLegacyBundle/);
 assert.match(runtimeAssetBuilder, /attachLegacyAsset/);
 assert.match(runtimeAssetBuilder, /attachCompiledModule\(inlineManifest, 'lib-core\.js'/);
+assert.doesNotMatch(
+    runtimeAssetBuilder,
+    /const bundleNames = \[[^\]]*['"]lib\.js['"]/,
+    'runtime asset generation must not recreate the duplicate dist/nora/lib.js bundle',
+);
+assert.equal(fs.existsSync(duplicatePublicLibBundle), false, 'the duplicate dist/nora/lib.js artifact must not ship');
+assert.equal(fs.existsSync(canonicalPublicLibBundle), true, 'the canonical /lib.js runtime artifact must still ship');
 assert.match(runtimeAssetBuilder, /CORE_LIBRARY_URL = '\/lib-core\.js'/);
 assert.match(index, /dist\/nora\/lib-core\.js/);
 assert.match(extensions, /normalized\.startsWith\('scripts\/extensions\/third-party\/'\)/);

@@ -316,7 +316,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     attachExtensionCoreBridges(inlineManifest, extensionCoreBridges);
     attachLegacyAsset(inlineManifest, 'dist/nora/legacy.js');
     await fs.mkdir(outputDirectory, { recursive: true });
-    const bundleNames = ['entry.js', 'lib-core.js', 'lib.js'];
+    const bundleNames = ['entry.js', 'lib-core.js'];
     const bundleEntries = await Promise.all(bundleNames.map(async (name) => {
         const filePath = path.join(outputDirectory, name);
         return [filePath, await fs.readFile(filePath)];
