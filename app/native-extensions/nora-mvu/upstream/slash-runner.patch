@@ -1,6 +1,33 @@
 diff --git a/src/function/generate/generateRaw.ts b/src/function/generate/generateRaw.ts
 --- a/src/function/generate/generateRaw.ts
 +++ b/src/function/generate/generateRaw.ts
+@@ -176,12 +176,16 @@ async function processChatHistoryAndInject(
+ 
+   // 为新聊天指示预留token
+   const newChat = oai_settings.new_chat_prompt;
+-  const newChatMessage = await Message.createAsync('system', substituteParams(newChat), 'newMainChat');
+-  chatCompletion.reserveBudget(newChatMessage);
++  const newChatMessage =
++    typeof newChat === 'string' && newChat.trim()
++      ? await Message.createAsync('system', substituteParams(newChat), 'newMainChat')
++      : null;
++  if (newChatMessage) chatCompletion.reserveBudget(newChatMessage);
+ 
+   // 添加新聊天提示词到集合的最前面
+-  chatCollection.add(newChatMessage);
++  if (newChatMessage) chatCollection.add(newChatMessage);
+ 
+   // 处理空消息替换
+   const lastChatPrompt = baseData.chatContext.oaiMessages[baseData.chatContext.oaiMessages.length - 1];
+@@ -251,7 +255,7 @@ async function processChatHistoryAndInject(
+   }
+ 
+   // 释放新聊天提示词的预留token
+-  chatCompletion.freeBudget(newChatMessage);
++  if (newChatMessage) chatCompletion.freeBudget(newChatMessage);
+ 
+   if (hasUserInput) {
+     // 按各自在order中的位置添加聊天记录和用户输入
 @@ -477,7 +477,17 @@ export async function handleCustomPath(
    processedUserInput: string,
  ) {
@@ -18,6 +45,17 @@ diff --git a/src/function/generate/generateRaw.ts b/src/function/generate/genera
    chatCompletion.reserveBudget(3);
    const orderArray = config.order || default_order;
    const positionMap: Record<string, number> = orderArray.reduce((acc: Record<string, number>, item, index) => {
+diff --git a/src/function/generate/dataProcessor.ts b/src/function/generate/dataProcessor.ts
+--- a/src/function/generate/dataProcessor.ts
++++ b/src/function/generate/dataProcessor.ts
+@@ -183,7 +183,7 @@ function setAuthorNotePrompt(config: detail.GenerateParams) {
+ function setAuthorNotePrompt(config: detail.GenerateParams) {
+   const authorNoteOverride = config?.overrides?.author_note;
+-  const prompt = authorNoteOverride ?? ($('#extension_floating_prompt').val() as string);
++  const prompt = authorNoteOverride ?? ($('#extension_floating_prompt').val() as string | undefined) ?? '';
+ 
+   setExtensionPrompt(
+     NOTE_MODULE_NAME,
 diff --git a/src/function/generate/index.ts b/src/function/generate/index.ts
 --- a/src/function/generate/index.ts
 +++ b/src/function/generate/index.ts

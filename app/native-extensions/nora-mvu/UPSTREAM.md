@@ -17,6 +17,9 @@ and Claude prompt families receive a deterministic MVU-only prompt; formatted-ou
 the upstream JSON Schema response and conversion path. An explicit empty `JSONPatch` commits as
 a successful no-op without rewriting the story message. Independent-model context and output
 limits are passed into the pinned Slash Runner prompt budget instead of being display-only fields.
+A model configured to follow the active Tavern text model now inherits that model's thinking
+behavior as well as its provider, credentials, model name, and output limit. The MVU-only
+`关闭thinking` override is applied only when the user selects an independent custom MVU model.
 A small `reloadSettings` bridge lets Nora's headless API
 refresh the live MVU store after configuration changes. The runtime also exposes an idempotent
 `ensureCurrentChatInitialized` operation so Nora cannot declare a World ready merely because the

@@ -120,6 +120,100 @@ diff --git a/src/function/update/invoke_extra_model.ts b/src/function/update/inv
 index edc468c..68baf40 100644
 --- a/src/function/update/invoke_extra_model.ts
 +++ b/src/function/update/invoke_extra_model.ts
+@@ -17,7 +17,7 @@ import {
+ import { tr } from '@/i18n';
+ import { useDataStore } from '@/store';
+-import { normalizeBaseURL } from '@/util';
++import { getLastValidVariable, normalizeBaseURL } from '@/util';
+ import { literalYamlify, uuidv4 } from '@util/common';
+ import { compare } from 'compare-versions';
+ import YAML from 'yaml';
+
+@@ -91,7 +91,9 @@ function buildJsonObjectCustomIncludeBody(original_body: unknown): Record<strin
+         ...parseCustomIncludeBody(original_body),
+         ...JSON_OBJECT_CUSTOM_INCLUDE_BODY,
+-        ...(store.settings.额外模型解析配置.关闭thinking
++        ...(store.settings.额外模型解析配置.模型来源 === '自定义' &&
++        store.settings.额外模型解析配置.关闭thinking
+             ? DISABLED_THINKING_CUSTOM_INCLUDE_BODY
+             : {}),
+     };
+@@ -164,6 +164,58 @@ async function restoreTemporaryJsonObjectResponseFormat() {
+     await saveSillyTavernSettings();
+ }
+ 
++let state_prompt_listener: ((event_data: any, dry_run: boolean) => void) | null = null;
++
++function replaceUnresolvedStateBlocks(event_data: any, dry_run: boolean) {
++    if (dry_run || !Array.isArray(event_data?.prompt)) return;
++
++    const message_id = getLastMessageId();
++    const variables = getLastValidVariable(message_id === 0 ? 1 : message_id);
++    if (!variables?.stat_data) return;
++
++    const state_block = [
++        '<status_current_variables>',
++        JSON.stringify(variables.stat_data),
++        '</status_current_variables>',
++    ].join('\n');
++    const state_block_pattern = /<status_current_variables>[\s\S]*?<\/status_current_variables>/gi;
++    const unresolved_pattern = /<%|{{\s*(?:getvar|get_message_variable)(?:::|\()/i;
++    let found_state_block = false;
++
++    for (const message of event_data.prompt) {
++        if (typeof message?.content !== 'string') continue;
++        message.content = message.content.replace(state_block_pattern, block => {
++            found_state_block = true;
++            return unresolved_pattern.test(block) ? state_block : block;
++        });
++    }
++
++    if (found_state_block) return;
++    const insert_at = event_data.prompt.findIndex(
++        (message: any) =>
++            typeof message?.content === 'string' &&
++            message.content.includes('<past_observe>')
++    );
++    event_data.prompt.splice(
++        insert_at < 0 ? 0 : insert_at,
++        0,
++        { role: 'system', content: state_block }
++    );
++}
++
++function installCurrentStatePrompt() {
++    if (state_prompt_listener) return;
++    state_prompt_listener = replaceUnresolvedStateBlocks;
++    eventOn(tavern_events.GENERATE_AFTER_DATA, state_prompt_listener);
++}
++
++function uninstallCurrentStatePrompt() {
++    if (!state_prompt_listener) return;
++    eventRemoveListener(tavern_events.GENERATE_AFTER_DATA, state_prompt_listener);
++    state_prompt_listener = null;
++}
++
+ async function setExtraAnalysisStates() {
+     const store = useDataStore();
+ 
+@@ -177,6 +229,7 @@ async function setExtraAnalysisStates() {
+ 
+     store.runtimes.is_during_extra_analysis = true;
+     try {
++        installCurrentStatePrompt();
+         await setTemporaryJsonObjectResponseFormat();
+     } catch (error) {
++        uninstallCurrentStatePrompt();
+         store.runtimes.is_during_extra_analysis = false;
+         throw error;
+@@ -187,6 +240,7 @@ async function unsetExtraAnalysisStates() {
+     const store = useDataStore();
+ 
+     SillyTavern.unregisterMacro('lastUserMessage');
++    uninstallCurrentStatePrompt();
+     clearExtraModelRequestOverrides();
+     store.runtimes.is_function_call_enabled = false;
+     try {
 @@ -347,11 +347,51 @@ export async function generateExtraModel(): Promise<string | null> {
      }
  }

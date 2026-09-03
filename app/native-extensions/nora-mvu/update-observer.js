@@ -91,14 +91,18 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         });
         on(transactionCommittedEvent, (detail = {}) => {
             transactionActive = false;
+            const committedCommandCount = detail.diagnostics?.command_count ?? commandCount;
+            const stateChanged = detail.diagnostics?.modified ?? committedCommandCount > 0;
             current = {
                 ...current,
                 updateOperational: true,
-                updatePhase: 'completed',
+                updatePhase: stateChanged ? 'completed' : 'no-change',
                 lastUpdateAt: now(),
+                lastUpdateCode: stateChanged ? null : 'MVU_NO_STATE_CHANGE',
+                lastUpdateStage: stateChanged ? null : 'update',
                 lastUpdateError: null,
-                lastUpdateCommandCount: detail.diagnostics?.command_count ?? commandCount,
-                stateChanged: detail.diagnostics?.modified ?? true,
+                lastUpdateCommandCount: committedCommandCount,
+                stateChanged,
                 transactionDurationMs: detail.duration_ms ?? null,
                 transactionAttempt: detail.attempt ?? null,
             };

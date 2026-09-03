@@ -15,6 +15,12 @@ This managed build has extension auto-update disabled so upstream updates
 cannot overwrite Nora's audited local dependency redirects. Updates are applied
 through Nora's managed-extension release process instead.
 
+Nora's headless runtime may omit ST's optional `new_chat_prompt` and author-note
+input. The managed bundle normalizes both missing values before handing them to
+ST's prompt collector, so neither can become a literal `undefined` message. All
+ordinary character, World Info, and chat-history prompt processing remains
+upstream-compatible.
+
 Nora's control adapter is connected in the readable prefix of `dist/index.js`.
 `nora-control-adapter.js` wraps the existing global/character/preset reactive
 stores and their native persistence functions. It does not replace the script

@@ -322,13 +322,15 @@ test('subscribe projects MVU transaction events without polling the runtime', ()
     });
 
     listeners.get('nora_mvu_transaction_started')?.({ message_id: 3 });
-    listeners.get('nora_mvu_transaction_committed')?.({ message_id: 3, status: 'wrong' });
-    listeners.get('nora_mvu_transaction_failed')?.({ message_id: 4, error_code: 'MVU_REQUEST_FAILED' });
+    listeners.get('nora_mvu_transaction_committed')?.({ message_id: 3, status: 'wrong', diagnostics: { modified: true } });
+    listeners.get('nora_mvu_transaction_committed')?.({ message_id: 4, diagnostics: { modified: false, command_count: 0 } });
+    listeners.get('nora_mvu_transaction_failed')?.({ message_id: 5, error_code: 'MVU_REQUEST_FAILED' });
 
     assert.deepEqual(received, [
         { message_id: 3, status: 'syncing' },
-        { message_id: 3, status: 'committed' },
-        { message_id: 4, error_code: 'MVU_REQUEST_FAILED', status: 'failed' },
+        { message_id: 3, diagnostics: { modified: true }, status: 'committed' },
+        { message_id: 4, diagnostics: { modified: false, command_count: 0 }, status: 'no-change' },
+        { message_id: 5, error_code: 'MVU_REQUEST_FAILED', status: 'failed' },
     ]);
     release();
     assert.equal(listeners.size, 0);

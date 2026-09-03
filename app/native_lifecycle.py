@@ -29,6 +29,7 @@ COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 RUN_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 MANAGED_EXTENSIONS = (
     "JS-Slash-Runner",
+    "ST-Prompt-Template",
     "nora-mvu",
     "nora-ui",
     "nora-ledger",

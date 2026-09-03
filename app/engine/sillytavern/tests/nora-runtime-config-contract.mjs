@@ -16,6 +16,7 @@ const serverStartup = read('src/server-startup.js');
 const lifecycle = read('../../native_lifecycle.py');
 const packageJson = JSON.parse(read('package.json'));
 const helperRoot = path.resolve(root, '../../native-extensions/JS-Slash-Runner');
+const promptTemplateRoot = path.resolve(root, '../../native-extensions/ST-Prompt-Template');
 
 for (const config of [defaultConfig]) {
     assert.equal(config.browserLaunch.enabled, false, 'managed Nora runtime must never auto-open a browser');
@@ -49,9 +50,12 @@ assert.match(commandLine, /getRuntimeUrl/);
 assert.doesNotMatch(serverMain, /import\(['"]open['"]\)|Launching in a browser/);
 assert.doesNotMatch(lifecycle, /--browserLaunchEnabled/);
 assert.match(lifecycle, /MANAGED_EXTENSIONS\s*=\s*\([\s\S]*['"]JS-Slash-Runner['"]/);
+assert.match(lifecycle, /MANAGED_EXTENSIONS\s*=\s*\([\s\S]*['"]ST-Prompt-Template['"]/);
 assert.equal(fs.existsSync(path.join(helperRoot, 'manifest.json')), true, 'managed runtime must bundle the card runtime manifest');
 assert.equal(fs.existsSync(path.join(helperRoot, 'dist/index.js')), true, 'managed runtime must bundle the card runtime script');
 assert.equal(fs.existsSync(path.join(helperRoot, 'dist/index.css')), true, 'managed runtime must bundle the card runtime styles');
+assert.equal(fs.existsSync(path.join(promptTemplateRoot, 'manifest.json')), true, 'managed runtime must bundle the EJS prompt-template manifest');
+assert.equal(fs.existsSync(path.join(promptTemplateRoot, 'dist/index.js')), true, 'managed runtime must bundle the EJS prompt-template runtime');
 assert.equal(packageJson.dependencies.open, undefined);
 
 assert.doesNotMatch(configInit, /newKey:\s*['"]browserLaunch\./);

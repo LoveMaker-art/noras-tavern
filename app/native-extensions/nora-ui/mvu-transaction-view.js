@@ -3,6 +3,7 @@ import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i1
 const PRESENTATION = Object.freeze({
     syncing: Object.freeze({ label: '正在同步MVU变量', symbol: '', duration: 0 }),
     committed: Object.freeze({ label: 'MVU变量已更新', symbol: '✓', duration: 1000 }),
+    'no-change': Object.freeze({ label: 'MVU变量无变化', symbol: '–', duration: 1000 }),
     failed: Object.freeze({ label: 'MVU变量更新失败', symbol: '!', duration: 3000 }),
 });
 

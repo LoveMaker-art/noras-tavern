@@ -208,7 +208,7 @@ test('MVU transaction observation preserves prior readiness and reports bounded 
     observer.dispose();
 });
 
-test('MVU transaction observation records an explicit empty JSONPatch as successful without a state change', () => {
+test('MVU transaction observation exposes an explicit empty JSONPatch as a no-change result', () => {
     const listeners = new Map();
     const eventSource = {
         on: (event, handler) => listeners.set(event, handler),
@@ -236,7 +236,8 @@ test('MVU transaction observation records an explicit empty JSONPatch as success
     });
 
     assert.equal(observer.status().updateOperational, true);
-    assert.equal(observer.status().updatePhase, 'completed');
+    assert.equal(observer.status().updatePhase, 'no-change');
+    assert.equal(observer.status().lastUpdateCode, 'MVU_NO_STATE_CHANGE');
     assert.equal(observer.status().stateChanged, false);
     assert.equal(observer.status().lastUpdateCommandCount, 0);
     observer.dispose();

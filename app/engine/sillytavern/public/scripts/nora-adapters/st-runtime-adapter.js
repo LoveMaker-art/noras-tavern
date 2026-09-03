@@ -102,7 +102,10 @@ export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {})
         on(events.GENERATION_ENDED, () => handlers.generationChanged?.(false));
         on(events.GENERATION_STOPPED, () => handlers.generationChanged?.(false));
         on(MVU_TRANSACTION_EVENTS.started, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
-        on(MVU_TRANSACTION_EVENTS.committed, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'committed' }));
+        on(MVU_TRANSACTION_EVENTS.committed, detail => handlers.mvuTransactionChanged?.({
+            ...detail,
+            status: detail?.diagnostics?.modified === false ? 'no-change' : 'committed',
+        }));
         on(MVU_TRANSACTION_EVENTS.failed, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'failed' }));
         return () => bindings.forEach(([event, handler]) => source.off?.(event, handler));
     }
