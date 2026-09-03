@@ -4,7 +4,7 @@
 
 Tavern is a World-centered role-playing runtime for a single-user Hermes / ClawChat workspace. It reuses SillyTavern compatibility for character cards, lorebooks, scripts, and extensions while Nora World Core owns Worlds, sessions, resources, and persistent state.
 
-Current stable release: [v2.0.13](https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.0.13)
+Current stable release: [v2.1.0](https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.1.0)
 
 ## What it provides
 
@@ -104,7 +104,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local setup, verification, Story Prof
 
 Additional references:
 
-- [v2.0.13 release notes](docs/releases/2.0.13.md)
+- [v2.1.0 release notes](docs/releases/2.1.0.md)
 - [Complex-card compatibility matrix](docs/architecture/COMPLEX-CARD-COMPATIBILITY-MATRIX.md)
 - [Nora MCP capabilities and boundaries](nora-mcp/README.md)
 - [Story Profile source project](story-profile/README.md)
