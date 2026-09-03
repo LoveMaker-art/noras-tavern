@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-03T07:49:55.148Z",
+  "generatedAt": "2026-09-03T07:57:39.682Z",
   "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
-  "head": "5c3edc2aeeac6b882f344927bb7b94d542a9ec5d",
+  "head": "a4a531330a0bbaefd6fb644beefbf4147215d9e3",
   "dirty": false,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
@@ -11,7 +11,7 @@
     "generatedFilesAreNotAuthoritativeSource": true
   },
   "counts": {
-    "files": 1350,
+    "files": 1346,
     "exclusions": 32,
     "byRole": {
       "architecture-documentation": 60,
@@ -25,7 +25,7 @@
       "frontend-nora-runtime": 38,
       "full-release-updater": 14,
       "generated-profile-runtime": 7,
-      "generated-runtime": 22,
+      "generated-runtime": 18,
       "hermes-skill-source": 46,
       "lifecycle": 2,
       "native-compatibility-extension": 21,
@@ -38,18 +38,18 @@
       "test": 156
     },
     "byStatus": {
-      "tracked": 1350
+      "tracked": 1346
     },
     "byExtension": {
-      ".br": 5,
+      ".br": 4,
       ".charx": 1,
       ".cjs": 5,
       ".css": 47,
-      ".gz": 5,
+      ".gz": 4,
       ".html": 94,
       ".ico": 1,
       ".jpg": 21,
-      ".js": 418,
+      ".js": 417,
       ".json": 211,
       ".license": 2,
       ".map": 1,
@@ -65,15 +65,15 @@
       ".svg": 58,
       ".ts": 13,
       ".ttf": 2,
-      ".txt": 7,
+      ".txt": 6,
       ".woff": 18,
       ".woff2": 29,
       ".yaml": 3,
       "[none]": 18
     },
-    "generated": 30,
+    "generated": 26,
     "source": 1320,
-    "totalBytes": 80200952
+    "totalBytes": 78767739
   },
   "files": [
     {
@@ -199,8 +199,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 14486,
-      "sha256": "9d3159fea168e9b64dfa677abb74959078d26d80b6d482098697809fb2f9882d"
+      "size": 14476,
+      "sha256": "d55514a4d81a4801c24b93fabe4e3d7e3b2ccf72162850d4f715f9707f42f5fc"
     },
     {
       "path": "app/engine/sillytavern/build/sync-story-profile-runtime.mjs",
@@ -2440,8 +2440,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 2562539,
-      "sha256": "968772317e3eff75a0aced87b2d2beebe901aeb0339324e3154dcdb59c8eb90b"
+      "size": 2562873,
+      "sha256": "b4eec5b73d2e311b450617c63f165616bd9520aaa37c0b52badee731cfa5815f"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.br",
@@ -2449,8 +2449,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 547502,
-      "sha256": "76bff6df14cbb0ecb1c7c3367e500537de0465d2fc0b5f7d25da2ed607fc4919"
+      "size": 547649,
+      "sha256": "3bd9b82ff1222c671e831a18d0c51493c974948253b0fdd17161378a93bdcf92"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.gz",
@@ -2458,8 +2458,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 791250,
-      "sha256": "3d82c35a334e9bb4cbf86745cf5f67161c84a36b616ddd36c296737f71f26e63"
+      "size": 791284,
+      "sha256": "d859a2b25fa80473387ec63f8f0b6a2be220efd11ea61efa220e36496d2ba750"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/legacy.js",
@@ -2517,42 +2517,6 @@
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.LICENSE.txt",
-      "role": "generated-runtime",
-      "status": "tracked",
-      "generated": true,
-      "kind": "file",
-      "size": 1249,
-      "sha256": "407724035bebf4a739d8f7be3286dc8af1b51ce248f9e333c8ac26e37aebc956"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/lib.js",
-      "role": "generated-runtime",
-      "status": "tracked",
-      "generated": true,
-      "kind": "file",
-      "size": 915054,
-      "sha256": "90f882a5a8b24841a1edebe49813af06bf7c383cd68fa83640a00da716d21b54"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/lib.js.br",
-      "role": "generated-runtime",
-      "status": "tracked",
-      "generated": true,
-      "kind": "file",
-      "size": 234125,
-      "sha256": "8c04ee3a1ed2f8914dc01839bcf1a3348b920b4442ab2413a248b1145e7bb78d"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/lib.js.gz",
-      "role": "generated-runtime",
-      "status": "tracked",
-      "generated": true,
-      "kind": "file",
-      "size": 284028,
-      "sha256": "e7929914e7d70ecbea900609ef1804e09fa24d90be59b4fdf5a737da4dbaf8ed"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/lib.js.LICENSE.txt",
       "role": "generated-runtime",
       "status": "tracked",
       "generated": true,
@@ -8839,8 +8803,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4150,
-      "sha256": "301a950bca9fd22b1cba2a2612afde8db453013cc9a6ae66b9f25b3d3f35d9f7"
+      "size": 4920,
+      "sha256": "eba2629da22904a6ae2ba6f6bbe35d617bf2fcc2cae44e4237e71c56bf4977b7"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-profile-host-request.test.mjs",
@@ -9541,8 +9505,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 745,
-      "sha256": "b4f759176cde8c1a0f0f91dde445b72ea8109b1e74b61fdd7e354c644597119e"
+      "size": 713,
+      "sha256": "44d62e4fbb8d61b95d0994d5d3d7108788295de31f76b1250bafa78074d96c82"
     },
     {
       "path": "app/native_lifecycle.py",
