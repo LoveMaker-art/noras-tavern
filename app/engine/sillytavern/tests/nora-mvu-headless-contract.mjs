@@ -77,7 +77,8 @@ assert.match(noraPatch, /Return exactly one block in this structure and no prose
 assert.match(noraPatch, /If nothing changed, return an empty JSONPatch array\./, 'the MVU response contract must define an explicit no-op form');
 assert.match(noraPatch, /const explicit_noop = \/<JSONPatch>/, 'an empty JSONPatch must be accepted as a successful no-op transaction');
 assert.doesNotMatch(noraPatch, /generation_id,[\s\S]{0,120}max_tokens:/, 'story-model MVU requests must inherit the active text-model output limit');
-assert.match(noraPatch, /config\.custom_api = \{[\s\S]{0,240}\+\s*max_context:[\s\S]{0,160}\+\s*max_tokens:/, 'independent MVU models must retain their own context and output limits');
+assert.match(noraPatch, /config\.custom_api = \{[\s\S]{0,120}\+\s*max_context:/, 'MVU must pass its independent context limit into the custom model request');
+assert.match(slashRunnerPatch, /config\.custom_api\?\.max_context[\s\S]{0,160}config\.custom_api\?\.max_tokens/, 'independent MVU models must retain their own context and output limits');
 assert.match(slashRunnerPatch, /chatCompletion\.setTokenBudget\(maxContext, maxOutput\)/, 'the pinned Slash Runner must apply independent MVU token limits');
 assert.match(vendorBuilder, /bundle\.js\.LICENSE\.txt/, 'the reproducible build must preserve the generated third-party license companion');
 assert.doesNotMatch(bundle, /sourceMappingURL=bundle\.js\.map/, 'the release bundle must not reference an omitted source map');

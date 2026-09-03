@@ -753,7 +753,7 @@ export async function ensureNoraFullChatLoaded() {
         chat.splice(0, chat.length, ...data);
         chat.forEach(ensureMessageMediaIsArray);
         noraChatWindowState = null;
-        await printMessages();
+        await printMessages({ announceRendered: true });
         return chat;
     })();
     try {
@@ -1837,9 +1837,10 @@ export async function showMoreMessages(messagesToLoad = null) {
     await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
 }
 
-export async function printMessages() {
+export async function printMessages({ announceRendered = false } = {}) {
     let startIndex = 0;
     let count = getChatRenderWindowSize();
+    chatElement.children('#show_more_messages').remove();
 
     if ((matchesNoraChatWindow() && noraChatWindowState.start > 0) || chat.length > count) {
         startIndex = chat.length - count;
@@ -1849,6 +1850,17 @@ export async function printMessages() {
     }
 
     await redisplayChat({ startIndex, fade: false });
+
+    if (announceRendered) {
+        for (let messageId = startIndex; messageId < chat.length; messageId++) {
+            const message = chat[messageId];
+            if (message?.is_system) continue;
+            const event = message?.is_user
+                ? event_types.USER_MESSAGE_RENDERED
+                : event_types.CHARACTER_MESSAGE_RENDERED;
+            await eventSource.emit(event, messageId, 'nora_history_hydration');
+        }
+    }
 
     scrollChatToBottom({ waitForFrame: true });
     delay(debounce_timeout.short).then(() => scrollOnMediaLoad());
@@ -8539,7 +8551,24 @@ export async function commitNoraStoryEdit(messageId, text) {
     chat_metadata = data[0].chat_metadata;
     chat.splice(0, chat.length, ...data.slice(1));
     this_edit_mes_id = -1;
-    await printMessages();
+    const messageElement = chatElement.children(`.mes[mesid="${absoluteId}"]`);
+    if (messageElement.length === 1 && chat[absoluteId]) {
+        // The backend edit is a branch replacement: everything after the edited
+        // message is gone. Keep earlier DOM nodes (including card iframes) alive
+        // and replace only the one message whose source actually changed.
+        messageElement.nextAll('.mes').remove();
+        const replacement = updateMessageElement(chat[absoluteId], { messageId: absoluteId });
+        messageElement.replaceWith(replacement);
+        replacement.addClass('last_mes');
+        refreshSwipeButtons(false, false);
+        applyStylePins();
+        updateEditArrowClasses();
+    } else {
+        // A non-visible edited message cannot be reconciled incrementally. In
+        // that rare case rebuild the window and explicitly announce every new
+        // message node so extension renderers can rehydrate their runtimes.
+        await printMessages({ announceRendered: true });
+    }
     if (oldLength > chat.length) await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
     await eventSource.emit(event_types.MESSAGE_EDITED, absoluteId);
     await eventSource.emit(event_types.MESSAGE_UPDATED, absoluteId);

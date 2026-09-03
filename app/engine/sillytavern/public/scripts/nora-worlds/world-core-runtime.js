@@ -297,10 +297,6 @@ export function createWorldCoreRuntime(runtime, {
         }
     }
 
-    function notAvailable(action) {
-        throw new Error(`${action} is not part of the Phase 3 World Core v2 vertical slice.`);
-    }
-
     function usesRuntimeCard(character) {
         const avatar = String(character?.avatar || '');
         return Boolean(avatar && manifests.some(item => item.runtime_card?.binding?.avatar === avatar));
@@ -347,9 +343,7 @@ export function createWorldCoreRuntime(runtime, {
         importCard,
         createBlank,
         createFromLibrary,
-        create: () => notAvailable('World creation from an existing Runtime Card'),
         updateActive,
         remove,
-        references: async () => ({ character_card: [], worldbooks: {} }),
     });
 }

@@ -321,6 +321,13 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-chat .mes.nora-rich-message .nora-message-controls { width: min(var(--nora-content), 100%); margin-right: auto; margin-left: auto; }
 #nora-chat #curEditTextarea { display: block !important; width: 100% !important; min-height: 120px; max-height: 50vh; resize: vertical; padding: 10px 12px !important; border: 1px solid var(--nora-brand) !important; border-radius: 10px !important; outline: none !important; background: var(--nora-surface) !important; color: var(--nora-ink) !important; font: 15px/1.68 var(--nora-sans) !important; }
 
+.nora-mvu-transaction-status { display: flex; width: fit-content; max-width: calc(100% - 32px); align-items: center; justify-content: center; gap: 7px; margin: 2px auto 12px; color: var(--nora-muted); font: 11.5px/1.4 var(--nora-sans); }
+.nora-mvu-transaction-indicator { display: grid; width: 13px; height: 13px; flex: 0 0 13px; place-items: center; border: 1px solid currentColor; border-radius: 50%; font-size: 9px; font-weight: 700; line-height: 1; }
+.nora-mvu-transaction-status.is-syncing .nora-mvu-transaction-indicator { border-color: var(--nora-line-2); border-top-color: var(--nora-brand); animation: nora-mvu-spin .8s linear infinite; }
+.nora-mvu-transaction-status.is-committed { color: var(--nora-brand-ink); }
+.nora-mvu-transaction-status.is-failed { color: var(--nora-danger); }
+@keyframes nora-mvu-spin { to { transform: rotate(360deg); } }
+
 #nora-composer { display: flex; flex: 0 0 auto; align-items: center; gap: 7px; padding: 12px 16px calc(12px + env(safe-area-inset-bottom, 0px)); border-top: 1px solid var(--nora-line); background: var(--nora-surface); }
 .nora-composer-notice { display: block; width: min(400px, calc(100% - 32px)); max-width: 100%; flex: 0 0 auto; align-self: center; margin: 0 auto 10px; padding: 11px 12px 10px; border: 1px solid var(--nora-line); border-radius: 12px; background: color-mix(in srgb, var(--nora-surface) 96%, var(--nora-brand-tint)); box-shadow: 0 7px 22px rgba(40, 30, 15, .10); color: var(--nora-ink-2); }
 .nora-composer-notice[hidden] { display: none; }

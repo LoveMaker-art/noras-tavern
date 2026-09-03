@@ -6,89 +6,18 @@ import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { NoraControlPlane } from "./nora-control-plane.js";
 import { NoraHttpClient } from "./http.js";
-import { StControlPlane } from "./st/control-plane.js";
-import type { StMcpConfig } from "./st/config.js";
+import { StInspectionPlane } from "./st/inspection-plane.js";
 import { createToolRegistrar, READ_TOOLS, WRITE_TOOLS } from "./tool-policy.js";
 
 const config = loadConfig();
-const stConfig: StMcpConfig = {
-  mcpRoot: config.mcpRoot,
-  projectRoot: config.projectRoot,
-  stRoot: config.stRoot,
-  configPath: config.configPath,
-  userDataRoot: config.userDataRoot,
-  baseUrl: config.baseUrl,
-  snapshotRoot: config.snapshotRoot,
-  timeoutMs: config.timeoutMs,
-  runtimeCommands: {},
-};
 const http = new NoraHttpClient(config.baseUrl, config.timeoutMs);
-const control = new StControlPlane(stConfig, http);
+const control = new StInspectionPlane(config, http);
 const nora = new NoraControlPlane(config, http);
 const mcp = new McpServer({
   name: "nora-mcp",
   version: "0.3.1",
 });
 const server = { tool: createToolRegistrar(mcp, config, http) };
-
-const fileScopeSchema = z.enum(["project-root", "st-root", "st-mcp"]);
-const promptInjectionPositionSchema = z.union([
-  z.enum([
-    "none",
-    "in_prompt",
-    "after_prompt",
-    "after",
-    "in_chat",
-    "chat",
-    "before_prompt",
-    "before",
-    "after_char",
-    "top_an",
-    "bottom_an",
-    "at_depth",
-  ]),
-  z.number().int(),
-]);
-const promptInjectionRoleSchema = z.union([
-  z.enum(["system", "user", "assistant"]),
-  z.number().int(),
-]);
-const regexPlacementSchema = z.union([
-  z.enum(["user_input", "ai_output", "slash_command", "world_info", "reasoning"]),
-  z.number().int(),
-]);
-const quickReplySchema = z.object({
-  id: z.number().int().positive().optional(),
-  icon: z.string().optional(),
-  label: z.string().min(1),
-  showLabel: z.boolean().optional(),
-  title: z.string().optional(),
-  message: z.string().optional(),
-  contextList: z.array(z.unknown()).optional(),
-  preventAutoExecute: z.boolean().optional(),
-  hidden: z.boolean().optional(),
-  isHidden: z.boolean().optional(),
-  executeOnStartup: z.boolean().optional(),
-  executeOnUser: z.boolean().optional(),
-  executeOnAi: z.boolean().optional(),
-  executeOnChatChange: z.boolean().optional(),
-  executeOnGroupMemberDraft: z.boolean().optional(),
-  executeOnNewChat: z.boolean().optional(),
-  executeBeforeGeneration: z.boolean().optional(),
-  automationId: z.string().optional(),
-});
-const chatLocatorSchema = {
-  avatar: z.string().min(1),
-  fileName: z.string().min(1),
-};
-const chatMessageSchema = z.record(z.unknown());
-const dottedPatchSchema = {
-  updates: z.record(z.unknown()).optional(),
-  unset: z.array(z.string().min(1)).optional(),
-  allowUnknown: z.boolean().optional(),
-  confirm: z.boolean().optional(),
-  snapshotLabel: z.string().optional(),
-};
 
 function textResult(value: unknown) {
   const result = value as { ok?: boolean; operation?: { status?: string } } | null;
@@ -103,47 +32,6 @@ function textResult(value: unknown) {
   };
 }
 
-server.tool("st.doctor", "Check whether the target SillyTavern runtime is controllable.", {}, async () => {
-  return textResult(await control.doctor());
-});
-
-server.tool(
-  "st.config_locations",
-  "Map high-level SillyTavern configuration domains to their real storage locations and semantic tools.",
-  {},
-  async () => textResult(await control.configLocations()),
-);
-
-server.tool(
-  "st.resource.read",
-  "Read a standard ST resource by URI, for example st://characters or st://extensions.",
-  { uri: z.string().startsWith("st://") },
-  async ({ uri }) => textResult(await control.readResource(uri)),
-);
-
-server.tool(
-  "st.plan_change",
-  "Plan a controlled ST change without writing. Use this before any destructive or complex action.",
-  {
-    goal: z.string().min(1),
-    targetUri: z.string().startsWith("st://"),
-    changes: z.unknown(),
-  },
-  async ({ goal, targetUri, changes }) => textResult(await control.planChange(goal, targetUri, changes)),
-);
-
-server.tool(
-  "st.resource.patch",
-  "Patch a supported ST resource. Requires confirm: true and creates a snapshot before writing.",
-  {
-    uri: z.string().startsWith("st://"),
-    patch: z.record(z.unknown()),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.patchResource(request)),
-);
-
 server.tool(
   "st.character.list",
   "List existing SillyTavern characters. This reads imported cards but does not create cards.",
@@ -153,23 +41,11 @@ server.tool(
 
 server.tool(
   "st.character.inspect",
-  "Read one character card with the core editable field list.",
+  "Read one character card with its core narrative field list.",
   {
     avatar: z.string().min(1),
   },
   async ({ avatar }) => textResult(await control.inspectCharacter(avatar)),
-);
-
-server.tool(
-  "st.character.configure",
-  "Patch core character card fields such as description, personality, scenario, greetings, and prompts. Requires confirm: true.",
-  {
-    avatar: z.string().min(1),
-    fields: z.record(z.unknown()),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureCharacter(request)),
 );
 
 server.tool(
@@ -200,29 +76,6 @@ server.tool(
 );
 
 server.tool(
-  "st.worldbook.create_empty",
-  "Create an empty worldbook shell for later entry management. Requires confirm: true.",
-  {
-    name: z.string().min(1),
-    overwrite: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.createEmptyWorldbook(request)),
-);
-
-server.tool(
-  "st.worldbook.delete",
-  "Delete a worldbook file. Requires confirm: true and snapshots first.",
-  {
-    name: z.string().min(1),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.deleteWorldbook(request)),
-);
-
-server.tool(
   "st.worldbook.entries",
   "List entries from one worldbook with core trigger and insertion fields.",
   {
@@ -232,46 +85,10 @@ server.tool(
 );
 
 server.tool(
-  "st.worldbook.entry.configure",
-  "Create, update, enable/disable, or delete a single worldbook entry. Requires confirm: true.",
-  {
-    book: z.string().min(1),
-    action: z.enum(["upsert", "set_enabled", "delete"]).optional(),
-    uid: z.number().int().nonnegative().optional(),
-    comment: z.string().optional(),
-    fields: z.record(z.unknown()).optional(),
-    enabled: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureWorldbookEntry(request)),
-);
-
-server.tool(
   "st.mvu.settings.get",
   "Read MagVarUpdate/MVU global settings and report their exact extension_settings storage path.",
   {},
   async () => textResult(await control.getMvuSettings()),
-);
-
-server.tool(
-  "st.mvu.settings.configure",
-  "Configure MagVarUpdate/MVU global settings through semantic fields. Requires confirm: true.",
-  {
-    enabled: z.boolean().optional(),
-    updateMode: z.string().optional(),
-    modelSource: z.string().optional(),
-    modelName: z.string().optional(),
-    apiUrl: z.string().optional(),
-    apiKey: z.string().optional(),
-    maxChatHistory: z.number().int().nonnegative().optional(),
-    maxReplyTokens: z.number().int().nonnegative().optional(),
-    temperature: z.number().optional(),
-    updates: z.record(z.unknown()).optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureMvuSettings(request)),
 );
 
 server.tool(
@@ -285,126 +102,10 @@ server.tool(
 );
 
 server.tool(
-  "st.mvu.entry.set_enabled",
-  "Enable or disable one MVU-related worldbook entry. Requires confirm: true.",
-  {
-    book: z.string().min(1),
-    uid: z.number().int().nonnegative().optional(),
-    comment: z.string().optional(),
-    enabled: z.boolean(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.setMvuEntryEnabled(request)),
-);
-
-server.tool(
-  "st.config.get",
-  "Read parsed config.yaml or one dotted config path with default value and code usage hints.",
-  {
-    path: z.string().min(1).optional(),
-    includeDefault: z.boolean().optional(),
-  },
-  async ({ path, includeDefault }) => textResult(await control.getConfigValue(path, includeDefault !== false)),
-);
-
-server.tool(
-  "st.config.patch",
-  "Patch config.yaml by dotted paths. Requires confirm: true, snapshots first, and usually requires ST restart.",
-  dottedPatchSchema,
-  async (request) => textResult(await control.patchConfig(request)),
-);
-
-server.tool(
-  "st.snapshot",
-  "Create a filesystem snapshot of important ST config, user data, extension, and plugin paths.",
-  { label: z.string().optional() },
-  async ({ label }) => textResult(await control.snapshots.create(label)),
-);
-
-server.tool(
-  "st.rollback",
-  "Restore a snapshot created by st.snapshot or a confirmed write operation.",
-  { id: z.string().min(1), confirm: z.boolean().optional() },
-  async ({ id, confirm }) => {
-    if (!confirm) throw new Error("rollback requires confirm: true");
-    return textResult(await control.snapshots.rollback(id));
-  },
-);
-
-server.tool(
-  "st.extension.install",
-  "Install a SillyTavern frontend extension from a Git URL via the ST extension endpoint.",
-  {
-    url: z.string().url(),
-    global: z.boolean().optional(),
-    branch: z.string().optional(),
-    confirm: z.boolean().optional(),
-  },
-  async ({ url, global, branch, confirm }) => textResult(await control.installExtension(url, Boolean(confirm), Boolean(global), branch)),
-);
-
-server.tool(
-  "st.extension.set_enabled",
-  "Enable or disable a discovered SillyTavern frontend extension. Requires confirm: true.",
-  {
-    name: z.string().min(1),
-    enabled: z.boolean(),
-    confirm: z.boolean().optional(),
-  },
-  async ({ name, enabled, confirm }) => textResult(await control.setExtensionEnabled(name, enabled, Boolean(confirm))),
-);
-
-server.tool(
   "st.extension.registry",
   "List discovered frontend extensions with enabled state, inferred extension_settings config keys, and current config.",
   {},
   async () => textResult(await control.extensionRegistry()),
-);
-
-server.tool(
-  "st.extension.configure",
-  "Configure a frontend extension through extension_settings and/or enabled state. Requires confirm: true.",
-  {
-    name: z.string().min(1).optional(),
-    configKey: z.string().min(1).optional(),
-    enabled: z.boolean().optional(),
-    updates: z.record(z.unknown()).optional(),
-    unset: z.array(z.string().min(1)).optional(),
-    allowCreate: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureExtension(request)),
-);
-
-server.tool(
-  "st.plugin.install",
-  "Install a SillyTavern server plugin from a Git URL into the plugins directory. Requires confirm: true.",
-  {
-    url: z.string().url(),
-    name: z.string().optional(),
-    branch: z.string().optional(),
-    installDependencies: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-  },
-  async ({ url, name, branch, installDependencies, confirm }) => textResult(await control.installServerPlugin(url, Boolean(confirm), {
-    name,
-    branch,
-    installDependencies,
-  })),
-);
-
-server.tool(
-  "st.plugin.scaffold",
-  "Create a loadable SillyTavern server plugin skeleton. Requires confirm: true.",
-  {
-    id: z.string().min(1),
-    name: z.string().optional(),
-    description: z.string().optional(),
-    confirm: z.boolean().optional(),
-  },
-  async (request) => textResult(await control.scaffoldServerPlugin(request)),
 );
 
 server.tool(
@@ -415,138 +116,6 @@ server.tool(
 );
 
 server.tool(
-  "st.plugin.configure",
-  "Configure SillyTavern server plugin flags in config.yaml. Requires confirm: true and restart.",
-  {
-    enableServerPlugins: z.boolean().optional(),
-    enableServerPluginsAutoUpdate: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configurePlugin(request)),
-);
-
-server.tool(
-  "st.source.read",
-  "Read a source file from project-root, st-root, or st-mcp without leaving that scope.",
-  {
-    scope: fileScopeSchema,
-    path: z.string().min(1),
-    maxBytes: z.number().int().positive().optional(),
-  },
-  async ({ scope, path, maxBytes }) => textResult(await control.readSourceFile(scope, path, maxBytes)),
-);
-
-server.tool(
-  "st.source.write",
-  "Write a source file within project-root, st-root, or st-mcp. Requires confirm: true and snapshots first.",
-  {
-    scope: fileScopeSchema,
-    path: z.string().min(1),
-    content: z.string(),
-    snapshotLabel: z.string().optional(),
-    confirm: z.boolean().optional(),
-  },
-  async (request) => textResult(await control.writeSourceFile(request)),
-);
-
-server.tool(
-  "st.dev.run",
-  "Run a controlled development command in project-root, st-root, or st-mcp. Requires confirm: true.",
-  {
-    scope: fileScopeSchema,
-    command: z.enum(["npm", "node", "npx", "git", "sh", "bash", "python3"]),
-    args: z.array(z.string()).optional(),
-    timeoutMs: z.number().int().positive().optional(),
-    confirm: z.boolean().optional(),
-  },
-  async (request) => textResult(await control.runDevCommand(request)),
-);
-
-server.tool(
-  "st.runtime.control",
-  "Run configured SillyTavern runtime status/start/stop/restart commands. Mutating actions require confirm: true.",
-  {
-    action: z.enum(["status", "start", "stop", "restart"]),
-    confirm: z.boolean().optional(),
-  },
-  async ({ action, confirm }) => textResult(await control.controlRuntime(action, Boolean(confirm))),
-);
-
-server.tool(
-  "st.bridge.install",
-  "Install the ST MCP runtime bridge server plugin and frontend extension. Requires confirm: true.",
-  {
-    confirm: z.boolean().optional(),
-  },
-  async ({ confirm }) => textResult(await control.installRuntimeBridge(Boolean(confirm))),
-);
-
-server.tool(
-  "st.bridge.health",
-  "Read the runtime bridge server plugin health endpoint.",
-  {},
-  async () => textResult(await control.runtimeBridgeHealth()),
-);
-
-server.tool(
-  "st.bridge.read",
-  "Read the latest browser runtime snapshot published by the ST MCP runtime bridge.",
-  {
-    history: z.boolean().optional(),
-  },
-  async ({ history }) => textResult(await control.readRuntimeBridgeSnapshot(Boolean(history))),
-);
-
-server.tool(
-  "st.index.refresh",
-  "Regenerate the static upstream ST codebase index used by st://index and st://index/markdown. Requires confirm: true.",
-  {
-    confirm: z.boolean().optional(),
-  },
-  async ({ confirm }) => textResult(await control.refreshCodebaseIndex(Boolean(confirm))),
-);
-
-server.tool(
-  "st.prompt.inspect",
-  "Inspect the prompt/context assembly surface: indexed seams, live prompt-related settings, and optional runtime bridge state.",
-  {
-    includeRuntime: z.boolean().optional(),
-  },
-  async ({ includeRuntime }) => textResult(await control.inspectPrompt({ includeRuntime })),
-);
-
-server.tool(
-  "st.prompt.set_injection",
-  "Change prompt injection semantics without knowing raw ST setting paths. Requires confirm: true and snapshots first.",
-  {
-    target: z.enum(["authors_note", "persona", "world_info", "system_prompt", "instruct", "context"]),
-    enabled: z.boolean().optional(),
-    text: z.string().optional(),
-    position: promptInjectionPositionSchema.optional(),
-    depth: z.number().int().nonnegative().optional(),
-    role: promptInjectionRoleSchema.optional(),
-    budget: z.number().int().nonnegative().optional(),
-    budgetCap: z.number().int().nonnegative().optional(),
-    interval: z.number().int().nonnegative().optional(),
-    scan: z.boolean().optional(),
-    recursive: z.boolean().optional(),
-    includeNames: z.boolean().optional(),
-    overflowAlert: z.boolean().optional(),
-    caseSensitive: z.boolean().optional(),
-    matchWholeWords: z.boolean().optional(),
-    characterStrategy: z.number().int().nonnegative().optional(),
-    preset: z.string().optional(),
-    name: z.string().optional(),
-    postHistory: z.string().optional(),
-    updates: z.record(z.unknown()).optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.setPromptInjection(request)),
-);
-
-server.tool(
   "st.regex.registry",
   "List global ST regex scripts with normalized placement metadata.",
   {},
@@ -554,237 +123,10 @@ server.tool(
 );
 
 server.tool(
-  "st.regex.configure",
-  "Create, update, enable/disable, or delete a global ST regex script. Requires confirm: true.",
-  {
-    name: z.string().min(1),
-    action: z.enum(["upsert", "set_enabled", "delete"]).optional(),
-    enabled: z.boolean().optional(),
-    findRegex: z.string().optional(),
-    replaceString: z.string().optional(),
-    placements: z.array(regexPlacementSchema).optional(),
-    trimStrings: z.array(z.string()).optional(),
-    substituteRegex: z.union([z.enum(["none", "raw", "escaped"]), z.number().int()]).optional(),
-    markdownOnly: z.boolean().optional(),
-    promptOnly: z.boolean().optional(),
-    runOnEdit: z.boolean().optional(),
-    minDepth: z.number().int().nonnegative().nullable().optional(),
-    maxDepth: z.number().int().nonnegative().nullable().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureRegex(request)),
-);
-
-server.tool(
-  "st.variables.registry",
-  "List global ST slash/macro variables stored in extension_settings.variables.global.",
-  {},
-  async () => textResult(await control.variablesRegistry()),
-);
-
-server.tool(
-  "st.variables.set",
-  "Set or unset a global ST slash/macro variable. Requires confirm: true.",
-  {
-    name: z.string().min(1),
-    value: z.string().optional(),
-    unset: z.boolean().optional(),
-    asJson: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.setVariable(request)),
-);
-
-server.tool(
   "st.quick_reply.registry",
   "List Quick Reply V2 settings and saved slash-command quick reply sets.",
   {},
   async () => textResult(await control.quickReplyRegistry()),
-);
-
-server.tool(
-  "st.quick_reply.configure",
-  "Enable Quick Reply, activate a set, create/update/delete a set, or upsert/delete a slash-command quick reply. Requires confirm: true.",
-  {
-    enabled: z.boolean().optional(),
-    activeSet: z.string().min(1).optional(),
-    set: z.string().min(1).optional(),
-    setOptions: z.record(z.unknown()).optional(),
-    reply: quickReplySchema.optional(),
-    deleteReplyLabel: z.string().min(1).optional(),
-    deleteSet: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureQuickReply(request)),
-);
-
-server.tool(
-  "st.chat.inspect",
-  "Read a chat file header, chat_metadata, and messages. Requires explicit avatar and fileName.",
-  chatLocatorSchema,
-  async (request) => textResult(await control.inspectChat(request)),
-);
-
-server.tool(
-  "st.chat.metadata.get",
-  "Read chat_metadata from a specific ST chat file. Requires explicit avatar and fileName.",
-  chatLocatorSchema,
-  async (request) => textResult(await control.getChatMetadata(request)),
-);
-
-server.tool(
-  "st.chat.metadata.patch",
-  "Patch chat_metadata dotted paths in a specific ST chat file. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    updates: z.record(z.unknown()).optional(),
-    unset: z.array(z.string().min(1)).optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.patchChatMetadata(request)),
-);
-
-server.tool(
-  "st.chat.authors_note.set",
-  "Set the current-chat Author's Note override fields in chat_metadata. Requires explicit avatar/fileName and confirm: true.",
-  {
-    ...chatLocatorSchema,
-    enabled: z.boolean().optional(),
-    text: z.string().optional(),
-    position: promptInjectionPositionSchema.optional(),
-    depth: z.number().int().nonnegative().optional(),
-    role: promptInjectionRoleSchema.optional(),
-    interval: z.number().int().nonnegative().optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.setChatAuthorsNote(request)),
-);
-
-server.tool(
-  "st.chat.variables.set",
-  "Set or unset a local slash/macro variable stored in a specific chat's chat_metadata.variables. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    name: z.string().min(1),
-    value: z.string().optional(),
-    unset: z.boolean().optional(),
-    asJson: z.boolean().optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.setChatVariable(request)),
-);
-
-server.tool(
-  "st.chat.script_inject.configure",
-  "Create, update, or delete a persistent slash-command-style prompt injection in chat_metadata.script_injects. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    id: z.string().min(1),
-    value: z.string().optional(),
-    position: promptInjectionPositionSchema.optional(),
-    depth: z.number().int().nonnegative().optional(),
-    role: promptInjectionRoleSchema.optional(),
-    scan: z.boolean().optional(),
-    filter: z.string().nullable().optional(),
-    delete: z.boolean().optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.configureChatScriptInject(request)),
-);
-
-server.tool(
-  "st.chat.worldbook.bind",
-  "Bind or unbind a worldbook to one chat through chat_metadata.world_info. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    book: z.string().min(1).optional(),
-    unset: z.boolean().optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.bindChatWorldbook(request)),
-);
-
-server.tool(
-  "st.chat.message.append",
-  "Append a caller-provided message to a chat transcript. Requires confirm: true; does not generate message content.",
-  {
-    ...chatLocatorSchema,
-    message: chatMessageSchema,
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.appendChatMessage(request)),
-);
-
-server.tool(
-  "st.chat.message.edit",
-  "Edit one existing chat message by zero-based transcript index. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    index: z.number().int().nonnegative(),
-    message: chatMessageSchema.optional(),
-    fields: chatMessageSchema.optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.editChatMessage(request)),
-);
-
-server.tool(
-  "st.chat.message.delete",
-  "Delete one existing chat message by zero-based transcript index. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    index: z.number().int().nonnegative(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.deleteChatMessage(request)),
-);
-
-server.tool(
-  "st.mvu.chat_state.inspect",
-  "Inspect MVU runtime variable snapshots stored in chat message variables[].stat_data.",
-  chatLocatorSchema,
-  async (request) => textResult(await control.inspectMvuChatState(request)),
-);
-
-server.tool(
-  "st.mvu.chat_state.patch",
-  "Patch MVU runtime stat_data on one chat message, defaulting to the latest message. Requires confirm: true.",
-  {
-    ...chatLocatorSchema,
-    index: z.number().int().nonnegative().optional(),
-    updates: z.record(z.unknown()).optional(),
-    unset: z.array(z.string().min(1)).optional(),
-    force: z.boolean().optional(),
-    confirm: z.boolean().optional(),
-    snapshotLabel: z.string().optional(),
-  },
-  async (request) => textResult(await control.patchMvuChatState(request)),
-);
-
-server.tool(
-  "st.verify",
-  "Verify that a resource can be read after a change. This is a technical check, not a UX proof.",
-  { targetUri: z.string().startsWith("st://").optional() },
-  async ({ targetUri }) => textResult(await control.verify(targetUri)),
 );
 
 server.tool("nora.status", "Check Nora Tavern product endpoints and embedded ST core controls.", {}, async () => {
@@ -799,14 +141,6 @@ server.tool("nora.control_map", "Explain the single Nora MCP control surface: no
 
 server.tool("nora.config_locations", "Map Nora product domains to real storage locations, runtime routes, and semantic tools.", {}, async () => {
   return textResult(await nora.configLocations());
-});
-
-server.tool("nora.read", "Read a Nora resource URI such as nora://worlds or nora://story-profile/card.", {
-  uri: z.string().startsWith("nora://"),
-}, async ({ uri }) => textResult(await nora.readResource(uri)));
-
-server.tool("nora.boot.bootstrap", "Read Nora boot/bootstrap state used by the app shell.", {}, async () => {
-  return textResult(await nora.bootstrap());
 });
 
 server.tool("nora.local_index", "Inspect local Nora/ST product data counts without modifying files.", {}, async () => {
@@ -849,26 +183,6 @@ server.tool("nora.operation.retry", "Retry a failed Nora World operation. Requir
   operationId: z.string(),
   confirm: z.boolean().optional(),
 }, async ({ operationId, confirm }) => textResult(await nora.retryOperation(operationId, confirm)));
-
-server.tool("nora.capability.begin", "Begin a Nora World capability attempt. Requires confirm: true.", {
-  worldId: z.string(),
-  capability: z.string(),
-  confirm: z.boolean().optional(),
-}, async ({ worldId, capability, confirm }) => textResult(await nora.beginCapabilityAttempt(worldId, capability, confirm)));
-
-server.tool("nora.capability.settle", "Settle a Nora World capability attempt as READY or DEGRADED. Requires confirm: true.", {
-  worldId: z.string(),
-  capability: z.string(),
-  attemptId: z.string(),
-  status: z.enum(["READY", "DEGRADED"]),
-  evidence: z.record(z.unknown()).optional(),
-  error: z.object({
-    code: z.string(),
-    message: z.string(),
-    retryable: z.boolean().optional(),
-  }).optional(),
-  confirm: z.boolean().optional(),
-}, async (request) => textResult(await nora.settleCapabilityAttempt(request)));
 
 server.tool("nora.story.card", "Read Nora Story Profile actor card.", {}, async () => {
   return textResult(await nora.storyCard());

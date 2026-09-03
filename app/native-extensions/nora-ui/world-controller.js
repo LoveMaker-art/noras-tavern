@@ -233,7 +233,7 @@ export function createWorldController({
             retryImport.disabled = true;
             try {
                 await worldRuntime.retryPendingCreation();
-                await load({ force: true });
+                await load();
                 showToast(tr("世界创建已恢复。"));
             } catch (error) {
                 showToast(t`世界创建重试失败：${normalizeError(error)}`, { tone: 'error', duration: 4200 });
@@ -303,7 +303,7 @@ export function createWorldController({
             await operations.run('world-delete', async () => {
                 await worldRuntime.remove(worldId);
                 if (target.active) onWorldLeaving({ reason: 'world-delete', worldId });
-                await load({ force: true });
+                await load();
                 refresh();
                 showToast(tr("世界已删除。"));
             });

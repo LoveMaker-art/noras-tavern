@@ -208,6 +208,26 @@ test('Nora explicit edit action opens and closes the native editor lifecycle', (
     assert.equal(message.dataset.noraEditing, undefined);
 });
 
+test('Nora does not cancel a native editor after its message node was replaced by a committed edit', () => {
+    let cancellations = 0;
+    const message = {
+        dataset: {},
+        getAttribute: name => name === 'mesid' ? '7' : 'false',
+    };
+    const adapter = createStMessageViewAdapter({
+        select: (selector, root) => selector === '.mes_edit_cancel' && root === message
+            ? { click: () => { cancellations += 1; } }
+            : null,
+        selectAll: selector => selector === '#chat .mes' ? [message] : [],
+        icons: {},
+        documentRef: {},
+        MutationObserverImpl: class {},
+    });
+
+    adapter.finishEdit(7);
+    assert.equal(cancellations, 0);
+});
+
 test('product mode disables native click-to-edit and does not create a second editor', () => {
     assert.match(chats, /classList\.contains\('nora-product'\)\) return;/);
     assert.doesNotMatch(messageViewSource, /nora-custom-editor|createElement\('textarea'\)|stripThinkingMarkup|guardNativeMessageEdit/);

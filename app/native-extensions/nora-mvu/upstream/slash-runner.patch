@@ -18,6 +18,17 @@ diff --git a/src/function/generate/generateRaw.ts b/src/function/generate/genera
    chatCompletion.reserveBudget(3);
    const orderArray = config.order || default_order;
    const positionMap: Record<string, number> = orderArray.reduce((acc: Record<string, number>, item, index) => {
+diff --git a/src/function/generate/index.ts b/src/function/generate/index.ts
+--- a/src/function/generate/index.ts
++++ b/src/function/generate/index.ts
+@@ -349,6 +349,7 @@ async function iframeGenerate({
+             max_chat_history,
+             inject,
+             order,
++            custom_api,
+             processedImageArray,
+           },
+           processedUserInput,
 diff --git a/src/function/generate/types.ts b/src/function/generate/types.ts
 --- a/src/function/generate/types.ts
 +++ b/src/function/generate/types.ts

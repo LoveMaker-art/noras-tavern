@@ -631,9 +631,9 @@ test('headless settings migration enables the bounded variable-model transaction
 
     const first = initializeHeadlessMvuSettings(context);
     assert.equal(first['更新方式'], '额外模型解析');
-    assert.equal(first['额外模型解析配置']['最大上下文token数'], 128000);
+    assert.equal(first['额外模型解析配置']['最大上下文token数'], 64000);
     assert.equal(first['额外模型解析配置']['最大回复token数'], 20000);
-    assert.equal(context.extensionSettings.nora_mvu.settingsVersion, 4);
+    assert.equal(context.extensionSettings.nora_mvu.settingsVersion, 5);
 
     context.extensionSettings.mvu_settings['更新方式'] = '随AI输出';
     const second = initializeHeadlessMvuSettings(context);
@@ -653,7 +653,7 @@ test('headless settings migration raises only the legacy 4096 MVU token limit', 
         saveSettingsDebounced() {},
     };
     const migrated = initializeHeadlessMvuSettings(legacy);
-    assert.equal(migrated['额外模型解析配置']['最大上下文token数'], 128000);
+    assert.equal(migrated['额外模型解析配置']['最大上下文token数'], 64000);
     assert.equal(migrated['额外模型解析配置']['最大回复token数'], 20000);
     assert.equal(migrated['更新方式'], '随AI输出', 'a token-limit migration must preserve user workflow choices');
 

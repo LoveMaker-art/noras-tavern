@@ -46,6 +46,12 @@ function normalizeCharacterId(value) {
     return Number.isInteger(id) && id >= 0 ? id : null;
 }
 
+const MVU_TRANSACTION_EVENTS = Object.freeze({
+    started: 'nora_mvu_transaction_started',
+    committed: 'nora_mvu_transaction_committed',
+    failed: 'nora_mvu_transaction_failed',
+});
+
 export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {}) {
     const runtime = () => requireRuntime(getContext);
 
@@ -95,6 +101,9 @@ export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {})
         on(events.GENERATION_STARTED, () => handlers.generationChanged?.(true));
         on(events.GENERATION_ENDED, () => handlers.generationChanged?.(false));
         on(events.GENERATION_STOPPED, () => handlers.generationChanged?.(false));
+        on(MVU_TRANSACTION_EVENTS.started, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
+        on(MVU_TRANSACTION_EVENTS.committed, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'committed' }));
+        on(MVU_TRANSACTION_EVENTS.failed, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'failed' }));
         return () => bindings.forEach(([event, handler]) => source.off?.(event, handler));
     }
 

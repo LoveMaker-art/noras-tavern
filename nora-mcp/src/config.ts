@@ -18,7 +18,6 @@ export interface NoraMcpConfig {
   stateRoot: string;
   nativeDataRoot: string;
   userDataRoot: string;
-  snapshotRoot: string;
   baseUrl: string;
   timeoutMs: number;
   modelTimeoutMs: number;
@@ -43,9 +42,6 @@ export function loadConfig(): NoraMcpConfig {
   const nativeDataRoot = path.resolve(process.env.NORA_MCP_NATIVE_DATA_ROOT || path.join(stateRoot, "native"));
   const userDataRoot = path.resolve(process.env.NORA_MCP_USER_DATA_ROOT || path.join(nativeDataRoot, "default-user"));
   const configPath = path.resolve(process.env.NORA_MCP_CONFIG_PATH || path.join(stateRoot, "native-runtime", "config.yaml"));
-  const snapshotRoot = path.resolve(
-    process.env.NORA_MCP_SNAPSHOT_ROOT || path.join(stateRoot, "mcp-snapshots"),
-  );
   const baseUrl = String(process.env.NORA_MCP_BASE_URL || "http://127.0.0.1:8799").replace(/\/+$/, "");
   const url = new URL(baseUrl);
   if (url.protocol !== "http:" || !["127.0.0.1", "[::1]"].includes(url.hostname)
@@ -61,7 +57,6 @@ export function loadConfig(): NoraMcpConfig {
     stateRoot,
     nativeDataRoot,
     userDataRoot,
-    snapshotRoot,
     baseUrl,
     timeoutMs: envNumber("NORA_MCP_TIMEOUT_MS", 30000),
     modelTimeoutMs: envNumber("NORA_MCP_MODEL_TIMEOUT_MS", 390000),

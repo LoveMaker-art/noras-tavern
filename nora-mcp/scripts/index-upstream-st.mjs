@@ -247,7 +247,7 @@ async function dataLayoutIndex() {
 
 function mcpPlanningIndex() {
   return {
-    proposedResources: [
+    indexedResources: [
       "st://index",
       "st://config/schema",
       "st://config/current",
@@ -260,18 +260,12 @@ function mcpPlanningIndex() {
       "st://plugin-registry",
       "st://data-layout",
     ],
-    proposedTools: [
-      "st.config.get / st.config.patch",
-      "st.settings.get / st.settings.patch",
-      "st.setting.explain",
-      "st.prompt.inspect",
-      "st.extension.registry",
-      "st.extension.configure",
-      "st.plugin.registry",
-      "st.plugin.configure",
-      "st.prompt.set_injection",
-      "st.capability.plan",
-      "st.apply_profile",
+    controlSurface: [
+      "st.* inspect/registry tools provide read-only compatibility diagnostics",
+      "nora.control.catalog lists the authoritative live-page actions",
+      "nora.control.read executes catalogued read actions against an explicit client and World",
+      "nora.control.execute is the only live-page mutation path",
+      "nora.control.operation reports queued operation completion",
     ],
     designRule: "Expose intention-level tools over raw UI mirroring. The MCP interface should hide whether a change is backed by config.yaml, settings.json, an HTTP endpoint, an extension setting, or a server plugin restart.",
   };
@@ -371,15 +365,15 @@ Important paths:
 
 ${renderList(value.dataLayout.importantPaths.map((item) => `\`${item}\``))}
 
-## MCP Planning
+## MCP Control Surface
 
-Proposed resources:
+Indexed ST resources:
 
-${renderList(value.mcpPlanning.proposedResources.map((item) => `\`${item}\``))}
+${renderList(value.mcpPlanning.indexedResources.map((item) => `\`${item}\``))}
 
-Proposed tools:
+Implemented control rules:
 
-${renderList(value.mcpPlanning.proposedTools.map((item) => `\`${item}\``))}
+${renderList(value.mcpPlanning.controlSurface.map((item) => item))}
 
 Design rule: ${value.mcpPlanning.designRule}
 `;

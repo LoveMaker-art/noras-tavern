@@ -8,7 +8,7 @@ import { NoraControlPlane } from '../dist/nora-control-plane.js';
 import { NoraRequestError } from '../dist/errors.js';
 import { loadConfig } from '../dist/config.js';
 import { assertInstance, allowedTool } from '../dist/tool-policy.js';
-import { StControlPlane } from '../dist/st/control-plane.js';
+import { StInspectionPlane } from '../dist/st/inspection-plane.js';
 
 test('configuration fails closed without data root or with a remote URL; operator is explicit', () => {
     const before = { ...process.env };
@@ -66,7 +66,7 @@ test('imports stay inside explicit upload root, including symlinks; instance mis
 });
 
 test('ST registries do not expose raw extension credentials or disguise transport failure as empty configuration', async () => {
-    const plane = new StControlPlane({}, { get: async () => [{ name: 'example' }] });
+    const plane = new StInspectionPlane({}, { get: async () => [{ name: 'example' }] });
     plane.settings = async () => ({ extension_settings: {
         example: { api_key: 'fixture-secret', enabled: true },
         mvu_settings: { '额外模型解析配置': { '模型名称': 'fixture', 'api密钥': 'fixture-secret' } },
@@ -74,9 +74,24 @@ test('ST registries do not expose raw extension credentials or disguise transpor
     const registry = await plane.extensionRegistry();
     assert.equal(registry.extensions[0].hasConfig, true);
     assert.equal(registry.extensions[0].config, undefined);
+    assert.equal(registry.controlTool, 'nora.control.execute');
+    assert.deepEqual(registry.controlActions, ['plugins.enabled', 'plugins.configure']);
     assert.equal(JSON.stringify(registry).includes('fixture-secret'), false);
     assert.equal(JSON.stringify(await plane.getMvuSettings()).includes('fixture-secret'), false);
     plane.settings = async () => { throw new NoraRequestError('offline', 'NORA_TRANSPORT_FAILED'); };
     await assert.rejects(plane.extensionRegistry(), { code: 'NORA_TRANSPORT_FAILED' });
     await assert.rejects(plane.regexRegistry(), { code: 'NORA_TRANSPORT_FAILED' });
+});
+
+test('ST discovery responses point to the single Nora mutation plane and never advertise removed tools', async () => {
+    const plane = new StInspectionPlane({}, {
+        post: async route => route === '/api/worldinfo/list' ? [] : { entries: {} },
+    });
+    const list = await plane.listWorldbooks();
+    const book = await plane.inspectWorldbook('fixture');
+    assert.equal(list.mutationTool, 'nora.control.execute');
+    assert.equal(book.mutationTool, 'nora.control.execute');
+    assert.equal(list.createTool, undefined);
+    assert.equal(list.deleteTool, undefined);
+    assert.equal(book.entryTool, undefined);
 });

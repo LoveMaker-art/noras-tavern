@@ -24,7 +24,6 @@ export class NoraControlPlane {
       nativeDataRoot: this.config.nativeDataRoot,
       userDataRoot: this.config.userDataRoot,
       configPath: this.config.configPath,
-      snapshotRoot: this.config.snapshotRoot,
     };
 
     checks.projectRootExists = await exists(this.config.projectRoot);
@@ -129,7 +128,6 @@ export class NoraControlPlane {
         nativeDataRoot: this.config.nativeDataRoot,
         userDataRoot: this.config.userDataRoot,
         configPath: this.config.configPath,
-        snapshotRoot: this.config.snapshotRoot,
       },
       noraDomains: [
         {

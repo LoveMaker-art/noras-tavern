@@ -47,6 +47,7 @@ assert.match(runtime, /whenAppReady:\s*story\.state\.whenReady/, 'the public rea
 
 assert.doesNotMatch(worldRuntime, /\bgetContext\b|\brequireContext\b|SillyTavern/, 'World runtime must depend on the World adapter interface');
 assert.match(worldRuntime, /export function createWorldCoreRuntime\(runtime,/, 'World runtime must receive the World adapter interface');
+assert.doesNotMatch(worldRuntime, /create:\s*\(\)\s*=>|references:\s*async/, 'World runtime must not advertise placeholder capabilities');
 assert.doesNotMatch(worldClient, /\bgetContext\b|\brequireContext\b|SillyTavern/, 'World client must receive request headers through the transport interface');
 
 console.log('nora-compatibility-seam-contract=PASS');

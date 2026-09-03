@@ -1,7 +1,7 @@
 export const MVU_SCRIPT_ID = 'nora-mvu-headless-runtime';
 export const MVU_UPSTREAM_COMMIT = '7fe9ae7cfe01f13d606f7a2e533a458431fe318c';
-export const NORA_MVU_SETTINGS_VERSION = 4;
-export const NORA_MVU_BUNDLE_REVISION = 6;
+export const NORA_MVU_SETTINGS_VERSION = 5;
+export const NORA_MVU_BUNDLE_REVISION = 7;
 export const NORA_MVU_MODEL_PROXY_URL = 'https://nora-mvu.invalid/v1';
 
 const MVU_ENTRY_MARKER = /\[(?:initvar|mvu_update|mvu_plot)\]/i;
@@ -94,7 +94,7 @@ const HEADLESS_DEFAULTS = Object.freeze({
         'top_p': 1,
         'top_k': 0,
         'max_chat_history': 2,
-        '最大上下文token数': 128000,
+        '最大上下文token数': 64000,
         '最大回复token数': 20000,
         'api方案列表': [],
         '当前api方案': '',
@@ -344,12 +344,14 @@ export function initializeHeadlessMvuSettings(context) {
             '模型来源': '与插头相同',
             '请求方式': '依次请求，失败后重试',
             '请求次数': 1,
-            '最大上下文token数': 128000,
+            '最大上下文token数': 64000,
             '最大回复token数': 20000,
         },
-    } : previousVersion < 4 ? {
+    } : previousVersion < 5 ? {
         '额外模型解析配置': {
-            ...(currentContextLimit === undefined ? { '最大上下文token数': 128000 } : {}),
+            ...(currentContextLimit === undefined || currentContextLimit === 128000
+                ? { '最大上下文token数': 64000 }
+                : {}),
             ...(currentTokenLimit === undefined || currentTokenLimit === 4096 ? { '最大回复token数': 20000 } : {}),
         },
     } : null;

@@ -44,6 +44,7 @@ export function createStartupController({
             stateChanged: () => setTimeout(refresh, 0),
             worldbookChanged: (name, book) => { onWorldbookChanged(name, book); setTimeout(refresh, 0); },
             worldChanged: () => {
+                messageController.clearMvuTransaction();
                 setTimeout(messageController.syncGenerating, 500);
                 setTimeout(updateActiveWorldSummary, 0);
             },
@@ -51,6 +52,7 @@ export function createStartupController({
             generationChanged: () => {
                 messageController.syncGenerating();
             },
+            mvuTransactionChanged: transaction => messageController.setMvuTransaction(transaction),
         });
     }
 

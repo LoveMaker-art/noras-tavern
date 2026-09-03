@@ -308,6 +308,32 @@ test('whenReady resolves to a Nora snapshot instead of the raw ST context', asyn
     assert.equal(readyState.activeChatId, 'phase-1-chat');
 });
 
+test('subscribe projects MVU transaction events without polling the runtime', () => {
+    const runtime = createRuntime(() => {});
+    const listeners = new Map();
+    runtime.eventSource = {
+        on(event, handler) { listeners.set(event, handler); },
+        off(event, handler) { if (listeners.get(event) === handler) listeners.delete(event); },
+    };
+    runtime.eventTypes = {};
+    const received = [];
+    const release = createStRuntimeAdapter(() => runtime).subscribe({
+        mvuTransactionChanged: transaction => received.push(transaction),
+    });
+
+    listeners.get('nora_mvu_transaction_started')?.({ message_id: 3 });
+    listeners.get('nora_mvu_transaction_committed')?.({ message_id: 3, status: 'wrong' });
+    listeners.get('nora_mvu_transaction_failed')?.({ message_id: 4, error_code: 'MVU_REQUEST_FAILED' });
+
+    assert.deepEqual(received, [
+        { message_id: 3, status: 'syncing' },
+        { message_id: 3, status: 'committed' },
+        { message_id: 4, error_code: 'MVU_REQUEST_FAILED', status: 'failed' },
+    ]);
+    release();
+    assert.equal(listeners.size, 0);
+});
+
 test('enableCharacterCapabilities delegates embedded regex and helper-script authorization', async () => {
     const runtime = createRuntime(() => {});
     const allowedRegex = [];

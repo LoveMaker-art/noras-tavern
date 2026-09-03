@@ -1,5 +1,6 @@
 import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { createPendingMessageView } from './pending-message-view.js';
+import { createMvuTransactionView } from './mvu-transaction-view.js';
 import { initializeReasoningView } from '../../engine/sillytavern/public/scripts/nora-compat/reasoning-view.js';
 import { ledgerAllowsEdit, subscribeLedger } from '../../engine/sillytavern/public/scripts/nora-story-ledger/client.js';
 
@@ -21,6 +22,10 @@ export function createStMessageViewAdapter({ select, selectAll, icons, documentR
     }
     const pendingView = createPendingMessageView({ host: () => select('#nora-chat'), readMessages,
         createElement: tag => documentRef.createElement(tag), documentRef,
+    });
+    const mvuTransactionView = createMvuTransactionView({
+        host: () => select('#nora-chat'),
+        createElement: tag => documentRef.createElement(tag),
     });
     const messageId = message => Number(message.getAttribute('mesid'));
     const messageNode = id => messageNodes().find(message => messageId(message) === Number(id)) || null;
@@ -134,7 +139,12 @@ export function createStMessageViewAdapter({ select, selectAll, icons, documentR
     function finishEdit(id) {
         const message = messageNode(id);
         if (!message) return;
-        select('.mes_edit_cancel', message)?.click();
+        // A committed Nora branch edit replaces the edited ST message node.
+        // Only invoke ST's cancel action while the original editor still owns
+        // this node; otherwise it would cancel an editor that no longer exists.
+        if (message.dataset.noraEditing === 'true' && select('#curEditTextarea', message)) {
+            select('.mes_edit_cancel', message)?.click();
+        }
         delete message.dataset.noraEditing;
     }
 
@@ -186,6 +196,8 @@ export function createStMessageViewAdapter({ select, selectAll, icons, documentR
         beginPending: pendingView.begin,
         clearPending: pendingView.clear,
         syncPending: pendingView.sync,
+        showMvuTransaction: mvuTransactionView.show,
+        clearMvuTransaction: mvuTransactionView.clear,
         decorate,
         handleAction,
         beginEdit,

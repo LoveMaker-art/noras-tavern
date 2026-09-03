@@ -17,7 +17,7 @@ assert.match(source, /body\.nora_window\s*=\s*NORA_CHAT_WINDOW_SIZE/, 'Nora chat
 assert.match(source, /isNoraProductMode\(\)[\s\S]*?ensureNoraFullChatLoaded\(\)[\s\S]*?GENERATION_STARTED/, 'generation must hydrate complete history before prompt assembly');
 assert.match(source, /isNoraProductMode\(\) \? \$\('#nora-chat'\) : chatElement/, 'Nora history loading must preserve the outer scroller');
 assert.match(source, /scrollElement\.scrollTop\(scrollElement\.scrollTop\(\) \+ newHeight - prevHeight\)/, 'loading older messages must retain the visible reading position');
-assert.match(source, /export async function printMessages\(\)[\s\S]*?getChatRenderWindowSize\(\)[\s\S]*?查看更早内容/, 'initial rendering must expose Nora history loading');
+assert.match(source, /export async function printMessages\(\{ announceRendered = false \} = \{\}\)[\s\S]*?getChatRenderWindowSize\(\)[\s\S]*?查看更早内容/, 'initial rendering must expose Nora history loading');
 assert.match(source, /chat\.slice\(firstId, messageId\)/, 'windowing should slice only the rendered view');
 assert.match(endpoint, /export function getChatWindowData\(/, 'the server must own chat response windowing');
 assert.match(endpoint, /request\.body\.nora_window[\s\S]*?getChatWindowData/, 'the existing chat route must opt into windowed responses only for Nora');

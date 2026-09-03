@@ -1,8 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { READ_TOOLS, WRITE_TOOLS } from '../dist/tool-policy.js';
+
+test('server source declares exactly the supported MCP tool surface', async () => {
+    const source = await fs.readFile(new URL('../src/server.ts', import.meta.url), 'utf8');
+    const declared = [...source.matchAll(/server\.tool\(\s*["']([^"']+)["']/g)].map(match => match[1]).sort();
+    const supported = [...READ_TOOLS, ...WRITE_TOOLS].sort();
+    assert.deepEqual(declared, supported);
+});
+
 for (const mode of ['read-only', 'operator']) test('actual stdio discovery enforces ' + mode, async () => {
     const client = new Client({ name: 'policy-test', version: '1' });
     const transport = new StdioClientTransport({ command: process.execPath, args: ['dist/server.js'],

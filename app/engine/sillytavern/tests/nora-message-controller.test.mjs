@@ -4,8 +4,9 @@ import test from 'node:test';
 
 import { createMessageController } from '../../../native-extensions/nora-ui/message-controller.js';
 
-function createHarness({ messages = {}, model = {}, retryResult = { status: 'completed' }, failure = null, storyActive = false } = {}) {
+function createHarness({ messages = {}, model = {}, retryResult = { status: 'completed' }, failure = null, storyActive = false, messageView = {} } = {}) {
     const notices = [];
+    const toasts = [];
     let cleared = 0;
     let submissions = 0;
     let cancellations = 0;
@@ -27,7 +28,7 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     })[selector] || null;
     const dialogs = {
         normalizeError: error => String(error?.message || error || ''),
-        toast: () => {},
+        toast: message => toasts.push(message),
         notice: value => notices.push(value),
         clearNotice: () => { cleared += 1; },
     };
@@ -53,7 +54,7 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
         operations,
         storyActions,
         dialogs,
-        messageView: {},
+        messageView,
         select,
         icons: { send: 'send', stop: 'stop' },
         readState: () => ({ messages: [] }),
@@ -65,7 +66,9 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     return {
         controller,
         input,
+        send,
         notices,
+        toasts,
         counts: () => ({ cancellations, cleared, submissions, modelSheets }),
     };
 }
@@ -113,4 +116,25 @@ test('a TavernHelper sidecar generation does not turn the story composer into a 
 
     assert.equal(harness.counts().submissions, 1);
     assert.equal(harness.counts().cancellations, 0);
+});
+
+test('MVU transaction feedback blocks only a second send and restores the composer after commit', async (context) => {
+    globalThis.window = { __NORA_BOOT_METRICS__: { startedAt: performance.now() } };
+    context.after(() => { delete globalThis.window; });
+    const statuses = [];
+    const harness = createHarness({
+        messageView: { showMvuTransaction: status => statuses.push(status) },
+    });
+
+    harness.controller.setMvuTransaction({ status: 'syncing' });
+    assert.equal(harness.controller.isMvuSyncing(), true);
+    assert.equal(harness.send.disabled, true);
+    await harness.controller.sendMessage({ preventDefault: () => {} });
+    assert.equal(harness.counts().submissions, 0);
+    assert.deepEqual(harness.toasts, ['正在同步MVU变量，请稍候。']);
+
+    harness.controller.setMvuTransaction({ status: 'committed' });
+    assert.equal(harness.controller.isMvuSyncing(), false);
+    assert.equal(harness.send.disabled, false);
+    assert.deepEqual(statuses, ['syncing', 'committed']);
 });

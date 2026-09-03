@@ -90,6 +90,11 @@ function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
     assert.match(shell, /viewport\.mount\(\)/);
     assert.match(style, /#nora-layout\s*\{[^}]*top:\s*var\(--nora-vv-top\);[^}]*height:\s*var\(--nora-vh\);/s);
     assert.match(earlyShell, /#nora-layout\s*\{[^}]*top:\s*var\(--nora-vv-top\);[^}]*height:\s*var\(--nora-vh\);/s);
+    assert.match(
+        earlyShell,
+        /body\.nora-product\s*>\s*\[name="templatesAndPopupsWrapper"\]\s*\{[^}]*display:\s*none\s*!important;/s,
+        'legacy ST popup and editor hosts must never enter the mobile document flow when the keyboard pans the viewport',
+    );
 }
 
 console.log('nora-mobile-viewport-contract=PASS');

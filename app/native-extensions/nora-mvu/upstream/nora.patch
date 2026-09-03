@@ -192,7 +192,6 @@ index edc468c..68baf40 100644
                  : value;
          config.custom_api = {
 +            max_context: store.settings.额外模型解析配置.最大上下文token数,
-+            max_tokens: store.settings.额外模型解析配置.最大回复token数,
              apiurl: normalizeBaseURL(store.settings.额外模型解析配置.api地址),
              key: store.settings.额外模型解析配置.密钥,
              model: store.settings.额外模型解析配置.模型名称,
@@ -333,6 +332,9 @@ index 2f7a0bf..3d76a01 100644
 +        return { code: 'MVU_EXTRA_MODEL_TIMEOUT', stage: 'request' };
 +    }
 +    const message = failureFeedback(error);
++    if (/token budge(?:t|d) exceeded/i.test(message)) {
++        return { code: 'MVU_CONTEXT_TOO_LARGE', stage: 'prepare' };
++    }
 +    if (/active chat or message changed/i.test(message)) {
 +        return { code: 'MVU_STALE_CHAT', stage: 'commit' };
 +    }

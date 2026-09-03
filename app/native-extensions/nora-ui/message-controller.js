@@ -16,6 +16,8 @@ export function createMessageController({
     getSessionKey = () => readState().activeChatId || '',
 }) {
     let generating = false;
+    let mvuSyncing = false;
+    let mvuSession = '';
     const normalizeError = error => dialogs.normalizeError(error);
     const showToast = (message, options) => dialogs.toast(message, options);
     const isModelConfigurationError = error => error?.code === 'NORA_MODEL_CONFIGURATION_REQUIRED'
@@ -35,11 +37,11 @@ export function createMessageController({
         input.style.overflowY = input.scrollHeight > 140 ? 'auto' : 'hidden';
         const button = select('#nora-send');
         const empty = !input.value.trim();
-        button.classList.toggle('empty', empty && !generating);
+        button.classList.toggle('empty', (empty || mvuSyncing) && !generating);
         button.classList.toggle('stop', generating);
-        button.disabled = !generating && (empty || !currentCharacter());
+        button.disabled = !generating && (empty || !currentCharacter() || mvuSyncing);
         button.innerHTML = generating ? icons.stop : icons.send;
-        button.setAttribute('aria-label', generating ? tr("停止生成") : tr("发送"));
+        button.setAttribute('aria-label', generating ? tr("停止生成") : mvuSyncing ? tr("正在同步MVU变量") : tr("发送"));
     }
 
     async function retryGeneration() {
@@ -100,6 +102,10 @@ export function createMessageController({
         if (generating || storyActions.status('story').active) {
             await storyActions.cancel('visible');
             updateComposer();
+            return;
+        }
+        if (mvuSyncing) {
+            showToast(tr("正在同步MVU变量，请稍候。"));
             return;
         }
         if (!text) return;
@@ -222,6 +228,25 @@ export function createMessageController({
         setGenerating(Boolean(storyActions.status('visible').active || messages.isGenerating?.()));
     }
 
+    function setMvuTransaction(transaction = {}) {
+        if (transaction.status === 'syncing') {
+            mvuSyncing = true;
+            mvuSession = getSessionKey();
+            messageView.showMvuTransaction?.('syncing');
+        } else if (mvuSyncing && mvuSession === getSessionKey()) {
+            mvuSyncing = false;
+            messageView.showMvuTransaction?.(transaction.status);
+        }
+        updateComposer();
+    }
+
+    function clearMvuTransaction() {
+        mvuSyncing = false;
+        mvuSession = '';
+        messageView.clearMvuTransaction?.();
+        updateComposer();
+    }
+
     return Object.freeze({
         composerKeydown,
         updateComposer,
@@ -233,6 +258,9 @@ export function createMessageController({
         updateEmptyState,
         setGenerating,
         syncGenerating,
+        setMvuTransaction,
+        clearMvuTransaction,
         isGenerating: () => generating,
+        isMvuSyncing: () => mvuSyncing,
     });
 }

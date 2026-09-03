@@ -68,7 +68,6 @@ NORA_MCP_STATE_ROOT 必填，不再猜测开发测试目录。HTTP 与文件读�
 | NORA_MCP_CONFIG_PATH | 默认状态根下 native-runtime/config.yaml |
 | NORA_MCP_BASE_URL | 默认 http://127.0.0.1:8799；仅允许 loopback HTTP origin |
 | NORA_MCP_UPLOAD_ROOT | 默认状态根下 imports；上传卡必须在此目录内 |
-| NORA_MCP_SNAPSHOT_ROOT | 默认状态根下 mcp-snapshots；日常工具不开放恢复入口 |
 | NORA_MCP_TIMEOUT_MS | 普通请求 30000ms |
 | NORA_MCP_MODEL_TIMEOUT_MS | 同步模型操作 390000ms；调用方也需允许足够长的工具超时 |
 
@@ -120,11 +119,9 @@ nora.session.read 返回 1–100 条消息及整个历史的 expectedSignature�
 
 压缩/复盘/预览/学习/刷新、启用账本以及可能恢复压缩的会话编辑都需要 allowModelCall:true。reflect_preview 虽不写档案，也会调用付费模型。后台请求返回不代表生成完成，需查询相应状态。同步模型请求失败或断开也不能据此认定“模型没有运行”；不要盲目重复收费操作。
 
-### 文件恢复与旧代码
+### 旧维护接口
 
-内部快照管理器改为指定文件、单份 32 MiB、最多 20 份且总计 128 MiB（payload）的备份；不再递归复制整个实例。恢复要求核对当前文件哈希，且只能在停止相关写入后维护；并不提供跨进程锁或多文件崩溃事务。它不是目前 World Core 业务写入的替代机制，日常 MCP 不开放它。
-
-原 ST 维护实现仍保留在源码，但不注册到任何公开模式；未声明文件范围的旧全量快照调用会在写入前失败。插件安装、文件维护仍需单独设计并验收，不能仅修改工具白名单。前端控制使用上述固定动作，不开放旧的任意前端代码执行入口。
+旧 ST 任意资源写入、源码改写、运行命令、通用快照/回滚和运行时桥接实现已从 nora-mcp 源码移除，不再以“存在但不注册”的方式保留。产品写入统一通过 World Core、账本接口或 `nora.control.execute` 的固定动作；插件安装和文件维护不属于日常 MCP 能力。
 
 docs/upstream-st-index.* 和旧索引脚本是 ST 1.18 的历史参考，不是当前 Nora 完整代码索引；不会随运行包交付。nora.local_index 只是当前实例文件统计，也不是代码理解/架构索引。
 
