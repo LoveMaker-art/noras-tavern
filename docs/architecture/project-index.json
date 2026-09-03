@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-03T07:49:43.259Z",
+  "generatedAt": "2026-09-03T07:49:55.148Z",
   "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
-  "head": "c84842be4ff2cc880cf53a9eee6a180d4eb9c428",
-  "dirty": true,
+  "head": "5c3edc2aeeac6b882f344927bb7b94d542a9ec5d",
+  "dirty": false,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
     "includes": "Tracked and untracked project files that participate in source, tests, build, operations, architecture, or shipped generated assets.",
@@ -38,8 +38,7 @@
       "test": 156
     },
     "byStatus": {
-      "modified": 1,
-      "tracked": 1349
+      "tracked": 1350
     },
     "byExtension": {
       ".br": 5,
@@ -197,7 +196,7 @@
     {
       "path": "app/engine/sillytavern/build/generate-nora-runtime-assets.mjs",
       "role": "build-tool",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 14486,
