@@ -110,6 +110,24 @@ def python_layout(app):
     return None
 
 
+def path_is_within(path, root):
+    return path == root or root in path.parents
+
+
+def runtime_process_belongs_to_app(app, cwd, argv):
+    app = Path(app).resolve()
+    cwd = Path(cwd).resolve()
+    for value in argv:
+        if not value.endswith(("server.py", "server.js")):
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        if path_is_within(candidate.resolve(), app):
+            return True
+    return False
+
+
 def process_rows(app):
     app = Path(app).resolve()
     rows = []
@@ -123,9 +141,7 @@ def process_rows(app):
             argv = [os.fsdecode(value) for value in (entry / "cmdline").read_bytes().split(b"\0") if value]
         except OSError:
             continue
-        if app != cwd and app not in cwd.parents:
-            continue
-        if not any(value.endswith(("server.py", "server.js")) for value in argv):
+        if not runtime_process_belongs_to_app(app, cwd, argv):
             continue
         rows.append(int(entry.name))
     return rows

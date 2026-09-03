@@ -18,6 +18,30 @@ def parse(text):
     return document
 
 
+def path_is_within(path, root):
+    return path == root or root in path.parents
+
+
+def service_references_app(app, command, directory):
+    app = Path(app).expanduser().resolve()
+    try:
+        configured_directory = Path(directory).expanduser().resolve() if directory else None
+    except (OSError, RuntimeError):
+        configured_directory = None
+    if configured_directory and path_is_within(configured_directory, app):
+        return True
+    for value in shlex.split(command):
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            continue
+        try:
+            if path_is_within(candidate.resolve(), app):
+                return True
+        except (OSError, RuntimeError):
+            pass
+    return False
+
+
 class UnixTransport(xmlrpc.client.Transport):
     def __init__(self, path):
         super().__init__()
@@ -74,19 +98,7 @@ class ManagedService:
                     continue
                 command = child[section].get("command", "")
                 directory = child[section].get("directory", "")
-                try:
-                    configured_directory = Path(directory).expanduser().resolve()
-                except (OSError, RuntimeError):
-                    configured_directory = None
-                command_paths = []
-                for value in shlex.split(command):
-                    candidate = Path(value).expanduser()
-                    if candidate.is_absolute():
-                        try:
-                            command_paths.append(candidate.resolve())
-                        except (OSError, RuntimeError):
-                            pass
-                if configured_directory != app and app not in command_paths:
+                if not service_references_app(app, command, directory):
                     continue
                 if not any(name in command for name in ("server.py", "server.js")):
                     continue
