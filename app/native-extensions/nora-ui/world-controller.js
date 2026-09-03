@@ -222,7 +222,7 @@ export function createWorldController({
             scheduleSupportingContent(initialWorld, 'initial-world');
             return;
         }
-        const selection = { ...initialWorld, interactionId: 'initial-world', showBuffer: false };
+        const selection = { ...initialWorld, interactionId: 'initial-world', showBuffer: true };
         await queueSelection(selection);
         if (selection.failed) throw selection.failed;
     }

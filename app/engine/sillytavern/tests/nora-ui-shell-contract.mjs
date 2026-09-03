@@ -110,10 +110,15 @@ if (html.includes('revealEarlyShell(data)')) {
 }
 
 const finalizeUi = getNamedFunction(startupController, 'finalizeUi');
-if (!finalizeUi.includes('finishBootScreen()') || !finalizeUi.includes("classList.add('nora-runtime-ready')")) {
-    throw new Error('Nora must still mark the full runtime ready after early-shell activation.');
+if (!finalizeUi.includes('finishBootScreen()') || !finalizeUi.includes("classList.add('nora-app-ready')") || finalizeUi.includes('nora-runtime-ready')) {
+    throw new Error('Nora must reveal the application shell without claiming that World-dependent runtime work is ready.');
 }
-if (!/if \(activeWorld && messagesReady && composerEnabled\) \{[\s\S]*dispatchEvent\(new Event\('nora:usable'\)\)[\s\S]*\} else \{/.test(finalizeUi)) {
+const markRuntimeReady = getNamedFunction(startupController, 'markRuntimeReady');
+if (!markRuntimeReady.includes("classList.add('nora-runtime-ready')") || !markRuntimeReady.includes("new Event('nora:runtime-ready')")) {
+    throw new Error('Nora must retain one explicit runtime-ready transition for compatibility extensions.');
+}
+const reportWorldUsable = getNamedFunction(startupController, 'reportWorldUsable');
+if (!/if \(activeWorld && messagesReady && composerEnabled\) \{[\s\S]*dispatchEvent\(new Event\('nora:usable'\)\)[\s\S]*\} else \{/.test(reportWorldUsable)) {
     throw new Error('Nora must emit its usable event only after the active World, messages, and composer are usable.');
 }
 if (!finishBootScreen.includes("name: 'shell-visible'")) {
@@ -178,8 +183,8 @@ if (queueWorldSelection.includes('await stopFollowingLatest()')) {
     throw new Error('World switching must not keep the loading buffer open while rich-card layout observers settle.');
 }
 const openInitialWorld = getNamedFunction(worldController, 'openInitial');
-if (!openInitialWorld.includes('showBuffer: false')) {
-    throw new Error('Initial World restoration must stay behind the single boot buffer instead of exposing a second entering-World message.');
+if (!openInitialWorld.includes('showBuffer: true')) {
+    throw new Error('Initial World restoration must expose the World loading state after the application shell becomes ready.');
 }
 
 const headlessExtensionHost = $('#extensions_settings');
@@ -286,8 +291,19 @@ for (const signal of [
         throw new Error(`Nora UI must restore the last active World and fall back safely on initial load: ${signal}`);
     }
 }
-if (!startupController.includes('await openInitialWorld();')) {
-    throw new Error('Nora hydration must open the restored initial World.');
+const hydrateUi = getNamedFunction(startupController, 'hydrateUi');
+const restoreInitialWorld = getNamedFunction(startupController, 'restoreInitialWorld');
+if (hydrateUi.includes('openInitialWorld')) {
+    throw new Error('Nora shell hydration must not wait for initial World activation.');
+}
+if (!restoreInitialWorld.includes('await openInitialWorld();')) {
+    throw new Error('Nora must restore the initial World after the application shell becomes ready.');
+}
+if (!restoreInitialWorld.includes('markRuntimeReady();')) {
+    throw new Error('Initial World settlement must release runtime prerequisites even when restoration fails.');
+}
+if (!/activation\.finalize\(\)[\s\S]*restoreInitialWorld\(\)/.test(getNamedFunction(startupController, 'start'))) {
+    throw new Error('Initial World restoration must start only after application finalization releases the shell.');
 }
 
 const earlyActions = ['profile', 'worldbook', 'model', 'archive'];
