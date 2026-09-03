@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-01T16:35:13.744Z",
+  "generatedAt": "2026-09-03T07:36:45.693Z",
   "repositoryRoot": "/Users/sorrymakerx/Desktop/github 项目/nora-tavern/tavern",
-  "head": "8cf08a7e47754c1e84b28aef7fe083067a8fb333",
-  "dirty": true,
+  "head": "251e09ea99e7a77d11b908ec03f28c6eef762764",
+  "dirty": false,
   "policy": {
     "purpose": "Content-addressed supplement to the structural .codebase-memory index.",
     "includes": "Tracked and untracked project files that participate in source, tests, build, operations, architecture, or shipped generated assets.",
@@ -11,37 +11,34 @@
     "generatedFilesAreNotAuthoritativeSource": true
   },
   "counts": {
-    "files": 1320,
+    "files": 1350,
     "exclusions": 32,
     "byRole": {
       "architecture-documentation": 60,
       "asset": 206,
       "backend-compatibility-engine": 81,
-      "backend-nora": 42,
+      "backend-nora": 44,
       "build-tool": 6,
       "configuration-or-manifest": 175,
-      "documentation": 29,
-      "frontend-compatibility-engine": 261,
+      "documentation": 32,
+      "frontend-compatibility-engine": 262,
       "frontend-nora-runtime": 38,
       "full-release-updater": 14,
       "generated-profile-runtime": 7,
-      "generated-runtime": 25,
+      "generated-runtime": 22,
       "hermes-skill-source": 46,
       "lifecycle": 2,
-      "native-compatibility-extension": 11,
-      "nora-mcp-source": 19,
-      "nora-mvu-extension": 7,
-      "nora-ui-extension": 30,
-      "operations": 24,
-      "other-source": 69,
+      "native-compatibility-extension": 21,
+      "nora-mcp-source": 16,
+      "nora-mvu-extension": 15,
+      "nora-ui-extension": 31,
+      "operations": 29,
+      "other-source": 70,
       "story-profile-source": 17,
-      "test": 151
+      "test": 156
     },
     "byStatus": {
-      "deleted": 3,
-      "modified": 16,
-      "tracked": 1297,
-      "untracked": 4
+      "tracked": 1350
     },
     "byExtension": {
       ".br": 5,
@@ -49,34 +46,45 @@
       ".cjs": 5,
       ".css": 47,
       ".gz": 5,
-      ".html": 93,
+      ".html": 94,
       ".ico": 1,
       ".jpg": 21,
-      ".js": 409,
-      ".json": 208,
-      ".license": 1,
+      ".js": 418,
+      ".json": 211,
+      ".license": 2,
       ".map": 1,
-      ".md": 115,
-      ".mjs": 134,
+      ".md": 120,
+      ".mjs": 140,
       ".model": 7,
       ".mp3": 2,
+      ".patch": 2,
       ".png": 79,
-      ".py": 28,
-      ".sh": 7,
+      ".ps1": 1,
+      ".py": 31,
+      ".sh": 9,
       ".svg": 58,
-      ".ts": 16,
+      ".ts": 13,
       ".ttf": 2,
-      ".txt": 6,
+      ".txt": 7,
       ".woff": 18,
       ".woff2": 29,
       ".yaml": 3,
-      "[none]": 16
+      "[none]": 18
     },
     "generated": 30,
-    "source": 1287,
-    "totalBytes": 75130973
+    "source": 1320,
+    "totalBytes": 80200948
   },
   "files": [
+    {
+      "path": ".gitattributes",
+      "role": "other-source",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 102,
+      "sha256": "13b1a1322230d9450ac2e537febcf5255119787274348d83017fb7dbd34639f2"
+    },
     {
       "path": ".gitignore",
       "role": "other-source",
@@ -98,7 +106,7 @@
     {
       "path": "app/.tavern-release-version",
       "role": "other-source",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 7,
@@ -188,11 +196,11 @@
     {
       "path": "app/engine/sillytavern/build/generate-nora-runtime-assets.mjs",
       "role": "build-tool",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 10269,
-      "sha256": "50ad14106b2b1c86fc1f025c4e2f85743cffa30f340f4f457bdd2f50dfb9bdad"
+      "size": 14482,
+      "sha256": "fa39dc7f6d458f4080655b317866bb3439bac659b035444a450f0201cd3c7a81"
     },
     {
       "path": "app/engine/sillytavern/build/sync-story-profile-runtime.mjs",
@@ -2378,8 +2386,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 11630,
-      "sha256": "b00277652b92c860719f06430cadd14792956bcc99c3ed3a269e8183bea0db45"
+      "size": 11984,
+      "sha256": "25bc999cfe51ec4b6d77a37bbdfcf971913e060cb9aaa66b254bff652d251db1"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/77.js",
@@ -2387,8 +2395,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 2604,
-      "sha256": "d28077219abaf696ec62f1db6b4eb76a15ff490773af5afe45da2b57f8362947"
+      "size": 2777,
+      "sha256": "f421f7e6530278847146cd19be6e5ecd09d526b916edc8b140d82b8f003827cc"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/84.js",
@@ -2405,8 +2413,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 481594,
-      "sha256": "d1d0b079a3978eeabd7a7f35215c68b752759c58141fafd49cf2ab9e27d97c1b"
+      "size": 487979,
+      "sha256": "73a0c242bdc5d5a44b94e9d7623754bbdbf66d69ef4be924feeabfab32dbcb0f"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/entry.js.br",
@@ -2414,8 +2422,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 129547,
-      "sha256": "ec28a81e82830eea676ef40a40972a102f698cc37f8f598a9659f06c94920897"
+      "size": 131063,
+      "sha256": "7f41b0541e8a937a7c1e2694e78dcf2320bc1f48f9f1de7a234f9b4d362b8534"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/entry.js.gz",
@@ -2423,62 +2431,35 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 163214,
-      "sha256": "61cf2b307c87df81ce77b9ec48758ca0eeb5b41f37aee1e637495f0659401c8e"
+      "size": 165129,
+      "sha256": "a10e95d088a7b90045d95e5f93020d2d3ad8939c769d5d047b94dfc3c0bb6a95"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js",
       "role": "generated-runtime",
-      "status": "untracked",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 2446103,
-      "sha256": "f4ec4f2045088aef359701ad71d44482ada40f256d7d9c5fad1f834cc07fd933"
+      "size": 2562539,
+      "sha256": "968772317e3eff75a0aced87b2d2beebe901aeb0339324e3154dcdb59c8eb90b"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.br",
       "role": "generated-runtime",
-      "status": "untracked",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 523190,
-      "sha256": "4e73d4a0787725c47927e94f6b390784938c4f2204d90007407794a1156a2bf2"
+      "size": 547502,
+      "sha256": "76bff6df14cbb0ecb1c7c3367e500537de0465d2fc0b5f7d25da2ed607fc4919"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/inline-modules.js.gz",
       "role": "generated-runtime",
-      "status": "untracked",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 754080,
-      "sha256": "d59ce1e36a3839f96ca4d1608ff2c7140a26f0ba7220043d43affeca3dab753e"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json",
-      "role": "generated-runtime",
-      "status": "deleted",
-      "generated": true,
-      "size": null,
-      "sha256": null,
-      "kind": "missing"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json.br",
-      "role": "generated-runtime",
-      "status": "deleted",
-      "generated": true,
-      "size": null,
-      "sha256": null,
-      "kind": "missing"
-    },
-    {
-      "path": "app/engine/sillytavern/public/dist/nora/inline-modules.json.gz",
-      "role": "generated-runtime",
-      "status": "deleted",
-      "generated": true,
-      "size": null,
-      "sha256": null,
-      "kind": "missing"
+      "size": 791250,
+      "sha256": "3d82c35a334e9bb4cbf86745cf5f67161c84a36b616ddd36c296737f71f26e63"
     },
     {
       "path": "app/engine/sillytavern/public/dist/nora/legacy.js",
@@ -2510,7 +2491,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 803590,
@@ -2519,7 +2500,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.br",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 204766,
@@ -2528,7 +2509,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib-core.js.gz",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 250248,
@@ -2546,7 +2527,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 915054,
@@ -2555,7 +2536,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js.br",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 234125,
@@ -2564,7 +2545,7 @@
     {
       "path": "app/engine/sillytavern/public/dist/nora/lib.js.gz",
       "role": "generated-runtime",
-      "status": "modified",
+      "status": "tracked",
       "generated": true,
       "kind": "file",
       "size": 284028,
@@ -3491,11 +3472,11 @@
     {
       "path": "app/engine/sillytavern/public/index.html",
       "role": "frontend-compatibility-engine",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 130005,
-      "sha256": "a27cd607b0c683ae580857ed1281b1e258550181fba768f282804c52be42e213"
+      "size": 130885,
+      "sha256": "94e281dff99d6d1d85e6cb9ad9e6c72efdf615ac80af91b6fdb4160ca448fc0c"
     },
     {
       "path": "app/engine/sillytavern/public/jsconfig.json",
@@ -3998,8 +3979,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 510693,
-      "sha256": "b392c6dacca1b59295f77b981b3bfcc211e94c2c59fe388493bd3dbc4d49ad27"
+      "size": 512259,
+      "sha256": "21de6b6d91733554f3cd46fa6fd51e229c820dd99c6eb5f4b3796d7ce3592594"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/a11y.js",
@@ -4286,8 +4267,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 38271,
-      "sha256": "7ced220ea44508269ff41a85d61d98c1573b39c2aa639b70fbff42cc89f2aa16"
+      "size": 38686,
+      "sha256": "1a04f3bf8af41d4a40e6ef9e0cdb072bcfd8848d004d62619edfdd5b3b16a9c4"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/extensions/assets/character.html",
@@ -4794,6 +4775,15 @@
       "sha256": "b53c5153caf46dc62dc17707413f14c8b077864122973288c21dd56c4f5856a0"
     },
     {
+      "path": "app/engine/sillytavern/public/scripts/group-chats.js",
+      "role": "frontend-compatibility-engine",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 250,
+      "sha256": "daaf0d92df5cd32ab2cf462c19420952b34cebaa68a9df6b160b54c7e325f10b"
+    },
+    {
       "path": "app/engine/sillytavern/public/scripts/horde.js",
       "role": "frontend-compatibility-engine",
       "status": "tracked",
@@ -5087,8 +5077,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18134,
-      "sha256": "0f242c99dc6a6e63cc17b1fe5fe8104c1d7d32441eccd8626071beebb1934cd5"
+      "size": 18741,
+      "sha256": "18175dc768e5e17b573d5541579b4d6737f0f125a3cca6fbe4e4442bd2068d5b"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-adapters/st-message-adapter.js",
@@ -5114,8 +5104,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3553,
-      "sha256": "937560d7e527c5cdf790f6104048c924f1c442d5b7e1b23868ba2574041abb28"
+      "size": 3809,
+      "sha256": "0e050d9cbe5747bdae913a6fe41b468df695cd3c64d425a7193a6f22b88e82bb"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-adapters/st-runtime-adapter.js",
@@ -5123,8 +5113,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5049,
-      "sha256": "b02abbff30db99b1e914cd2d18ad6bfc879d00c3404560e6c95bf7a4a4fcc4ad"
+      "size": 5695,
+      "sha256": "658d77f6293b0ea8493061d23ffa2d138af7ae8ea0788e85dce18ed3c6940df2"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-adapters/st-settings-adapter.js",
@@ -5159,8 +5149,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3739,
-      "sha256": "8ba8c0f0a96f20ce9a17bdf2b34b7c9df895df61f10c3270f4c0f26f0b553d77"
+      "size": 3982,
+      "sha256": "4bd7f2ddfa1361a7b4dacb09d546cf5679208ccdcd722372d1e114588cf42645"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-compat/interaction-bridge.js",
@@ -5177,8 +5167,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7288,
-      "sha256": "e3e6cc0671e633a557a5551ca36304ba42f345f52d36382207ea7f57074bf176"
+      "size": 11981,
+      "sha256": "b7c52420a03c94bb926d8acf8069c59015ce8f8bc4df5ef4432491b25eb6b980"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-compat/mvu-world-info-policy.js",
@@ -5276,8 +5266,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 28805,
-      "sha256": "be61418fc7a099c96f807aa4f9c2cc9d5627d4c3623f403dc990970b66474cef"
+      "size": 30336,
+      "sha256": "eccf60f911ac6d3bcb932f1524b1af2a5150e07ff6c95377fab5943ff342d3d1"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-controls/theme-actions.js",
@@ -5321,8 +5311,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 22791,
-      "sha256": "67f7c4286d36b2bd8fc430c3464ea08ea74e7198ca46af55bc42a60d0b7633a0"
+      "size": 23130,
+      "sha256": "452fd42b8e5b2a11423ce8d2d2a176d6fe3bb982b026aac3b7d4eec25858c80e"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-runtime/index.js",
@@ -5384,8 +5374,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18423,
-      "sha256": "35afb20e628a42ad79161210309821951d37673019987da55914327c7a90e359"
+      "size": 18942,
+      "sha256": "9fd56489c6d90573f287da032ffe5e3872e8c796b0443da338cf4c5634b70785"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js",
@@ -5393,8 +5383,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 15725,
-      "sha256": "54a7a83c336c8ea56bffc5d311fb587a88f6d7d89fb4ede9cf0a27fce1fc6c9d"
+      "size": 15429,
+      "sha256": "ee6d61fcef84d0e8f9d18ba44cfe10cc426d88d5d865fb859f13d81ff5254e11"
     },
     {
       "path": "app/engine/sillytavern/public/scripts/nora-worlds/world-theme.js",
@@ -7314,13 +7304,22 @@
       "sha256": "da79e6c0da89efa1489b3f540e85381fc37fbf36c5c73c9a3b6a33cfcdd1c9b1"
     },
     {
+      "path": "app/engine/sillytavern/src/endpoints/nora-mvu-diagnostics.js",
+      "role": "backend-nora",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1407,
+      "sha256": "d1427f42af0ff7f910bcc786a0e705762ba1e1367ea849855e1b1b5dcdb87740"
+    },
+    {
       "path": "app/engine/sillytavern/src/endpoints/nora-mvu-model.js",
       "role": "backend-nora",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1826,
-      "sha256": "ea8befaed4efe04bc4f42ea4eb64f45f6851a656c4977e1e0297e8f7917e5e91"
+      "size": 1918,
+      "sha256": "28a5966b8e98ec44b745eb899bce416ca7a07cd41ddc6ac281aa3a618bb51641"
     },
     {
       "path": "app/engine/sillytavern/src/endpoints/nora-story-ledger.js",
@@ -7647,13 +7646,22 @@
       "sha256": "7cac4e6768d129256da5450848283cc49d0692fdeb2b6043917f9991ec2f91eb"
     },
     {
+      "path": "app/engine/sillytavern/src/nora-mvu-diagnostics.js",
+      "role": "backend-nora",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 4899,
+      "sha256": "2bf777b48bc534d7fa4b15116d154755bcfcda4783985da8b7643f03eb3a0f7f"
+    },
+    {
       "path": "app/engine/sillytavern/src/nora-mvu-model-config.js",
       "role": "backend-nora",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2859,
-      "sha256": "2c7a625ef643403cfee4992a440ce3afebc0d13ca297d4dff7780f6ca4a41291"
+      "size": 3669,
+      "sha256": "b7285c79c9b3f648eca7a0d0d2f2a68e8145c7e7eaff29a6f04a881cdc64253d"
     },
     {
       "path": "app/engine/sillytavern/src/nora-performance-telemetry.js",
@@ -7667,7 +7675,7 @@
     {
       "path": "app/engine/sillytavern/src/nora-static-assets.js",
       "role": "backend-nora",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 6370,
@@ -7769,8 +7777,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5118,
-      "sha256": "a9f7ddec77630ee5873fd7dff6e49393cd21724f96d820db288e9123446ebba6"
+      "size": 5891,
+      "sha256": "c5b7ba357ae0f35153aa5af77ae8a53d77c9e32a061eca0f1b771d4267640486"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/atomic-json.js",
@@ -7886,8 +7894,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 29745,
-      "sha256": "ddd5839310f989cb7636f83471b157dfd335ff55a6459e8fee603fc73f53e697"
+      "size": 33606,
+      "sha256": "452c6ac627a4ba247f99869c67c294cc5fd5934757c205fcb184c31c1895c618"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/st-card-codec.js",
@@ -7895,8 +7903,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3320,
-      "sha256": "8d91df2ebf4f9e6b4c90d1ec0f657096a90005431357db698de0f8074b7f53c0"
+      "size": 8318,
+      "sha256": "17f0c14e41869e9b9341697cfb7bc8c302be0a0a05a46c235a7250f2c5991868"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/st-import-staging.js",
@@ -7904,8 +7912,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7129,
-      "sha256": "a673ca281daac7a0146b89c011876cdf74314429aefbeb251f8a58f10f60a3c2"
+      "size": 7152,
+      "sha256": "1768db93e5d564e6696e926c23f30b5c5ad5c2d8ba2db749a470ccede7382e66"
     },
     {
       "path": "app/engine/sillytavern/src/nora-world-core/store.js",
@@ -8000,7 +8008,7 @@
     {
       "path": "app/engine/sillytavern/src/server-main.js",
       "role": "backend-compatibility-engine",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 18464,
@@ -8012,8 +8020,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18414,
-      "sha256": "3800a135c8de90bf437529c9a4abfa16f4002818d18387272dd95a00743da19c"
+      "size": 18572,
+      "sha256": "b6119a7c2419b5cb0979a2be5dfc584ba2f7c7c772a30958ff6ea767e73f52e6"
     },
     {
       "path": "app/engine/sillytavern/src/settings-runtime.js",
@@ -8147,8 +8155,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 8457,
-      "sha256": "500e72ea5221740bbb1079827cd4c93452cfde2959e8f1a7580c744ffd375c97"
+      "size": 8481,
+      "sha256": "68bf766ac27bcd5178ed03d319e5c2d6610e20aeefb53ff406f67e8f11d6bdae"
     },
     {
       "path": "app/engine/sillytavern/tests/.eslintrc.cjs",
@@ -8417,8 +8425,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2272,
-      "sha256": "5cc58ad897e89eeba509378c5ba30f5e2cc022518c1fe92ccf949f1bb781226e"
+      "size": 3813,
+      "sha256": "ccac43446a8c58d9876bc06da05f0cf12a010c4d84a5fb29db16713c8a2eebfe"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-backend-surface-contract.mjs",
@@ -8462,8 +8470,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4073,
-      "sha256": "9029eec029b89049199ae000877bcd76eab9441a3cf4edde72751847e3459f0e"
+      "size": 5853,
+      "sha256": "3e9108849848e5e07d9183106c7e44e9e0ac5de66a375c449985b80dc83ab2f6"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-card-capability-controller.test.mjs",
@@ -8489,8 +8497,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5452,
-      "sha256": "220004fb34a39421b3a3361f1032475727fb1596b9cfcd740f0ee1b41501f45b"
+      "size": 5489,
+      "sha256": "aeefce2c19ab854da5159de39e91f9868cf03a7fb9443083ca45d28e83b38b19"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-chat-window.test.mjs",
@@ -8507,8 +8515,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3579,
-      "sha256": "e9336d6f8253e8cb43aa043a91773e1c20f25ca05dce7720d47d270ec9158ead"
+      "size": 3718,
+      "sha256": "b001a96a60933758a3dd20d14b11d2aa6f9f517fa6d3ece0858368695496a906"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-controls.test.mjs",
@@ -8516,8 +8524,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18462,
-      "sha256": "528c5cfcd490719627071d8e153202cf07faa4052ad9f561e0100e0b858232f1"
+      "size": 20852,
+      "sha256": "e81e4af75d3e45e2c5ccd8d794c9f6c4b5602eb35de692762f17d855e2fa4d2e"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-core-execution-contract.mjs",
@@ -8543,8 +8551,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4347,
-      "sha256": "0858dffc091f64b4736afb65a70cc0c2333452cd389f4c2fdf2a60ea74332f36"
+      "size": 6640,
+      "sha256": "1b2f6d1066e350ec36bbb5fc3d9d95a99b7b7281b1f43aa660b2951c34073777"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-critical-startup-contract.mjs",
@@ -8572,6 +8580,24 @@
       "kind": "file",
       "size": 2196,
       "sha256": "0dbbe3e75f006dd7f6959e9067f26f54a73a5f371413ceba08c9ddea24a704a4"
+    },
+    {
+      "path": "app/engine/sillytavern/tests/nora-edit-render-lifecycle-contract.test.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1650,
+      "sha256": "e5be97d23dd5f0b565502727b2cd0e1615710eadb44799fee407393b0da4bfa5"
+    },
+    {
+      "path": "app/engine/sillytavern/tests/nora-extension-module-routing.test.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3717,
+      "sha256": "cbb4511ed2c9ba41fcaba5f15a591b34e967172c363b6567cf2919c8bbef64e2"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-headless-config-contract.mjs",
@@ -8642,8 +8668,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4744,
-      "sha256": "e1f9b1d1ea82d1ae824a4e7858c988938a5e700fe06885352507d3d1ab6e3317"
+      "size": 5855,
+      "sha256": "24ceed7e9ec0ee6906438aa1c4261177b1bcd62435596d06559ed1241937ae76"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mobile-viewport-contract.mjs",
@@ -8651,8 +8677,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3825,
-      "sha256": "9cf3dc826d4cd7ae62cf63fcc603863777aa710ab88960ee062e7c4e71c0dd25"
+      "size": 4105,
+      "sha256": "8d27a85b3e492be0d978e869ff3611c776ea381bb7ebcf7fb38c5ac2fd37bf9c"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-model-display.test.mjs",
@@ -8682,13 +8708,31 @@
       "sha256": "cdcda19797552aaad1a0ece9bac89bb7ff8877fa61c8ae6e20a4d540425f7419"
     },
     {
+      "path": "app/engine/sillytavern/tests/nora-mvu-budget-contract.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1347,
+      "sha256": "f1b222afe6884756f150ff7c9c9eda6b2a0429553ddbaf73e2734a434a7311e0"
+    },
+    {
+      "path": "app/engine/sillytavern/tests/nora-mvu-diagnostics.test.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3694,
+      "sha256": "b611c700fcef8a7b5f6c0a6b835ca150e4d7e7a3ad1cf390b2315117abdb3d58"
+    },
+    {
       "path": "app/engine/sillytavern/tests/nora-mvu-headless-contract.mjs",
       "role": "test",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 8166,
-      "sha256": "2cdaa66bd08abe448569181b16450ea1abe6303064c686c2a0012ee08db508ab"
+      "size": 14981,
+      "sha256": "c22980e45dfd6de9743d7783886b16e769bc0c7d487315a90f3332705790da86"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mvu-headless.test.mjs",
@@ -8696,8 +8740,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 23618,
-      "sha256": "358248a5bd73b5915504b28dc0c13a1cf9192871cd62be1b7055e8ac30b8ea9b"
+      "size": 32827,
+      "sha256": "25c1e717429af8a0ab3eb265867fb773249ed29851290df17aaed61925a3951f"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mvu-model-config.test.mjs",
@@ -8705,8 +8749,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1925,
-      "sha256": "5f3aa7a5aefd770b834e167ce7c50f48e8bd5603063ece5837b55f9a0a0940c9"
+      "size": 3099,
+      "sha256": "4c0c422b10e99e658ffe387d6dc27c8faf965402d668dd270c25b18b0a5581b4"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-mvu-runtime.test.mjs",
@@ -8714,8 +8758,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3653,
-      "sha256": "ef7dea3219505173f1b6ef6af71a5bb523598ce26424c513c631334c5def6c0b"
+      "size": 4360,
+      "sha256": "1d9424e9bc3fca5ece389fbb6d117e14330e04b9a7f110b809bdc9e051018a13"
+    },
+    {
+      "path": "app/engine/sillytavern/tests/nora-mvu-transaction-view.test.mjs",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2178,
+      "sha256": "cbeba8824d22c8f8d176fab502249c6a107d6922e484af1beba4c612d0aa52d6"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-native-reasoning-stream.test.mjs",
@@ -8741,8 +8794,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2032,
-      "sha256": "11ad058a4030b8507d7ca986a2eadba6e69c4857d7a23ee82cfe06dc65803fe2"
+      "size": 2371,
+      "sha256": "31f02e8a0d76dcd976d305d5c5e0fa90486133ebe06a2395d58447791f7a7629"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-panel-controls.test.mjs",
@@ -8777,8 +8830,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 10621,
-      "sha256": "9517a79429c50e22cd001371352a19ea18a90dc79c5ae170002d278103d649d3"
+      "size": 13827,
+      "sha256": "7729378cc29773e21670187e6686a346411bb8d9b5238c5e9ad89371e6844869"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-production-bundle-contract.mjs",
@@ -8786,8 +8839,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3741,
-      "sha256": "ad1ad71bd4fde710e98d375f30b939601d6d414fd8c465d2dd4aacda0217acc1"
+      "size": 4150,
+      "sha256": "301a950bca9fd22b1cba2a2612afde8db453013cc9a6ae66b9f25b3d3f35d9f7"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-profile-host-request.test.mjs",
@@ -8840,8 +8893,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 25948,
-      "sha256": "d74f59d701609f6caf3e9cde74ca50e2b4af17b391b5730ffbea456ac308c939"
+      "size": 27504,
+      "sha256": "29b9b2f05f8f882d830da1ea1819b39ca26bc8a53b9beae7dfee7e9b93408048"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-runtime-config-contract.mjs",
@@ -8849,8 +8902,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3390,
-      "sha256": "4a49990cc49660b86110e2f0656cce58fea9f17eea05201d8b527c6143f804f7"
+      "size": 3865,
+      "sha256": "97950de6b4de6f268b7214b1ebdd761980a161176c4137b0324dea0513f424f9"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-runtime-phases.test.mjs",
@@ -8894,8 +8947,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 19902,
-      "sha256": "c98ccd0b7201eda80008be2c6242aa53838c7e16d748bc97f3f95ac79c61c61d"
+      "size": 28160,
+      "sha256": "ae894b518c0886b88b7d9062e55effc5022fcb9ecc7533eb9755639cc618ad04"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-capability-adapter.test.mjs",
@@ -8903,8 +8956,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9234,
-      "sha256": "77d4dc7bf1a78cc53398a2ae86e4cb156d19ecb951d6f0995867e7751b2c752f"
+      "size": 10179,
+      "sha256": "a8277b9164c433d6ed0b5da7972845112083e207614953a556c8d511d3d55823"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-card-codec.test.mjs",
@@ -8912,8 +8965,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4327,
-      "sha256": "e5e9de3601e6b9daf539755d9261509243b9ed4680c3032e7f9c350ac30aa9ef"
+      "size": 11198,
+      "sha256": "1b09153e104bf00448a1409f673de58415ad37515797520fb81a2cdd5cfddb99"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-st-compatibility-interface-manifest.test.mjs",
@@ -8945,7 +8998,7 @@
     {
       "path": "app/engine/sillytavern/tests/nora-startup-asset-budget-contract.mjs",
       "role": "test",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1526,
@@ -8957,13 +9010,13 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2268,
-      "sha256": "55c0aee74829978559daf9abcb817e1689c0f2070acc2483746ab8290aed0bc8"
+      "size": 6921,
+      "sha256": "9bb6667a4b19c34e95d0747ec7389f516ff22287ad8684f62867cac507474bb3"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-static-assets.test.mjs",
       "role": "test",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 6079,
@@ -9092,8 +9145,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3417,
-      "sha256": "8918c54b8f6c82fe52e43e9b6c8ecff42143aa1426c64050549f15356c9e6b79"
+      "size": 4193,
+      "sha256": "3192eab3989f7d9292e2e91bb766c12386d5785b4ace01914eb10c27759911b2"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-tokenizer-initialization.test.mjs",
@@ -9119,8 +9172,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7285,
-      "sha256": "b3f35db3cb27aba9f0332468c8f527473704708619bf9cf2a37c128e4a81ce22"
+      "size": 7318,
+      "sha256": "20f72aa77560a1e6f9c865bf05dfd6bd6438eaf740f1a12f1cabce66fe5bca88"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-ui-operation-registry.test.mjs",
@@ -9137,8 +9190,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 32862,
-      "sha256": "e95a76f9d2d46ba87f1c0a58d3abd4273bfa7705d75b681c256fccfeb3a675e9"
+      "size": 34067,
+      "sha256": "a935f1f3bdde2305cd4a79fa16c35cc43b019724476932aaa7d5312d4864ed05"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-ui-store.test.mjs",
@@ -9191,8 +9244,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 21912,
-      "sha256": "0e8c343e708b6309b60936f24c4d6f60efb9b218684e62c80a527caa3a418249"
+      "size": 23652,
+      "sha256": "f518f1d568cfbbcf61326fc4f56f63d4f3b38a6c08b6f7e4419d51d89805409f"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-world-core-contract.mjs",
@@ -9245,8 +9298,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 10677,
-      "sha256": "e3da5d4848babe4056f1dd0938f52c10034884585ed2ca17086f238a8f0bc1ed"
+      "size": 10731,
+      "sha256": "88315e8def724568c21d79f78533fc4dafd7779ff431df85a47a536a8dd642ab"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-world-store.test.mjs",
@@ -9281,8 +9334,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 10492,
-      "sha256": "c2764c1ebbce156a9d4bdefc178774a2435f9b8a79cf2012234c92cb1b768f7e"
+      "size": 11153,
+      "sha256": "0d7a807c8f8eb2f47f25b14f4bf01b8cfb39f0bd1743101e3be80fc236c86753"
     },
     {
       "path": "app/engine/sillytavern/tests/nora-world-v2-only.test.mjs",
@@ -9497,8 +9550,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 30364,
-      "sha256": "37f6bf20399eb355dbe1d0f41646f8a20bc3ec535c33d8a1123fb5a97d5dc3cb"
+      "size": 30390,
+      "sha256": "33ceb9c6b9743d2ef942b3d6d6916a6cad88be1da7966b4cd73cc1079c694f26"
     },
     {
       "path": "app/native_model_config.py",
@@ -9524,8 +9577,8 @@
       "status": "tracked",
       "generated": true,
       "kind": "file",
-      "size": 1128281,
-      "sha256": "dfd3d66892de85f99b6816fb0efe6e75a420dd2c05e2356dfc28f24a4eeaddf6"
+      "size": 1128389,
+      "sha256": "6812becce036e2a42667c9b5c1a42c42ee13ae3d2c4861cbe5086817e0188953"
     },
     {
       "path": "app/native-extensions/JS-Slash-Runner/i18n/en.json",
@@ -9578,8 +9631,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1639,
-      "sha256": "b952f44a8e0adbafda435abd40817239503ef5301b9ccf8647aa42facdc8a2a8"
+      "size": 1887,
+      "sha256": "9e524710aa9cf16aade446378cf3c56c7ca5ec7b170e3d7d197eb28b79f3d0d7"
     },
     {
       "path": "app/native-extensions/JS-Slash-Runner/UPSTREAM.md",
@@ -9587,8 +9640,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1111,
-      "sha256": "3b906a169ba588139249b670db0d884a47179b7026e58cd9b588ad518310c915"
+      "size": 1449,
+      "sha256": "02519828c628c0e289629d316542632ff213872298715035d464a88e8e66bbf2"
     },
     {
       "path": "app/native-extensions/nora-ledger/index.js",
@@ -9609,13 +9662,31 @@
       "sha256": "68b704e1fe95c0990bbb9c7cab50ee795088be62d308c588d2ee74340455d8fd"
     },
     {
+      "path": "app/native-extensions/nora-mvu/build-vendor.sh",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2278,
+      "sha256": "cbf86a6c5ed7db2fe4d68c04d278c6eeba8a03bed2f3e9d045a6df0230405f50"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/diagnostics-reporter.js",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 808,
+      "sha256": "6f2c0446f4a1e11b71bb00a46787b2a7ad0b9b2751eb2d56d91e42ed7101b9bd"
+    },
+    {
       "path": "app/native-extensions/nora-mvu/index.js",
       "role": "nora-mvu-extension",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7727,
-      "sha256": "323c0dc23c0504735edc91aebc8e753311b7d8049273eb2eaa8212a61325ac7a"
+      "size": 9179,
+      "sha256": "a877a337bc887da6f8b4ac9c90f03d4ee23c5841448601f1aeecf9918f91b36a"
     },
     {
       "path": "app/native-extensions/nora-mvu/manifest.json",
@@ -9624,7 +9695,16 @@
       "generated": false,
       "kind": "file",
       "size": 340,
-      "sha256": "24090b5e5ad31ed05f26a7707e05f611748cd9cfff2f092dd33a73f4adc5e833"
+      "sha256": "4a3325846089d7355e92789e9cb8f26004714fcae74c66b07efe9364bbb80cd1"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/mvu-zod.js",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 8960,
+      "sha256": "f3aee3fb25c7bfad1ad4f15c3ab4425a3f5ecc424b399d02f7bd7b8f40626bdf"
     },
     {
       "path": "app/native-extensions/nora-mvu/runtime.js",
@@ -9632,8 +9712,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9536,
-      "sha256": "9bafd908f2902834a9594a9be0f513e7f869d767d12e2fb09249c461ec73638e"
+      "size": 13901,
+      "sha256": "6d64095afbff21acfc151d43fb44d7281b1c132bd292ccbe76762692e05685af"
     },
     {
       "path": "app/native-extensions/nora-mvu/update-observer.js",
@@ -9641,8 +9721,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 2688,
-      "sha256": "b13c842856d58f9aef5643057c3f2caf97970e6ceef5dcbb8ae330b4da98ef65"
+      "size": 7145,
+      "sha256": "9e7263e8aa1bdbb229065bdc894211b5f87fa183d94fc814f6729de7feb1d8c8"
     },
     {
       "path": "app/native-extensions/nora-mvu/UPSTREAM.md",
@@ -9650,8 +9730,26 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1560,
-      "sha256": "f4b07aa55f074e8b49f5ff817dcba2028467ffa992fb3b86bbb07aa818152dfb"
+      "size": 3064,
+      "sha256": "8591090bed21471d4b0f5ae3d5e526e1307bc3cb5d0cf49a7cc4492f398c776b"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/upstream/nora.patch",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 31544,
+      "sha256": "e03cc6571621d1e1affaf1d5a99c270647aff47512fe6270f8fd553a5eae6266"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/upstream/slash-runner.patch",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3800,
+      "sha256": "a048dfff2dcaa5b339f2a1b4c9313c57694ba01778e8c8be3acf7eadc87f06b9"
     },
     {
       "path": "app/native-extensions/nora-mvu/vendor/bundle.js",
@@ -9659,8 +9757,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1007792,
-      "sha256": "fdf63d4d4471ffb0455f04978a59e75471ad1c8de7ceacd55852bb41e461a453"
+      "size": 1009138,
+      "sha256": "48f9d85a1979bf2d83ebf46958d45a4b5c7496efbcf500f91a0536e2a5eea578"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/vendor/bundle.js.LICENSE.txt",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 642,
+      "sha256": "efc8e4b1ffc810755b9a06715fc38e99912e7b7ac6cb3f99af92e6fcaf9d8551"
     },
     {
       "path": "app/native-extensions/nora-mvu/vendor/LICENSE",
@@ -9670,6 +9777,24 @@
       "kind": "file",
       "size": 642,
       "sha256": "4f277fa8643e0f32e0b5a05719110ac4ea1e9229ac504f51eb7ae9428eec20e2"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/vendor/zod.iife.js",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 275683,
+      "sha256": "776948db564024efd378851d885b5d6cb95ef8e41d988c626d11bee3ba0726df"
+    },
+    {
+      "path": "app/native-extensions/nora-mvu/vendor/ZOD.LICENSE",
+      "role": "nora-mvu-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1072,
+      "sha256": "3f1189b28e3866e0d979968d466b78f813f76827cfdca1fbb124cc0a5c8841f8"
     },
     {
       "path": "app/native-extensions/nora-ui/activation-lifecycle.js",
@@ -9686,8 +9811,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4079,
-      "sha256": "a4f690239a345845b825b65ad33619e5389900103eabd3ed157cbf8dba3b7291"
+      "size": 5318,
+      "sha256": "77572bba7f6efd8b3cb68d61d81e43bd2762e57fa96a874d0433637feda0f8e6"
     },
     {
       "path": "app/native-extensions/nora-ui/card-capability-controller.js",
@@ -9731,8 +9856,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 23135,
-      "sha256": "b244a947a780abab7320553452e902a5bd2ed2ace52330aa1bccfa4e1bcab9cf"
+      "size": 23203,
+      "sha256": "b101e2018f3a4640d675c08eae1ddeff047582d43ff459f37efe351fd247a7f2"
     },
     {
       "path": "app/native-extensions/nora-ui/manifest.json",
@@ -9749,8 +9874,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9281,
-      "sha256": "88b4133e601b3550078df4758417e7670e03311963b308403ef82b9eb0266f6f"
+      "size": 10231,
+      "sha256": "6da32af7229e3846c171d9b65d3025784489f9d1d538a5ac8320555f1eba3abc"
     },
     {
       "path": "app/native-extensions/nora-ui/model-controller.js",
@@ -9758,8 +9883,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 18217,
-      "sha256": "8e7065e7fee7af6981f0e7b7a6f6febae3cd97fdf4d9653ec53b7377c7f3931e"
+      "size": 18618,
+      "sha256": "658a58e67afbbc215b7803dadfdab94ec04c540549bea76d076d2b55d52bcfac"
     },
     {
       "path": "app/native-extensions/nora-ui/model-display.js",
@@ -9776,8 +9901,17 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4551,
-      "sha256": "38e97c0e0559068c4ce82c573788c5b2c4078cafd75acf96342ef9be7eb2a4eb"
+      "size": 4892,
+      "sha256": "38dfdd4790c423746cda1ab6984e088a3106e506fb6ce7d3d1876a3305762e71"
+    },
+    {
+      "path": "app/native-extensions/nora-ui/mvu-transaction-view.js",
+      "role": "nora-ui-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2452,
+      "sha256": "2bac21403be6a4aa1744a41b7d41cd6077011299e924af1879c972ebc2f162ab"
     },
     {
       "path": "app/native-extensions/nora-ui/panel-controller.js",
@@ -9830,8 +9964,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 7604,
-      "sha256": "195392fa4f89f8383b5c4f5db74ed80fcc1635c9cb1a9575d06b2565dcb85ebf"
+      "size": 10389,
+      "sha256": "dbdb2596dfe58049e5ef906d72a486c56f111edc3bbdbc3ec1a20bd8304f17d6"
     },
     {
       "path": "app/native-extensions/nora-ui/startup-controller.js",
@@ -9839,8 +9973,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5105,
-      "sha256": "cadc526e37ef7680ef8c5ac6d0ca87f1ecd6d012c71e9c63f9fa9783b56044dc"
+      "size": 6607,
+      "sha256": "7c4e3822d45bf754bc775550f78ab1da27427c52aa61a7bf02e469bd2bced0f8"
     },
     {
       "path": "app/native-extensions/nora-ui/story-action-dispatcher.js",
@@ -9875,8 +10009,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 62081,
-      "sha256": "8406c8a5d8dd540949164815a98168edf4f6644858b6712313e7b90a444365a7"
+      "size": 63951,
+      "sha256": "ee63e69965d0daddffe8cecd401dfc539b618f113dd0ace11e6f317c7ca1c7bf"
     },
     {
       "path": "app/native-extensions/nora-ui/ui-operation-registry.js",
@@ -9911,8 +10045,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 15430,
-      "sha256": "97f5281450d0a2d453722067bc0f74d5841f2929c1429621993337c1d8216eb5"
+      "size": 15384,
+      "sha256": "d2fb65faf07a8f59c4135528278ea2cfef82a4d6520fe3dfb24288f292696f17"
     },
     {
       "path": "app/native-extensions/nora-ui/world-creation-controller.js",
@@ -9940,6 +10074,96 @@
       "kind": "file",
       "size": 22207,
       "sha256": "531a28e48ed629175900dd7298e73068c0a2a628a01cb000992553c29b689be5"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/dist/ejs.workers.js",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 860,
+      "sha256": "faab85d2f929ab9b0976a86fd29e4abfb82ab25fd7a778cde0e9e0928e1d64aa"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/dist/index.js",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 577843,
+      "sha256": "a88e87348ecd3b86c11815b3e59e58a22c277012d23b97f91ab0869b794f592d"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/libs/buffer.mjs",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 28854,
+      "sha256": "43d7ffab85c67adc0575a7d7c463e84a61ee8efc455d95665c8eb8d4a31e17cd"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/libs/faker.mjs",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3860702,
+      "sha256": "e89e9d69ec8e237f5527eb1a8e860894df1b5b217836c2c34fd48a5d7e145000"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/LICENSE",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 34523,
+      "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/locales/zh-cn.json",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3782,
+      "sha256": "dad582ff89c8e5a7d578ac67d665c8a26a3911d4d8873bb8b9fd615d496cebe0"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/locales/zh-tw.json",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 3802,
+      "sha256": "1a68455b02dd123b78e2ed5547971995ccb548c25f7399c05612544fa8550413"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/manifest.json",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 359,
+      "sha256": "7ee314bc3768ca388e0354e9f0970ab416ba80e4ec9afff1c048d1c14a6359a0"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/settings.html",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 11851,
+      "sha256": "ba4567b12eabdc22154fdbf38bbca0301337dc9c1ef3d8ef799428ec3d43af6f"
+    },
+    {
+      "path": "app/native-extensions/ST-Prompt-Template/UPSTREAM.md",
+      "role": "native-compatibility-extension",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 816,
+      "sha256": "8726e6758ee34e0b93ef9bb92f078c35bf9a6dc21a85d55e005ab84d43cb82e7"
     },
     {
       "path": "app/native-runtime.json",
@@ -10331,7 +10555,7 @@
     {
       "path": "docs/architecture/PROJECT-ARCHITECTURE.md",
       "role": "architecture-documentation",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 18470,
@@ -10572,6 +10796,24 @@
       "sha256": "c1c69bf89f3fa33aae4cd521540d91b36e5559dc14b4813cdff7b857aef2d8a8"
     },
     {
+      "path": "docs/install-nora-tavern.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 10104,
+      "sha256": "a39adfa12146e9024e476dda35d2ff2872613a434cdb0562d85f103aefcf408b"
+    },
+    {
+      "path": "docs/install-tavern.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 5275,
+      "sha256": "7e92f82ca6010e54ab9235c6ebf86ef600fa0f99daa24d4722d03535c2c00498"
+    },
+    {
       "path": "docs/releases/2.0.1.md",
       "role": "documentation",
       "status": "tracked",
@@ -10610,7 +10852,7 @@
     {
       "path": "docs/releases/2.0.13.md",
       "role": "documentation",
-      "status": "untracked",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 1103,
@@ -10743,6 +10985,15 @@
       "sha256": "bc10fad8a0a939dee9ac7ada62fff70eba73609b4f38cd3ef74a40dfc022d0cf"
     },
     {
+      "path": "docs/update-nora-tavern.md",
+      "role": "documentation",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2690,
+      "sha256": "ea0b9562d72839ae64c78003e72136869df1540c8894e2fe3aca52323f7db410"
+    },
+    {
       "path": "nora-mcp/.gitignore",
       "role": "nora-mcp-source",
       "status": "tracked",
@@ -10767,7 +11018,7 @@
       "generated": false,
       "kind": "file",
       "size": 44064,
-      "sha256": "7a4f155430b38f670a31340dfbd196b58375395b9cacca249562d37e9ac08b75"
+      "sha256": "30b5d51be79e1621a0a3519827c70a279a7382400c7ab86bb988f7a37a736cca"
     },
     {
       "path": "nora-mcp/package.json",
@@ -10775,8 +11026,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 840,
-      "sha256": "8bf079462c664fec9635dcdcacb2674f669e2dc06f4931b989f1b9ba6800b077"
+      "size": 983,
+      "sha256": "3fe4dc75805c631bf83d83e2b8af0cb9f5b22ec955a744947f8326e917c8b3d1"
     },
     {
       "path": "nora-mcp/README.md",
@@ -10784,8 +11035,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 12266,
-      "sha256": "3b47273ab872a6ed5e69ed56e250a7827548b4c420bb454b5ed121ecc8b0b77e"
+      "size": 11808,
+      "sha256": "f356266172a38773701e1912690aa2bdb6ff130aa9d956d6102746207f2d8ecd"
     },
     {
       "path": "nora-mcp/scripts/index-upstream-st.mjs",
@@ -10793,8 +11044,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 17573,
-      "sha256": "81ae173b8475719809cbc7fab190c7a7be30b21b2a2d778a4d39bde960058a27"
+      "size": 17620,
+      "sha256": "56fd5762665629fcf50b3367ea217795b36a84308eb511c4a6d293a1a3f1f25f"
     },
     {
       "path": "nora-mcp/src/config.ts",
@@ -10802,8 +11053,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 3038,
-      "sha256": "7ff89f166478c6c3068892a4a30ce9ea27991601835dd4ef3b71436d1f00c496"
+      "size": 2873,
+      "sha256": "06531e1a3b1275b1046d8a93cf762b2e9e9b12b4975e3b44d6ed928358d764c0"
     },
     {
       "path": "nora-mcp/src/errors.ts",
@@ -10829,8 +11080,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 21088,
-      "sha256": "8f93693c065e695d9748d13d16d818c1188061dd5c345a58256e089aed1e7309"
+      "size": 20994,
+      "sha256": "7e6ea3747ee513db82a150e8b19166328e8798aa5cd18fad7df811b0de204030"
     },
     {
       "path": "nora-mcp/src/server.ts",
@@ -10838,35 +11089,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 37586,
-      "sha256": "7a5ee043719af1eef43246999bfdb6502a7eabb641463eade7c837d29c4c5979"
-    },
-    {
-      "path": "nora-mcp/src/st/bridge-templates.ts",
-      "role": "nora-mcp-source",
-      "status": "tracked",
-      "generated": false,
-      "kind": "file",
-      "size": 9224,
-      "sha256": "19c28e585bba01aa1615811f2d43af9e8683ff64a669f7031d9415a203f48d54"
-    },
-    {
-      "path": "nora-mcp/src/st/config.ts",
-      "role": "nora-mcp-source",
-      "status": "tracked",
-      "generated": false,
-      "kind": "file",
-      "size": 2070,
-      "sha256": "df68a51b7d4c9407507bf1df9ca4f97702ee6757ac609799f87f31c8e969efb9"
-    },
-    {
-      "path": "nora-mcp/src/st/control-plane.ts",
-      "role": "nora-mcp-source",
-      "status": "tracked",
-      "generated": false,
-      "kind": "file",
-      "size": 118388,
-      "sha256": "692d841469828a4bc1e6c9cb9a498d5c64359f4d0209e412878a1fe35443c88e"
+      "size": 14188,
+      "sha256": "a402c8804757d015a5f988546c17b8fc789f4c4217d26dd063a6c8cae1ed6001"
     },
     {
       "path": "nora-mcp/src/st/errors.ts",
@@ -10887,13 +11111,13 @@
       "sha256": "ceefd586912b9c540baec85161835c40f159ab6ed22207ba77a0d13b636ee624"
     },
     {
-      "path": "nora-mcp/src/st/snapshots.ts",
+      "path": "nora-mcp/src/st/inspection-plane.ts",
       "role": "nora-mcp-source",
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 8330,
-      "sha256": "5c8c225ad26f9032f03e90f7f60aad4961b70b84d5726fb1c7cf2452614d143b"
+      "size": 19619,
+      "sha256": "b5b98ce148304d6f5dfb16a36c9c0f3076b507d4c5e1a66e31b2f0b804e149e9"
     },
     {
       "path": "nora-mcp/src/tool-policy.ts",
@@ -10910,8 +11134,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 5360,
-      "sha256": "9751a4ecffac4ccec6dfe42fcd70fb76e0e12bddbeb3ae09aa548ba4cd5d0f28"
+      "size": 6149,
+      "sha256": "ff22ad3af46134e04b35720b10f2933fc0056517760e4463a364765416af9b99"
     },
     {
       "path": "nora-mcp/tests/discovery.test.mjs",
@@ -10919,8 +11143,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 1488,
-      "sha256": "1f1059357d0b92d85d11059cff5be82db6d3704ab71e3e0258ce62a35db8ae3d"
+      "size": 1921,
+      "sha256": "47b7f342b897db46d6e7252899db6c2d11ccdc9efa7b17a1a239f24cb18c8f70"
     },
     {
       "path": "nora-mcp/tests/http.test.mjs",
@@ -10939,15 +11163,6 @@
       "kind": "file",
       "size": 15656,
       "sha256": "97eddb53fffbd6474c9cade648dce1770c2fd8c663ac148948834a2f5d2b9bd3"
-    },
-    {
-      "path": "nora-mcp/tests/snapshots.test.mjs",
-      "role": "test",
-      "status": "tracked",
-      "generated": false,
-      "kind": "file",
-      "size": 2074,
-      "sha256": "c0d5390afeaacc62d687d12aca8cc7de5b6e5a8138a04df3afe646d372b1e38d"
     },
     {
       "path": "nora-mcp/tsconfig.json",
@@ -10993,6 +11208,51 @@
       "kind": "file",
       "size": 580,
       "sha256": "b26080dafe5d82ed5d116b2aafb08fa7c3522fd7bd25d40a0e9592639d25dc32"
+    },
+    {
+      "path": "ops/installer/bootstrap.py",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 6183,
+      "sha256": "27a83c913fb8c14e8f26ced26bf551d5e175d4f1c42367b83623a9c0762803bf"
+    },
+    {
+      "path": "ops/installer/first_install.py",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 16128,
+      "sha256": "72bb24ffbcd38167f8e71bf8e7e228f091e7adb381bd5a02c4112fecfe88e141"
+    },
+    {
+      "path": "ops/installer/install.ps1",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 2969,
+      "sha256": "0387c233483ed187839488ea0d93bff8c3910f9c7541e705777bfc235f01f054"
+    },
+    {
+      "path": "ops/installer/install.sh",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1746,
+      "sha256": "f09fad6faa440f11904ccf1ae5d6e70b266c4fab79703dbc23c60e3fe37c10a5"
+    },
+    {
+      "path": "ops/installer/templates/SOUL.md",
+      "role": "operations",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1126,
+      "sha256": "6052bbe0af1fe3e8658047b3152fc73326e70b42b1af7350c23dfd414a04e83b"
     },
     {
       "path": "ops/scripts/analyze-boot-metrics.mjs",
@@ -11090,8 +11350,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 4423,
-      "sha256": "c60b3453ae459df02e844d22fbdcf1021fb530dfd351900d274c60600cd9e41b"
+      "size": 5622,
+      "sha256": "bd4d05ca2b31c12834de5d495cc8a3817d2e4cd15f2b6fbad0ceac9de734d00d"
     },
     {
       "path": "ops/scripts/package-release.sh",
@@ -11126,8 +11386,8 @@
       "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 9923,
-      "sha256": "5ee662b5c88e901af71db3d51c4b29b43ceb7e7bf9a22c2c685e9b155662ba4c"
+      "size": 9968,
+      "sha256": "fdd215731952386878e1fc72462f903ed4f90c43cba0bd40cad527383a39f2e7"
     },
     {
       "path": "ops/scripts/replay-st-interaction-gaps.mjs",
@@ -11625,6 +11885,15 @@
       "sha256": "43c01df3ecf63ca91d8aa84fa27341acb97cc2b4307a5162ac78f6f0f5ed9511"
     },
     {
+      "path": "ops/tests/test_first_install.py",
+      "role": "test",
+      "status": "tracked",
+      "generated": false,
+      "kind": "file",
+      "size": 1824,
+      "sha256": "8fd329cc24fa535611ede4cf3c0ef3c1b72860685494f675393e501ebb6682d7"
+    },
+    {
       "path": "ops/tests/test_liveware_cache_release.py",
       "role": "test",
       "status": "tracked",
@@ -11780,7 +12049,7 @@
     {
       "path": "README.en.md",
       "role": "documentation",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
       "size": 6196,
@@ -11789,11 +12058,11 @@
     {
       "path": "README.md",
       "role": "documentation",
-      "status": "modified",
+      "status": "tracked",
       "generated": false,
       "kind": "file",
-      "size": 6055,
-      "sha256": "b68ce6c2156f78139b6894abcb47447764c946b214d9de8e0e653be59589456b"
+      "size": 3813,
+      "sha256": "18265b9643e2d07da3407b3acc086f9b36678ab74f5c9be4c102c9e106116cfd"
     },
     {
       "path": "story-profile/.gitignore",
