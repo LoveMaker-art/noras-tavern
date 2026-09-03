@@ -108,7 +108,7 @@ export function createWorldController({
     }
 
     async function loadSupportingContent(world, interactionId) {
-        await timedUiStep(`world-select.${interactionId}.worldbook`, () => primeActiveWorldbook({ force: true }));
+        await timedUiStep(`world-select.${interactionId}.worldbook`, () => primeActiveWorldbook());
         const result = await timedUiStep(
             `world-select.${interactionId}.capabilities`,
             () => loadWorldCapabilities(world.id),

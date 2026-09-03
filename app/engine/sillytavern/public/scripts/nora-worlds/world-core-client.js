@@ -132,6 +132,7 @@ export function createWorldCoreClient(getHeaders, {
         : operation(),
 } = {}) {
     const snapshotCache = new Map();
+    const snapshotRequests = new Map();
     function readPending() {
         try {
             return JSON.parse(pendingStore?.getItem(PENDING_CREATION_KEY) || 'null');
@@ -184,9 +185,7 @@ export function createWorldCoreClient(getHeaders, {
         })), deadline);
     }
 
-    async function prepareSnapshot(worldId) {
-        const normalizedWorldId = String(worldId || '').trim();
-        if (!normalizedWorldId) throw new Error('World identity is required for activation.');
+    async function downloadSnapshot(normalizedWorldId) {
         const cached = snapshotCache.get(normalizedWorldId) || null;
         const headers = requestHeaders(getHeaders);
         if (cached?.etag) headers['If-None-Match'] = cached.etag;
@@ -210,6 +209,19 @@ export function createWorldCoreClient(getHeaders, {
         const etag = response.headers.get('etag') || (snapshot.revision ? `"${snapshot.revision}"` : '');
         snapshotCache.set(normalizedWorldId, { etag, snapshot });
         return snapshot;
+    }
+
+    function prepareSnapshot(worldId) {
+        const normalizedWorldId = String(worldId || '').trim();
+        if (!normalizedWorldId) return Promise.reject(new Error('World identity is required for activation.'));
+        const activeRequest = snapshotRequests.get(normalizedWorldId);
+        if (activeRequest) return activeRequest;
+
+        const request = downloadSnapshot(normalizedWorldId).finally(() => {
+            if (snapshotRequests.get(normalizedWorldId) === request) snapshotRequests.delete(normalizedWorldId);
+        });
+        snapshotRequests.set(normalizedWorldId, request);
+        return request;
     }
 
     async function operation(operationId, timeoutMs = requestTimeoutMs) {

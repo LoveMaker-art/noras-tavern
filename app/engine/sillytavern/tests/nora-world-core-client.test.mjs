@@ -276,6 +276,46 @@ test('fetches one aggregate activation snapshot and revalidates it by ETag', asy
     ]);
 });
 
+test('coalesces concurrent activation snapshot requests for the same World', async () => {
+    let fetchCount = 0;
+    let releaseResponse;
+    const responseGate = new Promise(resolve => { releaseResponse = resolve; });
+    const snapshot = {
+        schema: 'nora-world-snapshot/v1',
+        revision: 'revision-one',
+        plan: {
+            schema: 'nora-world-activation/v1', world_id: 'world:one', world_revision: 1, name: 'One', persona: {},
+            runtime_card: { engine: 'sillytavern', binding: { avatar: 'one.png' } },
+            session: { session_id: 'session:one', engine: 'sillytavern', binding: { avatar: 'one.png', chat_id: 'chat-one' } },
+            knowledge: [], capabilities: { declared: [], status: 'READY' },
+        },
+        character: { avatar: 'one.png' },
+        chat: { header: { chat_metadata: {} }, messages: [] },
+        worldbooks: [],
+    };
+    const client = createWorldCoreClient(() => ({ 'X-CSRF-Token': 'token' }), {
+        fetchImpl: async () => {
+            fetchCount += 1;
+            await responseGate;
+            return new Response(JSON.stringify({ snapshot }), { status: 200, headers: { etag: '"revision-one"' } });
+        },
+    });
+
+    const first = client.prepareSnapshot('world:one');
+    const second = client.prepareSnapshot('world:one');
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(fetchCount, 1);
+
+    releaseResponse();
+    const [firstSnapshot, secondSnapshot] = await Promise.all([first, second]);
+    assert.equal(firstSnapshot.revision, 'revision-one');
+    assert.equal(secondSnapshot.revision, 'revision-one');
+    assert.equal(fetchCount, 1);
+
+    await client.prepareSnapshot('world:one');
+    assert.equal(fetchCount, 2);
+});
+
 test('A to B to A snapshot activation keeps one native transaction owner and verifies each binding', async () => {
     const calls = [];
     let state = {

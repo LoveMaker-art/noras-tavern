@@ -235,7 +235,7 @@ test('v2 base activation completes before asynchronous capability readiness sett
             timedUiStep: async (_name, operation) => operation(),
             recordBootMilestone: () => {},
             performanceReporter: { timedMilestone: () => {} },
-            primeActiveWorldbook: async () => calls.push('worldbook'),
+            primeActiveWorldbook: async options => calls.push(options?.force ? 'worldbook-force' : 'worldbook-cache'),
             resolveCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
             promptCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
             loadWorldCapabilities: async () => {
@@ -261,7 +261,7 @@ test('v2 base activation completes before asynchronous capability readiness sett
         await capabilityStarted.promise;
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(baseResolved, true);
-        assert.deepEqual(calls.slice(0, 4), ['base-activated', 'refresh', 'worldbook', 'capability-started']);
+        assert.deepEqual(calls.slice(0, 4), ['base-activated', 'refresh', 'worldbook-cache', 'capability-started']);
 
         capabilityRelease.resolve();
         await opening;

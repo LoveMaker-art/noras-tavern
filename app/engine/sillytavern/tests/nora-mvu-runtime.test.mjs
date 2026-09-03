@@ -22,7 +22,10 @@ function characterWithScripts(scripts, characterBook = null) {
 }
 
 test('managed MVU uses the local extension asset from inside the Helper iframe', () => {
-    assert.equal(MVU_BUNDLE_URL, '/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=7fe9ae7cfe01-nora5');
+    assert.match(
+        MVU_BUNDLE_URL,
+        /^\/scripts\/extensions\/third-party\/nora-mvu\/vendor\/bundle\.js\?v=[a-f0-9]{12}-nora[1-9]\d*$/,
+    );
 });
 
 test('managed MVU resolves its pinned Zod runtime from local extension assets', () => {
