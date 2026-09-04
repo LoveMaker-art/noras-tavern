@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import types
 import unittest
 from unittest import mock
@@ -166,6 +167,86 @@ class NativeLifecycleLockTests(unittest.TestCase):
 
         runtime._stop_run.assert_called_once_with("production")
         runtime.stop_run.assert_not_called()
+
+    def test_started_process_identity_waits_for_child_exec(self):
+        lifecycle = load_lifecycle()
+        runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
+        child = mock.Mock()
+        child.poll.return_value = None
+        expected = {
+            "pid": 123,
+            "argv": ["node", "server.js"],
+            "cwd": "/tmp/engine",
+        }
+        processes = types.SimpleNamespace(
+            process_record=mock.Mock(side_effect=[None, None, expected]),
+        )
+
+        with mock.patch.object(time, "sleep", return_value=None):
+            actual = runtime.wait_for_process_identity(
+                processes,
+                123,
+                Path("/tmp/engine/server.js"),
+                child=child,
+                timeout=1,
+            )
+
+        self.assertEqual(actual, expected)
+        self.assertEqual(processes.process_record.call_count, 3)
+
+    def test_started_process_identity_reports_a_real_early_exit(self):
+        lifecycle = load_lifecycle()
+        runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
+        child = mock.Mock()
+        child.poll.return_value = 7
+        processes = types.SimpleNamespace(process_record=mock.Mock(return_value=None))
+
+        with self.assertRaisesRegex(
+            lifecycle.NativeLifecycleError,
+            "exited with status 7 before identity verification",
+        ):
+            runtime.wait_for_process_identity(
+                processes,
+                123,
+                Path("/tmp/engine/server.js"),
+                child=child,
+                timeout=1,
+            )
+
+    def test_unverified_spawn_is_terminated_before_start_failure_escapes(self):
+        lifecycle = load_lifecycle()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
+            runtime.data_root = root
+            runtime.state_root = root / "state"
+            runtime.native_data_root = runtime.state_root / "native"
+            runtime.runtime_state = runtime.state_root / "native-runtime"
+            runtime.engine_root = root / "engine"
+            runtime.engine_root.mkdir()
+            runtime.contract = types.SimpleNamespace(commit="test")
+            runtime.config_path = runtime.runtime_state / "config.yaml"
+            runtime._children = {}
+            runtime.verify_install = mock.Mock()
+            runtime.sync_assets = mock.Mock()
+            runtime.managed_service = mock.Mock(return_value=None)
+            runtime._read_pid = mock.Mock(return_value=None)
+            runtime.node_command = mock.Mock(return_value=["node", "server.js"])
+            child = mock.Mock(pid=123)
+            child.poll.side_effect = [None, None]
+            runtime.spawn = mock.Mock(return_value=child)
+            runtime.wait_for_process_identity = mock.Mock(
+                side_effect=lifecycle.NativeLifecycleError("identity timeout")
+            )
+            processes = types.SimpleNamespace(port_open=lambda _port: False)
+            runtime.process_module = mock.Mock(return_value=processes)
+
+            with self.assertRaisesRegex(lifecycle.NativeLifecycleError, "identity timeout"):
+                runtime._start("production", 8799, None, assets_prepared=False)
+
+        child.terminate.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=3)
+        self.assertNotIn(123, runtime._children)
 
     def test_real_start_cli_fails_fast_instead_of_waiting_on_its_own_lock(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -374,6 +374,49 @@ class NativeRuntime:
         finally:
             log.close()
 
+    def wait_for_process_identity(self, processes, pid, script, *, child=None, timeout=5):
+        """Wait for a newly spawned process to finish exec() into Tavern.
+
+        Popen returns as soon as the child is forked. On a loaded host, /proc can
+        therefore still describe the short-lived launcher when the first
+        identity check runs. A bounded wait distinguishes that normal exec race
+        from a child that really exited or never became the reviewed runtime.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            process = processes.process_record(pid, script)
+            if process:
+                return process
+            if child is not None:
+                return_code = child.poll()
+                if return_code is not None:
+                    raise NativeLifecycleError(
+                        f'Started Tavern process exited with status {return_code} '
+                        'before identity verification'
+                    )
+            if time.monotonic() >= deadline:
+                raise NativeLifecycleError(
+                    'Started Tavern process did not establish the expected identity in time'
+                )
+            time.sleep(0.05)
+
+    def cleanup_unverified_start(self, child=None, service=None):
+        """Undo only the process started by the current failed start attempt."""
+        if service is not None:
+            service.stop()
+            return
+        if child is None:
+            return
+        self._children.pop(child.pid, None)
+        if child.poll() is not None:
+            return
+        child.terminate()
+        try:
+            child.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            child.kill()
+            child.wait(timeout=3)
+
     def operations_module(self, name):
         if name == 'service_manager':
             self.operations_module('runtime_process')
@@ -463,15 +506,23 @@ class NativeRuntime:
             "TAVERN_PERSONALITY_FILE",
             str(Path(env.get("HERMES_HOME") or Path.home() / ".hermes") / "SOUL.md"),
         )
-        if service:
-            native_pid = service.start()
-        else:
-            child = self.spawn(self.node_command(port, native_data), env, run_dir / 'native.log')
-            native_pid = child.pid
-            self._children[native_pid] = child
-        process = processes.process_record(native_pid, script)
-        if not process:
-            raise NativeLifecycleError('Started Tavern process exited before identity verification')
+        child = None
+        try:
+            if service:
+                native_pid = service.start()
+            else:
+                child = self.spawn(self.node_command(port, native_data), env, run_dir / 'native.log')
+                native_pid = child.pid
+                self._children[native_pid] = child
+            process = self.wait_for_process_identity(
+                processes,
+                native_pid,
+                script,
+                child=child,
+            )
+        except Exception:
+            self.cleanup_unverified_start(child=child, service=service)
+            raise
         _atomic_text(run_dir / "native.pid", str(native_pid) + "\n")
         metadata = {
             "schema": 1,
