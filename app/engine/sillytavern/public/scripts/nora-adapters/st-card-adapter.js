@@ -12,13 +12,15 @@ const PROMPT_TEMPLATE_EXTENSION = 'third-party/ST-Prompt-Template';
 function hasInitializedMvuData(runtime) {
     try {
         const value = runtime?.getMvuData?.({ type: 'message', message_id: 'latest' });
-        return value !== null
-            && typeof value === 'object'
-            && !Array.isArray(value)
-            && value.stat_data !== null
-            && typeof value.stat_data === 'object'
-            && !Array.isArray(value.stat_data)
-            && value.schema !== undefined;
+        if (value === null
+            || typeof value !== 'object'
+            || Array.isArray(value)
+            || value.stat_data === null
+            || typeof value.stat_data !== 'object'
+            || Array.isArray(value.stat_data)) {
+            return false;
+        }
+        return Object.keys(value.stat_data).length > 0 || value.schema !== undefined;
     } catch {
         return false;
     }

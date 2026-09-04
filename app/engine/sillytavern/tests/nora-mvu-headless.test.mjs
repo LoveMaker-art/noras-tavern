@@ -94,11 +94,22 @@ test('MVU capability detection only accepts upstream worldbook markers', () => {
     assert.equal(hasMvuDeclaration([]), false);
 });
 
-test('MVU runtime data requires both stat_data and schema', () => {
+test('MVU runtime data accepts populated legacy snapshots without a Zod schema', () => {
     assert.equal(hasInitializedMvuData({ stat_data: {}, schema: {} }), true);
+    assert.equal(hasInitializedMvuData({ stat_data: { day: 1 } }), true);
     assert.equal(hasInitializedMvuData({ stat_data: {} }), false);
     assert.equal(hasInitializedMvuData({ schema: {} }), false);
     assert.equal(hasInitializedMvuData(null), false);
+});
+
+test('MVU settings status reports populated legacy snapshots as initialized', () => {
+    const context = { extensionSettings: { mvu_settings: {} } };
+    const adapter = createStMvuSettingsAdapter(
+        () => context,
+        { readMvuRuntime: () => ({ getMvuData: () => ({ stat_data: { day: 1 } }) }) },
+    );
+
+    assert.equal(adapter.status().initialized, true);
 });
 
 test('MVU update observation distinguishes initialization, no-command runs and parsed updates', () => {

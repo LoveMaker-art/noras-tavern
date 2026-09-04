@@ -22,7 +22,8 @@ function mergePatch(current, patch) {
 function hasInitializedData(runtime) {
     try {
         const value = runtime?.getMvuData?.({ type: 'message', message_id: 'latest' });
-        return isRecord(value) && isRecord(value.stat_data) && value.schema !== undefined;
+        if (!isRecord(value) || !isRecord(value.stat_data)) return false;
+        return Object.keys(value.stat_data).length > 0 || value.schema !== undefined;
     } catch {
         return false;
     }

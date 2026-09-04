@@ -121,7 +121,8 @@ export function hasMvuDeclaration(entries = []) {
 }
 
 export function hasInitializedMvuData(value) {
-    return isRecord(value) && isRecord(value.stat_data) && value.schema !== undefined;
+    if (!isRecord(value) || !isRecord(value.stat_data)) return false;
+    return Object.keys(value.stat_data).length > 0 || value.schema !== undefined;
 }
 
 function clone(value) {

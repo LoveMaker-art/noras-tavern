@@ -182,6 +182,23 @@ test('proves embedded MVU readiness only when its public variable-data interface
     });
 });
 
+test('accepts an initialized legacy MVU card that does not publish a Zod schema', async (t) => {
+    const previousMvu = globalThis.Mvu;
+    t.after(() => {
+        if (previousMvu === undefined) delete globalThis.Mvu;
+        else globalThis.Mvu = previousMvu;
+    });
+    globalThis.Mvu = { getMvuData: () => ({ stat_data: { day: 1 } }) };
+    const character = characterWithCapabilities();
+    const context = runtimeContext(character);
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
+
+    const evidence = await adapter.ensureCharacterCapability(character, 'mvu');
+
+    assert.equal(evidence.data_initialized, true);
+    assert.equal(evidence.api_visible, true);
+});
+
 test('does not declare MVU ready when its variable snapshot is still missing', async (t) => {
     const previousMvu = globalThis.Mvu;
     t.after(() => {
