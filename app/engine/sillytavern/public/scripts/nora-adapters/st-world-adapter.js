@@ -50,6 +50,22 @@ export function createStWorldAdapter(getContext) {
         });
     }
 
+    function ensureCharacter(character) {
+        const current = requireRuntime(getContext);
+        const avatar = String(character?.avatar || '').trim();
+        if (!avatar || !String(character?.name || '').trim()) {
+            throw new Error('世界快照缺少有效的运行角色卡。');
+        }
+        const replacement = structuredClone(character);
+        const existingId = current.characters.findIndex(item => item?.avatar === avatar);
+        if (existingId >= 0) {
+            current.characters[existingId] = replacement;
+            return existingId;
+        }
+        current.characters.push(replacement);
+        return current.characters.length - 1;
+    }
+
     async function expandCharacter(characterId) {
         let current = requireRuntime(getContext);
         const character = current.characters[characterId];
@@ -146,5 +162,5 @@ export function createStWorldAdapter(getContext) {
         return result;
     }
 
-    return Object.freeze({ read, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
+    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
 }

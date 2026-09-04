@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createBootstrapPayload, createShellPayload, projectShellWorld } from '../src/nora-bootstrap.js';
+import { createBootstrapPayload, createShellPayload, projectShellWorld, selectBootstrapLastWorldId } from '../src/nora-bootstrap.js';
+import { selectNoraLastWorldId } from '../src/settings-runtime.js';
 
 test('bootstrap exposes only authoritative World v2 startup data', async () => {
     const started = [];
@@ -11,15 +12,10 @@ test('bootstrap exposes only authoritative World v2 startup data', async () => {
         csrfToken: 'token',
         directories: { characters: '/characters', chats: '/chats' },
         assetRelease: '0123456789abcdef',
-        listCharactersFn: async directories => {
-            started.push(['characters', directories]);
-            await gate;
-            return [{ name: 'Nora' }];
-        },
         readRuntimeSettingsFn: async directories => {
             started.push(['runtime-settings', directories]);
             await gate;
-            return { settings: '{"main_api":"openai"}' };
+            return { settings: '{"main_api":"openai","extension_settings":{"nora_ui":{"lastWorldId":"world:last"}}}' };
         },
         readSecretStateFn: async directories => {
             started.push(['secret-state', directories]);
@@ -39,23 +35,23 @@ test('bootstrap exposes only authoritative World v2 startup data', async () => {
     });
 
     await Promise.resolve();
-    assert.deepEqual(started.map(item => item[0]), ['characters', 'runtime-settings', 'secret-state', 'version', 'agent-user-id']);
+    assert.deepEqual(started.map(item => item[0]), ['runtime-settings', 'secret-state', 'version', 'agent-user-id']);
     release();
 
     const result = await pending;
     assert.equal(typeof result.fetchedAt, 'number');
     assert.deepEqual({ ...result, fetchedAt: 0 }, {
-        schema: 6,
+        schema: 8,
         assetRelease: '0123456789abcdef',
         csrfToken: 'token',
-        characters: [{ name: 'Nora' }],
-        runtimeSettings: { settings: '{"main_api":"openai"}' },
+        runtimeSettings: { settings: '{"main_api":"openai","extension_settings":{"nora_ui":{"lastWorldId":"world:last"}}}' },
+        lastWorldId: 'world:last',
         secretState: { api_key_openai: true },
         version: { agent: 'Nora:1', pkgVersion: '1.0.0' },
         agentUserId: 'usr_nora',
         fetchedAt: 0,
     });
-    assert.deepEqual(started.map(item => item[0]), ['characters', 'runtime-settings', 'secret-state', 'version', 'agent-user-id']);
+    assert.deepEqual(started.map(item => item[0]), ['runtime-settings', 'secret-state', 'version', 'agent-user-id']);
 });
 
 test('shell bootstrap projects compact World summaries without runtime bindings', async () => {
@@ -94,4 +90,17 @@ test('shell bootstrap projects compact World summaries without runtime bindings'
     assert.deepEqual(payload.worlds, [projectShellWorld(world)]);
     assert.equal(JSON.stringify(payload).includes('secret-chat'), false);
     assert.equal(JSON.stringify(payload).includes('private runtime data'), false);
+});
+
+test('bootstrap extracts the persisted last World without making the compact shell read settings', async () => {
+    assert.equal(selectNoraLastWorldId({ extension_settings: { nora_ui: { lastWorldId: ' world:ready ' } } }), 'world:ready');
+    assert.equal(selectNoraLastWorldId({}), '');
+    assert.equal(selectBootstrapLastWorldId({ settings: '{"extension_settings":{"nora_ui":{"lastWorldId":" world:ready "}}}' }), 'world:ready');
+    assert.equal(selectBootstrapLastWorldId({ settings: '{broken' }), '');
+
+    const payload = await createShellPayload({
+        assetRelease: '0123456789abcdef',
+        listWorldsFn: async () => [],
+    });
+    assert.equal(Object.hasOwn(payload, 'lastWorldId'), false);
 });

@@ -29,6 +29,7 @@ export function createCharacterController({
     const desktopLibraryPageSize = 8;
     const mobileLibraryPageSize = 4;
     let libraryPage = 0;
+    let libraryLoaded = false;
 
     function libraryPageSize() {
         return globalThis.matchMedia?.('(max-width: 560px)').matches
@@ -127,6 +128,10 @@ export function createCharacterController({
     }
 
     async function openLibrary(requestedPage = libraryPage) {
+        if (!libraryLoaded) {
+            await cards.refreshCharacters();
+            libraryLoaded = true;
+        }
         const libraryGroups = groups();
         const pageSize = libraryPageSize();
         const pageCount = Math.max(1, Math.ceil(libraryGroups.length / pageSize));

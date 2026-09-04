@@ -9,7 +9,6 @@ export function createWorldCreationController({
     normalizeError,
     loadWorlds,
     refresh,
-    rememberLastWorld,
     openWorldById = async () => {},
     isGenerating = () => false,
 }) {
@@ -28,7 +27,6 @@ export function createWorldCreationController({
             if (!intent.worldId) {
                 const world = await worldRuntime.createFromLibrary({ avatar, idempotencyKey: intent.key });
                 intent.worldId = world.id;
-                rememberLastWorld(world.id);
             }
             await refreshWorldsAfterCommit(tr("世界已创建"));
         }, { control, errorLabel: tr("世界创建失败"), logLabel: 'Library World creation failed' });
@@ -77,7 +75,6 @@ export function createWorldCreationController({
                     persona: { name: '', description: '' },
                 });
                 createdWorldId = world.id;
-                rememberLastWorld(world.id);
                 closeModal();
                 await refreshWorldsAfterCommit(tr("世界已创建"));
             }, { control: submit, errorLabel: tr("世界创建失败"), logLabel: 'Failed to create a blank World through World Core v2' });
@@ -133,7 +130,6 @@ export function createWorldCreationController({
                         idempotencyKey,
                         persona: { name: '', description: '' },
                     });
-                    rememberLastWorld(world.id);
                     importedWorldId = world.id;
                     committed = true;
                 }

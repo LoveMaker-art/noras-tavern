@@ -19,6 +19,7 @@ function groupedLibrary(characters, usedAvatars = []) {
     const state = { characters };
     const controller = createCharacterController({
         cards: {
+            refreshCharacters: async () => {},
             deleteCharacterCards: async request => {
                 deleted.push(request);
                 state.characters = state.characters.filter(card => !request.avatars.includes(card.avatar));
@@ -122,7 +123,7 @@ test('character library renders at most eight cards per page', async () => {
         return state.characters[index];
     };
     const controller = createCharacterController({
-        cards: { resolveCharacter },
+        cards: { resolveCharacter, refreshCharacters: async () => {} },
         operations: { isBusy: () => false, run: async (_key, operation) => operation() },
         dialogs,
         readState: () => state,

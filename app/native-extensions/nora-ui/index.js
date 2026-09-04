@@ -397,7 +397,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     normalizeError: normalizeNoticeMessage,
                     loadWorlds,
                     refresh,
-                    rememberLastWorld: worldId => worldController.rememberLastWorld(worldId),
                     openWorldById: (worldId, options) => worldController.openById(worldId, options),
                     isGenerating: () => messageController.isGenerating(),
                 });

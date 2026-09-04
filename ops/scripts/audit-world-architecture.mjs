@@ -23,10 +23,11 @@ const checks = [
     },
     {
         id: 'world-hidden-by-projection-order',
-        explanation: 'The UI lists authoritative manifests directly and reports missing bindings as repair state.',
+        explanation: 'The UI lists authoritative manifests directly; opening hydrates the complete Runtime Card from the authoritative snapshot.',
         evidence: [
             ['app/engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js', /manifests = await client\.list\(\)/],
-            ['app/engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js', /needsRepair:\s*!lifecycleReady \|\| characterId < 0/],
+            ['app/engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js', /available:\s*lifecycleReady/],
+            ['app/engine/sillytavern/public/scripts/nora-worlds/world-core-client.js', /runtime\.ensureCharacter\(snapshot\.character\)/],
         ],
         absence: [
             ['app/native-extensions/nora-ui/ui-store.js', /recentWorlds/],

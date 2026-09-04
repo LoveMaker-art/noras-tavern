@@ -7,8 +7,10 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const script = fs.readFileSync(path.join(root, 'public/script.js'), 'utf8');
 const systemMessages = fs.readFileSync(path.join(root, 'public/scripts/system-messages.js'), 'utf8');
 const i18n = fs.readFileSync(path.join(root, 'public/scripts/i18n.js'), 'utf8');
+const noraEntry = fs.readFileSync(path.join(root, 'public/nora-entry.js'), 'utf8');
 const index = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
 const bootEndpoint = fs.readFileSync(path.join(root, 'src/endpoints/nora-boot.js'), 'utf8');
+const bootstrap = fs.readFileSync(path.join(root, 'src/nora-bootstrap.js'), 'utf8');
 const extensions = fs.readFileSync(path.join(root, 'public/scripts/extensions.js'), 'utf8');
 const worldController = fs.readFileSync(path.resolve(root, '../../native-extensions/nora-ui/world-controller.js'), 'utf8');
 const singleQuote = String.fromCharCode(39);
@@ -48,7 +50,7 @@ assert.match(script, /criticalExtensionNames\s*=\s*\[['"]regex['"]\]/, 'ordinary
 assert.doesNotMatch(firstLoad, /mvu-runtime|JS-Slash-Runner/, 'complex-card runtimes must not block ordinary startup');
 assert.match(
     extensions,
-    /NORA_PRODUCT_DEFERRED_EXTENSIONS[\s\S]*third-party\/ST-Prompt-Template[\s\S]*third-party\/JS-Slash-Runner[\s\S]*third-party\/nora-mvu/,
+    /NORA_PRODUCT_DEFERRED_EXTENSIONS[\s\S]*third-party\/JS-Slash-Runner[\s\S]*third-party\/nora-mvu/,
     'complex-card runtimes must be explicitly deferred',
 );
 assert.match(
@@ -73,13 +75,15 @@ assert.match(systemMessages, /system_messages\[type\] \?\?= structuredClone\(def
 assert.match(systemMessages, /const systemMessage = system_messages\[type\] \?\? system_messages\.generic/, 'unknown compatibility messages must degrade to a valid generic message');
 assert.match(systemMessages, /export function getSafetyChat\(\)[\s\S]*initSystemMessageCore\(\)/, 'chat reset must use the headless system-message interface');
 assert.match(i18n, /export \{ getCurrentLocale, addLocaleData, t \} from '.\/nora-i18n\/core.js'/, 'ST and extensions must share Nora translation data without the legacy locale UI');
+assert.doesNotMatch(noraEntry, /from ['"]\.\/locales\/zh-cn\.json['"]/, 'the full ST locale must not be compiled into the critical Nora entry bundle');
+assert.match(noraEntry, /startNoraRuntime\(\)\.then\([\s\S]*loadCompatibilityLocale\(\)/, 'the full ST locale must load only after the Nora runtime is usable');
 assert.doesNotMatch(
     index,
     /<link\s+rel="preload"\s+as="style"[^>]+nora-ui\/style\.css/,
     'Nora UI CSS must not be transferred once as a preload and again as a stylesheet',
 );
 assert.doesNotMatch(index, /<link\s+rel="manifest"/, 'the PWA manifest must not compete with the interactive startup path');
-assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/, 'legacy libraries must load once from their immutable standalone asset');
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_VENDOR_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/, 'legacy libraries must load once from their independently versioned immutable asset');
 assert.match(index, /manifest\.legacy/, 'startup metrics must identify the standalone legacy asset');
 assert.match(index, /id="third-party_nora-ui-css"/, 'the Nora UI stylesheet must share the extension loader identity and load once');
 assert.match(extensions, /if \(existingStyle\.length > 0\)\s*\{\s*return Promise\.resolve\(\);/, 'an existing extension stylesheet must resolve without injecting a duplicate or hanging');
@@ -87,7 +91,7 @@ const headShellStart = index.indexOf(
     'const shellNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/shell' + singleQuote,
 );
 const headBootstrapStart = index.indexOf(
-    'const runtimeBootstrapNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/bootstrap?max=250&metadata=true' + singleQuote,
+    'const runtimeBootstrapNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/bootstrap' + singleQuote,
 );
 const manifestNetworkYield = index.indexOf('await globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__.catch(() => undefined)');
 const runtimeAssetGate = index.indexOf('globalThis.__NORA_START_RUNTIME_ASSETS__ =');
@@ -126,12 +130,15 @@ assert.match(
 );
 assert.doesNotMatch(
     index.slice(bodyBootstrapReuse),
-    /fetch\('\/api\/nora-boot\/bootstrap\?max=250&metadata=true'/,
+    /fetch\('\/api\/nora-boot\/bootstrap'/,
     'the body must not issue a duplicate aggregate bootstrap request',
 );
 assert.match(index, /shellPromise\.then\(\(shell\) => \{[\s\S]*render\(shell\)[\s\S]*reveal\(\)/, 'authoritative World summaries must reveal the existing shell before runtime hydration');
-assert.match(index, /function reveal\(\)[\s\S]*shell-visible[\s\S]*__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/, 'the visible World shell must release large runtime assets');
-assert.doesNotMatch(worldController, /async function openInitial\(/, 'startup must stop at the World list instead of restoring a saved or first World');
+assert.doesNotMatch(index, /shell-deadline|__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/, 'the visible World list must not automatically release the full ST runtime');
+assert.match(index, /const queueAction = \(name,[\s\S]*requestRuntime\(name\)/, 'a World or product action must release the full runtime on explicit user intent');
+assert.match(index, /Promise\.all\(\[shellPromise, dataPromise\]\)[\s\S]*world\.id === lastWorldId && world\.lifecycleStatus === 'READY'[\s\S]*queueWorld\(resumeWorld, target, 'resume'\)/, 'returning users must resume only the persisted last World after validating it against the authoritative shell list');
+assert.match(index, /requestRuntime\('send'\)/, 'an early send must release the full runtime');
+assert.doesNotMatch(worldController, /async function openInitial\(/, 'the World controller must not infer a first World or own a second startup path');
 assert.doesNotMatch(index, /dataset\.noraInteractiveMs\s*\|\|=/, 'metadata arrival must not masquerade as an interactive application');
 assert.doesNotMatch(index, /__NORA_CHAT_PROMISES__|data\.initialWorld|data\.startup|worldCoreV2/, 'the early shell must not reconstruct a legacy World from bootstrap projections');
 assert.doesNotMatch(firstLoad, /nora-deferred-core|__NORA_DEFERRED_CORE_PROMISE__/, 'Nora must not retain a legacy UI hydration phase');
@@ -140,6 +147,9 @@ assert.match(firstLoad, /waitForNoraRuntimeReady\(\)[\s\S]*?activateCritical/, '
 assert.doesNotMatch(index, /characters\.slice\(0, 3\)/, 'startup must not download arbitrary full character cards');
 assert.doesNotMatch(index, /recentAvatars/, 'startup must not prefetch every recent World card');
 assert.doesNotMatch(script, /globalThis\.__NORA_(?:CHAT|CHARACTER)_PROMISES__/, 'ST loading must not retain dead legacy bootstrap prefetch branches');
+assert.doesNotMatch(index, /__NORA_CHARACTERS_PROMISE__/, 'the shell must not expose a hidden full-card bootstrap dependency');
+assert.doesNotMatch(bootstrap, /listCharactersFn|characters:/, 'the runtime bootstrap must not scan or serialize the card library');
+assert.match(firstLoad, /if \(!isNoraProduct\)\s*\{\s*coreDataTasks\.push\(timedBootStep\('characters', getCharacters\)\)/, 'only upstream ST may block APP_READY on a full card-library scan');
 for (const retiredStartupRequest of [
     'fetch(' + singleQuote + '/csrf-token' + singleQuote + ')',
     'fetch(' + singleQuote + '/api/characters/all' + singleQuote,

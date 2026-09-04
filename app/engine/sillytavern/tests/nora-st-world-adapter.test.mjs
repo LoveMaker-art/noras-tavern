@@ -3,6 +3,22 @@ import test from 'node:test';
 
 import { createStWorldAdapter } from '../public/scripts/nora-adapters/st-world-adapter.js';
 
+test('hydrates a complete snapshot card into the ST runtime without scanning the card library', () => {
+    const runtime = {
+        characters: [{ avatar: 'one.png', name: 'Stale', data: { description: 'old' } }],
+        selectCharacterById() {},
+        updateChatMetadata() {},
+        saveMetadata() {},
+    };
+    const adapter = createStWorldAdapter(() => runtime);
+
+    assert.equal(adapter.ensureCharacter({ avatar: 'one.png', name: 'One', data: { description: 'fresh' } }), 0);
+    assert.deepEqual(runtime.characters, [{ avatar: 'one.png', name: 'One', data: { description: 'fresh' } }]);
+
+    assert.equal(adapter.ensureCharacter({ avatar: 'two.png', name: 'Two', data: {} }), 1);
+    assert.equal(runtime.characters[1].avatar, 'two.png');
+});
+
 test('World-owned context is injected once and cleared on ordinary World activation and close', async () => {
     const prompts = [];
     const runtime = { characters: [], chat: [], chatMetadata: {}, powerUserSettings: {},

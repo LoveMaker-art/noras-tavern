@@ -137,6 +137,7 @@
         globalThis.__NORA_ASSET_RELEASE__ = '{{NORA_ASSET_RELEASE}}';
         globalThis.__NORA_ASSET_BASE__ = '{{NORA_ASSET_BASE}}';
         globalThis.__NORA_EXTENSION_ASSET_BASE__ = '{{NORA_EXTENSION_ASSET_BASE}}';
+        globalThis.__NORA_VENDOR_ASSET_BASE__ = '{{NORA_VENDOR_ASSET_BASE}}';
         globalThis.__NORA_INLINE_MANIFEST_URL__ = '{{NORA_INLINE_MANIFEST_URL}}';
         globalThis.__NORA_EXTENSION_MODULE_URL__ = (assetPath) => {
             const value = String(assetPath || '');
@@ -184,7 +185,7 @@
             return response.json();
         });
         recordAssetCacheMilestone('runtime-bootstrap-requested');
-        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap?max=250&metadata=true', {
+        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap', {
             cache: 'no-store',
             credentials: 'same-origin',
             priority: 'low',
@@ -226,11 +227,14 @@
         globalThis.__NORA_START_RUNTIME_ASSETS__ = (reason = 'requested') => {
             if (runtimeAssetsStarted) return;
             runtimeAssetsStarted = true;
-            for (const asset of ['dist/nora/lib-core.js', 'dist/nora/entry.js']) {
+            for (const [base, asset] of [
+                [globalThis.__NORA_VENDOR_ASSET_BASE__, 'dist/nora/lib-core.js'],
+                [globalThis.__NORA_ASSET_BASE__, 'dist/nora/entry.js'],
+            ]) {
                 const preload = document.createElement('link');
                 preload.rel = 'modulepreload';
-                preload.href = `${globalThis.__NORA_ASSET_BASE__}/${asset}`;
-                preload.fetchPriority = 'low';
+                preload.href = `${base}/${asset}`;
+                preload.fetchPriority = 'high';
                 document.head.append(preload);
             }
             recordAssetCacheMilestone('runtime-assets-started', { reason });
@@ -254,7 +258,6 @@
             return response.json();
             });
         });
-        setTimeout(() => globalThis.__NORA_START_RUNTIME_ASSETS__('shell-deadline'), 1200);
         try {
             const longTaskObserver = new PerformanceObserver((list) => {
                 const metrics = globalThis.__NORA_BOOT_METRICS__;
@@ -321,9 +324,27 @@
             const send = document.getElementById('nora-send');
             const retry = document.getElementById('nora-boot-retry');
             const bootStatus = document.querySelector('#nora-boot-buffer .nora-buffer-status');
+            const worldBuffer = document.getElementById('nora-world-buffer');
+            const worldBufferTitle = document.getElementById('nora-world-buffer-title');
+            const worldBufferStatus = worldBuffer.querySelector('.nora-buffer-status');
+            const requestRuntime = reason => globalThis.__NORA_START_RUNTIME_ASSETS__(`user:${reason}`);
             const queueAction = (name, target, details = {}) => {
                 state.pendingAction = { name, clickedAt: performance.now(), ...details };
                 target?.setAttribute('aria-busy', 'true');
+                requestRuntime(name);
+            };
+            const queueWorld = (world, target, source = 'user') => {
+                if (!world?.id) return;
+                list.querySelectorAll('[data-early-world]').forEach(item => item.classList.toggle('active', item === target));
+                document.body.classList.add('nora-world-opening');
+                worldBuffer.setAttribute('aria-hidden', 'false');
+                worldBufferTitle.textContent = source === 'resume' ? tr('正在继续上次的世界') : (world.name || tr('正在进入世界'));
+                worldBufferStatus.textContent = source === 'resume' ? (world.name || tr('正在进入这个世界')) : tr('正在进入这个世界');
+                queueAction('world', target, {
+                    worldId: world.id,
+                    worldName: world.name,
+                    source,
+                });
             };
             const worldStatus = (world) => {
                 if (world.lifecycleStatus !== 'READY') return tr('世界 · 需要修复');
@@ -369,7 +390,6 @@
                 document.body.classList.remove('nora-booting');
                 globalThis.__NORA_BOOT_METRICS__.shellReadyAt = visibleAt;
                 globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'shell-visible', at: visibleAt, source: 'world-summary' });
-                globalThis.__NORA_START_RUNTIME_ASSETS__('shell-visible');
             }
             function failEarlyShell(error) {
                 if (document.body.classList.contains('nora-boot-failed')) return;
@@ -383,7 +403,6 @@
                     at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
                     message: String(error?.message || error),
                 });
-                globalThis.__NORA_START_RUNTIME_ASSETS__('shell-failed');
                 console.warn('[Nora early] Core data preload failed:', error);
             }
             retry.addEventListener('click', () => location.reload());
@@ -403,11 +422,10 @@
                 if (target?.closest('#nora-new-world')) queueAction('new-world', target.closest('#nora-new-world'));
                 const earlyWorld = target?.closest('[data-early-world]');
                 if (earlyWorld) {
-                    list.querySelectorAll('[data-early-world]').forEach(item => item.classList.toggle('active', item === earlyWorld));
-                    queueAction('world', earlyWorld, {
-                        worldId: earlyWorld.dataset.earlyWorld,
-                        worldName: earlyWorld.dataset.earlyWorldName,
-                    });
+                    queueWorld({
+                        id: earlyWorld.dataset.earlyWorld,
+                        name: earlyWorld.dataset.earlyWorldName,
+                    }, earlyWorld);
                 }
                 if (earlyAction) queueAction(earlyAction.dataset.earlyAction, earlyAction);
             }, true);
@@ -436,6 +454,7 @@
                 state.pendingSend = true;
                 composer.setAttribute('aria-busy', 'true');
                 send.disabled = true;
+                requestRuntime('send');
             });
             requestAnimationFrame(() => {
                 const readyMs = String(Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10);
@@ -448,17 +467,15 @@
             const shellPromise = globalThis.__NORA_SHELL_DATA_PROMISE__;
             const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__;
             globalThis.__NORA_CSRF_PROMISE__ = bootstrapPromise.then(data => data.csrfToken);
-            globalThis.__NORA_CHARACTERS_PROMISE__ = bootstrapPromise.then(data => data.characters);
             globalThis.__NORA_SETTINGS_PROMISE__ = bootstrapPromise.then(data => data.runtimeSettings);
             globalThis.__NORA_SECRET_STATE_PROMISE__ = bootstrapPromise.then(data => data.secretState);
             globalThis.__NORA_VERSION_PROMISE__ = bootstrapPromise.then(data => data.version);
             const dataPromise = bootstrapPromise.then((data) => {
                 globalThis.__NORA_AGENT_USER_ID__ = String(data.agentUserId || '');
-                const { characters = [] } = data;
                 globalThis.__NORA_EARLY_DATA__ = data;
                 const freshDataMs = String(Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10);
                 document.documentElement.dataset.noraFreshDataMs = freshDataMs;
-                globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'runtime-bootstrap-ready', at: Number(freshDataMs), characters: characters.length });
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'runtime-bootstrap-ready', at: Number(freshDataMs) });
                 return data;
             });
             globalThis.__NORA_EARLY_DATA_PROMISE__ = dataPromise;
@@ -469,6 +486,19 @@
                 document.documentElement.dataset.noraFreshDataMs = String(freshDataMs);
                 globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'fresh-world-data', at: freshDataMs, worlds: shell.worlds?.length || 0, source: 'authoritative-v2-summary' });
                 reveal();
+            }).catch(failEarlyShell);
+            Promise.all([shellPromise, dataPromise]).then(([shell, bootstrap]) => {
+                const lastWorldId = String(bootstrap.lastWorldId || '').trim();
+                const resumeWorld = shell.worlds?.find(world => world.id === lastWorldId && world.lifecycleStatus === 'READY');
+                if (!resumeWorld || state.pendingAction || document.body.classList.contains('nora-ui-hydrated')) return;
+                const target = [...list.querySelectorAll('[data-early-world]')]
+                    .find(item => item.dataset.earlyWorld === resumeWorld.id);
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                    name: 'last-world-resume-requested',
+                    at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                    worldId: resumeWorld.id,
+                });
+                queueWorld(resumeWorld, target, 'resume');
             }).catch(failEarlyShell);
             dataPromise.catch(failEarlyShell);
         })();
@@ -1693,7 +1723,7 @@
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
             });
             const legacy = document.createElement('script');
-            legacy.src = `${globalThis.__NORA_ASSET_BASE__}/dist/nora/legacy.js`;
+            legacy.src = `${globalThis.__NORA_VENDOR_ASSET_BASE__}/dist/nora/legacy.js`;
             legacy.fetchPriority = 'low';
             legacy.addEventListener('load', resolve, { once: true });
             legacy.addEventListener('error', () => reject(new Error('Nora legacy runtime failed to load.')), { once: true });
@@ -1705,6 +1735,7 @@
         ]).then(async ([manifest]) => {
             const assetBase = globalThis.__NORA_ASSET_BASE__;
             const extensionAssetBase = globalThis.__NORA_EXTENSION_ASSET_BASE__;
+            const vendorAssetBase = globalThis.__NORA_VENDOR_ASSET_BASE__;
             globalThis.__NORA_BOOT_METRICS__.milestones.push({
                 name: 'legacy-libs-loaded',
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
@@ -1724,7 +1755,8 @@
                 imports[`${assetBase}/${modulePath}`] = aliasUrl;
             }
             for (const [modulePath, assetPath] of Object.entries(manifest.compiled || {})) {
-                imports[`nora-module/${modulePath}`] = `${assetBase}/${assetPath}`;
+                const compiledBase = assetPath === 'dist/nora/lib-core.js' ? vendorAssetBase : assetBase;
+                imports[`nora-module/${modulePath}`] = `${compiledBase}/${assetPath}`;
             }
             for (const modulePath of manifest.network || []) {
                 imports[`nora-module/${modulePath}`] = `${assetBase}/${modulePath}`;

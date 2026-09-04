@@ -260,6 +260,8 @@ export const english = Object.freeze({
     '另一个世界操作尚未完成。': 'Another world action is still running.',
     '世界正在更新，请稍候。': 'Updating world. Please wait.',
     '正在进入世界': 'Opening world',
+    '正在继续上次的世界': 'Continuing your last world',
+    '要打开的世界已不存在，请重新选择。': 'That world is no longer available. Choose another world.',
     '世界打开失败：${0}': 'Could not open world: ${0}',
     '世界创建已恢复。': 'World creation resumed.',
     '世界创建重试失败：${0}': 'Could not retry world creation: ${0}',

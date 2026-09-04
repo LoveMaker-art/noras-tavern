@@ -101,3 +101,58 @@ test('an early World click is handed to the authoritative activation path withou
     assert.deepEqual(calls[0], ['requested-world', 'world:two', { interactionId: 'early-world-42', showBuffer: true }]);
     assert.equal(globalThis.window.__NORA_EARLY__.pendingAction, null);
 });
+
+test('a returning user resumes the server-validated last World through the same activation path', async (t) => {
+    const calls = [];
+    const classes = new Set(['nora-world-opening']);
+    const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
+    globalThis.document = { body: { classList: { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) } } };
+    globalThis.window = { __NORA_EARLY__: { pendingAction: { name: 'world', source: 'resume', worldId: 'world:last', clickedAt: 84 }, pendingSend: false } };
+    globalThis.dispatchEvent = () => {};
+
+    const startup = createStartupController({
+        messageView: { hasMessages: () => true },
+        messageController: { updateComposer() {} },
+        select: () => ({ disabled: false, getAttribute: () => null, setAttribute() {} }),
+        selectAll: () => [],
+        readState: () => ({ activeCharacterId: 0, activeChatId: 'chat-last', messages: [] }),
+        openWorldById: async (worldId, options) => calls.push(['resume', worldId, options]),
+        refresh: () => calls.push('refresh'),
+        recordBootMilestone: milestone => calls.push(['milestone', milestone]),
+        performanceReporter: { phase() {}, milestone() {}, usable() {} },
+    });
+
+    await startup.consumeEarlyIntent();
+    assert.deepEqual(calls[0], ['resume', 'world:last', { interactionId: 'early-world-84', showBuffer: true }]);
+    assert.equal(classes.has('nora-world-opening'), true);
+});
+
+test('a failed automatic resume returns to the World list without failing application hydration', async (t) => {
+    const calls = [];
+    const classes = new Set(['nora-world-opening']);
+    const buffer = { setAttribute: (...args) => calls.push(['buffer', ...args]) };
+    const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
+    globalThis.document = { body: { classList: { add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value) } } };
+    globalThis.window = { __NORA_EARLY__: { pendingAction: { name: 'world', source: 'resume', worldId: 'world:gone', clickedAt: 126 }, pendingSend: false } };
+    globalThis.dispatchEvent = () => {};
+
+    const startup = createStartupController({
+        messageView: { hasMessages: () => true },
+        messageController: { updateComposer() {} },
+        select: selector => selector === '#nora-world-buffer' ? buffer : { disabled: false, getAttribute: () => null },
+        selectAll: () => [],
+        readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
+        openWorldById: async () => { throw new Error('missing World'); },
+        refresh: () => calls.push('refresh'),
+        recordBootMilestone: milestone => calls.push(['milestone', milestone]),
+        performanceReporter: { phase() {}, milestone() {}, usable() {} },
+    });
+
+    await startup.consumeEarlyIntent();
+    assert.equal(classes.has('nora-world-opening'), false);
+    assert.deepEqual(calls[0], ['buffer', 'aria-hidden', 'true']);
+    assert.equal(calls.includes('refresh'), true);
+    assert.equal(calls.some(call => Array.isArray(call) && call[0] === 'milestone' && call[1].name === 'last-world-resume-failed'), true);
+});

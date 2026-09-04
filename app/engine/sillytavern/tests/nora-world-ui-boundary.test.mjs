@@ -67,7 +67,7 @@ test('authoritative World list is available before pending import recovery settl
     assert.ok(states.includes('COMPLETED'));
 });
 
-test('product World read model keeps ST bindings private and retains unavailable Worlds', async () => {
+test('product World read model trusts the authoritative lifecycle without requiring a preloaded card library', async () => {
     const runtime = createWorldCoreRuntime({
         read: () => ({ characters: [], activeCharacter: null, metadata: {}, chatId: '' }),
     }, {
@@ -80,9 +80,9 @@ test('product World read model keeps ST bindings private and retains unavailable
     const [world] = runtime.list();
 
     assert.equal(world.id, 'world:one');
-    assert.equal(world.available, false);
+    assert.equal(world.available, true);
     assert.equal(world.openingState, 'empty');
-    assert.equal(world.meta, '世界 · 需要修复');
+    assert.equal(world.meta, '世界 · 增强能力加载中');
     for (const privateField of ['character', 'characterId', 'characterAvatar', 'chatId', 'chatName', 'manifest']) {
         assert.equal(Object.hasOwn(world, privateField), false, `${privateField} leaked through the product World model`);
     }

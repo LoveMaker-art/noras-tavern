@@ -1,32 +1,40 @@
+import { selectNoraLastWorldId } from './settings-runtime.js';
+
+export function selectBootstrapLastWorldId(runtimeSettings) {
+    try {
+        const settings = typeof runtimeSettings?.settings === 'string'
+            ? JSON.parse(runtimeSettings.settings)
+            : runtimeSettings?.settings;
+        return selectNoraLastWorldId(settings);
+    } catch {
+        return '';
+    }
+}
+
 export async function createBootstrapPayload({
     csrfToken,
     directories,
     assetRelease,
-    listCharactersFn,
     readRuntimeSettingsFn,
     readSecretStateFn,
     readVersionFn,
     readAgentUserIdFn,
 }) {
-    if (typeof listCharactersFn !== 'function') {
-        throw new TypeError('Nora bootstrap data readers are required.');
-    }
     if (typeof assetRelease !== 'string' || !/^[a-f0-9]{12,64}$/i.test(assetRelease)) {
         throw new TypeError('Nora bootstrap requires a valid asset release.');
     }
-    const [characters, runtimeSettings, secretState, version, agentUserId] = await Promise.all([
-        listCharactersFn(directories),
+    const [runtimeSettings, secretState, version, agentUserId] = await Promise.all([
         typeof readRuntimeSettingsFn === 'function' ? readRuntimeSettingsFn(directories) : null,
         typeof readSecretStateFn === 'function' ? readSecretStateFn(directories) : null,
         typeof readVersionFn === 'function' ? readVersionFn() : null,
         typeof readAgentUserIdFn === 'function' ? readAgentUserIdFn() : '',
     ]);
     return {
-        schema: 6,
+        schema: 8,
         assetRelease,
         csrfToken,
-        characters,
         runtimeSettings,
+        lastWorldId: selectBootstrapLastWorldId(runtimeSettings),
         secretState,
         version,
         agentUserId: String(agentUserId || ''),

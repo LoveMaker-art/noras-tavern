@@ -99,12 +99,16 @@ export function createWorldController({
         world.click();
     }
 
-    function rememberLastWorld(worldId) {
+    async function rememberLastWorld(worldId) {
         if (!worldId) return;
         const settings = settingsDomain.uiSettings();
         if (settings.lastWorldId === worldId) return;
         settings.lastWorldId = worldId;
-        settingsDomain.saveUiSettings();
+        try {
+            await settingsDomain.saveUiSettings({ immediate: true });
+        } catch (error) {
+            console.warn('[Nora UI] The active World opened, but its resume preference could not be saved:', error);
+        }
     }
 
     async function loadSupportingContent(world, interactionId) {
@@ -163,7 +167,7 @@ export function createWorldController({
                     try {
                         await timedUiStep(`world-select.${current.interactionId}.lifecycle.open`, () => worldRuntime.activate(current.id));
                         if (isSuperseded()) continue;
-                        rememberLastWorld(current.id);
+                        void rememberLastWorld(current.id);
                         if (isSuperseded()) continue;
                         if (!leavingCheckpointSent && leavingWorldId && leavingWorldId !== current.id) {
                             leavingCheckpointSent = true;
@@ -259,7 +263,10 @@ export function createWorldController({
 
     async function openById(worldId, { interactionId = `world-${Date.now()}`, showBuffer = true } = {}) {
         const world = models().find(item => item.id === worldId);
-        if (!world) throw new Error('The requested World is absent from the authoritative list.');
+        if (!world) {
+            showToast(tr("要打开的世界已不存在，请重新选择。"), { tone: 'error', duration: 4200 });
+            throw new Error('The requested World is absent from the authoritative list.');
+        }
         const selection = { ...world, interactionId, showBuffer };
         await queueSelection(selection);
         if (selection.failed) throw selection.failed;

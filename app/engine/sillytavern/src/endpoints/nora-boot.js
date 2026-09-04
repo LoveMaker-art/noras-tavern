@@ -1,6 +1,5 @@
 import express from 'express';
 
-import { listCharacters } from './characters.js';
 import { readSecretState } from './secrets.js';
 import { readSettingsPayload } from './settings.js';
 import { createBootstrapPayload, createShellPayload } from '../nora-bootstrap.js';
@@ -45,7 +44,6 @@ router.get('/bootstrap', async (request, response) => {
             csrfToken,
             directories: request.user.directories,
             assetRelease: request.app.get('noraAssetRelease'),
-            listCharactersFn: listCharacters,
             readRuntimeSettingsFn: directories => readSettingsPayload(directories, 'runtime'),
             readSecretStateFn: readSecretState,
             readVersionFn: () => versionPromise ??= getVersion(),
