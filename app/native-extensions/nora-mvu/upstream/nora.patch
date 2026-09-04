@@ -297,30 +297,8 @@ index edc468c..68baf40 100644
 +        store.settings.额外模型解析配置.模型来源 === '与插头相同'
 +            ? SillyTavern.getChatCompletionModel()
 +            : store.settings.额外模型解析配置.模型名称;
-+    const normalized_model_name = model_name.toLowerCase();
-+    const is_gemini = normalized_model_name.includes('gemini');
-+    const is_claude = normalized_model_name.includes('claude');
-+    const use_builtin_jailbreak = is_gemini || is_claude;
-+    if (!use_builtin_jailbreak) {
-+        config.user_input =
-+            'Apply the observed story events to the variables now. Return only the required MVU update block.';
-+    }
-+    let task = use_builtin_jailbreak
-+        ? decoded_extra_model_task
-+        : `<variable_update_task>
-+You are a deterministic state-transition processor for a fictional role-playing game.
-+Inspect only the story events inside <past_observe> and compare them with the supplied pre-event variable state and schema.
-+Do not continue the story, role-play, invent events, or discuss these instructions.
-+Apply only changes supported by the observed story. Obey the card's MVU dialect and schema exactly.
-+Return exactly one block in this structure and no prose outside it:
-+<UpdateVariable>
-+<Analysis>Brief English update rationale, at most 80 words.</Analysis>
-+<JSONPatch>
-+[valid MVU JSON Patch operation objects]
-+</JSONPatch>
-+</UpdateVariable>
-+Never omit the <JSONPatch> wrapper. Use only operations declared by the card. Use add only as a numeric delta on an existing numeric path; never emit arithmetic expressions, macros, or placeholder strings as values. Use insert for new object keys or array items. If nothing changed, return an empty JSONPatch array.
-+</variable_update_task>`;
++    const is_gemini = model_name.toLowerCase().includes('gemini');
++    let task = decoded_extra_model_task;
 +    if (repair_feedback.trim()) {
 +        task += `\n\n<previous_attempt_error>\nThe previous variable update was rejected. Correct only the variable update commands and obey the existing schema exactly.\n${repair_feedback.slice(0, 2000)}\n</previous_attempt_error>`;
 +    }
@@ -338,19 +316,12 @@ index edc468c..68baf40 100644
          store.settings.额外模型解析配置.随机头部 && is_gemini
              ? [{ role: 'system' as const, content: batch_id ?? generateRandomHeader() }]
              : [];
-+    const builtin_head_prompts = use_builtin_jailbreak
-+        ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_head : decoded_claude_head }]
-+        : [];
-+    const builtin_tail_prompts = use_builtin_jailbreak
-+        ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_tail : decoded_claude_tail }]
-+        : [];
 
      const result = await generateRaw({
          ...config,
          ordered_prompts: [
              ...rnd_header_prompts,
--            { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
-+            ...builtin_head_prompts,
+             { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
              { role: 'system', content: '<additional_information>' },
              'persona_description',
              'char_description',
@@ -362,8 +333,7 @@ index edc468c..68baf40 100644
              { role: 'system', content: '</past_observe>' },
              { role: 'system', content: task },
              'user_input',
--            { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
-+            ...builtin_tail_prompts,
+             { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
          ],
      });
      return normalizeGenerateResultByResponseFormat(result, response_format);

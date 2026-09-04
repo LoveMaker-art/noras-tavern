@@ -71,11 +71,13 @@ assert.match(bundle, /MVU_EXTRA_MODEL_TIMEOUT/, 'vendored runtime must classify 
 assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;/, 'each MVU model attempt must receive the full observed provider budget');
 assert.doesNotMatch(noraPatch, /PRIMARY_ATTEMPT_BUDGET_MS|TRANSACTION_BUDGET_MS/, 'MVU must not split one request budget into guaranteed-short retries');
 assert.match(noraPatch, /if \(!\['parsing', 'validation'\]\.includes\(failure\.stage\)\) break;/, 'MVU transport failures must not trigger an overlapping paid retry');
-assert.match(noraPatch, /const use_builtin_jailbreak = is_gemini \|\| is_claude;/, 'the upstream jailbreak must only be sent to the model families it targets');
-assert.match(noraPatch, /You are a deterministic state-transition processor/, 'other model families must receive the neutral Nora variable task');
-assert.match(noraPatch, /Return exactly one block in this structure and no prose outside it:/, 'non-Gemini and non-Claude models must receive the verified strict MVU response contract');
-assert.match(noraPatch, /If nothing changed, return an empty JSONPatch array\./, 'the MVU response contract must define an explicit no-op form');
-assert.match(noraPatch, /const explicit_noop = \/<JSONPatch>/, 'an empty JSONPatch must be accepted as a successful no-op transaction');
+assert.match(noraPatch, /let task = decoded_extra_model_task;/, 'extra-model MVU must preserve the card/upstream variable update dialect');
+assert.doesNotMatch(
+    noraPatch,
+    /You are a deterministic state-transition processor|Return exactly one block in this structure|Never omit the <JSONPatch> wrapper/,
+    'Nora must not force a JSONPatch-only contract onto every extra-model request',
+);
+assert.match(noraPatch, /const explicit_noop = \/<JSONPatch>/, 'an empty JSONPatch can still be accepted when a card emits JSONPatch');
 assert.match(noraPatch, /replaceUnresolvedStateBlocks/, 'the source patch must replace unresolved card state templates at the MVU prompt boundary');
 assert.match(noraPatch, /<status_current_variables>/, 'the MVU request must carry an authoritative current-state block');
 assert.match(noraPatch, /getLastValidVariable/, 'the authoritative prompt state must come from the same snapshot store used for commit');
