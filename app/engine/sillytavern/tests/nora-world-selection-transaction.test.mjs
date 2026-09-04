@@ -19,6 +19,7 @@ test('rapid world selection only completes supporting work for the latest world'
     const primed = [];
     const refreshed = [];
     const reflected = [];
+    const settingsSaves = [];
     const milestones = [];
     const elements = new Map();
     const makeElement = () => ({
@@ -47,7 +48,7 @@ test('rapid world selection only completes supporting work for the latest world'
         const controller = createWorldController({
             settingsDomain: {
                 uiSettings: () => settings,
-                saveUiSettings: () => {},
+                saveUiSettings: options => settingsSaves.push(options),
                 isGenerating: () => false,
             },
             worldRuntime: {
@@ -99,6 +100,7 @@ test('rapid world selection only completes supporting work for the latest world'
 
         assert.deepEqual(activated, ['first', 'second']);
         assert.equal(settings.lastWorldId, 'second');
+        assert.deepEqual(settingsSaves, [{ immediate: true }]);
         assert.deepEqual(primed, ['second']);
         assert.deepEqual(refreshed, ['second']);
         assert.equal(elements.get('#nora-world-buffer-title').textContent, 'Second');

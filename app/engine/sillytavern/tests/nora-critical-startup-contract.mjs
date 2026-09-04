@@ -136,8 +136,9 @@ assert.doesNotMatch(
 assert.match(index, /shellPromise\.then\(\(shell\) => \{[\s\S]*render\(shell\)[\s\S]*reveal\(\)/, 'authoritative World summaries must reveal the existing shell before runtime hydration');
 assert.doesNotMatch(index, /shell-deadline|__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/, 'the visible World list must not automatically release the full ST runtime');
 assert.match(index, /const queueAction = \(name,[\s\S]*requestRuntime\(name\)/, 'a World or product action must release the full runtime on explicit user intent');
+assert.match(index, /Promise\.all\(\[shellPromise, dataPromise\]\)[\s\S]*world\.id === lastWorldId && world\.lifecycleStatus === 'READY'[\s\S]*queueWorld\(resumeWorld, target, 'resume'\)/, 'returning users must resume only the persisted last World after validating it against the authoritative shell list');
 assert.match(index, /requestRuntime\('send'\)/, 'an early send must release the full runtime');
-assert.doesNotMatch(worldController, /async function openInitial\(/, 'startup must stop at the World list instead of restoring a saved or first World');
+assert.doesNotMatch(worldController, /async function openInitial\(/, 'the World controller must not infer a first World or own a second startup path');
 assert.doesNotMatch(index, /dataset\.noraInteractiveMs\s*\|\|=/, 'metadata arrival must not masquerade as an interactive application');
 assert.doesNotMatch(index, /__NORA_CHAT_PROMISES__|data\.initialWorld|data\.startup|worldCoreV2/, 'the early shell must not reconstruct a legacy World from bootstrap projections');
 assert.doesNotMatch(firstLoad, /nora-deferred-core|__NORA_DEFERRED_CORE_PROMISE__/, 'Nora must not retain a legacy UI hydration phase');

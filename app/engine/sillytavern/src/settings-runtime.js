@@ -62,3 +62,7 @@ export function mergeRuntimeSettings(current, update) {
         ...update,
     };
 }
+
+export function selectNoraLastWorldId(source) {
+    return String(source?.extension_settings?.nora_ui?.lastWorldId || '').trim();
+}

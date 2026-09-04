@@ -1,3 +1,16 @@
+import { selectNoraLastWorldId } from './settings-runtime.js';
+
+export function selectBootstrapLastWorldId(runtimeSettings) {
+    try {
+        const settings = typeof runtimeSettings?.settings === 'string'
+            ? JSON.parse(runtimeSettings.settings)
+            : runtimeSettings?.settings;
+        return selectNoraLastWorldId(settings);
+    } catch {
+        return '';
+    }
+}
+
 export async function createBootstrapPayload({
     csrfToken,
     directories,
@@ -17,10 +30,11 @@ export async function createBootstrapPayload({
         typeof readAgentUserIdFn === 'function' ? readAgentUserIdFn() : '',
     ]);
     return {
-        schema: 7,
+        schema: 8,
         assetRelease,
         csrfToken,
         runtimeSettings,
+        lastWorldId: selectBootstrapLastWorldId(runtimeSettings),
         secretState,
         version,
         agentUserId: String(agentUserId || ''),

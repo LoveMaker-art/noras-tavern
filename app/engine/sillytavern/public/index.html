@@ -324,11 +324,27 @@
             const send = document.getElementById('nora-send');
             const retry = document.getElementById('nora-boot-retry');
             const bootStatus = document.querySelector('#nora-boot-buffer .nora-buffer-status');
+            const worldBuffer = document.getElementById('nora-world-buffer');
+            const worldBufferTitle = document.getElementById('nora-world-buffer-title');
+            const worldBufferStatus = worldBuffer.querySelector('.nora-buffer-status');
             const requestRuntime = reason => globalThis.__NORA_START_RUNTIME_ASSETS__(`user:${reason}`);
             const queueAction = (name, target, details = {}) => {
                 state.pendingAction = { name, clickedAt: performance.now(), ...details };
                 target?.setAttribute('aria-busy', 'true');
                 requestRuntime(name);
+            };
+            const queueWorld = (world, target, source = 'user') => {
+                if (!world?.id) return;
+                list.querySelectorAll('[data-early-world]').forEach(item => item.classList.toggle('active', item === target));
+                document.body.classList.add('nora-world-opening');
+                worldBuffer.setAttribute('aria-hidden', 'false');
+                worldBufferTitle.textContent = source === 'resume' ? tr('正在继续上次的世界') : (world.name || tr('正在进入世界'));
+                worldBufferStatus.textContent = source === 'resume' ? (world.name || tr('正在进入这个世界')) : tr('正在进入这个世界');
+                queueAction('world', target, {
+                    worldId: world.id,
+                    worldName: world.name,
+                    source,
+                });
             };
             const worldStatus = (world) => {
                 if (world.lifecycleStatus !== 'READY') return tr('世界 · 需要修复');
@@ -406,11 +422,10 @@
                 if (target?.closest('#nora-new-world')) queueAction('new-world', target.closest('#nora-new-world'));
                 const earlyWorld = target?.closest('[data-early-world]');
                 if (earlyWorld) {
-                    list.querySelectorAll('[data-early-world]').forEach(item => item.classList.toggle('active', item === earlyWorld));
-                    queueAction('world', earlyWorld, {
-                        worldId: earlyWorld.dataset.earlyWorld,
-                        worldName: earlyWorld.dataset.earlyWorldName,
-                    });
+                    queueWorld({
+                        id: earlyWorld.dataset.earlyWorld,
+                        name: earlyWorld.dataset.earlyWorldName,
+                    }, earlyWorld);
                 }
                 if (earlyAction) queueAction(earlyAction.dataset.earlyAction, earlyAction);
             }, true);
@@ -471,6 +486,19 @@
                 document.documentElement.dataset.noraFreshDataMs = String(freshDataMs);
                 globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'fresh-world-data', at: freshDataMs, worlds: shell.worlds?.length || 0, source: 'authoritative-v2-summary' });
                 reveal();
+            }).catch(failEarlyShell);
+            Promise.all([shellPromise, dataPromise]).then(([shell, bootstrap]) => {
+                const lastWorldId = String(bootstrap.lastWorldId || '').trim();
+                const resumeWorld = shell.worlds?.find(world => world.id === lastWorldId && world.lifecycleStatus === 'READY');
+                if (!resumeWorld || state.pendingAction || document.body.classList.contains('nora-ui-hydrated')) return;
+                const target = [...list.querySelectorAll('[data-early-world]')]
+                    .find(item => item.dataset.earlyWorld === resumeWorld.id);
+                globalThis.__NORA_BOOT_METRICS__.milestones.push({
+                    name: 'last-world-resume-requested',
+                    at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
+                    worldId: resumeWorld.id,
+                });
+                queueWorld(resumeWorld, target, 'resume');
             }).catch(failEarlyShell);
             dataPromise.catch(failEarlyShell);
         })();

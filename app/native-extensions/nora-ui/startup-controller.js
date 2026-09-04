@@ -31,10 +31,22 @@ export function createStartupController({
         early.pendingAction = null;
         selectAll('[aria-busy="true"]', select('#nora-layout')).forEach(node => node.removeAttribute('aria-busy'));
         if (pendingAction?.name === 'world') {
-            await openWorldById(pendingAction.worldId, {
-                interactionId: `early-world-${Math.round(pendingAction.clickedAt || performance.now())}`,
-                showBuffer: true,
-            });
+            try {
+                await openWorldById(pendingAction.worldId, {
+                    interactionId: `early-world-${Math.round(pendingAction.clickedAt || performance.now())}`,
+                    showBuffer: true,
+                });
+            } catch (error) {
+                if (pendingAction.source !== 'resume') throw error;
+                document.body.classList.remove('nora-world-opening');
+                select('#nora-world-buffer')?.setAttribute('aria-hidden', 'true');
+                refresh();
+                recordBootMilestone({
+                    name: 'last-world-resume-failed',
+                    message: String(error?.message || error),
+                });
+                console.warn('[Nora UI] Last World could not be resumed; returning to the World list:', error);
+            }
         } else if (pendingAction?.name === 'new-world') openNewWorldSheet();
         else if (pendingAction?.name) runPanelAction(pendingAction.name);
         if (!early.pendingSend) return;
