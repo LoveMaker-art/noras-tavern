@@ -1,11 +1,11 @@
 import express from 'express';
 
-import { listCharacters } from './characters.js';
 import { readSecretState } from './secrets.js';
 import { readSettingsPayload } from './settings.js';
-import { createBootstrapPayload } from '../nora-bootstrap.js';
+import { createBootstrapPayload, createShellPayload } from '../nora-bootstrap.js';
 import { readAgentUserId } from '../nora-story-profile.js';
 import { normalizeClientMetricPayload, noraTelemetryWriter } from '../nora-performance-telemetry.js';
+import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
 import { getVersion } from '../util.js';
 
 const MAX_PAYLOAD_BYTES = 96 * 1024;
@@ -24,6 +24,19 @@ const ALLOWED_PHASES = new Set([
 export const router = express.Router();
 let versionPromise;
 
+router.get('/shell', async (request, response) => {
+    try {
+        response.setHeader('Cache-Control', 'no-store');
+        return response.json(await createShellPayload({
+            assetRelease: request.app.get('noraAssetRelease'),
+            listWorldsFn: () => resolveNoraWorldCore(request.user.directories).listWorlds(),
+        }));
+    } catch (error) {
+        console.error('[Nora shell] Failed to load World summaries:', error);
+        return response.status(500).json({ error: 'Nora World summaries could not be loaded.' });
+    }
+});
+
 router.get('/bootstrap', async (request, response) => {
     const csrfToken = typeof request.csrfToken === 'function' ? request.csrfToken() : 'disabled';
     try {
@@ -31,7 +44,6 @@ router.get('/bootstrap', async (request, response) => {
             csrfToken,
             directories: request.user.directories,
             assetRelease: request.app.get('noraAssetRelease'),
-            listCharactersFn: listCharacters,
             readRuntimeSettingsFn: directories => readSettingsPayload(directories, 'runtime'),
             readSecretStateFn: readSecretState,
             readVersionFn: () => versionPromise ??= getVersion(),

@@ -64,9 +64,7 @@ export function createWorldCoreRuntime(runtime, {
 
     function model(manifest) {
         const state = runtime.read();
-        const avatar = String(manifest.runtime_card?.binding?.avatar || '');
         const session = defaultSession(manifest);
-        const characterId = state.characters.findIndex(character => character.avatar === avatar);
         const lifecycleReady = manifest.lifecycle?.status === 'READY';
         const lifecycleDeleting = manifest.lifecycle?.status === 'DELETING';
         const migrationRepair = manifest.lifecycle?.error?.code === 'NORA_WORLD_NEEDS_REPAIR';
@@ -82,11 +80,11 @@ export function createWorldCoreRuntime(runtime, {
             storyContext: manifest.story_context,
             ui: manifest.ui,
             persistent: true,
-            available: lifecycleReady && characterId >= 0,
-            needsRepair: !lifecycleReady || characterId < 0,
+            available: lifecycleReady,
+            needsRepair: !lifecycleReady,
             repairReason: migrationRepair
                 ? 'migration_conflict'
-                : (!lifecycleReady ? 'lifecycle_failed' : (characterId < 0 ? 'runtime_card_missing' : null)),
+                : (!lifecycleReady ? 'lifecycle_failed' : null),
             active,
             openingState,
             capabilities: manifest.capabilities,
@@ -96,11 +94,9 @@ export function createWorldCoreRuntime(runtime, {
                     ? '世界 · 迁移冲突待修复'
                     : !lifecycleReady
                         ? '世界 · 需要修复'
-                        : characterId < 0
-                            ? '世界 · 需要修复'
-                            : capabilityStatus === 'DEGRADED'
-                                ? '世界 · 附加能力降级'
-                                : (capabilityStatus === 'PENDING' ? '世界 · 增强能力加载中' : '世界 · 已就绪')),
+                        : capabilityStatus === 'DEGRADED'
+                            ? '世界 · 附加能力降级'
+                            : (capabilityStatus === 'PENDING' ? '世界 · 增强能力加载中' : '世界 · 已就绪')),
         });
     }
 

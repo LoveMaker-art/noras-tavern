@@ -85,7 +85,12 @@ export function validateActivationSnapshot(snapshot) {
 export async function executeStActivationSnapshot(snapshot, runtime, { measure = passthroughMeasure } = {}) {
     const { avatar, chatId } = validateActivationSnapshot(snapshot);
     let state = runtime.read();
-    const characterId = state.characters.findIndex(character => character.avatar === avatar);
+    const hydratedCharacterId = typeof runtime.ensureCharacter === 'function'
+        ? runtime.ensureCharacter(snapshot.character)
+        : null;
+    const characterId = Number.isInteger(hydratedCharacterId)
+        ? hydratedCharacterId
+        : state.characters.findIndex(character => character.avatar === avatar);
     if (characterId < 0) throw new Error(`World Runtime Card is unavailable: ${avatar}`);
     if (typeof runtime.activateSnapshot !== 'function') {
         throw new Error('The compatibility runtime does not support aggregate World activation.');

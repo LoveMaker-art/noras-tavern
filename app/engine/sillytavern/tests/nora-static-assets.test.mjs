@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
     computeCompositeAssetRelease,
     computeStaticAssetRelease,
+    createAssetAllowlistMiddleware,
     createPrecompressedAssetMiddleware,
     renderNoraIndex,
 } from '../src/nora-static-assets.js';
@@ -94,15 +95,17 @@ test('index rendering injects separate content-addressed core and extension name
     const coreRelease = '1111111111111111';
     const extensionRelease = '2222222222222222';
     const rendered = renderNoraIndex(
-        '{{NORA_INLINE_MANIFEST_URL}}\n{{NORA_EXTENSION_ASSET_BASE}}\n<script src="{{NORA_ASSET_BASE}}/entry.js">{{NORA_ASSET_RELEASE}}</script>',
+        '{{NORA_INLINE_MANIFEST_URL}}\n{{NORA_EXTENSION_ASSET_BASE}}\n{{NORA_VENDOR_ASSET_BASE}}\n<script src="{{NORA_ASSET_BASE}}/entry.js">{{NORA_ASSET_RELEASE}}</script>',
         release,
         coreRelease,
         extensionRelease,
+        '3333333333333333',
     );
 
     assert.equal(rendered, [
         `/assets/${coreRelease}/dist/nora/inline-modules.js`,
         `/extension-assets/${extensionRelease}`,
+        '/vendor-assets/3333333333333333',
         `<script src="/assets/${coreRelease}/entry.js">${release}</script>`,
     ].join('\n'));
     assert.throws(() => renderNoraIndex('x', 'manual-version'), /content hash/i);
@@ -138,4 +141,23 @@ test('versioned assets prefer a precompressed representation', () => {
     } finally {
         fs.rmSync(fixture, { recursive: true, force: true });
     }
+});
+
+test('an independently hashed asset namespace serves only files included in its release', () => {
+    const middleware = createAssetAllowlistMiddleware([
+        'dist/nora/lib-core.js',
+        'dist/nora/legacy.js',
+    ]);
+    let continued = false;
+    let status = 0;
+    const response = { sendStatus: value => { status = value; } };
+
+    middleware({ path: '/dist/nora/lib-core.js' }, response, () => { continued = true; });
+    assert.equal(continued, true);
+    assert.equal(status, 0);
+
+    continued = false;
+    middleware({ path: '/locales/zh-cn.json' }, response, () => { continued = true; });
+    assert.equal(continued, false);
+    assert.equal(status, 404);
 });

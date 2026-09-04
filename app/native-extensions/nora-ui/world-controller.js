@@ -209,24 +209,6 @@ export function createWorldController({
         }
     }
 
-    async function openInitial() {
-        const worlds = models();
-        if (!worlds.length) return;
-        const lastWorldId = settingsDomain.uiSettings().lastWorldId;
-        const lastWorld = worlds.find(world => world.id === lastWorldId);
-        const activeWorld = worlds.find(world => world.active);
-        const initialWorld = lastWorld || activeWorld || worlds[0];
-        if (initialWorld.active) {
-            if (!lastWorld) rememberLastWorld(initialWorld.id);
-            await timedUiStep('world-select.initial-world.lifecycle.ready', () => worldRuntime.ensureReady(initialWorld.id));
-            scheduleSupportingContent(initialWorld, 'initial-world');
-            return;
-        }
-        const selection = { ...initialWorld, interactionId: 'initial-world', showBuffer: true };
-        await queueSelection(selection);
-        if (selection.failed) throw selection.failed;
-    }
-
     async function selectWorld(event) {
         const retryImport = event.target instanceof Element ? event.target.closest('[data-retry-world-import]') : null;
         if (retryImport) {
@@ -322,7 +304,6 @@ export function createWorldController({
         queueSelection,
         openById,
         deleteWorld,
-        openInitial,
         selectWorld,
     });
 }

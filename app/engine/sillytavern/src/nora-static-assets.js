@@ -9,8 +9,22 @@ export const NO_STORE_CACHE_CONTROL = 'no-store';
 
 const INDEX_ASSET_BASE_TOKEN = '{{NORA_ASSET_BASE}}';
 const INDEX_EXTENSION_ASSET_BASE_TOKEN = '{{NORA_EXTENSION_ASSET_BASE}}';
+const INDEX_VENDOR_ASSET_BASE_TOKEN = '{{NORA_VENDOR_ASSET_BASE}}';
 const INDEX_ASSET_RELEASE_TOKEN = '{{NORA_ASSET_RELEASE}}';
 const INDEX_INLINE_MANIFEST_URL_TOKEN = '{{NORA_INLINE_MANIFEST_URL}}';
+
+/**
+ * Restricts a content-addressed namespace to the files included in its hash.
+ * @param {string[]} allowedPaths
+ * @returns {import('express').RequestHandler}
+ */
+export function createAssetAllowlistMiddleware(allowedPaths) {
+    const allowed = new Set(allowedPaths.map(value => `/${String(value || '').replace(/^\/+/, '')}`));
+    return (request, response, next) => {
+        if (allowed.has(request.path)) return next();
+        return response.sendStatus(404);
+    };
+}
 
 function isPathWithinRoot(rootPath, candidatePath) {
     return candidatePath === rootPath || candidatePath.startsWith(`${rootPath}${path.sep}`);
@@ -138,19 +152,22 @@ export function createPrecompressedAssetMiddleware(rootDirectory) {
  * @param {string} release Shell release used by the bootstrap consistency guard.
  * @param {string} [coreRelease] Core browser asset release.
  * @param {string} [extensionRelease] Third-party extension asset release.
+ * @param {string} [vendorRelease] Stable browser-library asset release.
  * @returns {string}
  */
-export function renderNoraIndex(template, release, coreRelease = release, extensionRelease = release) {
-    if (![release, coreRelease, extensionRelease].every(value => /^[a-f0-9]{12,64}$/i.test(value))) {
+export function renderNoraIndex(template, release, coreRelease = release, extensionRelease = release, vendorRelease = coreRelease) {
+    if (![release, coreRelease, extensionRelease, vendorRelease].every(value => /^[a-f0-9]{12,64}$/i.test(value))) {
         throw new TypeError('Static asset release must be a hexadecimal content hash.');
     }
 
     const assetBase = `/assets/${coreRelease}`;
     const extensionAssetBase = `/extension-assets/${extensionRelease}`;
+    const vendorAssetBase = `/vendor-assets/${vendorRelease}`;
     return template
         .replace('{{NORA_LOCALE_BOOTSTRAP}}', () => renderLocaleBootstrap(template))
         .replaceAll(INDEX_INLINE_MANIFEST_URL_TOKEN, `${assetBase}/dist/nora/inline-modules.js`)
         .replaceAll(INDEX_EXTENSION_ASSET_BASE_TOKEN, extensionAssetBase)
+        .replaceAll(INDEX_VENDOR_ASSET_BASE_TOKEN, vendorAssetBase)
         .replaceAll(INDEX_ASSET_BASE_TOKEN, assetBase)
         .replaceAll(INDEX_ASSET_RELEASE_TOKEN, release);
 }

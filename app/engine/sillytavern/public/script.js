@@ -1095,8 +1095,9 @@ async function firstLoadInit() {
             initBookmarks();
         });
     }
-    const coreDataTasks = [timedBootStep('characters', getCharacters)];
+    const coreDataTasks = [];
     if (!isNoraProduct) {
+        coreDataTasks.push(timedBootStep('characters', getCharacters));
         coreDataTasks.push(timedBootStep('user-avatars', () => getUserAvatars(false, user_avatar)));
         coreDataTasks.push(timedBootStep('token-cache', initTokenizers));
         coreDataTasks.push(timedBootStep('backgrounds', getBackgrounds));
@@ -1642,20 +1643,15 @@ export function getCharacterSource(chId = this_chid) {
 }
 
 export async function getCharacters() {
-    let earlyCharacters = null;
-    if (!globalThis.__NORA_EARLY_CHARACTERS_CONSUMED__ && globalThis.__NORA_CHARACTERS_PROMISE__) {
-        globalThis.__NORA_EARLY_CHARACTERS_CONSUMED__ = true;
-        earlyCharacters = await globalThis.__NORA_CHARACTERS_PROMISE__.catch(() => null);
-    }
-    const response = earlyCharacters ? null : await fetch('/api/characters/all', {
+    const response = await fetch('/api/characters/all', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify({}),
     });
-    if (earlyCharacters || response.ok) {
+    if (response.ok) {
         const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
         characters.splice(0, characters.length);
-        const getData = earlyCharacters || await response.json();
+        const getData = await response.json();
         for (let i = 0; i < getData.length; i++) {
             characters[i] = getData[i];
             characters[i].name = DOMPurify.sanitize(characters[i].name);

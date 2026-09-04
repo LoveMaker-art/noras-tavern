@@ -30,11 +30,6 @@
             "src": "img/apple-icon-192x192.png?v=2.13.5",
             "sizes": "192x192",
             "type": "image/png"
-        },
-        {
-            "src": "img/apple-icon-512x512.png?v=2.13.5",
-            "sizes": "512x512",
-            "type": "image/png"
         }
     ]
 }

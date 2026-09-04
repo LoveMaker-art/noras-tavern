@@ -239,6 +239,61 @@ test('executes and verifies the aggregate ST snapshot without capability waits',
     assert.equal(opened.chatId, 'chat-one');
 });
 
+test('hydrates the snapshot card before aggregate activation when the card library was not loaded', async () => {
+    const calls = [];
+    let state = {
+        characters: [],
+        activeCharacterId: null,
+        activeCharacter: null,
+        chatId: '',
+        persona: {},
+        metadata: {},
+    };
+    const runtime = {
+        read: () => state,
+        ensureCharacter(character) {
+            calls.push('hydrate-character');
+            state.characters.push(structuredClone(character));
+            return 0;
+        },
+        async activateSnapshot(characterId, snapshot) {
+            calls.push('activate-snapshot');
+            state = {
+                ...state,
+                activeCharacterId: characterId,
+                activeCharacter: state.characters[characterId],
+                chatId: snapshot.plan.session.binding.chat_id,
+                metadata: { nora_world: { id: snapshot.plan.world_id }, nora_session: { id: snapshot.plan.session.session_id } },
+            };
+        },
+        async savePersona() {},
+    };
+    const plan = {
+        schema: 'nora-world-activation/v1',
+        world_id: 'world:lazy-card',
+        world_revision: 1,
+        name: 'Lazy Card World',
+        persona: {},
+        runtime_card: { resource_id: 'resource:lazy-card', engine: 'sillytavern', binding: { avatar: 'lazy.png' } },
+        session: { session_id: 'session:lazy-card', engine: 'sillytavern', binding: { avatar: 'lazy.png', chat_id: 'chat-lazy' }, opening_state: 'message' },
+        knowledge: [],
+        capabilities: { declared: [], status: 'READY' },
+    };
+
+    const opened = await executeStActivationSnapshot({
+        schema: 'nora-world-snapshot/v1',
+        revision: 'lazy-card',
+        plan,
+        character: { avatar: 'lazy.png', name: 'Lazy' },
+        chat: { messages: [] },
+        worldbooks: [],
+    }, runtime);
+
+    assert.deepEqual(calls, ['hydrate-character', 'activate-snapshot']);
+    assert.equal(opened.characterId, 0);
+    assert.equal(state.activeCharacter.name, 'Lazy');
+});
+
 test('fetches one aggregate activation snapshot and revalidates it by ETag', async () => {
     const requests = [];
     const measures = [];

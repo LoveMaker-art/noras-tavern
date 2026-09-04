@@ -115,9 +115,10 @@ assert.match(
 );
 assert.match(
     worldController,
-    /if \(initialWorld\.active\)[\s\S]*worldRuntime\.ensureReady\(initialWorld\.id\)[\s\S]*return;/,
-    'restoring an already-active World must delegate readiness to World Runtime',
+    /worldRuntime\.activate\(current\.id\)[\s\S]*scheduleSupportingContent\(current, current\.interactionId\)/,
+    'an explicitly selected World must activate its base runtime before loading MVU and other supporting capabilities',
 );
+assert.doesNotMatch(worldController, /async function openInitial\(/, 'MVU readiness must not force an automatic World activation during Tavern startup');
 assert.doesNotMatch(worldController, /runtime\.(?:prepareCharacterRuntime|waitForCharacterRuntime|ensureCharacterRuntime)/);
 assert.equal(fs.existsSync(helperTailwind), true, 'the managed card runtime must include its Tailwind browser asset');
 assert.equal(

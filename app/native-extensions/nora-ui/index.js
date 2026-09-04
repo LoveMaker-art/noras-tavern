@@ -82,12 +82,10 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         if (hydrated) return;
         hydrated = true;
         document.documentElement.dataset.noraReadyMs = String(Date.now() - extensionStartedAt);
-        const bootMetrics = window.__NORA_BOOT_METRICS__;
-        if (bootMetrics) {
-            bootMetrics.shellReadyAt = Math.round((performance.now() - bootMetrics.startedAt) * 10) / 10;
-            document.documentElement.dataset.noraShellReadyMs = String(bootMetrics.shellReadyAt);
-            document.documentElement.dataset.noraInteractiveMs = String(bootMetrics.shellReadyAt);
-            recordBootMilestone({ name: 'shell-visible', at: bootMetrics.shellReadyAt });
+        const timing = performanceReporter.hydrateShell({ alreadyVisible: document.body.classList.contains('nora-shell-visible') });
+        if (timing) {
+            document.documentElement.dataset.noraShellReadyMs = String(timing.shellReadyAt);
+            document.documentElement.dataset.noraInteractiveMs = String(timing.hydratedAt);
         }
         document.body.classList.add('nora-ui-ready');
         document.body.classList.remove('nora-booting');
@@ -145,7 +143,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const updateActiveWorldSummary = () => worldController.updateActiveSummary();
     const renderRail = () => worldController.renderRail();
     const worldListKeydown = event => worldController.listKeydown(event);
-    const openInitialWorld = () => worldController.openInitial();
+    const openWorldById = (worldId, options) => worldController.openById(worldId, options);
     const selectWorld = event => worldController.selectWorld(event);
 
     const entriesFromBook = (book) => worldbookController.entries(book);
@@ -479,8 +477,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             bindLayoutEvents,
             refresh,
             loadWorlds,
-            openInitialWorld,
-            storyScroller,
+            openWorldById,
             openNewWorldSheet,
             runPanelAction,
             updateActiveWorldSummary,

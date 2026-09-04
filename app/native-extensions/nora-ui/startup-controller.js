@@ -12,8 +12,7 @@ export function createStartupController({
     bindLayoutEvents,
     refresh,
     loadWorlds,
-    openInitialWorld,
-    storyScroller,
+    openWorldById,
     openNewWorldSheet,
     runPanelAction,
     updateActiveWorldSummary,
@@ -23,7 +22,6 @@ export function createStartupController({
     onStarted,
     onWorldbookChanged = () => {},
 }) {
-    let initialWorldPromise;
     let runtimeReady = false;
 
     async function consumeEarlyIntent() {
@@ -32,7 +30,12 @@ export function createStartupController({
         const pendingAction = early.pendingAction;
         early.pendingAction = null;
         selectAll('[aria-busy="true"]', select('#nora-layout')).forEach(node => node.removeAttribute('aria-busy'));
-        if (pendingAction?.name === 'new-world') openNewWorldSheet();
+        if (pendingAction?.name === 'world') {
+            await openWorldById(pendingAction.worldId, {
+                interactionId: `early-world-${Math.round(pendingAction.clickedAt || performance.now())}`,
+                showBuffer: true,
+            });
+        } else if (pendingAction?.name === 'new-world') openNewWorldSheet();
         else if (pendingAction?.name) runPanelAction(pendingAction.name);
         if (!early.pendingSend) return;
         early.pendingSend = false;
@@ -72,11 +75,13 @@ export function createStartupController({
         refresh();
         await loadWorlds();
         messageController.updateComposer();
-        performanceReporter.phase('nora-ui-hydrated', startedAt);
+        await consumeEarlyIntent();
+        performanceReporter.phase('nora-ui-hydrated', startedAt, { mode: 'world-list' });
     }
 
-    function reportWorldUsable() {
+    function reportStartupUsable() {
         const currentState = readState();
+        const worldListReady = Boolean(select('#nora-world-list') && select('#nora-new-world'));
         const input = select('#nora-input');
         const composer = select('#nora-composer');
         const activeCharacterId = Number(currentState.activeCharacterId);
@@ -84,8 +89,10 @@ export function createStartupController({
         const renderedMessages = Array.isArray(currentState.messages) ? currentState.messages.length : 0;
         const messagesReady = renderedMessages === 0 || messageView.hasMessages();
         const composerEnabled = Boolean(input && composer && !input.disabled && composer.getAttribute('aria-busy') !== 'true');
-        if (activeWorld && messagesReady && composerEnabled) {
+        if (worldListReady) {
             performanceReporter.usable({
+                mode: activeWorld ? 'active-world' : 'world-list',
+                worldListReady,
                 activeWorld,
                 renderedMessages,
                 composerEnabled,
@@ -96,6 +103,7 @@ export function createStartupController({
             performanceReporter.milestone({
                 name: 'nora-usable-blocked',
                 at: Math.round((performance.now() - (window.__NORA_BOOT_METRICS__?.startedAt || 0)) * 10) / 10,
+                worldListReady,
                 activeWorld,
                 messagesReady,
                 composerEnabled,
@@ -112,34 +120,12 @@ export function createStartupController({
         performanceReporter.phase('nora-runtime-ready', startedAt);
     }
 
-    function restoreInitialWorld() {
-        if (initialWorldPromise) return initialWorldPromise;
-
-        let attempt;
-        attempt = (async () => {
-            const stopFollowingLatest = storyScroller.followLatest();
-            try {
-                await openInitialWorld();
-                await storyScroller.toLatest();
-                messageController.updateComposer();
-                await consumeEarlyIntent();
-                reportWorldUsable();
-            } finally {
-                void stopFollowingLatest();
-                markRuntimeReady();
-            }
-        })().catch((error) => {
-            if (initialWorldPromise === attempt) initialWorldPromise = null;
-            throw error;
-        });
-        initialWorldPromise = attempt;
-        return attempt;
-    }
-
     async function finalizeUi() {
         const startedAt = performance.now();
         finishBootScreen();
         document.body.classList.add('nora-app-ready');
+        markRuntimeReady();
+        reportStartupUsable();
         globalThis.dispatchEvent(new Event('nora:app-ready'));
         performanceReporter.phase('nora-app-ready', startedAt);
     }
@@ -157,16 +143,11 @@ export function createStartupController({
         });
         state.whenReady()
             .then(() => activation.finalize())
-            .then(() => restoreInitialWorld().catch((error) => {
-                console.error('[Nora UI] Failed to restore the initial World:', error);
-                performanceReporter.milestone({ name: 'nora-initial-world-failed', message: String(error?.message || error) });
-                globalThis.__NORA_REPORT_BOOT_METRICS__?.('nora-initial-world-failed');
-            }))
             .catch(error => {
                 console.error('[Nora UI] Failed to complete runtime activation:', error);
                 globalThis.__NORA_REPORT_BOOT_METRICS__?.('nora-startup-failed');
             });
     }
 
-    return Object.freeze({ start, mountUi, hydrateUi, finalizeUi, restoreInitialWorld, consumeEarlyIntent, wireEvents });
+    return Object.freeze({ start, mountUi, hydrateUi, finalizeUi, consumeEarlyIntent, wireEvents });
 }

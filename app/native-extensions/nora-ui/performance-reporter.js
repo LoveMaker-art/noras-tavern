@@ -72,5 +72,16 @@ export function createPerformanceReporter({
         reportPhase('nora-usable');
     }
 
-    return Object.freeze({ milestone, timedMilestone, phase, step, firstGeneration, usable });
+    function hydrateShell({ alreadyVisible = false } = {}) {
+        const metrics = getMetrics();
+        if (!metrics) return null;
+        const hydratedAt = elapsedAt();
+        metrics.shellReadyAt ??= hydratedAt;
+        metrics.hydratedAt = hydratedAt;
+        if (!alreadyVisible) milestone({ name: 'shell-visible', at: hydratedAt, source: 'runtime-fallback' });
+        milestone({ name: 'shell-hydrated', at: hydratedAt });
+        return { shellReadyAt: metrics.shellReadyAt, hydratedAt };
+    }
+
+    return Object.freeze({ milestone, timedMilestone, phase, step, firstGeneration, usable, hydrateShell });
 }

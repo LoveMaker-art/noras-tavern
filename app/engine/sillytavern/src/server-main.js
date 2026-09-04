@@ -57,6 +57,7 @@ import { createLivewareEntryMiddleware, createLivewareIndexHandler } from './nor
 import {
     computeCompositeAssetRelease,
     computeStaticAssetRelease,
+    createAssetAllowlistMiddleware,
     createPrecompressedAssetMiddleware,
     IMMUTABLE_ASSET_CACHE_CONTROL,
     NO_STORE_CACHE_CONTROL,
@@ -110,6 +111,19 @@ const coreAssetRelease = computeStaticAssetRelease({
     excludedPaths: [
         'public/css/user.css',
         `public/${PUBLIC_DIRECTORIES.globalExtensions.split(path.sep).join('/')}`,
+        'public/dist/nora/lib-core.js',
+        'public/dist/nora/lib-core.js.br',
+        'public/dist/nora/lib-core.js.gz',
+        'public/dist/nora/legacy.js',
+        'public/dist/nora/legacy.js.br',
+        'public/dist/nora/legacy.js.gz',
+    ],
+});
+const vendorAssetRelease = computeStaticAssetRelease({
+    roots: [],
+    files: [
+        { label: 'lib-core.js', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js') },
+        { label: 'legacy.js', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js') },
     ],
 });
 const extensionAssetRelease = computeStaticAssetRelease({
@@ -118,14 +132,16 @@ const extensionAssetRelease = computeStaticAssetRelease({
         { label: 'global-extensions', path: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions) },
     ],
 });
-const staticAssetRelease = computeCompositeAssetRelease([coreAssetRelease, extensionAssetRelease]);
+const staticAssetRelease = computeCompositeAssetRelease([coreAssetRelease, extensionAssetRelease, vendorAssetRelease]);
 const staticAssetBase = `/assets/${coreAssetRelease}`;
 const extensionAssetBase = `/extension-assets/${extensionAssetRelease}`;
+const vendorAssetBase = `/vendor-assets/${vendorAssetRelease}`;
 const indexHtml = renderNoraIndex(
     fs.readFileSync(path.join(publicDirectory, 'index.html'), 'utf8'),
     staticAssetRelease,
     coreAssetRelease,
     extensionAssetRelease,
+    vendorAssetRelease,
 );
 
 if (!cliArgs.enableIPv6 && !cliArgs.enableIPv4) {
@@ -277,6 +293,20 @@ const webpackMiddleware = getWebpackServeMiddleware(staticAssetBase);
 app.use(webpackMiddleware);
 app.use(userCssMiddleware);
 app.use(extensionAssetBase, createVersionedExtensionsRouter());
+app.use(vendorAssetBase, createAssetAllowlistMiddleware([
+    'dist/nora/lib-core.js',
+    'dist/nora/legacy.js',
+]));
+app.use(vendorAssetBase, createPrecompressedAssetMiddleware(publicDirectory));
+app.use(vendorAssetBase, express.static(publicDirectory, {
+    etag: true,
+    lastModified: true,
+    maxAge: '1y',
+    immutable: true,
+    setHeaders: (response) => {
+        response.setHeader('Cache-Control', IMMUTABLE_ASSET_CACHE_CONTROL);
+    },
+}));
 app.use(staticAssetBase, createPrecompressedAssetMiddleware(publicDirectory));
 app.use(staticAssetBase, express.static(publicDirectory, {
     etag: true,
@@ -328,6 +358,7 @@ app.get('/version', async function (_, response) {
         assetRelease: staticAssetRelease,
         coreAssetRelease,
         extensionAssetRelease,
+        vendorAssetRelease,
     });
 });
 
