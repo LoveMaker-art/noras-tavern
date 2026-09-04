@@ -29,13 +29,14 @@ assert.match(core, /beginCapabilityAttempt[\s\S]*settleCapabilityAttempt/);
 assert.match(endpoint, /capabilities\/:capability\/attempts[\s\S]*attempts\/:attemptId/);
 assert.match(client, /beginCapabilityAttempt[\s\S]*settleCapabilityAttempt/);
 
-assert.match(controller, /CAPABILITY_ORDER\s*=\s*Object\.freeze\(\['tavern_helper', 'regex', 'mvu'\]\)/);
+assert.match(controller, /CAPABILITY_ORDER\s*=\s*Object\.freeze\(\['prompt_template', 'tavern_helper', 'regex', 'mvu'\]\)/);
 assert.match(controller, /runtime\.ensureCharacterCapability\(character, capability\)/);
 assert.match(controller, /status:\s*'DEGRADED'[\s\S]*client\.settleCapabilityAttempt/);
 assert.match(controller, /const runtimeVerified = new Set\(\)/, 'page runtime readiness must not reuse persisted READY evidence');
 assert.match(controller, /return Object\.freeze\(\{\s*ensure,\s*retry:/, 'the controller must expose one ensure owner and an explicit retry path');
 
 for (const signal of [
+    "normalized === 'prompt_template'",
     "normalized === 'regex'",
     "normalized === 'tavern_helper'",
     'NORA_MVU_TIMEOUT',

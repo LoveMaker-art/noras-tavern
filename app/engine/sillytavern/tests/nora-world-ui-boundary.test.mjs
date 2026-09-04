@@ -122,6 +122,55 @@ test('repair and delete stay behind the World Runtime interface and refresh the 
     ]);
 });
 
+test('prepares Prompt Template before rendering an EJS World snapshot', async () => {
+    const calls = [];
+    const pending = manifest({
+        capabilities: {
+            declared: ['prompt_template'],
+            status: 'PENDING',
+            items: { prompt_template: { status: 'PENDING' } },
+        },
+    });
+    const ready = structuredClone(pending);
+    ready.capabilities.status = 'READY';
+    ready.capabilities.items.prompt_template.status = 'READY';
+    const runtimeState = {
+        characters: [{ avatar: 'one.png', data: { first_mes: '<%= getvar("opening") %>' } }],
+        activeCharacter: null,
+        metadata: {},
+        chatId: '',
+    };
+    const runtime = createWorldCoreRuntime({ read: () => runtimeState }, {
+        client: {
+            list: async () => [pending],
+            beginCapabilityAttempt: async () => ({ attempt: { attempt_id: 'attempt:prompt' } }),
+            settleCapabilityAttempt: async () => ({ world: ready }),
+            prepareSnapshot: async () => {
+                calls.push('snapshot');
+                return { plan: { world_id: 'world:one' }, character: runtimeState.characters[0], worldbooks: [] };
+            },
+        },
+        capabilityRuntime: {
+            resolveCharacter: async () => runtimeState.characters[0],
+            inspectSnapshotCharacter: () => ({ promptTemplateDeclared: true, promptTemplateReasons: ['ejs-syntax'] }),
+            preparePromptTemplate: async () => {
+                calls.push('capability:prompt_template');
+                return { engine: 'sillytavern', extension_active: true };
+            },
+            ensureCharacterCapability: async (_character, capability) => {
+                calls.push(`capability:${capability}`);
+                return { engine: 'sillytavern', extension_active: true };
+            },
+        },
+        executeSnapshot: async () => { calls.push('render'); },
+    });
+
+    await runtime.refresh();
+    await runtime.activate('world:one');
+
+    assert.deepEqual(calls, ['snapshot', 'capability:prompt_template', 'render']);
+});
+
 test('Nora World UI carries only worldId and has one open/capability owner', () => {
     const uiRoot = path.resolve(import.meta.dirname, '../../../native-extensions/nora-ui');
     const worldController = fs.readFileSync(path.join(uiRoot, 'world-controller.js'), 'utf8');

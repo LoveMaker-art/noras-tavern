@@ -29,7 +29,15 @@ test('extension JavaScript entries load from the immutable extension namespace',
     assert.match(extensionLoader, /const importExtensionModule = url => import\(url\.startsWith\('nora-module\/'\)/);
 });
 
-test('every bundled ST extension entry is available through the canonical module registry', () => {
+test('only product-enabled bundled ST extensions enter the canonical module registry', () => {
+    const productDisabledExtensions = new Set([
+        'assets',
+        'attachments',
+        'connection-manager',
+        'gallery',
+        'memory',
+        'token-counter',
+    ]);
     const builtInExtensionsDirectory = path.join(publicDirectory, 'scripts/extensions');
     for (const entry of fs.readdirSync(builtInExtensionsDirectory, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
@@ -38,6 +46,14 @@ test('every bundled ST extension entry is available through the canonical module
         const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
         if (!manifest.js) continue;
         const modulePath = `scripts/extensions/${entry.name}/${manifest.js}`;
+        if (productDisabledExtensions.has(entry.name)) {
+            assert.equal(
+                inlineManifest.modules[modulePath],
+                undefined,
+                `product-disabled extension leaked into the inline manifest: ${modulePath}`,
+            );
+            continue;
+        }
         assert.ok(inlineManifest.modules[modulePath], `bundled extension entry is absent from the inline manifest: ${modulePath}`);
     }
 });

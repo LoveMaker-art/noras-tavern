@@ -1,4 +1,4 @@
-const CAPABILITY_ORDER = Object.freeze(['tavern_helper', 'regex', 'mvu']);
+const CAPABILITY_ORDER = Object.freeze(['prompt_template', 'tavern_helper', 'regex', 'mvu']);
 
 function manifestFor(world) {
     return world?.manifest || world;

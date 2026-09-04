@@ -141,9 +141,21 @@ export function createWorldCoreRuntime(runtime, {
         return list();
     }
 
+    async function preparePromptTemplate(snapshot) {
+        if (!capabilityRuntime) return;
+        const inspection = capabilityRuntime.inspectSnapshotCharacter?.(snapshot.character, snapshot.worldbooks || []);
+        if (!inspection?.promptTemplateDeclared) return;
+        await capabilityRuntime.preparePromptTemplate(inspection);
+    }
+
     async function activate(worldOrId) {
         const manifest = manifestById(worldOrId);
         const snapshot = await client.prepareSnapshot(manifest.world_id);
+        try {
+            await preparePromptTemplate(snapshot);
+        } catch (error) {
+            console.warn('[Nora World Core] Prompt Template could not be prepared before World rendering:', error);
+        }
         await executeSnapshot(snapshot, runtime, { measure });
         return model(manifest);
     }

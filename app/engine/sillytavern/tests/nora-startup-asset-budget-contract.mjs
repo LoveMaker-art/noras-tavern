@@ -19,10 +19,11 @@ assert.equal(manifest.legacy, 'dist/nora/legacy.js', 'legacy libraries must use 
 assert.equal(manifest.compiled?.['lib-core.js'], 'dist/nora/lib-core.js', 'compiled core libraries must use their immutable standalone module');
 assert.ok(!Object.hasOwn(manifest.modules || {}, 'lib-core.js'), 'compiled core libraries must not be duplicated as base64');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'startup must not coordinate duplicate application cache authorities');
-assert.match(index, /fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__,\s*\{[\s\S]*?cache: 'force-cache',[\s\S]*?priority: 'low'/);
+assert.match(index, /__NORA_RUNTIME_ASSET_START_PROMISE__\.then\([\s\S]*?fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__,\s*\{[\s\S]*?cache: 'force-cache',[\s\S]*?priority: 'low'/);
 assert.match(index, /__NORA_EXTENSION_ASSET_BASE__/);
-assert.match(index, /<script src="\{\{NORA_ASSET_BASE\}\}\/dist\/nora\/legacy\.js" fetchpriority="low"><\/script>/);
-assert.match(index, /<link rel="modulepreload" href="\{\{NORA_ASSET_BASE\}\}\/dist\/nora\/lib-core\.js" fetchpriority="low">/);
+assert.match(index, /globalThis\.__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/);
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
+assert.doesNotMatch(index, /<link rel="modulepreload"[^>]+dist\/nora\//, 'large runtime modules must not compete with the visible shell');
 for (const stylesheet of ['fontawesome.min.css', 'solid.min.css', 'toastr.min.css']) {
     assert.match(index, new RegExp(`<link href="\\{\\{NORA_ASSET_BASE\\}\\}/css/${stylesheet.replace('.', '\\.')}" rel="stylesheet" media="print" onload="this\\.media='all'">`), `${stylesheet} must not block the visible shell`);
 }

@@ -56,7 +56,7 @@ export function createPanelController({
     function capabilitySection(world) {
         const capabilities = world?.capabilities;
         if (!capabilities?.declared?.length) return '';
-        const labels = { regex: tr("Regex 显示规则"), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
+        const labels = { prompt_template: tr("提示词模板"), regex: tr("Regex 显示规则"), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
         const statuses = { READY: tr("已就绪"), PENDING: tr("加载中"), DEGRADED: tr("未就绪") };
         const reasons = {
             NORA_MVU_TIMEOUT: tr("变量系统启动超时，可以重试。"),

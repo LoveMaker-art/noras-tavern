@@ -230,6 +230,7 @@ const NORA_PRODUCT_DISABLED_EXTENSIONS = Object.freeze([
     'token-counter',
 ]);
 const NORA_PRODUCT_DEFERRED_EXTENSIONS = Object.freeze([
+    'third-party/ST-Prompt-Template',
     'third-party/JS-Slash-Runner',
     'third-party/nora-mvu',
 ]);

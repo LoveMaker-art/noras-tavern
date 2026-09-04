@@ -25,7 +25,7 @@ assert.match(index, /{{NORA_INLINE_MANIFEST_URL}}/);
 assert.match(index, /__NORA_INLINE_MANIFEST_PROMISE__/);
 assert.match(index, /document\.createElement\('script'\)[\s\S]*?importMap\.type = 'importmap'/);
 assert.match(index, /manifest\.legacy/);
-assert.match(index, /<script[^>]+dist\/nora\/legacy\.js/);
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
 assert.match(index, /import 'nora-module\/scripts\/i18n\.js'/);
 assert.match(index, /manifest\.extensionCoreBridges/);
 assert.match(index, /imports\[`\$\{extensionAssetBase\}\/\$\{modulePath\}`\] = canonicalUrl/);
@@ -64,7 +64,7 @@ assert.match(extensions, /import\(url\.startsWith\('nora-module\/'\) \? url : ne
 assert.doesNotMatch(extensions, /script\.src = url/, 'extension modules must reuse import-map packaged runtimes');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'content-addressed immutable assets must have one browser cache authority');
 assert.match(index, /cache:\s*'force-cache'[\s\S]*priority:\s*'low'/, 'the immutable runtime manifest must not outrank the compact visible shell');
-assert.match(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\/lib-core\.js/);
-assert.match(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\/entry\.js/);
+assert.match(index, /for \(const asset of \['dist\/nora\/lib-core\.js', 'dist\/nora\/entry\.js'\]\)/);
+assert.doesNotMatch(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\//);
 
 console.log('nora-production-bundle-contract=PASS');

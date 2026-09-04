@@ -203,6 +203,7 @@ export const english = Object.freeze({
     '角色脚本尚未授权。': 'Character scripts have not been authorized.',
     '增强能力暂未就绪，可以重试。': 'Enhancements are not ready yet. You can retry.',
     '增强能力': 'Enhancements',
+    '提示词模板': 'Prompt template',
     '暂无常驻角色': 'No cast members yet',
     '编辑常驻角色资料': 'Edit cast member details',
     '查看${0}资料': 'View ${0}\'s details',

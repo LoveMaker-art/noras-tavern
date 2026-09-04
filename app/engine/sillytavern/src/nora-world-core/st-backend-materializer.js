@@ -9,6 +9,7 @@ import {
     inspectMvuCompatibility,
     normalizeTavernHelperScripts,
 } from '../../public/scripts/nora-compat/mvu-compatibility.js';
+import { inspectPromptTemplateCompatibility } from '../../public/scripts/nora-compat/prompt-template-compatibility.js';
 import { cloneJson, sha256, stableStringify } from './domain.js';
 import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
@@ -82,7 +83,9 @@ function capabilityInspection(card, books) {
     const regexScripts = Array.isArray(data.extensions?.regex_scripts) ? data.extensions.regex_scripts : [];
     const scripts = normalizeTavernHelperScripts(card);
     const mvu = inspectMvuCompatibility({ card, books, helperScripts: scripts });
+    const promptTemplate = inspectPromptTemplateCompatibility({ card, books });
     const declared = [];
+    if (promptTemplate.declared) declared.push('prompt_template');
     if (mvu.declared) declared.push('mvu');
     if (regexScripts.length) declared.push('regex');
     if (scripts.length || mvu.declared) declared.push('tavern_helper');
@@ -98,6 +101,10 @@ function capabilityInspection(card, books) {
                 split_model_supported: mvu.splitModelSupported,
                 update_entry_ids: [...mvu.updateEntryIds],
                 reasons: [...mvu.reasons],
+            },
+            prompt_template: {
+                declared: promptTemplate.declared,
+                reasons: [...promptTemplate.reasons],
             },
         },
     };

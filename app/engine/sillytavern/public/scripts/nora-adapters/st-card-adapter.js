@@ -2,10 +2,12 @@ import {
     inspectMvuCompatibility,
     normalizeTavernHelperScripts,
 } from '../nora-compat/mvu-compatibility.js';
+import { inspectPromptTemplateCompatibility } from '../nora-compat/prompt-template-compatibility.js';
 
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
 const MVU_EXTENSION = 'third-party/nora-mvu';
 const REGEX_EXTENSION = 'regex';
+const PROMPT_TEMPLATE_EXTENSION = 'third-party/ST-Prompt-Template';
 
 function hasInitializedMvuData(runtime) {
     try {
@@ -36,9 +38,11 @@ export function inspectCharacterRuntime(character, books = []) {
     const helperScripts = normalizeTavernHelperScripts(character);
     const availableBooks = [character?.data?.character_book, ...books].filter(Boolean);
     const mvu = inspectMvuCompatibility({ card: character, books: availableBooks, helperScripts });
+    const promptTemplate = inspectPromptTemplateCompatibility({ card: character, books: availableBooks });
     const mvuDeclared = mvu.declared;
     const mvuRuntimeSource = mvu.runtimeSource;
     const extensions = [];
+    if (promptTemplate.declared) extensions.push(PROMPT_TEMPLATE_EXTENSION);
     if (helperScripts.length || mvuDeclared) extensions.push(HELPER_EXTENSION);
     if (mvuRuntimeSource === 'managed') extensions.push(MVU_EXTENSION);
     return Object.freeze({
@@ -50,6 +54,8 @@ export function inspectCharacterRuntime(character, books = []) {
         mvuSplitModelSupported: mvu.splitModelSupported,
         mvuUpdateEntryIds: mvu.updateEntryIds,
         mvuReasons: mvu.reasons,
+        promptTemplateDeclared: promptTemplate.declared,
+        promptTemplateReasons: promptTemplate.reasons,
         extensions: Object.freeze(extensions),
     });
 }
@@ -65,6 +71,15 @@ async function waitForExposedMvuRuntime({ timeoutMs = 5000, intervalMs = 25 } = 
     error.code = 'NORA_MVU_TIMEOUT';
     error.retryable = true;
     throw error;
+}
+
+async function waitForPromptTemplateRuntime({ timeoutMs = 5000, intervalMs = 25 } = {}) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+        if (typeof globalThis.EjsTemplate?.evalTemplate === 'function') return globalThis.EjsTemplate;
+        await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+    throw new Error('Prompt Template did not expose its EJS interface in time.');
 }
 
 function capabilityError(code, message, { retryable = true, cause } = {}) {
@@ -136,14 +151,37 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         }
     }
 
+    async function preparePromptTemplate(inspection) {
+        if (!inspection?.promptTemplateDeclared) {
+            throw capabilityError('NORA_PROMPT_TEMPLATE_DECLARATION_MISSING', 'The Runtime Card and Worldbooks contain no compatible Prompt Template markers.', { retryable: false });
+        }
+        await activateCharacterExtensions([PROMPT_TEMPLATE_EXTENSION]);
+        const current = runtime();
+        const activeExtensions = new Set(current.getActiveExtensionNames());
+        const promptTemplateRuntime = activeExtensions.has(PROMPT_TEMPLATE_EXTENSION)
+            ? await waitForPromptTemplateRuntime()
+            : null;
+        if (!promptTemplateRuntime) {
+            throw capabilityError('NORA_PROMPT_TEMPLATE_RUNTIME_UNAVAILABLE', 'Prompt Template loaded without exposing its EJS interface.');
+        }
+        return Object.freeze({
+            engine: 'sillytavern',
+            extension: PROMPT_TEMPLATE_EXTENSION,
+            extension_active: true,
+            api: 'EjsTemplate.evalTemplate',
+            marker_reasons: [...inspection.promptTemplateReasons],
+        });
+    }
+
     async function ensureCharacterCapability(character, capability) {
         const normalized = String(capability || '').trim();
-        if (!['regex', 'tavern_helper', 'mvu'].includes(normalized)) {
+        if (!['prompt_template', 'regex', 'tavern_helper', 'mvu'].includes(normalized)) {
             throw capabilityError('NORA_CAPABILITY_UNSUPPORTED', `Unsupported character capability: ${normalized}`, { retryable: false });
         }
         let inspection;
         try {
             inspection = await inspectPreparedCharacter(character);
+            if (normalized === 'prompt_template') return await preparePromptTemplate(inspection);
             const requiredExtensions = normalized === 'regex'
                 ? [REGEX_EXTENSION]
                 : [HELPER_EXTENSION, ...(normalized === 'mvu' && inspection.mvuRuntimeSource === 'managed' ? [MVU_EXTENSION] : [])];
@@ -361,6 +399,9 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         isSystemCharacter,
         resolveCharacter,
         characterCapabilities,
+        inspectPreparedCharacter,
+        inspectSnapshotCharacter: (character, books = []) => inspectCharacterRuntime(character, books),
+        preparePromptTemplate,
         ensureCharacterCapability,
         markCharacterCapabilitiesPrompted,
         enableCharacterCapabilities,

@@ -22,6 +22,7 @@ for (const relative of [
     'nora-worlds/world-theme.js',
     'nora-worlds/story-context.js',
     'nora-compat/mvu-compatibility.js',
+    'nora-compat/prompt-template-compatibility.js',
 ]) {
     const schema = fs.readFileSync(path.resolve(moduleRoot, '../../public/scripts', relative), 'utf8');
     for (const pattern of [...forbidden, /^\s*import\b/m, /\b(?:fetch|process|SillyTavern|localStorage)\b/]) {
@@ -33,7 +34,8 @@ for (const file of files) {
     const source = fs.readFileSync(path.join(moduleRoot, file), 'utf8')
         .replace(/^import \{ normalizeWorldTheme \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/world-theme\.js';$/m, '')
         .replace(/^import \{ (?:editStoryCharacter, )?normalizeStoryContext \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/story-context\.js';$/m, '')
-        .replace(/^import \{\n    adaptCardForMvuRuntime,\n    inspectMvuCompatibility,\n    normalizeTavernHelperScripts,\n\} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/mvu-compatibility\.js';$/m, '');
+        .replace(/^import \{\n    adaptCardForMvuRuntime,\n    inspectMvuCompatibility,\n    normalizeTavernHelperScripts,\n\} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/mvu-compatibility\.js';$/m, '')
+        .replace(/^import \{ inspectPromptTemplateCompatibility \} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/prompt-template-compatibility\.js';$/m, '');
     for (const pattern of forbidden) {
         if (pattern.test(source)) throw new Error(`${file} crosses the browser/ST compatibility seam: ${pattern}`);
     }

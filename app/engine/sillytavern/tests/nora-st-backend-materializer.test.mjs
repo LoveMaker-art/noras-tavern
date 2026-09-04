@@ -110,6 +110,19 @@ test('preflights a complex card without creating resources', () => {
     assert.equal(report.capabilities.mvu.runtime_source, 'managed');
 });
 
+test('declares Prompt Template only when the card or embedded Worldbook uses its syntax', () => {
+    const ordinary = inspectStCard(complexCard());
+    assert.equal(ordinary.capabilities.prompt_template.declared, false);
+
+    const card = complexCard();
+    card.data.character_book.entries[0].content += '\n<%= getvar("affection") %>';
+    const report = inspectStCard(card);
+
+    assert.equal(report.capabilities.prompt_template.declared, true);
+    assert.deepEqual(report.capabilities.prompt_template.reasons, ['ejs-syntax']);
+    assert.deepEqual(report.declared_capabilities, ['mvu', 'prompt_template', 'regex', 'tavern_helper']);
+});
+
 test('normalizes legacy TavernHelper script wrappers before capability inspection', () => {
     const card = complexCard();
     const script = card.data.extensions.tavern_helper.scripts[0];

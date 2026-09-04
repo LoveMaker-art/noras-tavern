@@ -6,6 +6,7 @@ import test from 'node:test';
 import { createStCardAdapter } from '../public/scripts/nora-adapters/st-card-adapter.js';
 
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
+const PROMPT_TEMPLATE_EXTENSION = 'third-party/ST-Prompt-Template';
 
 function runtimeContext(character, { active = ['regex', HELPER_EXTENSION], regexAllowed = true, helperAllowed = true } = {}) {
     return {
@@ -63,6 +64,45 @@ test('proves Regex readiness from extension activation, scripts and character au
         script_count: 1,
         character_allowed: true,
     });
+});
+
+test('loads Prompt Template only for cards that declare EJS-compatible content', async (t) => {
+    const previous = globalThis.EjsTemplate;
+    t.after(() => {
+        if (previous === undefined) delete globalThis.EjsTemplate;
+        else globalThis.EjsTemplate = previous;
+    });
+    const character = {
+        name: '模板角色',
+        avatar: 'template.png',
+        data: { first_mes: '<%= getvar("opening") %>', extensions: {} },
+    };
+    const active = new Set();
+    const activations = [];
+    const context = runtimeContext(character, { active: [] });
+    context.activateExtensionNames = async names => {
+        activations.push([...names]);
+        names.forEach(name => active.add(name));
+        globalThis.EjsTemplate = { evalTemplate() {} };
+        return names;
+    };
+    context.getActiveExtensionNames = () => [...active];
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
+
+    const inspection = adapter.characterCapabilities(character);
+    assert.equal(inspection.promptTemplateDeclared, true);
+    assert.deepEqual(inspection.promptTemplateReasons, ['ejs-syntax']);
+    const evidence = await adapter.ensureCharacterCapability(character, 'prompt_template');
+    assert.deepEqual(activations, [[PROMPT_TEMPLATE_EXTENSION]]);
+    assert.equal(evidence.api, 'EjsTemplate.evalTemplate');
+});
+
+test('does not declare Prompt Template for an ordinary roleplay card', () => {
+    const character = { name: '普通角色', avatar: 'plain.png', data: { first_mes: '你好。', extensions: {} } };
+    const adapter = createStCardAdapter(() => runtimeContext(character), { saveUiSettings() {} });
+    const inspection = adapter.characterCapabilities(character);
+    assert.equal(inspection.promptTemplateDeclared, false);
+    assert.equal(inspection.extensions.includes(PROMPT_TEMPLATE_EXTENSION), false);
 });
 
 test('activates Regex on demand before reporting the capability ready', async () => {

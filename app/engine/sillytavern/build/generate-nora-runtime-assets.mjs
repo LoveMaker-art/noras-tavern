@@ -27,13 +27,7 @@ export const CORE_ENTRY_URLS = [
     '/lib/structured-clone/monkey-patch.js',
     '/lib/swiped-events.js',
     '/lib/eventemitter.js',
-    '/scripts/extensions/assets/index.js',
-    '/scripts/extensions/attachments/index.js',
-    '/scripts/extensions/connection-manager/index.js',
-    '/scripts/extensions/gallery/index.js',
-    '/scripts/extensions/memory/index.js',
     '/scripts/extensions/regex/index.js',
-    '/scripts/extensions/token-counter/index.js',
 ];
 
 // Webpack compiles this source entry because it contains bare package imports.
