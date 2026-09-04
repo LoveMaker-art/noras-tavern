@@ -20,7 +20,7 @@ const localOrigin = 'https://nora.local';
 const compressBrotli = promisify(brotliCompress);
 const compressGzip = promisify(gzip);
 
-const CORE_ENTRY_URLS = [
+export const CORE_ENTRY_URLS = [
     '/script.js',
     '/scripts/user.js',
     '/scripts/nora-compat/interaction-bridge.js',
@@ -289,6 +289,21 @@ export function attachLegacyAsset(manifest, assetPath) {
     return manifest;
 }
 
+export async function buildRuntimeManifest(
+    entryUrls = CORE_ENTRY_URLS,
+    rootDirectory = publicDirectory,
+    extensionsDirectory = managedExtensionsDirectory,
+) {
+    const [manifest, extensionCoreBridges] = await Promise.all([
+        buildInlineModuleManifest(entryUrls, rootDirectory),
+        collectManagedExtensionCoreBridges(extensionsDirectory, rootDirectory),
+    ]);
+    attachCompiledModule(manifest, 'lib-core.js', 'dist/nora/lib-core.js');
+    attachExtensionCoreBridges(manifest, extensionCoreBridges);
+    attachLegacyAsset(manifest, 'dist/nora/legacy.js');
+    return manifest;
+}
+
 export async function writePrecompressedAsset(filePath, content) {
     const source = Buffer.isBuffer(content) ? content : Buffer.from(content);
     const [brotli, gzipped] = await Promise.all([
@@ -307,14 +322,10 @@ export async function writePrecompressedAsset(filePath, content) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const [inlineManifest, legacyBundle, extensionCoreBridges] = await Promise.all([
-        buildInlineModuleManifest(CORE_ENTRY_URLS),
+    const [inlineManifest, legacyBundle] = await Promise.all([
+        buildRuntimeManifest(),
         buildLegacyBundle(),
-        collectManagedExtensionCoreBridges(),
     ]);
-    attachCompiledModule(inlineManifest, 'lib-core.js', 'dist/nora/lib-core.js');
-    attachExtensionCoreBridges(inlineManifest, extensionCoreBridges);
-    attachLegacyAsset(inlineManifest, 'dist/nora/legacy.js');
     await fs.mkdir(outputDirectory, { recursive: true });
     const bundleNames = ['entry.js', 'lib-core.js'];
     const bundleEntries = await Promise.all(bundleNames.map(async (name) => {

@@ -1,7 +1,7 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:b66f16006867ffa89bb4f92bc007b6a3178a8bd23332ec69fc34ced71ce368c2",
+  "sourceRevision": "sha256:82a269bf1a04f31a74ed99520f989c903891f25d94a8a5fa3b3737edfaa5cc67",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
@@ -30,8 +30,8 @@
     },
     "engine/sillytavern/public/actor.html": {
       "source": "story-profile/public/actor.html",
-      "sourceSha256": "f4a24948cbae5a060739a681207213dc9ff8428ce83b1c5af8343f4154989062",
-      "sha256": "b2468017f93cb2d5fc10497f2ef0e362d1aeded4d81fa69684708be660963738"
+      "sourceSha256": "98216e81b8e289e1cadb8aaffd7fb2438c5f60a745f0af4c4a9f7e33136ea36f",
+      "sha256": "20476fa1d0fec4805fa6f858d29aaf52226580c92f8a9a3016ab2ec8712f392c"
     },
     "engine/sillytavern/public/story-profile-book.svg": {
       "source": "story-profile/public/story-profile-book.svg",
@@ -40,8 +40,8 @@
     },
     "engine/sillytavern/public/story-profile-icon-v2.png": {
       "source": "story-profile/public/story-profile-icon-v2.png",
-      "sourceSha256": "564136847ec13c861603eae6a086bf35013e889ee9d64e7d82a7329485ababcc",
-      "sha256": "564136847ec13c861603eae6a086bf35013e889ee9d64e7d82a7329485ababcc"
+      "sourceSha256": "410ef2e0e2d19b0aa91ccb70fb600303cc7fd137f4200298071a5ea4ccb5c25d",
+      "sha256": "410ef2e0e2d19b0aa91ccb70fb600303cc7fd137f4200298071a5ea4ccb5c25d"
     },
     "engine/sillytavern/public/actor.js": {
       "source": "story-profile/public/actor.js",

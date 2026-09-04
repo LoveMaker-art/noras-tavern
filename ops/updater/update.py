@@ -3,10 +3,12 @@
 import argparse
 from contextlib import contextmanager
 import fcntl
+import hashlib
 import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import signal
 import socket
@@ -155,10 +157,14 @@ def stop_unmanaged(app):
         except ProcessLookupError:
             pass
     deadline = time.monotonic() + 8
-    while time.monotonic() < deadline and any(Path(f"/proc/{pid}").exists() for pid in pids):
+    # A terminated child can remain as a zombie in /proc until its parent
+    # reaps it.  A zombie no longer owns the Tavern listener and must not keep
+    # the update in maintenance for the full timeout.
+    while time.monotonic() < deadline and any(pid in process_rows(app) for pid in pids):
         time.sleep(0.1)
+    remaining = set(process_rows(app))
     for pid in pids:
-        if Path(f"/proc/{pid}").exists():
+        if pid in remaining:
             os.kill(pid, signal.SIGKILL)
     return pids
 
@@ -175,12 +181,65 @@ def run(command, *, cwd=None, env=None, timeout=None, capture=False):
     )
 
 
-def prepare_dependencies(source):
-    log("准备新版依赖")
-    run(["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-        cwd=source / "app/engine/sillytavern")
-    run(["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-        cwd=source / "nora-mcp")
+def file_sha(path):
+    digest = hashlib.sha256()
+    with Path(path).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_file(left, right):
+    try:
+        return Path(left).is_file() and Path(right).is_file() and file_sha(left) == file_sha(right)
+    except OSError:
+        return False
+
+
+def link_or_copy(source, target):
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+    return target
+
+
+def reuse_or_install_dependencies(target, current, lock_name, command, required):
+    target = Path(target)
+    current = Path(current)
+    modules = target / "node_modules"
+    reusable = same_file(target / lock_name, current / lock_name) and all(
+        (current / "node_modules" / relative).is_file() for relative in required
+    )
+    if reusable:
+        shutil.copytree(current / "node_modules", modules, symlinks=True, copy_function=link_or_copy)
+        return "reused"
+    run(command, cwd=target)
+    return "installed"
+
+
+def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed):
+    report = {"tavern": "unchanged", "mcp": "unchanged"}
+    if app_changed:
+        log("准备 Tavern 依赖")
+        engine = source / "app/engine/sillytavern"
+        report["tavern"] = reuse_or_install_dependencies(
+            engine,
+            Path(old_app) / "engine/sillytavern",
+            "package-lock.json",
+            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+            ("express/package.json", "webpack/package.json"),
+        )
+    if mcp_changed:
+        log("准备 Nora MCP 依赖")
+        report["mcp"] = reuse_or_install_dependencies(
+            source / "nora-mcp",
+            old_mcp,
+            "npm-shrinkwrap.json",
+            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+            ("@modelcontextprotocol/sdk/package.json", "zod/package.json"),
+        )
+    return report
 
 
 def prepare_skills(source, destination):
@@ -230,11 +289,14 @@ def migration_copy(home, source, work, layout):
 def fallback_python_state(home, work, reason):
     old = home / "tavern-state"
     prepared = work / "prepared-fallback/state"
-    prepared.mkdir(parents=True)
-    for name in ("story_profile.json", "profile_eras.json", "profile_events.jsonl"):
-        source = old / name
-        if source.is_file():
-            shutil.copy2(source, prepared / name)
+    if old.is_dir():
+        # An unsupported legacy record must not turn into lost configuration.
+        # Keep the complete state tree so Liveware identities, model settings,
+        # Story Profile data and the original import material remain usable or
+        # recoverable.  The native runtime can create its own missing layout.
+        shutil.copytree(old, prepared, symlinks=False)
+    else:
+        prepared.mkdir(parents=True)
     report = {
         "status": "archived",
         "reason": reason,
@@ -276,17 +338,97 @@ def render_mcp(home):
     return yaml.safe_dump(value, allow_unicode=True, sort_keys=False).encode()
 
 
-def merge_agents(home, managed):
+def merged_agents(home, managed):
     path = home / "AGENTS.md"
     current = path.read_text(encoding="utf-8") if path.is_file() else ""
     block = managed.decode("utf-8").strip()
     begin, end = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
     first, last = current.find(begin), current.rfind(end)
     if first >= 0 and last >= first:
-        current = current[:first].rstrip() + "\n\n" + block + "\n\n" + current[last + len(end):].lstrip()
+        prefix = current[:first].rstrip()
+        suffix = current[last + len(end):].strip()
     else:
-        current = current.replace(begin, "").replace(end, "").rstrip() + "\n\n" + block + "\n"
-    atomic(path, current.encode("utf-8"), mode=0o600)
+        prefix = current.replace(begin, "").replace(end, "").rstrip()
+        suffix = ""
+    sections = [value for value in (prefix, block, suffix) if value]
+    return ("\n\n".join(sections) + "\n").encode("utf-8")
+
+
+def tree_inventory(root):
+    root = Path(root)
+    if not root.is_dir():
+        return None
+    inventory = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        inventory[relative] = file_sha(path)
+    return inventory
+
+
+def trees_equal(left, right):
+    return tree_inventory(left) == tree_inventory(right)
+
+
+def changed_roots(manifest, changed_modules):
+    modules = manifest.get("modules") or {}
+    if not modules:
+        return {"app", "ops", "nora-mcp"}
+    roots = set()
+    for module in changed_modules:
+        for artifact in modules[module]["artifacts"]:
+            roots.add(artifact.split("/", 1)[0])
+    return roots
+
+
+def dependency_marker(app_root):
+    """Describe dependencies for an installed Tavern application tree.
+
+    Release staging keeps the application below ``source/app`` while the
+    installed tree itself is ``apps/tavern-runtime``.  Keeping this function
+    explicitly on the installed-tree contract prevents callers from applying
+    the staging prefix twice during a legacy-to-native upgrade.
+    """
+    result = run(["node", "--version"], capture=True)
+    value = result.stdout.strip()
+    if not value.startswith("v") or not value[1:].split(".", 1)[0].isdigit():
+        raise RuntimeError("无法识别 Node.js 版本：" + value)
+    return {
+        "schema": 1,
+        "lock_sha256": file_sha(Path(app_root) / "engine/sillytavern/package-lock.json"),
+        "node_major": int(value[1:].split(".", 1)[0]),
+        "prepared_at": int(time.time()),
+    }
+
+
+def roots_with_unmanaged_files(home, manifest):
+    expected = set(manifest.get("artifacts") or {})
+    roots = {
+        "app": Path(home) / "apps/tavern-runtime",
+        "ops": Path(home) / "apps/tavern-ops",
+        "nora-mcp": Path(home) / "apps/nora-mcp",
+    }
+    changed = set()
+    for name, root in roots.items():
+        if not root.is_dir():
+            changed.add(name)
+            continue
+        for directory, directories, files in os.walk(root):
+            directories[:] = [entry for entry in directories if entry != "node_modules"]
+            base = Path(directory)
+            for filename in files:
+                path = base / filename
+                if path.is_symlink():
+                    changed.add(name)
+                    break
+                relative = f"{name}/{path.relative_to(root).as_posix()}"
+                if relative not in expected:
+                    changed.add(name)
+                    break
+            if name in changed:
+                break
+    return changed
 
 
 def copy_host_backup(home, backup, service_snapshot):
@@ -378,7 +520,34 @@ def start_old(home, service, snapshot):
             )
 
 
-def install_runtime(home):
+@contextmanager
+def temporary_content_check_skip(config_path, enabled):
+    """Skip ST's content scan only for a restart whose engine did not change."""
+    config_path = Path(config_path)
+    if not enabled:
+        yield
+        return
+    original = config_path.read_bytes()
+    text = original.decode("utf-8")
+    patched, count = re.subn(
+        r"(?m)^skipContentCheck:\s*(?:false|true)\s*$",
+        "skipContentCheck: true",
+        text,
+        count=1,
+    )
+    if count != 1:
+        raise RuntimeError("无法定位 SillyTavern 内容检查配置")
+    changed = patched.encode("utf-8") != original
+    if changed:
+        atomic(config_path, patched.encode("utf-8"), mode=config_path.stat().st_mode & 0o777)
+    try:
+        yield
+    finally:
+        if changed:
+            atomic(config_path, original, mode=config_path.stat().st_mode & 0o777)
+
+
+def install_runtime(home, *, skip_content_check=False):
     app = home / "apps/tavern-runtime"
     module = module_at("installed_native_lifecycle", app / "native_lifecycle.py")
     contract = module.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
@@ -388,7 +557,8 @@ def install_runtime(home):
     if service:
         text = service.node_text(runtime.node_command(8799, runtime.native_data_root), runtime.engine_root)
         service.install_text(text, accepted_hash=None, mode=service.file.stat().st_mode & 0o777)
-    return runtime.start(port=8799)
+    with temporary_content_check_skip(runtime.config_path, skip_content_check):
+        return runtime.start(port=8799)
 
 
 def refresh_liveware(home, source):
@@ -497,7 +667,7 @@ def install(args):
     home = safe(args.home)
     if not (home / "skills").is_dir():
         raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(home))
-    from bundle import extract_bundle, read_bundle
+    from bundle import extract_bundle, installed_roots, read_bundle
     with installer_lock(home):
         update_root = home / "tavern-updates"
         update_root.mkdir(parents=True, exist_ok=True)
@@ -505,14 +675,32 @@ def install(args):
             work = Path(temporary)
             source = work / "source"
             manifest = read_bundle(args.release_dir, args.manifest_sha256)
-            extract_bundle(args.release_dir, source, manifest)
+            roots = installed_roots(home)
+            old_app = roots["app"]
+            old_mcp = roots["nora-mcp"]
+            layout = python_layout(old_app)
+            bundle_report = extract_bundle(args.release_dir, source, manifest, roots=roots)
             version = manifest["versions"]["tavern"]
-            prepare_dependencies(source)
+            changed = set(bundle_report["changedModules"])
+            root_changes = changed_roots(manifest, changed) | roots_with_unmanaged_files(home, manifest)
+            if layout:
+                root_changes.update(("app", "ops", "nora-mcp"))
+            app_changed = "app" in root_changes
+            ops_changed = "ops" in root_changes
+            mcp_changed = "nora-mcp" in root_changes
+            dependencies = prepare_dependencies(
+                source,
+                old_app,
+                old_mcp,
+                app_changed=app_changed,
+                mcp_changed=mcp_changed,
+            )
             skills = prepare_skills(source, work / "skills")
             agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
+            desired_agents = merged_agents(home, agents_bytes)
             mcp_config = render_mcp(home)
-            old_app = home / "apps/tavern-runtime"
-            layout = python_layout(old_app)
+            agents_changed = not (home / "AGENTS.md").is_file() or (home / "AGENTS.md").read_bytes() != desired_agents
+            config_changed = not (home / "config.yaml").is_file() or (home / "config.yaml").read_bytes() != mcp_config
             migration = {"status": "not-required"}
             prepared_state = None
             if layout:
@@ -521,32 +709,53 @@ def install(args):
                     prepared_state, migration = migration_copy(home, source, work, layout)
                 except Exception as error:
                     prepared_state, migration = fallback_python_state(home, work, str(error))
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            backup = home / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
-            backup.mkdir(parents=True)
             service_module = module_at("simple_service_manager", source / "ops/updater/service_manager.py")
             service = service_module.ManagedService.discover(home, old_app)
             service_snapshot = service.snapshot() if service else None
-            copy_host_backup(home, backup, service_snapshot)
-            swaps = [
-                ("app", source / "app", home / "apps/tavern-runtime"),
-                ("ops", source / "ops", home / "apps/tavern-ops"),
-                ("nora-mcp", source / "nora-mcp", home / "apps/nora-mcp"),
-            ]
+            swaps = []
+            if app_changed:
+                swaps.append(("app", source / "app", roots["app"]))
+            if ops_changed:
+                swaps.append(("ops", source / "ops", roots["ops"]))
+            if mcp_changed:
+                swaps.append(("nora-mcp", source / "nora-mcp", roots["nora-mcp"]))
             for relative, prepared in skills.items():
-                swaps.append(("skill-" + relative.replace("/", "-"), prepared, home / "skills" / relative))
+                target = home / "skills" / relative
+                if not trees_equal(prepared, target):
+                    swaps.append(("skill-" + relative.replace("/", "-"), prepared, target))
             for retired in getattr(module_at("simple_skill_names", source / "ops/scripts/install-hermes-skills.py"), "RETIRED"):
                 target = home / "skills/creative" / retired
                 if target.exists():
                     swaps.append(("retired-" + retired, None, target))
+            host_changed = agents_changed or config_changed
+            runtime_changed = app_changed or prepared_state is not None
+            if not swaps and not host_changed and prepared_state is None:
+                result = {
+                    "status": "up-to-date",
+                    "version": version,
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
+                }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                log("已是最新版，无需替换文件。")
+                return
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            backup = home / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
+            backup.mkdir(parents=True)
+            copy_host_backup(home, backup, service_snapshot)
             applied = []
             state_swapped = False
+            runtime_stopped = False
             try:
-                log("备份旧版本并停止 Tavern")
-                if service:
-                    service.stop()
+                if runtime_changed:
+                    log("备份旧版本并停止 Tavern")
+                    if service:
+                        service.stop()
+                    else:
+                        stop_unmanaged(old_app)
+                    runtime_stopped = True
                 else:
-                    stop_unmanaged(old_app)
+                    log("应用非运行时更新，Tavern 保持运行")
                 for name, prepared, target in swaps:
                     saved = backup / "trees" / name
                     if prepared is None:
@@ -567,17 +776,31 @@ def install(args):
                         os.replace(saved_state, active_state)
                         raise
                     state_swapped = True
-                merge_agents(home, agents_bytes)
-                atomic(home / "config.yaml", mcp_config, mode=0o600)
-                log("启动新版 Tavern")
-                runtime = install_runtime(home)
-                liveware = refresh_liveware(home, home / "apps/tavern-ops")
-                try:
-                    update_check = install_update_check(home, home / "apps/tavern-ops")
-                except Exception as update_check_error:
-                    update_check = {"status": "pending", "warnings": [str(update_check_error)]}
+                if agents_changed:
+                    atomic(home / "AGENTS.md", desired_agents, mode=0o600)
+                if config_changed:
+                    atomic(home / "config.yaml", mcp_config, mode=0o600)
+                if app_changed:
+                    json_write(home / "tavern-state/native-runtime/dependencies.json", dependency_marker(home / "apps/tavern-runtime"))
+                if runtime_changed:
+                    log("启动新版 Tavern")
+                    runtime = install_runtime(
+                        home,
+                        skip_content_check="tavern-engine" not in changed,
+                    )
+                else:
+                    runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
+                               "health": {"ok": port_open(8799)}}
+                liveware = refresh_liveware(home, home / "apps/tavern-ops") if app_changed else {"status": "unchanged"}
+                if ops_changed:
+                    try:
+                        update_check = install_update_check(home, home / "apps/tavern-ops")
+                    except Exception as update_check_error:
+                        update_check = {"status": "pending", "warnings": [str(update_check_error)]}
+                else:
+                    update_check = {"status": "unchanged"}
                 installed = {
-                    "schema": 1,
+                    "schema": 2,
                     "version": version,
                     "commit": manifest["commit"],
                     "installedAt": int(time.time()),
@@ -585,8 +808,12 @@ def install(args):
                     "migration": migration,
                     "liveware": liveware,
                     "updateCheck": update_check,
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
                 }
                 json_write(update_root / "installed.json", installed)
+                json_write(update_root / "installed-manifest.json", manifest)
+                reload_required = mcp_changed or agents_changed or config_changed or any(name.startswith("skill-") for name, _, _ in swaps)
                 result = {
                     "status": "installed",
                     "version": version,
@@ -595,22 +822,25 @@ def install(args):
                     "runtime": {"pid": runtime.get("native_pid"), "health": runtime.get("health", {}).get("ok")},
                     "liveware": liveware,
                     "updateCheck": update_check,
-                    "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。",
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
+                    "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。" if reload_required else "更新已生效。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
-                log("更新完成。请在 ClawChat 输入 /restart。")
+                log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required else ""))
                 return
             except BaseException as error:
-                log("新版未能启动，恢复旧版本")
-                try:
-                    active_app = home / "apps/tavern-runtime"
-                    active_service = service_module.ManagedService.discover(home, active_app)
-                    if active_service:
-                        active_service.stop()
-                    else:
-                        stop_unmanaged(active_app)
-                except Exception:
-                    pass
+                log("更新未完成，恢复旧版本")
+                if runtime_stopped:
+                    try:
+                        active_app = home / "apps/tavern-runtime"
+                        active_service = service_module.ManagedService.discover(home, active_app)
+                        if active_service:
+                            active_service.stop()
+                        else:
+                            stop_unmanaged(active_app)
+                    except Exception:
+                        pass
                 failed_root = backup / "failed-new"
                 for name, target, saved in reversed(applied):
                     restore_tree(target, saved, failed_root / name)
@@ -621,10 +851,11 @@ def install(args):
                     os.replace(backup / "state", active_state)
                 restore_host(home, backup)
                 recovery = "restored"
-                try:
-                    start_old(home, service, service_snapshot)
-                except Exception as recovery_error:
-                    recovery = "files-restored-start-failed: " + str(recovery_error)
+                if runtime_stopped:
+                    try:
+                        start_old(home, service, service_snapshot)
+                    except Exception as recovery_error:
+                        recovery = "files-restored-start-failed: " + str(recovery_error)
                 raise RuntimeError(f"{error}; recovery={recovery}; backup={backup}") from error
 
 

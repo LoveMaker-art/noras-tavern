@@ -61,3 +61,12 @@ test('records the first genuinely usable state with its readiness evidence', () 
     }]);
     assert.deepEqual(phases, ['nora-usable']);
 });
+
+test('keeps visible-shell and hydrated-runtime milestones separate', () => {
+    const metrics = { startedAt: 10, shellReadyAt: 120, milestones: [], steps: [] };
+    const reporter = createPerformanceReporter({ getMetrics: () => metrics, now: () => 410 });
+
+    assert.deepEqual(reporter.hydrateShell({ alreadyVisible: true }), { shellReadyAt: 120, hydratedAt: 400 });
+    assert.equal(metrics.hydratedAt, 400);
+    assert.deepEqual(metrics.milestones, [{ name: 'shell-hydrated', at: 400 }]);
+});

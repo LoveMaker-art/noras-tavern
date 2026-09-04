@@ -25,12 +25,14 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/tavern-bootstrap.XXXXXX")
 trap 'rm -f "$WORK/bootstrap-manifest.json" "$WORK/tavern-updater-bootstrap.py"; rmdir "$WORK" 2>/dev/null || true' EXIT HUP INT TERM
 curl -fsSL --connect-timeout 15 --max-time 120 "$BASE/bootstrap-manifest.json" -o "$WORK/bootstrap-manifest.json"
 curl -fsSL --connect-timeout 15 --max-time 120 "$BASE/tavern-updater-bootstrap.py" -o "$WORK/tavern-updater-bootstrap.py"
-"$PY" -B - "$WORK" <<'PY'
+TARGET_COMMIT=$("$PY" -B - "$WORK" <<'PY'
 import hashlib, json, pathlib, sys
 root = pathlib.Path(sys.argv[1])
 manifest = json.loads((root / 'bootstrap-manifest.json').read_text())
 actual = hashlib.sha256((root / 'tavern-updater-bootstrap.py').read_bytes()).hexdigest()
 if manifest.get('scope') != 'tavern-updater-bootstrap' or actual != manifest.get('sha256'):
     raise SystemExit('Bootstrap checksum mismatch')
+print(manifest.get('commit') or '')
 PY
-exec "$PY" -u -B "$WORK/tavern-updater-bootstrap.py" "$@"
+)
+exec "$PY" -u -B "$WORK/tavern-updater-bootstrap.py" --target-commit "$TARGET_COMMIT" "$@"

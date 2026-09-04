@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createStartupController } from '../../../native-extensions/nora-ui/startup-controller.js';
 
-test('empty-workspace finalization releases existing prerequisites without claiming World usability', async (t) => {
+test('empty-workspace finalization releases runtime prerequisites at the World list', async (t) => {
     const source = readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
     const name = source.includes('function waitForNoraRuntimeReady()') ? 'waitForNoraRuntimeReady' : 'waitForNoraUsable';
     const start = source.indexOf(`function ${name}()`);
@@ -23,20 +23,16 @@ test('empty-workspace finalization releases existing prerequisites without claim
     void wait().then(() => { resolved = true; });
     const startup = createStartupController({ finishBootScreen() {}, readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
         select: () => ({ disabled: false, getAttribute: () => null }), messageView: { hasMessages: () => true },
-        messageController: { updateComposer() {} }, openInitialWorld: async () => {},
-        storyScroller: { followLatest: () => () => {}, toLatest: async () => {} }, selectAll: () => [],
+        messageController: { updateComposer() {} }, selectAll: () => [],
         performanceReporter: { phase() {}, milestone() {}, usable() {} } });
     await startup.finalizeUi();
     await Promise.resolve();
-    assert.equal(resolved, false, 'shell readiness must not start compatibility extensions before World restoration settles');
-    await startup.restoreInitialWorld();
-    await Promise.resolve();
-    assert.equal(resolved, true, 'an empty workspace must still release runtime prerequisites after restoration settles');
-    assert.equal(usable, false, 'no World exists yet, so the user-outcome event must not fire');
+    assert.equal(resolved, true, 'the World list must release compatibility prerequisites without opening a World');
+    assert.equal(usable, true, 'the interactive World list is a usable product state');
     await wait();
 });
 
-test('application shell becomes ready before the initial World is restored', async (t) => {
+test('application startup stops at the World list without restoring a World', async (t) => {
     const calls = [];
     const events = new EventTarget();
     const classes = new Set();
@@ -62,8 +58,7 @@ test('application shell becomes ready before the initial World is restored', asy
         bindLayoutEvents() {},
         refresh: () => calls.push('refresh'),
         loadWorlds: async () => calls.push('worlds'),
-        openInitialWorld: async () => calls.push('initial-world'),
-        storyScroller: { followLatest: () => () => {}, toLatest: async () => calls.push('latest') },
+        openWorldById: async () => calls.push('requested-world'),
         openNewWorldSheet() {},
         runPanelAction() {},
         updateActiveWorldSummary() {},
@@ -77,41 +72,32 @@ test('application shell becomes ready before the initial World is restored', asy
     assert.deepEqual(calls, ['refresh', 'worlds', 'composer']);
     await startup.finalizeUi();
     assert.equal(classes.has('nora-app-ready'), true);
-    assert.equal(classes.has('nora-runtime-ready'), false);
-    assert.equal(calls.includes('shell-ready'), true);
-    assert.equal(usable, false);
-
-    await startup.restoreInitialWorld();
-    assert.ok(calls.indexOf('initial-world') > calls.indexOf('shell-ready'));
-    assert.ok(calls.indexOf('latest') > calls.indexOf('initial-world'));
     assert.equal(classes.has('nora-runtime-ready'), true);
+    assert.equal(calls.includes('shell-ready'), true);
     assert.equal(usable, true);
+    assert.equal(calls.includes('requested-world'), false);
 });
 
-test('a failed initial World releases runtime prerequisites without claiming usability', async (t) => {
-    const events = new EventTarget();
+test('an early World click is handed to the authoritative activation path without opening two Worlds', async (t) => {
+    const calls = [];
     const classes = new Set();
     const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
     globalThis.document = { body: { classList: { add: value => classes.add(value), contains: value => classes.has(value) } } };
-    globalThis.window = {};
-    globalThis.dispatchEvent = event => events.dispatchEvent(event);
-    let usable = false;
-    events.addEventListener('nora:usable', () => { usable = true; });
+    globalThis.window = { __NORA_EARLY__: { pendingAction: { name: 'world', worldId: 'world:two', clickedAt: 42 }, pendingSend: false } };
+    globalThis.dispatchEvent = () => {};
 
     const startup = createStartupController({
-        messageView: { hasMessages: () => false },
-        messageController: { updateComposer() {} },
+        messageView: { hasMessages: () => true },
+        messageController: { updateComposer: () => calls.push('composer') },
         select: () => ({ disabled: false, getAttribute: () => null }),
         selectAll: () => [],
-        readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
-        openInitialWorld: async () => { throw new Error('broken World'); },
-        storyScroller: { followLatest: () => () => {}, toLatest: async () => {} },
-        finishBootScreen() {},
+        readState: () => ({ activeCharacterId: 0, activeChatId: 'chat-two', messages: [] }),
+        openWorldById: async (worldId, options) => calls.push(['requested-world', worldId, options]),
         performanceReporter: { phase() {}, milestone() {}, usable() {} },
     });
 
-    await assert.rejects(startup.restoreInitialWorld(), /broken World/);
-    assert.equal(classes.has('nora-runtime-ready'), true);
-    assert.equal(usable, false);
+    await startup.consumeEarlyIntent();
+    assert.deepEqual(calls[0], ['requested-world', 'world:two', { interactionId: 'early-world-42', showBuffer: true }]);
+    assert.equal(globalThis.window.__NORA_EARLY__.pendingAction, null);
 });

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { assertSafeReleasePath, assertSafeReleaseContent, createReleaseSource, collectRuntimeFiles } from '../../../../ops/scripts/release-source.mjs';
+import { assertSafeReleasePath, assertSafeReleaseContent, createReleaseSource, collectRuntimeFiles, groupRuntimeModules, releaseModuleFor } from '../../../../ops/scripts/release-source.mjs';
 
 test('release guards reject runtime/private paths and credential contents without echoing them', () => {
     for (const file of ['app/.env', 'app/engine/sillytavern/data/default-user/secrets.json', 'app/audit-runtime.log', 'app/__pycache__/a.pyc', '../app/x', 'app/x\ny']) assert.throws(() => assertSafeReleasePath(file));
@@ -128,6 +128,24 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     const delivery = collectRuntimeFiles(stage, [...retained, ...excluded]);
     assert.deepEqual(delivery, [...retained, ...generated].sort());
     for (const file of excluded) assert.ok(fs.existsSync(path.join(stage, file)), `${file} remains available to source/build tests`);
+});
+
+test('runtime artifacts have stable, disjoint incremental module ownership', () => {
+    const fixtures = {
+        'app/engine/sillytavern/public/dist/nora/entry.js': 'nora-web',
+        'app/engine/sillytavern/src/nora-world-core/index.js': 'nora-runtime',
+        'app/engine/sillytavern/src/server-main.js': 'tavern-engine',
+        'app/native-extensions/nora-mvu/index.js': 'extension-nora-mvu',
+        'app/story_profile_runtime/core/story_profile.py': 'story-profile',
+        'app/native_lifecycle.py': 'nora-runtime',
+        'nora-mcp/dist/server.js': 'nora-mcp',
+        'ops/updater/update.py': 'updater',
+        'ops/skills/creative/tavern/SKILL.md': 'skills',
+        'ops/scripts/runtime.sh': 'operations',
+    };
+    for (const [file, module] of Object.entries(fixtures)) assert.equal(releaseModuleFor(file), module);
+    const grouped = groupRuntimeModules(Object.keys(fixtures));
+    assert.deepEqual([...grouped.values()].flat().sort(), Object.keys(fixtures).sort());
 });
 
 test('installed product exposes only English and Chinese locales and no bundled document converters', () => {

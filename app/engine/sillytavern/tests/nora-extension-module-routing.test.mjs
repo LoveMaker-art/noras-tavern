@@ -5,13 +5,14 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { init, parse } from 'es-module-lexer';
+import { buildRuntimeManifest } from '../build/generate-nora-runtime-assets.mjs';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const publicDirectory = path.resolve(testDirectory, '../public');
 const nativeExtensionsDirectory = path.resolve(testDirectory, '../../../native-extensions');
 const extensionLoader = fs.readFileSync(path.join(publicDirectory, 'scripts/extensions.js'), 'utf8');
 const indexTemplate = fs.readFileSync(path.join(publicDirectory, 'index.html'), 'utf8');
-const inlineManifest = JSON.parse(fs.readFileSync(path.join(publicDirectory, 'dist/nora/inline-modules.js'), 'utf8'));
+const inlineManifest = await buildRuntimeManifest();
 
 await init;
 

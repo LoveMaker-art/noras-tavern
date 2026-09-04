@@ -47,7 +47,8 @@ assert.match(runtimeAssetBuilder, /attachExtensionCoreBridges/);
 assert.match(runtimeAssetBuilder, /['"]\/scripts\/extensions\/regex\/index\.js['"]/, 'the critical regex runtime must ship in the initial module package');
 assert.match(runtimeAssetBuilder, /buildLegacyBundle/);
 assert.match(runtimeAssetBuilder, /attachLegacyAsset/);
-assert.match(runtimeAssetBuilder, /attachCompiledModule\(inlineManifest, 'lib-core\.js'/);
+assert.match(runtimeAssetBuilder, /export async function buildRuntimeManifest/);
+assert.match(runtimeAssetBuilder, /attachCompiledModule\(manifest, 'lib-core\.js'/);
 assert.doesNotMatch(
     runtimeAssetBuilder,
     /const bundleNames = \[[^\]]*['"]lib\.js['"]/,
@@ -62,7 +63,7 @@ assert.match(extensions, /return `nora-module\/\$\{normalized\}`/);
 assert.match(extensions, /import\(url\.startsWith\('nora-module\/'\) \? url : new URL\(url, location\.origin\)\.href\)/);
 assert.doesNotMatch(extensions, /script\.src = url/, 'extension modules must reuse import-map packaged runtimes');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'content-addressed immutable assets must have one browser cache authority');
-assert.match(index, /cache:\s*'force-cache'[\s\S]*priority:\s*'high'/, 'the critical manifest must use the immutable HTTP cache at high priority');
+assert.match(index, /cache:\s*'force-cache'[\s\S]*priority:\s*'low'/, 'the immutable runtime manifest must not outrank the compact visible shell');
 assert.match(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\/lib-core\.js/);
 assert.match(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\/entry\.js/);
 

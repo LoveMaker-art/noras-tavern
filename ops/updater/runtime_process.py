@@ -69,8 +69,8 @@ def stop_process(process, script, *, port=None, stop=None):
         except ProcessLookupError:
             return {"pid": pid, "stopped": True}
     deadline = time.monotonic() + 8
-    while time.monotonic() < deadline and Path(f"/proc/{pid}").exists():
+    while time.monotonic() < deadline and process_record(pid, script):
         time.sleep(0.1)
-    if Path(f"/proc/{pid}").exists():
+    if process_record(pid, script):
         os.kill(pid, signal.SIGKILL)
     return {"pid": pid, "stopped": True}

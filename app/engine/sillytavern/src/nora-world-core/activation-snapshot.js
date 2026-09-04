@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import sanitize from 'sanitize-filename';
 
@@ -49,6 +50,35 @@ function projectRuntimeWorldbookBinding(character, plan) {
         : {};
     data.extensions = { ...extensions, world: worldbookName };
     return projected;
+}
+
+/**
+ * Avoid sending the card's embedded Character Book twice when the materialized
+ * ST Worldbook still contains the exact same original payload. The client
+ * restores the card field before handing the snapshot to the ST runtime.
+ * Diverged/user-edited Worldbooks intentionally keep both copies.
+ */
+function deduplicateEmbeddedWorldbook(character, worldbooks) {
+    const data = character?.data && typeof character.data === 'object' ? character.data : character;
+    const embeddedBook = data?.character_book;
+    if (!embeddedBook || typeof embeddedBook !== 'object') {
+        return { character, binding: null };
+    }
+    const source = worldbooks.find(worldbook => (
+        worldbook?.data?.originalData
+        && isDeepStrictEqual(worldbook.data.originalData, embeddedBook)
+    ));
+    if (!source) return { character, binding: null };
+
+    const compactCharacter = structuredClone(character);
+    const compactData = compactCharacter?.data && typeof compactCharacter.data === 'object'
+        ? compactCharacter.data
+        : compactCharacter;
+    delete compactData.character_book;
+    return {
+        character: compactCharacter,
+        binding: Object.freeze({ name: source.name }),
+    };
 }
 
 function nowMs() {
@@ -129,6 +159,7 @@ export async function readActivationSnapshot(plan, directories, {
         });
     }
     const runtimeCharacter = adaptCardForMvuRuntime(projectRuntimeWorldbookBinding(character, plan)).card;
+    const compacted = deduplicateEmbeddedWorldbook(runtimeCharacter, worldbooks);
     const resolvedRevision = revision || await measured(
         'revision',
         () => getActivationSnapshotRevision(plan, directories),
@@ -140,9 +171,10 @@ export async function readActivationSnapshot(plan, directories, {
             schema: 'nora-world-snapshot/v1',
             revision: resolvedRevision,
             plan,
-            character: runtimeCharacter,
+            character: compacted.character,
             chat,
             worldbooks,
+            ...(compacted.binding ? { embedded_worldbook_binding: compacted.binding } : {}),
         }),
         timings: Object.freeze(timings),
     });

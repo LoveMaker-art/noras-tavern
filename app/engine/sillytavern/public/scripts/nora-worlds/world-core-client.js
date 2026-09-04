@@ -82,15 +82,33 @@ export function validateActivationSnapshot(snapshot) {
     return bindings;
 }
 
+function hydrateEmbeddedWorldbook(snapshot) {
+    const binding = snapshot?.embedded_worldbook_binding;
+    if (!binding) return snapshot;
+    const name = String(binding.name || '').trim();
+    const source = snapshot.worldbooks.find(worldbook => worldbook?.name === name)?.data?.originalData;
+    if (!name || !source || typeof source !== 'object') {
+        throw new Error('The World Activation Snapshot has an invalid embedded Worldbook reference.');
+    }
+    const hydrated = structuredClone(snapshot);
+    const data = hydrated.character?.data && typeof hydrated.character.data === 'object'
+        ? hydrated.character.data
+        : hydrated.character;
+    data.character_book = structuredClone(source);
+    delete hydrated.embedded_worldbook_binding;
+    return hydrated;
+}
+
 export async function executeStActivationSnapshot(snapshot, runtime, { measure = passthroughMeasure } = {}) {
     const { avatar, chatId } = validateActivationSnapshot(snapshot);
+    const runtimeSnapshot = hydrateEmbeddedWorldbook(snapshot);
     let state = runtime.read();
     const characterId = state.characters.findIndex(character => character.avatar === avatar);
     if (characterId < 0) throw new Error(`World Runtime Card is unavailable: ${avatar}`);
     if (typeof runtime.activateSnapshot !== 'function') {
         throw new Error('The compatibility runtime does not support aggregate World activation.');
     }
-    await measure('world.snapshot.runtime-transaction', () => runtime.activateSnapshot(characterId, snapshot));
+    await measure('world.snapshot.runtime-transaction', () => runtime.activateSnapshot(characterId, runtimeSnapshot));
     state = runtime.read();
     if (state.activeCharacter?.avatar !== avatar || normalizeChatId(state.chatId) !== chatId) {
         throw new Error('The compatibility runtime did not activate the requested World snapshot.');
@@ -112,7 +130,7 @@ export async function executeStActivationSnapshot(snapshot, runtime, { measure =
         characterAvatar: avatar,
         chatId,
         chatName: chatId,
-        activationSnapshot: snapshot,
+        activationSnapshot: runtimeSnapshot,
     });
 }
 

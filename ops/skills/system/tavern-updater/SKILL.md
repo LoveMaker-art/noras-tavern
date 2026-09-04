@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
 description: Install a published Tavern release with one direct backup-and-replace command.
-version: 3.0.0
+version: 3.1.0
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos]
@@ -9,7 +9,7 @@ metadata:
   hermes:
     category: system
     tags: [tavern, 更新, 发布, 回滚]
-    revision: direct-update-20260901
+    revision: incremental-update-20260904
     requires_tools: [terminal]
 ---
 
@@ -34,19 +34,23 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 ## Contract
 
-The direct updater performs one flow:
+The direct updater exposes one command and selects the delivery path itself:
 
-1. download and checksum the published archives;
-2. prepare Node dependencies before downtime;
-3. back up the current app, MCP, official skills, AGENTS, configuration and
+1. download and checksum release metadata;
+2. use full archives for Python-era installs, or download only changed modules
+   for an existing native 2.x install;
+3. reuse Node dependencies when their lock files are unchanged, otherwise
+   prepare them before downtime;
+4. back up the current app, MCP, official skills, AGENTS, configuration and
    Python-era state when applicable;
-4. stop the current Tavern without comparing it to a previously recorded PID;
-5. replace Tavern, Story Profile, MCP, operations and official skills;
-6. preserve native Worlds, chats, model configuration and Story Profile data,
+5. stop Tavern only when its runtime or migrated state will change;
+6. replace only changed managed roots and official skills;
+7. preserve native Worlds, chats, model configuration and Story Profile data,
    and configure the official Nora MCP in operator mode;
-7. convert compatible Python data and archive incompatible records;
-8. start Tavern and refresh the two existing Liveware bindings;
-9. ask the owner to send `/restart` so Hermes reloads MCP and skills.
+8. convert compatible Python data and archive incompatible records;
+9. restart Tavern and refresh Liveware only when its application changed;
+10. ask the owner to send `/restart` only when MCP, skills, AGENTS or Hermes
+    configuration changed.
 
 Archive checksums and safe extraction remain release integrity requirements.
 If the new Tavern cannot actually start, the updater restores the backup.

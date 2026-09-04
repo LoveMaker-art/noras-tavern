@@ -83,20 +83,28 @@ assert.match(index, /<script\s+src="\{\{NORA_ASSET_BASE\}\}\/dist\/nora\/legacy\
 assert.match(index, /manifest\.legacy/, 'startup metrics must identify the standalone legacy asset');
 assert.match(index, /id="third-party_nora-ui-css"/, 'the Nora UI stylesheet must share the extension loader identity and load once');
 assert.match(extensions, /if \(existingStyle\.length > 0\)\s*\{\s*return Promise\.resolve\(\);/, 'an existing extension stylesheet must resolve without injecting a duplicate or hanging');
+const headShellStart = index.indexOf(
+    'const shellNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/shell' + singleQuote,
+);
 const headBootstrapStart = index.indexOf(
-    'const bootstrapNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/bootstrap?max=250&metadata=true' + singleQuote,
+    'const runtimeBootstrapNetworkPromise = fetch(' + singleQuote + '/api/nora-boot/bootstrap?max=250&metadata=true' + singleQuote,
 );
 const manifestNetworkYield = index.indexOf('await globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__.catch(() => undefined)');
 const manifestNetworkStart = index.indexOf('globalThis.__NORA_INLINE_MANIFEST_PROMISE__ = fetch(globalThis.__NORA_INLINE_MANIFEST_URL__');
 const bodyBootstrapReuse = index.indexOf('const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__');
-assert.notEqual(headBootstrapStart, -1, 'the aggregate bootstrap request must start from the head before large runtime assets');
+const bodyShellReuse = index.indexOf('const shellPromise = globalThis.__NORA_SHELL_DATA_PROMISE__');
+assert.notEqual(headShellStart, -1, 'the compact World summary request must start from the head');
+assert.notEqual(headBootstrapStart, -1, 'the aggregate runtime bootstrap request must still start from the head');
 assert.equal(manifestNetworkYield, -1, 'a cold runtime manifest must not create a second network wave behind bootstrap');
 assert.notEqual(manifestNetworkStart, -1, 'the module manifest must retain its network fallback');
+assert.notEqual(bodyShellReuse, -1, 'the early shell must reuse the head World summary request');
 assert.notEqual(bodyBootstrapReuse, -1, 'the early shell must reuse the head bootstrap request');
-assert.ok(headBootstrapStart < manifestNetworkStart, 'bootstrap must start before the parallel runtime manifest request');
+assert.ok(headShellStart < headBootstrapStart, 'the compact visible-shell request must be scheduled first');
+assert.ok(headBootstrapStart < manifestNetworkStart, 'runtime bootstrap must start before the parallel runtime manifest request');
 assert.ok(manifestNetworkStart < bodyBootstrapReuse, 'the body must reuse the already-started shell bootstrap request');
-assert.match(index, /globalThis\.__NORA_RELEASE_GUARD_PROMISE__\s*=\s*bootstrapNetworkPromise\.then/, 'the existing bootstrap response must enforce shell/backend release coherence');
-assert.match(index, /globalThis\.__NORA_SHELL_BOOTSTRAP_PROMISE__\s*=\s*globalThis\.__NORA_RELEASE_GUARD_PROMISE__/, 'product data must wait for the release guard');
+assert.match(index, /globalThis\.__NORA_RELEASE_GUARD_PROMISE__\s*=\s*shellNetworkPromise\.then/, 'the compact shell response must enforce shell/backend release coherence');
+assert.match(index, /globalThis\.__NORA_SHELL_DATA_PROMISE__\s*=\s*globalThis\.__NORA_RELEASE_GUARD_PROMISE__/, 'visible shell data must wait for the release guard');
+assert.match(index, /globalThis\.__NORA_SHELL_BOOTSTRAP_PROMISE__\s*=\s*Promise\.all/, 'runtime bootstrap must retain the release guard without blocking the visible shell');
 assert.match(index, /target\.searchParams\.set\('release', currentRelease\)[\s\S]*location\.replace\(target\.href\)/, 'a stale shell must navigate once to the current release URL');
 assert.doesNotMatch(
     index.slice(manifestNetworkStart, bodyBootstrapReuse),
@@ -104,21 +112,23 @@ assert.doesNotMatch(
     'release validation must not serialize immutable manifest parsing behind bootstrap',
 );
 assert.match(
-    index.slice(headBootstrapStart, manifestNetworkStart),
+    index.slice(headShellStart, headBootstrapStart),
     /credentials:\s*'same-origin'[\s\S]*priority:\s*'high'/,
-    'the shell bootstrap must be an authenticated high-priority request',
+    'the compact visible-shell request must be authenticated and high priority',
 );
+assert.match(index.slice(headBootstrapStart, manifestNetworkStart), /priority:\s*'low'/, 'the larger runtime bootstrap must not outrank visible World summaries');
 assert.match(
     index.slice(manifestNetworkStart, bodyBootstrapReuse),
-    /priority:\s*'high'/,
-    'the parallel runtime manifest is a critical high-priority request',
+    /priority:\s*'low'/,
+    'the large runtime manifest must not compete with the compact visible-shell request',
 );
 assert.doesNotMatch(
     index.slice(bodyBootstrapReuse),
     /fetch\('\/api\/nora-boot\/bootstrap\?max=250&metadata=true'/,
     'the body must not issue a duplicate aggregate bootstrap request',
 );
-assert.match(worldController, /settingsDomain\.uiSettings\(\)\.lastWorldId/, 'World v2 must restore the saved World through its authoritative controller');
+assert.match(index, /shellPromise\.then\(\(shell\) => \{[\s\S]*render\(shell\)[\s\S]*reveal\(\)/, 'authoritative World summaries must reveal the existing shell before runtime hydration');
+assert.doesNotMatch(worldController, /async function openInitial\(/, 'startup must stop at the World list instead of restoring a saved or first World');
 assert.doesNotMatch(index, /dataset\.noraInteractiveMs\s*\|\|=/, 'metadata arrival must not masquerade as an interactive application');
 assert.doesNotMatch(index, /__NORA_CHAT_PROMISES__|data\.initialWorld|data\.startup|worldCoreV2/, 'the early shell must not reconstruct a legacy World from bootstrap projections');
 assert.doesNotMatch(firstLoad, /nora-deferred-core|__NORA_DEFERRED_CORE_PROMISE__/, 'Nora must not retain a legacy UI hydration phase');
@@ -134,6 +144,7 @@ for (const retiredStartupRequest of [
 ]) {
     assert.doesNotMatch(index, new RegExp(retiredStartupRequest.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `early startup must not issue ${retiredStartupRequest}`);
 }
-assert.match(bootEndpoint, /router\.get\('\/bootstrap'/, 'backend must expose one read-only Nora bootstrap route');
+assert.match(bootEndpoint, /router\.get\('\/shell'/, 'backend must expose one compact visible-shell route');
+assert.match(bootEndpoint, /router\.get\('\/bootstrap'/, 'backend must retain the aggregate runtime bootstrap route');
 
 console.log('nora-critical-startup-contract=PASS');

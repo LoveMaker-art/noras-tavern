@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { collectRuntimeFiles, createReleaseSource, digest } from './release-source.mjs';
+import { collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules } from './release-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
@@ -32,6 +32,21 @@ try {
         identity.archives[part] = { name, sha256 };
         checksums.push(`${sha256}  ${name}`);
     }
+    identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
+    identity.artifactModes = Object.fromEntries(members.map(file => [
+        file,
+        fs.statSync(path.join(stage, file)).mode & 0o111 ? 0o755 : 0o644,
+    ]));
+    identity.modules = {};
+    for (const [module, moduleMembers] of groupRuntimeModules(members)) {
+        const list = path.join(stage, `module-${module}-members.txt`);
+        fs.writeFileSync(list, moduleMembers.join('\n') + '\n');
+        const name = `nora-tavern-module-${module}.tar.gz`;
+        run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
+        const sha256 = digest(fs.readFileSync(path.join(release, name)));
+        identity.modules[module] = { name, sha256, artifacts: moduleMembers };
+        checksums.push(`${sha256}  ${name}`);
+    }
     const profile = JSON.parse(fs.readFileSync(path.join(stage, 'app/story_profile_runtime/manifest.json')));
     identity.storyProfile = { sourceRevision: profile.sourceRevision, manifestSha256: digest(JSON.stringify(profile)) };
     identity.generatedAt = new Date().toISOString();
@@ -48,7 +63,6 @@ try {
         testsExecutedByPackager: false,
         statement: 'The packager builds and seals release artifacts; it does not run release gates.',
     };
-    identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
     const bootstrap = fs.readFileSync(path.join(stage, 'ops/updater/bootstrap.py'));
     const installer = fs.readFileSync(path.join(stage, 'ops/updater/install.sh'));
     const bootstrapManifest = Buffer.from(JSON.stringify({ schema: 2, scope: 'tavern-updater-bootstrap',

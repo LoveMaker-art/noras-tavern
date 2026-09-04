@@ -276,6 +276,48 @@ test('fetches one aggregate activation snapshot and revalidates it by ETag', asy
     ]);
 });
 
+test('rehydrates a deduplicated embedded Character Book before entering the ST runtime', async () => {
+    const embeddedBook = {
+        name: 'One Book',
+        entries: [{ id: 0, keys: ['one'], content: 'shared content', enabled: true }],
+    };
+    const plan = {
+        schema: 'nora-world-activation/v1', world_id: 'world:one', world_revision: 1, name: 'One', persona: {},
+        runtime_card: { engine: 'sillytavern', binding: { avatar: 'one.png' } },
+        session: { session_id: 'session:one', engine: 'sillytavern', binding: { avatar: 'one.png', chat_id: 'chat-one' } },
+        knowledge: [{ binding: { name: 'One Book' } }], capabilities: { declared: [], status: 'READY' },
+    };
+    const snapshot = {
+        schema: 'nora-world-snapshot/v1', revision: 'revision-one', plan,
+        character: { avatar: 'one.png', data: { extensions: { world: 'One Book' } } },
+        chat: { header: { chat_metadata: {} }, messages: [] },
+        worldbooks: [{ name: 'One Book', data: { entries: {}, originalData: embeddedBook } }],
+        embedded_worldbook_binding: { name: 'One Book' },
+    };
+    let activatedSnapshot;
+    let state = {
+        characters: [{ avatar: 'one.png' }], activeCharacter: null, chatId: '', metadata: {}, persona: {},
+    };
+    const runtime = {
+        read: () => state,
+        async activateSnapshot(characterId, value) {
+            activatedSnapshot = value;
+            state = {
+                ...state,
+                activeCharacter: state.characters[characterId],
+                chatId: value.plan.session.binding.chat_id,
+                metadata: { nora_world: { id: 'world:one' }, nora_session: { id: 'session:one' } },
+            };
+        },
+        async savePersona() {},
+    };
+
+    await executeStActivationSnapshot(snapshot, runtime);
+
+    assert.deepEqual(activatedSnapshot.character.data.character_book, embeddedBook);
+    assert.equal(activatedSnapshot.embedded_worldbook_binding, undefined);
+});
+
 test('coalesces concurrent activation snapshot requests for the same World', async () => {
     let fetchCount = 0;
     let releaseResponse;

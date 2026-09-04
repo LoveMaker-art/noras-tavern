@@ -71,3 +71,11 @@ test('production entry routing precedes shared security and selects independent 
     // Platform binding/registration behavior is exercised through the shared
     // integration interface by ops/tests/test_liveware_integration.py.
 });
+
+test('Tavern and Story Profile publish distinct application icons below 100 KB', () => {
+    const tavernIcon = readFileSync(new URL('../public/tavern-icon-dbf4ecbd54ec.png', import.meta.url));
+    const storyProfileIcon = readFileSync(new URL('../public/story-profile-icon-v2.png', import.meta.url));
+    assert.ok(tavernIcon.byteLength < 100_000, `Tavern icon is ${tavernIcon.byteLength} bytes`);
+    assert.ok(storyProfileIcon.byteLength < 100_000, `Story Profile icon is ${storyProfileIcon.byteLength} bytes`);
+    assert.notDeepEqual(tavernIcon, storyProfileIcon);
+});

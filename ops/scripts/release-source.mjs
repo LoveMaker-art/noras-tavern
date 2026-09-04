@@ -172,3 +172,53 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     }
     return [...selected].sort();
 }
+
+const NORA_ENGINE_PREFIXES = [
+    'app/engine/sillytavern/public/dist/nora/',
+    'app/engine/sillytavern/public/scripts/nora-',
+    'app/engine/sillytavern/src/nora-',
+    'app/engine/sillytavern/src/endpoints/nora-',
+];
+
+const NORA_ENGINE_FILES = new Set([
+    'app/engine/sillytavern/public/actor.html',
+    'app/engine/sillytavern/public/index.html',
+    'app/engine/sillytavern/public/manifest.json',
+    'app/engine/sillytavern/public/nora-entry.js',
+    'app/engine/sillytavern/public/story-profile-icon-v2.png',
+    'app/engine/sillytavern/public/tavern-icon-dbf4ecbd54ec.png',
+]);
+
+/**
+ * Assign every installed artifact to exactly one independently downloadable
+ * module.  The target manifest is the authority; installers never need to
+ * understand these path rules.
+ */
+export function releaseModuleFor(relative) {
+    if (relative.startsWith('ops/updater/')) return 'updater';
+    if (relative.startsWith('ops/skills/')) return 'skills';
+    if (relative.startsWith('ops/')) return 'operations';
+    if (relative.startsWith('nora-mcp/')) return 'nora-mcp';
+    if (relative.startsWith('app/story_profile_runtime/')) return 'story-profile';
+    if (relative.startsWith('app/native-extensions/')) {
+        const extension = relative.split('/')[2].toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+        if (!extension) throw new Error(`Cannot classify extension artifact: ${relative}`);
+        return `extension-${extension}`;
+    }
+    if (!relative.startsWith('app/engine/sillytavern/')) return 'nora-runtime';
+    if (NORA_ENGINE_FILES.has(relative) || NORA_ENGINE_PREFIXES.some(prefix => relative.startsWith(prefix))) {
+        return relative.includes('/public/') ? 'nora-web' : 'nora-runtime';
+    }
+    return 'tavern-engine';
+}
+
+export function groupRuntimeModules(files) {
+    const modules = new Map();
+    for (const relative of files) {
+        const name = releaseModuleFor(relative);
+        if (!modules.has(name)) modules.set(name, []);
+        modules.get(name).push(relative);
+    }
+    return new Map([...modules].sort(([left], [right]) => left.localeCompare(right))
+        .map(([name, members]) => [name, members.sort()]));
+}
