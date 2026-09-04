@@ -141,24 +141,20 @@ export function createWorldCoreRuntime(runtime, {
         return list();
     }
 
-    async function prepareSnapshotCapabilities(snapshot) {
+    async function preparePromptTemplate(snapshot) {
         if (!capabilityRuntime) return;
         const inspection = capabilityRuntime.inspectSnapshotCharacter?.(snapshot.character, snapshot.worldbooks || []);
-        if (!inspection) return;
-        if (typeof capabilityRuntime.prepareSnapshotCapabilities === 'function') {
-            await capabilityRuntime.prepareSnapshotCapabilities(inspection);
-            return;
-        }
-        if (inspection.promptTemplateDeclared) await capabilityRuntime.preparePromptTemplate?.(inspection);
+        if (!inspection?.promptTemplateDeclared) return;
+        await capabilityRuntime.preparePromptTemplate(inspection);
     }
 
     async function activate(worldOrId) {
         const manifest = manifestById(worldOrId);
         const snapshot = await client.prepareSnapshot(manifest.world_id);
         try {
-            await prepareSnapshotCapabilities(snapshot);
+            await preparePromptTemplate(snapshot);
         } catch (error) {
-            console.warn('[Nora World Core] Character runtime could not be prepared before World rendering:', error);
+            console.warn('[Nora World Core] Prompt Template could not be prepared before World rendering:', error);
         }
         await executeSnapshot(snapshot, runtime, { measure });
         return model(manifest);
@@ -177,11 +173,6 @@ export function createWorldCoreRuntime(runtime, {
             return model(manifest);
         }
         const snapshot = await client.prepareSnapshot(manifest.world_id);
-        try {
-            await prepareSnapshotCapabilities(snapshot);
-        } catch (error) {
-            console.warn('[Nora World Core] Character runtime could not be prepared before World rendering:', error);
-        }
         await executeSnapshot(snapshot, runtime, { measure });
         return model(manifest);
     }
