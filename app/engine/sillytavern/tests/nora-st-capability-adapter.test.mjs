@@ -273,6 +273,35 @@ test('activates only the extension dependencies of the capability being checked'
     ]);
 });
 
+test('prepares Helper and managed MVU before a World emits its chat lifecycle', async () => {
+    const character = {
+        name: '管理型 MVU 角色',
+        avatar: 'managed-mvu.png',
+        data: {
+            character_book: { entries: [{ comment: '[InitVar]', content: '{"day":1}' }] },
+            extensions: { tavern_helper: { scripts: [] } },
+        },
+    };
+    const active = new Set();
+    const activations = [];
+    const context = runtimeContext(character, { active: [] });
+    context.getActiveExtensionNames = () => [...active];
+    context.activateExtensionNames = async (names) => {
+        activations.push([...names]);
+        names.forEach(name => active.add(name));
+        return names;
+    };
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
+    const inspection = adapter.inspectSnapshotCharacter(character);
+
+    await adapter.prepareSnapshotCapabilities(inspection);
+
+    assert.deepEqual(activations, [
+        [HELPER_EXTENSION],
+        ['third-party/nora-mvu'],
+    ]);
+});
+
 test('rerenders only while the requested Runtime Card is still active', async () => {
     const character = characterWithCapabilities();
     const context = runtimeContext(character);

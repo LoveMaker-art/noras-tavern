@@ -897,6 +897,8 @@ export function primeWorldInfoSnapshot(name, data) {
     const normalized = String(name || '').trim();
     if (!normalized || !data || typeof data !== 'object') return;
     worldInfoCache.set(normalized, data);
+    if (!Array.isArray(world_names)) world_names = [];
+    if (!world_names.includes(normalized)) world_names.push(normalized);
 }
 
 /**

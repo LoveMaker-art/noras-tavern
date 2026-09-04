@@ -171,6 +171,39 @@ test('prepares Prompt Template before rendering an EJS World snapshot', async ()
     assert.deepEqual(calls, ['snapshot', 'capability:prompt_template', 'render']);
 });
 
+test('prepares managed MVU runtime before the World chat lifecycle is rendered', async () => {
+    const calls = [];
+    const runtimeState = {
+        characters: [{ avatar: 'one.png', data: { character_book: { entries: [{ comment: '[InitVar]', content: '{}' }] } } }],
+        activeCharacter: null,
+        metadata: {},
+        chatId: '',
+    };
+    const runtime = createWorldCoreRuntime({ read: () => runtimeState }, {
+        client: {
+            list: async () => [manifest()],
+            beginCapabilityAttempt: async () => ({ attempt: { attempt_id: 'attempt:mvu' } }),
+            settleCapabilityAttempt: async () => ({ world: manifest() }),
+            prepareSnapshot: async () => {
+                calls.push('snapshot');
+                return { plan: { world_id: 'world:one' }, character: runtimeState.characters[0], worldbooks: [] };
+            },
+        },
+        capabilityRuntime: {
+            inspectSnapshotCharacter: () => ({ mvuDeclared: true, mvuRuntimeSource: 'managed' }),
+            prepareSnapshotCapabilities: async () => { calls.push('capability-runtime:mvu'); },
+            resolveCharacter: async () => runtimeState.characters[0],
+            ensureCharacterCapability: async () => ({ engine: 'sillytavern' }),
+        },
+        executeSnapshot: async () => { calls.push('render'); },
+    });
+
+    await runtime.refresh();
+    await runtime.activate('world:one');
+
+    assert.deepEqual(calls, ['snapshot', 'capability-runtime:mvu', 'render']);
+});
+
 test('Nora World UI carries only worldId and has one open/capability owner', () => {
     const uiRoot = path.resolve(import.meta.dirname, '../../../native-extensions/nora-ui');
     const worldController = fs.readFileSync(path.join(uiRoot, 'world-controller.js'), 'utf8');

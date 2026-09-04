@@ -173,6 +173,24 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         });
     }
 
+    async function prepareSnapshotCapabilities(inspection) {
+        const prepared = [];
+        if (inspection?.promptTemplateDeclared) {
+            await preparePromptTemplate(inspection);
+            prepared.push(PROMPT_TEMPLATE_EXTENSION);
+        }
+        if (inspection?.helperScripts?.length || inspection?.mvuDeclared) {
+            await activateCharacterExtensions([HELPER_EXTENSION]);
+            prepared.push(HELPER_EXTENSION);
+        }
+        if (inspection?.mvuDeclared && inspection?.mvuRuntimeSource === 'managed') {
+            // MVU must subscribe before World activation emits CHAT_CHANGED.
+            await activateCharacterExtensions([MVU_EXTENSION]);
+            prepared.push(MVU_EXTENSION);
+        }
+        return Object.freeze({ extensions: Object.freeze(prepared) });
+    }
+
     async function ensureCharacterCapability(character, capability) {
         const normalized = String(capability || '').trim();
         if (!['prompt_template', 'regex', 'tavern_helper', 'mvu'].includes(normalized)) {
@@ -402,6 +420,7 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         inspectPreparedCharacter,
         inspectSnapshotCharacter: (character, books = []) => inspectCharacterRuntime(character, books),
         preparePromptTemplate,
+        prepareSnapshotCapabilities,
         ensureCharacterCapability,
         markCharacterCapabilitiesPrompted,
         enableCharacterCapabilities,
