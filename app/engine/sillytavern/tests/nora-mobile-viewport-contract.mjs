@@ -29,7 +29,7 @@ function eventTarget(properties = {}) {
     }, properties);
 }
 
-function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
+function fixture({ innerHeight = 800, visualHeight, offsetTop = 0, activeElement = null } = {}) {
     const values = new Map();
     const root = {
         style: {
@@ -38,6 +38,7 @@ function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
     };
     const viewport = visualHeight === undefined ? undefined : eventTarget({ height: visualHeight, offsetTop });
     const windowRef = eventTarget({ innerHeight, visualViewport: viewport });
+    const documentRef = eventTarget({ activeElement });
     const observed = [];
     let disconnected = false;
     class ResizeObserverFake {
@@ -47,15 +48,20 @@ function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
     }
     const controller = createViewportController({
         windowRef,
+        documentRef,
         root,
         scheduleFrame: callback => callback(),
         ResizeObserverImpl: ResizeObserverFake,
     });
-    return { controller, windowRef, viewport, root, values, observed, disconnected: () => disconnected };
+    return { controller, windowRef, documentRef, viewport, root, values, observed, disconnected: () => disconnected };
 }
 
 {
-    const state = fixture({ innerHeight: 800, visualHeight: 420 });
+    const state = fixture({
+        innerHeight: 800,
+        visualHeight: 420,
+        activeElement: { tagName: 'TEXTAREA', isContentEditable: false },
+    });
     state.controller.mount();
     assert.equal(state.values.get('--nora-vh'), '420px', 'the composer must stay above an overlay keyboard');
     assert.equal(state.values.get('--nora-vv-top'), '0px');
@@ -70,7 +76,28 @@ function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
     state.controller.dispose();
     assert.equal(state.viewport.listenerCount('resize'), 0);
     assert.equal(state.viewport.listenerCount('scroll'), 0);
+    assert.equal(state.documentRef.listenerCount('focusin'), 0);
+    assert.equal(state.documentRef.listenerCount('focusout'), 0);
     assert.equal(state.disconnected(), true);
+}
+
+{
+    const state = fixture({ innerHeight: 800, visualHeight: 120 });
+    state.controller.mount();
+    assert.equal(state.values.get('--nora-vh'), '800px', 'a transient embedded-WebView visual viewport must not collapse the shell without keyboard focus');
+    assert.equal(state.values.get('--nora-vv-top'), '0px');
+
+    state.documentRef.activeElement = { tagName: 'INPUT', type: 'text', isContentEditable: false };
+    state.viewport.height = 360;
+    state.viewport.offsetTop = 18;
+    state.documentRef.dispatch('focusin');
+    assert.equal(state.values.get('--nora-vh'), '360px', 'an editable focus may activate the keyboard viewport');
+    assert.equal(state.values.get('--nora-vv-top'), '18px');
+
+    state.documentRef.activeElement = null;
+    state.documentRef.dispatch('focusout');
+    assert.equal(state.values.get('--nora-vh'), '800px', 'closing the keyboard must restore the layout viewport');
+    assert.equal(state.values.get('--nora-vv-top'), '0px');
 }
 
 {
@@ -90,6 +117,11 @@ function fixture({ innerHeight = 800, visualHeight, offsetTop = 0 } = {}) {
     assert.match(shell, /viewport\.mount\(\)/);
     assert.match(style, /#nora-layout\s*\{[^}]*top:\s*var\(--nora-vv-top\);[^}]*height:\s*var\(--nora-vh\);/s);
     assert.match(earlyShell, /#nora-layout\s*\{[^}]*top:\s*var\(--nora-vv-top\);[^}]*height:\s*var\(--nora-vh\);/s);
+    assert.ok(
+        earlyShell.indexOf('const updateEarlyViewport') < earlyShell.indexOf('<style>'),
+        'the deferred-runtime shell must own a reliable viewport height before first-paint CSS',
+    );
+    assert.match(earlyShell, /window\.__NORA_DISPOSE_EARLY_VIEWPORT__\s*=\s*disposeEarlyViewport/);
     assert.match(
         earlyShell,
         /body\.nora-product\s*>\s*\[name="templatesAndPopupsWrapper"\]\s*\{[^}]*display:\s*none\s*!important;/s,

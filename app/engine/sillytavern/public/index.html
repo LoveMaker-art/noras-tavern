@@ -12,6 +12,28 @@
     <meta name="darkreader-lock">
     <meta name="robots" content="noindex, nofollow" />
     <meta name="theme-color" content="#333">
+    <script>
+        (() => {
+            const root = document.documentElement;
+            const updateEarlyViewport = () => {
+                const layoutHeight = Number(window.innerHeight);
+                const documentHeight = Number(root.clientHeight);
+                const height = Number.isFinite(layoutHeight) && layoutHeight > 0 ? layoutHeight : documentHeight;
+                if (Number.isFinite(height) && height > 0) {
+                    root.style.setProperty('--nora-vh', `${Math.max(1, Math.round(height))}px`);
+                }
+                root.style.setProperty('--nora-vv-top', '0px');
+            };
+            const disposeEarlyViewport = () => {
+                window.removeEventListener('resize', updateEarlyViewport);
+                window.removeEventListener('orientationchange', updateEarlyViewport);
+            };
+            window.addEventListener('resize', updateEarlyViewport);
+            window.addEventListener('orientationchange', updateEarlyViewport);
+            window.__NORA_DISPOSE_EARLY_VIEWPORT__ = disposeEarlyViewport;
+            updateEarlyViewport();
+        })();
+    </script>
     <style>
         /* Put critical CSS here. The rest should go in stylesheets. */
         body {
