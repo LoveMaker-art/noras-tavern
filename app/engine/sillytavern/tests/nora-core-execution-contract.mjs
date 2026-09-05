@@ -7,7 +7,7 @@ const kernel = fs.readFileSync(new URL('../public/scripts/nora-compat/st-kernel.
 const core = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
 
 const directCoreImports = [index, entry, kernel]
-    .flatMap((source, ownerIndex) => [...source.matchAll(/import\s*\(\s*(?:\/\*[^*]*\*\/\s*)?['"]\/script\.js['"]\s*\)/g)]
+    .flatMap((source, ownerIndex) => [...source.matchAll(/(?:import\s*\(|loadModule\()\s*(?:\/\*[^*]*\*\/\s*)?['"]\/script\.js['"]\s*\)/g)]
         .map(() => ['index.html', 'nora-entry.js', 'st-kernel.js'][ownerIndex]));
 
 assert.deepEqual(

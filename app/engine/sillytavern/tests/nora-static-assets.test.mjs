@@ -26,6 +26,14 @@ function makeFixture() {
     fs.mkdirSync(extensionsDirectory, { recursive: true });
     fs.writeFileSync(path.join(publicDirectory, 'script.js'), 'export const version = 1;');
     fs.writeFileSync(path.join(publicDirectory, 'scripts', 'runtime.js'), 'export const ready = true;');
+    fs.mkdirSync(path.join(publicDirectory, 'dist', 'nora'), { recursive: true });
+    fs.writeFileSync(path.join(publicDirectory, 'dist', 'nora', 'inline-modules.js'), JSON.stringify({
+        modules: ['script.js', 'scripts/runtime.js'],
+        network: ['lib.js'],
+        compiled: { 'lib-core.js': 'dist/nora/lib-core.js' },
+        extensionCoreBridges: ['script.js'],
+        legacy: 'dist/nora/legacy.js',
+    }));
     fs.writeFileSync(path.join(extensionsDirectory, 'index.js'), 'export default {};');
     return { fixture, publicDirectory, extensionsDirectory };
 }
@@ -229,13 +237,22 @@ test('index rendering injects independently addressable asset namespaces', () =>
             'third-party/nora-ui': { release: '5'.repeat(32) },
             'third-party/nora-mvu': { release: '6'.repeat(32) },
         },
+        runtimeModules: {
+            modules: ['script.js'],
+            network: ['lib.js'],
+            compiled: { 'lib-core.js': 'dist/nora/lib-core.js' },
+            extensionCoreBridges: ['script.js'],
+            legacy: 'dist/nora/legacy.js',
+        },
     };
     const rendered = renderNoraIndex(
-        '{{NORA_INLINE_MANIFEST_URL}}\n{{NORA_ASSET_BASES}}\n{{NORA_SHELL_ASSET_BASE}}\n{{NORA_EXTENSION_ASSET_BASE}}\n{{NORA_EXTENSION_ASSET_RELEASES}}\n{{NORA_EXTENSION_ASSET_GROUP_RELEASES}}\n{{NORA_VENDOR_ASSET_BASE}}\n{{NORA_LEGACY_ASSET_BASE}}\n{{NORA_ASSET_RELEASE}}',
+        '{{NORA_IMPORT_MAP}}\n{{NORA_INLINE_MANIFEST_URL}}\n{{NORA_ASSET_BASES}}\n{{NORA_SHELL_ASSET_BASE}}\n{{NORA_EXTENSION_ASSET_BASE}}\n{{NORA_EXTENSION_ASSET_RELEASES}}\n{{NORA_EXTENSION_ASSET_GROUP_RELEASES}}\n{{NORA_VENDOR_ASSET_BASE}}\n{{NORA_LEGACY_ASSET_BASE}}\n{{NORA_ASSET_RELEASE}}',
         manifest,
     );
 
     assert.match(rendered, /^\/asset-files\/compat-runtime\/1{32}\/dist\/nora\/inline-modules\.js/m);
+    assert.match(rendered, /"nora-module\/script\.js":"\/asset-files\/st-static\/1{32}\/script\.js"/);
+    assert.match(rendered, /"\/lib\.js":"\/asset-files\/vendor-core\/3{32}\/dist\/nora\/lib-core\.js"/);
     assert.match(rendered, /\/asset-files\/nora-shell\/2{32}/);
     assert.match(rendered, /\/extension-assets\/5{32}/);
     assert.match(rendered, /\/asset-files\/vendor-core\/3{32}/);
@@ -261,7 +278,15 @@ function makeBrowserManifestFixture() {
     };
     for (const [name, filePath] of Object.entries(files)) {
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        fs.writeFileSync(filePath, `${name}-v1`);
+        fs.writeFileSync(filePath, name === 'compatibility'
+            ? JSON.stringify({
+                modules: ['script.js', 'scripts/group-chats.js'],
+                network: ['lib.js'],
+                compiled: { 'lib-core.js': 'dist/nora/lib-core.js' },
+                extensionCoreBridges: ['script.js'],
+                legacy: 'dist/nora/legacy.js',
+            })
+            : `${name}-v1`);
     }
     fs.mkdirSync(userExtensionDirectory, { recursive: true });
     fs.mkdirSync(path.join(globalExtensionDirectory, 'nora-mvu', 'vendor'), { recursive: true });

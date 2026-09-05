@@ -16,6 +16,8 @@ const managedExtensionsDirectory = path.resolve(root, '../../native-extensions')
 // startup asset is cached instead of being rewritten to `no-store` in transit.
 const inlineModulesPath = path.join(outputDirectory, 'inline-modules.js');
 const legacyBundlePath = path.join(outputDirectory, 'legacy.js');
+const moduleShimsPath = path.join(outputDirectory, 'module-shims.js');
+const moduleShimsSourcePath = path.join(root, 'node_modules', 'es-module-shims', 'dist', 'es-module-shims.js');
 const localOrigin = 'https://nora.local';
 const compressBrotli = promisify(brotliCompress);
 const compressGzip = promisify(gzip);
@@ -320,9 +322,10 @@ export async function writePrecompressedAsset(filePath, content) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-    const [inlineManifest, legacyBundle] = await Promise.all([
+    const [inlineManifest, legacyBundle, moduleShims] = await Promise.all([
         buildRuntimeManifest(),
         buildLegacyBundle(),
+        fs.readFile(moduleShimsSourcePath),
     ]);
     await fs.mkdir(outputDirectory, { recursive: true });
     const bundleNames = ['entry.js', 'lib-core.js'];
@@ -333,6 +336,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     await Promise.all([
         writePrecompressedAsset(inlineModulesPath, `${JSON.stringify(inlineManifest)}\n`),
         writePrecompressedAsset(legacyBundlePath, legacyBundle),
+        writePrecompressedAsset(moduleShimsPath, moduleShims),
         ...bundleEntries.map(([filePath, content]) => writePrecompressedAsset(filePath, content)),
     ]);
     console.log(`nora-inline-modules=${Object.keys(inlineManifest.modules).length}`);

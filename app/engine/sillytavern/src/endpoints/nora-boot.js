@@ -20,6 +20,11 @@ const ALLOWED_PHASES = new Set([
     'extensions-ready',
     'nora-startup-failed',
     'world-selection-failed',
+    'boot-resource-failed',
+    'boot-resource-stalled',
+    'boot-stage-timeout',
+    'boot-runtime-error',
+    'boot-runtime-rejection',
 ]);
 export const router = express.Router();
 let versionPromise;
@@ -75,7 +80,12 @@ router.post('/metrics', async (request, response) => {
     }
     try {
         await noraTelemetryWriter.append(request.user.directories, event);
-        console.info(`[Nora telemetry] ${event.phase} trace=${event.traceId} captured=${event.metrics.capturedAt ?? 'unknown'}ms`);
+        const resourceEvent = [...(event.metrics.resourceEvents || [])].reverse()
+            .find(item => ['failed', 'stalled'].includes(item.event));
+        const resourceSummary = resourceEvent
+            ? ` resource=${resourceEvent.name || resourceEvent.url || 'unknown'} state=${resourceEvent.event}`
+            : '';
+        console.info(`[Nora telemetry] ${event.phase} trace=${event.traceId} captured=${event.metrics.capturedAt ?? 'unknown'}ms${resourceSummary}`);
         return response.sendStatus(204);
     } catch (error) {
         console.error('[Nora telemetry] Could not persist client summary:', error);

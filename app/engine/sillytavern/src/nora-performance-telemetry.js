@@ -91,11 +91,13 @@ export function normalizeClientMetricPayload(payload, {
     }
     metrics.sessionId = traceId;
     metrics.navigation = sanitizeNavigation(source.navigation);
+    metrics.client = sanitizeScalarRecord(source.client);
     metrics.steps = sanitizeSeries(source.steps, MAX_SERIES_ITEMS);
     metrics.extensions = sanitizeSeries(source.extensions, MAX_SERIES_ITEMS);
     metrics.extensionBatches = sanitizeSeries(source.extensionBatches, MAX_SERIES_ITEMS);
     metrics.milestones = sanitizeSeries(source.milestones, MAX_SERIES_ITEMS);
     metrics.longTasks = sanitizeSeries(source.longTasks, MAX_SERIES_ITEMS);
+    metrics.resourceEvents = sanitizeSeries(source.resourceEvents, MAX_SERIES_ITEMS);
     metrics.resources = sanitizeSeries(source.resources, MAX_RESOURCES, { resource: true });
     return {
         schemaVersion: SCHEMA_VERSION,

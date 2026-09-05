@@ -12,6 +12,7 @@
     <meta name="darkreader-lock">
     <meta name="robots" content="noindex, nofollow" />
     <meta name="theme-color" content="#333">
+    <script type="importmap">{{NORA_IMPORT_MAP}}</script>
     <script>
         (() => {
             const root = document.documentElement;
@@ -202,7 +203,7 @@
             }
             let namespace = 'st-static';
             if (/^dist\/nora\/(?:entry|\d+)\.js$/i.test(normalized)) namespace = 'nora-entry';
-            else if (normalized === 'dist/nora/inline-modules.js' || normalized === 'lib.js') namespace = 'compat-runtime';
+            else if (normalized === 'dist/nora/inline-modules.js' || normalized === 'dist/nora/module-shims.js' || normalized === 'lib.js') namespace = 'compat-runtime';
             else if (normalized.startsWith('dist/nora/lib-core.js')) namespace = 'vendor-core';
             else if (normalized.startsWith('dist/nora/legacy.js')) namespace = 'vendor-legacy';
             else if (
@@ -214,7 +215,7 @@
             return `${base}/${normalized}`;
         };
         globalThis.__NORA_BOOT_METRICS__ = {
-            instrumentationVersion: '2.17.6',
+            instrumentationVersion: '2.18.0',
             sessionId: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`,
             startedAt: performance.now(),
             startedEpoch: Date.now(),
@@ -223,8 +224,148 @@
             extensionBatches: [],
             milestones: [],
             longTasks: [],
+            resourceEvents: [],
+            resources: [],
+            client: {
+                online: navigator.onLine,
+                language: navigator.language || '',
+                effectiveType: navigator.connection?.effectiveType || '',
+                downlinkMbps: Number(navigator.connection?.downlink) || 0,
+                rttMs: Number(navigator.connection?.rtt) || 0,
+                saveData: Boolean(navigator.connection?.saveData),
+            },
         };
         globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'head-metrics-ready', at: 0 });
+        (() => {
+            const metrics = globalThis.__NORA_BOOT_METRICS__;
+            const round = value => Math.round(Number(value || 0) * 10) / 10;
+            const elapsed = () => round(performance.now() - metrics.startedAt);
+            const resourceName = (value) => {
+                try {
+                    return new URL(String(value || ''), location.href).pathname.slice(0, 200);
+                } catch {
+                    return String(value || '').split(/[?#]/, 1)[0].slice(0, 200);
+                }
+            };
+            const pushBounded = (list, value, limit) => {
+                list.push(value);
+                if (list.length > limit) list.splice(0, list.length - limit);
+            };
+            const resourceSource = entry => Number(entry.transferSize) > 0
+                ? 'network'
+                : Number(entry.decodedBodySize) > 0 ? 'cache' : 'unknown';
+            const captureResourceTiming = (entry) => {
+                pushBounded(metrics.resources, {
+                    name: resourceName(entry.name),
+                    initiator: String(entry.initiatorType || ''),
+                    start: round(entry.startTime - metrics.startedAt),
+                    responseStart: round(entry.responseStart - metrics.startedAt),
+                    responseEnd: round(entry.responseEnd - metrics.startedAt),
+                    duration: round(entry.duration),
+                    transferSize: Number(entry.transferSize) || 0,
+                    encodedBodySize: Number(entry.encodedBodySize) || 0,
+                    decodedBodySize: Number(entry.decodedBodySize) || 0,
+                    responseStatus: Number(entry.responseStatus) || 0,
+                    protocol: String(entry.nextHopProtocol || ''),
+                    source: resourceSource(entry),
+                }, 100);
+            };
+            try {
+                const observer = new PerformanceObserver(list => list.getEntries().forEach(captureResourceTiming));
+                observer.observe({ type: 'resource', buffered: true });
+                globalThis.addEventListener('nora:runtime-ready', () => observer.disconnect(), { once: true });
+            } catch {
+                // Older embedded WebViews are still covered by explicit critical-resource events.
+            }
+            let resourceSequence = 0;
+            const pendingResources = new Map();
+            globalThis.__NORA_TRACK_BOOT_RESOURCE__ = (name, url, details = {}) => {
+                const id = `${name}:${++resourceSequence}`;
+                const startedAt = performance.now();
+                let settled = false;
+                const record = (event, extra = {}) => {
+                    pushBounded(metrics.resourceEvents, {
+                        id,
+                        name: String(name || 'unknown').slice(0, 80),
+                        url: resourceName(url),
+                        event,
+                        at: elapsed(),
+                        duration: round(performance.now() - startedAt),
+                        ...details,
+                        ...extra,
+                    }, 160);
+                };
+                record('requested');
+                const tracker = Object.freeze({
+                    complete(extra = {}) {
+                        if (settled) return;
+                        settled = true;
+                        pendingResources.delete(id);
+                        record('completed', extra);
+                    },
+                    fail(error, extra = {}) {
+                        if (settled) return;
+                        settled = true;
+                        pendingResources.delete(id);
+                        record('failed', { message: String(error?.message || error || 'unknown error').slice(0, 200), ...extra });
+                    },
+                    stalled(extra = {}) {
+                        if (!settled) record('stalled', extra);
+                    },
+                });
+                pendingResources.set(id, tracker);
+                return tracker;
+            };
+            globalThis.__NORA_MARK_BOOT_RESOURCES_STALLED__ = details => pendingResources.forEach(tracker => tracker.stalled(details));
+            globalThis.__NORA_EARLY_REPORT_QUEUE__ ??= Promise.resolve();
+            globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__ = (phase, details = {}) => {
+                pushBounded(metrics.milestones, { name: phase, at: elapsed(), ...details }, 120);
+                const send = async () => {
+                    let bootstrap;
+                    try {
+                        bootstrap = await Promise.race([
+                            globalThis.__NORA_SHELL_DATA_PROMISE__ || globalThis.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__,
+                            new Promise((_, reject) => setTimeout(() => reject(new Error('bootstrap token timeout')), 2_000)),
+                        ]);
+                    } catch (error) {
+                        console.warn('[Nora boot] Early telemetry unavailable:', error.message);
+                        return;
+                    }
+                    const payloadMetrics = structuredClone(metrics);
+                    payloadMetrics.capturedAt = elapsed();
+                    const response = await fetch('/api/nora-boot/metrics', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                            'X-CSRF-Token': bootstrap.csrfToken,
+                            'X-Nora-Trace-Id': metrics.sessionId,
+                        },
+                        body: JSON.stringify({ phase, release: globalThis.__NORA_ASSET_RELEASE__ || '', metrics: payloadMetrics }),
+                        cache: 'no-cache',
+                        keepalive: true,
+                    });
+                    if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
+                };
+                globalThis.__NORA_EARLY_REPORT_QUEUE__ = globalThis.__NORA_EARLY_REPORT_QUEUE__
+                    .catch(() => {})
+                    .then(send);
+                void globalThis.__NORA_EARLY_REPORT_QUEUE__.catch(error => console.warn('[Nora boot] Early telemetry failed:', error.message));
+                return globalThis.__NORA_EARLY_REPORT_QUEUE__;
+            };
+            globalThis.addEventListener('error', (event) => {
+                if (document.body?.classList.contains('nora-runtime-ready')) return;
+                globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-runtime-error', {
+                    message: String(event.error?.message || event.message || 'resource error').slice(0, 200),
+                    resource: resourceName(event.filename || event.target?.src || event.target?.href || ''),
+                });
+            }, true);
+            globalThis.addEventListener('unhandledrejection', (event) => {
+                if (document.body?.classList.contains('nora-runtime-ready')) return;
+                globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-runtime-rejection', {
+                    message: String(event.reason?.message || event.reason || 'unhandled rejection').slice(0, 200),
+                });
+            });
+        })();
         const recordAssetCacheMilestone = (name, details = {}) => {
             globalThis.__NORA_BOOT_METRICS__.milestones.push({
                 name,
@@ -233,6 +374,7 @@
             });
         };
         recordAssetCacheMilestone('shell-summary-requested');
+        const shellResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('shell-summary', '/api/nora-boot/shell');
         const shellNetworkPromise = fetch('/api/nora-boot/shell', {
             cache: 'no-store',
             credentials: 'same-origin',
@@ -240,10 +382,17 @@
             headers: { 'X-Nora-Trace-Id': globalThis.__NORA_BOOT_METRICS__.sessionId },
         }).then(async (response) => {
             if (!response.ok) throw new Error(`Nora shell HTTP ${response.status}`);
+            const payload = await response.json();
+            shellResource.complete({ httpStatus: response.status });
             recordAssetCacheMilestone('shell-summary-response', { status: response.status });
-            return response.json();
+            return payload;
+        }).catch((error) => {
+            shellResource.fail(error);
+            globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-resource-failed', { resource: 'shell-summary' });
+            throw error;
         });
         recordAssetCacheMilestone('runtime-bootstrap-requested');
+        const bootstrapResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('runtime-bootstrap', '/api/nora-boot/bootstrap');
         const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap', {
             cache: 'no-store',
             credentials: 'same-origin',
@@ -251,9 +400,15 @@
             headers: { 'X-Nora-Trace-Id': globalThis.__NORA_BOOT_METRICS__.sessionId },
         }).then(async (response) => {
             if (!response.ok) throw new Error(`Nora bootstrap HTTP ${response.status}`);
+            const payload = await response.json();
+            bootstrapResource.complete({ httpStatus: response.status });
             recordAssetCacheMilestone('runtime-bootstrap-response', { status: response.status });
-            return response.json();
+            return payload;
+        }).catch((error) => {
+            bootstrapResource.fail(error);
+            throw error;
         });
+        globalThis.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__ = runtimeBootstrapNetworkPromise;
         globalThis.__NORA_RELEASE_GUARD_PROMISE__ = shellNetworkPromise.then(async (shell) => {
             const embeddedRelease = globalThis.__NORA_ASSET_RELEASE__;
             const currentRelease = String(shell.assetRelease || '');
@@ -290,33 +445,60 @@
                 [globalThis.__NORA_VENDOR_ASSET_BASE__, 'dist/nora/lib-core.js'],
                 [globalThis.__NORA_ASSET_BASES__['nora-entry'], 'dist/nora/entry.js'],
             ]) {
+                const tracker = globalThis.__NORA_TRACK_BOOT_RESOURCE__(`preload:${asset}`, `${base}/${asset}`);
                 const preload = document.createElement('link');
                 preload.rel = 'modulepreload';
                 preload.href = `${base}/${asset}`;
                 preload.fetchPriority = 'high';
+                preload.addEventListener('load', () => tracker.complete(), { once: true });
+                preload.addEventListener('error', () => {
+                    tracker.fail(new Error(`Module preload failed: ${asset}`));
+                    globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-resource-failed', { resource: asset });
+                }, { once: true });
                 document.head.append(preload);
             }
             recordAssetCacheMilestone('runtime-assets-started', { reason });
             runtimeAssetStart();
         };
-        globalThis.__NORA_INLINE_MANIFEST_PROMISE__ = globalThis.__NORA_RUNTIME_ASSET_START_PROMISE__.then(() => {
-            recordAssetCacheMilestone('module-manifest-requested');
-            return fetch(globalThis.__NORA_INLINE_MANIFEST_URL__, {
-                cache: 'force-cache',
-                credentials: 'same-origin',
-                priority: 'low',
-            }).then(async (response) => {
-            if (!response.ok) throw new Error(`Nora module manifest request failed (${response.status}).`);
-            recordAssetCacheMilestone('module-manifest-network-response', {
-                status: response.status,
-                responseType: response.type,
-                cacheControl: response.headers.get('cache-control'),
-                etagPresent: response.headers.has('etag'),
-                age: response.headers.get('age'),
-            });
-            return response.json();
+        globalThis.__NORA_MODULE_LOADER_PROMISE__ = Promise.resolve().then(() => {
+            const supportsImportMaps = typeof HTMLScriptElement.supports === 'function'
+                && HTMLScriptElement.supports('importmap');
+            if (supportsImportMaps) {
+                recordAssetCacheMilestone('module-loader-ready', { loader: 'native-import-map' });
+                return specifier => import(specifier);
+            }
+            return new Promise((resolve, reject) => {
+                globalThis.esmsInitOptions = { shimMode: true };
+                const shimsUrl = globalThis.__NORA_ASSET_URL__('dist/nora/module-shims.js');
+                const shimsResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('module-compatibility-loader', shimsUrl);
+                const shims = document.createElement('script');
+                shims.async = true;
+                shims.src = shimsUrl;
+                shims.addEventListener('load', () => {
+                    if (typeof globalThis.importShim !== 'function') {
+                        const error = new Error('Nora module compatibility loader did not initialize.');
+                        shimsResource.fail(error);
+                        reject(error);
+                        return;
+                    }
+                    const importMap = JSON.parse(document.querySelector('script[type="importmap"]')?.textContent || '{}');
+                    globalThis.importShim.addImportMap(importMap);
+                    shimsResource.complete();
+                    recordAssetCacheMilestone('module-loader-ready', { loader: 'shim' });
+                    resolve(specifier => globalThis.importShim(specifier));
+                }, { once: true });
+                shims.addEventListener('error', () => {
+                    const error = new Error('Nora module compatibility loader failed to load.');
+                    shimsResource.fail(error);
+                    reject(error);
+                }, { once: true });
+                document.head.append(shims);
             });
         });
+        globalThis.__NORA_LOAD_MODULE__ = async specifier => {
+            const loader = await globalThis.__NORA_MODULE_LOADER_PROMISE__;
+            return loader(specifier);
+        };
         try {
             const longTaskObserver = new PerformanceObserver((list) => {
                 const metrics = globalThis.__NORA_BOOT_METRICS__;
@@ -396,7 +578,7 @@
             const runtimeProgress = (() => {
                 const stages = [
                     { milestone: 'runtime-assets-started', label: '正在加载酒馆组件', width: 18 },
-                    { milestone: 'module-manifest-network-response', label: '正在建立运行环境', width: 42 },
+                    { milestone: 'module-loader-ready', label: '正在建立运行环境', width: 42 },
                     { milestone: 'legacy-libs-loaded', label: '正在启动酒馆', width: 68 },
                     { milestone: 'nora-context-ready', label: '正在完成准备', width: 88 },
                 ];
@@ -407,6 +589,8 @@
                 let lastProgressAt = 0;
                 let timer = 0;
                 let selectedWorld = '';
+                const reportedStalls = new Set();
+                const stageTimeoutMs = 120_000;
 
                 const setDetail = (message = '', allowBack = false) => {
                     progressDetail.textContent = message ? tr(message) : '';
@@ -440,7 +624,25 @@
                     const now = performance.now();
                     const elapsed = now - startedAt;
                     const stalled = now - lastProgressAt;
-                    if (stalled >= 30_000) setDetail('准备时间过长', true);
+                    const reportKey = String(stage);
+                    if (stalled >= stageTimeoutMs && !reportedStalls.has(reportKey)) {
+                        reportedStalls.add(reportKey);
+                        globalThis.__NORA_MARK_BOOT_RESOURCES_STALLED__({
+                            stage,
+                            timeoutMs: stageTimeoutMs,
+                            stalledMs: Math.round(stalled),
+                        });
+                        const delivery = globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-stage-timeout', {
+                            stage,
+                            stageName: stages[Math.max(0, stage - 1)]?.milestone || 'unknown',
+                            timeoutMs: stageTimeoutMs,
+                            stalledMs: Math.round(stalled),
+                        });
+                        setDetail('准备超时，正在向诺拉发送诊断', true);
+                        void delivery.then(() => setDetail('准备超时，诺拉已收到诊断', true))
+                            .catch(() => setDetail('准备超时，诊断上报失败', true));
+                    }
+                    if (stalled < stageTimeoutMs && stalled >= 30_000) setDetail('准备时间过长', true);
                     else if (stalled >= 10_000) setDetail('运行组件仍在准备，网络较慢时可能需要多一点时间', true);
                     else if (elapsed >= 4_000) setDetail('这次准备比平时稍久');
                 };
@@ -1890,84 +2092,64 @@
             const legacy = document.createElement('script');
             legacy.src = `${globalThis.__NORA_LEGACY_ASSET_BASE__}/dist/nora/legacy.js`;
             legacy.fetchPriority = 'low';
-            legacy.addEventListener('load', resolve, { once: true });
-            legacy.addEventListener('error', () => reject(new Error('Nora legacy runtime failed to load.')), { once: true });
+            const legacyResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('legacy-runtime', legacy.src);
+            legacy.addEventListener('load', () => {
+                legacyResource.complete();
+                resolve();
+            }, { once: true });
+            legacy.addEventListener('error', () => {
+                const error = new Error('Nora legacy runtime failed to load.');
+                legacyResource.fail(error);
+                globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-resource-failed', { resource: 'legacy-runtime' });
+                reject(error);
+            }, { once: true });
             document.body.append(legacy);
         }));
         globalThis.__NORA_MODULE_BOOTSTRAP_PROMISE__ = Promise.all([
-            globalThis.__NORA_INLINE_MANIFEST_PROMISE__,
             globalThis.__NORA_LEGACY_RUNTIME_PROMISE__,
-        ]).then(async ([manifest]) => {
-            const assetBase = globalThis.__NORA_ASSET_BASE__;
-            const stStaticBase = globalThis.__NORA_ASSET_BASES__['st-static'];
-            const extensionAssetBases = [...new Set(Object.values(globalThis.__NORA_EXTENSION_ASSET_RELEASES__)
-                .map(release => `/extension-assets/${release}`))];
+            globalThis.__NORA_MODULE_LOADER_PROMISE__,
+        ]).then(async () => {
             globalThis.__NORA_BOOT_METRICS__.milestones.push({
                 name: 'legacy-libs-loaded',
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
-                source: manifest.legacy,
+                source: 'dist/nora/legacy.js',
             });
-            const imports = {
-                '/lib.js': `${assetBase}/lib.js`,
-                '/lib/': `${stStaticBase}/lib/`,
-                '/scripts/': `${stStaticBase}/scripts/`,
-            };
-
-            for (const [modulePath, dataUrl] of Object.entries(manifest.modules || {})) {
-                const aliasUrl = manifest.aliases?.[modulePath];
-                if (!aliasUrl) throw new Error(`Nora module alias is missing: ${modulePath}`);
-                imports[`nora-module/${modulePath}`] = dataUrl;
-                imports[`/${modulePath}`] = aliasUrl;
-                imports[`${assetBase}/${modulePath}`] = aliasUrl;
-                imports[`${stStaticBase}/${modulePath}`] = aliasUrl;
-            }
-            for (const [modulePath, assetPath] of Object.entries(manifest.compiled || {})) {
-                imports[`nora-module/${modulePath}`] = globalThis.__NORA_ASSET_URL__(assetPath);
-            }
-            for (const modulePath of manifest.network || []) {
-                imports[`nora-module/${modulePath}`] = globalThis.__NORA_ASSET_URL__(modulePath);
-            }
-            for (const modulePath of manifest.extensionCoreBridges || []) {
-                const canonicalUrl = imports[`nora-module/${modulePath}`];
-                if (!canonicalUrl) throw new Error(`Nora extension core bridge target is missing: ${modulePath}`);
-                for (const extensionAssetBase of extensionAssetBases) {
-                    imports[`${extensionAssetBase}/${modulePath}`] = canonicalUrl;
+            const compatibilityPreludeModules = [
+                'nora-module/lib/structured-clone/monkey-patch.js',
+                'nora-module/lib/swiped-events.js',
+                'nora-module/lib/eventemitter.js',
+                'nora-module/scripts/i18n.js',
+            ];
+            const preludeResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('compatibility-prelude', '[inline-module]');
+            try {
+                for (const specifier of compatibilityPreludeModules) {
+                    await globalThis.__NORA_LOAD_MODULE__(specifier);
                 }
+                preludeResource.complete({ loader: 'runtime' });
+            } catch (error) {
+                preludeResource.fail(error, { loader: 'runtime' });
+                globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-resource-failed', {
+                    resource: 'compatibility-prelude',
+                    loader: 'runtime',
+                    message: String(error?.message || error),
+                });
+                throw error;
             }
 
-            const importMap = document.createElement('script');
-            importMap.type = 'importmap';
-            importMap.textContent = JSON.stringify({ imports });
-            document.head.append(importMap);
-
-            const compatibilityPrelude = document.createElement('script');
-            compatibilityPrelude.type = 'module';
-            let resolveCompatibilityPrelude;
-            let rejectCompatibilityPrelude;
-            const compatibilityPreludeReady = new Promise((resolve, reject) => {
-                resolveCompatibilityPrelude = resolve;
-                rejectCompatibilityPrelude = reject;
-            });
-            globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__ = resolveCompatibilityPrelude;
-            compatibilityPrelude.textContent = [
-                "import 'nora-module/lib/structured-clone/monkey-patch.js';",
-                "import 'nora-module/lib/swiped-events.js';",
-                "import 'nora-module/lib/eventemitter.js';",
-                "import 'nora-module/scripts/i18n.js';",
-                "globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__?.();",
-            ].join('\n');
-            compatibilityPrelude.addEventListener('error', () => {
-                rejectCompatibilityPrelude(new Error('Nora compatibility prelude failed to evaluate.'));
-            }, { once: true });
-            document.body.append(compatibilityPrelude);
-            await compatibilityPreludeReady;
-            delete globalThis.__NORA_RESOLVE_COMPATIBILITY_PRELUDE__;
-
-            const entry = document.createElement('script');
-            entry.id = 'nora-runtime-entry';
-            entry.type = 'module';
-            entry.src = globalThis.__NORA_ASSET_URL__('dist/nora/entry.js');
-            document.body.append(entry);
+            const entryUrl = globalThis.__NORA_ASSET_URL__('dist/nora/entry.js');
+            const entryResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('nora-runtime-entry', entryUrl);
+            try {
+                await globalThis.__NORA_LOAD_MODULE__(entryUrl);
+                entryResource.complete({ loader: 'runtime' });
+            } catch (error) {
+                entryResource.fail(error, { loader: 'runtime' });
+                globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-resource-failed', {
+                    resource: 'nora-runtime-entry',
+                    loader: 'runtime',
+                    message: String(error?.message || error),
+                });
+                throw error;
+            }
 
             globalThis.__NORA_BOOT_METRICS__.milestones.push({
                 name: 'module-runtime-requested',

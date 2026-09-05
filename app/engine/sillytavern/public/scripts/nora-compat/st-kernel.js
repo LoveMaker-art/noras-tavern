@@ -22,7 +22,26 @@ function createAppReadyPromise(getContext) {
 
 async function loadKernel() {
     recordMilestone('st-compat-import-start');
-    await import(/* webpackIgnore: true */ '/script.js');
+    const importResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__?.('st-kernel-module', '/script.js') || {
+        complete() {},
+        fail() {},
+    };
+    try {
+        const loadModule = globalThis.__NORA_LOAD_MODULE__;
+        if (typeof loadModule !== 'function') {
+            throw new Error('Nora module loader is unavailable.');
+        }
+        await loadModule('/script.js');
+        importResource.complete();
+    } catch (error) {
+        importResource.fail(error);
+        recordMilestone('st-compat-import-failed');
+        globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__?.('boot-runtime-error', {
+            stageName: 'st-compat-import',
+            message: String(error?.message || error).slice(0, 200),
+        });
+        throw error;
+    }
 
     const st = globalThis.SillyTavern;
     if (typeof st?.getContext !== 'function') {
