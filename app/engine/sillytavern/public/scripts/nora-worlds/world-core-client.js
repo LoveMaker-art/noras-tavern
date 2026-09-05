@@ -278,23 +278,28 @@ export function createWorldCoreClient(getHeaders, {
         if (!normalizedKey) throw new Error('A World creation idempotency key is required.');
         const startedAt = clock();
         writePending({ idempotencyKey: normalizedKey, operationId: null, startedAt, kind });
-        let submitted;
-        for (let attempt = 0; attempt <= transportRetries; attempt += 1) {
-            try {
-                submitted = await request(path, { method: 'POST', headers, body });
-                break;
-            } catch (error) {
-                if (attempt >= transportRetries || !(error instanceof TypeError)) throw error;
+        try {
+            let submitted;
+            for (let attempt = 0; attempt <= transportRetries; attempt += 1) {
+                try {
+                    submitted = await request(path, { method: 'POST', headers, body });
+                    break;
+                } catch (error) {
+                    if (attempt >= transportRetries || !(error instanceof TypeError)) throw error;
+                }
             }
-        }
-        writePending({ idempotencyKey: normalizedKey, operationId: submitted.operation.operation_id, startedAt, kind });
-        if (submitted.world && submitted.operation?.status === 'COMPLETED') {
+            writePending({ idempotencyKey: normalizedKey, operationId: submitted.operation.operation_id, startedAt, kind });
+            if (submitted.world && submitted.operation?.status === 'COMPLETED') {
+                writePending(null);
+                return submitted;
+            }
+            const completed = await waitForOperation(submitted.operation.operation_id);
             writePending(null);
-            return submitted;
+            return completed;
+        } catch (error) {
+            if (error?.retryable === false) writePending(null);
+            throw error;
         }
-        const completed = await waitForOperation(submitted.operation.operation_id);
-        writePending(null);
-        return completed;
     }
 
     async function importCard(file, { idempotencyKey, persona = {}, name = '' } = {}) {
@@ -358,7 +363,7 @@ export function createWorldCoreClient(getHeaders, {
                     await delay(pollIntervalMs);
                     continue;
                 }
-                if (error?.code === 'NORA_OPERATION_NOT_FOUND') writePending(null);
+                if (error?.code === 'NORA_OPERATION_NOT_FOUND' || error?.retryable === false) writePending(null);
                 throw error;
             }
         }
@@ -369,15 +374,20 @@ export function createWorldCoreClient(getHeaders, {
         if (!pending?.idempotencyKey) throw new Error('There is no pending World creation to retry.');
         const operationId = pending.operationId || await operationIdForKey(pending.idempotencyKey);
         writePending({ ...pending, operationId });
-        const retried = await request(`/operations/${encodeURIComponent(operationId)}/retry`, {
-            method: 'POST',
-            headers: requestHeaders(getHeaders),
-        });
-        const result = retried.operation?.status === 'COMPLETED'
-            ? retried
-            : await waitForOperation(operationId);
-        writePending(null);
-        return result;
+        try {
+            const retried = await request(`/operations/${encodeURIComponent(operationId)}/retry`, {
+                method: 'POST',
+                headers: requestHeaders(getHeaders),
+            });
+            const result = retried.operation?.status === 'COMPLETED'
+                ? retried
+                : await waitForOperation(operationId);
+            writePending(null);
+            return result;
+        } catch (error) {
+            if (error?.retryable === false) writePending(null);
+            throw error;
+        }
     }
 
     async function beginCapabilityAttempt(worldId, capability) {
