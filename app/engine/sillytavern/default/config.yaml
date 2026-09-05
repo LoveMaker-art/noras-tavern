@@ -184,9 +184,9 @@ securityOverride: false
 logging:
   # Enable access logging to access.log file and console output
   # Records new connections with timestamp, IP address and user agent
-  enableAccessLog: true
+  enableAccessLog: false
   # Minimum log level to display in the terminal (DEBUG = 0, INFO = 1, WARN = 2, ERROR = 3)
-  minLogLevel: 0
+  minLogLevel: 1
 # -- RATE LIMITING CONFIGURATION --
 rateLimiting:
   # Use any of the enabled headers in the `forwardedHeaders` section to identify the client IP for rate limiting.

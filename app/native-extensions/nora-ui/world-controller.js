@@ -196,7 +196,6 @@ export function createWorldController({
                         showToast(t`世界已打开，但附加内容载入失败：${normalizeError(error)}`, { tone: 'error', duration: 4200 });
                     }
                     performanceReporter.timedMilestone(current.degraded ? 'world-selected-degraded' : 'world-selected', startedAt, { interactionId: current.interactionId });
-                    window.__NORA_REPORT_BOOT_METRICS__?.('world-selected');
                 }
             } finally {
                 void stopFollowingLatest();

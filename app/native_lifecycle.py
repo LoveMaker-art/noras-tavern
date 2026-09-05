@@ -38,6 +38,7 @@ OBSOLETE_MANAGED_EXTENSIONS = (
     "nora-shell",
     "nora-character-status",
 )
+MAX_NATIVE_LOG_BYTES = 4 * 1024 * 1024
 
 
 class NativeLifecycleError(RuntimeError):
@@ -79,6 +80,30 @@ class RuntimeContract:
         return cls(repository, tag, commit, node_min_major, source_dir)
 
 
+def _replace_nested_config_values(source, replacements):
+    found = set()
+    output = []
+    section = ""
+    for line in source.splitlines():
+        stripped = line.lstrip()
+        indentation = line[:len(line) - len(stripped)]
+        key = stripped.split(":", 1)[0] if stripped and not stripped.startswith("#") else ""
+        if key and not indentation:
+            section = key
+        config_path = f"{section}.{key}" if indentation and key else ""
+        if config_path in replacements:
+            output.append(f"{indentation}{key}: {replacements[config_path]}")
+            found.add(config_path)
+        else:
+            output.append(line)
+    missing = set(replacements) - found
+    if missing:
+        raise NativeLifecycleError(
+            "official config is missing required keys: " + ", ".join(sorted(missing))
+        )
+    return "\n".join(output) + "\n"
+
+
 def render_native_config(source):
     """Render the config for a localhost-only runtime behind Liveware."""
     replacements = {
@@ -90,6 +115,8 @@ def render_native_config(source):
     nested_replacements = {
         "performance.lazyLoadCharacters": "true",
         "extensions.autoUpdate": "false",
+        "logging.enableAccessLog": "false",
+        "logging.minLogLevel": "1",
     }
     found = set()
     output = []
@@ -116,6 +143,48 @@ def render_native_config(source):
             "official config is missing required keys: " + ", ".join(sorted(missing))
         )
     return "\n".join(output) + "\n"
+
+
+def render_production_logging_config(source):
+    """Keep existing installs quiet unless verbose logging is explicitly requested."""
+    lines = source.splitlines()
+    section_start = next((index for index, line in enumerate(lines)
+                          if line and not line[0].isspace() and line.strip() == "logging:"), None)
+    if section_start is None:
+        if lines and lines[-1].strip():
+            lines.append("")
+        lines.extend(("logging:", "  enableAccessLog: false", "  minLogLevel: 1"))
+        return "\n".join(lines) + "\n"
+
+    section_end = len(lines)
+    for index in range(section_start + 1, len(lines)):
+        stripped = lines[index].strip()
+        if stripped and not lines[index][0].isspace() and not stripped.startswith("#"):
+            section_end = index
+            break
+    replacements = {"enableAccessLog": "false", "minLogLevel": "1"}
+    found = set()
+    for index in range(section_start + 1, section_end):
+        stripped = lines[index].lstrip()
+        key = stripped.split(":", 1)[0] if stripped and not stripped.startswith("#") else ""
+        if key in replacements:
+            indentation = lines[index][:len(lines[index]) - len(stripped)] or "  "
+            lines[index] = f"{indentation}{key}: {replacements[key]}"
+            found.add(key)
+    missing = [key for key in replacements if key not in found]
+    lines[section_end:section_end] = [f"  {key}: {replacements[key]}" for key in missing]
+    return "\n".join(lines) + "\n"
+
+
+def prepare_runtime_log(log_path, max_bytes=MAX_NATIVE_LOG_BYTES):
+    """Rotate the previous native log before a new process inherits the file."""
+    log_path = Path(log_path)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    if log_path.is_file() and log_path.stat().st_size >= max_bytes:
+        rotated = log_path.with_name(log_path.name + ".1")
+        rotated.unlink(missing_ok=True)
+        log_path.replace(rotated)
+    return log_path
 
 
 def _atomic_text(path, text, mode=0o600):
@@ -346,6 +415,11 @@ class NativeRuntime:
                 (self.engine_root / "default/config.yaml").read_text(encoding="utf-8")
             )
             _atomic_text(self.config_path, config, mode=0o600)
+        elif os.environ.get("TAVERN_VERBOSE_LOGGING") != "1":
+            config = self.config_path.read_text(encoding="utf-8")
+            production_config = render_production_logging_config(config)
+            if production_config != config:
+                _atomic_text(self.config_path, production_config, mode=0o600)
         return {
             "extensions": list(MANAGED_EXTENSIONS),
             "engine": str(self.engine_root),
@@ -359,7 +433,7 @@ class NativeRuntime:
         return self.runtime_state / "runs" / run_id
 
     def spawn(self, command, env, log_path):
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path = prepare_runtime_log(log_path)
         log = open(log_path, "ab", buffering=0)
         try:
             return subprocess.Popen(

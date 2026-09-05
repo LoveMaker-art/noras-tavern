@@ -892,6 +892,12 @@ function publishNoraBootMetrics(phase, metrics) {
 }
 
 let noraMetricReportQueue = Promise.resolve();
+const persistedNoraMetricPhases = new Set([
+    'nora-usable',
+    'first-interaction',
+    'nora-startup-failed',
+    'world-selection-failed',
+]);
 
 async function sendNoraBootMetrics(payload) {
     if (globalThis.__NORA_CSRF_PROMISE__) {
@@ -938,6 +944,7 @@ function reportNoraBootMetrics(phase) {
         resources: getBootResourceMetrics(),
     };
     publishNoraBootMetrics(phase, metrics);
+    if (!persistedNoraMetricPhases.has(phase)) return;
     const payload = { phase, release: globalThis.__NORA_ASSET_RELEASE__ || '', metrics };
     noraMetricReportQueue = noraMetricReportQueue
         .catch(() => {})
@@ -960,6 +967,7 @@ async function timedBootStep(name, operation) {
         const endedAt = roundBootMetric(performance.now() - noraBootMetrics.startedAt);
         const duration = roundBootMetric(performance.now() - rawStartedAt);
         noraBootMetrics.steps.push({ name, startedAt, endedAt, duration, status });
+        if (noraBootMetrics.steps.length > 160) noraBootMetrics.steps.splice(0, noraBootMetrics.steps.length - 160);
         console.debug(`[Nora boot] ${name}: ${duration}ms (${status})`);
     }
 }
@@ -979,6 +987,7 @@ function timedBootSyncStep(name, operation) {
         const endedAt = roundBootMetric(performance.now() - noraBootMetrics.startedAt);
         const duration = roundBootMetric(performance.now() - rawStartedAt);
         noraBootMetrics.steps.push({ name, startedAt, endedAt, duration, status });
+        if (noraBootMetrics.steps.length > 160) noraBootMetrics.steps.splice(0, noraBootMetrics.steps.length - 160);
         console.debug(`[Nora boot] ${name}: ${duration}ms (${status})`);
     }
 }

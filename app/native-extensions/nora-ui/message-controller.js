@@ -98,7 +98,6 @@ export function createMessageController({
             generating,
             textLength: text.length,
         });
-        window.__NORA_REPORT_BOOT_METRICS__?.('send-ui-submit');
         if (generating || storyActions.status('story').active) {
             await storyActions.cancel('visible');
             updateComposer();

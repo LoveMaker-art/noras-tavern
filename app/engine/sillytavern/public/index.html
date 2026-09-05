@@ -279,6 +279,7 @@
             }
             let resourceSequence = 0;
             const pendingResources = new Map();
+            const reportedEarlyFailures = new Set();
             globalThis.__NORA_TRACK_BOOT_RESOURCE__ = (name, url, details = {}) => {
                 const id = `${name}:${++resourceSequence}`;
                 const startedAt = performance.now();
@@ -319,6 +320,11 @@
             globalThis.__NORA_MARK_BOOT_RESOURCES_STALLED__ = details => pendingResources.forEach(tracker => tracker.stalled(details));
             globalThis.__NORA_EARLY_REPORT_QUEUE__ ??= Promise.resolve();
             globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__ = (phase, details = {}) => {
+                const reportKey = `${phase}:${String(details.resource || details.stage || '')}`;
+                if (reportedEarlyFailures.has(reportKey) || reportedEarlyFailures.size >= 12) {
+                    return globalThis.__NORA_EARLY_REPORT_QUEUE__;
+                }
+                reportedEarlyFailures.add(reportKey);
                 pushBounded(metrics.milestones, { name: phase, at: elapsed(), ...details }, 120);
                 const send = async () => {
                     let csrfToken;
@@ -637,15 +643,13 @@
                             timeoutMs: stageTimeoutMs,
                             stalledMs: Math.round(stalled),
                         });
-                        const delivery = globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-stage-timeout', {
+                        globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-stage-timeout', {
                             stage,
                             stageName: stages[Math.max(0, stage - 1)]?.milestone || 'unknown',
                             timeoutMs: stageTimeoutMs,
                             stalledMs: Math.round(stalled),
                         });
-                        setDetail('准备超时，正在向诺拉发送诊断', true);
-                        void delivery.then(() => setDetail('准备超时，诺拉已收到诊断', true))
-                            .catch(() => setDetail('准备超时，诊断上报失败', true));
+                        setDetail('准备超时，诊断记录已保存', true);
                     }
                     if (stalled < stageTimeoutMs && stalled >= 30_000) setDetail('准备时间过长', true);
                     else if (stalled >= 10_000) setDetail('运行组件仍在准备，网络较慢时可能需要多一点时间', true);
