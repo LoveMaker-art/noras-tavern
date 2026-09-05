@@ -21,6 +21,7 @@ import time
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 BEGIN, END = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
+HOST_HOOK = Path("hooks/tavern-liveware-register")
 
 
 def log(message: str) -> None:
@@ -126,6 +127,17 @@ def copy_tree(source: Path, target: Path) -> None:
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, target)
+
+
+def install_host_hook(home: Path, source: Path) -> str:
+    origin = source / "ops" / HOST_HOOK
+    required = ("HOOK.yaml", "handler.py", "run.sh")
+    missing = [name for name in required if not (origin / name).is_file()]
+    if missing:
+        raise RuntimeError("发布包缺少 Tavern 启动钩子：" + ", ".join(missing))
+    target = home / HOST_HOOK
+    copy_tree(origin, target)
+    return str(target)
 
 
 def snapshot_targets(home: Path, targets: list[Path], backup: Path) -> list[dict]:
@@ -328,6 +340,7 @@ def install(args) -> dict:
             home / "config.yaml",
             home / "SOUL.md",
             home / "SOUL.nora-tavern.example.md",
+            home / HOST_HOOK,
             *[home / "skills" / relative for relative in prepared_skills],
         ]
         records = snapshot_targets(home, managed_targets, backup)
@@ -339,6 +352,7 @@ def install(args) -> dict:
 
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(home, prepared_skills)
+            host_hook = install_host_hook(home, source)
             agents = merge_agents(home, (source / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
             atomic(home / "config.yaml", render_mcp(home), mode=0o600)
             soul = install_soul(home, source, replace=args.replace_soul)
@@ -368,6 +382,7 @@ def install(args) -> dict:
             "ops": str(home / "apps/tavern-ops"),
             "state": str(home / "tavern-state"),
             "agents": agents,
+            "hostHook": host_hook,
         },
         "skills": skills,
         "soul": soul,

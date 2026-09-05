@@ -26,6 +26,7 @@ UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Asia/Shanghai)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.sh"
 UPDATE_CHECK_SCHEDULE = "0 9 * * *"
 UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py")
+HOST_HOOK = Path("hooks/tavern-liveware-register")
 
 
 def log(message):
@@ -245,6 +246,18 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed):
 def prepare_skills(source, destination):
     installer = module_at("simple_skill_installer", source / "ops/scripts/install-hermes-skills.py")
     return installer.prepare_skill_trees(source, destination)
+
+
+def host_hook_swap(home, source):
+    origin = Path(source) / "ops" / HOST_HOOK
+    required = ("HOOK.yaml", "handler.py", "run.sh")
+    missing = [name for name in required if not (origin / name).is_file()]
+    if missing:
+        raise RuntimeError("发布包缺少 Tavern 启动钩子：" + ", ".join(missing))
+    target = Path(home) / HOST_HOOK
+    if trees_equal(origin, target):
+        return None
+    return "host-hook-tavern-liveware-register", origin, target
 
 
 def hermes_model(home, source):
@@ -568,7 +581,7 @@ def refresh_liveware(home, source):
         if not path.is_file():
             path = source / "ops/updater/liveware_integration.py"
         integration = module_at("simple_liveware", path)
-        return integration.refresh(home)
+        return integration.repair(home)
     except Exception as error:
         return {"status": "pending", "warnings": [str(error)]}
 
@@ -719,6 +732,9 @@ def install(args):
                 swaps.append(("ops", source / "ops", roots["ops"]))
             if mcp_changed:
                 swaps.append(("nora-mcp", source / "nora-mcp", roots["nora-mcp"]))
+            host_hook = host_hook_swap(home, source)
+            if host_hook:
+                swaps.append(host_hook)
             for relative, prepared in skills.items():
                 target = home / "skills" / relative
                 if not trees_equal(prepared, target):
@@ -791,7 +807,8 @@ def install(args):
                 else:
                     runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
                                "health": {"ok": port_open(8799)}}
-                liveware = refresh_liveware(home, home / "apps/tavern-ops") if app_changed else {"status": "unchanged"}
+                liveware_needed = app_changed or ops_changed or host_hook is not None
+                liveware = refresh_liveware(home, home / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
                 if ops_changed:
                     try:
                         update_check = install_update_check(home, home / "apps/tavern-ops")
@@ -813,7 +830,10 @@ def install(args):
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
-                reload_required = mcp_changed or agents_changed or config_changed or any(name.startswith("skill-") for name, _, _ in swaps)
+                reload_required = (
+                    mcp_changed or agents_changed or config_changed
+                    or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
+                )
                 result = {
                     "status": "installed",
                     "version": version,

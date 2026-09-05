@@ -37,6 +37,25 @@ class FirstInstallSnapshotTests(unittest.TestCase):
             self.assertEqual((existing_tree / "SKILL.md").read_text(encoding="utf-8"), "original skill\n")
             self.assertFalse(new_tree.exists())
 
+    def test_installs_the_runtime_hook_at_the_path_hermes_executes(self):
+        with tempfile.TemporaryDirectory(prefix="nora-first-install-hook-") as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            source = root / "source"
+            origin = source / "ops/hooks/tavern-liveware-register"
+            origin.mkdir(parents=True)
+            (origin / "HOOK.yaml").write_text("name: tavern-liveware-register\n", encoding="utf-8")
+            (origin / "handler.py").write_text("HANDLER = 'new'\n", encoding="utf-8")
+            (origin / "run.sh").write_text("#!/bin/sh\n# ensure\n", encoding="utf-8")
+
+            installed = MODULE.install_host_hook(home, source)
+
+            self.assertEqual(installed, str(home / "hooks/tavern-liveware-register"))
+            self.assertEqual(
+                (home / "hooks/tavern-liveware-register/run.sh").read_text(encoding="utf-8"),
+                "#!/bin/sh\n# ensure\n",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
