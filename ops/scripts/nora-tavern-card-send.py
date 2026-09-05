@@ -75,8 +75,9 @@ def _owner_conversation_id(account_id: str) -> str:
     return str(row[0])
 
 
-def _markdown(installed: str, latest: str, locale: str | None = None) -> str:
+def _markdown(installed: str, latest: str, summary: str = "", locale: str | None = None) -> str:
     language = _locale_code(locale)
+    summary = str(summary or "").strip()
     if language == "en":
         return "\n".join(
             (
@@ -85,7 +86,9 @@ def _markdown(installed: str, latest: str, locale: str | None = None) -> str:
                 f"**Current version:** {installed}",
                 f"**Latest version:** {latest}",
                 "",
-                "> Your data has not changed",
+                "### Update summary",
+                "",
+                summary or "No update summary was provided.",
                 "",
                 "**To install it, reply: Update Tavern**",
             )
@@ -97,20 +100,28 @@ def _markdown(installed: str, latest: str, locale: str | None = None) -> str:
             f"**当前版本：** {installed}",
             f"**最新版本：** {latest}",
             "",
-            "> 用户数据尚未发生变化",
+            "### 更新摘要",
+            "",
+            summary or "发布页暂未提供更新摘要。",
             "",
             "**如需安装，请回复：更新 Tavern**",
         )
     )
 
 
-async def _send(installed: str, latest: str, account_id: str, locale: str | None = None) -> None:
+async def _send(
+    installed: str,
+    latest: str,
+    account_id: str,
+    summary: str = "",
+    locale: str | None = None,
+) -> None:
     from clawchat_gateway.standalone_send import standalone_send
 
     result = await standalone_send(
         SimpleNamespace(extra=_load_extra_config()),
         _owner_conversation_id(account_id),
-        _markdown(installed, latest, locale or _owner_locale()),
+        _markdown(installed, latest, summary, locale or _owner_locale()),
     )
     if not result.get("success"):
         raise RuntimeError(str(result.get("error") or "ClawChat delivery failed"))
@@ -120,6 +131,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--installed", required=True)
     parser.add_argument("--latest", required=True)
+    parser.add_argument("--summary", default="")
     parser.add_argument("--account-id", default="default")
     parser.add_argument("--locale", help="Override owner locale for tests/dry-runs")
     parser.add_argument("--dry-run", action="store_true")
@@ -128,13 +140,17 @@ def main() -> int:
     if args.dry_run:
         print(
             json.dumps(
-                {"kind": "text", "locale": _locale_code(locale), "text": _markdown(args.installed, args.latest, locale)},
+                {
+                    "kind": "text",
+                    "locale": _locale_code(locale),
+                    "text": _markdown(args.installed, args.latest, args.summary, locale),
+                },
                 ensure_ascii=False,
                 indent=2,
             )
         )
         return 0
-    asyncio.run(_send(args.installed, args.latest, args.account_id, locale))
+    asyncio.run(_send(args.installed, args.latest, args.account_id, args.summary, locale))
     return 0
 
 

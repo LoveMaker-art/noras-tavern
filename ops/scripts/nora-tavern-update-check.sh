@@ -31,6 +31,8 @@ INSTALL_RECORD = HOME / "tavern-updates/installed.json"
 NOTICE_STATE = HOME / "tavern-updates/notification-state.json"
 LOG_FILE = HOME / "logs/nora-tavern-update-check.log"
 SENDER = Path(os.environ.get("TAVERN_UPDATE_SENDER", HOME / "scripts/nora-tavern-card-send.py"))
+SUMMARY_MAX_CHARS = 1200
+SUMMARY_MAX_LINES = 10
 
 
 def normalize_version(value: object) -> str:
@@ -65,7 +67,37 @@ def installed_version() -> str:
     raise RuntimeError("未找到 Tavern 安装版本标记")
 
 
-def latest_version() -> str:
+def release_summary(value: object) -> str:
+    lines: list[str] = []
+    in_code_block = False
+    for raw_line in str(value or "").splitlines():
+        line = raw_line.strip()
+        if line.startswith("```"):
+            in_code_block = not in_code_block
+            continue
+        if in_code_block or not line or line.startswith("<!--"):
+            continue
+        heading = re.sub(r"^#{1,6}\s+", "", line).strip()
+        if re.fullmatch(r"(?:更新命令|安装命令|update command|install command)[:：]?", heading, re.IGNORECASE):
+            break
+        if heading != line:
+            continue
+        if re.match(r"^(?:curl|wget)\s", line, re.IGNORECASE):
+            continue
+        plain = line.lstrip("> ").strip().casefold()
+        if plain in {"用户数据尚未发生变化", "your data has not changed"}:
+            continue
+        lines.append(line)
+        if len(lines) >= SUMMARY_MAX_LINES:
+            break
+
+    summary = "\n".join(lines)
+    if len(summary) <= SUMMARY_MAX_CHARS:
+        return summary
+    return summary[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
+
+
+def latest_release() -> tuple[str, str]:
     request = urllib.request.Request(
         API_URL,
         headers={
@@ -77,7 +109,7 @@ def latest_version() -> str:
         payload = json.loads(response.read(1024 * 1024))
     value = normalize_version(payload.get("tag_name"))
     version_key(value)
-    return value
+    return value, release_summary(payload.get("body"))
 
 
 def load_notice_state() -> dict:
@@ -119,7 +151,7 @@ def main() -> int:
     args = parser.parse_args()
 
     installed = installed_version()
-    latest = latest_version()
+    latest, summary = latest_release()
     update_available = version_key(latest) > version_key(installed)
     result = {
         "installed": installed,
@@ -138,7 +170,16 @@ def main() -> int:
     if not SENDER.is_file():
         raise RuntimeError(f"更新提醒发送器不存在：{SENDER}")
     subprocess.run(
-        [sys.executable, str(SENDER), "--installed", installed, "--latest", latest],
+        [
+            sys.executable,
+            str(SENDER),
+            "--installed",
+            installed,
+            "--latest",
+            latest,
+            "--summary",
+            summary,
+        ],
         check=True,
         timeout=30,
     )

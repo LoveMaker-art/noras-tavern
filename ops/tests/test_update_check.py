@@ -13,6 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 CHECKER = ROOT / "ops/scripts/nora-tavern-update-check.sh"
+SENDER = ROOT / "ops/scripts/nora-tavern-card-send.py"
 UPDATER = ROOT / "ops/updater/update.py"
 
 
@@ -71,13 +72,30 @@ class UpdateCheckScriptTests(unittest.TestCase):
             marker.parent.mkdir(parents=True)
             marker.write_text("2.0.9\n", encoding="utf-8")
             release = root / "release.json"
-            release.write_text(json.dumps({"tag_name": "v2.0.10"}), encoding="utf-8")
+            release.write_text(
+                json.dumps({
+                    "tag_name": "v2.0.10",
+                    "body": (
+                        "# Tavern 2.0.10\n\n"
+                        "改善启动体验。\n\n"
+                        "> 用户数据尚未发生变化\n\n"
+                        "- 修复缓存\n"
+                        "- 加快加载\n\n"
+                        "更新命令：\n\n"
+                        "```sh\n"
+                        "curl https://example.invalid/install.sh | sh\n"
+                        "```\n"
+                    ),
+                }),
+                encoding="utf-8",
+            )
             calls = root / "calls"
             sender = root / "sender.py"
             sender.write_text(
+                "import json, sys\n"
                 "from pathlib import Path\n"
                 f"p = Path({str(calls)!r})\n"
-                "p.write_text(p.read_text() + 'x' if p.exists() else 'x')\n",
+                "p.write_text(json.dumps(sys.argv[1:], ensure_ascii=False))\n",
                 encoding="utf-8",
             )
 
@@ -86,9 +104,46 @@ class UpdateCheckScriptTests(unittest.TestCase):
 
             self.assertEqual(first.returncode, 0, first.stderr)
             self.assertEqual(second.returncode, 0, second.stderr)
-            self.assertEqual(calls.read_text(encoding="utf-8"), "x")
+            self.assertEqual(
+                json.loads(calls.read_text(encoding="utf-8")),
+                [
+                    "--installed",
+                    "2.0.9",
+                    "--latest",
+                    "2.0.10",
+                    "--summary",
+                    "改善启动体验。\n- 修复缓存\n- 加快加载",
+                ],
+            )
             state = json.loads((home / "tavern-updates/notification-state.json").read_text(encoding="utf-8"))
             self.assertEqual(state["last_notified_latest"], "2.0.10")
+
+    def test_notice_shows_release_summary_without_user_data_status(self):
+        result = subprocess.run(
+            [
+                sys.executable,
+                SENDER,
+                "--installed",
+                "2.0.9",
+                "--latest",
+                "2.0.10",
+                "--summary",
+                "- 修复缓存\n- 加快加载",
+                "--locale",
+                "zh",
+                "--dry-run",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = json.loads(result.stdout)["text"]
+        self.assertIn("### 更新摘要", text)
+        self.assertIn("- 修复缓存\n- 加快加载", text)
+        self.assertNotIn("用户数据尚未发生变化", text)
+        self.assertNotIn("Your data has not changed", text)
 
 
 class UpdateCheckInstallerTests(unittest.TestCase):
