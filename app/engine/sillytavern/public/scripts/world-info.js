@@ -11,7 +11,10 @@ import { power_user } from './power-user.js';
 import { getTagKeyForEntity } from './tags.js';
 import { debounce_timeout, GENERATION_TYPE_TRIGGERS } from './constants.js';
 import { getRegexedString, regex_placement } from './extensions/regex/engine.js';
-import { shouldSuppressNoraMvuUpdateEntryForMainPrompt } from './nora-compat/mvu-world-info-policy.js';
+import {
+    projectNoraMvuUpdateContent,
+    shouldSuppressNoraMvuUpdateEntryForMainPrompt,
+} from './nora-compat/mvu-world-info-policy.js';
 import { SlashCommandParser } from './slash-commands/SlashCommandParser.js';
 import { SlashCommand } from './slash-commands/SlashCommand.js';
 import { ARGUMENT_TYPE, SlashCommandArgument, SlashCommandNamedArgument } from './slash-commands/SlashCommandArgument.js';
@@ -5081,7 +5084,11 @@ export async function checkWorldInfo(chat, maxContext, isDryRun, globalScanData 
     // TODO (kingbri): Change to use WI Anchor positioning instead of separate top/bottom arrays
     [...allActivatedEntries.values()].sort(sortFn).forEach((entry) => {
         const regexDepth = entry.position === world_info_position.atDepth ? (entry.depth ?? DEFAULT_DEPTH) : null;
-        const content = getRegexedString(entry.content, regex_placement.WORLD_INFO, { depth: regexDepth, isMarkdown: false, isPrompt: true });
+        const content = getRegexedString(
+            projectNoraMvuUpdateContent(entry, entry.content),
+            regex_placement.WORLD_INFO,
+            { depth: regexDepth, isMarkdown: false, isPrompt: true },
+        );
 
         if (!content) {
             console.debug(`[WI] Entry ${entry.uid}`, 'skipped adding to prompt due to empty content', entry);

@@ -1,14 +1,15 @@
 const INIT_COMMENT_MARKER = /\[initvar\]/i;
 const UPDATE_COMMENT_MARKER = /\[mvu_update\]/i;
 const PLOT_COMMENT_MARKER = /\[mvu_plot\]/i;
+const NORA_V1_COMMENT_MARKER = /\[nora_mvu\/1\]/i;
 const VARIABLE_CONTENT_MARKER = /(?:<status_current_variables>|{{(?:format|get)_message_variable::stat_data(?:[.}]|}}))/i;
-const UPDATE_CONTENT_MARKER = /(?:<\/?\s*(?:UpdateVariable|JSONPatch)\b|\b_\.set\s*\()/i;
+const UPDATE_CONTENT_MARKER = /(?:<\/?\s*(?:UpdateVariable|JSONPatch|NoraMvu)\b|\b_\.set\s*\()/i;
 const MVU_RUNTIME_SCRIPT = /MagicalAstrogy\/MagVarUpdate(?:@[^/'"\s]+)?\/artifact\/bundle\.js/i;
 const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource\/dist\/util\/mvu_zod\.js/i;
 const MVU_SCHEMA_URL = /https?:\/\/[^'"\s]*StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\/mvu_zod\.js(?:\?[^'"\s]*)?/gi;
 // This URL is persisted into adapted cards and may be cached by Liveware for a
 // long time. Keep its revision independent from the main MVU bundle revision.
-const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1';
+const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora2';
 const ADAPTATION_SCHEMA = 1;
 
 function record(value) {
@@ -103,6 +104,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     const hasInit = entries.some(entry => INIT_COMMENT_MARKER.test(String(entry?.comment || '')));
     const hasSplitUpdate = entries.some(entry => UPDATE_COMMENT_MARKER.test(String(entry?.comment || '')));
     const hasSplitPlot = entries.some(entry => PLOT_COMMENT_MARKER.test(String(entry?.comment || '')));
+    const hasNoraV1 = entries.some(entry => NORA_V1_COMMENT_MARKER.test(String(entry?.comment || '')));
     const updateEntryIds = entries
         .map((entry, index) => ({ entry, id: entryId(entry, index) }))
         .filter(({ entry }) => isActiveUpdateEntry(entry))
@@ -111,13 +113,14 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     const embeddedRuntime = scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
     const schemaRuntime = scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
     const managedRuntime = record(data.extensions?.nora_mvu_compatibility).managed_runtime === true;
-    const declared = hasInit || hasSplitUpdate || hasSplitPlot
+    const declared = hasInit || hasSplitUpdate || hasSplitPlot || hasNoraV1
         || (hasVariableReference && updateEntryIds.length > 0)
         || embeddedRuntime || schemaRuntime || managedRuntime;
 
     let updateProtocol = 'none';
     if (declared) {
-        if (hasSplitUpdate || hasSplitPlot) updateProtocol = 'native-split';
+        if (hasNoraV1) updateProtocol = 'nora-v1';
+        else if (hasSplitUpdate || hasSplitPlot) updateProtocol = 'native-split';
         else if (updateEntryIds.length > 0) updateProtocol = 'legacy-adaptable';
         else if (hasVariableReference) updateProtocol = 'legacy-inline';
         else updateProtocol = 'initialization-only';
@@ -127,6 +130,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     if (hasInit) reasons.push('initvar');
     if (hasSplitUpdate) reasons.push('mvu-update-entry');
     if (hasSplitPlot) reasons.push('mvu-plot-entry');
+    if (hasNoraV1) reasons.push('nora-mvu-v1');
     if (updateEntryIds.length > 0 && !hasSplitUpdate && !hasSplitPlot) reasons.push('legacy-update-content');
     if (embeddedRuntime) reasons.push('embedded-runtime');
     if (schemaRuntime) reasons.push('schema-runtime');
@@ -136,7 +140,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
         declared,
         runtimeSource: !declared ? 'none' : (embeddedRuntime ? 'embedded' : 'managed'),
         updateProtocol,
-        splitModelSupported: hasSplitUpdate || hasSplitPlot,
+        splitModelSupported: hasNoraV1 || hasSplitUpdate || hasSplitPlot,
         updateEntryIds: Object.freeze(updateEntryIds),
         helperScripts: Object.freeze([...scripts]),
         reasons: Object.freeze(reasons),
@@ -249,5 +253,10 @@ export function adaptCardForMvuRuntime(card) {
 
 export function isMvuUpdateInstructionEntry(entry = {}) {
     return UPDATE_COMMENT_MARKER.test(String(entry?.comment || ''))
+        || NORA_V1_COMMENT_MARKER.test(String(entry?.comment || ''))
         || UPDATE_CONTENT_MARKER.test(String(entry?.content || ''));
+}
+
+export function isNoraMvuV1Entry(entry = {}) {
+    return NORA_V1_COMMENT_MARKER.test(String(entry?.comment || ''));
 }

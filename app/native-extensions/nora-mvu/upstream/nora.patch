@@ -1,5 +1,103 @@
+diff --git a/src/function/function_call.ts b/src/function/function_call.ts
+index 321bd11..0a6d96c 100644
+--- a/src/function/function_call.ts
++++ b/src/function/function_call.ts
+@@ -3,6 +3,12 @@ import { tr } from '@/i18n';
+ import { useDataStore } from '@/store';
+ import { getLastValidVariable, isJsonPatch } from '@/util';
+ import { parseString } from '@util/common';
++import {
++    formatNoraMvuUpdateBlock,
++    NORA_MVU_RESPONSE_SCHEMA,
++    NORA_MVU_TOOL_PARAMETERS,
++    parseNoraMvuEnvelope,
++} from '@/function/nora_protocol';
+ 
+ /**
+  * 最终的变量更新机制实际上是专门generate 一个新的请求，那个请求会通过 tool_call 直接更新变量。
+@@ -155,6 +161,17 @@ export const MVU_TOOL_DEFINITION = Object.freeze({
+     },
+ }) satisfies ToolDefinition;
+ 
++export const NORA_MVU_TOOL_DEFINITION = Object.freeze({
++    type: 'function',
++    function: {
++        name: MVU_FUNCTION_NAME,
++        description: 'Return one validated Nora MVU v1 state transition.',
++        parameters: NORA_MVU_TOOL_PARAMETERS,
++    },
++}) satisfies ToolDefinition;
++
++export { NORA_MVU_RESPONSE_SCHEMA };
++
+ /*
+     e.g.: [
+     [
+@@ -213,7 +230,10 @@ async function _onStoryEndCall(_args: any): Promise<string> {
+ */
+ 
+ async function onVariableUpdatedCall(args: any): Promise<string> {
+-    if (!args?.delta) return '';
++    const nora_delta = args?.protocol === 'nora-mvu/1'
++        ? formatNoraMvuUpdateBlock(args)
++        : null;
++    if (!args?.delta && !nora_delta) return '';
+     let message_id = getLastMessageId();
+     let chat_message = getChatMessages(message_id).at(-1);
+     if (chat_message && chat_message.role === 'system') {
+@@ -231,13 +251,16 @@ async function onVariableUpdatedCall(args: any): Promise<string> {
+         return '';
+     }
+ 
+-    const has_variable_modified = await updateVariables(args.delta, variables);
++    const update_content = nora_delta ?? args.delta;
++    const has_variable_modified = await updateVariables(update_content, variables);
+     if (has_variable_modified && useDataStore().effective_settings.兼容性.更新到聊天变量) {
+         await replaceVariables(variables, { type: 'chat' });
+     }
+     await replaceVariables(variables, { type: 'message', message_id: message_id });
+ 
+-    message_content += `\n\n<UpdateVariable>\n<Analysis>${args.analysis}</Analysis></Analysis>${args.delta}\n</UpdateVariable>`;
++    message_content += nora_delta
++        ? `\n\n${nora_delta}`
++        : `\n\n<UpdateVariable>\n<Analysis>${args.analysis}</Analysis></Analysis>${args.delta}\n</UpdateVariable>`;
+ 
+     if (chat_message.role !== 'user' && !message_content.includes('<StatusPlaceHolderImpl/>')) {
+         //同时追加 PlaceHolder。
+@@ -442,6 +465,9 @@ export function extractFromToolCall(tool_calls: ToolCallBatches | undefined): st
+ 
+     try {
+         const json = parseString(content);
++        if (json?.protocol === 'nora-mvu/1') {
++            return formatNoraMvuUpdateBlock(parseNoraMvuEnvelope(json));
++        }
+         if (json.delta && json.delta.length > 5) {
+             let result = '';
+             result += `<UpdateVariable>\n`;
+@@ -491,6 +517,21 @@ export function extractFromToolCall(tool_calls: ToolCallBatches | undefined): st
+     return null;
+ }
+ 
++export function extractNoraMvuFromFormattedOutput(
++    result: string | GenerateToolCallResult
++): string | null {
++    const content = typeof result === 'string' ? result : result.content;
++    if (!content) return null;
++    try {
++        return formatNoraMvuUpdateBlock(
++            parseNoraMvuEnvelope(parseString(cleanStructuredPayload(content)))
++        );
++    } catch (error) {
++        console.error(`Nora MVU formatted output parse failed: ${String(error)}`);
++        return null;
++    }
++}
++
+ export function extractFromFormattedOutput(result: string | GenerateToolCallResult): string | null {
+     const content = typeof result === 'string' ? result : result.content;
+     if (!content) {
 diff --git a/src/function/global/index.ts b/src/function/global/index.ts
-index caf3097..bd027b9 100644
+index caf3097..c4b810a 100644
 --- a/src/function/global/index.ts
 +++ b/src/function/global/index.ts
 @@ -1,6 +1,7 @@
@@ -11,11 +109,11 @@ index caf3097..bd027b9 100644
 +import { isMvuData, isValueWithDescription, MvuData, variable_events } from '@/variable_def';
  import { watch } from 'vue';
  import { useDataStore } from '../../store';
-
+ 
 @@ -29,6 +30,17 @@ function createMvu() {
              return getVariables(options) as MvuData;
          },
-
+ 
 +        /**
 +         * Ensure that the active chat owns a durable MVU snapshot before Nora
 +         * declares the card capability ready. This is idempotent and remains
@@ -57,7 +155,7 @@ index caf3097..bd027b9 100644
      return mvu;
  }
 diff --git a/src/function/initvar/variable_init.ts b/src/function/initvar/variable_init.ts
-index c3ddcb5..89d0781 100644
+index c3ddcb5..a0d8dea 100644
 --- a/src/function/initvar/variable_init.ts
 +++ b/src/function/initvar/variable_init.ts
 @@ -4,6 +4,7 @@ import { tr } from '@/i18n';
@@ -68,18 +166,17 @@ index c3ddcb5..89d0781 100644
      isObjectSchema,
      MvuData,
      RootAdditionalProps,
-@@ -21,7 +22,7 @@ type LorebookEntry = {
-
+@@ -21,25 +22,20 @@ type LorebookEntry = {
+ 
  export async function initCheck() {
      if ($('#chat > .welcomePanel').length > 0) {
 -        return;
 +        return false;
      }
-
+ 
      let variables: MvuData & Record<string, any>;
-@@ -28,18 +29,13 @@ export async function initCheck() {
      //这个函数需要处理 dryRun,因为0层。
-
+ 
      try {
 -        if (SillyTavern.chat.length === 0) {
 -            console.error(tr('runtime.initvar.noMessagesLog'));
@@ -97,30 +194,356 @@ index c3ddcb5..89d0781 100644
 -        return;
 +        return false;
      }
-
+ 
      // 确保变量结构完整
 @@ -124,7 +120,7 @@ export async function initCheck() {
      }
-
+ 
      if (!is_updated) {
 -        return;
 +        return isMvuData(variables) && !_.isEmpty(variables.stat_data);
      }
-
+ 
      if (useDataStore().effective_settings.兼容性.更新到聊天变量) {
 @@ -222,6 +218,7 @@ export async function initCheck() {
-
+ 
      // 更新 lorebook 设置
      await updateLorebookSettings();
 +    return isMvuData(variables) && !_.isEmpty(variables.stat_data);
  }
-
+ 
  /**
+diff --git a/src/function/nora_protocol.ts b/src/function/nora_protocol.ts
+new file mode 100644
+index 0000000..e3aa38a
+--- /dev/null
++++ b/src/function/nora_protocol.ts
+@@ -0,0 +1,301 @@
++export const NORA_MVU_PROTOCOL = 'nora-mvu/1' as const;
++export const NORA_MVU_PROTOCOL_MARKER = /\[nora_mvu\/1\]/i;
++
++const MAX_OPERATIONS = 128;
++const MAX_PATH_DEPTH = 32;
++const MAX_PAYLOAD_CHARS = 262_144;
++const FORBIDDEN_PATH_SEGMENTS = new Set(['__proto__', 'prototype', 'constructor']);
++
++type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
++type NoraMvuPath = Array<string | number>;
++
++type NoraMvuOperation =
++    | { op: 'set'; path: NoraMvuPath; value: JsonValue }
++    | { op: 'increment'; path: NoraMvuPath; amount: number }
++    | { op: 'append'; path: NoraMvuPath; value: JsonValue }
++    | { op: 'insert'; path: NoraMvuPath; index: number; value: JsonValue }
++    | { op: 'delete'; path: NoraMvuPath }
++    | { op: 'move'; from: NoraMvuPath; path: NoraMvuPath };
++
++export type NoraMvuEnvelope = {
++    protocol: typeof NORA_MVU_PROTOCOL;
++    operations: NoraMvuOperation[];
++};
++
++export type NoraMvuCommand = {
++    type: 'set' | 'insert' | 'delete' | 'add' | 'move';
++    full_match: string;
++    args: string[];
++    reason: string;
++};
++
++const path_schema = {
++    type: 'array',
++    minItems: 1,
++    maxItems: MAX_PATH_DEPTH,
++    items: {
++        anyOf: [
++            { type: 'string', minLength: 1 },
++            { type: 'integer', minimum: 0 },
++        ],
++    },
++};
++
++const json_value_schema = {
++    anyOf: [
++        { type: 'string' },
++        { type: 'number' },
++        { type: 'boolean' },
++        { type: 'null' },
++        { type: 'object' },
++        { type: 'array' },
++    ],
++};
++
++const operation_schema = {
++    anyOf: [
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['set'] },
++                path: path_schema,
++                value: json_value_schema,
++            },
++            required: ['op', 'path', 'value'],
++        },
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['increment'] },
++                path: path_schema,
++                amount: { type: 'number' },
++            },
++            required: ['op', 'path', 'amount'],
++        },
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['append'] },
++                path: path_schema,
++                value: json_value_schema,
++            },
++            required: ['op', 'path', 'value'],
++        },
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['insert'] },
++                path: path_schema,
++                index: { type: 'integer', minimum: 0 },
++                value: json_value_schema,
++            },
++            required: ['op', 'path', 'index', 'value'],
++        },
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['delete'] },
++                path: path_schema,
++            },
++            required: ['op', 'path'],
++        },
++        {
++            type: 'object',
++            additionalProperties: false,
++            properties: {
++                op: { type: 'string', enum: ['move'] },
++                from: path_schema,
++                path: path_schema,
++            },
++            required: ['op', 'from', 'path'],
++        },
++    ],
++};
++
++export const NORA_MVU_RESPONSE_SCHEMA = Object.freeze({
++    name: 'nora_mvu_v1',
++    description: 'A validated Nora MVU state transition. Return only this object.',
++    // Operation values may contain card-defined objects, which cannot satisfy
++    // every provider's strict-schema subset without a card-specific schema.
++    strict: false,
++    value: {
++        type: 'object',
++        additionalProperties: false,
++        properties: {
++            protocol: { type: 'string', enum: [NORA_MVU_PROTOCOL] },
++            operations: {
++                type: 'array',
++                maxItems: MAX_OPERATIONS,
++                items: operation_schema,
++            },
++        },
++        required: ['protocol', 'operations'],
++    },
++}) satisfies JsonSchema;
++
++export const NORA_MVU_TOOL_PARAMETERS = NORA_MVU_RESPONSE_SCHEMA.value;
++
++export const NORA_MVU_OUTPUT_INSTRUCTION = `
++Return variable changes using Nora MVU protocol v1. Never output _.set, JsonPatch, prose, or markdown inside the update block.
++Use exactly:
++<UpdateVariable><NoraMvu>{"protocol":"nora-mvu/1","operations":[...]}</NoraMvu></UpdateVariable>
++Allowed operations are set(path,value), increment(path,amount), append(path,value), insert(path,index,value), delete(path), and move(from,path).
++Every path is a JSON array of non-empty string keys or non-negative integer indexes. Use {"protocol":"nora-mvu/1","operations":[]} when no variable changes are justified.
++`.trim();
++
++function isRecord(value: unknown): value is Record<string, unknown> {
++    return value !== null && typeof value === 'object' && !Array.isArray(value);
++}
++
++function assertExactKeys(value: Record<string, unknown>, allowed: string[], label: string) {
++    const expected = new Set(allowed);
++    const unknown = Object.keys(value).filter(key => !expected.has(key));
++    if (unknown.length > 0) throw new Error(`${label} has unknown fields: ${unknown.join(', ')}`);
++}
++
++function parsePath(value: unknown, label: string): NoraMvuPath {
++    if (!Array.isArray(value) || value.length === 0) throw new Error(`${label} must be a non-empty array.`);
++    if (value.length > MAX_PATH_DEPTH) throw new Error(`${label} exceeds ${MAX_PATH_DEPTH} segments.`);
++    return value.map((segment, index) => {
++        if (typeof segment === 'number' && Number.isInteger(segment) && segment >= 0) return segment;
++        if (typeof segment !== 'string' || segment.trim().length === 0) {
++            throw new Error(`${label}[${index}] must be a non-empty string or non-negative integer.`);
++        }
++        if (segment.startsWith('_') || FORBIDDEN_PATH_SEGMENTS.has(segment)) {
++            throw new Error(`${label}[${index}] is not writable.`);
++        }
++        return segment;
++    });
++}
++
++function parseOperation(value: unknown, index: number): NoraMvuOperation {
++    if (!isRecord(value) || typeof value.op !== 'string') {
++        throw new Error(`operations[${index}] must be an object with an op field.`);
++    }
++    const path = parsePath(value.path, `operations[${index}].path`);
++    switch (value.op) {
++        case 'set':
++        case 'append':
++            assertExactKeys(value, ['op', 'path', 'value'], `operations[${index}]`);
++            if (!Object.hasOwn(value, 'value')) throw new Error(`operations[${index}].value is required.`);
++            return { op: value.op, path, value: value.value as JsonValue };
++        case 'increment':
++            assertExactKeys(value, ['op', 'path', 'amount'], `operations[${index}]`);
++            if (typeof value.amount !== 'number' || !Number.isFinite(value.amount)) {
++                throw new Error(`operations[${index}].amount must be a finite number.`);
++            }
++            return { op: value.op, path, amount: value.amount };
++        case 'insert':
++            assertExactKeys(value, ['op', 'path', 'index', 'value'], `operations[${index}]`);
++            if (!Number.isInteger(value.index) || Number(value.index) < 0) {
++                throw new Error(`operations[${index}].index must be a non-negative integer.`);
++            }
++            if (!Object.hasOwn(value, 'value')) throw new Error(`operations[${index}].value is required.`);
++            return { op: value.op, path, index: Number(value.index), value: value.value as JsonValue };
++        case 'delete':
++            assertExactKeys(value, ['op', 'path'], `operations[${index}]`);
++            return { op: value.op, path };
++        case 'move':
++            assertExactKeys(value, ['op', 'from', 'path'], `operations[${index}]`);
++            const from = parsePath(value.from, `operations[${index}].from`);
++            if (from.length === path.length && from.every((segment, part) => segment === path[part])) {
++                throw new Error(`operations[${index}] cannot move a value onto itself.`);
++            }
++            if (from.length < path.length && from.every((segment, part) => segment === path[part])) {
++                throw new Error(`operations[${index}] cannot move a value into its own descendant.`);
++            }
++            return { op: value.op, from, path };
++        default:
++            throw new Error(`operations[${index}].op is unsupported: ${value.op}`);
++    }
++}
++
++export function parseNoraMvuEnvelope(value: unknown): NoraMvuEnvelope {
++    if (!isRecord(value)) throw new Error('Nora MVU payload must be an object.');
++    assertExactKeys(value, ['protocol', 'operations'], 'Nora MVU payload');
++    if (value.protocol !== NORA_MVU_PROTOCOL) throw new Error(`Unsupported Nora MVU protocol: ${String(value.protocol)}`);
++    if (!Array.isArray(value.operations)) throw new Error('Nora MVU operations must be an array.');
++    if (value.operations.length > MAX_OPERATIONS) throw new Error(`Nora MVU operations exceed ${MAX_OPERATIONS}.`);
++    return {
++        protocol: NORA_MVU_PROTOCOL,
++        operations: value.operations.map(parseOperation),
++    };
++}
++
++function pathToCommandPath(path: NoraMvuPath): string {
++    return path.map(segment => typeof segment === 'number'
++        ? `[${segment}]`
++        : `["${segment.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`
++    ).join('');
++}
++
++export function envelopeToCommands(envelope: NoraMvuEnvelope): NoraMvuCommand[] {
++    return envelope.operations.map(operation => {
++        const full_match = JSON.stringify(operation);
++        switch (operation.op) {
++            case 'set':
++                return { type: 'set', full_match, args: [pathToCommandPath(operation.path), JSON.stringify(operation.value)], reason: 'nora-mvu/1' };
++            case 'increment':
++                return { type: 'add', full_match, args: [pathToCommandPath(operation.path), JSON.stringify(operation.amount)], reason: 'nora-mvu/1' };
++            case 'append':
++                return { type: 'insert', full_match, args: [pathToCommandPath(operation.path), '"-"', JSON.stringify(operation.value)], reason: 'nora-mvu/1' };
++            case 'insert':
++                return { type: 'insert', full_match, args: [pathToCommandPath(operation.path), String(operation.index), JSON.stringify(operation.value)], reason: 'nora-mvu/1' };
++            case 'delete':
++                return { type: 'delete', full_match, args: [pathToCommandPath(operation.path)], reason: 'nora-mvu/1' };
++            case 'move':
++                return { type: 'move', full_match, args: [pathToCommandPath(operation.from), pathToCommandPath(operation.path)], reason: 'nora-mvu/1' };
++        }
++    });
++}
++
++export type NoraMvuExtraction = {
++    matched: boolean;
++    envelope?: NoraMvuEnvelope;
++    commands: NoraMvuCommand[];
++    error?: Error;
++};
++
++export function extractNoraMvuCommands(input: string): NoraMvuExtraction {
++    const matches = [...input.matchAll(/<nora_?mvu>\s*(?:```(?:json)?\s*)?([\s\S]*?)(?:```\s*)?<\/nora_?mvu>/gi)];
++    if (matches.length === 0) return { matched: false, commands: [] };
++    try {
++        if (matches.length !== 1) throw new Error('Nora MVU response must contain exactly one update block.');
++        const payload = matches[0][1].trim();
++        if (payload.length > MAX_PAYLOAD_CHARS) throw new Error(`Nora MVU payload exceeds ${MAX_PAYLOAD_CHARS} characters.`);
++        const envelope = parseNoraMvuEnvelope(JSON.parse(payload));
++        return { matched: true, envelope, commands: envelopeToCommands(envelope) };
++    } catch (error) {
++        return {
++            matched: true,
++            commands: [],
++            error: error instanceof Error ? error : new Error(String(error)),
++        };
++    }
++}
++
++export function formatNoraMvuUpdateBlock(value: unknown): string {
++    const envelope = parseNoraMvuEnvelope(value);
++    return `<UpdateVariable>\n<NoraMvu>${JSON.stringify(envelope)}</NoraMvu>\n</UpdateVariable>`;
++}
++
++export function isExplicitNoraMvuNoop(input: string): boolean {
++    const result = extractNoraMvuCommands(input);
++    return result.matched && !result.error && result.envelope?.operations.length === 0;
++}
++
++export async function isCurrentCardNoraMvuV1(): Promise<boolean> {
++    try {
++        const lorebook = getCurrentCharPrimaryLorebook();
++        if (!lorebook) return false;
++        const entries = await getLorebookEntries(lorebook);
++        return entries.some(entry => NORA_MVU_PROTOCOL_MARKER.test(String(entry?.comment || '')));
++    } catch {
++        return false;
++    }
++}
 diff --git a/src/function/update/invoke_extra_model.ts b/src/function/update/invoke_extra_model.ts
-index edc468c..68baf40 100644
+index edc468c..e1c7e83 100644
 --- a/src/function/update/invoke_extra_model.ts
 +++ b/src/function/update/invoke_extra_model.ts
-@@ -17,7 +17,7 @@ import {
+@@ -1,9 +1,17 @@
+ import {
+     extractFromFormattedOutput,
+     extractFromGenerateToolCallResult,
++    extractNoraMvuFromFormattedOutput,
+     MVU_JSON_PATCH_RESPONSE_SCHEMA,
+     MVU_TOOL_DEFINITION,
++    NORA_MVU_RESPONSE_SCHEMA,
++    NORA_MVU_TOOL_DEFINITION,
+ } from '@/function/function_call';
++import {
++    extractNoraMvuCommands,
++    isCurrentCardNoraMvuV1,
++    NORA_MVU_OUTPUT_INSTRUCTION,
++} from '@/function/nora_protocol';
+ import { MIN_FUNCTION_CALLING_TAVERN_HELPER_VERSION } from '@/function/is_function_calling_supported';
+ import claude_head from '@/prompts/claude_head.txt?raw';
+ import claude_tail from '@/prompts/claude_tail.txt?raw';
+@@ -20,7 +28,7 @@ import {
+ } from '@/function/request/extra_model_request_override';
  import { tr } from '@/i18n';
  import { useDataStore } from '@/store';
 -import { normalizeBaseURL } from '@/util';
@@ -128,8 +551,8 @@ index edc468c..68baf40 100644
  import { literalYamlify, uuidv4 } from '@util/common';
  import { compare } from 'compare-versions';
  import YAML from 'yaml';
-
-@@ -91,7 +91,9 @@ function buildJsonObjectCustomIncludeBody(original_body: unknown): Record<strin
+@@ -93,7 +101,8 @@ function buildJsonObjectCustomIncludeBody(original_body: unknown): Record<string
+     return {
          ...parseCustomIncludeBody(original_body),
          ...JSON_OBJECT_CUSTOM_INCLUDE_BODY,
 -        ...(store.settings.额外模型解析配置.关闭thinking
@@ -138,7 +561,7 @@ index edc468c..68baf40 100644
              ? DISABLED_THINKING_CUSTOM_INCLUDE_BODY
              : {}),
      };
-@@ -164,6 +164,58 @@ async function restoreTemporaryJsonObjectResponseFormat() {
+@@ -170,6 +179,57 @@ async function restoreTemporaryJsonObjectResponseFormat() {
      await saveSillyTavernSettings();
  }
  
@@ -196,7 +619,7 @@ index edc468c..68baf40 100644
  async function setExtraAnalysisStates() {
      const store = useDataStore();
  
-@@ -177,6 +229,7 @@ async function setExtraAnalysisStates() {
+@@ -183,8 +243,10 @@ async function setExtraAnalysisStates() {
  
      store.runtimes.is_during_extra_analysis = true;
      try {
@@ -206,7 +629,8 @@ index edc468c..68baf40 100644
 +        uninstallCurrentStatePrompt();
          store.runtimes.is_during_extra_analysis = false;
          throw error;
-@@ -187,6 +240,7 @@ async function unsetExtraAnalysisStates() {
+     }
+@@ -194,6 +256,7 @@ async function unsetExtraAnalysisStates() {
      const store = useDataStore();
  
      SillyTavern.unregisterMacro('lastUserMessage');
@@ -214,10 +638,10 @@ index edc468c..68baf40 100644
      clearExtraModelRequestOverrides();
      store.runtimes.is_function_call_enabled = false;
      try {
-@@ -347,11 +347,51 @@ export async function generateExtraModel(): Promise<string | null> {
+@@ -347,11 +410,63 @@ export async function generateExtraModel(): Promise<string | null> {
      }
  }
-
+ 
 +export class ExtraModelAttemptTimeoutError extends Error {
 +    constructor(readonly timeout_ms: number) {
 +        super(`MVU extra-model request exceeded ${timeout_ms}ms.`);
@@ -264,24 +688,68 @@ index edc468c..68baf40 100644
 +): Promise<string> {
      try {
 -        const result = await requestReply(generation_id, batch_id);
-+        const result = await requestReply(generation_id, batch_id, repair_feedback);
-
++        const use_nora_protocol = await isCurrentCardNoraMvuV1();
++        const result = await requestReply(
++            generation_id,
++            batch_id,
++            repair_feedback,
++            use_nora_protocol
++        );
++
++        if (use_nora_protocol) {
++            const parsed = extractNoraMvuCommands(result);
++            if (parsed.matched && !parsed.error) return result;
++            throw parsed.error ?? new Error('Nora MVU v1 response block is missing.');
++        }
+ 
          const tag = _([...result.matchAll(/<(update(?:variable)?|variableupdate)>/gi)]).last()?.[1];
          if (!tag) {
-@@ -431,7 +471,11 @@ function normalizeGenerateResultByResponseFormat(
+@@ -420,8 +535,18 @@ function normalizeGenerateResult(result: string | GenerateToolCallResult): strin
+ 
+ function normalizeGenerateResultByResponseFormat(
+     result: string | GenerateToolCallResult,
+-    response_format: string
++    response_format: string,
++    use_nora_protocol = false
+ ): string {
++    if (use_nora_protocol) {
++        if (isGenerateToolCallResult(result)) {
++            return extractFromGenerateToolCallResult(result) ?? result.content;
++        }
++        if (response_format === '格式化输出' || response_format === V4_COMPATIBLE_FORMATTED_OUTPUT) {
++            return extractNoraMvuFromFormattedOutput(result) ?? String(result);
++        }
++        return String(result);
++    }
+     if (response_format === '格式化输出' || response_format === V4_COMPATIBLE_FORMATTED_OUTPUT) {
+         const formatted = extractFromFormattedOutput(result);
+         if (formatted) {
+@@ -431,7 +556,12 @@ function normalizeGenerateResultByResponseFormat(
      return normalizeGenerateResult(result);
  }
-
+ 
 -async function requestReply(generation_id?: string, batch_id?: string): Promise<string> {
 +async function requestReply(
 +    generation_id?: string,
 +    batch_id?: string,
-+    repair_feedback = ''
++    repair_feedback = '',
++    use_nora_protocol = false
 +): Promise<string> {
      const store = useDataStore();
      const response_format = store.settings.额外模型解析配置.应答格式;
      const is_v4_compatible_formatted_output = response_format === V4_COMPATIBLE_FORMATTED_OUTPUT;
-@@ -454,6 +498,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -446,7 +576,9 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         generation_id,
+     };
+     if (supports_request_scoped_tools) {
+-        config.tools = response_format === '工具调用' ? [MVU_TOOL_DEFINITION] : [];
++        config.tools = response_format === '工具调用'
++            ? [use_nora_protocol ? NORA_MVU_TOOL_DEFINITION : MVU_TOOL_DEFINITION]
++            : [];
+     }
+     if (store.settings.额外模型解析配置.模型来源 === '自定义') {
+         const unset_if_equal = (value: number, expected: number) =>
+@@ -454,6 +586,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
                  ? 'unset'
                  : value;
          config.custom_api = {
@@ -289,23 +757,76 @@ index edc468c..68baf40 100644
              apiurl: normalizeBaseURL(store.settings.额外模型解析配置.api地址),
              key: store.settings.额外模型解析配置.密钥,
              model: store.settings.额外模型解析配置.模型名称,
-@@ -479,6 +524,36 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -478,22 +611,42 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         }
      }
-
--    let task = decoded_extra_model_task;
+ 
 +    const model_name =
 +        store.settings.额外模型解析配置.模型来源 === '与插头相同'
 +            ? SillyTavern.getChatCompletionModel()
 +            : store.settings.额外模型解析配置.模型名称;
 +    const is_gemini = model_name.toLowerCase().includes('gemini');
-+    let task = decoded_extra_model_task;
+     let task = decoded_extra_model_task;
++    if (use_nora_protocol) task += `\n\n${NORA_MVU_OUTPUT_INSTRUCTION}`;
 +    if (repair_feedback.trim()) {
 +        task += `\n\n<previous_attempt_error>\nThe previous variable update was rejected. Correct only the variable update commands and obey the existing schema exactly.\n${repair_feedback.slice(0, 2000)}\n</previous_attempt_error>`;
 +    }
      if (response_format === '工具调用') {
-         task += `\n use \`${MVU_TOOL_DEFINITION.function.name}\` tool to update variables.`;
+-        task += `\n use \`${MVU_TOOL_DEFINITION.function.name}\` tool to update variables.`;
++        const tool_definition = use_nora_protocol ? NORA_MVU_TOOL_DEFINITION : MVU_TOOL_DEFINITION;
++        task += `\n use \`${tool_definition.function.name}\` tool to update variables.`;
          store.runtimes.is_function_call_enabled = true;
-@@ -563,32 +635,33 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         if (!supports_request_scoped_tools) {
+-            config.tools = [MVU_TOOL_DEFINITION];
++            config.tools = [tool_definition];
+         }
+         config.tool_choice = 'required';
+     } else if (response_format === '格式化输出') {
+-        task +=
+-            '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object matching the provided json_schema: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`.';
+-        config.json_schema = MVU_JSON_PATCH_RESPONSE_SCHEMA;
++        if (use_nora_protocol) {
++            task += '\n Return only the Nora MVU v1 object required by the provided JSON Schema.';
++            config.json_schema = NORA_MVU_RESPONSE_SCHEMA;
++        } else {
++            task +=
++                '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object matching the provided json_schema: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`.';
++            config.json_schema = MVU_JSON_PATCH_RESPONSE_SCHEMA;
++        }
+     } else if (is_v4_compatible_formatted_output) {
+-        task +=
+-            '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`. Return exactly one JSON object that conforms to this schema:' +
+-            JSON.stringify(MVU_JSON_PATCH_RESPONSE_SCHEMA.value);
++        if (use_nora_protocol) {
++            task += '\n Return exactly one Nora MVU v1 JSON object conforming to this schema:'
++                + JSON.stringify(NORA_MVU_RESPONSE_SCHEMA.value);
++        } else {
++            task +=
++                '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`. Return exactly one JSON object that conforms to this schema:' +
++                JSON.stringify(MVU_JSON_PATCH_RESPONSE_SCHEMA.value);
++        }
+     }
+ 
+     //因为部分预设会用到 {{lastUserMessage}}，因此进行修正。
+@@ -534,7 +687,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+                 },
+             ],
+         });
+-        return normalizeGenerateResultByResponseFormat(result, response_format);
++        return normalizeGenerateResultByResponseFormat(result, response_format, use_nora_protocol);
+     }
+ 
+     if (store.settings.额外模型解析配置.破限方案 === '使用其他预设') {
+@@ -556,16 +709,12 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+                 injects,
+                 ordered_prompts,
+             }),
+-            response_format
++            response_format,
++            use_nora_protocol
+         );
+     }
+ 
      clearExtraModelRequestOverrides();
 -    const model_name =
 -        store.settings.额外模型解析配置.模型来源 === '与插头相同'
@@ -315,34 +836,18 @@ index edc468c..68baf40 100644
      const rnd_header_prompts =
          store.settings.额外模型解析配置.随机头部 && is_gemini
              ? [{ role: 'system' as const, content: batch_id ?? generateRandomHeader() }]
-             : [];
-
-     const result = await generateRaw({
-         ...config,
-         ordered_prompts: [
-             ...rnd_header_prompts,
-             { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
-             { role: 'system', content: '<additional_information>' },
-             'persona_description',
-             'char_description',
-             'world_info_before',
-             'world_info_after',
-             { role: 'system', content: '</additional_information>' },
-             { role: 'system', content: '<past_observe>' },
-             'chat_history',
-             { role: 'system', content: '</past_observe>' },
-             { role: 'system', content: task },
-             'user_input',
+@@ -590,5 +739,5 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
              { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
          ],
      });
-     return normalizeGenerateResultByResponseFormat(result, response_format);
+-    return normalizeGenerateResultByResponseFormat(result, response_format);
++    return normalizeGenerateResultByResponseFormat(result, response_format, use_nora_protocol);
  }
 diff --git a/src/function/update/on_message_received.ts b/src/function/update/on_message_received.ts
-index 2f7a0bf..3d76a01 100644
+index 2f7a0bf..81fd5d4 100644
 --- a/src/function/update/on_message_received.ts
 +++ b/src/function/update/on_message_received.ts
-@@ -1,9 +1,96 @@
+@@ -1,9 +1,101 @@
  import { isExtraModelSupported } from '@/function/is_extra_model_supported';
  import { isFunctionCallingSupported } from '@/function/is_function_calling_supported';
 -import { invokeExtraModelWithStrategy } from '@/function/update/invoke_extra_model';
@@ -361,6 +866,7 @@ index 2f7a0bf..3d76a01 100644
  import { useDataStore } from '@/store';
 +import { getLastValidVariable } from '@/util';
 +import { variable_events } from '@/variable_def';
++import { isExplicitNoraMvuNoop } from '@/function/nora_protocol';
 +
 +const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;
 +
@@ -424,7 +930,8 @@ index 2f7a0bf..3d76a01 100644
 +    const candidate_message = `${original_message.trimEnd()}\n\n${update_block}`;
 +    const modified = await updateVariables(candidate_message, variables);
 +    const diagnostics = getLastVariableUpdateDiagnostics();
-+    const explicit_noop = /<JSONPatch>\s*\[\s*\]\s*<\/JSONPatch>/i.test(update_block);
++    const explicit_noop = /<JSONPatch>\s*\[\s*\]\s*<\/JSONPatch>/i.test(update_block)
++        || isExplicitNoraMvuNoop(update_block);
 +    if (diagnostics.errors.length > 0 || (!modified && !explicit_noop)) return false;
 +
 +    const current = getChatMessages(message_id).at(-1);
@@ -441,13 +948,13 @@ index 2f7a0bf..3d76a01 100644
 +    await persistVariablesForMessage(message_id, variables);
 +    return true;
 +}
-
+ 
  export async function onMessageReceived(
      message_id: number,
-@@ -49,26 +136,75 @@ export async function onMessageReceived(
+@@ -49,26 +141,75 @@ export async function onMessageReceived(
          return;
      }
-
+ 
 -    const result = await invokeExtraModelWithStrategy();
 -    if (result !== null) {
 -        const chat_message = getChatMessages(message_id);
@@ -465,7 +972,7 @@ index 2f7a0bf..3d76a01 100644
 +        started_at,
 +        had_snapshot: Boolean(previous_snapshot?.stat_data && previous_snapshot?.schema),
 +    });
-
+ 
 -        await setChatMessages(
 -            [
 -                {
@@ -496,6 +1003,8 @@ index 2f7a0bf..3d76a01 100644
 -            tr('runtime.extraModel.updateFailed'),
 -            tr('runtime.extraModel.updateFailedTitle')
 -        );
+-    }
+-    await handleVariablesInMessage(message_id);
 +            repair_feedback = diagnosticFeedback();
 +            failure = diagnosticFailure();
 +            failure_diagnostics = getLastVariableUpdateDiagnostics();
@@ -522,8 +1031,7 @@ index 2f7a0bf..3d76a01 100644
 +        if (previous_snapshot?.stat_data) {
 +            await persistVariablesForMessage(message_id, previous_snapshot);
 +        }
-     }
--    await handleVariablesInMessage(message_id);
++    }
 +    await eventEmit(variable_events.TRANSACTION_FAILED, {
 +        message_id,
 +        duration_ms: Date.now() - started_at,
@@ -539,13 +1047,15 @@ index 2f7a0bf..3d76a01 100644
 +    );
  }
 diff --git a/src/function/update_variables.ts b/src/function/update_variables.ts
-index e803b3d..06d842b 100644
+index e803b3d..a346da2 100644
 --- a/src/function/update_variables.ts
 +++ b/src/function/update_variables.ts
-@@ -21,6 +21,22 @@ import { parseString } from '@util/common';
+@@ -20,6 +20,23 @@ import {
+ import { parseString } from '@util/common';
  import { klona } from 'klona';
  import * as math from 'mathjs';
-
++import { extractNoraMvuCommands } from '@/function/nora_protocol';
++
 +export type VariableUpdateDiagnostics = {
 +    command_count: number;
 +    modified: boolean;
@@ -561,11 +1071,10 @@ index e803b3d..06d842b 100644
 +export function getLastVariableUpdateDiagnostics(): VariableUpdateDiagnostics {
 +    return klona(last_update_diagnostics);
 +}
-+
+ 
  export function trimQuotesAndBackslashes(str: string): string {
      if (!_.isString(str)) return str;
-     // Regular expression to match backslashes and quotes (including backticks) at the beginning and end
-@@ -678,6 +694,7 @@ export async function updateVariables(
+@@ -678,6 +695,7 @@ export async function updateVariables(
      current_message_content: string,
      variables: MvuData
  ): Promise<boolean> {
@@ -573,34 +1082,142 @@ index e803b3d..06d842b 100644
      // 拷贝一份变量，用于提供给 variable_ended
      const variables_before_update: MvuData = klona(variables);
      // 深拷贝变量对象，生成状态快照，用于记录显示数据
-@@ -708,6 +725,7 @@ export async function updateVariables(
+@@ -688,8 +706,12 @@ export async function updateVariables(
+     // 重构新增：统一处理宏替换，确保命令中的宏（如 ${variable}）被替换，提升一致性
+     const processed_message_content = substitudeMacros(current_message_content);
+ 
+-    // 使用重构后的 extractCommands 提取所有命令
+-    const commands = extractCommands(processed_message_content);
++    // Nora v1 is an exclusive envelope. If its tag is present, do not also
++    // execute legacy commands from the same response and risk duplicate writes.
++    const nora_extraction = extractNoraMvuCommands(processed_message_content);
++    const commands: Command[] = nora_extraction.matched
++        ? nora_extraction.commands
++        : extractCommands(processed_message_content);
+ 
+     // 触发变量更新开始事件，通知外部系统
+     _.set(variables.stat_data, '$internal', {
+@@ -708,7 +730,17 @@ export async function updateVariables(
              command,
              content,
          };
 +        last_update_diagnostics.errors.push({ command, content });
      };
-
++    if (nora_extraction.error) {
++        current_command = {
++            type: 'set',
++            full_match: '<NoraMvu>',
++            args: [],
++            reason: 'nora-mvu/1',
++        };
++        outError(nora_extraction.error.message);
++    }
+ 
      const schema = variables.schema; // 获取 schema，可能为 undefined
-@@ -742,6 +760,7 @@ export async function updateVariables(
+     const strict_template = schema?.strictTemplate ?? false;
+@@ -742,6 +774,7 @@ export async function updateVariables(
          commands,
          current_message_content
      );
 +    last_update_diagnostics.command_count = commands.length;
-
+ 
      pathFixPass(variables, commands, current_message_content);
-
-@@ -1474,6 +1493,7 @@ export async function updateVariables(
+ 
+@@ -860,6 +893,11 @@ export async function updateVariables(
+                         : _.get(variables.stat_data, targetPath);
+                 const targetSchema = getSchemaForPath(schema, targetPath);
+ 
++                if (command.reason === 'nora-mvu/1' && !Array.isArray(existingValue)) {
++                    outError(`Nora MVU insert target must be an existing array: ${targetPath}`);
++                    continue;
++                }
++
+                 // 验证1：目标是否为原始类型？如果是，则无法插入。
+                 if (
+                     existingValue !== null &&
+@@ -1031,6 +1069,10 @@ export async function updateVariables(
+                         // 目标是数组且索引是数字，插入到指定位置
+                         // JSON Patch 中的 "-" 表示追加到数组末尾，而不是字面量键名。
+                         const insertIndex = keyOrIndex === '-' ? collection.length : keyOrIndex;
++                        if (command.reason === 'nora-mvu/1' && insertIndex > collection.length) {
++                            outError(`Nora MVU insert index is outside the target array: ${insertIndex}`);
++                            continue;
++                        }
+                         const positionLabel =
+                             keyOrIndex === '-' || keyOrIndex === -1 ? 'tail' : keyOrIndex;
+                         valueToAssign = applyTemplate(
+@@ -1321,6 +1363,28 @@ export async function updateVariables(
+                 break;
+             }
+ 
++            case 'move': {
++                const from = command.args[0];
++                const to = command.args[1];
++                if (!_.has(variables.stat_data, from)) {
++                    outError(`Nora MVU move source does not exist: ${from}`);
++                    continue;
++                }
++                const value = klona(_.get(variables.stat_data, from));
++                const previousTarget = klona(_.get(variables.stat_data, to));
++                _.unset(variables.stat_data, from);
++                _.set(variables.stat_data, to, value);
++                display_str = `MOVED '${from}' to '${to}' ${reason_str}`;
++                await eventEmit(
++                    variable_events.SINGLE_VARIABLE_UPDATED,
++                    variables.stat_data,
++                    to,
++                    previousTarget,
++                    value
++                );
++                break;
++            }
++
+             case 'add': {
+                 // 验证路径存在
+                 if (!_.has(variables.stat_data, path)) {
+@@ -1343,6 +1407,10 @@ export async function updateVariables(
+                     assertVWD(isVWD, oldValue);
+                     valueToAdd = oldValue[0]; // 对 ValueWithDescription 类型，操作其第一个元素
+                 }
++                if (command.reason === 'nora-mvu/1' && typeof valueToAdd !== 'number') {
++                    outError(`Nora MVU increment target must be numeric: ${path}`);
++                    continue;
++                }
+                 // console.warn(valueToAdd);
+ 
+                 // 尝试将当前值解析为 Date 对象，无论其原始类型是 Date 还是字符串
+@@ -1465,15 +1533,23 @@ export async function updateVariables(
+             _.set(delta_status.stat_data!, path, display_str);
+         }
+     }
+-    // 更新变量的显示和增量数据
+-    variables.display_data = out_status.stat_data;
+-    variables.delta_data = delta_status.stat_data!;
++    // A batch is indivisible. A later invalid command must not leave mutations
++    // from earlier commands in the snapshot that is persisted for this message.
++    if (last_update_diagnostics.errors.length > 0) {
++        for (const key of Object.keys(variables)) delete (variables as any)[key];
++        Object.assign(variables, klona(variables_before_update));
++    } else {
++        variables.display_data = out_status.stat_data;
++        variables.delta_data = delta_status.stat_data!;
++    }
+     // 触发变量更新结束事件
+     await eventEmit(variable_events.VARIABLE_UPDATE_ENDED, variables, variables_before_update);
+     //在结束事件中也可能设置变量
      _.unset(variables.stat_data, '$internal');
      // 在所有命令执行完毕后，如果数据有任何变动，则执行一次 Schema 调和
-     const is_modified = !_.isEqual(variables.stat_data, variables_before_update.stat_data);
+-    const is_modified = !_.isEqual(variables.stat_data, variables_before_update.stat_data);
++    const is_modified = last_update_diagnostics.errors.length === 0
++        && !_.isEqual(variables.stat_data, variables_before_update.stat_data);
 +    last_update_diagnostics.modified = is_modified;
      if (is_modified) {
          reconcileAndApplySchema(variables);
      }
-@@ -1497,26 +1517,10 @@ export async function updateVariables(
+@@ -1497,26 +1573,10 @@ export async function updateVariables(
      return is_modified;
  }
-
+ 
 -export async function handleVariablesInMessage(message_id: number) {
 +export async function persistVariablesForMessage(message_id: number, variables: MvuData) {
      const chat_message = getChatMessages(message_id).at(-1);
@@ -626,7 +1243,7 @@ index e803b3d..06d842b 100644
      const latest_chat_message = getChatMessages(message_id).at(-1) ?? chat_message;
      if (latest_chat_message.role !== 'user') {
          // updateVariables() emits events and awaits their listeners. Re-read immediately before
-@@ -1577,3 +1581,18 @@ export async function handleVariablesInMessage(message_id: number) {
+@@ -1577,3 +1637,18 @@ export async function handleVariablesInMessage(message_id: number) {
          });
      }
  }
@@ -645,6 +1262,32 @@ index e803b3d..06d842b 100644
 +    await persistVariablesForMessage(message_id, variables);
 +    return is_modified;
 +}
+diff --git a/src/main.ts b/src/main.ts
+index 364eb10..2b10780 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -1,4 +1,3 @@
+-import { initButtons } from '@/button';
+ import { watchPreferredChatSync } from '@/function/chat_lifecycle';
+ import { initCleanup } from '@/function/cleanup';
+ import { initCharacterSettingsOverride } from '@/function/character_override';
+@@ -9,7 +8,6 @@ import { initNotification } from '@/function/notification';
+ import { initRequest } from '@/function/request';
+ import { initResponse } from '@/function/update';
+ import { tr } from '@/i18n';
+-import { initPanel } from '@/panel';
+ import { useDataStore } from '@/store';
+ import { controlledStoppableEventOn } from '@/util';
+ import { checkMinimumVersion } from '@util/common';
+@@ -34,8 +32,6 @@ $(async () => {
+ 
+     const stop_list: Stop[] = [];
+ 
+-    stop_list.push(initPanel());
+-    stop_list.push(initButtons());
+     stop_list.push(initGlobals());
+ 
+     let chat_level_stop_list: Stop[] = [];
 diff --git a/src/variable_def.ts b/src/variable_def.ts
 index a94688c..2bcf166 100644
 --- a/src/variable_def.ts
@@ -652,7 +1295,7 @@ index a94688c..2bcf166 100644
 @@ -179,6 +179,15 @@ export const variable_events = {
      /** 某轮变量更新开始时触发的事件 */
      VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
-
+ 
 +    /** Nora: a bounded extra-model update transaction started. */
 +    TRANSACTION_STARTED: 'nora_mvu_transaction_started',
 +
@@ -675,31 +1318,216 @@ index a94688c..2bcf166 100644
      [variable_events.COMMAND_PARSED]: (
          variables: MvuData,
          commands: CommandInfo[],
-diff --git a/src/main.ts b/src/main.ts
---- a/src/main.ts
-+++ b/src/main.ts
-@@ -1,4 +1,3 @@
--import { initButtons } from '@/button';
- import { watchPreferredChatSync } from '@/function/chat_lifecycle';
- import { initCleanup } from '@/function/cleanup';
- import { initCharacterSettingsOverride } from '@/function/character_override';
-@@ -8,7 +7,6 @@ import { initNotification } from '@/function/notification';
- import { initRequest } from '@/function/request';
- import { initResponse } from '@/function/update';
- import { tr } from '@/i18n';
--import { initPanel } from '@/panel';
- import { useDataStore } from '@/store';
- import { controlledStoppableEventOn } from '@/util';
- import { checkMinimumVersion } from '@util/common';
-@@ -33,8 +31,6 @@ $(async () => {
-
-     const stop_list: Stop[] = [];
-
--    stop_list.push(initPanel());
--    stop_list.push(initButtons());
-     stop_list.push(initGlobals());
-
-     let chat_level_stop_list: Stop[] = [];
+diff --git a/tests/invoke_extra_model.test.ts b/tests/invoke_extra_model.test.ts
+index cea1030..6b568e4 100644
+--- a/tests/invoke_extra_model.test.ts
++++ b/tests/invoke_extra_model.test.ts
+@@ -1,6 +1,7 @@
+ import {
+     extractFromFormattedOutput,
+     extractFromGenerateToolCallResult,
++    extractNoraMvuFromFormattedOutput,
+     extractFromToolCall,
+     MVU_FUNCTION_NAME,
+     MVU_JSON_PATCH_RESPONSE_SCHEMA,
+@@ -30,6 +31,18 @@ const makeToolCalls = (argumentsValue: string, name = MVU_FUNCTION_NAME): ToolCa
+ ];
+ 
+ describe('extractFromToolCall', () => {
++    test('extracts a Nora MVU v1 tool payload without a text delta', () => {
++        const args = JSON.stringify({
++            protocol: 'nora-mvu/1',
++            operations: [{ op: 'set', path: ['角色', '好感度'], value: 44 }],
++        });
++
++        expect(extractFromToolCall(makeToolCalls(args))).toBe([
++            '<UpdateVariable>',
++            '<NoraMvu>{"protocol":"nora-mvu/1","operations":[{"op":"set","path":["角色","好感度"],"value":44}]}</NoraMvu>',
++            '</UpdateVariable>',
++        ].join('\n'));
++    });
+     test('returns null when tool_calls is missing or empty', () => {
+         expect(extractFromToolCall(undefined)).toBeNull();
+         expect(extractFromToolCall([] as ToolCallBatches)).toBeNull();
+@@ -339,6 +352,21 @@ describe('extractFromToolCall', () => {
+     });
+ });
+ 
++describe('extractNoraMvuFromFormattedOutput', () => {
++    test('validates and wraps a structured Nora MVU response', () => {
++        const result = JSON.stringify({ protocol: 'nora-mvu/1', operations: [] });
++        expect(extractNoraMvuFromFormattedOutput(result)).toBe(
++            '<UpdateVariable>\n<NoraMvu>{"protocol":"nora-mvu/1","operations":[]}</NoraMvu>\n</UpdateVariable>'
++        );
++    });
++
++    test('rejects an invalid structured Nora MVU response', () => {
++        const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
++        expect(extractNoraMvuFromFormattedOutput('{"protocol":"nora-mvu/1","operations":[{"op":"set","path":[],"value":1}]}')).toBeNull();
++        errorSpy.mockRestore();
++    });
++});
++
+ describe('extractFromFormattedOutput', () => {
+     test('extracts json_patch object response into UpdateVariable block', () => {
+         const content = JSON.stringify({
+diff --git a/tests/nora_protocol.test.ts b/tests/nora_protocol.test.ts
+new file mode 100644
+index 0000000..11b90b6
+--- /dev/null
++++ b/tests/nora_protocol.test.ts
+@@ -0,0 +1,151 @@
++import {
++    envelopeToCommands,
++    extractNoraMvuCommands,
++    formatNoraMvuUpdateBlock,
++    isExplicitNoraMvuNoop,
++    parseNoraMvuEnvelope,
++} from '@/function/nora_protocol';
++import { getLastVariableUpdateDiagnostics, updateVariables } from '@/function/update_variables';
++
++describe('Nora MVU v1 protocol', () => {
++    test('translates every operation into the pinned MVU command interface', () => {
++        const envelope = parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1',
++            operations: [
++                { op: 'set', path: ['角色', '好感度'], value: 44 },
++                { op: 'increment', path: ['角色', '好感度'], amount: 2 },
++                { op: 'append', path: ['角色', '背包'], value: '钥匙' },
++                { op: 'insert', path: ['角色', '背包'], index: 0, value: '车票' },
++                { op: 'delete', path: ['角色', '背包', 1] },
++                { op: 'move', from: ['角色', '旧位置'], path: ['角色', '当前位置'] },
++            ],
++        });
++
++        expect(envelopeToCommands(envelope)).toEqual([
++            expect.objectContaining({ type: 'set', args: ['["角色"]["好感度"]', '44'] }),
++            expect.objectContaining({ type: 'add', args: ['["角色"]["好感度"]', '2'] }),
++            expect.objectContaining({ type: 'insert', args: ['["角色"]["背包"]', '"-"', '"钥匙"'] }),
++            expect.objectContaining({ type: 'insert', args: ['["角色"]["背包"]', '0', '"车票"'] }),
++            expect.objectContaining({ type: 'delete', args: ['["角色"]["背包"][1]'] }),
++            expect.objectContaining({ type: 'move', args: ['["角色"]["旧位置"]', '["角色"]["当前位置"]'] }),
++        ]);
++    });
++
++    test('extracts a tagged envelope and treats it as an exclusive command batch', () => {
++        const input = [
++            "_.set('角色.好感度', 999);",
++            '<NoraMvu>',
++            '{"protocol":"nora-mvu/1","operations":[{"op":"set","path":["角色","好感度"],"value":44}]}',
++            '</NoraMvu>',
++        ].join('\n');
++        const extracted = extractNoraMvuCommands(input);
++
++        expect(extracted.matched).toBe(true);
++        expect(extracted.error).toBeUndefined();
++        expect(extracted.commands).toHaveLength(1);
++        expect(extracted.commands[0].args.at(-1)).toBe('44');
++    });
++
++    test('rejects unknown fields, dangerous paths, unknown operations and invalid indexes', () => {
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [], extra: true,
++        })).toThrow(/unknown fields/);
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [{ op: 'set', path: ['__proto__'], value: 1 }],
++        })).toThrow(/not writable/);
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [{ op: 'merge', path: ['x'], value: 1 }],
++        })).toThrow(/unsupported/);
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [{ op: 'insert', path: ['x'], index: -1, value: 1 }],
++        })).toThrow(/non-negative integer/);
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [{ op: 'set', path: ['   '], value: 1 }],
++        })).toThrow(/non-empty string/);
++        expect(() => parseNoraMvuEnvelope({
++            protocol: 'nora-mvu/1', operations: [{ op: 'move', from: ['角色'], path: ['角色', '状态'] }],
++        })).toThrow(/own descendant/);
++    });
++
++    test('formats and recognizes an explicit no-op', () => {
++        const block = formatNoraMvuUpdateBlock({ protocol: 'nora-mvu/1', operations: [] });
++        expect(block).toContain('<NoraMvu>{"protocol":"nora-mvu/1","operations":[]}</NoraMvu>');
++        expect(isExplicitNoraMvuNoop(block)).toBe(true);
++    });
++
++    test('reports malformed tagged JSON instead of silently falling back to legacy parsing', () => {
++        const extracted = extractNoraMvuCommands('<NoraMvu>{bad json}</NoraMvu>');
++        expect(extracted.matched).toBe(true);
++        expect(extracted.commands).toEqual([]);
++        expect(extracted.error).toBeInstanceOf(Error);
++    });
++
++    test('rejects duplicate Nora blocks instead of choosing one silently', () => {
++        const block = '<NoraMvu>{"protocol":"nora-mvu/1","operations":[]}</NoraMvu>';
++        const extracted = extractNoraMvuCommands(`${block}\n${block}`);
++        expect(extracted.matched).toBe(true);
++        expect(extracted.commands).toEqual([]);
++        expect(extracted.error?.message).toContain('exactly one');
++    });
++
++    test('rolls the whole batch back when a later operation is invalid', async () => {
++        const variables: any = {
++            initialized_lorebooks: {},
++            stat_data: { score: 1 },
++            display_data: {},
++            delta_data: {},
++        };
++        const block = formatNoraMvuUpdateBlock({
++            protocol: 'nora-mvu/1',
++            operations: [
++                { op: 'set', path: ['score'], value: 2 },
++                { op: 'set', path: ['missing'], value: 3 },
++            ],
++        });
++
++        await expect(updateVariables(block, variables)).resolves.toBe(false);
++        expect(variables.stat_data).toEqual({ score: 1 });
++        expect(getLastVariableUpdateDiagnostics().errors).toHaveLength(1);
++    });
++
++    test('executes move and enforces Nora operation semantics without a Zod card schema', async () => {
++        const variables: any = {
++            initialized_lorebooks: {},
++            stat_data: { actor: { oldPlace: 'train', items: [] } },
++            display_data: {},
++            delta_data: {},
++        };
++        const block = formatNoraMvuUpdateBlock({
++            protocol: 'nora-mvu/1',
++            operations: [
++                { op: 'move', from: ['actor', 'oldPlace'], path: ['actor', 'place'] },
++                { op: 'append', path: ['actor', 'items'], value: 'ticket' },
++            ],
++        });
++
++        await expect(updateVariables(block, variables)).resolves.toBe(true);
++        expect(variables.stat_data).toEqual({ actor: { place: 'train', items: ['ticket'] } });
++    });
++
++    test('rejects non-array append and non-numeric increment without partial writes', async () => {
++        const variables: any = {
++            initialized_lorebooks: {},
++            stat_data: { actor: { items: {}, clock: '2026-09-05T00:00:00.000Z' } },
++            display_data: {},
++            delta_data: {},
++        };
++        const block = formatNoraMvuUpdateBlock({
++            protocol: 'nora-mvu/1',
++            operations: [
++                { op: 'append', path: ['actor', 'items'], value: 'ticket' },
++                { op: 'increment', path: ['actor', 'clock'], amount: 1000 },
++            ],
++        });
++
++        await expect(updateVariables(block, variables)).resolves.toBe(false);
++        expect(variables.stat_data).toEqual({
++            actor: { items: {}, clock: '2026-09-05T00:00:00.000Z' },
++        });
++        expect(getLastVariableUpdateDiagnostics().errors.length).toBeGreaterThan(0);
++    });
++});
 diff --git a/webpack.config.ts b/webpack.config.ts
 index 76b0425..e3f598e 100644
 --- a/webpack.config.ts
