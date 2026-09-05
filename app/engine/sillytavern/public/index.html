@@ -321,10 +321,10 @@
             globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__ = (phase, details = {}) => {
                 pushBounded(metrics.milestones, { name: phase, at: elapsed(), ...details }, 120);
                 const send = async () => {
-                    let bootstrap;
+                    let csrfToken;
                     try {
-                        bootstrap = await Promise.race([
-                            globalThis.__NORA_SHELL_DATA_PROMISE__ || globalThis.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__,
+                        csrfToken = await Promise.race([
+                            globalThis.__NORA_CSRF_PROMISE__,
                             new Promise((_, reject) => setTimeout(() => reject(new Error('bootstrap token timeout')), 2_000)),
                         ]);
                     } catch (error) {
@@ -337,7 +337,7 @@
                         method: 'POST',
                         headers: {
                             'Content-Type': 'application/json',
-                            'X-CSRF-Token': bootstrap.csrfToken,
+                            'X-CSRF-Token': csrfToken,
                             'X-Nora-Trace-Id': metrics.sessionId,
                         },
                         body: JSON.stringify({ phase, release: globalThis.__NORA_ASSET_RELEASE__ || '', metrics: payloadMetrics }),
@@ -409,6 +409,11 @@
             throw error;
         });
         globalThis.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__ = runtimeBootstrapNetworkPromise;
+        globalThis.__NORA_CSRF_PROMISE__ = runtimeBootstrapNetworkPromise.then((bootstrap) => {
+            const csrfToken = String(bootstrap?.csrfToken || '');
+            if (!csrfToken) throw new Error('Nora runtime bootstrap has no CSRF token.');
+            return csrfToken;
+        });
         globalThis.__NORA_RELEASE_GUARD_PROMISE__ = shellNetworkPromise.then(async (shell) => {
             const embeddedRelease = globalThis.__NORA_ASSET_RELEASE__;
             const currentRelease = String(shell.assetRelease || '');
@@ -833,7 +838,6 @@
             });
             const shellPromise = globalThis.__NORA_SHELL_DATA_PROMISE__;
             const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__;
-            globalThis.__NORA_CSRF_PROMISE__ = bootstrapPromise.then(data => data.csrfToken);
             globalThis.__NORA_SETTINGS_PROMISE__ = bootstrapPromise.then(data => data.runtimeSettings);
             globalThis.__NORA_SECRET_STATE_PROMISE__ = bootstrapPromise.then(data => data.secretState);
             globalThis.__NORA_VERSION_PROMISE__ = bootstrapPromise.then(data => data.version);

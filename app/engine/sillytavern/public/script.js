@@ -901,13 +901,26 @@ async function sendNoraBootMetrics(payload) {
             // The normal startup error path owns bootstrap failures.
         }
     }
-    const response = await fetch('/api/nora-boot/metrics', {
+    const send = () => fetch('/api/nora-boot/metrics', {
         method: 'POST',
         headers: getRequestHeaders(),
         body: JSON.stringify(payload),
         cache: 'no-cache',
         keepalive: true,
     });
+    let response = await send();
+    if (response.status === 403) {
+        const tokenResponse = await fetch('/csrf-token', {
+            cache: 'no-store',
+            credentials: 'same-origin',
+        });
+        if (!tokenResponse.ok) throw new Error(`csrf refresh HTTP ${tokenResponse.status}`);
+        const tokenData = await tokenResponse.json();
+        token = String(tokenData?.token || '');
+        if (!token) throw new Error('csrf refresh returned no token');
+        globalThis.__NORA_CSRF_PROMISE__ = Promise.resolve(token);
+        response = await send();
+    }
     if (!response.ok) throw new Error(`metrics HTTP ${response.status}`);
 }
 

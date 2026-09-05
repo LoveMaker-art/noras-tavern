@@ -119,6 +119,9 @@ assert.ok(moduleLoaderStart < bodyBootstrapReuse, 'the module loader must be rea
 assert.match(index, /globalThis\.__NORA_RELEASE_GUARD_PROMISE__\s*=\s*shellNetworkPromise\.then/, 'the compact shell response must enforce shell/backend release coherence');
 assert.match(index, /globalThis\.__NORA_SHELL_DATA_PROMISE__\s*=\s*globalThis\.__NORA_RELEASE_GUARD_PROMISE__/, 'visible shell data must wait for the release guard');
 assert.match(index, /globalThis\.__NORA_SHELL_BOOTSTRAP_PROMISE__\s*=\s*Promise\.all/, 'runtime bootstrap must retain the release guard without blocking the visible shell');
+assert.match(index, /globalThis\.__NORA_CSRF_PROMISE__\s*=\s*runtimeBootstrapNetworkPromise\.then/, 'all startup telemetry must use the authoritative runtime bootstrap token');
+assert.match(index, /csrfToken\s*=\s*await Promise\.race\(\[\s*globalThis\.__NORA_CSRF_PROMISE__/, 'early telemetry must wait for the canonical CSRF token');
+assert.doesNotMatch(index, /__NORA_SHELL_DATA_PROMISE__\s*\|\|\s*globalThis\.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__/, 'the token-free World shell must never be used as a CSRF source');
 assert.match(index, /target\.searchParams\.set\('release', currentRelease\)[\s\S]*location\.replace\(target\.href\)/, 'a stale shell must navigate once to the current release URL');
 assert.doesNotMatch(
     index.slice(moduleLoaderStart, bodyBootstrapReuse),
