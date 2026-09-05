@@ -248,7 +248,7 @@ def prepare_skills(source, destination):
     return installer.prepare_skill_trees(source, destination)
 
 
-def host_hook_swap(home, source):
+def prepare_host_hook_swap(home, source, prepared_root):
     origin = Path(source) / "ops" / HOST_HOOK
     required = ("HOOK.yaml", "handler.py", "run.sh")
     missing = [name for name in required if not (origin / name).is_file()]
@@ -257,7 +257,11 @@ def host_hook_swap(home, source):
     target = Path(home) / HOST_HOOK
     if trees_equal(origin, target):
         return None
-    return "host-hook-tavern-liveware-register", origin, target
+    prepared_root = Path(prepared_root)
+    prepared_root.mkdir(parents=True, exist_ok=True)
+    prepared = prepared_root / HOST_HOOK.name
+    shutil.copytree(origin, prepared, symlinks=False)
+    return "host-hook-tavern-liveware-register", prepared, target
 
 
 def hermes_model(home, source):
@@ -732,7 +736,10 @@ def install(args):
                 swaps.append(("ops", source / "ops", roots["ops"]))
             if mcp_changed:
                 swaps.append(("nora-mcp", source / "nora-mcp", roots["nora-mcp"]))
-            host_hook = host_hook_swap(home, source)
+            # The operations tree is swapped before host hooks. Keep the hook's
+            # prepared source outside source/ops so moving that parent tree
+            # cannot invalidate a later swap in the same transaction.
+            host_hook = prepare_host_hook_swap(home, source, work / "host-hooks")
             if host_hook:
                 swaps.append(host_hook)
             for relative, prepared in skills.items():
