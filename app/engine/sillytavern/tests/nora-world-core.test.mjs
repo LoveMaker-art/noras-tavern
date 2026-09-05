@@ -422,26 +422,102 @@ test('persists a failed operation and retries with the original World identity',
     assert.equal(retried.operation.status, 'COMPLETED');
 });
 
-test('releases staged input after a terminal non-retryable creation failure', async (t) => {
+test('persists a terminal creation failure, releases its staged input, and refuses retry', async (t) => {
     const root = await temporaryRoot(t);
     let releases = 0;
+    let materializations = 0;
     const core = createNoraWorldCore({
         root,
         materializer: {
             async materialize() {
+                materializations += 1;
                 throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Invalid card');
             },
-            async release() {
+            async releaseStagedInput() {
                 releases += 1;
             },
         },
     });
 
+    let failure;
+    try {
+        await core.createWorld(command(), { idempotencyKey: 'import:terminal-failure' });
+    } catch (error) {
+        failure = error;
+    }
+    assert.equal(failure?.code, 'NORA_CARD_INVALID');
+    assert.equal(failure?.retryable, false);
+    const failed = await core.getOperation(failure.details.operationId);
+    assert.equal(failed.status, 'FAILED');
+    assert.equal(failed.error.retryable, false);
+    assert.ok(failed.input_released_at);
+    assert.equal(releases, 1);
+    await assert.rejects(
+        core.retryOperation(failed.operation_id),
+        error => error?.code === 'NORA_CARD_INVALID' && error?.retryable === false,
+    );
     await assert.rejects(
         core.createWorld(command(), { idempotencyKey: 'import:terminal-failure' }),
         error => error?.code === 'NORA_CARD_INVALID' && error?.retryable === false,
     );
+    assert.equal(materializations, 1);
     assert.equal(releases, 1);
+});
+
+test('does not fail a valid World when staged-input cleanup is temporarily unavailable', async (t) => {
+    const root = await temporaryRoot(t);
+    const adapter = materializer();
+    adapter.releaseStagedInput = async () => {
+        throw new Error('fixture cleanup interruption');
+    };
+    const core = createNoraWorldCore({ root, materializer: adapter });
+
+    const created = await core.createWorld(command(), { idempotencyKey: 'import:cleanup-does-not-block' });
+
+    assert.equal(created.operation.status, 'COMPLETED');
+    assert.equal(created.world.lifecycle.status, 'READY');
+    assert.equal(created.operation.input_released_at, null);
+});
+
+test('retries an unfinished terminal staged-input release after restart', async (t) => {
+    const root = await temporaryRoot(t);
+    const firstCore = createNoraWorldCore({
+        root,
+        materializer: {
+            async materialize() {
+                throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Invalid card');
+            },
+            async releaseStagedInput() {
+                throw new Error('fixture cleanup interruption');
+            },
+        },
+    });
+
+    let failure;
+    try {
+        await firstCore.createWorld(command(), { idempotencyKey: 'import:cleanup-recovery' });
+    } catch (error) {
+        failure = error;
+    }
+    const beforeRestart = await firstCore.getOperation(failure.details.operationId);
+    assert.equal(beforeRestart.status, 'FAILED');
+    assert.equal(beforeRestart.input_released_at, null);
+
+    let recoveredReleases = 0;
+    const restartedCore = createNoraWorldCore({
+        root,
+        materializer: {
+            async materialize() {
+                assert.fail('a terminal operation must not materialize after restart');
+            },
+            async releaseStagedInput() {
+                recoveredReleases += 1;
+            },
+        },
+    });
+    const recovered = await restartedCore.getOperation(beforeRestart.operation_id);
+    assert.equal(recovered.input_released_at === null, false);
+    assert.equal(recoveredReleases, 1);
 });
 
 test('restores Worlds and completed operations after constructing a new core', async (t) => {

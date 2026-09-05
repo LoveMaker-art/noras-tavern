@@ -1,5 +1,4 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import express from 'express';
 
 import { NoraWorldCoreError } from '../nora-world-core/index.js';
@@ -62,23 +61,12 @@ async function unlinkUpload(file) {
     if (file?.path) await fs.unlink(file.path).catch(() => {});
 }
 
-async function unlinkStagedOperation(operation, stagingRoot) {
-    const source = path.resolve(String(operation?.command?.payload?.staged_card?.path || ''));
-    const root = path.resolve(stagingRoot);
-    const relative = path.relative(root, source);
-    if (!source || !relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) return;
-    await fs.unlink(source).catch(error => {
-        if (error?.code !== 'ENOENT') throw error;
-    });
-}
-
 export function createNoraWorldsV2Router({
     resolveCore = defaultResolveCore,
     stageImport = stageStCardImport,
     stageBlank = stageBlankWorld,
     stageLibrary = stageLibraryCard,
     cleanupUpload = unlinkUpload,
-    cleanupStagedCard = unlinkStagedOperation,
     getSnapshotRevision = getActivationSnapshotRevision,
     readSnapshot = readActivationSnapshot,
 } = {}) {
@@ -124,9 +112,6 @@ export function createNoraWorldsV2Router({
             const result = await resolveCore(request).submitWorld(command, {
                 idempotencyKey: request.body?.idempotency_key,
             });
-            if (result.operation.status === 'COMPLETED') {
-                await cleanupStagedCard(result.operation, stagingRoot);
-            }
             return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
                 operation: publicOperation(result.operation),
                 world: result.world,
@@ -155,7 +140,6 @@ export function createNoraWorldsV2Router({
             const result = existing?.status === 'FAILED' && existing.error?.retryable
                 ? await core.retryOperation(existing.operation_id)
                 : await core.submitWorld(command, { idempotencyKey });
-            if (result.operation.status === 'COMPLETED') await cleanupStagedCard(result.operation, stagingRoot);
             return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
                 operation: publicOperation(result.operation), world: result.world, reused: result.reused,
             });
@@ -178,9 +162,6 @@ export function createNoraWorldsV2Router({
             const result = await resolveCore(request).submitWorld(command, {
                 idempotencyKey: request.body?.idempotency_key,
             });
-            if (result.operation.status === 'COMPLETED') {
-                await cleanupStagedCard(result.operation, stagingRoot);
-            }
             return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
                 operation: publicOperation(result.operation),
                 world: result.world,
@@ -197,9 +178,6 @@ export function createNoraWorldsV2Router({
             const operation = await core.getOperation(request.params.operationId);
             if (!operation) throw new NoraWorldCoreError('NORA_OPERATION_NOT_FOUND', 'World operation was not found.');
             const world = operation.status === 'COMPLETED' ? await core.getWorld(operation.world_id) : null;
-            if (operation.type === 'CREATE_WORLD' && operation.status === 'COMPLETED') {
-                await cleanupStagedCard(operation, worldCorePaths(request.user.directories).stagingRoot);
-            }
             return response.json({ operation: publicOperation(operation), world });
         } catch (error) {
             return sendError(response, error);
@@ -209,9 +187,6 @@ export function createNoraWorldsV2Router({
     router.post('/operations/:operationId/retry', async (request, response) => {
         try {
             const result = await resolveCore(request).retryOperation(request.params.operationId);
-            if (result.operation.type === 'CREATE_WORLD' && result.operation.status === 'COMPLETED') {
-                await cleanupStagedCard(result.operation, worldCorePaths(request.user.directories).stagingRoot);
-            }
             return response.json({ operation: publicOperation(result.operation), world: result.world, reused: result.reused });
         } catch (error) {
             return sendError(response, error);

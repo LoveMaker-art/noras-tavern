@@ -592,7 +592,7 @@ export function createStBackendMaterializer({
             }
             return { deleted };
         },
-        async release(command) {
+        async releaseStagedInput(command) {
             const sourcePath = path.resolve(String(command?.payload?.staged_card?.path || ''));
             const relative = path.relative(staging, sourcePath);
             if (!sourcePath || !relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {

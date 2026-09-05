@@ -24,6 +24,17 @@ function stageAtLeast(operation, stage) {
     return OPERATION_STAGES.indexOf(operation.stage) >= OPERATION_STAGES.indexOf(stage);
 }
 
+function failedOperationError(operation) {
+    return new NoraWorldCoreError(
+        operation.error?.code || 'NORA_WORLD_CREATE_FAILED',
+        operation.error?.message || 'World creation failed.',
+        {
+            retryable: operation.error?.retryable === true,
+            details: { operationId: operation.operation_id, worldId: operation.world_id },
+        },
+    );
+}
+
 export class NoraWorldCore {
     #store;
     #journal;
@@ -46,12 +57,26 @@ export class NoraWorldCore {
     }
 
     async #initialize() {
-        if (!this.#initialized) this.#initialized = Promise.all([
-            this.#store.load(),
-            this.#journal.load(),
-            this.#mutations.load(),
-        ]);
+        if (!this.#initialized) this.#initialized = (async () => {
+            await Promise.all([
+                this.#store.load(),
+                this.#journal.load(),
+                this.#mutations.load(),
+            ]);
+            const pendingReleases = await this.#journal.pendingInputReleases();
+            for (const operation of pendingReleases) {
+                await this.#releaseStagedInput(operation).catch(() => {});
+            }
+        })();
         await this.#initialized;
+    }
+
+    async #releaseStagedInput(operation) {
+        if (!operation || operation.input_released_at) return operation;
+        if (typeof this.#materializer.releaseStagedInput === 'function') {
+            await this.#materializer.releaseStagedInput(operation.command);
+        }
+        return this.#journal.markInputReleased(operation.operation_id);
     }
 
     async #begin(command, { idempotencyKey } = {}) {
@@ -128,7 +153,10 @@ export class NoraWorldCore {
     async createWorld(command, options = {}) {
         let receipt = await this.submitWorld(command, options);
         if (receipt.world) return receipt;
-        if (receipt.operation.status === 'FAILED') return this.retryOperation(receipt.operation.operation_id);
+        if (receipt.operation.status === 'FAILED') {
+            if (receipt.operation.error?.retryable !== true) throw failedOperationError(receipt.operation);
+            return this.retryOperation(receipt.operation.operation_id);
+        }
         const task = this.#tasks.get(receipt.operation.operation_id) || this.#schedule(receipt.operation, { reused: receipt.reused });
         if (task) return task;
         const operation = await this.#journal.get(receipt.operation.operation_id);
@@ -151,7 +179,10 @@ export class NoraWorldCore {
         }
         const operation = await this.#locks.run(`operation:${operationId}`, async () => {
             let operation = createOperation;
-            if (operation.status === 'FAILED') operation = await this.#journal.resume(operation.operation_id);
+            if (operation.status === 'FAILED') {
+                if (operation.error?.retryable !== true) throw failedOperationError(operation);
+                operation = await this.#journal.resume(operation.operation_id);
+            }
             return operation;
         });
         if (operation.status === 'COMPLETED') {
@@ -167,7 +198,7 @@ export class NoraWorldCore {
         try {
             const committedWorld = await this.#store.get(operation.world_id);
             if (committedWorld) {
-                await this.#materializer.release?.(operation.command).catch(() => {});
+                await this.#releaseStagedInput(operation).catch(() => {});
                 if (!stageAtLeast(operation, 'WORLD_COMMITTED')) {
                     operation = await this.#journal.advance(operation.operation_id, 'WORLD_COMMITTED');
                 }
@@ -207,7 +238,8 @@ export class NoraWorldCore {
                 operation = await this.#journal.advance(operation.operation_id, 'MATERIALIZED', { materialization });
             }
             if (operation.stage === 'MATERIALIZED') {
-                await this.#materializer.release?.(operation.command).catch(() => {});
+                // Staged-input cleanup is recoverable bookkeeping, not a gate on a valid World.
+                await this.#releaseStagedInput(operation).catch(() => {});
                 const manifest = createWorldManifest({
                     operation,
                     command: operation.command,
@@ -222,8 +254,10 @@ export class NoraWorldCore {
             throw new NoraWorldCoreError('NORA_OPERATION_STAGE', `Operation stopped at unsupported stage ${operation.stage}.`);
         } catch (error) {
             const coreError = asWorldCoreError(error, 'NORA_WORLD_CREATE_FAILED', 'World creation failed.', { retryable: true });
-            await this.#journal.fail(operation.operation_id, coreError).catch(() => {});
-            if (!coreError.retryable) await this.#materializer.release?.(operation.command).catch(() => {});
+            const failedOperation = await this.#journal.fail(operation.operation_id, coreError);
+            if (failedOperation && !coreError.retryable) {
+                await this.#releaseStagedInput(failedOperation).catch(() => {});
+            }
             coreError.details = {
                 ...coreError.details,
                 operationId: operation.operation_id,

@@ -27,12 +27,12 @@ The composition root supplies a materializer with:
 
 ```js
 materialize(command, identities) -> MaterializationResult
-release(command) -> void // optional, after MATERIALIZED is durable
+releaseStagedInput(command) -> void // optional, after the input is durably unnecessary
 inspect(world) -> RepairEvidence
 deleteResources(world, deletionPlan) -> DeletionResult
 ```
 
-The production ST backend adapter is Phase 2. Phase 1 tests use a local in-memory adapter. Materialization must be idempotent for the supplied `operationId`; a process can stop after the compatibility engine creates a resource but before the journal advances. Phase 3 calls `release()` only after the materialization result is durable, so staged uploads do not accumulate and crash recovery remains possible.
+The production ST backend adapter is Phase 2. Phase 1 tests use a local in-memory adapter. Materialization must be idempotent for the supplied `operationId`; a process can stop after the compatibility engine creates a resource but before the journal advances. World Core calls `releaseStagedInput()` only after the materialization result is durable or after a non-retryable failure is durable. The journal records `input_released_at`; startup retries any unfinished release, so staged uploads do not accumulate and crash recovery remains possible.
 
 The command `payload` is persisted for retry. It may contain durable non-secret staging references, but never raw card bytes, provider credentials, authentication headers, or ephemeral browser objects.
 
