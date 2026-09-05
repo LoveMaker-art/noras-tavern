@@ -90,6 +90,29 @@ test('composite release changes only when one namespace changes', () => {
     assert.throws(() => computeCompositeAssetRelease(['not-a-hash']), /hexadecimal content hashes/i);
 });
 
+test('a precompressed representation participates in its immutable release identity', () => {
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-static-vendor-'));
+    const sourcePath = path.join(fixture, 'runtime.js');
+    const brotliPath = `${sourcePath}.br`;
+    const options = {
+        roots: [],
+        files: [
+            { label: 'runtime.js', path: sourcePath },
+            { label: 'runtime.js.br', path: brotliPath },
+        ],
+    };
+
+    try {
+        fs.writeFileSync(sourcePath, 'export const ready = true;');
+        fs.writeFileSync(brotliPath, 'brotli-v1');
+        const initial = computeStaticAssetRelease(options);
+        fs.writeFileSync(brotliPath, 'brotli-v2');
+        assert.notEqual(computeStaticAssetRelease(options), initial);
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
 test('index rendering injects separate content-addressed core and extension namespaces', () => {
     const release = '0123456789abcdef';
     const coreRelease = '1111111111111111';

@@ -248,7 +248,11 @@ export async function buildInlineModuleManifest(entryUrls, rootDirectory = publi
 export async function buildLegacyBundle(rootDirectory = publicDirectory) {
     const sources = await Promise.all(LEGACY_SCRIPT_PATHS.map(async (relativePath) => {
         const source = await fs.readFile(path.join(rootDirectory, relativePath), 'utf8');
-        return `/* ${relativePath} */\n${source.replace(/^\/\/# sourceMappingURL=.*$/gm, '')}`;
+        const normalized = source
+            .replace(/^\/\/# sourceMappingURL=.*$/gm, '')
+            .replace(/[ \t]+$/gm, '')
+            .trimEnd();
+        return `/* ${relativePath} */\n${normalized}`;
     }));
     return `${sources.join('\n;\n')}\n`;
 }

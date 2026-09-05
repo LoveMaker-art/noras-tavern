@@ -123,7 +123,11 @@ const vendorAssetRelease = computeStaticAssetRelease({
     roots: [],
     files: [
         { label: 'lib-core.js', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js') },
+        { label: 'lib-core.js.br', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js.br') },
+        { label: 'lib-core.js.gz', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js.gz') },
         { label: 'legacy.js', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js') },
+        { label: 'legacy.js.br', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js.br') },
+        { label: 'legacy.js.gz', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js.gz') },
     ],
 });
 const extensionAssetRelease = computeStaticAssetRelease({
