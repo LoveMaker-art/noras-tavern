@@ -28,6 +28,7 @@ const INDEX_VENDOR_ASSET_BASE_TOKEN = '{{NORA_VENDOR_ASSET_BASE}}';
 const INDEX_LEGACY_ASSET_BASE_TOKEN = '{{NORA_LEGACY_ASSET_BASE}}';
 const INDEX_ASSET_RELEASE_TOKEN = '{{NORA_ASSET_RELEASE}}';
 const INDEX_INLINE_MANIFEST_URL_TOKEN = '{{NORA_INLINE_MANIFEST_URL}}';
+const INDEX_IMPORT_MAP_TOKEN = '{{NORA_IMPORT_MAP}}';
 const MANIFEST_FILE_NAME = '.nora-asset-manifest.json';
 const HASH_PATTERN = /^[a-f0-9]{12,64}$/i;
 const SAFE_SEGMENT_PATTERN = /^[a-zA-Z0-9._-]+$/;
@@ -239,7 +240,7 @@ function coreNamespaceFor(relativePath) {
     if (/^dist\/nora\/(?:entry|\d+)\.js(?:\.(?:br|gz))?$/i.test(relativePath)) {
         return NORA_ASSET_NAMESPACE.noraEntry;
     }
-    if (/^dist\/nora\/inline-modules\.js(?:\.(?:br|gz))?$/i.test(relativePath)) {
+    if (/^dist\/nora\/(?:inline-modules|module-shims)\.js(?:\.(?:br|gz))?$/i.test(relativePath)) {
         return NORA_ASSET_NAMESPACE.compatibility;
     }
     if (/^dist\/nora\/lib-core\.js(?:\..+)?$/i.test(relativePath)) {
@@ -308,6 +309,16 @@ export function computeBrowserAssetManifest({
         deploymentHash.update(`${name}\0${extension.fullDigest}\0`);
     }
     const fullDigest = deploymentHash.digest('hex');
+    const runtimeModuleManifestPath = path.join(publicDirectory, 'dist', 'nora', 'inline-modules.js');
+    let runtimeModuleManifest;
+    try {
+        runtimeModuleManifest = JSON.parse(fs.readFileSync(runtimeModuleManifestPath, 'utf8'));
+    } catch (error) {
+        throw new Error(`Nora runtime module index is invalid: ${runtimeModuleManifestPath}: ${error.message}`);
+    }
+    const runtimeModulePaths = Array.isArray(runtimeModuleManifest.modules)
+        ? runtimeModuleManifest.modules
+        : Object.keys(runtimeModuleManifest.modules || {});
 
     return Object.freeze({
         schemaVersion: NORA_ASSET_SCHEMA_VERSION,
@@ -316,6 +327,13 @@ export function computeBrowserAssetManifest({
         namespaces: Object.freeze(namespaces),
         extensionRelease: extensionManifest.release,
         extensions: extensionManifest.extensions,
+        runtimeModules: Object.freeze({
+            modules: Object.freeze([...new Set(runtimeModulePaths)].sort()),
+            network: Object.freeze([...new Set(runtimeModuleManifest.network || [])].sort()),
+            compiled: Object.freeze({ ...(runtimeModuleManifest.compiled || {}) }),
+            extensionCoreBridges: Object.freeze([...new Set(runtimeModuleManifest.extensionCoreBridges || [])].sort()),
+            legacy: String(runtimeModuleManifest.legacy || ''),
+        }),
     });
 }
 
@@ -595,8 +613,40 @@ export function renderNoraIndex(template, manifest) {
     const compatibilityBase = assetBases[NORA_ASSET_NAMESPACE.compatibility];
     const vendorBase = assetBases[NORA_ASSET_NAMESPACE.vendorCore];
     const legacyBase = assetBases[NORA_ASSET_NAMESPACE.vendorLegacy];
+    const stStaticBase = assetBases[NORA_ASSET_NAMESPACE.stStatic];
+    const imports = {
+        '/lib.js': `${vendorBase}/dist/nora/lib-core.js`,
+        '/lib/': `${stStaticBase}/lib/`,
+        '/scripts/': `${stStaticBase}/scripts/`,
+        [`${stStaticBase}/lib.js`]: `${vendorBase}/dist/nora/lib-core.js`,
+    };
+    for (const modulePath of manifest.runtimeModules?.modules || []) {
+        const canonicalUrl = `${stStaticBase}/${modulePath}`;
+        imports[`nora-module/${modulePath}`] = canonicalUrl;
+        imports[`/${modulePath}`] = canonicalUrl;
+    }
+    for (const [modulePath, assetPath] of Object.entries(manifest.runtimeModules?.compiled || {})) {
+        imports[`nora-module/${modulePath}`] = `${assetBases[coreNamespaceFor(assetPath)]}/${assetPath}`;
+    }
+    for (const modulePath of manifest.runtimeModules?.network || []) {
+        if (modulePath === 'lib.js') {
+            imports[`nora-module/${modulePath}`] = `${vendorBase}/dist/nora/lib-core.js`;
+            continue;
+        }
+        imports[`nora-module/${modulePath}`] = `${stStaticBase}/${modulePath}`;
+    }
+    const extensionAssetBases = [...new Set(Object.values(extensionReleases)
+        .map(release => `/extension-assets/${release}`))];
+    for (const modulePath of manifest.runtimeModules?.extensionCoreBridges || []) {
+        const canonicalUrl = imports[`nora-module/${modulePath}`];
+        if (!canonicalUrl) throw new Error(`Nora extension core bridge target is missing: ${modulePath}`);
+        for (const extensionAssetBase of extensionAssetBases) {
+            imports[`${extensionAssetBase}/${modulePath}`] = canonicalUrl;
+        }
+    }
     return template
         .replace('{{NORA_LOCALE_BOOTSTRAP}}', () => renderLocaleBootstrap(template))
+        .replaceAll(INDEX_IMPORT_MAP_TOKEN, safeJson({ imports }))
         .replaceAll(INDEX_INLINE_MANIFEST_URL_TOKEN, `${compatibilityBase}/dist/nora/inline-modules.js`)
         .replaceAll(INDEX_ASSET_BASES_TOKEN, safeJson(assetBases))
         .replaceAll(INDEX_SHELL_ASSET_BASE_TOKEN, assetBases[NORA_ASSET_NAMESPACE.shell])

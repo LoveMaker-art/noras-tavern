@@ -96,6 +96,34 @@ class NativeLifecycleLockTests(unittest.TestCase):
             lifecycle.main(list(arguments))
         return runtime, output.getvalue()
 
+    def test_production_logging_config_disables_request_and_debug_noise(self):
+        lifecycle = load_lifecycle()
+        source = "logging:\n  enableAccessLog: true\n  minLogLevel: 0\nperformance:\n  lazyLoadCharacters: true\n"
+
+        rendered = lifecycle.render_production_logging_config(source)
+
+        self.assertIn("  enableAccessLog: false", rendered)
+        self.assertIn("  minLogLevel: 1", rendered)
+        self.assertIn("  lazyLoadCharacters: true", rendered)
+
+    def test_production_logging_config_upgrades_legacy_config_without_logging_keys(self):
+        lifecycle = load_lifecycle()
+
+        rendered = lifecycle.render_production_logging_config("listen: false\n")
+
+        self.assertIn("logging:\n  enableAccessLog: false\n  minLogLevel: 1", rendered)
+
+    def test_runtime_log_keeps_only_one_bounded_previous_file(self):
+        lifecycle = load_lifecycle()
+        with tempfile.TemporaryDirectory() as temporary:
+            log_path = Path(temporary) / "native.log"
+            log_path.write_bytes(b"old-log")
+
+            lifecycle.prepare_runtime_log(log_path, max_bytes=4)
+
+            self.assertFalse(log_path.exists())
+            self.assertEqual((Path(temporary) / "native.log.1").read_bytes(), b"old-log")
+
     def test_start_cli_owns_the_lifecycle_lock_once(self):
         runtime, _ = self.invoke("start")
 

@@ -12,6 +12,7 @@ const index = fs.readFileSync(path.join(root, 'public/index.html'), 'utf8');
 const bootEndpoint = fs.readFileSync(path.join(root, 'src/endpoints/nora-boot.js'), 'utf8');
 const bootstrap = fs.readFileSync(path.join(root, 'src/nora-bootstrap.js'), 'utf8');
 const extensions = fs.readFileSync(path.join(root, 'public/scripts/extensions.js'), 'utf8');
+const stKernel = fs.readFileSync(path.join(root, 'public/scripts/nora-compat/st-kernel.js'), 'utf8');
 const worldController = fs.readFileSync(path.resolve(root, '../../native-extensions/nora-ui/world-controller.js'), 'utf8');
 const singleQuote = String.fromCharCode(39);
 
@@ -84,7 +85,14 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(index, /<link\s+rel="manifest"/, 'the PWA manifest must not compete with the interactive startup path');
 assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/, 'legacy libraries must load once from their independently versioned immutable asset');
-assert.match(index, /manifest\.legacy/, 'startup metrics must identify the standalone legacy asset');
+assert.match(index, /__NORA_TRACK_BOOT_RESOURCE__/, 'the early shell must record critical resource lifecycle events before the ST runtime exists');
+assert.match(index, /new PerformanceObserver[\s\S]*type: 'resource', buffered: true/, 'the early shell must capture completed browser resource timings');
+assert.match(index, /const stageTimeoutMs = 120_000/, 'each visible startup stage must have a two-minute timeout');
+assert.match(index, /__NORA_REPORT_EARLY_BOOT_METRICS__\('boot-stage-timeout'/, 'a stage timeout must be reported exactly from the visible startup owner');
+assert.match(index, /await globalThis\.__NORA_LOAD_MODULE__\(entryUrl\)[\s\S]*entryResource\.complete/, 'the Nora module graph must record successful evaluation');
+assert.match(index, /await globalThis\.__NORA_LOAD_MODULE__\(entryUrl\)[\s\S]*catch \(error\)[\s\S]*entryResource\.fail/, 'the Nora module graph must expose dependency load failures');
+assert.match(stKernel, /__NORA_TRACK_BOOT_RESOURCE__\?\.\('st-kernel-module', '\/script\.js'\)/, 'the ST kernel module import must expose its own resource lifecycle');
+assert.match(index, /source: 'dist\/nora\/legacy\.js'/, 'startup metrics must identify the standalone legacy asset');
 assert.match(index, /id="third-party_nora-ui-css"/, 'the Nora UI stylesheet must share the extension loader identity and load once');
 assert.match(extensions, /if \(existingStyle\.length > 0\)\s*\{\s*return Promise\.resolve\(\);/, 'an existing extension stylesheet must resolve without injecting a duplicate or hanging');
 const headShellStart = index.indexOf(
@@ -95,25 +103,28 @@ const headBootstrapStart = index.indexOf(
 );
 const manifestNetworkYield = index.indexOf('await globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__.catch(() => undefined)');
 const runtimeAssetGate = index.indexOf('globalThis.__NORA_START_RUNTIME_ASSETS__ =');
-const manifestNetworkStart = index.indexOf('return fetch(globalThis.__NORA_INLINE_MANIFEST_URL__');
+const moduleLoaderStart = index.indexOf('globalThis.__NORA_MODULE_LOADER_PROMISE__ =');
 const bodyBootstrapReuse = index.indexOf('const bootstrapPromise = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__');
 const bodyShellReuse = index.indexOf('const shellPromise = globalThis.__NORA_SHELL_DATA_PROMISE__');
 assert.notEqual(headShellStart, -1, 'the compact World summary request must start from the head');
 assert.notEqual(headBootstrapStart, -1, 'the aggregate runtime bootstrap request must still start from the head');
 assert.notEqual(runtimeAssetGate, -1, 'large runtime assets must have one explicit start gate');
 assert.equal(manifestNetworkYield, -1, 'a cold runtime manifest must not create a second network wave behind bootstrap');
-assert.notEqual(manifestNetworkStart, -1, 'the module manifest must retain its network fallback');
+assert.notEqual(moduleLoaderStart, -1, 'the module loader must be initialized before runtime hydration');
 assert.notEqual(bodyShellReuse, -1, 'the early shell must reuse the head World summary request');
 assert.notEqual(bodyBootstrapReuse, -1, 'the early shell must reuse the head bootstrap request');
 assert.ok(headShellStart < headBootstrapStart, 'the compact visible-shell request must be scheduled first');
 assert.ok(headBootstrapStart < runtimeAssetGate, 'runtime bootstrap must be scheduled before the gated runtime assets');
-assert.ok(manifestNetworkStart < bodyBootstrapReuse, 'the body must reuse the already-started shell bootstrap request');
+assert.ok(moduleLoaderStart < bodyBootstrapReuse, 'the module loader must be ready before the body hydrates');
 assert.match(index, /globalThis\.__NORA_RELEASE_GUARD_PROMISE__\s*=\s*shellNetworkPromise\.then/, 'the compact shell response must enforce shell/backend release coherence');
 assert.match(index, /globalThis\.__NORA_SHELL_DATA_PROMISE__\s*=\s*globalThis\.__NORA_RELEASE_GUARD_PROMISE__/, 'visible shell data must wait for the release guard');
 assert.match(index, /globalThis\.__NORA_SHELL_BOOTSTRAP_PROMISE__\s*=\s*Promise\.all/, 'runtime bootstrap must retain the release guard without blocking the visible shell');
+assert.match(index, /globalThis\.__NORA_CSRF_PROMISE__\s*=\s*runtimeBootstrapNetworkPromise\.then/, 'all startup telemetry must use the authoritative runtime bootstrap token');
+assert.match(index, /csrfToken\s*=\s*await Promise\.race\(\[\s*globalThis\.__NORA_CSRF_PROMISE__/, 'early telemetry must wait for the canonical CSRF token');
+assert.doesNotMatch(index, /__NORA_SHELL_DATA_PROMISE__\s*\|\|\s*globalThis\.__NORA_RUNTIME_BOOTSTRAP_NETWORK_PROMISE__/, 'the token-free World shell must never be used as a CSRF source');
 assert.match(index, /target\.searchParams\.set\('release', currentRelease\)[\s\S]*location\.replace\(target\.href\)/, 'a stale shell must navigate once to the current release URL');
 assert.doesNotMatch(
-    index.slice(manifestNetworkStart, bodyBootstrapReuse),
+    index.slice(moduleLoaderStart, bodyBootstrapReuse),
     /__NORA_RELEASE_GUARD_PROMISE__|bootstrapNetworkPromise|Promise\.all/,
     'release validation must not serialize immutable manifest parsing behind bootstrap',
 );
@@ -122,12 +133,8 @@ assert.match(
     /credentials:\s*'same-origin'[\s\S]*priority:\s*'high'/,
     'the compact visible-shell request must be authenticated and high priority',
 );
-assert.match(index.slice(headBootstrapStart, manifestNetworkStart), /priority:\s*'low'/, 'the larger runtime bootstrap must not outrank visible World summaries');
-assert.match(
-    index.slice(manifestNetworkStart, bodyBootstrapReuse),
-    /priority:\s*'low'/,
-    'the large runtime manifest must not compete with the compact visible-shell request',
-);
+assert.match(index.slice(headBootstrapStart, moduleLoaderStart), /priority:\s*'low'/, 'the larger runtime bootstrap must not outrank visible World summaries');
+assert.doesNotMatch(index, /fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__/, 'module routing must not require a second large request');
 assert.doesNotMatch(
     index.slice(bodyBootstrapReuse),
     /fetch\('\/api\/nora-boot\/bootstrap'/,

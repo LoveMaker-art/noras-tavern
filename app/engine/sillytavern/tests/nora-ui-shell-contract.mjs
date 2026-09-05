@@ -189,7 +189,7 @@ if (!html.includes('animation: nora-buffer-reveal 1ms linear 120ms forwards')) {
 for (const progressSignal of [
     "requestRuntime('shell-visible')",
     "window.addEventListener('nora:runtime-ready'",
-    'module-manifest-network-response',
+    'module-loader-ready',
     'legacy-libs-loaded',
     'nora-context-ready',
     '4_000',

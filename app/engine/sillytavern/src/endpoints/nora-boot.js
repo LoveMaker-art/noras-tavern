@@ -9,17 +9,16 @@ import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
 import { getVersion } from '../util.js';
 
 const MAX_PAYLOAD_BYTES = 96 * 1024;
-const ALLOWED_PHASES = new Set([
-    'app-ready',
-    'nora-ui-hydrated',
-    'nora-runtime-ready',
+const PERSISTED_PHASES = new Set([
     'nora-usable',
     'first-interaction',
-    'world-selected',
-    'early-world-selected',
-    'extensions-ready',
     'nora-startup-failed',
     'world-selection-failed',
+    'boot-resource-failed',
+    'boot-resource-stalled',
+    'boot-stage-timeout',
+    'boot-runtime-error',
+    'boot-runtime-rejection',
 ]);
 export const router = express.Router();
 let versionPromise;
@@ -61,10 +60,10 @@ router.post('/metrics', async (request, response) => {
         return response.sendStatus(400);
     }
 
-    const knownPhase = ALLOWED_PHASES.has(payload.phase);
+    if (!PERSISTED_PHASES.has(payload.phase)) return response.sendStatus(204);
     const event = normalizeClientMetricPayload({
         ...payload,
-        phase: knownPhase ? payload.phase : 'runtime-event',
+        phase: payload.phase,
     }, {
         receivedAt: new Date().toISOString(),
         user: request.user?.profile?.handle || 'unknown',
@@ -75,7 +74,6 @@ router.post('/metrics', async (request, response) => {
     }
     try {
         await noraTelemetryWriter.append(request.user.directories, event);
-        console.info(`[Nora telemetry] ${event.phase} trace=${event.traceId} captured=${event.metrics.capturedAt ?? 'unknown'}ms`);
         return response.sendStatus(204);
     } catch (error) {
         console.error('[Nora telemetry] Could not persist client summary:', error);

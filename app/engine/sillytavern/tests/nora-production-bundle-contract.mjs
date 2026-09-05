@@ -20,24 +20,23 @@ assert.doesNotMatch(
 assert.match(config, /filename:\s*'\[name\]\.js'/);
 assert.doesNotMatch(config, /core:\s*'\.\/public\/script\.js'/);
 assert.doesNotMatch(kernel, /dist\/nora\/core\.js/);
-assert.match(kernel, /import\([^\n]*['"]\/script\.js['"]\)/);
-assert.match(index, /{{NORA_INLINE_MANIFEST_URL}}/);
-assert.match(index, /__NORA_INLINE_MANIFEST_PROMISE__/);
-assert.match(index, /document\.createElement\('script'\)[\s\S]*?importMap\.type = 'importmap'/);
-assert.match(index, /manifest\.legacy/);
+assert.match(kernel, /__NORA_LOAD_MODULE__/);
+assert.match(kernel, /loadModule\(['"]\/script\.js['"]\)/);
+assert.match(index, /<script type="importmap">\{\{NORA_IMPORT_MAP\}\}<\/script>/);
+assert.doesNotMatch(index, /__NORA_INLINE_MANIFEST_PROMISE__/);
+assert.match(index, /module-shims\.js/, 'older WebViews need the locally bundled compatibility loader');
+assert.match(index, /normalized === 'dist\/nora\/module-shims\.js'.*namespace = 'compat-runtime'/, 'the compatibility loader must use the compat-runtime hash namespace');
+assert.match(index, /HTMLScriptElement\.supports\('importmap'\)/, 'native static import maps must bypass the compatibility parser');
+assert.match(index, /globalThis\.importShim\.addImportMap\(importMap\)/, 'unsupported WebViews must receive the same static import map');
+assert.match(index, /return specifier => import\(specifier\)/, 'native WebViews must use the browser module loader');
+assert.match(index, /resolve\(specifier => globalThis\.importShim\(specifier\)\)/, 'unsupported WebViews must retain the compatibility loader');
 assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
-assert.match(index, /import 'nora-module\/scripts\/i18n\.js'/);
-assert.match(index, /manifest\.extensionCoreBridges/);
-assert.match(index, /imports\[`\$\{extensionAssetBase\}\/\$\{modulePath\}`\] = canonicalUrl/);
-const compatibilityPreludeAppend = index.indexOf('document.body.append(compatibilityPrelude)');
-const compatibilityPreludeReady = index.indexOf('await compatibilityPreludeReady', compatibilityPreludeAppend);
-const runtimeEntryAppend = index.indexOf('document.body.append(entry)', compatibilityPreludeAppend);
-assert.notEqual(compatibilityPreludeAppend, -1, 'the compatibility prelude must be attached');
-assert.notEqual(compatibilityPreludeReady, -1, 'startup must wait for the compatibility prelude to finish evaluating');
-assert.ok(
-    compatibilityPreludeAppend < compatibilityPreludeReady && compatibilityPreludeReady < runtimeEntryAppend,
-    'the ST runtime entry must not race the compatibility prelude module graph',
-);
+assert.match(index, /'nora-module\/scripts\/i18n\.js'/);
+const compatibilityPreludeLoad = index.indexOf('for (const specifier of compatibilityPreludeModules)');
+const runtimeEntryLoad = index.indexOf('await globalThis.__NORA_LOAD_MODULE__(entryUrl)', compatibilityPreludeLoad);
+assert.notEqual(compatibilityPreludeLoad, -1, 'startup must await compatibility prelude evaluation');
+assert.notEqual(runtimeEntryLoad, -1, 'startup must await runtime entry evaluation');
+assert.ok(compatibilityPreludeLoad < runtimeEntryLoad, 'the ST runtime entry must not race the compatibility prelude module graph');
 assert.doesNotMatch(index, /src="{{NORA_ASSET_BASE}}\/scripts\/i18n\.js"/);
 assert.doesNotMatch(coreSource, /dispatchEvent\(new Event\('nora:st-core-ready'\)\)/);
 assert.doesNotMatch(index, /__NORA_ST_CORE_READY__|nora:st-core-ready/);
@@ -63,7 +62,7 @@ assert.match(extensions, /return `nora-module\/\$\{normalized\}`/);
 assert.match(extensions, /import\(url\.startsWith\('nora-module\/'\) \? url : new URL\(url, location\.origin\)\.href\)/);
 assert.doesNotMatch(extensions, /script\.src = url/, 'extension modules must reuse import-map packaged runtimes');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'content-addressed immutable assets must have one browser cache authority');
-assert.match(index, /cache:\s*'force-cache'[\s\S]*priority:\s*'low'/, 'the immutable runtime manifest must not outrank the compact visible shell');
+assert.doesNotMatch(index, /fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__/, 'module routing must be present before startup instead of fetched as a second wave');
 assert.match(index, /globalThis\.__NORA_VENDOR_ASSET_BASE__[\s\S]*'dist\/nora\/lib-core\.js'/);
 assert.doesNotMatch(index, /<link\s+rel="modulepreload"[^>]+dist\/nora\//);
 

@@ -86,6 +86,7 @@ test('shell bootstrap projects compact World summaries without runtime bindings'
     });
     assert.equal(payload.schema, 1);
     assert.equal(payload.assetRelease, '0123456789abcdef');
+    assert.equal(Object.hasOwn(payload, 'csrfToken'), false);
     assert.equal(typeof payload.fetchedAt, 'number');
     assert.deepEqual(payload.worlds, [projectShellWorld(world)]);
     assert.equal(JSON.stringify(payload).includes('secret-chat'), false);

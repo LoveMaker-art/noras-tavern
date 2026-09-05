@@ -32,6 +32,7 @@ export function migrateAccessLog() {
  */
 export default function accessLoggerMiddleware() {
     return function (req, res, next) {
+        if (!enableAccessLog) return next();
         const clientIp = getIpAddress(req, true);
         const userAgent = req.headers['user-agent'];
 
@@ -39,19 +40,16 @@ export default function accessLoggerMiddleware() {
             // Log new connection
             knownIPs.add(clientIp);
 
-            // Write to access log if enabled
-            if (enableAccessLog) {
-                console.info(color.yellow(`New connection from ${clientIp}; User Agent: ${userAgent}\n`));
-                const logPath = getAccessLogPath();
-                const timestamp = new Date().toISOString();
-                const log = `${timestamp} ${clientIp} ${userAgent}\n`;
+            console.info(color.yellow(`New connection from ${clientIp}; User Agent: ${userAgent}\n`));
+            const logPath = getAccessLogPath();
+            const timestamp = new Date().toISOString();
+            const log = `${timestamp} ${clientIp} ${userAgent}\n`;
 
-                fs.appendFile(logPath, log, (err) => {
-                    if (err) {
-                        console.error('Failed to write access log:', err);
-                    }
-                });
-            }
+            fs.appendFile(logPath, log, (err) => {
+                if (err) {
+                    console.error('Failed to write access log:', err);
+                }
+            });
         }
 
         next();

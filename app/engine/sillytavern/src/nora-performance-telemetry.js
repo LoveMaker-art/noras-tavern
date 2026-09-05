@@ -3,7 +3,8 @@ import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 
 const SCHEMA_VERSION = 1;
-const DEFAULT_MAX_FILE_BYTES = 10 * 1024 * 1024;
+const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
+const SLOW_SERVER_SPAN_MS = 500;
 const MAX_TRACE_ID_LENGTH = 100;
 const MAX_STRING_LENGTH = 200;
 const MAX_RESOURCES = 100;
@@ -19,6 +20,13 @@ const METRIC_SCALARS = new Set([
     'shellReadyAt',
     'criticalExtensionsReadyAt',
     'extensionsReadyAt',
+]);
+const ALWAYS_RECORDED_SERVER_PATHS = new Set([
+    '/api/nora-boot/shell',
+    '/api/nora-boot/bootstrap',
+]);
+const NEVER_RECORDED_SERVER_PATHS = new Set([
+    '/api/nora-boot/metrics',
 ]);
 
 function finiteNumber(value) {
@@ -73,6 +81,14 @@ export function normalizeTraceId(value) {
     return traceId;
 }
 
+export function shouldPersistServerSpan({ path: requestPath, status, durationMs }) {
+    const normalizedPath = normalizeResourceName(requestPath);
+    if (NEVER_RECORDED_SERVER_PATHS.has(normalizedPath)) return false;
+    if (Number(status) >= 400) return true;
+    if (ALWAYS_RECORDED_SERVER_PATHS.has(normalizedPath)) return true;
+    return Number(durationMs) >= SLOW_SERVER_SPAN_MS;
+}
+
 export function normalizeClientMetricPayload(payload, {
     user = 'unknown',
     receivedAt = new Date().toISOString(),
@@ -91,11 +107,13 @@ export function normalizeClientMetricPayload(payload, {
     }
     metrics.sessionId = traceId;
     metrics.navigation = sanitizeNavigation(source.navigation);
+    metrics.client = sanitizeScalarRecord(source.client);
     metrics.steps = sanitizeSeries(source.steps, MAX_SERIES_ITEMS);
     metrics.extensions = sanitizeSeries(source.extensions, MAX_SERIES_ITEMS);
     metrics.extensionBatches = sanitizeSeries(source.extensionBatches, MAX_SERIES_ITEMS);
     metrics.milestones = sanitizeSeries(source.milestones, MAX_SERIES_ITEMS);
     metrics.longTasks = sanitizeSeries(source.longTasks, MAX_SERIES_ITEMS);
+    metrics.resourceEvents = sanitizeSeries(source.resourceEvents, MAX_SERIES_ITEMS);
     metrics.resources = sanitizeSeries(source.resources, MAX_RESOURCES, { resource: true });
     return {
         schemaVersion: SCHEMA_VERSION,
@@ -178,6 +196,9 @@ export function createNoraTraceMiddleware({ writer = noraTelemetryWriter } = {})
             return originalEnd(chunk, ...args);
         };
         response.once('finish', () => {
+            const durationMs = finiteNumber(performance.now() - startedAt);
+            const requestPath = normalizeResourceName(request.originalUrl || request.url);
+            if (!shouldPersistServerSpan({ path: requestPath, status: response.statusCode, durationMs })) return;
             const event = {
                 schemaVersion: SCHEMA_VERSION,
                 kind: 'server-span',
@@ -185,9 +206,9 @@ export function createNoraTraceMiddleware({ writer = noraTelemetryWriter } = {})
                 user: boundedString(request.user?.profile?.handle, 80) || 'unknown',
                 traceId,
                 method: boundedString(request.method, 12) || '',
-                path: normalizeResourceName(request.originalUrl || request.url),
+                path: requestPath,
                 status: response.statusCode,
-                durationMs: finiteNumber(performance.now() - startedAt),
+                durationMs,
                 responseBytes,
             };
             void writer.append(request.user?.directories, event)

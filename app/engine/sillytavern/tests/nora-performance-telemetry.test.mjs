@@ -8,6 +8,7 @@ import {
     createNoraTelemetryWriter,
     normalizeClientMetricPayload,
     normalizeTraceId,
+    shouldPersistServerSpan,
 } from '../src/nora-performance-telemetry.js';
 
 test('normalizes client telemetry into a bounded privacy-safe event', () => {
@@ -49,6 +50,16 @@ test('accepts only bounded trace identifiers', () => {
     assert.equal(normalizeTraceId(' boot:abc-123 '), 'boot:abc-123');
     assert.equal(normalizeTraceId('has spaces'), '');
     assert.equal(normalizeTraceId('x'.repeat(101)), '');
+});
+
+test('persists only actionable server spans instead of routine polling traffic', () => {
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-boot/shell', status: 200, durationMs: 25 }), true);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-boot/bootstrap', status: 200, durationMs: 30 }), true);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-controls/hello', status: 200, durationMs: 12 }), false);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-worlds-v2/status', status: 200, durationMs: 18 }), false);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-worlds-v2/status', status: 200, durationMs: 900 }), true);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-controls/hello', status: 503, durationMs: 20 }), true);
+    assert.equal(shouldPersistServerSpan({ path: '/api/nora-boot/metrics', status: 500, durationMs: 900 }), false);
 });
 
 test('writes structured NDJSON and rotates before exceeding the configured file budget', async (t) => {

@@ -27,6 +27,10 @@ globalThis.__NORA_RUNTIME_PROMISE__ = startNoraRuntime().then((runtime) => {
         at: Math.round((performance.now() - metrics.startedAt) * 10) / 10,
         message: String(error?.message || error),
     });
+    globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__?.('boot-runtime-error', {
+        stageName: 'nora-entry-startup',
+        message: String(error?.message || error).slice(0, 200),
+    });
     console.error('[Nora Runtime] Startup failed', error);
     throw error;
 });

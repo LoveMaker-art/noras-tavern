@@ -12,6 +12,7 @@ export function createPerformanceReporter({
         if (!metrics) return;
         metrics.milestones ??= [];
         metrics.milestones.push(value);
+        if (metrics.milestones.length > 160) metrics.milestones.splice(0, metrics.milestones.length - 160);
     }
 
     function elapsedAt() {
@@ -48,6 +49,7 @@ export function createPerformanceReporter({
                     duration: round(now() - rawStartedAt),
                     status,
                 });
+                if (metrics.steps.length > 160) metrics.steps.splice(0, metrics.steps.length - 160);
             }
         }
     }

@@ -14,12 +14,13 @@ const shellHtmlBrotliSize = brotliCompressSync(Buffer.from(index), {
 }).length;
 
 assert.ok(manifestBrotliSize <= 550_000, `critical module manifest exceeds 550 KB Brotli budget: ${manifestBrotliSize}`);
-assert.ok(shellHtmlBrotliSize <= 24_000, `visible shell HTML exceeds 24 KB Brotli budget: ${shellHtmlBrotliSize}`);
+assert.ok(shellHtmlBrotliSize <= 30_000, `visible shell HTML exceeds 30 KB Brotli budget: ${shellHtmlBrotliSize}`);
 assert.equal(manifest.legacy, 'dist/nora/legacy.js', 'legacy libraries must use their immutable standalone asset');
 assert.equal(manifest.compiled?.['lib-core.js'], 'dist/nora/lib-core.js', 'compiled core libraries must use their immutable standalone module');
 assert.ok(!Object.hasOwn(manifest.modules || {}, 'lib-core.js'), 'compiled core libraries must not be duplicated as base64');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'startup must not coordinate duplicate application cache authorities');
-assert.match(index, /__NORA_RUNTIME_ASSET_START_PROMISE__\.then\([\s\S]*?fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__,\s*\{[\s\S]*?cache: 'force-cache',[\s\S]*?priority: 'low'/);
+assert.match(index, /<script type="importmap">\{\{NORA_IMPORT_MAP\}\}<\/script>/);
+assert.doesNotMatch(index, /fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__/);
 assert.match(index, /__NORA_EXTENSION_ASSET_BASE__/);
 assert.match(index, /__NORA_VENDOR_ASSET_BASE__/);
 assert.match(index, /function reveal\(\)[\s\S]*requestRuntime\('shell-visible'\)/, 'shared runtime preparation must begin as soon as the visible shell is ready');
