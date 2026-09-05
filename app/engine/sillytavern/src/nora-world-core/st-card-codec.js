@@ -5,7 +5,20 @@ import { DEFAULT_AVATAR_PATH } from '../constants.js';
 import { TavernCardValidator } from '../validator/TavernCardValidator.js';
 import { NoraWorldCoreError } from './errors.js';
 
+function normalizeStCompatibilityDefaults(card) {
+    const characterBook = card?.data?.character_book;
+    if (card?.spec === 'chara_card_v2'
+        && characterBook
+        && typeof characterBook === 'object'
+        && !Array.isArray(characterBook)
+        && !Object.hasOwn(characterBook, 'extensions')) {
+        characterBook.extensions = {};
+    }
+    return card;
+}
+
 function validateCard(card) {
+    normalizeStCompatibilityDefaults(card);
     const validator = new TavernCardValidator(card);
     const version = validator.validate();
     if (!version) {

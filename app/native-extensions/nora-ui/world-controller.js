@@ -77,8 +77,8 @@ export function createWorldController({
         const operationLabel = operation?.kind === 'IMPORT' ? tr("正在导入角色卡…") : tr("正在恢复世界导入…");
         const operationHtml = operation?.status === 'RUNNING'
             ? `<div class="nora-world-progress" role="status"><span class="nora-progress-dot" aria-hidden="true"></span><span>${operationLabel}</span></div>`
-            : operation?.status === 'FAILED'
-                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr("上次导入未完成")}</span>${operation.error?.retryable ? `<button data-retry-world-import type="button">${tr("重试")}</button>` : ''}</div>`
+            : operation?.status === 'FAILED' && operation.error?.retryable
+                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr("导入暂时中断，可继续")}</span><button data-retry-world-import type="button">${tr("重试")}</button></div>`
                 : '';
         const worldsHtml = worlds.length ? worlds.map((world) => {
             const name = world.name || tr("未命名世界");

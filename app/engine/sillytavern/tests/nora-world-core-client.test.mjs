@@ -191,6 +191,64 @@ test('times out a stalled World operation while preserving its resumable pending
     });
 });
 
+test('clears pending state when an import reaches a terminal non-retryable failure', async () => {
+    const pendingStore = memoryStore();
+    const client = createWorldCoreClient(() => ({ 'X-CSRF-Token': 'token' }), {
+        pendingStore,
+        pollIntervalMs: 0,
+        fetchImpl: async (url) => {
+            if (url.endsWith('/imports')) {
+                return response(202, { operation: { operation_id: 'operation:invalid', status: 'RUNNING' } });
+            }
+            if (url.endsWith('/operations/operation%3Ainvalid')) {
+                return response(200, {
+                    operation: {
+                        operation_id: 'operation:invalid',
+                        status: 'FAILED',
+                        error: { code: 'NORA_CARD_INVALID', message: 'Invalid card', retryable: false },
+                    },
+                });
+            }
+            throw new Error(`Unexpected request: ${url}`);
+        },
+    });
+
+    await assert.rejects(
+        client.importCard(new File(['card'], 'card.png'), { idempotencyKey: 'browser:invalid' }),
+        error => error?.code === 'NORA_CARD_INVALID' && error?.retryable === false,
+    );
+    assert.equal(client.pendingCreation(), null);
+});
+
+test('clears a persisted pending import when recovery finds a terminal failure', async () => {
+    const pendingStore = memoryStore();
+    pendingStore.setItem('nora.world-core-v2.pending-import', JSON.stringify({
+        idempotencyKey: 'browser:old-invalid',
+        operationId: 'operation:old-invalid',
+        startedAt: 1,
+        kind: 'import',
+    }));
+    const client = createWorldCoreClient(() => ({ 'X-CSRF-Token': 'token' }), {
+        pendingStore,
+        fetchImpl: async (url) => {
+            assert.ok(url.endsWith('/operations/operation%3Aold-invalid'));
+            return response(200, {
+                operation: {
+                    operation_id: 'operation:old-invalid',
+                    status: 'FAILED',
+                    error: { code: 'NORA_CARD_INVALID', message: 'Invalid card', retryable: false },
+                },
+            });
+        },
+    });
+
+    await assert.rejects(
+        client.resumePendingCreation(),
+        error => error?.code === 'NORA_CARD_INVALID' && error?.retryable === false,
+    );
+    assert.equal(client.pendingCreation(), null);
+});
+
 test('executes and verifies the aggregate ST snapshot without capability waits', async () => {
     const calls = [];
     let state = {

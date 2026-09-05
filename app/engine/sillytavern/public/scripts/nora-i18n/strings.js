@@ -249,6 +249,7 @@ export const english = Object.freeze({
     '正在导入角色卡…': 'Importing card…',
     '正在恢复世界导入…': 'Resuming world import…',
     '上次导入未完成': 'The last import did not finish',
+    '导入暂时中断，可继续': 'Import was interrupted and can be resumed',
     '未命名世界': 'Unnamed world',
     '重新检查': 'Check again',
     '删除世界 ${0}': 'Delete world ${0}',

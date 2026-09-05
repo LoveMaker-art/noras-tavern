@@ -223,6 +223,7 @@ export class NoraWorldCore {
         } catch (error) {
             const coreError = asWorldCoreError(error, 'NORA_WORLD_CREATE_FAILED', 'World creation failed.', { retryable: true });
             await this.#journal.fail(operation.operation_id, coreError).catch(() => {});
+            if (!coreError.retryable) await this.#materializer.release?.(operation.command).catch(() => {});
             coreError.details = {
                 ...coreError.details,
                 operationId: operation.operation_id,

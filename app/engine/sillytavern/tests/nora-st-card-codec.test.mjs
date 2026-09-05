@@ -31,6 +31,20 @@ for (const fixture of [
     });
 }
 
+test('normalizes a V2 character book that omits its empty extensions object', async () => {
+    const fixture = JSON.parse(await fs.readFile(path.join(fixtureRoot, 'sanitized-v2.json'), 'utf8'));
+    const expectedEntries = structuredClone(fixture.data.character_book.entries);
+    delete fixture.data.character_book.extensions;
+
+    const decoded = await codec.decode({
+        format: 'json',
+        buffer: Buffer.from(JSON.stringify(fixture)),
+    });
+
+    assert.deepEqual(decoded.card.data.character_book.extensions, {});
+    assert.deepEqual(decoded.card.data.character_book.entries, expectedEntries);
+});
+
 test('rejects flattened V1-shaped JSON even when it carries a V2 spec label', async () => {
     const hybrid = Buffer.from(JSON.stringify({
         spec: 'chara_card_v2',

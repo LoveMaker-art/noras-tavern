@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createNoraWorldCore } from '../src/nora-world-core/index.js';
+import { createNoraWorldCore, NoraWorldCoreError } from '../src/nora-world-core/index.js';
 
 const SOURCE_SHA = 'a'.repeat(64);
 
@@ -420,6 +420,28 @@ test('persists a failed operation and retries with the original World identity',
     assert.equal(retried.world.world_id, failed.world_id);
     assert.equal(retried.operation.attempts, 2);
     assert.equal(retried.operation.status, 'COMPLETED');
+});
+
+test('releases staged input after a terminal non-retryable creation failure', async (t) => {
+    const root = await temporaryRoot(t);
+    let releases = 0;
+    const core = createNoraWorldCore({
+        root,
+        materializer: {
+            async materialize() {
+                throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Invalid card');
+            },
+            async release() {
+                releases += 1;
+            },
+        },
+    });
+
+    await assert.rejects(
+        core.createWorld(command(), { idempotencyKey: 'import:terminal-failure' }),
+        error => error?.code === 'NORA_CARD_INVALID' && error?.retryable === false,
+    );
+    assert.equal(releases, 1);
 });
 
 test('restores Worlds and completed operations after constructing a new core', async (t) => {
