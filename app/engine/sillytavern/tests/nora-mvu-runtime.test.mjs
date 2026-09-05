@@ -35,6 +35,18 @@ test('managed MVU resolves its pinned Zod runtime from local extension assets', 
     );
 });
 
+test('managed MVU lets the shell address its stable vendor group independently', () => {
+    globalThis.__NORA_EXTENSION_ASSET_URL__ = assetPath => `/extension-assets/vendor-release${assetPath}`;
+    try {
+        assert.equal(
+            resolveMvuZodUrl('https://example.test/extension-assets/runtime-release/scripts/extensions/third-party/nora-mvu/runtime.js'),
+            'https://example.test/extension-assets/vendor-release/scripts/extensions/third-party/nora-mvu/vendor/zod.iife.js?v=4.1.11',
+        );
+    } finally {
+        delete globalThis.__NORA_EXTENSION_ASSET_URL__;
+    }
+});
+
 test('managed MVU waits for Helper, registers its iframe script, then waits for the public API', async () => {
     const events = [];
     const expected = { getMvuData() {} };

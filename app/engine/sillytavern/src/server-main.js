@@ -39,6 +39,7 @@ import {
     cleanUploads,
     getSessionCookieAge,
     verifySecuritySettings,
+    createExtensionAssetRedirectRouter,
     createVersionedExtensionsRouter,
 } from './workspace.js';
 
@@ -55,11 +56,9 @@ import hostWhitelistMiddleware from './middleware/hostWhitelist.js';
 import userCssMiddleware from './middleware/userCss.js';
 import { createLivewareEntryMiddleware, createLivewareIndexHandler } from './nora-liveware-entry.js';
 import {
-    computeCompositeAssetRelease,
-    computeStaticAssetRelease,
-    createAssetAllowlistMiddleware,
-    createPrecompressedAssetMiddleware,
-    IMMUTABLE_ASSET_CACHE_CONTROL,
+    computeBrowserAssetManifest,
+    createVersionedAssetRouteHandler,
+    materializeBrowserAssetManifest,
     NO_STORE_CACHE_CONTROL,
     REVALIDATED_ASSET_CACHE_CONTROL,
     renderNoraIndex,
@@ -98,55 +97,27 @@ util.inspect.defaultOptions.depth = 4;
 /** @type {import('./command-line.js').CommandLineArguments} */
 const cliArgs = globalThis.COMMAND_LINE_ARGS;
 const publicDirectory = path.join(serverDirectory, 'public');
-const coreAssetRelease = computeStaticAssetRelease({
-    roots: [
-        { label: 'public', path: publicDirectory },
-    ],
-    files: [
-        { label: 'package.json', path: path.join(serverDirectory, 'package.json') },
-        { label: 'package-lock.json', path: path.join(serverDirectory, 'package-lock.json') },
-        { label: 'webpack.config.js', path: path.join(serverDirectory, 'webpack.config.js') },
-        { label: 'bundled-lib.js', path: path.join(serverDirectory, 'dist', '_webpack', 'output', 'lib.js') },
-    ],
-    excludedPaths: [
-        'public/css/user.css',
-        `public/${PUBLIC_DIRECTORIES.globalExtensions.split(path.sep).join('/')}`,
-        'public/dist/nora/lib-core.js',
-        'public/dist/nora/lib-core.js.br',
-        'public/dist/nora/lib-core.js.gz',
-        'public/dist/nora/legacy.js',
-        'public/dist/nora/legacy.js.br',
-        'public/dist/nora/legacy.js.gz',
-    ],
-});
-const vendorAssetRelease = computeStaticAssetRelease({
-    roots: [],
-    files: [
-        { label: 'lib-core.js', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js') },
-        { label: 'lib-core.js.br', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js.br') },
-        { label: 'lib-core.js.gz', path: path.join(publicDirectory, 'dist', 'nora', 'lib-core.js.gz') },
-        { label: 'legacy.js', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js') },
-        { label: 'legacy.js.br', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js.br') },
-        { label: 'legacy.js.gz', path: path.join(publicDirectory, 'dist', 'nora', 'legacy.js.gz') },
-    ],
-});
-const extensionAssetRelease = computeStaticAssetRelease({
-    roots: [
-        { label: 'workspace-extensions', path: getUserDirectories().extensions },
-        { label: 'global-extensions', path: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions) },
-    ],
-});
-const staticAssetRelease = computeCompositeAssetRelease([coreAssetRelease, extensionAssetRelease, vendorAssetRelease]);
-const staticAssetBase = `/assets/${coreAssetRelease}`;
-const extensionAssetBase = `/extension-assets/${extensionAssetRelease}`;
-const vendorAssetBase = `/vendor-assets/${vendorAssetRelease}`;
-const indexHtml = renderNoraIndex(
-    fs.readFileSync(path.join(publicDirectory, 'index.html'), 'utf8'),
-    staticAssetRelease,
-    coreAssetRelease,
-    extensionAssetRelease,
-    vendorAssetRelease,
-);
+const bundledLibPath = path.join(serverDirectory, 'dist', '_webpack', 'output', 'lib.js');
+const assetCacheDirectory = path.join(globalThis.DATA_ROOT, '_cache', 'nora-assets-v3');
+let browserAssetManifest;
+let indexHtml = '';
+
+function initializeBrowserAssets() {
+    browserAssetManifest = computeBrowserAssetManifest({
+        publicDirectory,
+        bundledLibPath,
+        userExtensionDirectory: getUserDirectories().extensions,
+        globalExtensionDirectory: path.resolve(serverDirectory, PUBLIC_DIRECTORIES.globalExtensions),
+    });
+    materializeBrowserAssetManifest({
+        manifest: browserAssetManifest,
+        cacheDirectory: assetCacheDirectory,
+    });
+    indexHtml = renderNoraIndex(
+        fs.readFileSync(path.join(publicDirectory, 'index.html'), 'utf8'),
+        browserAssetManifest,
+    );
+}
 
 if (!cliArgs.enableIPv6 && !cliArgs.enableIPv4) {
     console.error('error: You can\'t disable all internet protocols: at least IPv6 or IPv4 must be enabled.');
@@ -158,7 +129,7 @@ http.globalAgent = new http.Agent({ keepAlive: cliArgs.enableKeepAlive });
 https.globalAgent = new https.Agent({ keepAlive: cliArgs.enableKeepAlive });
 
 const app = express();
-app.set('noraAssetRelease', staticAssetRelease);
+app.set('noraAssetRelease', '');
 app.use(createLivewareEntryMiddleware());
 app.use(helmet({
     contentSecurityPolicy: false,
@@ -277,7 +248,7 @@ if (!cliArgs.disableCsrf) {
 // Static files
 // Host index page
 app.get('/', cacheBuster.middleware, createLivewareIndexHandler({
-    tavernHtml: indexHtml,
+    tavernHtml: () => indexHtml,
     storyProfileHtml: fs.readFileSync(path.join(publicDirectory, 'actor.html'), 'utf8'),
 }));
 
@@ -293,34 +264,12 @@ app.get('/callback/:source?', (request, response) => {
 });
 
 // Host frontend assets
-const webpackMiddleware = getWebpackServeMiddleware(staticAssetBase);
+const webpackMiddleware = getWebpackServeMiddleware();
 app.use(webpackMiddleware);
 app.use(userCssMiddleware);
-app.use(extensionAssetBase, createVersionedExtensionsRouter());
-app.use(vendorAssetBase, createAssetAllowlistMiddleware([
-    'dist/nora/lib-core.js',
-    'dist/nora/legacy.js',
-]));
-app.use(vendorAssetBase, createPrecompressedAssetMiddleware(publicDirectory));
-app.use(vendorAssetBase, express.static(publicDirectory, {
-    etag: true,
-    lastModified: true,
-    maxAge: '1y',
-    immutable: true,
-    setHeaders: (response) => {
-        response.setHeader('Cache-Control', IMMUTABLE_ASSET_CACHE_CONTROL);
-    },
-}));
-app.use(staticAssetBase, createPrecompressedAssetMiddleware(publicDirectory));
-app.use(staticAssetBase, express.static(publicDirectory, {
-    etag: true,
-    lastModified: true,
-    maxAge: '1y',
-    immutable: true,
-    setHeaders: (response) => {
-        response.setHeader('Cache-Control', IMMUTABLE_ASSET_CACHE_CONTROL);
-    },
-}));
+app.use('/asset-files/:namespace/:release/*', createVersionedAssetRouteHandler(assetCacheDirectory));
+app.use('/extension-assets', createVersionedExtensionsRouter(assetCacheDirectory));
+app.use(createExtensionAssetRedirectRouter(() => browserAssetManifest));
 app.use(express.static(publicDirectory, {
     etag: true,
     lastModified: true,
@@ -356,13 +305,23 @@ app.use(multerMonkeyPatch);
 
 app.get('/version', async function (_, response) {
     const data = await getVersion();
+    const namespaceReleases = Object.fromEntries(Object.entries(browserAssetManifest?.namespaces || {})
+        .map(([name, namespace]) => [name, namespace.release]));
+    const extensionAssetReleases = Object.fromEntries(Object.entries(browserAssetManifest?.extensions || {})
+        .map(([name, extension]) => [name, extension.release]));
+    const extensionAssetGroupReleases = Object.fromEntries(Object.entries(browserAssetManifest?.extensions || {})
+        .filter(([, extension]) => extension.groups)
+        .map(([name, extension]) => [name, Object.fromEntries(Object.entries(extension.groups)
+            .map(([groupName, group]) => [groupName, group.release]))]));
     response.setHeader('Cache-Control', NO_STORE_CACHE_CONTROL);
     response.send({
         ...data,
-        assetRelease: staticAssetRelease,
-        coreAssetRelease,
-        extensionAssetRelease,
-        vendorAssetRelease,
+        assetRelease: browserAssetManifest?.release || '',
+        assetSchemaVersion: browserAssetManifest?.schemaVersion || null,
+        namespaceReleases,
+        extensionAssetRelease: browserAssetManifest?.extensionRelease || '',
+        extensionAssetReleases,
+        extensionAssetGroupReleases,
     });
 });
 
@@ -440,6 +399,8 @@ async function preSetupTasks() {
 
     // Wait for frontend libs to compile
     await webpackMiddleware.runWebpackCompiler({ pruneCache: true });
+    initializeBrowserAssets();
+    app.set('noraAssetRelease', browserAssetManifest.release);
 }
 
 /**

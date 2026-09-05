@@ -25,7 +25,7 @@ assert.match(index, /{{NORA_INLINE_MANIFEST_URL}}/);
 assert.match(index, /__NORA_INLINE_MANIFEST_PROMISE__/);
 assert.match(index, /document\.createElement\('script'\)[\s\S]*?importMap\.type = 'importmap'/);
 assert.match(index, /manifest\.legacy/);
-assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_VENDOR_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
 assert.match(index, /import 'nora-module\/scripts\/i18n\.js'/);
 assert.match(index, /manifest\.extensionCoreBridges/);
 assert.match(index, /imports\[`\$\{extensionAssetBase\}\/\$\{modulePath\}`\] = canonicalUrl/);

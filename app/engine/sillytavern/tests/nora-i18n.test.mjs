@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 import { english } from '../public/scripts/nora-i18n/strings.js';
 import { resolveNoraLocale, resolveExtensionLocale } from '../public/scripts/nora-i18n/locale.js';
-import { renderNoraIndex } from '../src/nora-static-assets.js';
+import { NORA_ASSET_NAMESPACE, renderNoraIndex } from '../src/nora-static-assets.js';
 import { renderLocaleBootstrap } from '../src/nora-locale-bootstrap.js';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
@@ -66,7 +66,14 @@ test('all explicit Nora translation calls and templates have English entries', (
 
 test('early shell and module use the same language, no unresolved bootstrap token', () => {
     const template = fs.readFileSync(path.join(root,'public/index.html'),'utf8');
-    assert.ok(!renderNoraIndex(template,'0123456789abcdef').includes('{{NORA_LOCALE_BOOTSTRAP}}'));
+    const namespace = name => ({ name, release: '1'.repeat(32), fullDigest: '1'.repeat(64), files: {} });
+    const manifest = {
+        schemaVersion: 3,
+        release: '0'.repeat(32),
+        namespaces: Object.fromEntries(Object.values(NORA_ASSET_NAMESPACE).map(name => [name, namespace(name)])),
+        extensions: {},
+    };
+    assert.ok(!renderNoraIndex(template, manifest).includes('{{NORA_LOCALE_BOOTSTRAP}}'));
     for (const [lang, browser, expected] of [['en','zh-CN','Your story is about to begin'],['zh','en-US','故事即将开始']]) {
         const context = { URLSearchParams, location:{search:'?lang='+lang}, navigator:{language:browser}, document:{documentElement:{}} };
         vm.runInNewContext(renderLocaleBootstrap(template),context);

@@ -12,6 +12,8 @@ import { extensionsEnabledFeatureGuard } from './endpoints/extensions.js';
 import {
     IMMUTABLE_ASSET_CACHE_CONTROL,
     REVALIDATED_ASSET_CACHE_CONTROL,
+    createVersionedExtensionRouteHandler,
+    extensionReleaseForPath,
 } from './nora-static-assets.js';
 import { color, getConfigValue, invalidateFirefoxCache, isPathUnderParent } from './util.js';
 
@@ -212,12 +214,46 @@ function createExtensionsRouteHandler(directoryFn, { immutable = false } = {}) {
     };
 }
 
-export function createVersionedExtensionsRouter() {
+export function createExtensionAssetRedirectHandler(getAssetManifest) {
+    return (request, response, next) => {
+        try {
+            const assetManifest = typeof getAssetManifest === 'function' ? getAssetManifest() : getAssetManifest;
+            const extensionName = decodeURIComponent(String(request.params.extension || ''));
+            const relativePath = decodeURIComponent(String(request.params[0] || '')).replace(/^\/+/, '');
+            const extension = assetManifest?.extensions?.[`third-party/${extensionName}`];
+            if (!extension || !Object.hasOwn(extension.files, relativePath)) return next();
+            const release = extensionReleaseForPath(extension, relativePath);
+
+            const encodedExtension = encodeURIComponent(extensionName);
+            const encodedPath = relativePath.split('/').map(encodeURIComponent).join('/');
+            const query = new URL(request.originalUrl, 'http://localhost').search;
+            response.setHeader('Cache-Control', REVALIDATED_ASSET_CACHE_CONTROL);
+            return response.redirect(
+                302,
+                `/extension-assets/${release}/scripts/extensions/third-party/${encodedExtension}/${encodedPath}${query}`,
+            );
+        } catch {
+            return next();
+        }
+    };
+}
+
+export function createExtensionAssetRedirectRouter(getAssetManifest) {
+    const redirectRouter = express.Router();
+    redirectRouter.use(
+        '/scripts/extensions/third-party/:extension/*',
+        extensionsEnabledFeatureGuard,
+        createExtensionAssetRedirectHandler(getAssetManifest),
+    );
+    return redirectRouter;
+}
+
+export function createVersionedExtensionsRouter(cacheDirectory) {
     const versionedRouter = express.Router();
     versionedRouter.use(
-        '/scripts/extensions/third-party/*',
+        '/:release/scripts/extensions/third-party/:extension/*',
         extensionsEnabledFeatureGuard,
-        createExtensionsRouteHandler(request => request.user.directories.extensions, { immutable: true }),
+        createVersionedExtensionRouteHandler(cacheDirectory),
     );
     return versionedRouter;
 }

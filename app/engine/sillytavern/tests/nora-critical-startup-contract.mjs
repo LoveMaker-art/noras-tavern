@@ -83,7 +83,7 @@ assert.doesNotMatch(
     'Nora UI CSS must not be transferred once as a preload and again as a stylesheet',
 );
 assert.doesNotMatch(index, /<link\s+rel="manifest"/, 'the PWA manifest must not compete with the interactive startup path');
-assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_VENDOR_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/, 'legacy libraries must load once from their independently versioned immutable asset');
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/, 'legacy libraries must load once from their independently versioned immutable asset');
 assert.match(index, /manifest\.legacy/, 'startup metrics must identify the standalone legacy asset');
 assert.match(index, /id="third-party_nora-ui-css"/, 'the Nora UI stylesheet must share the extension loader identity and load once');
 assert.match(extensions, /if \(existingStyle\.length > 0\)\s*\{\s*return Promise\.resolve\(\);/, 'an existing extension stylesheet must resolve without injecting a duplicate or hanging');
@@ -134,7 +134,7 @@ assert.doesNotMatch(
     'the body must not issue a duplicate aggregate bootstrap request',
 );
 assert.match(index, /shellPromise\.then\(\(shell\) => \{[\s\S]*render\(shell\)[\s\S]*reveal\(\)/, 'authoritative World summaries must reveal the existing shell before runtime hydration');
-assert.doesNotMatch(index, /shell-deadline|__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/, 'the visible World list must not automatically release the full ST runtime');
+assert.match(index, /function reveal\(\)[\s\S]*requestRuntime\('shell-visible'\)/, 'the visible World list must immediately start preparing the shared Tavern runtime');
 assert.match(index, /const queueAction = \(name,[\s\S]*requestRuntime\(name\)/, 'a World or product action must release the full runtime on explicit user intent');
 assert.match(index, /Promise\.all\(\[shellPromise, dataPromise\]\)[\s\S]*world\.id === lastWorldId && world\.lifecycleStatus === 'READY'[\s\S]*queueWorld\(resumeWorld, target, 'resume'\)/, 'returning users must resume only the persisted last World after validating it against the authoritative shell list');
 assert.match(index, /requestRuntime\('send'\)/, 'an early send must release the full runtime');
