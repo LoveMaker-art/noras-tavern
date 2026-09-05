@@ -51,7 +51,7 @@ test('Nora history reasoning has no streaming-status flash or duplicate arrow', 
 });
 
 test('Nora reasoning is visually stable without the legacy ST product stylesheet', () => {
-    assert.match(index, /href="\{\{NORA_ASSET_BASE\}\}\/css\/nora-runtime-contract\.css"/);
+    assert.match(index, /href="\{\{NORA_SHELL_ASSET_BASE\}\}\/css\/nora-runtime-contract\.css"/);
     assert.doesNotMatch(index, /href="\{\{NORA_ASSET_BASE\}\}\/style\.css"/);
     assert.match(style, /#nora-chat \.mes:not\(\.reasoning\) \.mes_reasoning_details[^}]*\{[^}]*display:\s*none\s*!important;/s);
     assert.match(style, /#nora-chat \.mes:has\(\.mes_reasoning:empty\) \.mes_reasoning_details[^}]*\{[^}]*display:\s*none\s*!important;/s);

@@ -26,13 +26,14 @@ export function createLivewareEntryMiddleware() {
 
 /**
  * Return each app's own title/icon in the initial HTML, without a redirect or JS.
- * @param {{tavernHtml: string, storyProfileHtml: string}} pages Initial HTML.
+ * @param {{tavernHtml: string|(() => string), storyProfileHtml: string}} pages Initial HTML.
  * @returns {import('express').RequestHandler}
  */
 export function createLivewareIndexHandler({ tavernHtml, storyProfileHtml }) {
     return (_request, response) => {
         const isStoryProfile = response.locals[storyProfileEntry] === true;
+        const renderedTavernHtml = typeof tavernHtml === 'function' ? tavernHtml() : tavernHtml;
         response.setHeader('Cache-Control', NO_STORE_CACHE_CONTROL);
-        return response.type('html').send(isStoryProfile ? storyProfileHtml : tavernHtml);
+        return response.type('html').send(isStoryProfile ? storyProfileHtml : renderedTavernHtml);
     };
 }

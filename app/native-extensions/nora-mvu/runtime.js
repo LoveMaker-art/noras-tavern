@@ -12,6 +12,9 @@ export const MVU_IMPORT_ERROR_KEY = '__NORA_MVU_IMPORT_ERROR__';
 export const MVU_LOADER_VERSION = 2;
 
 export function resolveMvuZodUrl(moduleUrl = import.meta.url) {
+    const assetPath = '/scripts/extensions/third-party/nora-mvu/vendor/zod.iife.js?v=4.1.11';
+    const versionedUrl = globalThis.__NORA_EXTENSION_ASSET_URL__?.(assetPath);
+    if (versionedUrl) return new URL(versionedUrl, globalThis.location?.href || moduleUrl).href;
     return new URL(MVU_ZOD_PATH, moduleUrl).href;
 }
 

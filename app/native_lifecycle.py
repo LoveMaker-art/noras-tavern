@@ -235,7 +235,7 @@ class NativeRuntime:
             raise NativeLifecycleError("bundled engine package version does not match its metadata")
         source_markers = (
             ("public/index.html", 'class="no-blur nora-product"'),
-            ("src/server-main.js", "computeStaticAssetRelease"),
+            ("src/server-main.js", "computeBrowserAssetManifest"),
             ("src/workspace.js", "function createExtensionsRouteHandler"),
             ("src/middleware/webpack-serve.js", "Nora pinned build output v4"),
         )

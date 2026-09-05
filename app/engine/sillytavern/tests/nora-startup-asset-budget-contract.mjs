@@ -22,12 +22,12 @@ assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'startup m
 assert.match(index, /__NORA_RUNTIME_ASSET_START_PROMISE__\.then\([\s\S]*?fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__,\s*\{[\s\S]*?cache: 'force-cache',[\s\S]*?priority: 'low'/);
 assert.match(index, /__NORA_EXTENSION_ASSET_BASE__/);
 assert.match(index, /__NORA_VENDOR_ASSET_BASE__/);
-assert.doesNotMatch(index, /shell-deadline|globalThis\.__NORA_START_RUNTIME_ASSETS__\('shell-visible'\)/);
+assert.match(index, /function reveal\(\)[\s\S]*requestRuntime\('shell-visible'\)/, 'shared runtime preparation must begin as soon as the visible shell is ready');
 assert.match(index, /requestRuntime\(name\)/);
-assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_VENDOR_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
+assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
 assert.doesNotMatch(index, /<link rel="modulepreload"[^>]+dist\/nora\//, 'large runtime modules must not compete with the visible shell');
 for (const stylesheet of ['fontawesome.min.css', 'solid.min.css', 'toastr.min.css']) {
-    assert.match(index, new RegExp(`<link href="\\{\\{NORA_ASSET_BASE\\}\\}/css/${stylesheet.replace('.', '\\.')}" rel="stylesheet" media="print" onload="this\\.media='all'">`), `${stylesheet} must not block the visible shell`);
+    assert.match(index, new RegExp(`<link href="\\{\\{NORA_SHELL_ASSET_BASE\\}\\}/css/${stylesheet.replace('.', '\\.')}" rel="stylesheet" media="print" onload="this\\.media='all'">`), `${stylesheet} must not block the visible shell`);
 }
 
 console.log(`nora-startup-asset-budget-contract=PASS shell_br=${shellHtmlBrotliSize} manifest_br=${manifestBrotliSize}`);

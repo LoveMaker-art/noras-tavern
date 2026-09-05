@@ -67,7 +67,7 @@ test('production entry routing precedes shared security and selects independent 
     const server = readFileSync(new URL('../src/server-main.js', import.meta.url), 'utf8');
     assert.ok(server.indexOf('app.use(createLivewareEntryMiddleware())') > 0);
     assert.ok(server.indexOf('app.use(createLivewareEntryMiddleware())') < server.indexOf('app.use(helmet('));
-    assert.match(server, /createLivewareIndexHandler\(\{[\s\S]*tavernHtml: indexHtml,[\s\S]*storyProfileHtml:/);
+    assert.match(server, /createLivewareIndexHandler\(\{[\s\S]*tavernHtml: \(\) => indexHtml,[\s\S]*storyProfileHtml:/);
     // Platform binding/registration behavior is exercised through the shared
     // integration interface by ops/tests/test_liveware_integration.py.
 });

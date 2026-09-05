@@ -78,7 +78,9 @@ for (const criticalSignal of [
     'body.nora-booting #nora-layout > *',
     'body.nora-booting #nora-boot-buffer',
     'body.nora-world-opening #nora-world-buffer',
+    'body.nora-runtime-preparing #nora-world-buffer',
     'body.nora-world-opening #nora-empty',
+    'body.nora-runtime-preparing #nora-empty',
     '@media (prefers-reduced-motion: reduce)',
     '.nora-empty.hidden',
     'body.nora-product > #sheld',
@@ -146,6 +148,11 @@ const requiredShellIds = [
     'nora-boot-buffer',
     'nora-world-buffer',
     'nora-world-buffer-title',
+    'nora-runtime-progress-fill',
+    'nora-runtime-progress-step',
+    'nora-runtime-progress-detail',
+    'nora-runtime-progress-actions',
+    'nora-runtime-back',
     'nora-rail-toggle',
     'nora-panel-toggle',
     'nora-scrim',
@@ -164,17 +171,32 @@ const missing = requiredShellIds.filter((id) => $(`#${id}`).length !== 1);
 if (missing.length) {
     throw new Error(`Nora early shell is missing required event nodes: ${missing.join(', ')}`);
 }
+if ($('#nora-runtime-retry').length || html.includes("getElementById('nora-runtime-retry')")) {
+    throw new Error('Runtime preparation must not present a retry control while loading can still continue.');
+}
 
 const bootBuffer = $('#nora-boot-buffer');
 const worldBuffer = $('#nora-world-buffer');
 if (bootBuffer.find('img').length || worldBuffer.find('img').length) {
     throw new Error('Nora buffers must use the typographic mark without image assets.');
 }
-if (!bootBuffer.text().includes('tavern') || !bootBuffer.text().includes('故事即将开始') || !worldBuffer.text().includes('正在进入这个世界')) {
+if (!bootBuffer.text().includes('tavern') || !bootBuffer.text().includes('故事即将开始') || !worldBuffer.text().includes('正在加载酒馆组件')) {
     throw new Error('Initial and World buffers must expose the shared Nora loading language.');
 }
 if (!html.includes('animation: nora-buffer-reveal 1ms linear 120ms forwards')) {
     throw new Error('World buffer must wait 120ms before appearing to avoid short-operation flashes.');
+}
+for (const progressSignal of [
+    "requestRuntime('shell-visible')",
+    "window.addEventListener('nora:runtime-ready'",
+    'module-manifest-network-response',
+    'legacy-libs-loaded',
+    'nora-context-ready',
+    '4_000',
+    '10_000',
+    '30_000',
+]) {
+    if (!html.includes(progressSignal)) throw new Error(`Runtime preparation feedback is incomplete: ${progressSignal}`);
 }
 const queueWorldSelection = getNamedFunction(worldController, 'queueSelection');
 for (const signal of ['current.name || tr("正在进入世界")', 'current.showBuffer !== false', "setAttribute('aria-hidden', 'false')", "setAttribute('aria-hidden', 'true')", 'void stopFollowingLatest()']) {
@@ -269,7 +291,7 @@ for (const signal of [
     if (!cardAdapter.includes(signal)) throw new Error(`The ST card adapter must preserve complex-card authorization: ${signal}`);
 }
 
-if (!html.includes('<title>Tavern</title>') || !html.includes('{{NORA_ASSET_BASE}}/tavern-icon-dbf4ecbd54ec.png')) {
+if (!html.includes('<title>Tavern</title>') || !html.includes('{{NORA_SHELL_ASSET_BASE}}/tavern-icon-dbf4ecbd54ec.png')) {
     throw new Error('The Nora shell must own the page title and use the release-owned compact application icon.');
 }
 
