@@ -1,17 +1,7 @@
 import {
     inspectMvuCompatibility,
     isMvuUpdateInstructionEntry,
-    isNoraMvuV1Entry,
 } from './mvu-compatibility.js';
-
-export const NORA_MVU_V1_PROMPT = [
-    'Use Nora MVU protocol v1 for this variable update.',
-    'Never output _.set, JSONPatch, prose, or markdown inside the update block.',
-    'Append exactly one block: <UpdateVariable><NoraMvu>{"protocol":"nora-mvu/1","operations":[...]}</NoraMvu></UpdateVariable>.',
-    'Allowed operations: set(path,value), increment(path,amount), append(path,value), insert(path,index,value), delete(path), move(from,path).',
-    'Every path must be an array of non-empty string keys or non-negative integer indexes.',
-    'When no variable should change, return {"protocol":"nora-mvu/1","operations":[]}.',
-].join('\n');
 
 export function isNoraMvuVariableModelEnabled(settings = {}) {
     return settings?.['更新方式'] === '额外模型解析'
@@ -20,12 +10,6 @@ export function isNoraMvuVariableModelEnabled(settings = {}) {
 
 export function isNoraMvuUpdateInstructionEntry(entry = {}) {
     return isMvuUpdateInstructionEntry(entry);
-}
-
-export function projectNoraMvuUpdateContent(entry = {}, content = '') {
-    const source = String(content || '');
-    if (!isNoraMvuV1Entry(entry) || source.includes(NORA_MVU_V1_PROMPT)) return source;
-    return `${source.trimEnd()}\n\n${NORA_MVU_V1_PROMPT}`;
 }
 
 export function isNoraMvuExtraAnalysisRunning(runtime = globalThis.Mvu) {

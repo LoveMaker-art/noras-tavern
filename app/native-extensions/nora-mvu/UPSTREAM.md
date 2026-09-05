@@ -12,13 +12,10 @@ replacement. It also restores the original message and variables when the replac
 fails. Nora now wraps the upstream parser and persistence logic in one bounded transaction: one
 primary model attempt, at most one targeted parsing/validation repair, a 120-second deadline per
 attempt, validation on a cloned snapshot, a stale-chat guard, and one atomic commit. An invalid
-or late result never replaces the previous valid snapshot. Cards that explicitly declare
-`[nora_mvu/1]` use Nora's strict operation envelope with array paths and unambiguous operations;
-legacy `_.set` and JSONPatch cards remain compatibility inputs. Formatted-output and tool-call
-modes use the Nora schema only for declared v1 cards, while text mode receives the same protocol
-instruction through its update entry. Invalid command batches are rolled back as a whole. An
-explicit empty `JSONPatch` or empty Nora operation list commits as a successful no-op without
-rewriting the story message. Independent-model context and output
+or late result never replaces the previous valid snapshot. Models outside the upstream Gemini
+and Claude prompt families receive a deterministic MVU-only prompt; formatted-output mode keeps
+the upstream JSON Schema response and conversion path. An explicit empty `JSONPatch` commits as
+a successful no-op without rewriting the story message. Independent-model context and output
 limits are passed into the pinned Slash Runner prompt budget instead of being display-only fields.
 A model configured to follow the active Tavern text model now inherits that model's thinking
 behavior as well as its provider, credentials, model name, and output limit. The MVU-only

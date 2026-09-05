@@ -75,17 +75,16 @@ function writablePath(lodash, value) {
     return !path.some(part => String(part).startsWith(READ_ONLY_PREFIX));
 }
 
-function applyCommand(data, command, lodash, notify) {
+function applyCommand(data, command, validate, lodash, notify) {
     const args = [...(command?.args || [])];
     switch (command?.type) {
         case 'set': {
             if (args.length === 3) args.splice(1, 1);
             const path = parsePath(args[0]);
             if (!writablePath(lodash, path)) return null;
-            if (command?.reason === 'nora-mvu/1' && path && !lodash.has(data, path)) return null;
             if (path) lodash.set(data, path, normalizedValue(args[1]));
             else data = normalizedValue(args[1]);
-            return data;
+            return validate(data, command, true);
         }
         case 'add': {
             const path = parsePath(args[0]);
@@ -96,7 +95,7 @@ function applyCommand(data, command, lodash, notify) {
                 return null;
             }
             lodash.set(data, path, previous + Number(normalizedValue(args[1])));
-            return data;
+            return validate(data, command, true);
         }
         case 'insert': {
             const path = parsePath(args[0]);
@@ -104,7 +103,6 @@ function applyCommand(data, command, lodash, notify) {
             const key = normalizedValue(args[1]);
             const value = normalizedValue(args.at(-1));
             let collection = path ? lodash.get(data, path) : data;
-            if (command?.reason === 'nora-mvu/1' && !Array.isArray(collection)) return null;
             if (collection === undefined || collection === null) {
                 collection = args.length === 2 ? [] : {};
                 if (path) lodash.set(data, path, collection);
@@ -112,27 +110,23 @@ function applyCommand(data, command, lodash, notify) {
             }
             if (Array.isArray(collection)) {
                 if (args.length === 2) collection.push(value);
-                else {
-                    const index = key === '-' ? collection.length : Number(key);
-                    if (command?.reason === 'nora-mvu/1' && index > collection.length) return null;
-                    collection.splice(index, 0, value);
-                }
+                else collection.splice(key === '-' ? collection.length : Number(key), 0, value);
             } else if (lodash.isPlainObject(collection)) {
                 if (args.length === 2 && lodash.isPlainObject(value)) Object.assign(collection, value);
                 else collection[String(key)] = value;
             } else {
                 return null;
             }
-            return data;
+            return validate(data, command, true);
         }
         case 'delete': {
             const path = args.map(parsePath).join('.');
-            if (!writablePath(lodash, path) || (command?.reason === 'nora-mvu/1' && !lodash.has(data, path))) return null;
+            if (!writablePath(lodash, path)) return null;
             const parts = lodash.toPath(path);
             const parent = lodash.get(data, parts.slice(0, -1));
             if (Array.isArray(parent)) parent.splice(Number(parts.at(-1)), 1);
             else lodash.unset(data, parts);
-            return data;
+            return validate(data, command, true);
         }
         default:
             return null;
@@ -178,59 +172,42 @@ export function registerMvuSchema(input) {
     eventOn('mag_command_parsed_for_zod', (variables, commands) => {
         const schema = unwrapSchema();
         const notify = notificationEnabled();
-        let candidate = clone(variables.stat_data);
-        let valid = true;
-        let failedCommand = null;
+        const validate = (data, command, shouldNotify) => {
+            try {
+                const parsed = schema.safeParse(data, { reportInput: true });
+                if (parsed.success) return parsed.data;
+                if (notify && shouldNotify) report('warn', schemaError(zod, parsed.error), `变量更新失败: ${command.full_match || ''}`);
+            } catch (error) {
+                if (notify && shouldNotify) report('warn', error?.stack || error?.message || error, `变量更新失败: ${command.full_match || ''}`);
+            }
+            return null;
+        };
+        const consumed = [];
 
-        for (const command of commands) {
-            let next = candidate;
+        commands.forEach((command, index) => {
+            let next = clone(variables.stat_data);
+            const removed = [];
             if (command.type === 'move') {
                 const from = parsePath(command.args?.[0]);
                 const to = parsePath(command.args?.[1]);
-                if (!lodash.has(next, from) || !writablePath(lodash, from) || !writablePath(lodash, to)) {
-                    valid = false;
-                    failedCommand = command;
-                    break;
-                }
+                if (!lodash.has(next, from) || !writablePath(lodash, from) || !writablePath(lodash, to)) return;
                 const value = clone(lodash.get(next, from));
-                next = applyCommand(next, { ...command, type: 'delete', args: [from] }, lodash, notify);
-                if (next !== null) lodash.set(next, to, value);
+                next = applyCommand(next, { ...command, type: 'delete', args: [from] }, validate, lodash, notify);
+                if (next !== null) next = applyCommand(next, { ...command, type: 'set', args: [to, value] }, validate, lodash, notify);
+                removed.push(lodash.toPath(from));
             } else {
-                next = applyCommand(next, command, lodash, notify);
+                next = applyCommand(next, command, validate, lodash, notify);
+                if (command.type === 'delete') removed.push(lodash.toPath(command.args.map(parsePath).join('.')));
             }
-            if (next === null) {
-                valid = false;
-                failedCommand = command;
-                break;
-            }
-            candidate = next;
-        }
+            if (next === null) return;
+            removed.forEach(path => {
+                if (!lodash.has(next, path)) lodash.unset(variables.stat_data, path);
+            });
+            variables.stat_data = { ...variables.stat_data, ...next };
+            consumed.push(index);
+        });
 
-        // Zod owns these commands, so the upstream executor must never run a
-        // rejected remainder. Commit the whole candidate or preserve the whole
-        // previous snapshot.
-        commands.length = 0;
-        if (!valid) {
-            if (notify) {
-                report(
-                    'warn',
-                    'The command cannot be applied to the current variable state.',
-                    `变量更新失败: ${failedCommand?.full_match || ''}`,
-                );
-            }
-            return;
-        }
-
-        try {
-            const parsed = schema.safeParse(candidate, { reportInput: true });
-            if (parsed.success) {
-                variables.stat_data = parsed.data;
-            } else if (notify) {
-                report('warn', schemaError(zod, parsed.error), '整批变量更新校验失败');
-            }
-        } catch (error) {
-            if (notify) report('warn', error?.stack || error?.message || error, '整批变量更新校验失败');
-        }
+        lodash.pullAt(commands, consumed);
     });
 
     eventOn('mag_command_parsed_ended_for_zod', (_variables, commands) => {

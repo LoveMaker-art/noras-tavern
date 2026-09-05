@@ -21,8 +21,6 @@ const script = fs.readFileSync(path.join(root, 'engine/sillytavern/public/script
 const extensions = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/extensions.js'), 'utf8');
 const cardAdapter = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-adapters/st-card-adapter.js'), 'utf8');
 const mvuCompatibility = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-compat/mvu-compatibility.js'), 'utf8');
-const mvuWorldInfoPolicy = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-compat/mvu-world-info-policy.js'), 'utf8');
-const worldInfo = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/world-info.js'), 'utf8');
 const worldController = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/world-controller.js'), 'utf8');
 const worldCoreRuntime = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-worlds/world-core-runtime.js'), 'utf8');
 const helperRoot = path.join(root, 'native-extensions/JS-Slash-Runner');
@@ -70,16 +68,10 @@ assert.doesNotMatch(schemaRuntime, /https?:\/\/|^\s*import\b/m, 'MVU schema runt
 assert.match(bundle, /reloadSettings/, 'vendored runtime must expose the headless settings reload bridge');
 assert.match(bundle, /MVU_COMMAND_VALIDATION_FAILED/, 'vendored runtime must classify update validation failures');
 assert.match(bundle, /MVU_EXTRA_MODEL_TIMEOUT/, 'vendored runtime must classify bounded request timeouts');
-assert.match(bundle, /nora-mvu\/1/, 'vendored runtime must contain Nora MVU protocol v1');
 assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;/, 'each MVU model attempt must receive the full observed provider budget');
 assert.doesNotMatch(noraPatch, /PRIMARY_ATTEMPT_BUDGET_MS|TRANSACTION_BUDGET_MS/, 'MVU must not split one request budget into guaranteed-short retries');
 assert.match(noraPatch, /if \(!\['parsing', 'validation'\]\.includes\(failure\.stage\)\) break;/, 'MVU transport failures must not trigger an overlapping paid retry');
 assert.match(noraPatch, /let task = decoded_extra_model_task;/, 'extra-model MVU must preserve the card/upstream variable update dialect');
-assert.match(noraPatch, /NORA_MVU_PROTOCOL\s*=\s*'nora-mvu\/1'/, 'the source patch must define one versioned Nora MVU protocol');
-assert.match(noraPatch, /NORA_MVU_RESPONSE_SCHEMA/, 'the source patch must provide a request-time schema for Nora MVU v1');
-assert.match(noraPatch, /use_nora_protocol \? NORA_MVU_TOOL_DEFINITION : MVU_TOOL_DEFINITION/, 'tool calling must select the Nora schema only for declared v1 cards');
-assert.match(noraPatch, /nora_extraction\.matched[\s\S]{0,120}nora_extraction\.commands[\s\S]{0,120}extractCommands/, 'Nora v1 and legacy extraction must remain separate compatible paths');
-assert.match(noraPatch, /Object\.assign\(variables, klona\(variables_before_update\)\)/, 'any rejected command batch must restore the complete previous variable snapshot');
 assert.doesNotMatch(
     noraPatch,
     /You are a deterministic state-transition processor|Return exactly one block in this structure|Never omit the <JSONPatch> wrapper/,
@@ -95,9 +87,7 @@ assert.match(noraPatch, /config\.custom_api = \{[\s\S]{0,120}\+\s*max_context:/,
 assert.match(slashRunnerPatch, /config\.custom_api\?\.max_context[\s\S]{0,160}config\.custom_api\?\.max_tokens/, 'independent MVU models must retain their own context and output limits');
 assert.match(slashRunnerPatch, /chatCompletion\.setTokenBudget\(maxContext, maxOutput\)/, 'the pinned Slash Runner must apply independent MVU token limits');
 assert.match(slashRunnerPatch, /authorNoteOverride[\s\S]{0,160}\?\? ''/, 'the pinned Slash Runner must normalize a missing headless author note to an empty string');
-for (const promptField of ['persona_description', 'char_description', 'world_info_before', 'world_info_after', 'chat_history']) {
-    assert.match(bundle, new RegExp(promptField), `Nora MVU bundle must preserve the ${promptField} prompt field`);
-}
+assert.match(noraPatch, /'persona_description'[\s\S]*'char_description'[\s\S]*'world_info_before'[\s\S]*'world_info_after'[\s\S]*'chat_history'/, 'Nora MVU must preserve the original ST character, worldbook, and chat-history prompt chain');
 assert.doesNotMatch(helperBundle, /p=wt\.new_chat_prompt,m=await yt\.createAsync\(`system`,Re\(p\),`newMainChat`\);n\.reserveBudget\(m\),f\.add\(m\)/, 'the shipped Helper runtime must not inject a missing new-chat prompt');
 assert.match(helperBundle, /typeof wt\.new_chat_prompt==`string`[\s\S]{0,180}newMainChat[\s\S]{0,100}m&&\(n\.reserveBudget\(m\),f\.add\(m\)\)/, 'the shipped Helper runtime must guard its optional new-chat prompt');
 assert.doesNotMatch(helperBundle, /e\?\.overrides\?\.author_note\?\?\$\(`#extension_floating_prompt`\)\.val\(\);/, 'the shipped Helper runtime must not pass an absent author note into ST prompt aggregation');
@@ -116,13 +106,7 @@ assert.match(cardAdapter, /inspectMvuCompatibility/);
 assert.match(mvuCompatibility, /INIT_COMMENT_MARKER\s*=\s*\/\\\[initvar\\\]\/i/);
 assert.match(mvuCompatibility, /UPDATE_COMMENT_MARKER\s*=\s*\/\\\[mvu_update\\\]\/i/);
 assert.match(mvuCompatibility, /PLOT_COMMENT_MARKER\s*=\s*\/\\\[mvu_plot\\\]\/i/);
-assert.match(mvuCompatibility, /NORA_V1_COMMENT_MARKER/);
 assert.match(mvuCompatibility, /MagicalAstrogy\\\/MagVarUpdate/);
-assert.match(mvuWorldInfoPolicy, /NORA_MVU_V1_PROMPT/);
-assert.match(mvuWorldInfoPolicy, /projectNoraMvuUpdateContent/);
-assert.match(worldInfo, /projectNoraMvuUpdateContent\(entry, entry\.content\)/, 'Nora v1 instructions must be projected into active world-info prompts without mutating the card');
-assert.match(schemaRuntime, /let candidate = clone\(variables\.stat_data\)/, 'Zod updates must execute against one batch candidate');
-assert.match(schemaRuntime, /schema\.safeParse\(candidate[\s\S]{0,160}if \(parsed\.success\)[\s\S]{0,120}variables\.stat_data = parsed\.data/, 'Zod updates must commit only after the whole batch validates');
 assert.match(cardAdapter, /__NORA_ENSURE_MVU_READY__/);
 assert.match(
     worldCoreRuntime,

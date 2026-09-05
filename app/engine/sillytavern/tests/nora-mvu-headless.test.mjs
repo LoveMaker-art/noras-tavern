@@ -22,18 +22,6 @@ import {
 import { createManagedMvuRuntimeLoader } from '../../../native-extensions/nora-mvu/runtime.js';
 import { createMvuUpdateObserver } from '../../../native-extensions/nora-mvu/update-observer.js';
 import { registerMvuSchema } from '../../../native-extensions/nora-mvu/mvu-zod.js';
-import { createMvuModelAdapter } from '../../../native-extensions/nora-ui/mvu-model-adapter.js';
-import {
-    createStMvuSettingsAdapter,
-    NORA_MVU_MODEL_PROXY_URL as STORY_MVU_PROXY_URL,
-} from '../public/scripts/nora-adapters/st-mvu-settings-adapter.js';
-import { renderMvuModelSection } from '../../../native-extensions/nora-ui/model-controller.js';
-import { NORA_MVU_MODEL_PROXY_URL as BACKEND_MVU_PROXY_URL } from '../src/nora-mvu-model-config.js';
-import {
-    isNoraMvuUpdateInstructionEntry,
-    projectNoraMvuUpdateContent,
-    shouldSuppressNoraMvuUpdateEntryForMainPrompt,
-} from '../public/scripts/nora-compat/mvu-world-info-policy.js';
 
 test('managed MVU script is installed in persisted Helper settings', () => {
     const context = { extensionSettings: { tavern_helper: { script: { scripts: [
@@ -84,72 +72,17 @@ test('local MVU schema runtime initializes and validates card variables without 
     assert.equal(variables.stat_data.score, 2);
     assert.deepEqual(commands, []);
 });
-
-test('local MVU schema runtime rejects a mixed-validity batch atomically', (t) => {
-    const original = new Map([
-        ['z', globalThis.z],
-        ['_', globalThis._],
-        ['eventOn', globalThis.eventOn],
-        ['registerVariableSchema', globalThis.registerVariableSchema],
-    ]);
-    const listeners = new Map();
-    globalThis.z = z;
-    globalThis._ = lodash;
-    globalThis.eventOn = (event, handler) => listeners.set(event, handler);
-    globalThis.registerVariableSchema = () => {};
-    t.after(() => {
-        for (const [name, value] of original) {
-            if (value === undefined) delete globalThis[name];
-            else globalThis[name] = value;
-        }
-    });
-
-    registerMvuSchema(() => z.object({ score: z.number().int().min(0).max(10) }));
-    const variables = { stat_data: { score: 1 } };
-    const commands = [
-        { type: 'set', args: ['score', '2'], full_match: 'valid first command' },
-        { type: 'set', args: ['score', '99'], full_match: 'invalid second command' },
-    ];
-
-    listeners.get('mag_command_parsed_for_zod')(variables, commands);
-    assert.deepEqual(variables.stat_data, { score: 1 });
-    assert.deepEqual(commands, []);
-});
-
-test('local MVU schema runtime validates the final batch instead of rejecting a valid transition midway', (t) => {
-    const original = new Map([
-        ['z', globalThis.z],
-        ['_', globalThis._],
-        ['eventOn', globalThis.eventOn],
-        ['registerVariableSchema', globalThis.registerVariableSchema],
-    ]);
-    const listeners = new Map();
-    globalThis.z = z;
-    globalThis._ = lodash;
-    globalThis.eventOn = (event, handler) => listeners.set(event, handler);
-    globalThis.registerVariableSchema = () => {};
-    t.after(() => {
-        for (const [name, value] of original) {
-            if (value === undefined) delete globalThis[name];
-            else globalThis[name] = value;
-        }
-    });
-
-    registerMvuSchema(() => z.union([
-        z.object({ mode: z.literal('a'), a: z.number() }),
-        z.object({ mode: z.literal('b'), b: z.number() }),
-    ]));
-    const variables = { stat_data: { mode: 'a', a: 1 } };
-    const commands = [
-        { type: 'set', args: ['mode', '"b"'], full_match: 'switch mode' },
-        { type: 'set', args: ['b', '2'], full_match: 'create b' },
-        { type: 'delete', args: ['a'], full_match: 'remove a' },
-    ];
-
-    listeners.get('mag_command_parsed_for_zod')(variables, commands);
-    assert.deepEqual(variables.stat_data, { mode: 'b', b: 2 });
-    assert.deepEqual(commands, []);
-});
+import { createMvuModelAdapter } from '../../../native-extensions/nora-ui/mvu-model-adapter.js';
+import {
+    createStMvuSettingsAdapter,
+    NORA_MVU_MODEL_PROXY_URL as STORY_MVU_PROXY_URL,
+} from '../public/scripts/nora-adapters/st-mvu-settings-adapter.js';
+import { renderMvuModelSection } from '../../../native-extensions/nora-ui/model-controller.js';
+import { NORA_MVU_MODEL_PROXY_URL as BACKEND_MVU_PROXY_URL } from '../src/nora-mvu-model-config.js';
+import {
+    isNoraMvuUpdateInstructionEntry,
+    shouldSuppressNoraMvuUpdateEntryForMainPrompt,
+} from '../public/scripts/nora-compat/mvu-world-info-policy.js';
 
 const escapeHtml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 
@@ -157,7 +90,6 @@ test('MVU capability detection only accepts upstream worldbook markers', () => {
     assert.equal(hasMvuDeclaration([{ comment: '[InitVar] initialized variables' }]), true);
     assert.equal(hasMvuDeclaration([{ comment: '[mvu_update] variable rules' }]), true);
     assert.equal(hasMvuDeclaration([{ comment: 'Plot [MVU_PLOT]' }]), true);
-    assert.equal(hasMvuDeclaration([{ comment: '[nora_mvu/1] structured protocol' }]), true);
     assert.equal(hasMvuDeclaration([{ comment: 'ordinary character and setting entry', content: '[mvu_update]' }]), false);
     assert.equal(hasMvuDeclaration([]), false);
 });
@@ -581,40 +513,6 @@ test('MVU variable model suppresses update instructions only from the story mode
         }),
     };
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, { extensionSettings: disabledSettings }), false);
-});
-
-test('Nora MVU v1 cards receive a stable structured-output instruction in either model path', () => {
-    const entry = {
-        comment: '[mvu_update] [nora_mvu/1] variable rules',
-        content: 'Increase 好感度 only when the relationship changes.',
-    };
-    const projected = projectNoraMvuUpdateContent(entry, entry.content);
-
-    assert.match(projected, /<NoraMvu>/);
-    assert.match(projected, /"protocol":"nora-mvu\/1"/);
-    assert.match(projected, /increment\(path,amount\)/);
-    assert.equal(projectNoraMvuUpdateContent(entry, projected), projected, 'projection must be idempotent');
-    assert.match(
-        projectNoraMvuUpdateContent(entry, 'This card mentions nora-mvu/1 but contains no output contract.'),
-        /<NoraMvu>/,
-        'a casual protocol mention must not suppress the actual output contract',
-    );
-
-    const enabledSettings = {
-        mvu_settings: createHeadlessMvuSettings({
-            '更新方式': '额外模型解析',
-            '额外模型解析配置': { '启用自动请求': true },
-        }),
-    };
-    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
-        extensionSettings: enabledSettings,
-        lorebookEntries: [entry],
-    }), true);
-    assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
-        extensionSettings: enabledSettings,
-        lorebookEntries: [entry],
-        mvuRuntime: { isDuringExtraAnalysis: () => true },
-    }), false);
 });
 
 test('legacy MVU update rules stay in the story prompt when upstream split mode is unsupported', () => {
