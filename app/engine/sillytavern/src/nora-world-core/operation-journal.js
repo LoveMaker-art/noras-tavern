@@ -45,10 +45,18 @@ function validateOperation(value) {
         ? null
         : normalizeMaterialization(value.materialization);
     if (needsMaterialization !== Boolean(materialization)) throw new Error('Operation materialization contradicts its stage.');
+    const inputReleasedAt = value.input_released_at ?? null;
+    if (inputReleasedAt !== null && !Number.isFinite(Date.parse(inputReleasedAt))) {
+        throw new Error('Operation staged-input release timestamp must be null or an ISO date.');
+    }
+    const terminalFailure = value.status === 'FAILED' && value.error?.retryable === false;
+    if (inputReleasedAt !== null && !needsMaterialization && !terminalFailure) {
+        throw new Error('Operation released staged input before reaching a durable terminal state.');
+    }
     if (!Number.isFinite(Date.parse(value.created_at)) || !Number.isFinite(Date.parse(value.updated_at))) {
         throw new Error('Operation timestamps must be ISO dates.');
     }
-    return cloneJson({ ...value, command, materialization });
+    return cloneJson({ ...value, command, materialization, input_released_at: inputReleasedAt });
 }
 
 export class OperationJournal {
@@ -150,6 +158,7 @@ export class OperationJournal {
                 status: 'RUNNING',
                 attempts: 1,
                 materialization: null,
+                input_released_at: null,
                 error: null,
                 created_at: timestamp,
                 updated_at: timestamp,
@@ -195,6 +204,7 @@ export class OperationJournal {
                 status: 'COMPLETED',
                 attempts: 1,
                 materialization: materializationFromWorld(world),
+                input_released_at: timestamp,
                 error: null,
                 created_at: world.created_at,
                 updated_at: timestamp,
@@ -235,6 +245,35 @@ export class OperationJournal {
                 ...current,
                 status: 'FAILED',
                 error: serializeWorldCoreError(error),
+                updated_at: this.#now(),
+            });
+        });
+    }
+
+    async pendingInputReleases() {
+        await this.load();
+        const materializedIndex = OPERATION_STAGES.indexOf('MATERIALIZED');
+        return [...this.#operations.values()]
+            .filter(operation => operation.input_released_at === null
+                && (OPERATION_STAGES.indexOf(operation.stage) >= materializedIndex
+                    || (operation.status === 'FAILED' && operation.error?.retryable === false)))
+            .map(cloneJson);
+    }
+
+    async markInputReleased(operationId) {
+        await this.load();
+        return this.#locks.run(`journal-operation:${operationId}`, async () => {
+            const current = this.#operations.get(String(operationId));
+            if (!current) throw new NoraWorldCoreError('NORA_OPERATION_NOT_FOUND', 'World operation was not found.');
+            if (current.input_released_at !== null) return cloneJson(current);
+            const materialized = OPERATION_STAGES.indexOf(current.stage) >= OPERATION_STAGES.indexOf('MATERIALIZED');
+            const terminalFailure = current.status === 'FAILED' && current.error?.retryable === false;
+            if (!materialized && !terminalFailure) {
+                throw new NoraWorldCoreError('NORA_OPERATION_STAGE', 'Staged input is still required by this World operation.');
+            }
+            return this.#save({
+                ...current,
+                input_released_at: this.#now(),
                 updated_at: this.#now(),
             });
         });

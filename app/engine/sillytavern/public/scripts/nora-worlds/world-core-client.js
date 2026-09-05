@@ -14,10 +14,17 @@ function decodePayload(response, payload) {
     if (response.ok) return payload;
     const error = new Error(payload?.detail || payload?.error?.message || payload?.error || `Nora World Core request failed (${response.status}).`);
     error.code = payload?.error?.code || payload?.error || 'NORA_WORLD_HTTP_ERROR';
-    error.retryable = Boolean(payload?.error?.retryable);
+    if (typeof payload?.error?.retryable === 'boolean') error.retryable = payload.error.retryable;
     error.operationId = payload?.error?.operation_id || null;
     error.worldId = payload?.error?.world_id || null;
     throw error;
+}
+
+function operationFailure(operation) {
+    const error = new Error(operation?.error?.message || 'World creation failed.');
+    error.code = operation?.error?.code || 'NORA_WORLD_CREATE_FAILED';
+    if (typeof operation?.error?.retryable === 'boolean') error.retryable = operation.error.retryable;
+    return error;
 }
 
 async function decodeResponse(response) {
@@ -170,6 +177,10 @@ export function createWorldCoreClient(getHeaders, {
         else pendingStore.removeItem(PENDING_CREATION_KEY);
     }
 
+    function settlePendingFromError(error) {
+        if (error?.retryable === false) writePending(null);
+    }
+
     function timeoutError(operationId) {
         const error = new Error(operationId
             ? 'World operation did not complete in time. It can be resumed without importing again.'
@@ -263,10 +274,7 @@ export function createWorldCoreClient(getHeaders, {
             if (clock() - startedAt >= operationTimeoutMs) throw timeoutError(operationId);
             if (current.operation?.status === 'COMPLETED') return current;
             if (current.operation?.status === 'FAILED') {
-                const error = new Error(current.operation.error?.message || 'World creation failed.');
-                error.code = current.operation.error?.code || 'NORA_WORLD_CREATE_FAILED';
-                error.retryable = Boolean(current.operation.error?.retryable);
-                throw error;
+                throw operationFailure(current.operation);
             }
             await delay(Math.min(nextPollMs, operationTimeoutMs - (clock() - startedAt)));
             nextPollMs = Math.min(Math.max(nextPollMs * 2, pollIntervalMs), pollMaxIntervalMs);
@@ -297,7 +305,7 @@ export function createWorldCoreClient(getHeaders, {
             writePending(null);
             return completed;
         } catch (error) {
-            if (error?.retryable === false) writePending(null);
+            settlePendingFromError(error);
             throw error;
         }
     }
@@ -349,10 +357,7 @@ export function createWorldCoreClient(getHeaders, {
             try {
                 const current = await operation(operationId);
                 if (current.operation?.status === 'FAILED') {
-                    const error = new Error(current.operation.error?.message || 'World creation failed.');
-                    error.code = current.operation.error?.code || 'NORA_WORLD_CREATE_FAILED';
-                    error.retryable = Boolean(current.operation.error?.retryable);
-                    throw error;
+                    throw operationFailure(current.operation);
                 }
                 const result = current.operation?.status === 'COMPLETED' ? current : await waitForOperation(operationId);
                 writePending(null);
@@ -363,7 +368,8 @@ export function createWorldCoreClient(getHeaders, {
                     await delay(pollIntervalMs);
                     continue;
                 }
-                if (error?.code === 'NORA_OPERATION_NOT_FOUND' || error?.retryable === false) writePending(null);
+                if (error?.code === 'NORA_OPERATION_NOT_FOUND') writePending(null);
+                else settlePendingFromError(error);
                 throw error;
             }
         }
@@ -385,7 +391,7 @@ export function createWorldCoreClient(getHeaders, {
             writePending(null);
             return result;
         } catch (error) {
-            if (error?.retryable === false) writePending(null);
+            settlePendingFromError(error);
             throw error;
         }
     }

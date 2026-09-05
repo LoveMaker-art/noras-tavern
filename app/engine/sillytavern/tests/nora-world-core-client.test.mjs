@@ -249,6 +249,21 @@ test('clears a persisted pending import when recovery finds a terminal failure',
     assert.equal(client.pendingCreation(), null);
 });
 
+test('retains a pending import when an HTTP failure does not explicitly declare retryability', async () => {
+    const pendingStore = memoryStore();
+    const client = createWorldCoreClient(() => ({ 'X-CSRF-Token': 'token' }), {
+        pendingStore,
+        transportRetries: 0,
+        fetchImpl: async () => response(502, { error: { code: 'UPSTREAM_BAD_GATEWAY', message: 'Bad gateway' } }),
+    });
+
+    await assert.rejects(
+        client.importCard(new File(['card'], 'card.png'), { idempotencyKey: 'browser:ambiguous' }),
+        error => error?.code === 'UPSTREAM_BAD_GATEWAY' && error?.retryable === undefined,
+    );
+    assert.equal(client.pendingCreation()?.idempotencyKey, 'browser:ambiguous');
+});
+
 test('executes and verifies the aggregate ST snapshot without capability waits', async () => {
     const calls = [];
     let state = {

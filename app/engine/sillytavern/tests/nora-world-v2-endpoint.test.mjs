@@ -156,7 +156,6 @@ test('exposes the authoritative v2 import, operation, list and open-plan contrac
             payload: { runtime_card_kind: 'nora-internal-blank' },
         }),
         cleanupUpload: async () => {},
-        cleanupStagedCard: async () => {},
         getSnapshotRevision: async () => 'revision-one',
         readSnapshot: async plan => ({
             snapshot: { schema: 'nora-world-snapshot/v1', revision: 'revision-one', plan, character: {}, chat: { messages: [] }, worldbooks: [] },
