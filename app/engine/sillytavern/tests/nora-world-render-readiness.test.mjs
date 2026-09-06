@@ -57,3 +57,24 @@ test('has one awaited owner and propagates readiness failures', async () => {
     );
     disposeFailure();
 });
+
+test('shares one readiness owner across separately bundled module instances', async () => {
+    const ownerModule = await import('../public/scripts/nora-worlds/world-render-readiness.js?instance=owner');
+    const consumerModule = await import('../public/scripts/nora-worlds/world-render-readiness.js?instance=consumer');
+    const context = {
+        worldId: 'world:bundled',
+        sessionId: 'session:bundled',
+        chatId: 'chat-bundled.jsonl',
+        characterId: 1,
+    };
+    const dispose = ownerModule.registerWorldRenderReadiness(async preparedContext => preparedContext);
+
+    assert.deepEqual(await consumerModule.prepareWorldRender(context), {
+        worldId: 'world:bundled',
+        sessionId: 'session:bundled',
+        chatId: 'chat-bundled',
+        characterId: 1,
+    });
+
+    dispose();
+});
