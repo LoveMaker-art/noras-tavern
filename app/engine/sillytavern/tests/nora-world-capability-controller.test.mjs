@@ -166,3 +166,40 @@ test('prepares display capabilities locally before persistence and reuses that e
         'settle:mvu:READY:none',
     ]);
 });
+
+test('does not reuse prepared capability evidence after the Runtime Card changes', async () => {
+    const calls = [];
+    const controller = createWorldCapabilityController({
+        client: {
+            async beginCapabilityAttempt() {
+                calls.push('begin');
+                return { attempt: { attempt_id: 'attempt:one' } };
+            },
+            async settleCapabilityAttempt(_worldId, _capability, _attemptId, result) {
+                calls.push(`settle:${result.evidence.avatar}`);
+                return { world: manifest({ regex: 'READY' }) };
+            },
+        },
+        runtime: {
+            async resolveCharacter(characterId) {
+                return { avatar: characterId === 0 ? 'first.png' : 'second.png' };
+            },
+            async ensureCharacterCapability(character) {
+                calls.push(`ensure:${character.avatar}`);
+                return { avatar: character.avatar };
+            },
+        },
+        logger: { warn() {} },
+    });
+    const capabilityManifest = manifest({ regex: 'PENDING' });
+
+    await controller.prepare({ id: 'world:one', characterId: 0, manifest: capabilityManifest });
+    await controller.ensure({ id: 'world:one', characterId: 1, manifest: capabilityManifest });
+
+    assert.deepEqual(calls, [
+        'ensure:first.png',
+        'begin',
+        'ensure:second.png',
+        'settle:second.png',
+    ]);
+});

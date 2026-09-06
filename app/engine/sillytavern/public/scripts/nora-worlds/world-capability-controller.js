@@ -8,6 +8,10 @@ function runtimeCapabilityKey(worldId, capability) {
     return `${worldId}\u0000${capability}`;
 }
 
+function preparedCapabilityKey(worldId, character, capability) {
+    return `${worldId}\u0000${String(character?.avatar || '').trim()}\u0000${capability}`;
+}
+
 function orderedCapabilities(manifest, requested = null, runtimeVerified = new Set()) {
     const declared = manifest?.capabilities?.declared || [];
     const worldId = String(manifest?.world_id || '').trim();
@@ -58,6 +62,27 @@ export function createWorldCapabilityController({
     const runtimeVerified = new Set();
     const prepared = new Map();
 
+    async function resolveExecutionContext(world, {
+        capabilities = null,
+        authorize = null,
+        forceAuthorization = false,
+    } = {}, unavailableMessage = 'World capability loading requires one available Runtime Card.') {
+        const manifest = manifestFor(world);
+        const selected = orderedCapabilities(manifest, capabilities, runtimeVerified);
+        const worldId = String(world?.id || manifest?.world_id || '').trim();
+        if (!selected.length) {
+            return Object.freeze({ manifest, worldId, selected: Object.freeze([]), character: null });
+        }
+        const character = await runtime.resolveCharacter(Number(world?.characterId));
+        if (!character?.avatar) {
+            throw new Error(unavailableMessage);
+        }
+        if (typeof authorize === 'function') {
+            await authorize(character, { force: forceAuthorization, refresh: false });
+        }
+        return Object.freeze({ manifest, worldId, selected: Object.freeze(selected), character });
+    }
+
     async function verifyRuntime(capability, character) {
         const startedAt = clock();
         try {
@@ -86,11 +111,12 @@ export function createWorldCapabilityController({
     async function execute(world, capability, character) {
         const worldId = String(world?.id || manifestFor(world)?.world_id || '').trim();
         const key = runtimeCapabilityKey(worldId, capability);
+        const preparedKey = preparedCapabilityKey(worldId, character, capability);
         if (tasks.has(key)) return tasks.get(key);
         const task = (async () => {
             const begun = await client.beginCapabilityAttempt(worldId, capability);
-            const result = prepared.get(key) || await verifyRuntime(capability, character);
-            prepared.delete(key);
+            const result = prepared.get(preparedKey) || await verifyRuntime(capability, character);
+            prepared.delete(preparedKey);
             const settled = await client.settleCapabilityAttempt(
                 worldId,
                 capability,
@@ -104,16 +130,9 @@ export function createWorldCapabilityController({
         return task;
     }
 
-    async function run(world, { capabilities = null, authorize = null, forceAuthorization = false } = {}) {
-        const manifest = manifestFor(world);
-        const selected = orderedCapabilities(manifest, capabilities, runtimeVerified);
+    async function run(world, options = {}) {
+        const { manifest, selected, character } = await resolveExecutionContext(world, options);
         if (!selected.length) return Object.freeze({ world: manifest, results: [] });
-        const characterId = Number(world?.characterId);
-        const character = await runtime.resolveCharacter(characterId);
-        if (!character?.avatar) throw new Error('World capability loading requires one available Runtime Card.');
-        if (typeof authorize === 'function') {
-            await authorize(character, { force: forceAuthorization, refresh: false });
-        }
         const results = [];
         let latestWorld = manifest;
         for (const capability of selected) {
@@ -132,19 +151,16 @@ export function createWorldCapabilityController({
         return task;
     }
 
-    async function prepare(world, { capabilities = null, authorize = null, forceAuthorization = false } = {}) {
-        const manifest = manifestFor(world);
-        const selected = orderedCapabilities(manifest, capabilities, runtimeVerified);
+    async function prepare(world, options = {}) {
+        const { manifest, worldId, selected, character } = await resolveExecutionContext(
+            world,
+            options,
+            'World capability preparation requires one available Runtime Card.',
+        );
         if (!selected.length) return Object.freeze({ world: manifest, results: [] });
-        const character = await runtime.resolveCharacter(Number(world?.characterId));
-        if (!character?.avatar) throw new Error('World capability preparation requires one available Runtime Card.');
-        if (typeof authorize === 'function') {
-            await authorize(character, { force: forceAuthorization, refresh: false });
-        }
         const results = [];
-        const worldId = String(world?.id || manifest?.world_id || '').trim();
         for (const capability of selected) {
-            const key = runtimeCapabilityKey(worldId, capability);
+            const key = preparedCapabilityKey(worldId, character, capability);
             const result = prepared.get(key) || await verifyRuntime(capability, character);
             prepared.set(key, result);
             results.push(Object.freeze({ capability, result, world: manifest }));
