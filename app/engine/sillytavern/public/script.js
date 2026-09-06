@@ -381,6 +381,8 @@ export let name2 = systemUserName;
 /** @type {ChatMessage[]} */
 export let chat = [];
 let noraChatWindowState = null;
+let noraEarlierHistoryObserver = null;
+let noraEarlierHistoryLoadPromise = null;
 
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
@@ -792,6 +794,44 @@ async function loadEarlierNoraChatWindow() {
     } finally {
         state.pagePromise = null;
     }
+}
+
+function updateNoraEarlierHistoryControl() {
+    const control = document.getElementById('show_more_messages');
+    if (!control || !isNoraProductMode()) return;
+    const remaining = matchesNoraChatWindow() ? Math.max(0, Number(noraChatWindowState.start) || 0) : 0;
+    control.textContent = remaining > 0 ? `查看更早内容（还有 ${remaining} 条）` : '查看更早内容';
+}
+
+async function loadEarlierNoraHistoryFromUi() {
+    if (noraEarlierHistoryLoadPromise) return noraEarlierHistoryLoadPromise;
+    const control = document.getElementById('show_more_messages');
+    if (!control) return;
+    control.setAttribute('aria-busy', 'true');
+    control.textContent = '正在加载更早内容…';
+    noraEarlierHistoryLoadPromise = showMoreMessages().catch((error) => {
+        console.error('Could not load earlier chat history', error);
+        toastr.error('更早的聊天记录加载失败，请重试。');
+    }).finally(() => {
+        noraEarlierHistoryLoadPromise = null;
+        control.removeAttribute('aria-busy');
+        updateNoraEarlierHistoryControl();
+        observeNoraEarlierHistory();
+    });
+    return noraEarlierHistoryLoadPromise;
+}
+
+function observeNoraEarlierHistory() {
+    noraEarlierHistoryObserver?.disconnect();
+    noraEarlierHistoryObserver = null;
+    if (!isNoraProductMode() || typeof IntersectionObserver !== 'function') return;
+    const root = document.getElementById('nora-chat');
+    const control = document.getElementById('show_more_messages');
+    if (!root || !control) return;
+    noraEarlierHistoryObserver = new IntersectionObserver((entries) => {
+        if (entries.some(entry => entry.isIntersecting)) void loadEarlierNoraHistoryFromUi();
+    }, { root, rootMargin: '160px 0px 0px', threshold: 0 });
+    noraEarlierHistoryObserver.observe(control);
 }
 
 function roundBootMetric(value) {
@@ -1853,6 +1893,7 @@ export async function showMoreMessages(messagesToLoad = null) {
 
     applyStylePins();
     await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
+    updateNoraEarlierHistoryControl();
 }
 
 export async function printMessages({ announceRendered = false } = {}) {
@@ -1863,11 +1904,14 @@ export async function printMessages({ announceRendered = false } = {}) {
     if ((matchesNoraChatWindow() && noraChatWindowState.start > 0) || chat.length > count) {
         startIndex = chat.length - count;
         startIndex = Math.max(0, startIndex);
-        const label = isNoraProductMode() ? '查看更早内容' : 'Show more messages';
+        const remaining = matchesNoraChatWindow() ? Math.max(0, Number(noraChatWindowState.start) || 0) : 0;
+        const label = isNoraProductMode() && remaining > 0 ? `查看更早内容（还有 ${remaining} 条）`
+            : isNoraProductMode() ? '查看更早内容' : 'Show more messages';
         chatElement.append(`<div id="show_more_messages">${label}</div>`);
     }
 
     await redisplayChat({ startIndex, fade: false });
+    observeNoraEarlierHistory();
 
     if (announceRendered) {
         for (let messageId = startIndex; messageId < chat.length; messageId++) {
@@ -12821,7 +12865,8 @@ jQuery(async function () {
     $(document).on('click', '#show_more_messages', async function (event) {
         event.stopPropagation();
         event.preventDefault();
-        await showMoreMessages();
+        if (isNoraProductMode()) await loadEarlierNoraHistoryFromUi();
+        else await showMoreMessages();
     });
 
     $(document).on('click', '.open_characters_library', async function () {

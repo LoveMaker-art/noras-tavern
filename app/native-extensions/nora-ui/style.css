@@ -224,21 +224,27 @@ body.nora-world-opening #nora-chat { opacity: 0; pointer-events: none; transitio
 body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-chat #show_more_messages {
     width: fit-content;
-    min-height: 28px;
+    min-height: 38px;
     margin: 0 auto 18px;
-    padding: 5px 10px;
-    border: 0;
-    border-radius: 6px;
+    padding: 9px 14px;
+    border: 1px solid color-mix(in srgb, var(--nora-brand) 22%, transparent);
+    border-radius: 999px;
     outline: 0;
-    background: transparent;
-    color: var(--nora-muted);
-    font: 11px/1.4 var(--nora-sans);
+    background: color-mix(in srgb, var(--nora-surface) 86%, transparent);
+    color: var(--nora-ink-2);
+    font: 13px/1.4 var(--nora-sans);
+    cursor: pointer;
 }
 #nora-chat #show_more_messages:hover,
 #nora-chat #show_more_messages:focus-visible {
     background: var(--nora-brand-tint);
     color: var(--nora-brand-ink);
     filter: none;
+}
+#nora-chat #show_more_messages[aria-busy="true"] {
+    cursor: wait;
+    opacity: .72;
+    pointer-events: none;
 }
 
 .nora-empty { position: absolute; inset: 0; z-index: 0; display: flex; align-items: center; justify-content: center; flex-direction: column; color: var(--nora-muted); text-align: center; pointer-events: none; }

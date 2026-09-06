@@ -18,6 +18,9 @@ assert.match(source, /isNoraProductMode\(\)[\s\S]*?ensureNoraFullChatLoaded\(\)[
 assert.match(source, /isNoraProductMode\(\) \? \$\('#nora-chat'\) : chatElement/, 'Nora history loading must preserve the outer scroller');
 assert.match(source, /scrollElement\.scrollTop\(scrollElement\.scrollTop\(\) \+ newHeight - prevHeight\)/, 'loading older messages must retain the visible reading position');
 assert.match(source, /export async function printMessages\(\{ announceRendered = false \} = \{\}\)[\s\S]*?getChatRenderWindowSize\(\)[\s\S]*?查看更早内容/, 'initial rendering must expose Nora history loading');
+assert.match(source, /function observeNoraEarlierHistory\(\)[\s\S]*?new IntersectionObserver/, 'Nora must automatically request an earlier page when the history control reaches the viewport');
+assert.match(source, /查看更早内容（还有 \$\{remaining\} 条）/, 'Nora history control must disclose how many earlier messages remain');
+assert.match(source, /loadEarlierNoraHistoryFromUi\(\)[\s\S]*?更早的聊天记录加载失败，请重试/, 'Nora history loading must expose a retryable failure instead of silently stopping');
 assert.match(source, /chat\.slice\(firstId, messageId\)/, 'windowing should slice only the rendered view');
 assert.match(endpoint, /export function getChatWindowData\(/, 'the server must own chat response windowing');
 assert.match(endpoint, /request\.body\.nora_window[\s\S]*?getChatWindowData/, 'the existing chat route must opt into windowed responses only for Nora');
