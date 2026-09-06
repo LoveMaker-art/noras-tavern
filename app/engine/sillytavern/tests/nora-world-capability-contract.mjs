@@ -10,7 +10,10 @@ const core = read('engine/sillytavern/src/nora-world-core/service.js');
 const endpoint = read('engine/sillytavern/src/endpoints/nora-worlds-v2.js');
 const client = read('engine/sillytavern/public/scripts/nora-worlds/world-core-client.js');
 const controller = read('engine/sillytavern/public/scripts/nora-worlds/world-capability-controller.js');
+const renderReadiness = read('engine/sillytavern/public/scripts/nora-worlds/world-render-readiness.js');
+const script = read('engine/sillytavern/public/script.js');
 const adapter = read('engine/sillytavern/public/scripts/nora-adapters/st-card-adapter.js');
+const ui = read('native-extensions/nora-ui/index.js');
 const worldController = read('native-extensions/nora-ui/world-controller.js');
 const startupController = read('native-extensions/nora-ui/startup-controller.js');
 const panelController = read('native-extensions/nora-ui/panel-controller.js');
@@ -47,10 +50,16 @@ for (const signal of [
     assert.match(adapter, new RegExp(signal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `ST readiness adapter is missing: ${signal}`);
 }
 
-const displayPreparation = worldController.indexOf('prepareWorldCapabilities(current.id)');
 const baseActivation = worldController.indexOf('worldRuntime.activate(current.id');
 const supportingSchedule = worldController.indexOf('scheduleSupportingContent(current, current.interactionId)');
-assert.ok(baseActivation >= 0 && displayPreparation > baseActivation && supportingSchedule > displayPreparation, 'display capabilities must be prepared inside World activation before background capability settlement');
+assert.ok(baseActivation >= 0 && supportingSchedule > baseActivation, 'supporting capability settlement must remain after base World activation');
+assert.match(renderReadiness, /export function registerWorldRenderReadiness[\s\S]*export async function prepareWorldRender/);
+assert.match(ui, /registerWorldRenderReadiness\(\(\{ worldId \}\) => prepareWorldCapabilities\(worldId\)\)/, 'Nora UI must register the sole display-capability preparation owner');
+const displayPreparation = script.indexOf("snapshotStep('display-capabilities', () => prepareWorldRender(");
+const chatPreRender = script.indexOf("snapshotStep('event.chat-pre-render'");
+const domRender = script.indexOf("snapshotStep('dom-render', printMessages)");
+assert.ok(displayPreparation >= 0 && chatPreRender > displayPreparation && domRender > chatPreRender, 'display capabilities must settle at the ST render boundary before extension hooks and DOM rendering');
+assert.doesNotMatch(worldController, /prepareWorldCapabilities/, 'World selection must not duplicate display-capability preparation');
 assert.doesNotMatch(startupController, /loadWorldCapabilities|promptCharacterCapabilities/, 'startup must not duplicate World capability ownership');
 assert.match(panelController, /data-retry-capability[\s\S]*retryWorldCapability/);
 

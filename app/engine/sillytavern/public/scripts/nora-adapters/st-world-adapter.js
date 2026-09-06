@@ -115,13 +115,13 @@ export function createStWorldAdapter(getContext) {
         return read();
     }
 
-    async function activateSnapshot(characterId, snapshot, options = {}) {
+    async function activateSnapshot(characterId, snapshot) {
         interactionBridge.assertSessionIdle();
         const current = requireRuntime(getContext);
         if (typeof current.activateNoraWorldSnapshot !== 'function') {
             throw new Error('故事运行核心缺少聚合世界快照能力。');
         }
-        await current.activateNoraWorldSnapshot(characterId, snapshot, options);
+        await current.activateNoraWorldSnapshot(characterId, snapshot);
         applyStoryContext(snapshot.plan?.story_context);
         return read();
     }

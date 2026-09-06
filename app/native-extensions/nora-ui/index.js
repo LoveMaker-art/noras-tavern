@@ -1,5 +1,6 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { createCardCapabilityController } from './card-capability-controller.js';
+import { registerWorldRenderReadiness } from '../../engine/sillytavern/public/scripts/nora-worlds/world-render-readiness.js';
 import { createCardActionGateway } from './card-action-gateway.js';
 import { createDialogController } from './dialog-controller.js';
 import { createMessageController } from './message-controller.js';
@@ -299,6 +300,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             showToast,
             onWorldCapabilitiesChanged: () => refresh(),
         });
+        registerWorldRenderReadiness(({ worldId }) => prepareWorldCapabilities(worldId));
         storyScroller = createStoryScroller({ getContainer: () => $('#nora-chat') });
         smartReplyController = createSmartReplyController({
             storyActions,
@@ -424,7 +426,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             recordBootMilestone,
             performanceReporter,
             primeActiveWorldbook,
-            prepareWorldCapabilities,
             loadWorldCapabilities,
             closeDrawers,
             refresh,

@@ -5,6 +5,7 @@ import test from 'node:test';
 
 const root = path.resolve(import.meta.dirname, '..');
 const script = fs.readFileSync(path.join(root, 'public/script.js'), 'utf8');
+const noraUi = fs.readFileSync(path.join(root, '../../native-extensions/nora-ui/index.js'), 'utf8');
 
 test('aggregate snapshots replace transport only and retain the native synchronous chat lifecycle', () => {
     const start = script.indexOf('export async function activateNoraWorldSnapshot');
@@ -12,16 +13,18 @@ test('aggregate snapshots replace transport only and retain the native synchrono
     assert.ok(start >= 0 && end > start);
     const source = script.slice(start, end);
     assert.match(source, /primeWorldInfoSnapshot/);
-    assert.match(source, /getChat\(\{ preloadedData: snapshot\.chat, strict: true, beforeRender \}\)/);
+    assert.match(source, /getChat\(\{ preloadedData: snapshot\.chat, strict: true \}\)/);
     assert.doesNotMatch(source, /scheduleNoraWorldSnapshotLifecycle|setTimeout/);
-    assert.match(script, /await getChatResult\(\{ snapshot: Boolean\(preloadedData\), beforeRender \}\)/);
+    assert.match(script, /await getChatResult\(\{ snapshot: Boolean\(preloadedData\) \}\)/);
     const lifecycleStart = script.indexOf('async function getChatResult');
     const lifecycleEnd = script.indexOf('\nfunction getFirstMessage', lifecycleStart);
     const lifecycle = script.slice(lifecycleStart, lifecycleEnd);
-    const prepare = lifecycle.indexOf("snapshotStep('display-capabilities', beforeRender)");
+    const prepare = lifecycle.indexOf("snapshotStep('display-capabilities', () => prepareWorldRender");
     const regex = lifecycle.indexOf("snapshotStep('event.chat-pre-render'");
     const render = lifecycle.indexOf("snapshotStep('dom-render', printMessages)");
     assert.ok(prepare >= 0 && regex > prepare && render > regex, 'display capabilities and Regex rules must finish before the only first render');
+    assert.match(noraUi, /registerWorldRenderReadiness\(\(\{ worldId \}\) => prepareWorldCapabilities\(worldId\)\)/);
+    assert.doesNotMatch(source, /beforeRender/);
     assert.match(script, /snapshotStep\('background\.event\.chat-loaded', emitChatLoaded\)/);
     assert.doesNotMatch(source, /await snapshotStep\('background\.event\.chat-loaded'/);
 });

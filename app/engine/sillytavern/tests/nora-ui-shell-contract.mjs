@@ -241,8 +241,8 @@ if (/recentChats|messageCount\s*<\s*2/.test(worldRuntime)) {
     throw new Error('The World runtime must not infer product Worlds from recent-chat heuristics.');
 }
 
-if (!/worldRuntime\.activate\(current\.id,\s*\{[\s\S]*?beforeRender:\s*\(\)\s*=>[\s\S]*?prepareWorldCapabilities\(current\.id\)/.test(worldController)) {
-    throw new Error('Nora UI must activate Worlds through the transactional World runtime and prepare display capabilities before its first render.');
+if (!/worldRuntime\.activate\(current\.id\)/.test(worldController) || /beforeRender|prepareWorldCapabilities/.test(worldController)) {
+    throw new Error('Nora UI must activate Worlds through one transactional World runtime interface without threading render callbacks.');
 }
 
 for (const privateBinding of ['data-character=', 'data-chat=']) {

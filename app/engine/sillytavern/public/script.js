@@ -7,6 +7,7 @@ import {
     noraIdentityKey,
     sameNoraIdentity,
 } from './scripts/nora-chat/identity.js';
+import { prepareWorldRender } from './scripts/nora-worlds/world-render-readiness.js';
 import {
     showdown,
     moment,
@@ -7980,7 +7981,7 @@ export async function unshallowCharacter(characterId) {
     await getOneCharacter(avatar);
 }
 
-export async function getChat({ preloadedData = null, strict = false, beforeRender = null } = {}) {
+export async function getChat({ preloadedData = null, strict = false } = {}) {
     const snapshotStep = (suffix, operation) => preloadedData
         ? timedBootStep(`world.snapshot.runtime.${suffix}`, operation)
         : operation();
@@ -8043,7 +8044,7 @@ export async function getChat({ preloadedData = null, strict = false, beforeRend
             }
             if (!chat_metadata.integrity) chat_metadata.integrity = uuidv4();
         });
-        await getChatResult({ snapshot: Boolean(preloadedData), beforeRender });
+        await getChatResult({ snapshot: Boolean(preloadedData) });
         const emitChatLoaded = () => eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
         if (preloadedData) {
             void snapshotStep('background.event.chat-loaded', emitChatLoaded)
@@ -8064,14 +8065,20 @@ export async function getChat({ preloadedData = null, strict = false, beforeRend
     }
 }
 
-async function getChatResult({ snapshot = false, beforeRender = null } = {}) {
+async function getChatResult({ snapshot = false } = {}) {
     const snapshotStep = (suffix, operation) => snapshot
         ? timedBootStep(`world.snapshot.runtime.${suffix}`, operation)
         : operation();
     name2 = characters[this_chid].name;
     await snapshotStep('itemized-prompts', () => loadItemizedPrompts(getCurrentChatId()));
-    if (typeof beforeRender === 'function') {
-        await snapshotStep('display-capabilities', beforeRender);
+    if (snapshot && isNoraProductMode()) {
+        const scope = scopeOf(chat_metadata);
+        await snapshotStep('display-capabilities', () => prepareWorldRender({
+            worldId: scope?.worldId,
+            sessionId: scope?.sessionId,
+            chatId: getCurrentChatId(),
+            characterId: this_chid,
+        }));
     }
     if (isNoraProductMode()) {
         await snapshotStep('event.chat-pre-render', () => eventSource.emit(event_types.CHAT_PRE_RENDER, getCurrentChatId()));
@@ -8152,7 +8159,7 @@ export async function openCharacterChat(file_name, { persistChat = true, preload
  * @param {number} characterId Character array index.
  * @param {object} snapshot Server-authoritative activation snapshot.
  */
-export async function activateNoraWorldSnapshot(characterId, snapshot, { beforeRender = null } = {}) {
+export async function activateNoraWorldSnapshot(characterId, snapshot) {
     const source = snapshot?.character;
     const plan = snapshot?.plan;
     const chatId = String(plan?.session?.binding?.chat_id || '').replace(/\.jsonl$/i, '');
@@ -8181,7 +8188,7 @@ export async function activateNoraWorldSnapshot(characterId, snapshot, { beforeR
         setCharacterId(characterId);
         chat_metadata = {};
     });
-    await getChat({ preloadedData: snapshot.chat, strict: true, beforeRender });
+    await getChat({ preloadedData: snapshot.chat, strict: true });
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////

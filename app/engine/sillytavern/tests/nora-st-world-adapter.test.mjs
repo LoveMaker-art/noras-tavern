@@ -68,13 +68,12 @@ test('delegates aggregate activation to one native snapshot transaction', async 
         characters: [{ avatar: 'one.png' }], characterId: null, chatId: '', chat: [], chatMetadata: {},
         powerUserSettings: { persona_description: '' }, name1: '',
         selectCharacterById() {}, updateChatMetadata() {}, saveMetadata() {},
-        async activateNoraWorldSnapshot(characterId, snapshot, options) {
-            calls.push({ characterId, snapshot, options });
+        async activateNoraWorldSnapshot(characterId, snapshot) {
+            calls.push({ characterId, snapshot });
         },
     };
     const adapter = createStWorldAdapter(() => runtime);
     const snapshot = { schema: 'nora-world-snapshot/v1', revision: 'one' };
-    const beforeRender = async () => {};
-    await adapter.activateSnapshot(0, snapshot, { beforeRender });
-    assert.deepEqual(calls, [{ characterId: 0, snapshot, options: { beforeRender } }]);
+    await adapter.activateSnapshot(0, snapshot);
+    assert.deepEqual(calls, [{ characterId: 0, snapshot }]);
 });

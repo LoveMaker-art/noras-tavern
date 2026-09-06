@@ -223,9 +223,9 @@ test('display capabilities finish before first render while remaining capabiliti
             settingsDomain: { uiSettings: () => ({}), saveUiSettings() {}, isGenerating: () => false },
             worldRuntime: {
                 mode: 'v2',
-                activate: async (_worldId, { beforeRender }) => {
+                activate: async () => {
                     calls.push('snapshot-bound');
-                    await beforeRender();
+                    calls.push('display-capabilities');
                     calls.push('first-render');
                 },
             },
@@ -247,7 +247,6 @@ test('display capabilities finish before first render while remaining capabiliti
             primeActiveWorldbook: async options => calls.push(options?.force ? 'worldbook-force' : 'worldbook-cache'),
             resolveCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
             promptCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
-            prepareWorldCapabilities: async () => calls.push('display-capabilities'),
             loadWorldCapabilities: async () => {
                 calls.push('capability-started');
                 capabilityStarted.resolve();

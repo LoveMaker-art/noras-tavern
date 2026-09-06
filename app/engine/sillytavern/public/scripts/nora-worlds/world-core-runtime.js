@@ -137,10 +137,10 @@ export function createWorldCoreRuntime(runtime, {
         return list();
     }
 
-    async function activate(worldOrId, { beforeRender = null } = {}) {
+    async function activate(worldOrId) {
         const manifest = manifestById(worldOrId);
         const snapshot = await client.prepareSnapshot(manifest.world_id);
-        await executeSnapshot(snapshot, runtime, { measure, beforeRender });
+        await executeSnapshot(snapshot, runtime, { measure });
         return model(manifest);
     }
 

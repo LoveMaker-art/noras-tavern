@@ -122,7 +122,7 @@ test('repair and delete stay behind the World Runtime interface and refresh the 
     ]);
 });
 
-test('runs the supplied display-capability preparation inside activation before first render', async () => {
+test('World Runtime activation owns the complete snapshot transaction', async () => {
     const calls = [];
     const pending = manifest({
         capabilities: {
@@ -151,17 +151,16 @@ test('runs the supplied display-capability preparation inside activation before 
             },
         },
         executeSnapshot: async (_snapshot, _runtime, options) => {
-            await options.beforeRender();
+            assert.equal(typeof options.measure, 'function');
+            assert.equal('beforeRender' in options, false);
             calls.push('render');
         },
     });
 
     await runtime.refresh();
-    await runtime.activate('world:one', {
-        beforeRender: async () => calls.push('display-capabilities'),
-    });
+    await runtime.activate('world:one');
 
-    assert.deepEqual(calls, ['snapshot', 'display-capabilities', 'render']);
+    assert.deepEqual(calls, ['snapshot', 'render']);
 });
 
 test('Nora World UI carries only worldId and has one open/capability owner', () => {
@@ -171,7 +170,8 @@ test('Nora World UI carries only worldId and has one open/capability owner', () 
     const creationController = fs.readFileSync(path.join(uiRoot, 'world-creation-controller.js'), 'utf8');
 
     assert.doesNotMatch(worldController, /data-character=|data-chat=/);
-    assert.match(worldController, /worldRuntime\.activate\(current\.id,\s*\{[\s\S]*beforeRender:[\s\S]*prepareWorldCapabilities\(current\.id\)/);
+    assert.match(worldController, /worldRuntime\.activate\(current\.id\)/);
+    assert.doesNotMatch(worldController, /beforeRender|prepareWorldCapabilities/);
     assert.match(worldController, /loadWorldCapabilities\(world\.id\)/);
     assert.match(worldController, /worldRuntime\.remove\(worldId\)/);
     assert.match(worldController, /confirmAction\(\{/);
