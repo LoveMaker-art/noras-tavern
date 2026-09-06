@@ -20,11 +20,11 @@ export function createCardCapabilityController({
         cards.markCharacterCapabilitiesPrompted(character, current);
     }
 
-    async function enable(character, { reload = false } = {}) {
-        await cards.enableCharacterCapabilities(character, { reload });
+    async function enable(character, { refresh = false } = {}) {
+        await cards.enableCharacterCapabilities(character, { refresh });
     }
 
-    async function runPrompt(character, { reload = false, force = false } = {}) {
+    async function runPrompt(character, { refresh = false, force = false } = {}) {
         if (!character) return false;
         const current = capabilities(character);
         const missingRegex = current.regexScripts.length > 0 && !current.regexAllowed;
@@ -47,7 +47,7 @@ export function createCardCapabilityController({
             detailsLabel: tr("查看包含的功能"),
         });
         if (!confirmed) return false;
-        await enable(character, { reload });
+        await enable(character, { refresh });
         showToast(tr("角色卡增强功能已启用。"));
         return true;
     }
@@ -61,11 +61,16 @@ export function createCardCapabilityController({
         return pending;
     }
 
-    async function rerenderReadyCapabilities(result) {
-        const becameReady = result?.results?.some(item => item?.result?.status === 'READY');
-        if (!becameReady) return false;
-        const avatar = String(result?.world?.runtime_card?.binding?.avatar || '').trim();
-        return cards.rerenderCharacterChat(avatar);
+    const displayCapabilities = Object.freeze(['prompt_template', 'regex', 'tavern_helper']);
+
+    async function prepare(worldId, { force = false } = {}) {
+        if (typeof worldRuntime?.prepareCapabilities !== 'function') {
+            throw new Error('World display capability preparation is unavailable.');
+        }
+        return worldRuntime.prepareCapabilities(worldId, {
+            capabilities: displayCapabilities,
+            authorize: (character, options) => prompt(character, { ...options, force: force || options.force }),
+        });
     }
 
     async function load(worldId, { force = false } = {}) {
@@ -75,7 +80,6 @@ export function createCardCapabilityController({
         const result = await worldRuntime.ensureCapabilities(worldId, {
             authorize: (character, options) => prompt(character, { ...options, force: force || options.force }),
         });
-        await rerenderReadyCapabilities(result);
         await onWorldCapabilitiesChanged(result);
         return result;
     }
@@ -87,7 +91,11 @@ export function createCardCapabilityController({
         const result = await worldRuntime.retryCapability(worldId, capability, {
             authorize: (character, options) => prompt(character, { ...options, force: true }),
         });
-        await rerenderReadyCapabilities(result);
+        const becameReady = result?.results?.some(item => item?.result?.status === 'READY');
+        if (becameReady) {
+            const avatar = String(result?.world?.runtime_card?.binding?.avatar || '').trim();
+            await cards.rerenderCharacterChat(avatar);
+        }
         await onWorldCapabilitiesChanged(result);
         const settled = result.results[0]?.result;
         if (settled?.status === 'READY') showToast(tr("增强能力已恢复。"));
@@ -95,5 +103,5 @@ export function createCardCapabilityController({
         return result;
     }
 
-    return Object.freeze({ capabilities, resolve, markPrompted, enable, prompt, load, retry });
+    return Object.freeze({ capabilities, resolve, markPrompted, enable, prompt, prepare, load, retry });
 }

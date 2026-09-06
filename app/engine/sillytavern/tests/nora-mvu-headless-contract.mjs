@@ -110,13 +110,13 @@ assert.match(mvuCompatibility, /MagicalAstrogy\\\/MagVarUpdate/);
 assert.match(cardAdapter, /__NORA_ENSURE_MVU_READY__/);
 assert.match(
     worldCoreRuntime,
-    /executeSnapshot\(snapshot, runtime, \{ measure \}\)[\s\S]*ensureCapabilities/,
+    /executeSnapshot\(snapshot, runtime, \{ measure, beforeRender \}\)[\s\S]*ensureCapabilities/,
     'World Core Runtime must keep base activation separate from capability readiness',
 );
 assert.match(
     worldController,
-    /worldRuntime\.activate\(current\.id\)[\s\S]*scheduleSupportingContent\(current, current\.interactionId\)/,
-    'an explicitly selected World must activate its base runtime before loading MVU and other supporting capabilities',
+    /worldRuntime\.activate\(current\.id,\s*\{[\s\S]*beforeRender:[\s\S]*scheduleSupportingContent\(current, current\.interactionId\)/,
+    'an explicitly selected World must prepare display capabilities before rendering and load MVU in the background',
 );
 assert.doesNotMatch(worldController, /async function openInitial\(/, 'MVU readiness must not force an automatic World activation during Tavern startup');
 assert.doesNotMatch(worldController, /runtime\.(?:prepareCharacterRuntime|waitForCharacterRuntime|ensureCharacterRuntime)/);

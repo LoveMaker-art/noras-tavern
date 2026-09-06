@@ -1,4 +1,4 @@
-import { characters, eventSource, event_types, getCurrentChatId, messageFormatting, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
+import { characters, eventSource, event_types, getCurrentChatId, isNoraProductMode, messageFormatting, refreshCurrentChatDisplay, reloadCurrentChat, saveSettingsDebounced, this_chid } from '../../../script.js';
 import { extension_settings, renderExtensionTemplateAsync } from '../../extensions.js';
 import { callGenericPopup, Popup, POPUP_TYPE } from '../../popup.js';
 import { SlashCommand } from '../../slash-commands/SlashCommand.js';
@@ -1617,8 +1617,9 @@ function purgePresetEmbeddedRegexScripts({ apiId, name }) {
     disallowPresetScripts(apiId, name);
 }
 
-async function checkCharEmbeddedRegexScripts() {
+async function checkCharEmbeddedRegexScripts({ preRender = false } = {}) {
     const chid = this_chid;
+    let refreshRequired = false;
 
     if (chid !== undefined) {
         const character = characters[chid];
@@ -1640,7 +1641,7 @@ async function checkCharEmbeddedRegexScripts() {
 
                     if (result) {
                         allowScopedScripts(character);
-                        await reloadCurrentChat();
+                        refreshRequired = true;
                         globalThis.__NORA_MESSAGES__?.toast?.('角色显示规则已启用。');
                     }
                 }
@@ -1651,6 +1652,18 @@ async function checkCharEmbeddedRegexScripts() {
     // Clear cache and reload scripts
     RegexProvider.instance.clear();
     await loadRegexScripts();
+    if (refreshRequired && !preRender) {
+        if (isNoraProductMode()) {
+            await refreshCurrentChatDisplay();
+        } else {
+            await reloadCurrentChat();
+        }
+    }
+}
+
+async function checkCharEmbeddedRegexScriptsAfterChatChange() {
+    if (isNoraProductMode()) return;
+    await checkCharEmbeddedRegexScripts();
 }
 
 /**
@@ -2153,7 +2166,8 @@ export async function init() {
     }));
 
     eventSource.on(event_types.MAIN_API_CHANGED, onMainApiChanged);
-    eventSource.on(event_types.CHAT_CHANGED, checkCharEmbeddedRegexScripts);
+    eventSource.on(event_types.CHAT_PRE_RENDER, () => checkCharEmbeddedRegexScripts({ preRender: true }));
+    eventSource.on(event_types.CHAT_CHANGED, checkCharEmbeddedRegexScriptsAfterChatChange);
     eventSource.on(event_types.CHARACTER_DELETED, purgeEmbeddedRegexScripts);
     eventSource.on(event_types.PRESET_RENAMED_BEFORE, onPresetRenamed);
     eventSource.on(event_types.PRESET_CHANGED, checkPresetEmbeddedRegexScripts);

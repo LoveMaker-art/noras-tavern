@@ -69,13 +69,21 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         bindings.set(scopeKey(scope), binding);
         return binding;
     }
-    async function writeChat(filePath, data, writer) {
+    async function writeChat(filePath, data, writer, { beforeWrite = null } = {}) {
         const existing = jsonl(filePath);
         const scope = scopeOf(existing[0]?.chat_metadata) || scopeOf(data[0]?.chat_metadata);
-        if (!scope) return writer(); // non-Nora ST chats remain native
+        if (!scope) {
+            beforeWrite?.();
+            return writer(); // non-Nora ST chats remain native
+        }
         await resolve(scope, filePath);
         if (scopeKey(scopeOf(data[0]?.chat_metadata)) !== scopeKey(scope)) throw new LedgerConflict('Cannot replace Story Session identity.');
-        const result = await plugin.writeChat(scope, data.slice(1), writer);
+        const result = await plugin.writeChat(scope, data.slice(1), () => {
+            // The revision precondition and the JSONL replacement share the
+            // ledger's per-session lock, making the save an atomic CAS.
+            beforeWrite?.();
+            return writer();
+        });
         void plugin.schedule(scope);
         return result;
     }

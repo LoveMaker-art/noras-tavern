@@ -1,5 +1,6 @@
 import { tagHistory, scopeOf } from './scripts/nora-story-ledger/history.js';
 import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage } from './scripts/nora-story-ledger/client.js';
+import { createLedgerSaveRecovery } from './scripts/nora-story-ledger/save-recovery.js';
 import {
     showdown,
     moment,
@@ -381,8 +382,6 @@ export let name2 = systemUserName;
 /** @type {ChatMessage[]} */
 export let chat = [];
 let noraChatWindowState = null;
-let noraEarlierHistoryObserver = null;
-let noraEarlierHistoryLoadPromise = null;
 
 /**
  * @type {import('./scripts/constants.js').SWIPE_STATE}
@@ -391,6 +390,11 @@ export let swipeState = SWIPE_STATE.NONE;
 let chatSaveTimeout;
 let importFlashTimeout;
 export let isChatSaving = false;
+let noraLedgerRecoveryTarget = null;
+
+function isChatPersistenceBusy() {
+    return isChatSaving || noraLedgerRecoveryTarget !== null;
+}
 let firstRun = false;
 export let settingsReady = false;
 let currentVersion = '0.0.0';
@@ -680,16 +684,19 @@ noraBootMetrics.longTasks ??= [];
 let extensionActivationPlan = null;
 const criticalExtensionNames = ['regex'];
 
-function isNoraProductMode() {
+export function isNoraProductMode() {
     return document.body.classList.contains('nora-product');
 }
 
 const NORA_CHAT_WINDOW_SIZE = 40;
 
 function getChatRenderWindowSize() {
-    return isNoraProductMode()
-        ? NORA_CHAT_WINDOW_SIZE
-        : (power_user.chat_truncation || Number.MAX_SAFE_INTEGER);
+    if (!isNoraProductMode()) return power_user.chat_truncation || Number.MAX_SAFE_INTEGER;
+    return matchesNoraChatWindow()
+        && noraChatWindowState.fullHistoryLoaded
+        && noraChatWindowState.showFullHistory
+        ? chat.length
+        : NORA_CHAT_WINDOW_SIZE;
 }
 
 function currentNoraChatBinding() {
@@ -707,7 +714,7 @@ function matchesNoraChatWindow(state = noraChatWindowState) {
     return Boolean(state && current && state.avatar === current.avatar && state.chatId === current.chatId);
 }
 
-async function requestNoraChatWindow({ before, full = false } = {}) {
+async function requestNoraChatWindow({ full = false } = {}) {
     const binding = currentNoraChatBinding();
     if (!binding) return null;
     const body = {
@@ -717,7 +724,6 @@ async function requestNoraChatWindow({ before, full = false } = {}) {
     };
     if (!full) {
         body.nora_window = NORA_CHAT_WINDOW_SIZE;
-        if (before !== undefined) body.nora_before = before;
     }
     const response = await fetch('/api/chats/get', {
         method: 'POST',
@@ -736,102 +742,108 @@ export function getNoraAbsoluteMessageId(messageId) {
         : id;
 }
 
-export async function ensureNoraFullChatLoaded() {
+async function revealNoraFullHistory(state) {
+    if (!matchesNoraChatWindow(state) || !state.fullHistoryLoaded) return;
+    const renderedHistoryStart = Math.max(0, Number(state.renderStart) || 0);
+    if (renderedHistoryStart === 0) {
+        state.showFullHistory = true;
+        document.getElementById('show_more_messages')?.remove();
+        return;
+    }
+
+    const scrollElement = document.getElementById('nora-chat');
+    const previousScrollHeight = scrollElement?.scrollHeight ?? 0;
+    const previousScrollTop = scrollElement?.scrollTop ?? 0;
+    const visibleMessages = chatElement.children('.mes');
+    const firstVisibleMessageId = Number(visibleMessages.first().attr('mesid'));
+    const canPrependMissingHistory = visibleMessages.length > 0 && firstVisibleMessageId === renderedHistoryStart;
+    if (!canPrependMissingHistory) {
+        throw new Error('Visible chat no longer matches the hydrated history window.');
+    }
+    const missingMessages = chat.slice(0, renderedHistoryStart);
+    const missingMessageElements = missingMessages.map((message, index) => {
+        return updateMessageElement(message, { messageId: index })[0];
+    });
+
+    chatElement.prepend(missingMessageElements);
+    state.showFullHistory = true;
+    state.renderStart = 0;
+    document.getElementById('show_more_messages')?.remove();
+    refreshSwipeButtons(false, false);
+    applyCharacterTagsToMessageDivs({ mesIds: lodash.range(0, missingMessages.length, 1) });
+    applyStylePins();
+    updateEditArrowClasses();
+
+    for (let messageId = 0; messageId < missingMessages.length; messageId++) {
+        const message = missingMessages[messageId];
+        if (message?.is_system) continue;
+        const event = message?.is_user
+            ? event_types.USER_MESSAGE_RENDERED
+            : event_types.CHARACTER_MESSAGE_RENDERED;
+        await eventSource.emit(event, messageId, 'nora_history_hydration');
+    }
+
+    if (scrollElement) {
+        scrollElement.scrollTop = previousScrollTop + scrollElement.scrollHeight - previousScrollHeight;
+    }
+}
+
+export async function ensureNoraFullChatLoaded({ revealHistory = false } = {}) {
     const state = noraChatWindowState;
     if (!isNoraProductMode() || !matchesNoraChatWindow(state)) return chat;
-    if (state.start === 0 && chat.length >= state.total) {
-        noraChatWindowState = null;
-        return chat;
+    if (!state.fullHistoryLoaded) {
+        if (!state.fullPromise) {
+            state.fullPromise = (async () => {
+                const bindingKey = `${state.avatar}\u0000${state.chatId}`;
+                const renderedHistoryStart = Number(state.renderStart ?? state.start) || 0;
+                const data = await requestNoraChatWindow({ full: true });
+                if (!Array.isArray(data) || !data.length) throw new Error('Complete chat history could not be loaded');
+                const current = currentNoraChatBinding();
+                if (!current || `${current.avatar}\u0000${current.chatId}` !== bindingKey) return chat;
+                const header = data.shift();
+                chat_metadata = header?.chat_metadata ?? {};
+                chat.splice(0, chat.length, ...data);
+                chat.forEach(ensureMessageMediaIsArray);
+                // The bounded window originally used local DOM ids (0..39). Once
+                // the complete data array is installed, promote those ids to
+                // their absolute positions without repainting the conversation.
+                if (renderedHistoryStart > 0) updateViewMessageIds(renderedHistoryStart);
+                state.start = 0;
+                state.total = chat.length;
+                state.serverTotal = chat.length;
+                state.fullHistoryLoaded = true;
+                state.renderStart = renderedHistoryStart;
+                return chat;
+            })();
+        }
+        try {
+            await state.fullPromise;
+        } finally {
+            state.fullPromise = null;
+        }
     }
-    if (state.fullPromise) return state.fullPromise;
-    state.fullPromise = (async () => {
-        const bindingKey = `${state.avatar}\u0000${state.chatId}`;
-        const data = await requestNoraChatWindow({ full: true });
-        if (!Array.isArray(data) || !data.length) throw new Error('Complete chat history could not be loaded');
-        const current = currentNoraChatBinding();
-        if (!current || `${current.avatar}\u0000${current.chatId}` !== bindingKey) return chat;
-        const header = data.shift();
-        chat_metadata = header?.chat_metadata ?? {};
-        chat.splice(0, chat.length, ...data);
-        chat.forEach(ensureMessageMediaIsArray);
-        noraChatWindowState = null;
-        await printMessages({ announceRendered: true });
-        return chat;
-    })();
-    try {
-        return await state.fullPromise;
-    } finally {
-        state.fullPromise = null;
+    if (revealHistory && matchesNoraChatWindow(state)) {
+        await revealNoraFullHistory(state);
     }
+    return chat;
 }
 
-async function loadEarlierNoraChatWindow() {
-    const state = noraChatWindowState;
-    if (!matchesNoraChatWindow(state) || state.start <= 0 || state.pagePromise) {
-        return state?.pagePromise || 0;
-    }
-    state.pagePromise = (async () => {
-        const data = await requestNoraChatWindow({ before: state.start });
-        if (!matchesNoraChatWindow(state) || !Array.isArray(data?.messages)) return 0;
-        const added = data.messages.length;
-        if (!added) return 0;
-        chat.unshift(...data.messages);
-        chat.forEach(ensureMessageMediaIsArray);
-        state.start = Number(data.start) || 0;
-        state.total = Number(data.total) || chat.length;
-        chatElement.find('.mes').each((_index, element) => {
-            const node = $(element);
-            const id = Number(node.attr('mesid'));
-            if (Number.isInteger(id)) {
-                node.attr('mesid', id + added);
-                node.find('.mesIDDisplay').text(`#${id + added}`);
-            }
-        });
-        return added;
-    })();
-    try {
-        return await state.pagePromise;
-    } finally {
-        state.pagePromise = null;
-    }
-}
-
-function updateNoraEarlierHistoryControl() {
+async function loadFullNoraHistoryFromUi() {
     const control = document.getElementById('show_more_messages');
-    if (!control || !isNoraProductMode()) return;
-    const remaining = matchesNoraChatWindow() ? Math.max(0, Number(noraChatWindowState.start) || 0) : 0;
-    control.textContent = remaining > 0 ? `查看更早内容（还有 ${remaining} 条）` : '查看更早内容';
-}
-
-async function loadEarlierNoraHistoryFromUi() {
-    if (noraEarlierHistoryLoadPromise) return noraEarlierHistoryLoadPromise;
-    const control = document.getElementById('show_more_messages');
-    if (!control) return;
+    if (!control || control.getAttribute('aria-busy') === 'true') return;
     control.setAttribute('aria-busy', 'true');
-    control.textContent = '正在加载更早内容…';
-    noraEarlierHistoryLoadPromise = showMoreMessages().catch((error) => {
-        console.error('Could not load earlier chat history', error);
-        toastr.error('更早的聊天记录加载失败，请重试。');
-    }).finally(() => {
-        noraEarlierHistoryLoadPromise = null;
-        control.removeAttribute('aria-busy');
-        updateNoraEarlierHistoryControl();
-        observeNoraEarlierHistory();
-    });
-    return noraEarlierHistoryLoadPromise;
-}
-
-function observeNoraEarlierHistory() {
-    noraEarlierHistoryObserver?.disconnect();
-    noraEarlierHistoryObserver = null;
-    if (!isNoraProductMode() || typeof IntersectionObserver !== 'function') return;
-    const root = document.getElementById('nora-chat');
-    const control = document.getElementById('show_more_messages');
-    if (!root || !control) return;
-    noraEarlierHistoryObserver = new IntersectionObserver((entries) => {
-        if (entries.some(entry => entry.isIntersecting)) void loadEarlierNoraHistoryFromUi();
-    }, { root, rootMargin: '160px 0px 0px', threshold: 0 });
-    noraEarlierHistoryObserver.observe(control);
+    control.textContent = '正在加载全部历史消息…';
+    try {
+        await ensureNoraFullChatLoaded({ revealHistory: true });
+    } catch (error) {
+        console.error('Could not load complete chat history', error);
+        toastr.error('全部历史消息加载失败，请重试。');
+    } finally {
+        if (control.isConnected) {
+            control.removeAttribute('aria-busy');
+            control.textContent = '查看全部历史消息';
+        }
+    }
 }
 
 function roundBootMetric(value) {
@@ -1297,7 +1309,7 @@ export async function selectCharacterById(id, { switchMenu = true, chatId = null
         return;
     }
 
-    if (isChatSaving) {
+    if (isChatPersistenceBusy()) {
         toastr.info(t`Please wait until the chat is saved before switching characters.`, t`Your chat is still saving...`);
         return;
     }
@@ -1846,14 +1858,14 @@ export async function replaceCurrentChat() {
 }
 
 export async function showMoreMessages(messagesToLoad = null) {
+    if (isNoraProductMode() && matchesNoraChatWindow() && noraChatWindowState.renderStart > 0) {
+        await ensureNoraFullChatLoaded({ revealHistory: true });
+        return;
+    }
+
     const firstDisplayedMesId = chatElement.children('.mes').first().attr('mesid');
     let messageId = Number(firstDisplayedMesId);
     let count = messagesToLoad || getChatRenderWindowSize();
-
-    if (isNoraProductMode() && matchesNoraChatWindow() && noraChatWindowState.start > 0) {
-        const added = await loadEarlierNoraChatWindow();
-        if (Number.isInteger(messageId)) messageId += added;
-    }
 
     // If there are no messages displayed, or the message somehow has no mesid, we default to one higher than last message id,
     // so the first "new" message being shown will be the last available message
@@ -1893,25 +1905,39 @@ export async function showMoreMessages(messagesToLoad = null) {
 
     applyStylePins();
     await eventSource.emit(event_types.MORE_MESSAGES_LOADED);
-    updateNoraEarlierHistoryControl();
 }
 
-export async function printMessages({ announceRendered = false } = {}) {
+function noraHistoryControlHost() {
+    if (!isNoraProductMode()) return chatElement;
+    const host = document.getElementById('nora-chat');
+    return host ? $(host) : chatElement;
+}
+
+export async function printMessages({ announceRendered = false, scrollToBottom = true } = {}) {
     let startIndex = 0;
     let count = getChatRenderWindowSize();
-    chatElement.children('#show_more_messages').remove();
+    $('#show_more_messages').remove();
 
-    if ((matchesNoraChatWindow() && noraChatWindowState.start > 0) || chat.length > count) {
+    const hasHiddenHistory = matchesNoraChatWindow()
+        ? !noraChatWindowState.showFullHistory && (noraChatWindowState.renderStart > 0 || chat.length > count)
+        : chat.length > count;
+    if (hasHiddenHistory) {
         startIndex = chat.length - count;
         startIndex = Math.max(0, startIndex);
-        const remaining = matchesNoraChatWindow() ? Math.max(0, Number(noraChatWindowState.start) || 0) : 0;
-        const label = isNoraProductMode() && remaining > 0 ? `查看更早内容（还有 ${remaining} 条）`
-            : isNoraProductMode() ? '查看更早内容' : 'Show more messages';
-        chatElement.append(`<div id="show_more_messages">${label}</div>`);
+        const label = isNoraProductMode() ? '查看全部历史消息' : 'Show more messages';
+        const control = $(`<button id="show_more_messages" type="button">${label}</button>`);
+        const controlHost = noraHistoryControlHost();
+        if (isNoraProductMode() && controlHost[0] !== chatElement[0]) chatElement.before(control);
+        else controlHost.append(control);
+    }
+
+    if (matchesNoraChatWindow()) {
+        noraChatWindowState.renderStart = noraChatWindowState.fullHistoryLoaded
+            ? startIndex
+            : noraChatWindowState.start + startIndex;
     }
 
     await redisplayChat({ startIndex, fade: false });
-    observeNoraEarlierHistory();
 
     if (announceRendered) {
         for (let messageId = startIndex; messageId < chat.length; messageId++) {
@@ -1924,8 +1950,24 @@ export async function printMessages({ announceRendered = false } = {}) {
         }
     }
 
-    scrollChatToBottom({ waitForFrame: true });
-    delay(debounce_timeout.short).then(() => scrollOnMediaLoad());
+    if (scrollToBottom) {
+        scrollChatToBottom({ waitForFrame: true });
+        delay(debounce_timeout.short).then(() => scrollOnMediaLoad());
+    }
+}
+
+/**
+ * Re-renders the active conversation without clearing or fetching chat data.
+ * Extensions use this after display rules change so activation cannot replace
+ * an in-flight Nora world selection with a second legacy chat reload.
+ */
+export async function refreshCurrentChatDisplay({ announceRendered = false } = {}) {
+    const scrollElement = isNoraProductMode()
+        ? document.getElementById('nora-chat')
+        : chatElement[0];
+    const previousScrollTop = scrollElement?.scrollTop ?? 0;
+    await printMessages({ announceRendered, scrollToBottom: false });
+    if (scrollElement) scrollElement.scrollTop = previousScrollTop;
 }
 
 /**
@@ -2030,7 +2072,8 @@ export async function clearChat({ clearData = false } = {}) {
     if (is_delete_mode) {
         $('#dialogue_del_mes_cancel').trigger('click');
     }
-    //This will also remove non '.mes' elements, e.g. '<div id="show_more_messages">Show more messages</div>'.
+    // The Nora history control is owned by the outer reading surface and is not
+    // part of this mutable ST message list.
     chatElement.children().remove();
     if ($('.zoomed_avatar[forChar]').length) {
         console.debug('saw avatars to remove');
@@ -2041,6 +2084,7 @@ export async function clearChat({ clearData = false } = {}) {
     itemizedPrompts.length = 0;
 
     if (clearData) {
+        noraHistoryControlHost().children('#show_more_messages').remove();
         chat.length = 0;
         noraChatWindowState = null;
     }
@@ -7631,8 +7675,12 @@ export function saveChatDebounced() {
         }
 
         console.debug('Chat save timeout triggered');
-        await saveChatConditional();
-        console.debug('Chat saved');
+        try {
+            await saveChatConditional();
+            console.debug('Chat saved');
+        } catch (error) {
+            console.error('Debounced chat save failed', error);
+        }
     }, DEFAULT_SAVE_EDIT_TIMEOUT);
 }
 
@@ -7656,8 +7704,16 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         [chatName, withMetadata, mesId, force] = arguments;
     }
 
+    const activeChatName = characters[this_chid]?.chat;
+    const isCurrentNoraChatSave = isNoraProductMode()
+        && chatData === undefined
+        && (chatName === undefined || chatName === activeChatName);
+    if (isCurrentNoraChatSave) {
+        await ensureNoraFullChatLoaded();
+    }
+
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
-    const fileName = chatName ?? characters[this_chid]?.chat;
+    const fileName = chatName ?? activeChatName;
 
     if (!fileName && name2 === neutralCharacterName) {
         // TODO: Do something for a temporary chat with no character.
@@ -7676,6 +7732,12 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         : (mesId !== undefined && mesId >= 0 && mesId < chat.length)
             ? chat.slice(0, Number(mesId) + 1)
             : chat.slice();
+    const activeWindowState = isCurrentNoraChatSave && matchesNoraChatWindow()
+        ? noraChatWindowState
+        : null;
+    const noraCompleteHistory = Boolean(isCurrentNoraChatSave
+        && (!activeWindowState || activeWindowState.fullHistoryLoaded));
+    const noraBaseRevision = activeWindowState?.serverRevision ?? null;
 
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -7696,6 +7758,8 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 avatar_url: characters[this_chid].avatar,
                 force: force,
                 skip_backup: skipBackup || noraChatBackupTransactionDepth > 0,
+                nora_complete_history: noraCompleteHistory,
+                nora_base_revision: noraBaseRevision,
             }),
         });
         const result = await fetch('/api/chats/save', saveChatRequest);
@@ -7705,6 +7769,10 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             if (saved.ledger) {
                 adoptLedgerStatus(saved.ledger);
                 if (saved.ledger.running) void refreshLedger();
+            }
+            if (activeWindowState && matchesNoraChatWindow(activeWindowState)) {
+                activeWindowState.serverTotal = trimmedChat.length;
+                activeWindowState.serverRevision = saved.revision || activeWindowState.serverRevision;
             }
             return;
         }
@@ -7902,7 +7970,7 @@ export async function unshallowCharacter(characterId) {
     await getOneCharacter(avatar);
 }
 
-export async function getChat({ preloadedData = null, strict = false } = {}) {
+export async function getChat({ preloadedData = null, strict = false, beforeRender = null } = {}) {
     const snapshotStep = (suffix, operation) => preloadedData
         ? timedBootStep(`world.snapshot.runtime.${suffix}`, operation)
         : operation();
@@ -7942,8 +8010,12 @@ export async function getChat({ preloadedData = null, strict = false } = {}) {
                     chatId: binding.chatId,
                     start: Number(data.start) || 0,
                     total: Number(data.total) || data.messages.length,
+                    serverTotal: Number(data.total) || data.messages.length,
+                    serverRevision: String(data.revision || ''),
+                    renderStart: Number(data.start) || 0,
+                    fullHistoryLoaded: (Number(data.start) || 0) === 0 && data.messages.length >= (Number(data.total) || data.messages.length),
+                    showFullHistory: false,
                     fullPromise: null,
-                    pagePromise: null,
                 } : null;
             } else if (Array.isArray(data) && data.length > 0) {
                 /** @type {ChatHeader} */
@@ -7960,7 +8032,7 @@ export async function getChat({ preloadedData = null, strict = false } = {}) {
             }
             if (!chat_metadata.integrity) chat_metadata.integrity = uuidv4();
         });
-        await getChatResult({ snapshot: Boolean(preloadedData) });
+        await getChatResult({ snapshot: Boolean(preloadedData), beforeRender });
         const emitChatLoaded = () => eventSource.emit(event_types.CHAT_LOADED, { detail: { id: this_chid, character: characters[this_chid] } });
         if (preloadedData) {
             void snapshotStep('background.event.chat-loaded', emitChatLoaded)
@@ -7981,11 +8053,18 @@ export async function getChat({ preloadedData = null, strict = false } = {}) {
     }
 }
 
-async function getChatResult({ snapshot = false } = {}) {
+async function getChatResult({ snapshot = false, beforeRender = null } = {}) {
     const snapshotStep = (suffix, operation) => snapshot
         ? timedBootStep(`world.snapshot.runtime.${suffix}`, operation)
         : operation();
     name2 = characters[this_chid].name;
+    await snapshotStep('itemized-prompts', () => loadItemizedPrompts(getCurrentChatId()));
+    if (typeof beforeRender === 'function') {
+        await snapshotStep('display-capabilities', beforeRender);
+    }
+    if (isNoraProductMode()) {
+        await snapshotStep('event.chat-pre-render', () => eventSource.emit(event_types.CHAT_PRE_RENDER, getCurrentChatId()));
+    }
     let freshChat = false;
     if (chat.length === 0) {
         const message = getFirstMessage();
@@ -7996,7 +8075,6 @@ async function getChatResult({ snapshot = false } = {}) {
         // Make sure the chat appears on the server
         await snapshotStep('fresh-chat-persist', saveChatConditional);
     }
-    await snapshotStep('itemized-prompts', () => loadItemizedPrompts(getCurrentChatId()));
     await snapshotStep('dom-render', printMessages);
     if (snapshot) timedBootSyncStep('world.snapshot.runtime.character-ui-state', () => select_selected_character(this_chid));
     else select_selected_character(this_chid);
@@ -8046,7 +8124,7 @@ function getFirstMessage() {
 }
 
 export async function openCharacterChat(file_name, { persistChat = true, preloadedData = null } = {}) {
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+    await waitUntilCondition(() => !isChatPersistenceBusy(), debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
     characters[this_chid].chat = file_name;
     chat_metadata = {};
@@ -8063,14 +8141,14 @@ export async function openCharacterChat(file_name, { persistChat = true, preload
  * @param {number} characterId Character array index.
  * @param {object} snapshot Server-authoritative activation snapshot.
  */
-export async function activateNoraWorldSnapshot(characterId, snapshot) {
+export async function activateNoraWorldSnapshot(characterId, snapshot, { beforeRender = null } = {}) {
     const source = snapshot?.character;
     const plan = snapshot?.plan;
     const chatId = String(plan?.session?.binding?.chat_id || '').replace(/\.jsonl$/i, '');
     if (!source || source.avatar !== characters[characterId]?.avatar || !chatId || !snapshot?.chat) {
         throw new Error('The World Activation Snapshot does not match the selected Runtime Card.');
     }
-    if (isChatSaving) throw new Error('The active Story Session is still being saved.');
+    if (isChatPersistenceBusy()) throw new Error('The active Story Session is still being saved.');
 
     await timedBootStep('world.snapshot.runtime.worldbooks-prime', async () => {
         for (const worldbook of snapshot.worldbooks || []) primeWorldInfoSnapshot(worldbook?.name, worldbook?.data);
@@ -8092,7 +8170,7 @@ export async function activateNoraWorldSnapshot(characterId, snapshot) {
         setCharacterId(characterId);
         chat_metadata = {};
     });
-    await getChat({ preloadedData: snapshot.chat, strict: true });
+    await getChat({ preloadedData: snapshot.chat, strict: true, beforeRender });
 }
 
 ////////// OPTIMZED MAIN API CHANGE FUNCTION ////////////
@@ -9849,10 +9927,19 @@ export async function saveMetadata() {
     return await saveChatConditional();
 }
 
+function createChatSaveTarget() {
+    const scope = scopeOf(chat_metadata);
+    if (scope) return `nora:${scope.worldId}\u0000${scope.sessionId}`;
+    const binding = currentNoraChatBinding();
+    return binding ? `${binding.avatar}\u0000${binding.chatId}` : null;
+}
+
+const recoverLedgerSaveFailure = createLedgerSaveRecovery({
+    currentTarget: createChatSaveTarget,
+    reload: () => reloadCurrentChat(),
+});
+
 export async function saveChatConditional() {
-    if (isNoraProductMode()) {
-        await ensureNoraFullChatLoaded();
-    }
     try {
         await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
     } catch {
@@ -9860,6 +9947,10 @@ export async function saveChatConditional() {
         if (isNoraProductMode()) throw new Error('聊天保存仍在处理中，请稍后重试。');
         return;
     }
+
+    const chatSaveTarget = createChatSaveTarget();
+    let failure = null;
+    const shouldRethrow = isNoraProductMode();
 
     try {
         cancelDebouncedChatSave();
@@ -9873,9 +9964,23 @@ export async function saveChatConditional() {
         saveItemizedPrompts(getCurrentChatId());
     } catch (error) {
         console.error('Error saving chat', error);
-        if (isNoraProductMode()) throw error;
+        failure = error;
     } finally {
         isChatSaving = false;
+    }
+
+    if (failure) {
+        if (failure?.code?.startsWith('NORA_LEDGER_')) {
+            noraLedgerRecoveryTarget = chatSaveTarget;
+            try {
+                await recoverLedgerSaveFailure(failure, chatSaveTarget);
+            } catch (recoveryError) {
+                console.error('Could not restore chat after a rejected ledger save', recoveryError);
+            } finally {
+                if (noraLedgerRecoveryTarget === chatSaveTarget) noraLedgerRecoveryTarget = null;
+            }
+        }
+        if (shouldRethrow) throw failure;
     }
 }
 
@@ -11063,7 +11168,7 @@ export async function doNewChat({ deleteCurrentChat = false } = {}) {
     }
 
     //Fix it; New chat doesn't create while open create character menu
-    await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+    await waitUntilCondition(() => !isChatPersistenceBusy(), debounce_timeout.extended, 10);
     await clearChat({ clearData: true });
 
     chat_file_for_del = getCurrentChatDetails()?.sessionName;
@@ -11176,7 +11281,7 @@ export async function renameChat(oldFileName, newName) {
  */
 export async function closeCurrentChat() {
     if (is_send_press == false) {
-        await waitUntilCondition(() => !isChatSaving, debounce_timeout.extended, 10);
+        await waitUntilCondition(() => !isChatPersistenceBusy(), debounce_timeout.extended, 10);
         await clearChat({ clearData: true });
         setCharacterId(undefined);
         setCharacterName('');
@@ -12865,7 +12970,7 @@ jQuery(async function () {
     $(document).on('click', '#show_more_messages', async function (event) {
         event.stopPropagation();
         event.preventDefault();
-        if (isNoraProductMode()) await loadEarlierNoraHistoryFromUi();
+        if (isNoraProductMode()) await loadFullNoraHistoryFromUi();
         else await showMoreMessages();
     });
 

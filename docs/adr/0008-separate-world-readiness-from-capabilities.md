@@ -17,3 +17,6 @@ A World is basically ready when its authoritative record, default Story Session,
 - Each capability reports its own status, duration, error code, and retry result.
 - Capability evidence distinguishes execution-runtime readiness from Story Session data readiness; neither is inferred from the other.
 - The UI must distinguish “World failed” from “World available with degraded capabilities.”
+- Display-affecting capability runtimes (Prompt Template, Regex, and Tavern Helper) are prepared locally after the World snapshot is bound but before the first message render. Their persisted readiness is settled afterward.
+- MVU and other non-display readiness continue after the first render and may not reload or clear the active chat when their status changes.
+- Capability failure degrades only that capability; it does not trigger a second World activation or roll back a valid World snapshot.

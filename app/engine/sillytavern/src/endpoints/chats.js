@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import process from 'node:process';
+import crypto from 'node:crypto';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -449,6 +450,52 @@ class IntegrityMismatchError extends Error {
     }
 }
 
+class NoraPartialChatSaveError extends Error {
+    constructor(message) {
+        super(message);
+        this.code = 'NORA_PARTIAL_CHAT_SAVE';
+        this.status = 409;
+    }
+}
+
+function getChatRevision(chatData) {
+    return crypto.createHash('sha256')
+        .update(chatData.map(message => JSON.stringify(message)).join('\n'))
+        .digest('hex');
+}
+
+/**
+ * Detects a Nora replacement that could discard or rewrite stored history.
+ * Append-only writes remain backward-compatible; every other replacement is
+ * accepted only when the client proves it loaded the current server revision.
+ * @param {Array} existingChat Complete chat currently stored on disk.
+ * @param {Array} incomingChat Candidate replacement chat.
+ * @param {{completeHistory?: boolean, baseRevision?: string}} [proof] Client proof that it hydrated the complete server history.
+ * @returns {boolean}
+ */
+export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {}) {
+    if (!Array.isArray(existingChat) || !Array.isArray(incomingChat)) return false;
+    if (existingChat.length < 2 || incomingChat.length < 1) return false;
+
+    const incomingMetadata = incomingChat[0]?.chat_metadata;
+    if (!incomingMetadata?.nora_world?.id && !incomingMetadata?.nora_session?.id) return false;
+
+    const existingIntegrity = existingChat[0]?.chat_metadata?.integrity;
+    const incomingIntegrity = incomingMetadata?.integrity;
+    if (existingIntegrity && incomingIntegrity && existingIntegrity !== incomingIntegrity) return false;
+
+    const completeHistoryProved = proof.completeHistory === true
+        && typeof proof.baseRevision === 'string'
+        && proof.baseRevision === getChatRevision(existingChat);
+    if (completeHistoryProved) return false;
+
+    const existingMessages = existingChat.slice(1);
+    const incomingMessages = incomingChat.slice(1);
+    const isAppendOnly = incomingMessages.length >= existingMessages.length
+        && existingMessages.every((message, index) => JSON.stringify(message) === JSON.stringify(incomingMessages[index]));
+    return !isAppendOnly;
+}
+
 /**
  * Tries to save the chat data to a file, performing an integrity check if required.
  * @param {Array} chatData The chat array to save.
@@ -459,7 +506,7 @@ class IntegrityMismatchError extends Error {
  * @param {string} backupDirectory Passed to backupChat.
  * @param {boolean} skipBackup Skip the automatic recovery snapshot for an intermediate transaction save.
  */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null) {
+export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null, noraHistoryProof = {}) {
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
 
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
@@ -468,9 +515,21 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     if (chatIntegritySlug && !await checkChatIntegrity(filePath, chatIntegritySlug)) {
         throw new IntegrityMismatchError(`Chat integrity check failed for "${filePath}". The expected integrity slug was "${chatIntegritySlug}".`);
     }
+    const verifyWriteBase = () => {
+        const existingChat = fs.existsSync(filePath) ? getChatData(filePath) : [];
+        if (isNoraPartialChatOverwrite(existingChat, chatData, noraHistoryProof)) {
+            throw new NoraPartialChatSaveError(`Refusing to replace complete Nora history without its current revision: ${filePath}`);
+        }
+    };
     if (directories) {
-        await resolveStoryLedger(directories).writeChat(filePath, chatData, () => writeFileAtomicSync(filePath, jsonlData, 'utf8'));
+        await resolveStoryLedger(directories).writeChat(
+            filePath,
+            chatData,
+            () => writeFileAtomicSync(filePath, jsonlData, 'utf8'),
+            { beforeWrite: verifyWriteBase },
+        );
     } else {
+        verifyWriteBase();
         tryWriteFileSync(filePath, jsonlData);
     }
     if (!skipBackup) {
@@ -490,14 +549,28 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(chatData, chatFilePath, request.body.force, handle, cardName, request.user.directories.backups, Boolean(request.body.skip_backup), request.user.directories);
+            await trySaveChat(
+                chatData,
+                chatFilePath,
+                request.body.force,
+                handle,
+                cardName,
+                request.user.directories.backups,
+                Boolean(request.body.skip_backup),
+                request.user.directories,
+                {
+                    completeHistory: request.body.nora_complete_history,
+                    baseRevision: request.body.nora_base_revision,
+                },
+            );
             const scope = scopeOf(chatData[0]?.chat_metadata);
             const ledger = scope ? await resolveStoryLedger(request.user.directories).plugin.status(scope) : null;
-            return response.send({ ok: true, ledger });
+            return response.send({ ok: true, ledger, revision: getChatRevision(chatData) });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
     } catch (error) {
+        if (error?.code === 'NORA_PARTIAL_CHAT_SAVE') return response.status(error.status).send({ error: error.code });
         if (error?.code?.startsWith('NORA_LEDGER_')) return response.status(error.status || 409).send({ error: error.code });
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);
@@ -534,7 +607,7 @@ export function getChatData(chatFilePath) {
  * continue receiving the historical array response.
  * @param {string} chatFilePath Chat JSONL path.
  * @param {{limit?: number, before?: number}} options Window options.
- * @returns {{header: object, messages: object[], start: number, total: number, hasMore: boolean}}
+ * @returns {{header: object, messages: object[], start: number, total: number, hasMore: boolean, revision: string}}
  */
 export function getChatWindowData(chatFilePath, { limit = 40, before } = {}) {
     const data = getChatData(chatFilePath);
@@ -552,6 +625,7 @@ export function getChatWindowData(chatFilePath, { limit = 40, before } = {}) {
         start,
         total: messages.length,
         hasMore: start > 0,
+        revision: getChatRevision(data),
     };
 }
 

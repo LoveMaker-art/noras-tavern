@@ -79,7 +79,7 @@ test('keeps a complex World open while capability evidence degrades and recovers
         characterId: 0,
         manifest: created.world,
     });
-    assert.deepEqual(checks, ['tavern_helper', 'regex', 'mvu']);
+    assert.deepEqual(checks, ['regex', 'tavern_helper', 'mvu']);
     assert.equal(first.world.lifecycle.status, 'READY');
     assert.equal(first.world.capabilities.status, 'DEGRADED');
     assert.equal(first.world.capabilities.items.regex.status, 'READY');
@@ -93,7 +93,7 @@ test('keeps a complex World open while capability evidence degrades and recovers
         characterId: 0,
         manifest: first.world,
     }, 'mvu');
-    assert.deepEqual(checks, ['tavern_helper', 'regex', 'mvu', 'mvu']);
+    assert.deepEqual(checks, ['regex', 'tavern_helper', 'mvu', 'mvu']);
     assert.equal(retried.world.lifecycle.status, 'READY');
     assert.equal(retried.world.capabilities.status, 'READY');
     assert.equal(retried.world.capabilities.items.mvu.attempts, 2);

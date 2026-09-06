@@ -122,7 +122,7 @@ test('repair and delete stay behind the World Runtime interface and refresh the 
     ]);
 });
 
-test('prepares Prompt Template before rendering an EJS World snapshot', async () => {
+test('runs the supplied display-capability preparation inside activation before first render', async () => {
     const calls = [];
     const pending = manifest({
         capabilities: {
@@ -150,25 +150,18 @@ test('prepares Prompt Template before rendering an EJS World snapshot', async ()
                 return { plan: { world_id: 'world:one' }, character: runtimeState.characters[0], worldbooks: [] };
             },
         },
-        capabilityRuntime: {
-            resolveCharacter: async () => runtimeState.characters[0],
-            inspectSnapshotCharacter: () => ({ promptTemplateDeclared: true, promptTemplateReasons: ['ejs-syntax'] }),
-            preparePromptTemplate: async () => {
-                calls.push('capability:prompt_template');
-                return { engine: 'sillytavern', extension_active: true };
-            },
-            ensureCharacterCapability: async (_character, capability) => {
-                calls.push(`capability:${capability}`);
-                return { engine: 'sillytavern', extension_active: true };
-            },
+        executeSnapshot: async (_snapshot, _runtime, options) => {
+            await options.beforeRender();
+            calls.push('render');
         },
-        executeSnapshot: async () => { calls.push('render'); },
     });
 
     await runtime.refresh();
-    await runtime.activate('world:one');
+    await runtime.activate('world:one', {
+        beforeRender: async () => calls.push('display-capabilities'),
+    });
 
-    assert.deepEqual(calls, ['snapshot', 'capability:prompt_template', 'render']);
+    assert.deepEqual(calls, ['snapshot', 'display-capabilities', 'render']);
 });
 
 test('Nora World UI carries only worldId and has one open/capability owner', () => {
@@ -178,7 +171,7 @@ test('Nora World UI carries only worldId and has one open/capability owner', () 
     const creationController = fs.readFileSync(path.join(uiRoot, 'world-creation-controller.js'), 'utf8');
 
     assert.doesNotMatch(worldController, /data-character=|data-chat=/);
-    assert.match(worldController, /worldRuntime\.activate\(current\.id\)/);
+    assert.match(worldController, /worldRuntime\.activate\(current\.id,\s*\{[\s\S]*beforeRender:[\s\S]*prepareWorldCapabilities\(current\.id\)/);
     assert.match(worldController, /loadWorldCapabilities\(world\.id\)/);
     assert.match(worldController, /worldRuntime\.remove\(worldId\)/);
     assert.match(worldController, /confirmAction\(\{/);

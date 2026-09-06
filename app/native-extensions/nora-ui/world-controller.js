@@ -18,6 +18,7 @@ export function createWorldController({
     recordBootMilestone,
     performanceReporter,
     primeActiveWorldbook,
+    prepareWorldCapabilities = async () => null,
     loadWorldCapabilities = async () => null,
     closeDrawers,
     refresh,
@@ -165,7 +166,12 @@ export function createWorldController({
                     }
                     const startedAt = performance.now();
                     try {
-                        await timedUiStep(`world-select.${current.interactionId}.lifecycle.open`, () => worldRuntime.activate(current.id));
+                        await timedUiStep(`world-select.${current.interactionId}.lifecycle.open`, () => worldRuntime.activate(current.id, {
+                            beforeRender: () => timedUiStep(
+                                `world-select.${current.interactionId}.display-capabilities`,
+                                () => prepareWorldCapabilities(current.id),
+                            ),
+                        }));
                         if (isSuperseded()) continue;
                         void rememberLastWorld(current.id);
                         if (isSuperseded()) continue;

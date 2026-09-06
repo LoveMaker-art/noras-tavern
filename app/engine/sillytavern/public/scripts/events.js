@@ -16,6 +16,7 @@ export const event_types = {
     MESSAGE_SWIPE_DELETED: 'message_swipe_deleted',
     MORE_MESSAGES_LOADED: 'more_messages_loaded',
     IMPERSONATE_READY: 'impersonate_ready',
+    CHAT_PRE_RENDER: 'chat_pre_render',
     CHAT_CHANGED: 'chat_id_changed',
     // TODO: Naming convention is inconsistent with other events
     CHAT_LOADED: 'chatLoaded',

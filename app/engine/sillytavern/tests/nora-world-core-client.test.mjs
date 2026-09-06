@@ -264,7 +264,7 @@ test('retains a pending import when an HTTP failure does not explicitly declare 
     assert.equal(client.pendingCreation()?.idempotencyKey, 'browser:ambiguous');
 });
 
-test('executes and verifies the aggregate ST snapshot without capability waits', async () => {
+test('executes display preparation inside the aggregate ST snapshot before its first render', async () => {
     const calls = [];
     let state = {
         characters: [{ avatar: 'target.png', name: 'Target' }],
@@ -276,7 +276,7 @@ test('executes and verifies the aggregate ST snapshot without capability waits',
     };
     const runtime = {
         read: () => state,
-        async activateSnapshot(characterId, snapshot) {
+        async activateSnapshot(characterId, snapshot, { beforeRender }) {
             const chatId = snapshot.plan.session.binding.chat_id;
             calls.push('activate-snapshot');
             state = {
@@ -286,6 +286,8 @@ test('executes and verifies the aggregate ST snapshot without capability waits',
                 chatId,
                 metadata: { nora_world: { id: 'world:one' }, nora_session: { id: 'session:one' } },
             };
+            await beforeRender();
+            calls.push('render');
         },
         async savePersona(persona) {
             calls.push('persona');
@@ -305,8 +307,10 @@ test('executes and verifies the aggregate ST snapshot without capability waits',
     };
 
     const opened = await executeStActivationSnapshot({ schema: 'nora-world-snapshot/v1', revision: 'one', plan,
-        character: { avatar: 'target.png' }, chat: { messages: [] }, worldbooks: [] }, runtime);
-    assert.deepEqual(calls, ['activate-snapshot', 'persona']);
+        character: { avatar: 'target.png' }, chat: { messages: [] }, worldbooks: [] }, runtime, {
+        beforeRender: async ({ characterId }) => calls.push(`display:${characterId}`),
+    });
+    assert.deepEqual(calls, ['activate-snapshot', 'display:0', 'render', 'persona']);
     assert.equal(opened.id, 'world:one');
     assert.equal(opened.characterId, 0);
     assert.equal(opened.chatId, 'chat-one');

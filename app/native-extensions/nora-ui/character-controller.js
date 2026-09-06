@@ -203,7 +203,7 @@ export function createCharacterController({
             let enabled = false;
             try {
                 await operations.run('character-capabilities', async () => {
-                    await enableCharacterCapabilities(character, { reload: true });
+                    await enableCharacterCapabilities(character, { refresh: true });
                     enabled = true;
                     dialogs.toast(tr("角色扩展能力已启用。"));
                     openSheet(characterId, backToLibrary);

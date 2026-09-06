@@ -293,13 +293,13 @@ test('activates only the extension dependencies of the capability being checked'
 test('rerenders only while the requested Runtime Card is still active', async () => {
     const character = characterWithCapabilities();
     const context = runtimeContext(character);
-    let reloads = 0;
-    context.reloadCurrentChat = async () => { reloads += 1; };
+    let refreshes = 0;
+    context.refreshCurrentChatDisplay = async () => { refreshes += 1; };
     const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
 
     assert.equal(await adapter.rerenderCharacterChat(character.avatar), true);
     assert.equal(await adapter.rerenderCharacterChat('another-world.png'), false);
-    assert.equal(reloads, 1);
+    assert.equal(refreshes, 1);
 });
 
 test('saves a card persona without hydrating the hidden ST persona UI', async () => {

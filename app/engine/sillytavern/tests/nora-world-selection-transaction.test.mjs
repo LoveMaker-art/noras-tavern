@@ -195,7 +195,7 @@ test('cold MVU World delegates the complete readiness lifecycle to World Runtime
     }
 });
 
-test('v2 base activation completes before asynchronous capability readiness settles', async () => {
+test('display capabilities finish before first render while remaining capabilities settle in background', async () => {
     const capabilityStarted = deferred();
     const capabilityRelease = deferred();
     const calls = [];
@@ -221,7 +221,14 @@ test('v2 base activation completes before asynchronous capability readiness sett
     try {
         const controller = createWorldController({
             settingsDomain: { uiSettings: () => ({}), saveUiSettings() {}, isGenerating: () => false },
-            worldRuntime: { mode: 'v2', activate: async () => calls.push('base-activated') },
+            worldRuntime: {
+                mode: 'v2',
+                activate: async (_worldId, { beforeRender }) => {
+                    calls.push('snapshot-bound');
+                    await beforeRender();
+                    calls.push('first-render');
+                },
+            },
             store: { read: () => ({ worldModels: [] }) },
             operations: { isBusy: () => false, run: async (_scope, operation) => operation() },
             storyScroller: { followLatest: () => () => {}, toLatest: async () => {} },
@@ -240,6 +247,7 @@ test('v2 base activation completes before asynchronous capability readiness sett
             primeActiveWorldbook: async options => calls.push(options?.force ? 'worldbook-force' : 'worldbook-cache'),
             resolveCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
             promptCharacterCapabilities: async () => { throw new Error('v2 must not use the legacy loader'); },
+            prepareWorldCapabilities: async () => calls.push('display-capabilities'),
             loadWorldCapabilities: async () => {
                 calls.push('capability-started');
                 capabilityStarted.resolve();
@@ -263,7 +271,14 @@ test('v2 base activation completes before asynchronous capability readiness sett
         await capabilityStarted.promise;
         await new Promise(resolve => setImmediate(resolve));
         assert.equal(baseResolved, true);
-        assert.deepEqual(calls.slice(0, 4), ['base-activated', 'refresh', 'worldbook-cache', 'capability-started']);
+        assert.deepEqual(calls.slice(0, 6), [
+            'snapshot-bound',
+            'display-capabilities',
+            'first-render',
+            'refresh',
+            'worldbook-cache',
+            'capability-started',
+        ]);
 
         capabilityRelease.resolve();
         await opening;

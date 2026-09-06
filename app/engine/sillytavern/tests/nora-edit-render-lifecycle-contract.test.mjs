@@ -20,13 +20,23 @@ test('Nora branch edits preserve unchanged rich-message DOM nodes', () => {
     assert.match(body, /await printMessages\(\{ announceRendered: true \}\)/);
 });
 
-test('full-history hydration announces every rebuilt message through ST render events', () => {
+test('explicit full-history reveal announces rebuilt messages without coupling data hydration to rendering', () => {
     const printStart = script.indexOf('export async function printMessages');
     const printEnd = script.indexOf('\nexport function scrollOnMediaLoad', printStart);
     const printBody = script.slice(printStart, printEnd);
     assert.match(printBody, /announceRendered = false/);
-    assert.match(printBody, /children\('#show_more_messages'\)\.remove\(\)/);
+    assert.match(printBody, /\$\('#show_more_messages'\)\.remove\(\)/);
+    assert.match(printBody, /chatElement\.before\(control\)/);
     assert.match(printBody, /event_types\.USER_MESSAGE_RENDERED/);
     assert.match(printBody, /event_types\.CHARACTER_MESSAGE_RENDERED/);
-    assert.match(script, /await printMessages\(\{ announceRendered: true \}\);\n\s*return chat;/);
+    const revealStart = script.indexOf('function revealNoraFullHistory');
+    const revealEnd = script.indexOf('\nexport async function ensureNoraFullChatLoaded', revealStart);
+    const revealBody = script.slice(revealStart, revealEnd);
+    const hydrationStart = revealEnd;
+    const hydrationEnd = script.indexOf('\nasync function loadFullNoraHistoryFromUi', hydrationStart);
+    const hydrationBody = script.slice(hydrationStart, hydrationEnd);
+    assert.match(revealBody, /chat\.slice\(0, renderedHistoryStart\)/);
+    assert.match(revealBody, /chatElement\.prepend\(missingMessageElements\)/);
+    assert.doesNotMatch(revealBody, /printMessages/);
+    assert.doesNotMatch(hydrationBody, /state\.total = chat\.length;\s*await printMessages/);
 });

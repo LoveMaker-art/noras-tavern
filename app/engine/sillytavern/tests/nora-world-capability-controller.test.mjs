@@ -60,8 +60,8 @@ test('is the single owner that authorizes once and settles each capability in de
     });
 
     assert.deepEqual(result.results.map(item => [item.capability, item.result.status]), [
-        ['tavern_helper', 'READY'],
         ['regex', 'READY'],
+        ['tavern_helper', 'READY'],
         ['mvu', 'DEGRADED'],
     ]);
     assert.equal(result.results[2].result.error.message, 'MVU readiness timed out.');
@@ -69,12 +69,12 @@ test('is the single owner that authorizes once and settles each capability in de
     assert.deepEqual(calls, [
         'resolve',
         'authorize:false',
-        'begin:tavern_helper',
-        'ensure:tavern_helper',
-        'settle:tavern_helper:READY:none',
         'begin:regex',
         'ensure:regex',
         'settle:regex:READY:none',
+        'begin:tavern_helper',
+        'ensure:tavern_helper',
+        'settle:tavern_helper:READY:none',
         'begin:mvu',
         'ensure:mvu',
         'settle:mvu:DEGRADED:NORA_MVU_TIMEOUT',
@@ -118,16 +118,49 @@ test('revalidates persisted READY capabilities once per browser runtime', async 
     const first = await controller.ensure(world);
     const second = await controller.ensure(world);
 
-    assert.deepEqual(first.results.map(item => item.capability), ['tavern_helper', 'regex', 'mvu']);
+    assert.deepEqual(first.results.map(item => item.capability), ['regex', 'tavern_helper', 'mvu']);
     assert.equal(second.results.length, 0, 'one page runtime must not reactivate an already verified World');
     assert.deepEqual(calls, [
         'resolve',
-        'begin:tavern_helper',
-        'ensure:tavern_helper',
-        'settle:tavern_helper:READY:none',
         'begin:regex',
         'ensure:regex',
         'settle:regex:READY:none',
+        'begin:tavern_helper',
+        'ensure:tavern_helper',
+        'settle:tavern_helper:READY:none',
+        'begin:mvu',
+        'ensure:mvu',
+        'settle:mvu:READY:none',
+    ]);
+});
+
+test('prepares display capabilities locally before persistence and reuses that evidence afterward', async () => {
+    const { calls, controller } = fixture({ mvuFails: false });
+    const world = { id: 'world:one', characterId: 0, manifest: manifest() };
+
+    const prepared = await controller.prepare(world, {
+        capabilities: ['regex', 'tavern_helper'],
+        async authorize(_character, options) {
+            calls.push(`authorize:${options.force}:${options.refresh}`);
+        },
+    });
+
+    assert.deepEqual(prepared.results.map(item => item.capability), ['regex', 'tavern_helper']);
+    assert.deepEqual(calls, [
+        'resolve',
+        'authorize:false:false',
+        'ensure:regex',
+        'ensure:tavern_helper',
+    ]);
+
+    calls.length = 0;
+    await controller.ensure(world);
+    assert.deepEqual(calls, [
+        'resolve',
+        'begin:regex',
+        'settle:regex:READY:none',
+        'begin:tavern_helper',
+        'settle:tavern_helper:READY:none',
         'begin:mvu',
         'ensure:mvu',
         'settle:mvu:READY:none',

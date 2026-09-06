@@ -44,6 +44,6 @@ test('actual ST hooks preserve raw worldbook scan, carry Helper lineage, validat
     const fetch = server.indexOf('await fetch(endpointUrl, config)', reserve);
     const accept = server.indexOf('await ledgerDispatch.accept()', fetch);
     assert.ok(finalExclude < reserve && reserve < fetch && fetch < accept);
-    assert.match(chats, /request\.body\.force[\s\S]*?request\.user\.directories\);/);
+    assert.match(chats, /request\.body\.force[\s\S]*?request\.user\.directories/);
     assert.match(chats, /resolveStoryLedger\(directories\)\.writeChat/);
 });

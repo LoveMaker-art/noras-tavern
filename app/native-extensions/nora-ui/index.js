@@ -184,13 +184,13 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             dialog.classList.add('nora-popup-adapted');
             dialog.dataset.noraPopupType = String(popup.type || '');
         };
-        const confirmCharacterCapabilities = ({ characterName, reload = false } = {}) => {
+        const confirmCharacterCapabilities = ({ characterName, refresh = false } = {}) => {
             const current = readState();
             const characters = current.characters;
             const character = characters.find((item) => item?.name === characterName)
                 || characters[current.activeCharacterId]
                 || null;
-            return promptCharacterCapabilities(character, { reload, force: true });
+            return promptCharacterCapabilities(character, { refresh, force: true });
         };
         window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__ = confirmCharacterCapabilities;
         window.__NORA_CONFIRM_CHARACTER_REGEX__ = confirmCharacterCapabilities;
@@ -201,6 +201,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const enableCharacterCapabilities = (character, options) => capabilityController.enable(character, options);
     const promptCharacterCapabilities = (character, options) => capabilityController.prompt(character, options);
     const loadWorldCapabilities = (world, options) => capabilityController.load(world, options);
+    const prepareWorldCapabilities = (world, options) => capabilityController.prepare(world, options);
     const retryWorldCapability = (world, capability) => capabilityController.retry(world, capability);
     const openNewWorldSheet = async () => (await ensureWorldCreationController()).openNewWorldSheet();
     const handleCharacterImport = async event => (await ensureWorldCreationController()).handleCharacterImport(event);
@@ -423,6 +424,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             recordBootMilestone,
             performanceReporter,
             primeActiveWorldbook,
+            prepareWorldCapabilities,
             loadWorldCapabilities,
             closeDrawers,
             refresh,

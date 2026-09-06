@@ -339,7 +339,7 @@ test('subscribe projects MVU transaction events without polling the runtime', ()
 test('enableCharacterCapabilities delegates embedded regex and helper-script authorization', async () => {
     const runtime = createRuntime(() => {});
     const allowedRegex = [];
-    let reloaded = 0;
+    let refreshed = 0;
     const character = {
         name: 'Complex Card',
         avatar: 'complex.png',
@@ -361,16 +361,16 @@ test('enableCharacterCapabilities delegates embedded regex and helper-script aut
         isCharacterAllowed: () => false,
         allowCharacter: (value) => allowedRegex.push(value.avatar),
     };
-    runtime.reloadCurrentChat = async () => { reloaded += 1; };
+    runtime.refreshCurrentChatDisplay = async () => { refreshed += 1; };
     runtime.saveSettingsDebounced = () => {};
 
     const adapter = createStRuntimeAdapter(() => runtime);
-    await adapter.enableCharacterCapabilities(character, { reload: true });
+    await adapter.enableCharacterCapabilities(character, { refresh: true });
 
     assert.deepEqual(allowedRegex, ['complex.png']);
     assert.deepEqual(runtime.extensionSettings.tavern_helper.script.enabled.characters, ['Complex Card']);
     assert.equal(accountStorage.get('AlertRegex_complex.png'), 'true');
-    assert.equal(reloaded, 1);
+    assert.equal(refreshed, 1);
 });
 
 test('Nora runtime exposes capabilities without the obsolete preparation and creation bypasses', () => {

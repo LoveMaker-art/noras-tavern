@@ -223,6 +223,7 @@ body.nora-world-opening #nora-chat { opacity: 0; pointer-events: none; transitio
 #nora-chat .welcomePanel, #nora-chat .welcomeHeader, #nora-chat .welcomeRecent, #nora-chat #chat-scroll-button { display: none !important; }
 body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-chat #show_more_messages {
+    display: block;
     width: fit-content;
     min-height: 38px;
     margin: 0 auto 18px;

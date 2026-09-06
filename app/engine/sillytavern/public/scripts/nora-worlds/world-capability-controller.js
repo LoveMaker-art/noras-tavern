@@ -1,4 +1,4 @@
-const CAPABILITY_ORDER = Object.freeze(['prompt_template', 'tavern_helper', 'regex', 'mvu']);
+const CAPABILITY_ORDER = Object.freeze(['prompt_template', 'regex', 'tavern_helper', 'mvu']);
 
 function manifestFor(world) {
     return world?.manifest || world;
@@ -56,6 +56,32 @@ export function createWorldCapabilityController({
     const tasks = new Map();
     const ensureTasks = new Map();
     const runtimeVerified = new Set();
+    const prepared = new Map();
+
+    async function verifyRuntime(capability, character) {
+        const startedAt = clock();
+        try {
+            const evidence = await runtime.ensureCharacterCapability(character, capability);
+            return {
+                status: 'READY',
+                duration_ms: Math.max(0, clock() - startedAt),
+                error: null,
+                evidence,
+            };
+        } catch (error) {
+            logger.warn?.(`[Nora Capability] ${capability} readiness failed:`, error);
+            return {
+                status: 'DEGRADED',
+                duration_ms: Math.max(0, clock() - startedAt),
+                error: capabilityFailure(capability, error),
+                evidence: {
+                    engine: 'sillytavern',
+                    phase: 'readiness',
+                    api_visible: false,
+                },
+            };
+        }
+    }
 
     async function execute(world, capability, character) {
         const worldId = String(world?.id || manifestFor(world)?.world_id || '').trim();
@@ -63,29 +89,8 @@ export function createWorldCapabilityController({
         if (tasks.has(key)) return tasks.get(key);
         const task = (async () => {
             const begun = await client.beginCapabilityAttempt(worldId, capability);
-            const startedAt = clock();
-            let result;
-            try {
-                const evidence = await runtime.ensureCharacterCapability(character, capability);
-                result = {
-                    status: 'READY',
-                    duration_ms: Math.max(0, clock() - startedAt),
-                    error: null,
-                    evidence,
-                };
-            } catch (error) {
-                logger.warn?.(`[Nora Capability] ${capability} readiness failed:`, error);
-                result = {
-                    status: 'DEGRADED',
-                    duration_ms: Math.max(0, clock() - startedAt),
-                    error: capabilityFailure(capability, error),
-                    evidence: {
-                        engine: 'sillytavern',
-                        phase: 'readiness',
-                        api_visible: false,
-                    },
-                };
-            }
+            const result = prepared.get(key) || await verifyRuntime(capability, character);
+            prepared.delete(key);
             const settled = await client.settleCapabilityAttempt(
                 worldId,
                 capability,
@@ -107,7 +112,7 @@ export function createWorldCapabilityController({
         const character = await runtime.resolveCharacter(characterId);
         if (!character?.avatar) throw new Error('World capability loading requires one available Runtime Card.');
         if (typeof authorize === 'function') {
-            await authorize(character, { force: forceAuthorization, reload: true });
+            await authorize(character, { force: forceAuthorization, refresh: false });
         }
         const results = [];
         let latestWorld = manifest;
@@ -127,7 +132,28 @@ export function createWorldCapabilityController({
         return task;
     }
 
+    async function prepare(world, { capabilities = null, authorize = null, forceAuthorization = false } = {}) {
+        const manifest = manifestFor(world);
+        const selected = orderedCapabilities(manifest, capabilities, runtimeVerified);
+        if (!selected.length) return Object.freeze({ world: manifest, results: [] });
+        const character = await runtime.resolveCharacter(Number(world?.characterId));
+        if (!character?.avatar) throw new Error('World capability preparation requires one available Runtime Card.');
+        if (typeof authorize === 'function') {
+            await authorize(character, { force: forceAuthorization, refresh: false });
+        }
+        const results = [];
+        const worldId = String(world?.id || manifest?.world_id || '').trim();
+        for (const capability of selected) {
+            const key = runtimeCapabilityKey(worldId, capability);
+            const result = prepared.get(key) || await verifyRuntime(capability, character);
+            prepared.set(key, result);
+            results.push(Object.freeze({ capability, result, world: manifest }));
+        }
+        return Object.freeze({ world: manifest, results: Object.freeze(results) });
+    }
+
     return Object.freeze({
+        prepare,
         ensure,
         retry: (world, capability, options = {}) => run(world, {
             ...options,

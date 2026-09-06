@@ -12,9 +12,16 @@ test('aggregate snapshots replace transport only and retain the native synchrono
     assert.ok(start >= 0 && end > start);
     const source = script.slice(start, end);
     assert.match(source, /primeWorldInfoSnapshot/);
-    assert.match(source, /getChat\(\{ preloadedData: snapshot\.chat, strict: true \}\)/);
+    assert.match(source, /getChat\(\{ preloadedData: snapshot\.chat, strict: true, beforeRender \}\)/);
     assert.doesNotMatch(source, /scheduleNoraWorldSnapshotLifecycle|setTimeout/);
-    assert.match(script, /await getChatResult\(\{ snapshot: Boolean\(preloadedData\) \}\)/);
+    assert.match(script, /await getChatResult\(\{ snapshot: Boolean\(preloadedData\), beforeRender \}\)/);
+    const lifecycleStart = script.indexOf('async function getChatResult');
+    const lifecycleEnd = script.indexOf('\nfunction getFirstMessage', lifecycleStart);
+    const lifecycle = script.slice(lifecycleStart, lifecycleEnd);
+    const prepare = lifecycle.indexOf("snapshotStep('display-capabilities', beforeRender)");
+    const regex = lifecycle.indexOf("snapshotStep('event.chat-pre-render'");
+    const render = lifecycle.indexOf("snapshotStep('dom-render', printMessages)");
+    assert.ok(prepare >= 0 && regex > prepare && render > regex, 'display capabilities and Regex rules must finish before the only first render');
     assert.match(script, /snapshotStep\('background\.event\.chat-loaded', emitChatLoaded\)/);
     assert.doesNotMatch(source, /await snapshotStep\('background\.event\.chat-loaded'/);
 });

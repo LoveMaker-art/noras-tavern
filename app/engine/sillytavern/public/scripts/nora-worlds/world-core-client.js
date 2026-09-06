@@ -106,7 +106,7 @@ function hydrateEmbeddedWorldbook(snapshot) {
     return hydrated;
 }
 
-export async function executeStActivationSnapshot(snapshot, runtime, { measure = passthroughMeasure } = {}) {
+export async function executeStActivationSnapshot(snapshot, runtime, { measure = passthroughMeasure, beforeRender = null } = {}) {
     const { avatar, chatId } = validateActivationSnapshot(snapshot);
     const runtimeSnapshot = hydrateEmbeddedWorldbook(snapshot);
     let state = runtime.read();
@@ -120,7 +120,11 @@ export async function executeStActivationSnapshot(snapshot, runtime, { measure =
     if (typeof runtime.activateSnapshot !== 'function') {
         throw new Error('The compatibility runtime does not support aggregate World activation.');
     }
-    await measure('world.snapshot.runtime-transaction', () => runtime.activateSnapshot(characterId, runtimeSnapshot));
+    await measure('world.snapshot.runtime-transaction', () => runtime.activateSnapshot(characterId, runtimeSnapshot, {
+        beforeRender: typeof beforeRender === 'function'
+            ? () => beforeRender({ characterId, snapshot: runtimeSnapshot })
+            : null,
+    }));
     state = runtime.read();
     if (state.activeCharacter?.avatar !== avatar || normalizeChatId(state.chatId) !== chatId) {
         throw new Error('The compatibility runtime did not activate the requested World snapshot.');

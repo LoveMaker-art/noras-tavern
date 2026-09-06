@@ -16,7 +16,7 @@ function readyResult(results = [{ capability: 'regex', result: { status: 'READY'
 }
 
 function composedController() {
-    let reloads = 0;
+    let refreshes = 0;
     let result = readyResult();
     const context = {
         ...Object.fromEntries(['sendText', 'stopGeneration', 'regenerate', 'commitMessageEdit', 'deleteLastMessage',
@@ -25,29 +25,30 @@ function composedController() {
             .map(name => [name, () => {}])),
         characterId: 0,
         characters: [{ avatar: 'target.png' }],
-        reloadCurrentChat: async () => { reloads += 1; },
+        refreshCurrentChatDisplay: async () => { refreshes += 1; },
     };
     const worlds = {
         activate() {},
+        prepareCapabilities: async () => result,
         ensureCapabilities: async () => result,
         retryCapability: async () => result,
     };
     const runtime = createStRuntimeAdapter(() => context);
     const story = createStorySurface(runtime, worlds);
     return {
-        context, runtime, get reloads() { return reloads; }, setResult(value) { result = value; },
+        context, runtime, get refreshes() { return refreshes; }, setResult(value) { result = value; },
         controller: createCardCapabilityController({
             cards: story.cards, worldRuntime: story.worlds, confirmAction: async () => true, showToast() {},
         }),
     };
 }
 
-test('composed Story cards Interface preserves rerender after capability load and retry', async () => {
+test('background capability settlement does not repaint, while explicit retry refreshes presentation once', async () => {
     const app = composedController();
     await app.controller.load('world:one');
-    assert.equal(app.reloads, 1, 'READY must reach the native reload through the actual Story Interface');
+    assert.equal(app.refreshes, 0, 'late capability settlement must not repaint an already usable World');
     await app.controller.retry('world:one', 'regex');
-    assert.equal(app.reloads, 2);
+    assert.equal(app.refreshes, 1, 'an explicit retry may refresh presentation without reloading chat data');
 });
 
 test('composed capability rerender ignores no-op, failed and no-longer-active results', async () => {
@@ -59,23 +60,23 @@ test('composed capability rerender ignores no-op, failed and no-longer-active re
     app.setResult(readyResult());
     app.context.characters = [{ avatar: 'another-world.png' }];
     await app.controller.load('world:one');
-    assert.equal(app.reloads, 0);
+    assert.equal(app.refreshes, 0);
 });
 
 test('native rerender works without the Story projection as a control', async () => {
     const app = composedController();
     assert.equal(await app.runtime.rerenderCharacterChat('target.png'), true);
-    assert.equal(app.reloads, 1);
+    assert.equal(app.refreshes, 1);
 });
 
 test('capabilities finishing during generation do not reload the live chat', async () => {
     const app = composedController();
     app.context.isGenerating = () => true;
     await app.controller.load('world:one');
-    assert.equal(app.reloads, 0, 'late capability completion must not clear a streaming chat');
+    assert.equal(app.refreshes, 0, 'late capability completion must not redraw a streaming chat');
 });
 
-test('rerenders the active Runtime Card once after capabilities become ready', async () => {
+test('prepares display capabilities without repainting the chat', async () => {
     const rerenders = [];
     const cards = {
         characterCapabilities: () => ({}),
@@ -84,6 +85,10 @@ test('rerenders the active Runtime Card once after capabilities become ready', a
     };
     const worldRuntime = {
         mode: 'v2',
+        prepareCapabilities: async (_worldId, options) => {
+            assert.deepEqual(options.capabilities, ['prompt_template', 'regex', 'tavern_helper']);
+            return readyResult();
+        },
         ensureCapabilities: async () => readyResult(),
     };
     const controller = createCardCapabilityController({
@@ -93,9 +98,9 @@ test('rerenders the active Runtime Card once after capabilities become ready', a
         showToast() {},
     });
 
-    await controller.load('world:one');
+    await controller.prepare('world:one');
 
-    assert.deepEqual(rerenders, ['target.png']);
+    assert.deepEqual(rerenders, []);
 });
 
 test('does not rerender when the current page runtime already verified every capability', async () => {

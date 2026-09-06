@@ -29,11 +29,11 @@ assert.match(core, /beginCapabilityAttempt[\s\S]*settleCapabilityAttempt/);
 assert.match(endpoint, /capabilities\/:capability\/attempts[\s\S]*attempts\/:attemptId/);
 assert.match(client, /beginCapabilityAttempt[\s\S]*settleCapabilityAttempt/);
 
-assert.match(controller, /CAPABILITY_ORDER\s*=\s*Object\.freeze\(\['prompt_template', 'tavern_helper', 'regex', 'mvu'\]\)/);
+assert.match(controller, /CAPABILITY_ORDER\s*=\s*Object\.freeze\(\['prompt_template', 'regex', 'tavern_helper', 'mvu'\]\)/);
 assert.match(controller, /runtime\.ensureCharacterCapability\(character, capability\)/);
 assert.match(controller, /status:\s*'DEGRADED'[\s\S]*client\.settleCapabilityAttempt/);
 assert.match(controller, /const runtimeVerified = new Set\(\)/, 'page runtime readiness must not reuse persisted READY evidence');
-assert.match(controller, /return Object\.freeze\(\{\s*ensure,\s*retry:/, 'the controller must expose one ensure owner and an explicit retry path');
+assert.match(controller, /return Object\.freeze\(\{\s*prepare,\s*ensure,\s*retry:/, 'the controller must expose one pre-render preparation owner, one persistence owner and an explicit retry path');
 
 for (const signal of [
     "normalized === 'prompt_template'",
@@ -47,9 +47,10 @@ for (const signal of [
     assert.match(adapter, new RegExp(signal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `ST readiness adapter is missing: ${signal}`);
 }
 
-const baseActivation = worldController.indexOf('worldRuntime.activate(current.id)');
+const displayPreparation = worldController.indexOf('prepareWorldCapabilities(current.id)');
+const baseActivation = worldController.indexOf('worldRuntime.activate(current.id');
 const supportingSchedule = worldController.indexOf('scheduleSupportingContent(current, current.interactionId)');
-assert.ok(baseActivation >= 0 && supportingSchedule > baseActivation, 'base World activation must finish before v2 capability scheduling');
+assert.ok(baseActivation >= 0 && displayPreparation > baseActivation && supportingSchedule > displayPreparation, 'display capabilities must be prepared inside World activation before background capability settlement');
 assert.doesNotMatch(startupController, /loadWorldCapabilities|promptCharacterCapabilities/, 'startup must not duplicate World capability ownership');
 assert.match(panelController, /data-retry-capability[\s\S]*retryWorldCapability/);
 

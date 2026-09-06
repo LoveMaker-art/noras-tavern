@@ -301,7 +301,7 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         saveUiSettings();
     }
 
-    async function enableCharacterCapabilities(character, { reload = false } = {}) {
+    async function enableCharacterCapabilities(character, { refresh = false } = {}) {
         const current = runtime();
         const capabilities = characterCapabilities(character);
         markCharacterCapabilitiesPrompted(character, capabilities);
@@ -312,19 +312,19 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         }
         saveUiSettings();
         const activeId = Number(current.characterId);
-        if (reload && current.characters?.[activeId]?.avatar === character.avatar) {
-            await current.reloadCurrentChat?.();
+        if (refresh && current.characters?.[activeId]?.avatar === character.avatar) {
+            await current.refreshCurrentChatDisplay?.({ announceRendered: true });
         }
     }
 
     async function rerenderCharacterChat(avatar) {
         const current = runtime();
         const activeCharacter = current.characters?.[Number(current.characterId)];
-        if (!avatar || activeCharacter?.avatar !== avatar || typeof current.reloadCurrentChat !== 'function') return false;
-        // Capability completion can arrive after the user starts a generation.
-        // Reloading now would clear the live chat; generation owns rendering then.
+        if (!avatar || activeCharacter?.avatar !== avatar || typeof current.refreshCurrentChatDisplay !== 'function') return false;
+        // An explicit capability retry can finish after generation starts.
+        // Generation owns presentation updates until it settles.
         if (current.isGenerating?.()) return false;
-        await current.reloadCurrentChat();
+        await current.refreshCurrentChatDisplay({ announceRendered: true });
         return true;
     }
 
