@@ -2,6 +2,12 @@ import { tagHistory, scopeOf } from './scripts/nora-story-ledger/history.js';
 import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage } from './scripts/nora-story-ledger/client.js';
 import { createLedgerSaveRecovery } from './scripts/nora-story-ledger/save-recovery.js';
 import {
+    createChatIdentity,
+    createStorySessionIdentity,
+    noraIdentityKey,
+    sameNoraIdentity,
+} from './scripts/nora-chat/identity.js';
+import {
     showdown,
     moment,
     DOMPurify,
@@ -702,16 +708,20 @@ function getChatRenderWindowSize() {
 function currentNoraChatBinding() {
     const character = characters[this_chid];
     if (!character?.avatar) return null;
+    const identity = createChatIdentity({ avatar: character.avatar, chatId: character.chat });
+    if (!identity) return null;
     return {
-        avatar: character.avatar,
-        chatId: String(character.chat || '').replace(/\.jsonl$/i, ''),
+        avatar: identity.avatar,
+        chatId: identity.chatId,
+        identity,
         character,
     };
 }
 
 function matchesNoraChatWindow(state = noraChatWindowState) {
     const current = currentNoraChatBinding();
-    return Boolean(state && current && state.avatar === current.avatar && state.chatId === current.chatId);
+    const stateIdentity = state?.identity || createChatIdentity(state);
+    return Boolean(current && sameNoraIdentity(stateIdentity, current.identity));
 }
 
 async function requestNoraChatWindow({ full = false } = {}) {
@@ -794,12 +804,12 @@ export async function ensureNoraFullChatLoaded({ revealHistory = false } = {}) {
     if (!state.fullHistoryLoaded) {
         if (!state.fullPromise) {
             state.fullPromise = (async () => {
-                const bindingKey = `${state.avatar}\u0000${state.chatId}`;
+                const requestedIdentity = state.identity || createChatIdentity(state);
                 const renderedHistoryStart = Number(state.renderStart ?? state.start) || 0;
                 const data = await requestNoraChatWindow({ full: true });
                 if (!Array.isArray(data) || !data.length) throw new Error('Complete chat history could not be loaded');
                 const current = currentNoraChatBinding();
-                if (!current || `${current.avatar}\u0000${current.chatId}` !== bindingKey) return chat;
+                if (!current || !sameNoraIdentity(current.identity, requestedIdentity)) return chat;
                 const header = data.shift();
                 chat_metadata = header?.chat_metadata ?? {};
                 chat.splice(0, chat.length, ...data);
@@ -8008,6 +8018,7 @@ export async function getChat({ preloadedData = null, strict = false, beforeRend
                 noraChatWindowState = binding ? {
                     avatar: binding.avatar,
                     chatId: binding.chatId,
+                    identity: binding.identity,
                     start: Number(data.start) || 0,
                     total: Number(data.total) || data.messages.length,
                     serverTotal: Number(data.total) || data.messages.length,
@@ -9929,9 +9940,9 @@ export async function saveMetadata() {
 
 function createChatSaveTarget() {
     const scope = scopeOf(chat_metadata);
-    if (scope) return `nora:${scope.worldId}\u0000${scope.sessionId}`;
+    if (scope) return noraIdentityKey(createStorySessionIdentity(scope));
     const binding = currentNoraChatBinding();
-    return binding ? `${binding.avatar}\u0000${binding.chatId}` : null;
+    return binding ? noraIdentityKey(binding.identity) : null;
 }
 
 const recoverLedgerSaveFailure = createLedgerSaveRecovery({
