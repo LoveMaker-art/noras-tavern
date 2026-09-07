@@ -145,6 +145,20 @@ test('exposes the authoritative v2 import, operation, list and open-plan contrac
         async settleCapabilityAttempt() {
             return { ...world, capabilities: { status: 'READY' } };
         },
+        async addWorldSetting(worldId, setting, options) {
+            assert.equal(worldId, world.world_id);
+            assert.deepEqual(setting, { type: 'constant', title: '规则', content: '始终下雨。', keys: [] });
+            assert.deepEqual(options, { expectedRevision: 1, idempotencyKey: 'setting:one' });
+            return {
+                operation: { ...operation, type: 'ADD_WORLD_SETTING' },
+                world: { ...world, revision: 2 },
+                resource: { binding: { name: 'World One 自建设定' } },
+                entry_id: '0',
+                entry: { uid: 0, content: '始终下雨。' },
+                book: { entries: { 0: { uid: 0, content: '始终下雨。' } } },
+                reused: false,
+            };
+        },
     };
     const router = createNoraWorldsV2Router({
         resolveCore: () => core,
@@ -202,6 +216,19 @@ test('exposes the authoritative v2 import, operation, list and open-plan contrac
         params: { worldId: world.world_id },
     })).payload;
     assert.equal(opened.plan.schema, 'nora-world-activation/v1');
+
+    const added = await invoke(handler(router, '/worlds/:worldId/settings', 'post'), {
+        ...baseRequest,
+        params: { worldId: world.world_id },
+        body: {
+            setting: { type: 'constant', title: '规则', content: '始终下雨。', keys: [] },
+            expected_revision: 1,
+            idempotency_key: 'setting:one',
+        },
+    });
+    assert.equal(added.statusCode, 201);
+    assert.equal(added.payload.entry_id, '0');
+    assert.equal(added.headers['cache-control'], 'no-store');
 
     const snapshot = await invoke(handler(router, '/worlds/:worldId/snapshot', 'get'), {
         ...baseRequest,

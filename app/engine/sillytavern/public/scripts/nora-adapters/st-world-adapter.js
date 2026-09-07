@@ -105,6 +105,23 @@ export function createStWorldAdapter(getContext) {
         return read();
     }
 
+    async function applyWorldbook(name, book) {
+        const current = requireRuntime(getContext);
+        const normalized = String(name || '').trim();
+        if (!normalized || !book || typeof book !== 'object') throw new Error('World settings projection is invalid.');
+        if (typeof current.primeWorldInfoSnapshot !== 'function' || typeof current.updateWorldInfoList !== 'function') {
+            throw new Error('故事运行核心缺少世界书投影能力。');
+        }
+        const characterId = normalizeCharacterId(current.characterId);
+        const character = characterId === null ? null : current.characters[characterId];
+        if (!character) throw new Error('当前世界的运行角色卡不可用。');
+        const data = character.data && typeof character.data === 'object' ? character.data : character;
+        data.extensions = { ...(data.extensions || {}), world: normalized };
+        current.primeWorldInfoSnapshot(normalized, book);
+        await current.updateWorldInfoList();
+        return read();
+    }
+
     async function activate(characterId, chatId) {
         interactionBridge.assertSessionIdle();
         await requireRuntime(getContext).selectCharacterById(characterId, {
@@ -162,5 +179,5 @@ export function createStWorldAdapter(getContext) {
         return result;
     }
 
-    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
+    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, applyWorldbook, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
 }

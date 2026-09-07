@@ -4,6 +4,7 @@ import { editStoryCharacter, normalizeStoryContext } from '../../public/scripts/
 import { createActivationPlan } from './activation-plan.js';
 import {
     beginWorldCapabilityAttempt,
+    cloneJson,
     commandDigest,
     createWorldManifest,
     normalizeCreateCommand,
@@ -33,6 +34,24 @@ function failedOperationError(operation) {
             details: { operationId: operation.operation_id, worldId: operation.world_id },
         },
     );
+}
+
+function normalizeWorldSetting(value, expectedRevision) {
+    const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
+    if (!value || typeof value !== 'object' || Array.isArray(value)) invalid('World setting must be an object.');
+    const type = String(value.type || '').trim();
+    const title = String(value.title || '').trim();
+    const content = String(value.content || '').trim();
+    const keys = type === 'trigger'
+        ? [...new Set((Array.isArray(value.keys) ? value.keys : []).map(item => String(item || '').trim()).filter(Boolean))]
+        : [];
+    if (!['constant', 'trigger'].includes(type)) invalid('World setting type must be constant or trigger.');
+    if (title.length > 500 || !content || content.length > 100000) invalid('World setting title or content is invalid.');
+    if (type === 'trigger' && (!keys.length || keys.length > 100 || keys.some(key => key.length > 500))) {
+        invalid('Triggered World settings require valid trigger keys.');
+    }
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 1) invalid('A valid expected World revision is required.');
+    return { expected_revision: expectedRevision, setting: { type, title, content, keys } };
 }
 
 export class NoraWorldCore {
@@ -173,7 +192,7 @@ export class NoraWorldCore {
             if (!mutation) throw new NoraWorldCoreError('NORA_OPERATION_NOT_FOUND', 'World operation was not found.');
             if (mutation.status === 'FAILED') mutation = await this.#mutations.resume(mutation.operation_id);
             if (mutation.status === 'COMPLETED') {
-                return { world: await this.#store.get(mutation.world_id), operation: mutation, reused: true };
+                return { ...await this.#mutationResult(mutation), world: await this.#store.get(mutation.world_id), operation: mutation, reused: true };
             }
             return this.#scheduleMutation(mutation, { reused: true });
         }
@@ -404,15 +423,15 @@ export class NoraWorldCore {
         return task;
     }
 
-    async #mutateWorld(type, worldId, { idempotencyKey } = {}) {
+    async #mutateWorld(type, worldId, { idempotencyKey, command = null } = {}) {
         await this.#initialize();
         const existingWorld = await this.#store.get(worldId);
         if (!existingWorld) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.', { details: { worldId } });
-        const receipt = await this.#mutations.begin({ type, worldId, idempotencyKey });
+        const receipt = await this.#mutations.begin({ type, worldId, idempotencyKey, command });
         let operation = receipt.operation;
         if (operation.status === 'FAILED') operation = await this.#mutations.resume(operation.operation_id);
         if (operation.status === 'COMPLETED') {
-            return { world: await this.#store.get(worldId), operation, reused: true };
+            return { ...await this.#mutationResult(operation), world: await this.#store.get(worldId), operation, reused: true };
         }
         return this.#scheduleMutation(operation, { reused: receipt.reused });
     }
@@ -425,14 +444,85 @@ export class NoraWorldCore {
         return this.#mutateWorld('REPAIR_WORLD', worldId, options);
     }
 
+    async addWorldSetting(worldId, setting, { expectedRevision, idempotencyKey } = {}) {
+        const command = normalizeWorldSetting(setting, expectedRevision);
+        return this.#mutateWorld('ADD_WORLD_SETTING', worldId, { idempotencyKey, command });
+    }
+
+    async #mutationResult(operation) {
+        const result = cloneJson(operation.result || {});
+        if (operation.type !== 'ADD_WORLD_SETTING') return result;
+        if (typeof this.#materializer.readWorldSettingBook !== 'function') {
+            throw new NoraWorldCoreError('NORA_WORLD_EDIT_UNSUPPORTED', 'The compatibility adapter cannot read World settings.');
+        }
+        const book = await this.#materializer.readWorldSettingBook(operation.world_id, result.resource);
+        return { ...result, entry: cloneJson(book?.entries?.[result.entry_id]), book: cloneJson(book) };
+    }
+
     async #runMutation(operation, { reused }) {
         // Operation IDs deduplicate retries, but different commands can still
         // target one World. Their inspect/delete/commit lifecycle must not overlap.
         return this.#locks.run(`mutation-world:${operation.world_id}`, () => {
             if (operation.type === 'DELETE_WORLD') return this.#runDelete(operation, { reused });
             if (operation.type === 'REPAIR_WORLD') return this.#runRepair(operation, { reused });
+            if (operation.type === 'ADD_WORLD_SETTING') return this.#runAddWorldSetting(operation, { reused });
             throw new NoraWorldCoreError('NORA_OPERATION_TYPE', 'Unsupported World mutation operation.');
         });
+    }
+
+    async #runAddWorldSetting(initialOperation, { reused }) {
+        let operation = initialOperation;
+        try {
+            let world = await this.#store.get(operation.world_id);
+            if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
+            if (operation.stage === 'RECEIVED') {
+                if (world.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
+                if (world.revision !== operation.command.expected_revision) {
+                    throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before adding a setting.');
+                }
+                if (typeof this.#materializer.addWorldSetting !== 'function') {
+                    throw new NoraWorldCoreError('NORA_WORLD_EDIT_UNSUPPORTED', 'The compatibility adapter cannot add World settings.');
+                }
+                const materialization = await this.#materializer.addWorldSetting(world, operation.command.setting, {
+                    operationId: operation.operation_id,
+                });
+                operation = await this.#mutations.advance(operation.operation_id, 'RESOURCE_WRITTEN', {
+                    result: {
+                        resource: cloneJson(materialization.resource),
+                        entry_id: String(materialization.entry_id),
+                        operation_id: operation.operation_id,
+                    },
+                });
+            }
+            if (operation.stage === 'RESOURCE_WRITTEN') {
+                const resource = operation.result?.resource;
+                world = await this.#store.update(operation.world_id, current => {
+                    if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
+                    const existing = current.knowledge.find(item => item.source_key === 'nora:user-settings');
+                    if (existing) {
+                        if (existing.resource_id !== resource?.resource_id) {
+                            throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'World settings resource binding changed unexpectedly.');
+                        }
+                        return current;
+                    }
+                    if (current.revision !== operation.command.expected_revision) {
+                        throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before adding a setting.');
+                    }
+                    return { ...current, knowledge: [resource, ...current.knowledge], updated_at: this.#now() };
+                });
+                operation = await this.#mutations.advance(operation.operation_id, 'WORLD_COMMITTED');
+            }
+            if (operation.stage === 'WORLD_COMMITTED') {
+                world = await this.#store.get(operation.world_id);
+                operation = await this.#mutations.advance(operation.operation_id, 'COMPLETED');
+            }
+            return { ...await this.#mutationResult(operation), world, operation, reused };
+        } catch (error) {
+            const coreError = asWorldCoreError(error, 'NORA_WORLD_SETTING_FAILED', 'World setting could not be added.', { retryable: true });
+            await this.#mutations.fail(operation.operation_id, coreError).catch(() => {});
+            coreError.details = { ...coreError.details, operationId: operation.operation_id, worldId: operation.world_id };
+            throw coreError;
+        }
     }
 
     async #runDelete(initialOperation, { reused }) {

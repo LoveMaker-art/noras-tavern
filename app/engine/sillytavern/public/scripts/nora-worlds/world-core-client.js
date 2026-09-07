@@ -163,6 +163,7 @@ export function createWorldCoreClient(getHeaders, {
 } = {}) {
     const snapshotCache = new Map();
     const snapshotRequests = new Map();
+    const snapshotEpochs = new Map();
     function readPending() {
         try {
             return JSON.parse(pendingStore?.getItem(PENDING_CREATION_KEY) || 'null');
@@ -219,7 +220,7 @@ export function createWorldCoreClient(getHeaders, {
         })), deadline);
     }
 
-    async function downloadSnapshot(normalizedWorldId) {
+    async function downloadSnapshot(normalizedWorldId, epoch) {
         const cached = snapshotCache.get(normalizedWorldId) || null;
         const headers = requestHeaders(getHeaders);
         if (cached?.etag) headers['If-None-Match'] = cached.etag;
@@ -241,7 +242,9 @@ export function createWorldCoreClient(getHeaders, {
             if (snapshot.plan.world_id !== normalizedWorldId) throw new Error('World snapshot response is inconsistent.');
         });
         const etag = response.headers.get('etag') || (snapshot.revision ? `"${snapshot.revision}"` : '');
-        snapshotCache.set(normalizedWorldId, { etag, snapshot });
+        if ((snapshotEpochs.get(normalizedWorldId) || 0) === epoch) {
+            snapshotCache.set(normalizedWorldId, { etag, snapshot });
+        }
         return snapshot;
     }
 
@@ -251,7 +254,8 @@ export function createWorldCoreClient(getHeaders, {
         const activeRequest = snapshotRequests.get(normalizedWorldId);
         if (activeRequest) return activeRequest;
 
-        const request = downloadSnapshot(normalizedWorldId).finally(() => {
+        const epoch = snapshotEpochs.get(normalizedWorldId) || 0;
+        const request = downloadSnapshot(normalizedWorldId, epoch).finally(() => {
             if (snapshotRequests.get(normalizedWorldId) === request) snapshotRequests.delete(normalizedWorldId);
         });
         snapshotRequests.set(normalizedWorldId, request);
@@ -422,12 +426,28 @@ export function createWorldCoreClient(getHeaders, {
         });
     }
 
+    async function addWorldSetting(worldId, setting, { expectedRevision, idempotencyKey } = {}) {
+        const normalizedWorldId = String(worldId || '').trim();
+        const normalizedKey = String(idempotencyKey || '').trim();
+        if (!normalizedWorldId || !normalizedKey) throw new Error('World identity and mutation idempotency key are required.');
+        const result = await request(`/worlds/${encodeURIComponent(normalizedWorldId)}/settings`, {
+            method: 'POST',
+            headers: requestHeaders(getHeaders),
+            body: JSON.stringify({ setting, expected_revision: expectedRevision, idempotency_key: normalizedKey }),
+        });
+        snapshotEpochs.set(normalizedWorldId, (snapshotEpochs.get(normalizedWorldId) || 0) + 1);
+        snapshotCache.delete(normalizedWorldId);
+        snapshotRequests.delete(normalizedWorldId);
+        return result;
+    }
+
     return Object.freeze({
         status: () => request('/status', { headers: requestHeaders(getHeaders) }),
         list: async () => (await request('/worlds', { headers: requestHeaders(getHeaders) })).worlds || [],
         importCard,
         createBlank,
         createFromLibrary,
+        addWorldSetting,
         updateWorld: async (worldId, patch, expectedRevision) => (await request(`/worlds/${encodeURIComponent(worldId)}`, {
             method: 'PATCH', headers: requestHeaders(getHeaders),
             body: JSON.stringify({ patch, expected_revision: expectedRevision }),

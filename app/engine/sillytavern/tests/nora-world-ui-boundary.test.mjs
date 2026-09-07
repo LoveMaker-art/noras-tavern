@@ -163,11 +163,52 @@ test('World Runtime activation owns the complete snapshot transaction', async ()
     assert.deepEqual(calls, ['snapshot', 'render']);
 });
 
+test('adding lore updates the authoritative manifest and current ST runtime book', async () => {
+    let current = manifest();
+    const calls = [];
+    const runtime = createWorldCoreRuntime({
+        read: () => ({
+            characters: [{ avatar: 'one.png', data: { extensions: {} } }],
+            activeCharacter: { avatar: 'one.png' },
+            metadata: { nora_world: { id: 'world:one' }, nora_session: { id: 'session:one' } },
+            chatId: 'chat-one',
+        }),
+        async applyWorldbook(name, book) { calls.push({ name, book }); },
+    }, {
+        client: {
+            list: async () => [current],
+            prepareSnapshot: async () => { throw new Error('not used'); },
+            async addWorldSetting(worldId, setting, options) {
+                assert.equal(worldId, 'world:one');
+                assert.equal(setting.content, '始终下雨。');
+                assert.equal(options.expectedRevision, 1);
+                current = { ...current, revision: 2 };
+                return {
+                    world: current,
+                    resource: { binding: { name: 'One 自建设定' } },
+                    entry_id: '0',
+                    entry: { uid: 0, content: setting.content },
+                    book: { entries: { 0: { uid: 0, content: setting.content } } },
+                };
+            },
+        },
+    });
+    await runtime.refresh();
+
+    const result = await runtime.addSetting({ type: 'constant', title: '', content: '始终下雨。', keys: [] });
+
+    assert.equal(result.world.revision, 2);
+    assert.equal(result.runtimeApplied, true);
+    assert.deepEqual(calls, [{ name: 'One 自建设定', book: result.book }]);
+});
+
 test('Nora World UI carries only worldId and has one open/capability owner', () => {
     const uiRoot = path.resolve(import.meta.dirname, '../../../native-extensions/nora-ui');
     const worldController = fs.readFileSync(path.join(uiRoot, 'world-controller.js'), 'utf8');
     const startupController = fs.readFileSync(path.join(uiRoot, 'startup-controller.js'), 'utf8');
     const creationController = fs.readFileSync(path.join(uiRoot, 'world-creation-controller.js'), 'utf8');
+    const worldbookController = fs.readFileSync(path.join(uiRoot, 'worldbook-controller.js'), 'utf8');
+    const style = fs.readFileSync(path.join(uiRoot, 'style.css'), 'utf8');
 
     assert.doesNotMatch(worldController, /data-character=|data-chat=/);
     assert.match(worldController, /worldRuntime\.activate\(current\.id\)/);
@@ -179,4 +220,7 @@ test('Nora World UI carries only worldId and has one open/capability owner', () 
     assert.match(creationController, /const completed = await runWorldOperation/);
     assert.match(creationController, /if \(completed && importedWorldId\)[\s\S]*openWorldById\(importedWorldId/);
     assert.doesNotMatch(creationController, /capabilities\.load\(world\)/);
+    assert.match(worldbookController, /data-add-world-setting/);
+    assert.match(worldbookController, /worldRuntime\.addSetting/);
+    assert.match(style, /#nora-panel \.nora-add-setting \{[^}]*width: 100%/);
 });

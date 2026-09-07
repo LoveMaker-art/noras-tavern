@@ -14,6 +14,12 @@ function defaultResolveCore(request) {
 
 function publicOperation(operation) {
     if (!operation) return null;
+    const result = operation.type === 'ADD_WORLD_SETTING'
+        ? {
+            resource_id: operation.result?.resource?.resource_id || null,
+            entry_id: operation.result?.entry_id || null,
+        }
+        : operation.result ?? null;
     return {
         schema: operation.schema,
         operation_id: operation.operation_id,
@@ -22,7 +28,7 @@ function publicOperation(operation) {
         stage: operation.stage,
         status: operation.status,
         attempts: operation.attempts,
-        result: operation.result ?? null,
+        result,
         error: operation.error,
         created_at: operation.created_at,
         updated_at: operation.updated_at,
@@ -32,10 +38,12 @@ function publicOperation(operation) {
 function errorStatus(error) {
     if (error?.code === 'NORA_OPERATION_NOT_FOUND' || error?.code === 'NORA_WORLD_NOT_FOUND') return 404;
     if (error?.code === 'NORA_OPERATION_CONFLICT' || error?.code === 'NORA_WORLD_REVISION_CONFLICT'
-        || error?.code === 'NORA_CAPABILITY_ATTEMPT_CONFLICT' || error?.code === 'NORA_WORLD_NEEDS_REPAIR') return 409;
+        || error?.code === 'NORA_CAPABILITY_ATTEMPT_CONFLICT' || error?.code === 'NORA_WORLD_NEEDS_REPAIR'
+        || error?.code === 'NORA_ST_RESOURCE_CONFLICT') return 409;
     if (error?.code === 'NORA_CARD_STAGING_INVALID' || error?.code === 'NORA_CARD_INVALID'
         || error?.code === 'NORA_CARD_FORMAT_UNSUPPORTED' || error?.code === 'NORA_CARD_UNSUPPORTED_ASSETS'
         || error?.code === 'NORA_WORLD_INVALID' || error?.code === 'NORA_WORLD_NOT_READY'
+        || error?.code === 'NORA_WORLD_EDIT_UNSUPPORTED'
         || error?.code === 'NORA_CAPABILITY_NOT_DECLARED') return 400;
     return 500;
 }
@@ -219,6 +227,29 @@ export function createNoraWorldsV2Router({
                 { expectedRevision: request.body?.expected_revision });
             response.setHeader('Cache-Control', 'no-store');
             return response.json({ world });
+        } catch (error) { return sendError(response, error); }
+    });
+
+    router.post('/worlds/:worldId/settings', async (request, response) => {
+        try {
+            const result = await resolveCore(request).addWorldSetting(
+                request.params.worldId,
+                request.body?.setting,
+                {
+                    expectedRevision: request.body?.expected_revision,
+                    idempotencyKey: request.body?.idempotency_key,
+                },
+            );
+            response.setHeader('Cache-Control', 'no-store');
+            return response.status(result.reused ? 200 : 201).json({
+                operation: publicOperation(result.operation),
+                world: result.world,
+                resource: result.resource,
+                entry_id: result.entry_id,
+                entry: result.entry,
+                book: result.book,
+                reused: result.reused,
+            });
         } catch (error) { return sendError(response, error); }
     });
 

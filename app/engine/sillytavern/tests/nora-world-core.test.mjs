@@ -30,14 +30,40 @@ function command(overrides = {}) {
 
 function materializer({ failOnce = false, deleteFailOnce = false, delay = null, ownership = 'owned', inspectResults = [] } = {}) {
     let calls = 0;
+    let settingCalls = 0;
     const deletions = [];
     let inspections = 0;
+    const settingBooks = new Map();
     return {
         get calls() {
             return calls;
         },
         get deletions() {
             return deletions;
+        },
+        get settingCalls() {
+            return settingCalls;
+        },
+        async addWorldSetting(world, setting, { operationId }) {
+            settingCalls += 1;
+            const result = {
+                resource: {
+                    resource_id: `resource:${world.world_id}:settings`,
+                    source_key: 'nora:user-settings',
+                    engine: 'sillytavern',
+                    binding: { name: `${world.name} 自建设定` },
+                    ownership: 'owned',
+                },
+                entry_id: '0',
+                entry: { uid: 0, comment: setting.title, content: setting.content, constant: setting.type === 'constant', key: setting.keys },
+                book: { entries: { 0: { uid: 0, comment: setting.title, content: setting.content, key: setting.keys } } },
+                operation_id: operationId,
+            };
+            settingBooks.set(world.world_id, result.book);
+            return result;
+        },
+        async readWorldSettingBook(worldId) {
+            return structuredClone(settingBooks.get(worldId));
         },
         async inspect() {
             const result = inspectResults[Math.min(inspections, Math.max(0, inspectResults.length - 1))]
@@ -83,6 +109,7 @@ test('presents one small World Core interface and hides persistence mechanics', 
     const core = createNoraWorldCore({ root, materializer: adapter });
 
     assert.deepEqual(Object.keys(core).sort(), [
+        'addWorldSetting',
         'beginCapabilityAttempt',
         'createWorld',
         'deleteWorld',
@@ -114,6 +141,40 @@ test('presents one small World Core interface and hides persistence mechanics', 
     const inspected = await core.inspectWorld(result.world.world_id);
     assert.deepEqual(inspected.resource_references.runtime_card.world_ids, [result.world.world_id]);
     assert.deepEqual(inspected.resource_references.knowledge[0].world_ids, [result.world.world_id]);
+});
+
+test('adds one owned setting book ahead of imported knowledge and deduplicates retries', async (t) => {
+    const root = await temporaryRoot(t);
+    const adapter = materializer();
+    const core = createNoraWorldCore({ root, materializer: adapter });
+    const created = await core.createWorld(command(), { idempotencyKey: 'import:setting-target' });
+    const input = { type: 'trigger', title: '雨夜', content: '雨夜里的街道更危险。', keys: ['雨', '街道'] };
+
+    const added = await core.addWorldSetting(created.world.world_id, input, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:one',
+    });
+
+    assert.equal(added.reused, false);
+    assert.equal(added.world.knowledge[0].source_key, 'nora:user-settings');
+    assert.equal(added.world.knowledge[0].ownership, 'owned');
+    assert.equal(added.world.knowledge[1].source_key, 'embedded-worldbook:0');
+    assert.equal(added.entry.comment, '雨夜');
+    assert.deepEqual(added.entry.key, ['雨', '街道']);
+    assert.equal(adapter.settingCalls, 1);
+
+    const repeated = await core.addWorldSetting(created.world.world_id, input, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:one',
+    });
+    assert.equal(repeated.reused, true);
+    assert.equal(repeated.entry_id, added.entry_id);
+    assert.equal(adapter.settingCalls, 1);
+
+    await assert.rejects(core.addWorldSetting(created.world.world_id, input, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:stale',
+    }), { code: 'NORA_WORLD_REVISION_CONFLICT' });
 });
 
 test('deletes one World through a durable idempotent backend command and leaves a tombstone', async (t) => {

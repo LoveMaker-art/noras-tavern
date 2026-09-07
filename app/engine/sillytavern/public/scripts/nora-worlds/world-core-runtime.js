@@ -71,6 +71,7 @@ export function createWorldCoreRuntime(runtime, {
         const active = String(state.metadata?.nora_world?.id || '') === manifest.world_id
             && String(state.metadata?.nora_session?.id || '') === String(session?.session_id || '');
         const capabilityStatus = manifest.capabilities?.status;
+        const worldbookName = String(manifest.knowledge?.find(item => item.source_key === 'nora:user-settings')?.binding?.name || '');
         const openingState = session?.opening_state === 'empty' ? 'empty' : 'message';
         return Object.freeze({
             id: manifest.world_id,
@@ -88,6 +89,7 @@ export function createWorldCoreRuntime(runtime, {
             active,
             openingState,
             capabilities: manifest.capabilities,
+            worldbookName,
             meta: translate(lifecycleDeleting
                 ? '世界 · 删除中'
                 : migrationRepair
@@ -327,6 +329,29 @@ export function createWorldCoreRuntime(runtime, {
         return { world: model(world), saved: true, runtimeApplied };
     }
 
+    async function addSetting(setting, { expectedRevision, idempotencyKey = null } = {}) {
+        const worldId = String(runtime.read().metadata?.nora_world?.id || '').trim();
+        const current = manifestById(worldId);
+        const result = await client.addWorldSetting(worldId, setting, {
+            expectedRevision: expectedRevision ?? current.revision,
+            idempotencyKey: idempotencyKey || mutationKey('add-setting', worldId),
+        });
+        manifests = manifests.map(item => item.world_id === worldId ? result.world : item);
+        let runtimeApplied = false;
+        if (String(runtime.read().metadata?.nora_world?.id || '').trim() === worldId) {
+            try {
+                await runtime.applyWorldbook(result.resource?.binding?.name, result.book);
+                runtimeApplied = true;
+            } catch (error) {
+                emit();
+                throw Object.assign(new Error('World setting was saved, but its live Worldbook could not be applied. Reopen the World.'),
+                    { code: 'NORA_WORLD_PROJECTION_FAILED', saved: true, result, cause: error });
+            }
+        }
+        emit();
+        return { ...result, world: model(result.world), saved: true, runtimeApplied };
+    }
+
     return Object.freeze({
         list,
         status,
@@ -346,6 +371,7 @@ export function createWorldCoreRuntime(runtime, {
         importCard,
         createBlank,
         createFromLibrary,
+        addSetting,
         updateActive,
         remove,
     });

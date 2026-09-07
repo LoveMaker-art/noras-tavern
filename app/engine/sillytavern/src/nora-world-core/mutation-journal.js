@@ -7,6 +7,7 @@ import { NoraWorldCoreError, serializeWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 
 const DEFINITIONS = Object.freeze({
+    ADD_WORLD_SETTING: Object.freeze(['RECEIVED', 'RESOURCE_WRITTEN', 'WORLD_COMMITTED', 'COMPLETED']),
     DELETE_WORLD: Object.freeze(['RECEIVED', 'WORLD_MARKED_DELETING', 'RESOURCES_RELEASED', 'COMPLETED']),
     REPAIR_WORLD: Object.freeze(['RECEIVED', 'INSPECTED', 'COMPLETED']),
 });
@@ -18,8 +19,10 @@ function operationIdentity(type, idempotencyKey) {
     return { idempotencyHash, operationId: `operation:${idempotencyHash.slice(0, 32)}` };
 }
 
-function commandDigest(type, worldId) {
-    return sha256(stableStringify({ type, world_id: worldId }));
+function commandDigest(type, worldId, command = null) {
+    const value = { type, world_id: worldId };
+    if (type === 'ADD_WORLD_SETTING') value.command = command;
+    return sha256(stableStringify(value));
 }
 
 function validateOperation(value) {
@@ -32,7 +35,10 @@ function validateOperation(value) {
     if (!/^[a-f0-9]{64}$/.test(value.idempotency_hash || '')) throw new Error('Invalid mutation idempotency digest.');
     if (value.operation_id !== `operation:${value.idempotency_hash.slice(0, 32)}`) throw new Error('Mutation identity does not match its idempotency digest.');
     if (!ID_PATTERN.test(value.world_id || '')) throw new Error('Invalid mutation World identity.');
-    if (value.command_digest !== commandDigest(value.type, value.world_id)) throw new Error('Mutation command digest does not match its command.');
+    if (value.type === 'ADD_WORLD_SETTING' && (!value.command || typeof value.command !== 'object' || Array.isArray(value.command))) {
+        throw new Error('Add-setting mutation must preserve its command.');
+    }
+    if (value.command_digest !== commandDigest(value.type, value.world_id, value.command ?? null)) throw new Error('Mutation command digest does not match its command.');
     if (!Number.isInteger(value.attempts) || value.attempts < 1) throw new Error('Invalid mutation attempts.');
     const completed = value.stage === 'COMPLETED';
     if ((value.status === 'COMPLETED') !== completed) throw new Error('Mutation completion status contradicts its stage.');
@@ -106,7 +112,7 @@ export class MutationJournal {
         return cloneJson(this.#operations.get(String(operationId)) || null);
     }
 
-    async begin({ type, worldId, idempotencyKey }) {
+    async begin({ type, worldId, idempotencyKey, command = null }) {
         await this.load();
         if (!DEFINITIONS[type]) throw new NoraWorldCoreError('NORA_OPERATION_TYPE', 'Unsupported World mutation operation.');
         const normalizedWorldId = String(worldId || '').trim();
@@ -115,11 +121,13 @@ export class MutationJournal {
             throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'World mutation identity or idempotency key is invalid.');
         }
         const { idempotencyHash, operationId } = operationIdentity(type, normalizedKey);
+        const normalizedCommand = type === 'ADD_WORLD_SETTING' ? cloneJson(command) : null;
+        const digest = commandDigest(type, normalizedWorldId, normalizedCommand);
         return this.#locks.run(`mutation-idempotency:${idempotencyHash}`, async () => {
             const existingId = this.#byIdempotency.get(idempotencyHash);
             if (existingId) {
                 const existing = this.#operations.get(existingId);
-                if (existing.type !== type || existing.world_id !== normalizedWorldId) {
+                if (existing.type !== type || existing.world_id !== normalizedWorldId || existing.command_digest !== digest) {
                     throw new NoraWorldCoreError(
                         'NORA_OPERATION_CONFLICT',
                         'The idempotency key was already used for another World mutation.',
@@ -134,7 +142,8 @@ export class MutationJournal {
                 operation_id: operationId,
                 type,
                 idempotency_hash: idempotencyHash,
-                command_digest: commandDigest(type, normalizedWorldId),
+                command_digest: digest,
+                ...(normalizedCommand ? { command: normalizedCommand } : {}),
                 world_id: normalizedWorldId,
                 stage: 'RECEIVED',
                 status: 'RUNNING',

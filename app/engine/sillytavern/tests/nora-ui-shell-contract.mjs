@@ -396,7 +396,7 @@ for (const signal of ['class="nora-form" autocomplete="off"', 'name="name"', 'au
 }
 
 const renderPanel = getNamedFunction(panelController, 'render');
-for (const signal of ['常驻角色', '世界书', 'worldbookSummary(character, worldbookEditing)', '角色卡库', 'class="pSection', 'pHeadFold', 'pFoldBody', 'librarySupport', 'data-edit-section="cast"', 'data-cast-edit', 'openCharacterEditor', 'data-edit-section="worldbook"', 'data-worldbook-kind', 'data-worldbook-edit-kind', 'openWorldbookEntryEditor', 'castEditing', 'worldbookEditing', 'castFolded', 'worldSettingsFolded', 'emptyEditRow', '文本模型', '切换 / 管理']) {
+for (const signal of ['常驻角色', '世界书', 'worldbookSummary(character, worldbookEditing)', '角色卡库', 'class="pSection', 'pHeadFold', 'pFoldBody', 'librarySupport', 'data-edit-section="cast"', 'data-cast-edit', 'openCharacterEditor', 'data-edit-section="worldbook"', 'data-worldbook-kind', 'data-worldbook-edit-kind', 'worldbookController.openEntryEditor', 'castEditing', 'worldbookEditing', 'castFolded', 'worldSettingsFolded', 'emptyEditRow', '文本模型', '切换 / 管理']) {
     if (!renderPanel.includes(signal)) throw new Error(`The Nora panel must expose World Settings using Python Tavern semantics: ${signal}`);
 }
 for (const removedSignal of ['世界书库', 'data-edit-section="settings"', 'worldSettingsEditing']) {
@@ -437,8 +437,11 @@ if (hasCharacterProfile.includes("characterField(character, 'description')")) {
 }
 
 const worldbookSummary = getNamedFunction(worldbookController, 'summary');
-for (const signal of ['data-worldbook-kind="scenario"', 'data-worldbook-edit-kind="scenario"', "panelItems(alwaysOn, 'always', editing)", "panelItems(triggered, 'triggered', editing)", 'is-always', 'is-triggered', 'class="loreTitle"']) {
+for (const signal of ['data-worldbook-kind="scenario"', 'data-worldbook-edit-kind="scenario"', "panelItems(alwaysOn, 'always', canEditEntries)", "panelItems(triggered, 'triggered', canEditEntries)", 'is-always', 'is-triggered', 'class="loreTitle"', 'data-add-world-setting']) {
     if (!worldbookSummary.includes(signal)) throw new Error(`The Worldbook panel must render compact drill-down summaries: ${signal}`);
+}
+for (const signal of ['editing && runtimeName(character) === editableWorldbookName()', '添加第一条设定']) {
+    if (!worldbookSummary.includes(signal)) throw new Error(`Only Nora-owned Worldbook entries may be edited while add-setting remains available: ${signal}`);
 }
 if (worldbookSummary.includes('loreSummary(') || worldbookSummary.includes('entry.content')) {
     throw new Error('Compact Worldbook rows must display titles only.');

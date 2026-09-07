@@ -405,6 +405,37 @@ test('fetches one aggregate activation snapshot and revalidates it by ETag', asy
     ]);
 });
 
+test('adding lore invalidates the activation snapshot cache', async () => {
+    const snapshot = revision => ({
+        schema: 'nora-world-snapshot/v1', revision,
+        plan: {
+            schema: 'nora-world-activation/v1', world_id: 'world:one', world_revision: revision === 'one' ? 1 : 2, name: 'One', persona: {},
+            runtime_card: { engine: 'sillytavern', binding: { avatar: 'one.png' } },
+            session: { session_id: 'session:one', engine: 'sillytavern', binding: { avatar: 'one.png', chat_id: 'chat-one' } },
+            knowledge: [], capabilities: { declared: [], status: 'READY' },
+        },
+        character: { avatar: 'one.png' }, chat: { messages: [] }, worldbooks: [],
+    });
+    const snapshotHeaders = [];
+    const client = createWorldCoreClient(() => ({ 'X-CSRF-Token': 'token' }), {
+        fetchImpl: async (url, options) => {
+            if (url.endsWith('/settings')) return response(201, {
+                world: { world_id: 'world:one', revision: 2 }, resource: { binding: { name: 'One settings' } }, book: { entries: {} },
+            });
+            snapshotHeaders.push(options.headers);
+            const next = snapshot(snapshotHeaders.length === 1 ? 'one' : 'two');
+            return new Response(JSON.stringify({ snapshot: next }), { status: 200, headers: { etag: `"${next.revision}"` } });
+        },
+    });
+
+    await client.prepareSnapshot('world:one');
+    await client.addWorldSetting('world:one', { type: 'constant', content: 'rain', keys: [] }, {
+        expectedRevision: 1, idempotencyKey: 'setting:one',
+    });
+    assert.equal((await client.prepareSnapshot('world:one')).revision, 'two');
+    assert.equal(snapshotHeaders[1]['If-None-Match'], undefined);
+});
+
 test('rehydrates a deduplicated embedded Character Book before entering the ST runtime', async () => {
     const embeddedBook = {
         name: 'One Book',

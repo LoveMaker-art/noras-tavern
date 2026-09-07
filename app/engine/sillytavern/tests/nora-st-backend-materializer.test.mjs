@@ -417,6 +417,39 @@ test('plugs into NoraWorldCore and commits authoritative ST bindings', async (t)
     await assert.rejects(fs.stat(current.stagedPath), error => error?.code === 'ENOENT');
 });
 
+test('adds durable user lore without mutating an imported Worldbook', async (t) => {
+    const current = await harness(t);
+    const core = createNoraWorldCore({
+        root: path.join(current.root, 'world-core'),
+        materializer: current.materializer,
+    });
+    const created = await core.createWorld(current.command, { idempotencyKey: 'setting:world' });
+    const importedName = created.world.knowledge[0].binding.name;
+    const importedBefore = await fs.readFile(path.join(current.directories.worlds, `${importedName}.json`), 'utf8');
+    const input = { type: 'trigger', title: '雨夜', content: '雨夜更危险。', keys: ['雨', '街道'] };
+
+    const added = await core.addWorldSetting(created.world.world_id, input, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:rain',
+    });
+    const repeated = await core.addWorldSetting(created.world.world_id, input, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:rain',
+    });
+
+    assert.equal(added.world.knowledge[0].source_key, 'nora:user-settings');
+    assert.equal(added.world.knowledge[0].ownership, 'owned');
+    assert.equal(added.world.knowledge[1].binding.name, importedName);
+    assert.equal(await fs.readFile(path.join(current.directories.worlds, `${importedName}.json`), 'utf8'), importedBefore);
+    const userBook = JSON.parse(await fs.readFile(path.join(current.directories.worlds, `${added.resource.binding.name}.json`), 'utf8'));
+    assert.deepEqual(Object.keys(userBook.entries), ['0']);
+    assert.equal(userBook.entries[0].constant, false);
+    assert.equal(userBook.entries[0].selective, true);
+    assert.deepEqual(userBook.entries[0].key, ['雨', '街道']);
+    assert.equal(repeated.reused, true);
+    assert.deepEqual(Object.keys(repeated.book.entries), ['0']);
+});
+
 test('repairs from filesystem evidence and deletes only owned World resources', async (t) => {
     const current = await harness(t);
     const core = createNoraWorldCore({

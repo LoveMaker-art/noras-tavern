@@ -454,6 +454,79 @@ async function materializeAuxiliaryAssets(decoded, roots, characterName, created
     }
 }
 
+function worldSettingsBinding(world) {
+    const suffix = sha256(String(world.world_id)).slice(0, 10);
+    return {
+        name: `${safeEngineName(world.name, 'World')} 自建设定--nora-${suffix}`,
+        resourceId: `resource:${sha256(`world-settings\u0000${world.world_id}`).slice(0, 32)}`,
+    };
+}
+
+function nextWorldbookEntryId(entries) {
+    const used = Object.keys(record(entries)).map(value => Number(value)).filter(Number.isInteger);
+    return String((used.length ? Math.max(...used) : -1) + 1);
+}
+
+async function persistWorldSetting({ world, setting, operationId, roots, locks }) {
+    const binding = worldSettingsBinding(world);
+    const filePath = path.join(roots.worlds, `${binding.name}.json`);
+    const operationDigest = sha256(stableStringify(setting));
+    return locks.run(`st-worldbook:${binding.name}`, async () => {
+        let book;
+        try {
+            book = JSON.parse(await fs.readFile(filePath, 'utf8'));
+        } catch (error) {
+            if (error?.code !== 'ENOENT') {
+                throw new NoraWorldCoreError('NORA_WORLD_KNOWLEDGE_CORRUPT', 'The World settings book is unreadable.', { cause: error });
+            }
+            book = {
+                entries: {},
+                extensions: { nora_resource: { schema: 1, kind: 'world-settings', world_id: world.world_id } },
+            };
+        }
+        if (book?.extensions?.nora_resource?.kind !== 'world-settings'
+            || book.extensions.nora_resource.world_id !== world.world_id
+            || !book.entries || Array.isArray(book.entries) || typeof book.entries !== 'object') {
+            throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'The World settings book binding is occupied by another resource.');
+        }
+        const repeated = Object.entries(book.entries).find(([, entry]) => (
+            entry?.extensions?.nora_operation?.id === operationId
+            && entry.extensions.nora_operation.digest === operationDigest
+        ));
+        let entryId = repeated?.[0] || '';
+        if (!entryId) {
+            entryId = nextWorldbookEntryId(book.entries);
+            book.entries[entryId] = {
+                ...ENTRY_DEFAULTS,
+                uid: Number(entryId),
+                key: cloneJson(setting.keys),
+                comment: setting.title,
+                content: setting.content,
+                constant: setting.type === 'constant',
+                selective: setting.type === 'trigger',
+                addMemo: Boolean(setting.title),
+                displayIndex: Object.keys(book.entries).length,
+                extensions: { nora_operation: { id: operationId, digest: operationDigest } },
+            };
+            await writeAtomic(filePath, `${JSON.stringify(book, null, 4)}\n`);
+        }
+        return {
+            resource: {
+                resource_id: binding.resourceId,
+                source_key: 'nora:user-settings',
+                engine: 'sillytavern',
+                binding: { name: binding.name },
+                ownership: 'owned',
+            },
+            entry_id: entryId,
+            entry: cloneJson(book.entries[entryId]),
+            book: cloneJson(book),
+            operation_id: operationId,
+            reused: Boolean(repeated),
+        };
+    });
+}
+
 function safeBindingName(value, field, { stripJsonl = false } = {}) {
     const original = String(value || '').trim();
     const normalized = stripJsonl ? original.replace(/\.jsonl$/i, '') : original;
@@ -522,6 +595,24 @@ export function createStBackendMaterializer({
     if (typeof cardCodec?.decode !== 'function') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST card codec is required.');
 
     return Object.freeze({
+        addWorldSetting(world, setting, { operationId } = {}) {
+            return persistWorldSetting({
+                world,
+                setting,
+                operationId: assertIdentity(operationId, 'operationId'),
+                roots,
+                locks,
+            });
+        },
+        async readWorldSettingBook(worldId, resource) {
+            const name = safeBindingName(resource?.binding?.name, 'Knowledge Resource');
+            const book = JSON.parse(await fs.readFile(path.join(roots.worlds, `${name}.json`), 'utf8'));
+            if (book?.extensions?.nora_resource?.kind !== 'world-settings'
+                || book.extensions.nora_resource.world_id !== String(worldId || '')) {
+                throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'The World settings book does not belong to this World.');
+            }
+            return book;
+        },
         async inspect(world) {
             const issues = [];
             let paths;

@@ -416,6 +416,8 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-panel .librarySupport .pSection { margin-bottom: 12px; padding-bottom: 12px; }
 #nora-panel .librarySupport .pSection:last-child { margin-bottom: 0; padding-bottom: 0; }
 #nora-panel .loreGroupTitle { margin: 12px 0 5px; color: var(--nora-muted); font-size: 11px; font-weight: 700; }
+#nora-panel .nora-add-setting { display: flex; width: 100%; min-height: 34px; align-items: center; justify-content: center; gap: 6px; margin-top: 13px; border: 1px solid var(--nora-line-2); border-radius: 8px; background: transparent; color: var(--nora-brand-ink); font-size: 12px; cursor: pointer; }
+#nora-panel .nora-add-setting:hover { border-color: var(--nora-brand); background: var(--nora-brand-tint); }
 #nora-panel .pHeadAction, #nora-panel .headRight { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 #nora-panel .headRight { margin-left: auto; }
 #nora-panel .sectionEdit { padding: 4px 0; border: 0; background: transparent; color: var(--nora-muted); font-size: 11px; cursor: pointer; }
@@ -563,6 +565,8 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-world-binding-list > button { display: flex; width: 100%; flex-direction: column; align-items: flex-start; padding: 8px 0; border: 0; border-bottom: 1px solid var(--nora-line); background: transparent; color: var(--nora-ink); text-align: left; cursor: pointer; }
 .nora-world-binding-list > button:last-child { border-bottom: 0; }
 .nora-world-binding-list strong { font-size: 12.5px; }
+.nora-world-setting-section > .nora-add-setting { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 7px; margin-top: 12px; border: 1px solid var(--nora-line-2); border-radius: 9px; background: transparent; color: var(--nora-brand-ink); font-size: 12.5px; cursor: pointer; }
+.nora-world-setting-section > .nora-add-setting:hover { border-color: var(--nora-brand); background: var(--nora-brand-tint); }
 .nora-editor-intro { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 .nora-editor-intro strong { font-size: 14px; }
 .nora-editor-intro span { color: var(--nora-muted); font-size: 11px; }

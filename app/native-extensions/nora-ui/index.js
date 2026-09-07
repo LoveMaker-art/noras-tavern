@@ -150,9 +150,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const entriesFromBook = (book) => worldbookController.entries(book);
     const worldbookSummary = (character, editing = false) => worldbookController.summary(character, editing);
     const primeActiveWorldbook = (options = {}) => worldbookController.prime(options);
-    const openWorldbookEntryDetail = (kind, entryId = '') => worldbookController.openEntryDetail(kind, entryId);
-    const openWorldbookSheet = () => worldbookController.open();
-    const openWorldbookEntryEditor = (kind, entryId = '') => worldbookController.openEntryEditor(kind, entryId);
 
     const renderPanel = () => panelController.render();
     const runPanelAction = action => panelController.runAction(action);
@@ -312,6 +309,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         });
         worldbookController = createWorldbookController({
             worldbook,
+            worldRuntime: worlds,
             operations,
             store: uiStore,
             dialogs,
@@ -449,9 +447,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             activeWorldModel,
             currentWorldPersona,
             worldbookSummary,
-            openWorldbookEntryDetail,
-            openWorldbookEntryEditor,
-            openWorldbookSheet,
+            worldbookController,
             openCharacterLibrary,
             openCharacterSheet,
             openCharacterEditor,

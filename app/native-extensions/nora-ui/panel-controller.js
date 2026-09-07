@@ -18,9 +18,7 @@ export function createPanelController({
     activeWorldModel,
     currentWorldPersona,
     worldbookSummary,
-    openWorldbookEntryDetail,
-    openWorldbookEntryEditor,
-    openWorldbookSheet,
+    worldbookController,
     openCharacterLibrary,
     openCharacterSheet,
     openCharacterEditor,
@@ -136,7 +134,7 @@ export function createPanelController({
             });
         });
         selectAll('[data-worldbook-kind]', body).forEach((item) => {
-            const open = () => openWorldbookEntryDetail(item.dataset.worldbookKind, item.dataset.entryId);
+            const open = () => worldbookController.openEntryDetail(item.dataset.worldbookKind, item.dataset.entryId);
             item.addEventListener('click', (event) => {
                 if (!event.target.closest('[data-action]')) open();
             });
@@ -149,7 +147,12 @@ export function createPanelController({
         selectAll('[data-worldbook-edit-kind]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
             closeDrawers();
-            openWorldbookEntryEditor(button.dataset.worldbookEditKind, button.dataset.entryId);
+            worldbookController.openEntryEditor(button.dataset.worldbookEditKind, button.dataset.entryId);
+        }));
+        selectAll('[data-add-world-setting]', body).forEach(button => button.addEventListener('click', (event) => {
+            event.stopPropagation();
+            closeDrawers();
+            worldbookController.openAdd();
         }));
         selectAll('[data-retry-capability]', body).forEach(button => button.addEventListener('click', async (event) => {
             event.stopPropagation();
@@ -187,7 +190,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { profile: openPersona, character: openCharacterSheet, worldbook: openWorldbookSheet, library: openCharacterLibrary, model: openModelSheet };
+        const actions = { profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, model: openModelSheet };
         actions[action]?.();
     }
 
