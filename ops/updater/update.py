@@ -81,6 +81,25 @@ def remove(path):
         path.unlink(missing_ok=True)
 
 
+def prune_backup_history(home, keep):
+    home = Path(home).absolute()
+    primary = home / "tavern-backups"
+    keep = Path(keep).absolute()
+    if keep.parent != primary or not keep.is_dir():
+        raise RuntimeError(f"refusing to prune backups with invalid keep path: {keep}")
+
+    removed = []
+    for root in (primary, home / "tavern-updates" / "backups"):
+        if not root.is_dir():
+            continue
+        for candidate in sorted(root.iterdir()):
+            if candidate.absolute() == keep:
+                continue
+            remove(candidate)
+            removed.append(str(candidate))
+    return {"status": "pruned", "kept": str(keep), "removed": removed}
+
+
 def port_open(port=8799):
     with socket.socket() as probe:
         probe.settimeout(0.3)
@@ -855,6 +874,16 @@ def install(args):
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
+                try:
+                    backup_retention = prune_backup_history(home, backup)
+                    log(f"备份保留策略：保留最新 1 份，已清理 {len(backup_retention['removed'])} 份旧备份")
+                except Exception as retention_error:
+                    backup_retention = {
+                        "status": "pending",
+                        "kept": str(backup),
+                        "warnings": [str(retention_error)],
+                    }
+                    log(f"旧备份清理未完成，当前备份仍保留：{retention_error}")
                 reload_required = (
                     mcp_changed or agents_changed or config_changed
                     or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
@@ -867,6 +896,7 @@ def install(args):
                     "runtime": {"pid": runtime.get("native_pid"), "health": runtime.get("health", {}).get("ok")},
                     "liveware": liveware,
                     "updateCheck": update_check,
+                    "backupRetention": backup_retention,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
                     "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。" if reload_required else "更新已生效。",

@@ -40,6 +40,43 @@ def archive(path, members):
 
 
 class IncrementalUpdateTests(unittest.TestCase):
+    def test_successful_update_retains_only_the_current_backup(self):
+        with tempfile.TemporaryDirectory(prefix="nora-backup-retention-") as temporary:
+            home = Path(temporary)
+            current = home / "tavern-backups/20260907-120000-2.2.8-current"
+            old = home / "tavern-backups/20260906-120000-2.2.7-old"
+            legacy = home / "tavern-updates/backups/1.24.12-old"
+            unrelated = home / "tavern-state/worlds.json"
+            for path in (current, old, legacy):
+                path.mkdir(parents=True)
+                path.joinpath("marker").write_text(path.name, encoding="utf-8")
+            unrelated.parent.mkdir(parents=True)
+            unrelated.write_text("preserve", encoding="utf-8")
+
+            result = UPDATER.prune_backup_history(home, current)
+
+            self.assertEqual(result["status"], "pruned")
+            self.assertEqual(result["kept"], str(current))
+            self.assertEqual(set(result["removed"]), {str(old), str(legacy)})
+            self.assertTrue(current.joinpath("marker").is_file())
+            self.assertFalse(old.exists())
+            self.assertFalse(legacy.exists())
+            self.assertEqual(unrelated.read_text(encoding="utf-8"), "preserve")
+
+    def test_backup_retention_rejects_a_keep_path_outside_the_backup_root(self):
+        with tempfile.TemporaryDirectory(prefix="nora-backup-retention-") as temporary:
+            home = Path(temporary)
+            old = home / "tavern-backups/20260906-120000-2.2.7-old"
+            invalid = home / "tavern-state/not-a-backup"
+            old.mkdir(parents=True)
+            invalid.mkdir(parents=True)
+
+            with self.assertRaisesRegex(RuntimeError, "invalid keep path"):
+                UPDATER.prune_backup_history(home, invalid)
+
+            self.assertTrue(old.is_dir())
+            self.assertTrue(invalid.is_dir())
+
     def test_same_commit_exits_before_release_download(self):
         with tempfile.TemporaryDirectory(prefix="nora-current-version-") as temporary:
             home = Path(temporary)
