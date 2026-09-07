@@ -1,5 +1,5 @@
 #!/bin/sh
-# Gateway startup creates missing first-run Apps, then only recovers saved identities.
+# Gateway startup validates saved identities and creates missing replacements.
 set -eu
 if [ -z "${HERMES_HOME:-}" ]; then
   if [ "$(uname -s)" = Linux ] && [ -d /opt/data/skills ]; then HERMES_HOME=/opt/data; else HERMES_HOME="$HOME/.hermes"; fi

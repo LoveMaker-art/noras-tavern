@@ -329,7 +329,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             repair.assert_called_once_with(home, 8799)
             refresh.assert_not_called()
 
-    def test_ensure_only_recovers_when_both_app_identities_are_saved(self):
+    def test_ensure_repairs_saved_identities_against_liveware_state(self):
         integration = load_integration()
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
@@ -341,15 +341,15 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             }), encoding="utf-8")
             with (
                 mock.patch.object(integration, "start_runtime") as start,
-                mock.patch.object(integration, "repair") as repair,
-                mock.patch.object(integration, "refresh", return_value={"status": "updated"}) as refresh,
+                mock.patch.object(integration, "repair", return_value={"status": "updated"}) as repair,
+                mock.patch.object(integration, "refresh") as refresh,
             ):
                 result = integration.ensure(home)
 
             self.assertEqual(result, {"status": "updated"})
             start.assert_called_once_with(home)
-            refresh.assert_called_once_with(home, 8799)
-            repair.assert_not_called()
+            repair.assert_called_once_with(home, 8799)
+            refresh.assert_not_called()
 
     def test_repair_persists_tavern_before_story_profile_creation_failure(self):
         integration = load_integration()

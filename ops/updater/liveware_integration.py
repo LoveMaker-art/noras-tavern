@@ -322,25 +322,6 @@ def initialize(home, port=8799):
     return repair(home, port)
 
 
-def identities_complete(home):
-    path = Path(home) / "tavern-state/apps.json"
-    try:
-        document = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(document, dict):
-        return False
-    for role in ROLES:
-        app = document.get(role)
-        if not isinstance(app, dict):
-            return False
-        if not isinstance(app.get("app_id"), str) or not LIVEWARE_APP_ID_PATTERN.fullmatch(app["app_id"]):
-            return False
-        if not isinstance(app.get("domain"), str) or not LIVEWARE_DOMAIN_PATTERN.fullmatch(app["domain"]):
-            return False
-    return True
-
-
 def start_runtime(home):
     app = Path(home) / "apps/tavern-runtime"
     return subprocess.run(
@@ -353,8 +334,6 @@ def start_runtime(home):
 def ensure(home, port=8799):
     home = Path(home)
     start_runtime(home)
-    if identities_complete(home):
-        return refresh(home, port)
     return repair(home, port)
 
 
