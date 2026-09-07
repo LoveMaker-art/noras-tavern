@@ -197,6 +197,24 @@ def same_file(left, right):
         return False
 
 
+def package_dependency_manifests(root):
+    root = Path(root)
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"无法读取生产依赖清单：{error}") from error
+    dependencies = package.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise RuntimeError("生产依赖清单格式无效")
+    manifests = []
+    for name in sorted(dependencies):
+        path = Path(name)
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise RuntimeError(f"生产依赖名称无效：{name}")
+        manifests.append(str(path / "package.json"))
+    return tuple(manifests)
+
+
 def link_or_copy(source, target):
     try:
         os.link(source, target)
@@ -229,7 +247,7 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed):
             Path(old_app) / "engine/sillytavern",
             "package-lock.json",
             ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-            ("express/package.json", "webpack/package.json"),
+            package_dependency_manifests(engine),
         )
     if mcp_changed:
         log("准备 Nora MCP 依赖")
@@ -238,7 +256,7 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed):
             old_mcp,
             "npm-shrinkwrap.json",
             ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
-            ("@modelcontextprotocol/sdk/package.json", "zod/package.json"),
+            package_dependency_manifests(source / "nora-mcp"),
         )
     return report
 

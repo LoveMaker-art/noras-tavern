@@ -284,6 +284,22 @@ class NativeRuntime:
         except OSError as error:
             raise NativeLifecycleError(f"cannot read bundled dependency lock: {error}")
 
+    def dependency_manifests(self):
+        try:
+            package = json.loads((self.engine_root / "package.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise NativeLifecycleError(f"cannot read bundled dependency manifest: {error}") from error
+        dependencies = package.get("dependencies")
+        if not isinstance(dependencies, dict):
+            raise NativeLifecycleError("bundled dependency manifest is invalid")
+        manifests = []
+        for name in sorted(dependencies):
+            path = Path(name)
+            if path.is_absolute() or not path.parts or ".." in path.parts:
+                raise NativeLifecycleError(f"bundled dependency name is invalid: {name}")
+            manifests.append(self.engine_root / "node_modules" / path / "package.json")
+        return tuple(manifests)
+
     def verify_source(self):
         required = (
             self.engine_root / "server.js",
@@ -325,10 +341,10 @@ class NativeRuntime:
         }
 
     def dependencies_ready(self, node_major=None):
-        required = (
-            self.engine_root / "node_modules/express/package.json",
-            self.engine_root / "node_modules/webpack/package.json",
-        )
+        try:
+            required = self.dependency_manifests()
+        except NativeLifecycleError:
+            return False
         if not all(path.is_file() for path in required):
             return False
         try:

@@ -195,6 +195,41 @@ class IncrementalUpdateTests(unittest.TestCase):
             self.assertEqual(result, "reused")
             self.assertTrue((target / "node_modules/express/package.json").is_file())
 
+    def test_dependencies_are_not_reused_when_a_direct_dependency_is_missing(self):
+        with tempfile.TemporaryDirectory(prefix="nora-dependency-incomplete-") as temporary:
+            root = Path(temporary)
+            current = root / "current"
+            target = root / "target"
+            package = {
+                "dependencies": {
+                    "express": "1.0.0",
+                    "image-size": "file:vendor/image-size",
+                    "showdown": "file:vendor/showdown",
+                    "webpack": "1.0.0",
+                },
+            }
+            for base in (current, target):
+                base.mkdir()
+                base.joinpath("package.json").write_text(json.dumps(package), encoding="utf-8")
+                base.joinpath("package-lock.json").write_text('{"lockfileVersion":3}\n', encoding="utf-8")
+            for relative in ("express/package.json", "webpack/package.json"):
+                path = current / "node_modules" / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n", encoding="utf-8")
+
+            required = UPDATER.package_dependency_manifests(target)
+            with mock.patch.object(UPDATER, "run") as run:
+                result = UPDATER.reuse_or_install_dependencies(
+                    target,
+                    current,
+                    "package-lock.json",
+                    ["npm", "ci"],
+                    required,
+                )
+
+            self.assertEqual(result, "installed")
+            run.assert_called_once_with(["npm", "ci"], cwd=target)
+
     def test_dependency_marker_reads_the_installed_app_layout(self):
         with tempfile.TemporaryDirectory(prefix="nora-dependency-marker-") as temporary:
             app = Path(temporary) / "apps/tavern-runtime"
