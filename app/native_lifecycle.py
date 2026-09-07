@@ -284,7 +284,7 @@ class NativeRuntime:
         except OSError as error:
             raise NativeLifecycleError(f"cannot read bundled dependency lock: {error}")
 
-    def dependency_manifests(self):
+    def package_dependencies(self):
         try:
             package = json.loads((self.engine_root / "package.json").read_text(encoding="utf-8"))
         except (OSError, ValueError) as error:
@@ -292,13 +292,60 @@ class NativeRuntime:
         dependencies = package.get("dependencies")
         if not isinstance(dependencies, dict):
             raise NativeLifecycleError("bundled dependency manifest is invalid")
+        return dependencies
+
+    def dependency_manifests(self):
         manifests = []
-        for name in sorted(dependencies):
+        for name in sorted(self.package_dependencies()):
             path = Path(name)
             if path.is_absolute() or not path.parts or ".." in path.parts:
                 raise NativeLifecycleError(f"bundled dependency name is invalid: {name}")
             manifests.append(self.engine_root / "node_modules" / path / "package.json")
         return tuple(manifests)
+
+    def materialize_local_dependencies(self):
+        """Replace file dependency links with copies that survive volume restores."""
+        repaired = []
+        engine_root = self.engine_root.resolve()
+        for name, value in sorted(self.package_dependencies().items()):
+            if not isinstance(value, str) or not value.startswith("file:"):
+                continue
+            name_path = Path(name)
+            source_path = Path(value[5:])
+            if (
+                name_path.is_absolute()
+                or not name_path.parts
+                or ".." in name_path.parts
+                or source_path.is_absolute()
+                or not source_path.parts
+                or ".." in source_path.parts
+            ):
+                raise NativeLifecycleError(f"bundled local dependency is invalid: {name}")
+            source = (engine_root / source_path).resolve()
+            try:
+                source.relative_to(engine_root)
+            except ValueError as error:
+                raise NativeLifecycleError(f"bundled local dependency escapes the engine: {name}") from error
+            if not (source / "package.json").is_file():
+                raise NativeLifecycleError(f"bundled local dependency source is missing: {name}")
+
+            target = engine_root / "node_modules" / name_path
+            if target.is_dir() and not target.is_symlink() and (target / "package.json").is_file():
+                continue
+            prepared = target.with_name(target.name + ".nora-prepared")
+            if prepared.is_symlink() or prepared.is_file():
+                prepared.unlink()
+            elif prepared.exists():
+                shutil.rmtree(prepared)
+            prepared.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(source, prepared, symlinks=False)
+            if target.is_symlink() or target.is_file():
+                target.unlink()
+            elif target.exists():
+                shutil.rmtree(target)
+            os.replace(prepared, target)
+            repaired.append(name)
+        return repaired
 
     def verify_source(self):
         required = (
@@ -381,6 +428,7 @@ class NativeRuntime:
             raise NativeLifecycleError(
                 f"Node.js {self.contract.node_min_major}+ is required; found {node_major}"
             )
+        materialized = self.materialize_local_dependencies()
         installed = not self.dependencies_ready(node_major)
         if installed:
             try:
@@ -391,6 +439,7 @@ class NativeRuntime:
                 )
             except (OSError, subprocess.SubprocessError) as error:
                 raise NativeLifecycleError(f"cannot prepare bundled SillyTavern dependencies: {error}")
+            materialized.extend(self.materialize_local_dependencies())
             _atomic_text(
                 self.dependencies_marker,
                 json.dumps({
@@ -402,7 +451,12 @@ class NativeRuntime:
             )
         report = self.verify_install()
         self.sync_assets()
-        return {**report, "installed": installed, "path": str(self.engine_root)}
+        return {
+            **report,
+            "installed": installed,
+            "materialized": sorted(set(materialized)),
+            "path": str(self.engine_root),
+        }
 
     def sync_assets(self, data_root=None):
         self.verify_source()
@@ -555,7 +609,10 @@ class NativeRuntime:
             return self._start(run_id, port, data_root, assets_prepared=assets_prepared)
 
     def _start(self, run_id, port, data_root, *, assets_prepared):
-        self.verify_install()
+        if self.dependencies_ready():
+            self.verify_install()
+        else:
+            self.install()
         native_data = Path(data_root or self.native_data_root)
         if not assets_prepared:
             self.sync_assets(native_data)

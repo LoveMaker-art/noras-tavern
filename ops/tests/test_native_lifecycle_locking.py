@@ -170,6 +170,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
             runtime.contract = types.SimpleNamespace(commit="test")
             runtime.config_path = runtime.runtime_state / "config.yaml"
             runtime._children = {}
+            runtime.dependencies_ready = mock.Mock(return_value=True)
             runtime.verify_install = mock.Mock()
             runtime.sync_assets = mock.Mock()
             runtime.managed_service = mock.Mock(return_value=None)
@@ -255,6 +256,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
             runtime.contract = types.SimpleNamespace(commit="test")
             runtime.config_path = runtime.runtime_state / "config.yaml"
             runtime._children = {}
+            runtime.dependencies_ready = mock.Mock(return_value=True)
             runtime.verify_install = mock.Mock()
             runtime.sync_assets = mock.Mock()
             runtime.managed_service = mock.Mock(return_value=None)
@@ -279,12 +281,18 @@ class NativeLifecycleLockTests(unittest.TestCase):
     def test_real_start_cli_fails_fast_instead_of_waiting_on_its_own_lock(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
+            bin_dir = root / "bin"
+            bin_dir.mkdir()
+            npm = bin_dir / "npm"
+            npm.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
+            npm.chmod(0o755)
             environment = {
                 **os.environ,
                 "HERMES_HOME": str(root),
                 "TAVERN_DATA_ROOT": str(root),
                 "TAVERN_APP_DIR": str(ROOT / "app"),
                 "TAVERN_STATE_DIR": str(root / "state"),
+                "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
             }
 
             result = subprocess.run(
