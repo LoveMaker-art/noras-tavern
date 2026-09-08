@@ -5,6 +5,15 @@ const path = require('node:path');
 const test = require('node:test');
 const { findBundledRuntime, validateRuntimeLinks } = require('../installer/desktop/runtime');
 
+test('Windows runtime extraction uses native tar directly with literal paths', () => {
+  const { extractionCommand } = require('../installer/desktop/runtime');
+  assert.deepEqual(extractionCommand('D:\\release dir\\runtime.zip', 'C:\\Users\\Test User\\Nora',
+    'win32', 'C:\\Windows'), {
+    file: 'C:\\Windows\\System32\\tar.exe',
+    args: ['-xf', 'D:\\release dir\\runtime.zip', '-C', 'C:\\Users\\Test User\\Nora'],
+  });
+});
+
 test('relocated Windows Python source never contains unescaped user-directory backslashes', () => {
   const { relocateText } = require('../installer/desktop/runtime');
   const text = relocateText("MAPPING = {'hermes': '@@NORA_HERMES_HOME@@/hermes-agent'}",

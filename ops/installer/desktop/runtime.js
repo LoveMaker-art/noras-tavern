@@ -42,18 +42,19 @@ function findBundledRuntime(payloadRoot, platform = process.platform, arch = pro
   return { manifest, manifestPath, archive };
 }
 
+function extractionCommand(archive, destination, platform = process.platform, systemRoot = process.env.SystemRoot) {
+  // Native bsdtar handles both ZIP and gzip; bypass PowerShell's per-file overhead.
+  return {
+    file: platform === 'win32' ? path.win32.join(systemRoot || 'C:\\Windows', 'System32', 'tar.exe') : 'tar',
+    args: ['-xf', archive, '-C', destination],
+  };
+}
+
 function extractArchive(bundle, destination) {
-  const { manifest, archive } = bundle;
-  const command = manifest.format === 'zip' && process.platform === 'win32'
-    ? {
-      file: 'powershell.exe',
-      args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
-        `Expand-Archive -LiteralPath '${archive.replace(/'/g, "''")}' -DestinationPath '${destination.replace(/'/g, "''")}' -Force`],
-    }
-    : { file: 'tar', args: ['-xzf', archive, '-C', destination] };
-  const result = spawnSync(command.file, command.args, { encoding: 'utf8', windowsHide: true });
+  const command = extractionCommand(bundle.archive, destination);
+  const result = spawnSync(command.file, command.args, { encoding: 'utf8', windowsHide: true, timeout: 600000 });
   if (result.status !== 0) {
-    throw new Error(`无法释放 Hermes 运行时：${(result.stderr || result.stdout || '').trim()}`);
+    throw new Error(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`);
   }
 }
 
@@ -236,6 +237,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
 }
 
 module.exports = {
+  extractionCommand,
   RUNTIME_MANIFEST,
   findBundledRuntime,
   installBundledHermes,
