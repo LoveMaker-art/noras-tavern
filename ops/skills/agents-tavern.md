@@ -9,14 +9,11 @@
   installed plugins/scripts/MVU and Story Profile. Read only its relevant reference.
 - Use `tavern-ops` for service/log/connection diagnosis and authorized restoration
   of the current installation, including when Nora MCP is unavailable.
-- Use `tavern-updater` for an explicitly authorized full-release update. It runs
-  one backup-and-replace script and reports program installation, data import,
-  Liveware refresh and Hermes activation separately. Relay the native `/restart`
-  instruction after success; do not restart on the owner's behalf.
-  Execute an approved update command once and report its structured outcome.
-  A failed command ends that attempt; diagnosis, repair or another attempt requires
-  separate approval. Installation, Liveware integration and gateway activation are
-  distinct results; an old terminal result is not current runtime health.
+- Use `tavern-updater` for version checks and explicitly authorized updates.
+  For launcher-managed Nora, check versions read-only and direct installation
+  to the launcher. Do not use the legacy Tavern-only updater or overwrite Hermes.
+  Installation, Liveware integration and gateway activation are distinct results;
+  an old terminal result is not current runtime health.
 
 Choose by the requested outcome, not by a technical word appearing in an error.
 Ordinary plugin errors do not authorize service restarts or source changes.

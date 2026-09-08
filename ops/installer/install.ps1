@@ -20,35 +20,62 @@ function Get-InstallerArg {
     return ""
 }
 
+$RequestedNoraHome = Get-InstallerArg "--nora-home"
+$RequestedHermesHome = Get-InstallerArg "--hermes-home"
+if (-not $RequestedHermesHome) { $RequestedHermesHome = Get-InstallerArg "--data-root" }
+$RequestedInstallRoot = Get-InstallerArg "--install-root"
+
+if ($RequestedNoraHome) {
+    $env:NORA_TAVERN_HOME = $RequestedNoraHome
+} elseif (-not $env:NORA_TAVERN_HOME) {
+    if ($env:LOCALAPPDATA) {
+        $env:NORA_TAVERN_HOME = Join-Path $env:LOCALAPPDATA "NoraTavern"
+    } else {
+        $env:NORA_TAVERN_HOME = Join-Path $HOME "AppData\Local\NoraTavern"
+    }
+}
+if ($RequestedHermesHome) {
+    $env:HERMES_HOME = $RequestedHermesHome
+} elseif (-not $env:HERMES_HOME) {
+    $env:HERMES_HOME = Join-Path $env:NORA_TAVERN_HOME "hermes"
+}
+if (-not $env:HERMES_INSTALL_DIR) {
+    $env:HERMES_INSTALL_DIR = Join-Path $env:HERMES_HOME "hermes-agent"
+}
+if ($RequestedInstallRoot) {
+    $env:TAVERN_DATA_ROOT = $RequestedInstallRoot
+} elseif (-not $env:TAVERN_DATA_ROOT) {
+    $env:TAVERN_DATA_ROOT = Join-Path $env:NORA_TAVERN_HOME "tavern"
+}
+$env:HOME = $env:HERMES_HOME
+$env:USERPROFILE = $env:HERMES_HOME
+$env:APPDATA = Join-Path $env:NORA_TAVERN_HOME "appdata\roaming"
+$env:LOCALAPPDATA = Join-Path $env:NORA_TAVERN_HOME "appdata\local"
+
 function Invoke-Python {
     param([string]$Script)
+    $InstallerArgs = @("--nora-home", $env:NORA_TAVERN_HOME, "--hermes-home", $env:HERMES_HOME, "--install-root", $env:TAVERN_DATA_ROOT) + $Rest
     if ($env:TAVERN_PYTHON) {
-        & $env:TAVERN_PYTHON -u -B $Script @Rest
+        & $env:TAVERN_PYTHON -u -B $Script @InstallerArgs
         exit $LASTEXITCODE
     }
     $Candidates = @()
-    if ($env:HERMES_HOME) {
-        $Candidates += (Join-Path $env:HERMES_HOME "hermes-agent\venv\Scripts\python.exe")
-    }
-    if ($env:LOCALAPPDATA) {
-        $Candidates += (Join-Path $env:LOCALAPPDATA "hermes\hermes-agent\venv\Scripts\python.exe")
-    }
-    $Candidates += (Join-Path $HOME ".hermes\hermes-agent\venv\Scripts\python.exe")
+    $Candidates += (Join-Path $env:HERMES_INSTALL_DIR "venv\Scripts\python.exe")
     foreach ($Candidate in $Candidates) {
         if ($Candidate -and (Test-Path $Candidate)) {
             & $Candidate -B -c "import sys; assert sys.version_info >= (3, 9)"
-            & $Candidate -u -B $Script @Rest
+            & $Candidate -u -B $Script @InstallerArgs
             exit $LASTEXITCODE
         }
     }
     if (Get-Command python -ErrorAction SilentlyContinue) {
         python -B -c "import sys; assert sys.version_info >= (3, 9)"
-        python -u -B $Script @Rest
+        python -u -B $Script @InstallerArgs
         exit $LASTEXITCODE
     }
     if (Get-Command py -ErrorAction SilentlyContinue) {
         py -3 -B -c "import sys; assert sys.version_info >= (3, 9)"
-        py -3 -u -B $Script @Rest
+        py -3 -u -B $Script @InstallerArgs
         exit $LASTEXITCODE
     }
     throw "未找到 Python 3.9+。请先确认 Hermes 安装完成，并重新打开 PowerShell。"

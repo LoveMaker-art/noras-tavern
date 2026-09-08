@@ -3,11 +3,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-HERMES_HOME = Path(os.environ.get('HERMES_HOME') or (
-    '/opt/data' if sys.platform.startswith('linux') and Path('/opt/data/skills').is_dir()
-    else Path.home() / '.hermes'
-)).expanduser().resolve()
-RUNNER = HERMES_HOME / 'hooks/tavern-liveware-register/run.sh'
+HERMES_HOME = Path(
+    os.environ.get('HERMES_HOME') or Path(__file__).resolve().parents[2]
+).expanduser().resolve()
+RUNNER = HERMES_HOME / 'scripts/nora-instance.py'
 LOG = HERMES_HOME / 'logs/tavern-liveware-register-hook.log'
 
 
@@ -18,7 +17,7 @@ def handle(event_type, context):
     with LOG.open('a', encoding='utf-8') as log:
         log.write('gateway:startup received; spawning tavern liveware ensure\n')
         subprocess.Popen(
-            ['/bin/sh', str(RUNNER)],
+            [sys.executable, '-B', str(RUNNER), 'recover-existing'],
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,

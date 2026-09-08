@@ -1,24 +1,51 @@
 import fs from 'node:fs';
+import { writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
-import { collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules } from './release-source.mjs';
+import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules } from './release-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
+const runtimeManifestIndex = process.argv.indexOf('--hermes-runtime-manifest');
+const runtimeManifestPath = runtimeManifestIndex >= 0
+    ? path.resolve(process.argv[runtimeManifestIndex + 1] || '')
+    : null;
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
     return execFileSync(command, args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
 }
 
+function copyPackageFile(source, target) {
+    const stat = fs.statSync(source);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+    fs.chmodSync(target, stat.mode & 0o777);
+}
+
+function copyPackageTree(source, target) {
+    fs.mkdirSync(target, { recursive: true });
+    for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+        const from = path.join(source, entry.name);
+        const to = path.join(target, entry.name);
+        if (entry.isDirectory()) {
+            copyPackageTree(from, to);
+        } else if (entry.isFile()) {
+            copyPackageFile(from, to);
+        }
+    }
+}
+
 try {
     run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
     const mcp = path.join(stage, 'nora-mcp');
-    run('npm', ['ci', '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
+    const mcpInstall = fs.existsSync(path.join(mcp, 'package-lock.json')) ? 'ci' : 'install';
+    run('npm', [mcpInstall, '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
     run('npm', ['run', 'build'], mcp);
     run('npm', ['run', 'build:nora']);
     const members = collectRuntimeFiles(stage, files);
+    if (runtimeManifestPath) assertNoraSystemArtifacts(members);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
     const checksums = [];
@@ -92,6 +119,127 @@ try {
         installerSha256: digest(firstInstaller),
         powershellInstallerSha256: digest(firstPowerShellInstaller),
     };
+    const runtimePayloadNames = [];
+    if (runtimeManifestPath) {
+        const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'));
+        if (runtimeManifest.schema !== 1 || !runtimeManifest.archive || !runtimeManifest.sha256) {
+            throw new Error('Hermes runtime manifest is invalid');
+        }
+        if (!runtimeManifest.components?.clawchat?.revision || !runtimeManifest.components?.liveware?.sha256 ||
+            runtimeManifest.componentProbe !== 'nora-clawchat-check.py') {
+            throw new Error('Integrated runtime must include verified ClawChat and Liveware components');
+        }
+        const runtimeArchive = path.resolve(path.dirname(runtimeManifestPath), runtimeManifest.archive);
+        const runtimeBytes = fs.readFileSync(runtimeArchive);
+        if (digest(runtimeBytes) !== runtimeManifest.sha256) {
+            throw new Error('Hermes runtime archive checksum does not match its manifest');
+        }
+        for (const [name, bytes] of [
+            ['nora-hermes-runtime.json', fs.readFileSync(runtimeManifestPath)],
+            [runtimeManifest.archive, runtimeBytes],
+        ]) {
+            fs.writeFileSync(path.join(release, name), bytes);
+            checksums.push(`${digest(bytes)}  ${name}`);
+            runtimePayloadNames.push(name);
+        }
+        identity.hermesRuntime = {
+            platform: runtimeManifest.platform,
+            arch: runtimeManifest.arch,
+            version: runtimeManifest.hermesVersion,
+            archive: runtimeManifest.archive,
+            sha256: runtimeManifest.sha256,
+            size: runtimeManifest.size,
+            optionalComponents: runtimeManifest.optionalComponents,
+        };
+
+        run('npm', ['prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], engine);
+        run('npm', ['prune', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], mcp);
+        const dependencyArchiveName = `nora-tavern-dependencies-${runtimeManifest.platform}-${runtimeManifest.arch}.tar.gz`;
+        const dependencyArchive = path.join(release, dependencyArchiveName);
+        run('tar', ['--no-xattrs', '-C', stage, '-czf', dependencyArchive,
+            'app/engine/sillytavern/node_modules', 'nora-mcp/node_modules'], stage, { COPYFILE_DISABLE: '1' });
+        const dependencyBytes = fs.readFileSync(dependencyArchive);
+        const dependencyManifest = Buffer.from(JSON.stringify({
+            schema: 1,
+            platform: runtimeManifest.platform,
+            arch: runtimeManifest.arch,
+            archive: dependencyArchiveName,
+            sha256: digest(dependencyBytes),
+            size: dependencyBytes.length,
+            nodeMajor: Number(String(runtimeManifest.nodeVersion || '').match(/v?(\d+)/)?.[1] || 0),
+            roots: ['app/engine/sillytavern/node_modules', 'nora-mcp/node_modules'],
+        }, null, 2) + '\n');
+        fs.writeFileSync(path.join(release, 'nora-tavern-dependencies.json'), dependencyManifest);
+        checksums.push(`${digest(dependencyBytes)}  ${dependencyArchiveName}`);
+        checksums.push(`${digest(dependencyManifest)}  nora-tavern-dependencies.json`);
+        runtimePayloadNames.push(dependencyArchiveName, 'nora-tavern-dependencies.json');
+        identity.dependencies = {
+            platform: runtimeManifest.platform,
+            arch: runtimeManifest.arch,
+            archive: dependencyArchiveName,
+            sha256: digest(dependencyBytes),
+            size: dependencyBytes.length,
+            nodeMajor: Number(String(runtimeManifest.nodeVersion || '').match(/v?(\d+)/)?.[1] || 0),
+        };
+    }
+    const payloadManifest = Buffer.from(JSON.stringify(identity, null, 2) + '\n');
+    fs.writeFileSync(path.join(release, 'release-manifest.json'), payloadManifest);
+    const payloadChecksums = [...checksums, `${digest(payloadManifest)}  release-manifest.json`];
+    fs.writeFileSync(path.join(release, 'SHA256SUMS'), payloadChecksums.join('\n') + '\n');
+
+    const starterRoot = path.join(release, 'nora-tavern-launcher');
+    const starterPayload = path.join(starterRoot, 'payload');
+    fs.mkdirSync(starterPayload, { recursive: true });
+    for (const name of [
+        'release-manifest.json',
+        'SHA256SUMS',
+        'nora-tavern-app.tar.gz',
+        'nora-tavern-ops.tar.gz',
+        'nora-tavern-nora-mcp.tar.gz',
+        'nora-tavern-first-install-bootstrap.py',
+        'first-install-manifest.json',
+        ...runtimePayloadNames,
+    ]) {
+        copyPackageFile(path.join(release, name), path.join(starterPayload, name));
+    }
+    const starterFiles = [
+        'Install-Nora-Tavern.command',
+        'Install-Nora-Tavern.cmd',
+        'Install-Nora-Tavern.ps1',
+        'START-HERE.md',
+    ];
+    for (const name of starterFiles) {
+        copyPackageFile(path.join(stage, 'ops/installer/package', name), path.join(starterRoot, name));
+    }
+    for (const name of ['launcher-ui-prototype.html', 'launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py']) {
+        copyPackageFile(path.join(stage, 'ops/installer', name), path.join(starterRoot, name));
+    }
+    copyPackageTree(path.join(stage, 'ops/installer/assets'), path.join(starterRoot, 'assets'));
+    copyPackageTree(path.join(stage, 'ops/installer/desktop'), path.join(starterRoot, 'desktop'));
+    if (/-beta\./.test(identity.versions.tavern)) {
+        const packageFile = path.join(starterRoot, 'desktop/package.json');
+        const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+        desktop.noraReleaseChannel = 'beta';
+        desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.beta';
+        desktop.build.productName = '诺拉·酒馆 Beta';
+        desktop.build.artifactName = `Nora-Tavern-${identity.versions.tavern}-\${os}-\${arch}.\${ext}`;
+        desktop.build.mac.identity = '-';
+        desktop.build.nsis.artifactName = `Nora-Tavern-${identity.versions.tavern}-win-\${arch}-setup.\${ext}`;
+        fs.writeFileSync(packageFile, JSON.stringify(desktop, null, 2));
+    }
+    writeSystemRelease({ release, payload: starterPayload, identity,
+        launcherVersion: JSON.parse(fs.readFileSync(path.join(starterRoot, 'desktop/package.json'), 'utf8')).version });
+    const starterName = 'nora-tavern-launcher.zip';
+    run('zip', ['-qry', starterName, 'nora-tavern-launcher'], release);
+    const starterBytes = fs.readFileSync(path.join(release, starterName));
+    checksums.push(`${digest(starterBytes)}  ${starterName}`);
+    identity.starter = {
+        name: starterName,
+        sha256: digest(starterBytes),
+        payload: 'bundled-release',
+        entrypoints: starterFiles,
+    };
+
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');

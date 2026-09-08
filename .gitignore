@@ -8,6 +8,7 @@
 **/.cache/
 **/coverage/
 release/
+ops/installer/desktop/dist/
 
 # Private production-state snapshot. Keep only its documentation in Git.
 local-state/**

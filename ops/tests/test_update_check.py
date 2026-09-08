@@ -33,6 +33,7 @@ class UpdateCheckScriptTests(unittest.TestCase):
         environment = {
             **os.environ,
             "HERMES_HOME": str(home),
+            "TAVERN_DATA_ROOT": str(home),
             "TAVERN_UPDATE_PYTHON": sys.executable,
             "TAVERN_RELEASE_API_URL": release.as_uri(),
         }
@@ -157,7 +158,7 @@ class UpdateCheckInstallerTests(unittest.TestCase):
             (cron / "jobs.json").write_text(
                 json.dumps({
                     "jobs": [
-                        {"id": "keep", "name": "old name", "script": updater.UPDATE_CHECK_SCRIPT},
+                        {"id": "keep", "name": "old name", "script": updater.UPDATE_CHECK_SCRIPT, "enabled": True},
                         {"id": "duplicate", "name": updater.UPDATE_CHECK_JOB_NAME, "script": "old.sh"},
                     ]
                 }),

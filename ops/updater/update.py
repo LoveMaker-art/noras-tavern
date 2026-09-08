@@ -2,7 +2,6 @@
 """Direct Tavern updater: backup, replace, start."""
 import argparse
 from contextlib import contextmanager
-import fcntl
 import hashlib
 import importlib.util
 import json
@@ -18,14 +17,19 @@ import tempfile
 import time
 import uuid
 
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows has no fcntl.
+    fcntl = None
+
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Asia/Shanghai)"
-UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.sh"
+UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
+UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
 UPDATE_CHECK_SCHEDULE = "0 9 * * *"
-UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py")
+UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py", "nora-instance.py")
 HOST_HOOK = Path("hooks/tavern-liveware-register")
 
 
@@ -38,6 +42,26 @@ def safe(path):
     if value == Path("/"):
         raise RuntimeError("拒绝使用根目录")
     return value
+
+
+def default_nora_home():
+    if os.environ.get("NORA_TAVERN_HOME"):
+        return safe(os.environ["NORA_TAVERN_HOME"])
+    if sys.platform == "darwin":
+        return safe(Path.home() / "Library/Application Support/Nora Tavern")
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        return safe(base / "Nora Tavern")
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    return safe(base / "nora-tavern")
+
+
+def default_hermes_home():
+    return safe(os.environ.get("HERMES_HOME") or default_nora_home() / "hermes")
+
+
+def default_install_root():
+    return safe(os.environ.get("TAVERN_DATA_ROOT") or default_nora_home() / "tavern")
 
 
 def atomic(path, data, mode=0o600):
@@ -110,11 +134,13 @@ def port_open(port=8799):
 def installer_lock(home):
     path = Path(home) / "tavern-installer.lock"
     with path.open("a+") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        if fcntl:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
         try:
             yield
         finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            if fcntl:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def python_layout(app):
@@ -285,13 +311,13 @@ def prepare_skills(source, destination):
     return installer.prepare_skill_trees(source, destination)
 
 
-def prepare_host_hook_swap(home, source, prepared_root):
+def prepare_host_hook_swap(hermes_home, source, prepared_root):
     origin = Path(source) / "ops" / HOST_HOOK
     required = ("HOOK.yaml", "handler.py", "run.sh")
     missing = [name for name in required if not (origin / name).is_file()]
     if missing:
         raise RuntimeError("发布包缺少 Tavern 启动钩子：" + ", ".join(missing))
-    target = Path(home) / HOST_HOOK
+    target = Path(hermes_home) / HOST_HOOK
     if trees_equal(origin, target):
         return None
     prepared_root = Path(prepared_root)
@@ -301,10 +327,10 @@ def prepare_host_hook_swap(home, source, prepared_root):
     return "host-hook-tavern-liveware-register", prepared, target
 
 
-def hermes_model(home, source):
+def hermes_model(hermes_home, source):
     try:
         model = module_at("release_native_model", source / "app/native_model_config.py")
-        return model.load_model_config(home / "config.yaml")
+        return model.load_model_config(hermes_home / "config.yaml")
     except Exception:
         return None
 
@@ -317,17 +343,17 @@ def legacy_model(home):
         return None
 
 
-def migration_copy(home, source, work, layout):
-    old_state = home / "tavern-state"
+def migration_copy(hermes_home, install_root, source, work, layout):
+    old_state = install_root / "tavern-state"
     prepared = work / "prepared/state"
     if old_state.is_dir():
         shutil.copytree(old_state, prepared, symlinks=False)
     else:
         prepared.mkdir(parents=True)
     options = {
-        "hermesModel": hermes_model(home, source),
-        "legacyModel": legacy_model(home),
-        "legacyApp": str(home / "apps/tavern-runtime"),
+        "hermesModel": hermes_model(hermes_home, source),
+        "legacyModel": legacy_model(hermes_home),
+        "legacyApp": str(install_root / "apps/tavern-runtime"),
         "legacyWeb": layout["web"],
     }
     options_path = work / "model-input.json"
@@ -340,8 +366,8 @@ def migration_copy(home, source, work, layout):
     return prepared, json.loads(result.stdout)
 
 
-def fallback_python_state(home, work, reason):
-    old = home / "tavern-state"
+def fallback_python_state(install_root, work, reason):
+    old = install_root / "tavern-state"
     prepared = work / "prepared-fallback/state"
     if old.is_dir():
         # An unsupported legacy record must not turn into lost configuration.
@@ -360,32 +386,32 @@ def fallback_python_state(home, work, reason):
     return prepared, report
 
 
-def render_mcp(home):
+def render_mcp(hermes_home, install_root):
     try:
         import yaml
     except ImportError as error:
         raise RuntimeError("Hermes Python 缺少 PyYAML，无法写入 MCP 配置") from error
-    path = home / "config.yaml"
+    path = hermes_home / "config.yaml"
     value = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
     value = value or {}
     servers = value.setdefault("mcp_servers", {})
     current = servers.get("nora") if isinstance(servers.get("nora"), dict) else {}
     env = current.get("env") if isinstance(current.get("env"), dict) else {}
     env.update({
-        "NORA_MCP_PROJECT_ROOT": str(home / "apps/tavern-runtime"),
-        "NORA_MCP_ST_ROOT": str(home / "apps/tavern-runtime/engine/sillytavern"),
-        "NORA_MCP_STATE_ROOT": str(home / "tavern-state"),
-        "NORA_MCP_NATIVE_DATA_ROOT": str(home / "tavern-state/native"),
-        "NORA_MCP_USER_DATA_ROOT": str(home / "tavern-state/native/default-user"),
-        "NORA_MCP_CONFIG_PATH": str(home / "tavern-state/native-runtime/config.yaml"),
-        "NORA_MCP_UPLOAD_ROOT": str(home / "tavern-state/imports"),
+        "NORA_MCP_PROJECT_ROOT": str(install_root / "apps/tavern-runtime"),
+        "NORA_MCP_ST_ROOT": str(install_root / "apps/tavern-runtime/engine/sillytavern"),
+        "NORA_MCP_STATE_ROOT": str(install_root / "tavern-state"),
+        "NORA_MCP_NATIVE_DATA_ROOT": str(install_root / "tavern-state/native"),
+        "NORA_MCP_USER_DATA_ROOT": str(install_root / "tavern-state/native/default-user"),
+        "NORA_MCP_CONFIG_PATH": str(install_root / "tavern-state/native-runtime/config.yaml"),
+        "NORA_MCP_UPLOAD_ROOT": str(install_root / "tavern-state/imports"),
         "NORA_MCP_BASE_URL": "http://127.0.0.1:8799",
         "NORA_MCP_MODE": "operator",
     })
     servers["nora"] = {
         **current,
         "command": shutil.which("node") or "node",
-        "args": [str(home / "apps/nora-mcp/dist/server.js")],
+        "args": [str(install_root / "apps/nora-mcp/dist/server.js")],
         "env": env,
         "timeout": current.get("timeout", 420),
     }
@@ -485,14 +511,14 @@ def roots_with_unmanaged_files(home, manifest):
     return changed
 
 
-def copy_host_backup(home, backup, service_snapshot):
+def copy_host_backup(hermes_home, install_root, backup, service_snapshot):
     host = backup / "host"
     host.mkdir(parents=True)
     for name in ("AGENTS.md", "config.yaml"):
-        source = home / name
+        source = hermes_home / name
         if source.is_file():
             shutil.copy2(source, host / name)
-    marker = home / "tavern-state/native-runtime/dependencies.json"
+    marker = install_root / "tavern-state/native-runtime/dependencies.json"
     if marker.is_file():
         (host / "native-runtime").mkdir()
         shutil.copy2(marker, host / "native-runtime/dependencies.json")
@@ -500,16 +526,16 @@ def copy_host_backup(home, backup, service_snapshot):
         json_write(host / "service.json", service_snapshot)
 
 
-def restore_host(home, backup):
+def restore_host(hermes_home, install_root, backup):
     host = backup / "host"
     for name in ("AGENTS.md", "config.yaml"):
         saved = host / name
-        target = home / name
+        target = hermes_home / name
         if saved.is_file():
             shutil.copy2(saved, target)
         else:
             target.unlink(missing_ok=True)
-    marker = home / "tavern-state/native-runtime/dependencies.json"
+    marker = install_root / "tavern-state/native-runtime/dependencies.json"
     saved_marker = host / "native-runtime/dependencies.json"
     if saved_marker.is_file():
         marker.parent.mkdir(parents=True, exist_ok=True)
@@ -543,10 +569,10 @@ def restore_tree(target, backup_target, failed):
         os.replace(backup_target, target)
 
 
-def start_old(home, service, snapshot):
-    app = home / "apps/tavern-runtime"
+def start_old(hermes_home, install_root, service, snapshot):
+    app = install_root / "apps/tavern-runtime"
     if (app / "native_lifecycle.py").is_file():
-        environment = {**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(home)}
+        environment = {**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)}
         run([sys.executable, "-B", app / "native_lifecycle.py", "install"], env=environment)
         if service and snapshot:
             service.restore(snapshot)
@@ -560,13 +586,13 @@ def start_old(home, service, snapshot):
         return
     layout = python_layout(app)
     if layout:
-        log_file = home / "tavern-state/runtime/python-recovery.log"
+        log_file = install_root / "tavern-state/runtime/python-recovery.log"
         log_file.parent.mkdir(parents=True, exist_ok=True)
         with log_file.open("ab", buffering=0) as output:
             subprocess.Popen(
                 [sys.executable, str(app / layout["entry"]), "--port", "8799"],
                 cwd=app,
-                env={**os.environ, "HERMES_HOME": str(home)},
+                env={**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)},
                 stdin=subprocess.DEVNULL,
                 stdout=output,
                 stderr=subprocess.STDOUT,
@@ -601,11 +627,11 @@ def temporary_content_check_skip(config_path, enabled):
             atomic(config_path, original, mode=config_path.stat().st_mode & 0o777)
 
 
-def install_runtime(home, *, skip_content_check=False):
-    app = home / "apps/tavern-runtime"
+def install_runtime(hermes_home, install_root, *, skip_content_check=False):
+    app = install_root / "apps/tavern-runtime"
     module = module_at("installed_native_lifecycle", app / "native_lifecycle.py")
     contract = module.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
-    runtime = module.NativeRuntime(home, app, home / "tavern-state", contract)
+    runtime = module.NativeRuntime(install_root, app, install_root / "tavern-state", contract)
     runtime.install()
     service = runtime.managed_service()
     if service:
@@ -615,14 +641,14 @@ def install_runtime(home, *, skip_content_check=False):
         return runtime.start(port=8799)
 
 
-def refresh_liveware(home, source):
+def refresh_liveware(hermes_home, install_root, source):
     try:
         source = Path(source)
         path = source / "updater/liveware_integration.py"
         if not path.is_file():
             path = source / "ops/updater/liveware_integration.py"
         integration = module_at("simple_liveware", path)
-        return integration.repair(home)
+        return integration.repair(install_root, hermes_home=hermes_home)
     except Exception as error:
         return {"status": "pending", "warnings": [str(error)]}
 
@@ -641,6 +667,7 @@ def read_cron_jobs(home):
 def hermes_command():
     candidates = (
         Path(sys.executable).with_name("hermes"),
+        Path(sys.executable).with_name("hermes.exe"),
         Path("/opt/hermes/.venv/bin/hermes"),
     )
     for candidate in candidates:
@@ -655,7 +682,8 @@ def hermes_command():
 def update_check_jobs(home):
     return [
         job for job in read_cron_jobs(home)
-        if job.get("name") == UPDATE_CHECK_JOB_NAME or job.get("script") == UPDATE_CHECK_SCRIPT
+        if job.get("name") in (UPDATE_CHECK_JOB_NAME, "Nora Tavern daily update check (09:00 Asia/Shanghai)")
+        or job.get("script") in (UPDATE_CHECK_SCRIPT, "nora-tavern-update-check.sh")
     ]
 
 
@@ -694,7 +722,8 @@ def configure_update_check_job(home):
     if (schedule.get("expr") != UPDATE_CHECK_SCHEDULE
             or job.get("script") != UPDATE_CHECK_SCRIPT
             or job.get("no_agent") is not True
-            or job.get("deliver") != "local"):
+            or job.get("deliver") != "local"
+            or job.get("enabled") is not True):
         raise RuntimeError("更新提醒任务配置未生效")
     return job
 
@@ -718,25 +747,38 @@ def install_update_check(home, ops_root):
 
 
 def install(args):
-    home = safe(args.home)
-    if not (home / "skills").is_dir():
-        raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(home))
+    hermes_home = safe(args.home) if args.home else default_hermes_home()
+    if args.install_root:
+        install_root = safe(args.install_root)
+    elif os.environ.get("TAVERN_DATA_ROOT"):
+        install_root = safe(os.environ["TAVERN_DATA_ROOT"])
+    else:
+        install_root = hermes_home if args.home else default_install_root()
+    if ((hermes_home / "nora-instance.json").is_file()
+            or (install_root / "tavern-updates/nora-system.json").is_file()):
+        raise RuntimeError("此实例由诺拉启动器管理，禁止用 Tavern 单体更新器覆盖完整 Nora 系统。请在启动器中检查版本。")
+    os.environ["HERMES_HOME"] = str(hermes_home)
+    os.environ["NORA_HERMES_HOME"] = str(hermes_home)
+    os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
+    os.environ["TAVERN_DATA_ROOT"] = str(install_root)
+    if not (hermes_home / "skills").is_dir():
+        raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(hermes_home))
     from bundle import extract_bundle, installed_roots, read_bundle
-    with installer_lock(home):
-        update_root = home / "tavern-updates"
+    with installer_lock(install_root):
+        update_root = install_root / "tavern-updates"
         update_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="direct-", dir=update_root) as temporary:
             work = Path(temporary)
             source = work / "source"
             manifest = read_bundle(args.release_dir, args.manifest_sha256)
-            roots = installed_roots(home)
+            roots = installed_roots(install_root)
             old_app = roots["app"]
             old_mcp = roots["nora-mcp"]
             layout = python_layout(old_app)
             bundle_report = extract_bundle(args.release_dir, source, manifest, roots=roots)
             version = manifest["versions"]["tavern"]
             changed = set(bundle_report["changedModules"])
-            root_changes = changed_roots(manifest, changed) | roots_with_unmanaged_files(home, manifest)
+            root_changes = changed_roots(manifest, changed) | roots_with_unmanaged_files(install_root, manifest)
             if layout:
                 root_changes.update(("app", "ops", "nora-mcp"))
             app_changed = "app" in root_changes
@@ -751,20 +793,20 @@ def install(args):
             )
             skills = prepare_skills(source, work / "skills")
             agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
-            desired_agents = merged_agents(home, agents_bytes)
-            mcp_config = render_mcp(home)
-            agents_changed = not (home / "AGENTS.md").is_file() or (home / "AGENTS.md").read_bytes() != desired_agents
-            config_changed = not (home / "config.yaml").is_file() or (home / "config.yaml").read_bytes() != mcp_config
+            desired_agents = merged_agents(hermes_home, agents_bytes)
+            mcp_config = render_mcp(hermes_home, install_root)
+            agents_changed = not (hermes_home / "AGENTS.md").is_file() or (hermes_home / "AGENTS.md").read_bytes() != desired_agents
+            config_changed = not (hermes_home / "config.yaml").is_file() or (hermes_home / "config.yaml").read_bytes() != mcp_config
             migration = {"status": "not-required"}
             prepared_state = None
             if layout:
                 log("迁移旧 Python 数据；不兼容记录只归档，不阻止更新")
                 try:
-                    prepared_state, migration = migration_copy(home, source, work, layout)
+                    prepared_state, migration = migration_copy(hermes_home, install_root, source, work, layout)
                 except Exception as error:
-                    prepared_state, migration = fallback_python_state(home, work, str(error))
+                    prepared_state, migration = fallback_python_state(install_root, work, str(error))
             service_module = module_at("simple_service_manager", source / "ops/updater/service_manager.py")
-            service = service_module.ManagedService.discover(home, old_app)
+            service = service_module.ManagedService.discover(install_root, old_app)
             service_snapshot = service.snapshot() if service else None
             swaps = []
             if app_changed:
@@ -776,15 +818,15 @@ def install(args):
             # The operations tree is swapped before host hooks. Keep the hook's
             # prepared source outside source/ops so moving that parent tree
             # cannot invalidate a later swap in the same transaction.
-            host_hook = prepare_host_hook_swap(home, source, work / "host-hooks")
+            host_hook = prepare_host_hook_swap(hermes_home, source, work / "host-hooks")
             if host_hook:
                 swaps.append(host_hook)
             for relative, prepared in skills.items():
-                target = home / "skills" / relative
+                target = hermes_home / "skills" / relative
                 if not trees_equal(prepared, target):
                     swaps.append(("skill-" + relative.replace("/", "-"), prepared, target))
             for retired in getattr(module_at("simple_skill_names", source / "ops/scripts/install-hermes-skills.py"), "RETIRED"):
-                target = home / "skills/creative" / retired
+                target = hermes_home / "skills/creative" / retired
                 if target.exists():
                     swaps.append(("retired-" + retired, None, target))
             host_changed = agents_changed or config_changed
@@ -800,9 +842,9 @@ def install(args):
                 log("已是最新版，无需替换文件。")
                 return
             stamp = time.strftime("%Y%m%d-%H%M%S")
-            backup = home / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
+            backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             backup.mkdir(parents=True)
-            copy_host_backup(home, backup, service_snapshot)
+            copy_host_backup(hermes_home, install_root, backup, service_snapshot)
             applied = []
             state_swapped = False
             runtime_stopped = False
@@ -827,7 +869,7 @@ def install(args):
                     swap_tree(prepared, target, saved)
                     applied.append((name, target, saved))
                 if prepared_state is not None:
-                    active_state = home / "tavern-state"
+                    active_state = install_root / "tavern-state"
                     saved_state = backup / "state"
                     os.replace(active_state, saved_state)
                     try:
@@ -837,25 +879,29 @@ def install(args):
                         raise
                     state_swapped = True
                 if agents_changed:
-                    atomic(home / "AGENTS.md", desired_agents, mode=0o600)
+                    atomic(hermes_home / "AGENTS.md", desired_agents, mode=0o600)
                 if config_changed:
-                    atomic(home / "config.yaml", mcp_config, mode=0o600)
+                    atomic(hermes_home / "config.yaml", mcp_config, mode=0o600)
                 if app_changed:
-                    json_write(home / "tavern-state/native-runtime/dependencies.json", dependency_marker(home / "apps/tavern-runtime"))
+                    json_write(
+                        install_root / "tavern-state/native-runtime/dependencies.json",
+                        dependency_marker(install_root / "apps/tavern-runtime"),
+                    )
                 if runtime_changed:
                     log("启动新版 Tavern")
                     runtime = install_runtime(
-                        home,
+                        hermes_home,
+                        install_root,
                         skip_content_check="tavern-engine" not in changed,
                     )
                 else:
                     runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
                                "health": {"ok": port_open(8799)}}
                 liveware_needed = app_changed or ops_changed or host_hook is not None
-                liveware = refresh_liveware(home, home / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
+                liveware = refresh_liveware(hermes_home, install_root, install_root / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
                 if ops_changed:
                     try:
-                        update_check = install_update_check(home, home / "apps/tavern-ops")
+                        update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
                     except Exception as update_check_error:
                         update_check = {"status": "pending", "warnings": [str(update_check_error)]}
                 else:
@@ -908,8 +954,8 @@ def install(args):
                 log("更新未完成，恢复旧版本")
                 if runtime_stopped:
                     try:
-                        active_app = home / "apps/tavern-runtime"
-                        active_service = service_module.ManagedService.discover(home, active_app)
+                        active_app = install_root / "apps/tavern-runtime"
+                        active_service = service_module.ManagedService.discover(install_root, active_app)
                         if active_service:
                             active_service.stop()
                         else:
@@ -920,15 +966,15 @@ def install(args):
                 for name, target, saved in reversed(applied):
                     restore_tree(target, saved, failed_root / name)
                 if state_swapped:
-                    active_state = home / "tavern-state"
+                    active_state = install_root / "tavern-state"
                     if active_state.exists():
                         os.replace(active_state, failed_root / "state")
                     os.replace(backup / "state", active_state)
-                restore_host(home, backup)
+                restore_host(hermes_home, install_root, backup)
                 recovery = "restored"
                 if runtime_stopped:
                     try:
-                        start_old(home, service, service_snapshot)
+                        start_old(hermes_home, install_root, service, service_snapshot)
                     except Exception as recovery_error:
                         recovery = "files-restored-start-failed: " + str(recovery_error)
                 raise RuntimeError(f"{error}; recovery={recovery}; backup={backup}") from error
@@ -936,7 +982,8 @@ def install(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--hermes-home", dest="home", type=Path, default=os.environ.get("HERMES_HOME", "/opt/data"))
+    parser.add_argument("--hermes-home", dest="home", type=Path)
+    parser.add_argument("--install-root", type=Path)
     sub = parser.add_subparsers(dest="command", required=True)
     command = sub.add_parser("install")
     command.add_argument("--release-dir", type=Path, required=True)

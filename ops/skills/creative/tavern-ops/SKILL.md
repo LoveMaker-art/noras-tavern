@@ -4,7 +4,7 @@ description: Diagnose and restore Tavern, MCP and Liveware services.
 version: 1.25.1
 author: ClawChat Tavern
 license: AGPL-3.0-only
-platforms: [linux, macos]
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     category: creative
@@ -38,7 +38,14 @@ and its setup requirements; preserve the platform-managed skills/configuration.
 Load with `skill_view(name="tavern-ops")` or `/tavern-ops <request>`. Inspect files
 through `read_file`/`search_files`; invoke the maintained lifecycle through
 `terminal`. For example, after resolving HERMES_HOME, the read-only command is
-`sh "$HERMES_HOME/skills/creative/tavern/scripts/runtime.sh" status`.
+the isolated Hermes Python with `scripts/nora-instance.py status` under HERMES_HOME.
+On Windows use `hermes-agent/venv/Scripts/python.exe`; on macOS use
+`hermes-agent/venv/bin/python3`. Pass absolute paths as separate arguments.
+For launcher-managed installations (identified by `nora-instance.json`), this
+Python entrypoint is authoritative: `status` is read-only, `start` and `stop`
+require explicit authorization, and `recover-existing` restores saved Liveware
+bindings. Never invoke legacy shell provision/update scripts on that instance.
+Its port and root come from the instance file, not a guessed default.
 
 ## Quick Reference
 

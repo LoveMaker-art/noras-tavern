@@ -1,0 +1,1339 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>诺拉·酒馆</title>
+  <link rel="icon" href="assets/tavern-icon-dbf4ecbd54ec.png">
+  <link rel="stylesheet" href="assets/css/fontawesome.min.css">
+  <link rel="stylesheet" href="assets/css/solid.min.css">
+  <style>
+    :root {
+      --ink: #f8eff3;
+      --muted: #b7aab2;
+      --deep: #111016;
+      --panel: rgba(29, 25, 33, .88);
+      --panel-2: rgba(248, 239, 243, .07);
+      --line: rgba(248, 239, 243, .14);
+      --rose: #db5378;
+      --wine: #9e3049;
+      --gold: #d6ab67;
+      --cyan: #39bdb8;
+      --green: #45c77b;
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; letter-spacing: 0; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+      background: #0b0a0e;
+      font-size: 14px;
+    }
+    button { border: 0; font: inherit; cursor: pointer; }
+    [hidden] { display: none !important; }
+    .launcher {
+      --nora-x: 0px;
+      --nora-y: 0px;
+      width: 1120px;
+      height: 680px;
+      overflow: hidden;
+      display: grid;
+      grid-template-columns: 470px minmax(0, 1fr);
+      background: var(--deep);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .portrait {
+      position: relative;
+      height: 680px;
+      overflow: hidden;
+      background: #050507;
+      border-right: 1px solid var(--line);
+    }
+    .portrait img {
+      position: absolute;
+      inset: -2% auto auto 50%;
+      width: 128%;
+      height: 108%;
+      max-width: none;
+      object-fit: cover;
+      object-position: 50% 45%;
+      transform: translate(calc(-50% + var(--nora-x)), var(--nora-y)) scale(1.035);
+      filter: saturate(1.04) contrast(1.03);
+      transition: transform 480ms ease;
+    }
+    .portrait::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background:
+        linear-gradient(90deg, rgba(0,0,0,.08), transparent 56%, rgba(17,16,22,.76)),
+        linear-gradient(0deg, rgba(17,16,22,.9), transparent 38%);
+    }
+    .work {
+      position: relative;
+      min-width: 0;
+      height: 680px;
+      padding: 20px;
+      display: grid;
+      grid-template-rows: 42px 78px minmax(0, 1fr) 36px;
+      gap: 12px;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 100% 0%, rgba(57,189,184,.13), transparent 30%),
+        radial-gradient(circle at 5% 100%, rgba(219,83,120,.14), transparent 34%),
+        #121017;
+      transition: grid-template-rows 420ms cubic-bezier(.2,.8,.2,1);
+    }
+    .work.launcher-mode { grid-template-rows: 42px minmax(0, 1fr) 36px; }
+    .topbar, .brand, .status-pill, .actions, .footer, .tools, .task-line {
+      display: flex;
+      align-items: center;
+    }
+    .topbar, .footer { justify-content: space-between; gap: 12px; }
+    .brand { gap: 10px; min-width: 0; }
+    .brand img { width: 34px; height: 34px; border-radius: 8px; }
+    .brand b { display: block; font-size: 16px; }
+    .brand span { display: block; margin-top: 1px; color: var(--muted); font-size: 11px; }
+    .status-pill {
+      min-height: 28px;
+      padding: 0 10px;
+      gap: 7px;
+      border: 1px solid rgba(214,171,103,.3);
+      border-radius: 999px;
+      color: #f1d19e;
+      background: rgba(214,171,103,.09);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .status-pill.ready { color: #aaf0c4; border-color: rgba(69,199,123,.34); background: rgba(69,199,123,.09); }
+    .status-pill.busy { color: #b5f2ef; border-color: rgba(57,189,184,.34); background: rgba(57,189,184,.09); }
+    .status-pill.error { color: #ffb8c9; border-color: rgba(219,83,120,.46); background: rgba(219,83,120,.12); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+    .nora-chat-panel, .flow-step {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+    }
+    .actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .btn, .tool {
+      min-height: 40px;
+      padding: 0 14px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(248,239,243,.07);
+      white-space: nowrap;
+    }
+    .btn.primary {
+      position: relative;
+      min-width: 172px;
+      overflow: hidden;
+      color: white;
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--wine), var(--rose));
+      font-weight: 800;
+    }
+    .btn.primary.ready-reveal { animation: primary-arrive 520ms cubic-bezier(.2,.8,.2,1) both; }
+    .btn.primary.ready-reveal::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: linear-gradient(105deg, transparent 25%, rgba(255,255,255,.34) 50%, transparent 75%);
+      transform: translateX(-120%);
+      animation: primary-sheen 700ms 100ms ease-out both;
+      pointer-events: none;
+    }
+    .btn.small { min-height: 34px; padding: 0 11px; font-size: 12px; }
+    .btn:disabled, .tool:disabled { cursor: not-allowed; opacity: .45; }
+    .flow {
+      position: relative;
+      min-width: 0;
+      width: 100%;
+      display: flex;
+      gap: 8px;
+      overflow: hidden;
+      transition: height 420ms cubic-bezier(.2,.8,.2,1), gap 420ms cubic-bezier(.2,.8,.2,1);
+    }
+    .flow::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 2px;
+      background: var(--green);
+      transform: scaleX(0);
+      transform-origin: left;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .flow.completing::after { animation: completion-trace 760ms ease-out both; }
+    .flow.hidden { display: none; }
+    .flow-step {
+      height: 78px;
+      padding: 9px;
+      display: grid;
+      grid-template-rows: 20px auto;
+      align-content: space-between;
+      min-width: 0;
+      width: 0;
+      flex: 1 1 0;
+      transition: height 420ms cubic-bezier(.2,.8,.2,1), padding 420ms cubic-bezier(.2,.8,.2,1), background 220ms ease, border-color 220ms ease;
+    }
+    .flow-step i { color: #6d6570; font-size: 16px; }
+    .flow-step b { display: block; font-size: 12px; white-space: nowrap; }
+    .flow-step span {
+      display: block;
+      margin-top: 3px;
+      overflow: hidden;
+      color: var(--muted);
+      font-size: 11px;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .flow-step.running { border-color: rgba(219,83,120,.55); background: rgba(219,83,120,.13); }
+    .flow-step.running i { color: var(--rose); }
+    .flow-step.action { border-color: rgba(214,171,103,.42); background: rgba(214,171,103,.08); }
+    .flow-step.action i { color: var(--gold); }
+    .flow-step.done { border-color: rgba(69,199,123,.38); background: rgba(69,199,123,.09); }
+    .flow-step.done i { color: var(--green); }
+    .flow-step.error { border-color: rgba(219,83,120,.58); background: rgba(219,83,120,.16); }
+    .flow.completing .flow-step.done { animation: step-confirm 380ms ease-out both; }
+    .flow.completing .flow-step:nth-child(2) { animation-delay: 80ms; }
+    .flow.completing .flow-step:nth-child(3) { animation-delay: 160ms; }
+    .flow.completing .flow-step:nth-child(4) { animation-delay: 240ms; }
+    .flow.completing .flow-step:nth-child(5) { animation-delay: 320ms; }
+    .flow.departing { animation: flow-depart 360ms cubic-bezier(.4,0,.2,1) both; pointer-events: none; }
+    .content {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr);
+    }
+    .content.has-launcher-action {
+      grid-template-rows: minmax(0, 1fr) 40px;
+      gap: 8px;
+    }
+    .daily {
+      padding: 10px 12px;
+      min-width: 0;
+      width: 100%;
+      display: flex;
+      gap: 8px;
+      overflow: hidden;
+    }
+    .component {
+      min-width: 0;
+      width: 0;
+      flex: 1 1 0;
+      padding: 8px 10px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr);
+      align-items: center;
+      gap: 9px;
+      border-radius: 6px;
+      background: var(--panel-2);
+    }
+    .component-dot { width: 8px; height: 8px; border-radius: 50%; background: #6d6570; }
+    .component.ok .component-dot { background: var(--green); }
+    .component.warn .component-dot { background: var(--gold); }
+    .component b, .component span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .component b { font-size: 12px; }
+    .component span { margin-top: 2px; color: var(--muted); font-size: 11px; }
+    .activity { min-height: 0; padding: 14px; display: grid; grid-template-rows: auto auto minmax(0, 1fr); gap: 10px; }
+    .task-line { justify-content: space-between; gap: 12px; }
+    .task-line b { font-size: 13px; }
+    .task-line span { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .progress { height: 5px; overflow: hidden; border-radius: 5px; background: rgba(248,239,243,.09); }
+    .progress > span { display: block; width: 0; height: 100%; background: var(--cyan); transition: width 180ms linear; }
+    .footer { min-width: 0; overflow: hidden; color: var(--muted); font-size: 11px; }
+    .footer > span { min-width: 0; flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tools { gap: 7px; }
+    .tool { min-height: 30px; padding: 0 9px; color: var(--muted); font-size: 11px; }
+    .component.actionable { color: var(--ink); text-align: left; cursor: pointer; }
+    .component.actionable:hover { background: rgba(248,239,243,.11); }
+    .nora-chat-panel {
+      position: relative;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) 32px;
+      overflow: hidden;
+      background: rgba(20, 17, 24, .76);
+    }
+    .conversation-scroll {
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(248,239,243,.18) transparent;
+    }
+    .nora-messages { padding: 13px 14px 0; }
+    .nora-message {
+      display: grid;
+      grid-template-columns: 30px minmax(0, 1fr);
+      align-items: start;
+      gap: 9px;
+      padding: 1px 0 11px;
+      animation: message-in 220ms ease-out both;
+      max-height: 88px;
+      overflow: hidden;
+      transition: max-height 360ms cubic-bezier(.2,.8,.2,1), opacity 260ms ease, padding 360ms ease, transform 360ms ease;
+    }
+    .nora-messages.launcher-status .nora-message:not(:last-child) {
+      max-height: 0;
+      padding-top: 0;
+      padding-bottom: 0;
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    .nora-message-avatar {
+      width: 30px;
+      height: 30px;
+      object-fit: cover;
+      object-position: 50% 34%;
+      border: 1px solid rgba(248,239,243,.22);
+      border-radius: 6px;
+      box-shadow: 0 3px 10px rgba(0,0,0,.24);
+    }
+    .nora-message-body { min-width: 0; }
+    .nora-message-name { margin-bottom: 2px; color: var(--rose); font-size: 10px; font-weight: 800; }
+    .nora-message-text { margin: 0; color: #f2e9ed; font-size: 12.5px; line-height: 1.5; overflow-wrap: anywhere; }
+    .nora-message.error .nora-message-text { color: #ffb8c9; }
+    .conversation-action {
+      min-width: 0;
+      margin: 0 14px 14px 53px;
+      animation: message-in 180ms ease-out both;
+    }
+    .launcher-action-bar {
+      min-width: 0;
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+    }
+    .launcher-action-bar .actions { justify-content: flex-end; }
+    .launcher-action-bar .btn { min-height: 40px; }
+    .nora-chat-foot {
+      position: relative;
+      min-width: 0;
+      padding: 0 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-top: 1px solid rgba(248,239,243,.09);
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .dialogue-meta { min-width: 0; display: flex; align-items: center; gap: 8px; }
+    .dialogue-task { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dialogue-time { flex: 0 0 auto; white-space: nowrap; }
+    .dialogue-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(248,239,243,.06); }
+    .dialogue-progress span { display: block; width: 0; height: 100%; background: var(--cyan); transition: width 180ms linear; }
+    @keyframes message-in {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes completion-trace {
+      0% { opacity: 0; transform: scaleX(0); }
+      18% { opacity: 1; }
+      72% { opacity: 1; transform: scaleX(1); }
+      100% { opacity: 0; transform: scaleX(1); }
+    }
+    @keyframes step-confirm {
+      0%, 100% { transform: translateY(0); }
+      48% { transform: translateY(-3px); }
+    }
+    @keyframes flow-depart {
+      from { opacity: 1; transform: translateY(0) scale(1); }
+      to { opacity: 0; transform: translateY(-14px) scale(.985); }
+    }
+    @keyframes primary-arrive {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes primary-sheen {
+      from { transform: translateX(-120%); }
+      to { transform: translateX(120%); }
+    }
+    @keyframes launcher-glow {
+      0%, 100% { box-shadow: 0 0 0 rgba(69,199,123,0); }
+      45% { box-shadow: 0 0 26px rgba(69,199,123,.2); }
+    }
+    .launcher.completion-glow { animation: launcher-glow 900ms ease-out both; }
+    @media (prefers-reduced-motion: reduce) {
+      .launcher, .work, .flow, .flow-step, .nora-message, .btn.primary { animation: none !important; transition: none !important; }
+    }
+    .model-setup {
+      min-width: 0;
+      padding: 11px;
+      border-left: 2px solid rgba(219,83,120,.64);
+      background: rgba(248,239,243,.045);
+    }
+    .model-head { margin-bottom: 9px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .model-head h2 { margin: 0; font-size: 12px; line-height: 1.2; }
+    .model-head p { display: none; }
+    .icon-btn {
+      width: 24px;
+      height: 24px;
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      color: var(--muted);
+      border-radius: 5px;
+      background: transparent;
+    }
+    .icon-btn:hover { color: var(--ink); background: rgba(248,239,243,.1); }
+    .model-form {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 9px 10px;
+      align-content: start;
+    }
+    .field { min-width: 0; display: grid; grid-template-rows: 17px 34px; gap: 4px; align-content: start; }
+    .field.full { grid-column: 1 / -1; }
+    .field-line { min-height: 17px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .field label { display: block; color: #e9dfe4; font-size: 10px; font-weight: 700; line-height: 17px; }
+    .field a { color: #e5ba77; font-size: 10px; text-decoration: none; }
+    .field a:hover { text-decoration: underline; }
+    .control, .secret-control {
+      width: 100%;
+      height: 34px;
+      margin-top: 0;
+      color: var(--ink);
+      border: 1px solid rgba(248,239,243,.18);
+      border-radius: 7px;
+      outline: none;
+      background: rgba(248,239,243,.07);
+      font-size: 12px;
+    }
+    .control { padding: 0 11px; }
+    .control:focus, .secret-control:focus-within { border-color: rgba(219,83,120,.72); }
+    .control:disabled { color: #746b75; cursor: not-allowed; }
+    .secret-control { display: grid; grid-template-columns: minmax(0, 1fr) 34px; overflow: hidden; }
+    .secret-control input {
+      min-width: 0;
+      padding: 0 11px;
+      color: var(--ink);
+      border: 0;
+      outline: 0;
+      background: transparent;
+      font: inherit;
+    }
+    .secret-control button { color: var(--muted); background: transparent; }
+    .secret-control button:hover { color: var(--ink); }
+    .model-message {
+      grid-column: 1;
+      align-self: stretch;
+      min-height: 32px;
+      padding: 6px 9px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      font-size: 10.5px;
+      line-height: 1.45;
+    }
+    .model-message i { color: var(--gold); }
+    .model-message.busy i { color: var(--cyan); }
+    .model-message.success { color: #b8f3ce; border-color: rgba(69,199,123,.32); background: rgba(69,199,123,.07); }
+    .model-message.success i { color: var(--green); }
+    .model-message.error { color: #ffc0cf; border-color: rgba(219,83,120,.42); background: rgba(219,83,120,.08); }
+    .model-message.error i { color: var(--rose); }
+    .model-actions { grid-column: 2; min-height: 32px; display: flex; align-items: stretch; justify-content: flex-end; gap: 9px; }
+    .model-actions .btn { min-width: 118px; min-height: 32px; font-size: 11px; }
+    .claw-body { min-height: 0; display: grid; grid-template-columns: 32px minmax(0, 1fr); align-items: center; gap: 10px; }
+    .claw-device { width: 32px; height: 42px; display: grid; place-items: center; color: var(--gold); border: 1px solid rgba(214,171,103,.3); border-radius: 6px; background: rgba(214,171,103,.06); font-size: 15px; }
+    .claw-copy h3 { margin: 0; font-size: 12px; }
+    .claw-copy p { margin: 3px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.45; }
+    .claw-state { margin-top: 8px; display: flex; align-items: center; gap: 7px; color: #f0d3a7; font-size: 10.5px; }
+    .claw-state.success { color: #b8f3ce; }
+    .claw-state .dot { width: 8px; height: 8px; }
+    .claw-actions { margin-top: 8px; display: flex; gap: 8px; }
+    .claw-actions .btn { min-height: 32px; font-size: 11px; }
+    @media (max-width: 1120px), (max-height: 680px) {
+      .launcher { transform: scale(var(--app-scale, 1)); transform-origin: center; }
+    }
+  </style>
+</head>
+<body>
+  <main class="launcher">
+    <section class="portrait" aria-label="Nora">
+      <img src="assets/nora-launcher-portrait.png" alt="Nora">
+    </section>
+    <section class="work">
+      <header class="topbar">
+        <div class="brand">
+          <img src="assets/tavern-icon-dbf4ecbd54ec.png" alt="">
+          <div><b>诺拉·酒馆</b><span>本地启动器</span></div>
+        </div>
+        <span class="status-pill"><span class="dot"></span><span class="status-text">正在检查</span></span>
+      </header>
+
+      <section class="flow" aria-label="首次设置">
+        <div class="flow-step" data-step="0"><i class="fa-solid fa-wand-magic-sparkles"></i><div><b>安装 Nora</b><span>等待</span></div></div>
+        <div class="flow-step" data-step="1"><i class="fa-solid fa-mug-hot"></i><div><b>安装酒馆</b><span>等待</span></div></div>
+        <div class="flow-step" data-step="2"><i class="fa-solid fa-key"></i><div><b>配置模型</b><span>等待</span></div></div>
+        <div class="flow-step" data-step="3"><i class="fa-solid fa-mobile-screen"></i><div><b>连接 ClawChat</b><span>等待</span></div></div>
+        <div class="flow-step" data-step="4"><i class="fa-solid fa-circle-check"></i><div><b>启动检查</b><span>等待</span></div></div>
+      </section>
+
+      <section class="content" id="mainContent">
+        <div class="nora-chat-panel">
+          <div class="conversation-scroll" id="conversationScroll">
+            <div class="nora-messages" id="noraMessages" role="log" aria-live="polite" aria-label="Nora 消息"></div>
+            <div class="conversation-action" id="conversationAction">
+              <section class="model-setup" id="modelSetup" aria-label="配置 Nora" hidden>
+                <div class="model-head">
+                  <h2>连接模型</h2>
+                  <button class="icon-btn" id="modelBack" type="button" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <form class="model-form" id="modelForm">
+                  <div class="field">
+                    <div class="field-line"><label for="modelProvider">模型服务</label><a id="modelKeyLink" href="#">获取 Key</a></div>
+                    <select class="control" id="modelProvider"></select>
+                  </div>
+                  <div class="field">
+                    <div class="field-line"><label for="modelKey">API Key</label></div>
+                    <div class="secret-control">
+                      <input id="modelKey" type="password" autocomplete="off" spellcheck="false" placeholder="粘贴 API Key">
+                      <button id="modelKeyToggle" type="button" title="显示或隐藏 Key"><i class="fa-solid fa-eye"></i></button>
+                    </div>
+                  </div>
+                  <div class="field" id="modelBaseUrlField" hidden>
+                    <div class="field-line"><label for="modelBaseUrl">接口地址</label></div>
+                    <input class="control" id="modelBaseUrl" type="url" autocomplete="off" spellcheck="false" placeholder="https://example.com/v1">
+                  </div>
+                  <div class="field full" id="modelNameField">
+                    <div class="field-line"><label for="modelName">模型</label></div>
+                    <select class="control" id="modelName" disabled><option value="">先验证 Key</option></select>
+                  </div>
+                  <div class="field" id="modelCustomNameField" hidden>
+                    <div class="field-line"><label for="modelCustomName">模型名称</label></div>
+                    <input class="control" id="modelCustomName" type="text" autocomplete="off" spellcheck="false" placeholder="例如 deepseek-chat">
+                  </div>
+                  <div class="model-message" id="modelMessage"><i class="fa-solid fa-key"></i><span>Key 只保存在这台电脑。</span></div>
+                  <div class="model-actions">
+                    <button class="btn primary" id="modelAction" type="submit"><i class="fa-solid fa-link"></i><span>连接模型</span></button>
+                  </div>
+                </form>
+              </section>
+
+              <section class="model-setup" id="clawSetup" aria-label="连接 ClawChat" hidden>
+                <div class="model-head">
+                  <h2>连接 ClawChat</h2>
+                  <button class="icon-btn" id="clawBack" type="button" title="关闭"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+                <div class="claw-body">
+                  <div class="claw-device"><i class="fa-solid fa-mobile-screen"></i></div>
+                  <div class="claw-copy">
+                    <h3>打开 ClawChat</h3>
+                    <p>连接信息会自动完成配置。</p>
+                    <div class="claw-state" id="clawConnectState"><span class="dot"></span><span>等待连接</span></div>
+                    <div class="claw-actions">
+                      <button class="btn primary" id="clawConnectAction" type="button"><i class="fa-solid fa-arrow-up-right-from-square"></i><span>打开 ClawChat</span></button>
+                    </div>
+                  </div>
+                </div>
+              </section>
+            </div>
+          </div>
+          <div class="nora-chat-foot">
+            <div class="dialogue-meta">
+              <span class="dialogue-task" id="taskText">等待开始</span>
+              <span class="dialogue-time" id="elapsedText"></span>
+            </div>
+          </div>
+          <div class="dialogue-progress"><span id="progressBar"></span></div>
+        </div>
+        <div class="launcher-action-bar" id="launcherActionBar">
+          <div class="actions" id="launcherActions">
+            <button class="btn primary" id="primaryAction" type="button"><i class="fa-solid fa-download"></i><span>安装酒馆</span></button>
+            <button class="btn small" id="cancelAction" type="button" hidden><i class="fa-solid fa-xmark"></i><span>取消</span></button>
+          </div>
+        </div>
+      </section>
+
+      <footer class="footer">
+        <span id="footerText">所有文件保存在 Nora Tavern 隔离目录。</span>
+        <div class="tools">
+          <button class="tool" type="button" data-action="update"><i class="fa-solid fa-rotate"></i><span>更新</span></button>
+          <button class="tool" type="button" data-action="repair"><i class="fa-solid fa-screwdriver-wrench"></i><span>修复</span></button>
+          <button class="tool" type="button" data-action="logs"><i class="fa-solid fa-file-lines"></i><span>日志</span></button>
+          <button class="tool" type="button" data-action="settings"><i class="fa-solid fa-gear"></i><span>设置</span></button>
+        </div>
+      </footer>
+    </section>
+  </main>
+  <script>
+    const WAIT = (ms) => new Promise((resolve) => window.setTimeout(resolve, ms));
+    const LABELS = ['安装 Nora', '安装酒馆', '配置模型', '连接 ClawChat', '启动检查'];
+    const launcher = document.querySelector('.launcher');
+    const portrait = document.querySelector('.portrait');
+    const work = document.querySelector('.work');
+    const mainContent = document.querySelector('#mainContent');
+    const launcherActionBar = document.querySelector('#launcherActionBar');
+    const flow = document.querySelector('.flow');
+    const flowSteps = Array.from(document.querySelectorAll('.flow-step'));
+    const primaryAction = document.querySelector('#primaryAction');
+    const cancelAction = document.querySelector('#cancelAction');
+    const statusPill = document.querySelector('.status-pill');
+    const statusText = document.querySelector('.status-text');
+    const conversationScroll = document.querySelector('#conversationScroll');
+    const launcherActions = document.querySelector('#launcherActions');
+    const taskText = document.querySelector('#taskText');
+    const noraMessages = document.querySelector('#noraMessages');
+    const elapsedText = document.querySelector('#elapsedText');
+    const progressBar = document.querySelector('#progressBar');
+    const footerText = document.querySelector('#footerText');
+    const toolButtons = Array.from(document.querySelectorAll('.tool'));
+    const modelSetup = document.querySelector('#modelSetup');
+    const modelForm = document.querySelector('#modelForm');
+    const modelBack = document.querySelector('#modelBack');
+    const modelProvider = document.querySelector('#modelProvider');
+    const modelKey = document.querySelector('#modelKey');
+    const modelKeyLink = document.querySelector('#modelKeyLink');
+    const modelKeyToggle = document.querySelector('#modelKeyToggle');
+    const modelBaseUrlField = document.querySelector('#modelBaseUrlField');
+    const modelBaseUrl = document.querySelector('#modelBaseUrl');
+    const modelNameField = document.querySelector('#modelNameField');
+    const modelName = document.querySelector('#modelName');
+    const modelCustomNameField = document.querySelector('#modelCustomNameField');
+    const modelCustomName = document.querySelector('#modelCustomName');
+    const modelMessage = document.querySelector('#modelMessage');
+    const modelAction = document.querySelector('#modelAction');
+    const clawSetup = document.querySelector('#clawSetup');
+    const clawBack = document.querySelector('#clawBack');
+    const clawConnectAction = document.querySelector('#clawConnectAction');
+    const clawConnectState = document.querySelector('#clawConnectState');
+    const mockScenario = new URLSearchParams(window.location.search).get('mock')
+      || (window.NoraLauncherBridge ? '' : 'uninstalled');
+    let modelProviders = [];
+    let modelSetupBusy = false;
+    let modelValidated = false;
+    let clawSetupBusy = false;
+    let clawCompleting = false;
+    let lastNoraMessageKey = '';
+    let statusLoaded = false;
+    let launcherMode = false;
+    let launcherTransitioning = false;
+    let launcherTransitionTimer = 0;
+    let state = {
+      installed: false,
+      running: false,
+      hermesInstalled: false,
+      modelConfigured: false,
+      modelProvider: '',
+      modelName: '',
+      modelBaseUrl: '',
+      clawchatConnected: false,
+      busy: false,
+      error: '',
+      url: 'http://127.0.0.1:8799',
+      port: 8799,
+      installer: null,
+      mode: mockScenario ? 'mock' : 'desktop',
+    };
+
+    function fitLauncher() {
+      const scale = Math.min(window.innerWidth / 1120, window.innerHeight / 680, 1);
+      document.documentElement.style.setProperty('--app-scale', Math.max(scale, .65).toFixed(3));
+    }
+    window.addEventListener('resize', fitLauncher);
+    fitLauncher();
+
+    portrait.addEventListener('pointermove', (event) => {
+      const rect = portrait.getBoundingClientRect();
+      const x = ((event.clientX - rect.left) / rect.width - .5) * 18;
+      const y = ((event.clientY - rect.top) / rect.height - .5) * 10;
+      launcher.style.setProperty('--nora-x', `${x.toFixed(1)}px`);
+      launcher.style.setProperty('--nora-y', `${y.toFixed(1)}px`);
+    });
+    portrait.addEventListener('pointerleave', () => {
+      launcher.style.setProperty('--nora-x', '0px');
+      launcher.style.setProperty('--nora-y', '0px');
+    });
+
+    function initialMockState(scenario) {
+      const installed = ['installed', 'ready', 'running'].includes(scenario);
+      const ready = ['ready', 'running'].includes(scenario);
+      return {
+        installed,
+        running: scenario === 'running',
+        hermesInstalled: installed,
+        modelConfigured: ready,
+        modelProvider: ready ? 'openrouter' : '',
+        modelName: ready ? 'anthropic/claude-sonnet-4.6' : '',
+        clawchatConnected: ready,
+        url: 'http://127.0.0.1:8799',
+        port: 8799,
+        noraHome: '~/Library/NoraTavern',
+        installRoot: '~/Library/NoraTavern/tavern',
+        installer: {
+          phase: scenario === 'error' ? 'error' : installed ? 'ready' : 'idle',
+          task: '',
+          startedAt: null,
+          error: scenario === 'error' ? '模拟安装失败，可测试重新安装流程。' : '',
+          milestones: LABELS.map((label, index) => ({
+            index,
+            label,
+            state: [installed, installed, ready, ready, ready][index] ? 'done' : 'pending',
+            task: '',
+          })),
+          setupCompleted: ready,
+        },
+      };
+    }
+
+    let mockState = initialMockState(mockScenario);
+    const mockSnapshot = () => JSON.parse(JSON.stringify(mockState));
+
+    function updateMockMilestone(index, nextState, task = '') {
+      mockState.installer.milestones[index] = { ...mockState.installer.milestones[index], state: nextState, task };
+    }
+
+    async function mockStage(options, index, task) {
+      mockState.installer.task = task;
+      updateMockMilestone(index, 'running', task);
+      options?.onEvent?.({ event: 'milestone', index, state: 'running', task });
+      options?.onEvent?.({ event: 'task', task });
+      options?.onLog?.(`[模拟] ${task}`);
+      await WAIT(650);
+      updateMockMilestone(index, 'done', '完成');
+      options?.onEvent?.({ event: 'milestone', index, state: 'done', task: '完成' });
+    }
+
+    const previewBridge = {
+      async status() { return mockSnapshot(); },
+      async install(options) {
+        mockState = initialMockState('uninstalled');
+        mockState.installer.phase = 'installing';
+        mockState.installer.startedAt = Date.now();
+        await mockStage(options, 0, '安装 Nora');
+        mockState.hermesInstalled = true;
+        await mockStage(options, 1, '安装酒馆');
+        mockState.installed = true;
+        mockState.installer.phase = 'ready';
+        mockState.installer.task = '';
+        return mockSnapshot();
+      },
+      async start(options) {
+        mockState.installer.phase = 'start';
+        mockState.installer.startedAt = Date.now();
+        await mockStage(options, 4, '启动检查');
+        mockState.running = true;
+        mockState.installer.phase = 'ready';
+        mockState.installer.task = '';
+        mockState.installer.setupCompleted = true;
+        return mockSnapshot();
+      },
+      async update() { await WAIT(700); return mockSnapshot(); },
+      async repair() { await WAIT(700); return mockSnapshot(); },
+      async cancel() {
+        mockState.installer.phase = mockState.installed ? 'ready' : 'idle';
+        mockState.installer.task = '';
+        return { ok: true };
+      },
+      async modelProviders() {
+        return { ok: true, providers: [
+          { id: 'openrouter', label: 'OpenRouter', signupUrl: 'https://openrouter.ai/keys' },
+          { id: 'deepseek', label: 'DeepSeek', signupUrl: 'https://platform.deepseek.com/api_keys' },
+          { id: 'anthropic', label: 'Anthropic', signupUrl: 'https://console.anthropic.com/settings/keys' },
+          { id: 'openai-api', label: 'OpenAI', signupUrl: 'https://platform.openai.com/api-keys' },
+          { id: 'gemini', label: 'Google Gemini', signupUrl: 'https://aistudio.google.com/app/apikey' },
+          { id: 'custom', label: '自定义模型', signupUrl: '', custom: true },
+        ] };
+      },
+      async modelOptions(payload) {
+        await WAIT(500);
+        if (String(payload?.key || '').toLowerCase().includes('error')) throw new Error('模拟：API Key 无效。');
+        return { ok: true, models: ['anthropic/claude-sonnet-4.6', 'deepseek/deepseek-v3.2', 'openai/gpt-5.2'] };
+      },
+      async saveAndTestModel(payload) {
+        await WAIT(800);
+        mockState.modelConfigured = true;
+        mockState.modelProvider = payload.provider;
+        mockState.modelName = payload.model;
+        mockState.modelBaseUrl = payload.baseUrl || '';
+        updateMockMilestone(2, 'done', '模型配置完成');
+        return { ok: true, provider: payload.provider, model: payload.model, baseUrl: payload.baseUrl || '' };
+      },
+      async openClawChat() {
+        await WAIT(350);
+        mockState.clawchatConnected = true;
+        updateMockMilestone(3, 'done', '已连接');
+        return { ok: true };
+      },
+      async openLogs() { return { ok: true }; },
+      async openSettings() { return { ok: true }; },
+      async openExternal() { return { ok: true }; },
+    };
+    const bridge = mockScenario ? previewBridge : window.NoraLauncherBridge;
+
+    function setStatus(kind, text) {
+      statusPill.className = 'status-pill' + (kind ? ` ${kind}` : '');
+      statusText.textContent = text;
+    }
+
+    function milestoneValues() {
+      const saved = state.installer?.milestones || [];
+      return LABELS.map((label, index) => {
+        const item = saved.find((value) => value.index === index) || { index, label, state: 'pending', task: '' };
+        const facts = [
+          state.hermesInstalled,
+          state.installed,
+          state.modelConfigured,
+          state.clawchatConnected,
+          state.running,
+        ];
+        if (facts[index]) return { ...item, state: 'done' };
+        if (index === 4 && item.state === 'done' && state.installed && state.modelConfigured && state.clawchatConnected) return item;
+        if (['running', 'error'].includes(item.state)) return item;
+        return { ...item, state: 'pending', task: '' };
+      });
+    }
+
+    function renderMilestones() {
+      if (launcherMode) {
+        flow.classList.add('hidden');
+        return;
+      }
+      const values = milestoneValues();
+      flow.classList.remove('hidden');
+      const actionIndex = state.installed && !state.modelConfigured ? 2
+        : state.modelConfigured && !state.clawchatConnected ? 3
+        : -1;
+      values.forEach((item, index) => {
+        const element = flowSteps[index];
+        const visualState = item.state === 'pending' && index === actionIndex ? 'action' : (item.state || 'pending');
+        element.className = `flow-step ${visualState}`;
+        element.querySelector('b').textContent = LABELS[index];
+        const detail = item.state === 'done' ? '完成'
+          : item.state === 'running' ? (item.task || '进行中')
+          : item.state === 'error' ? '失败'
+          : index === actionIndex ? '需要操作'
+          : '等待';
+        element.querySelector('span').textContent = detail;
+        element.title = detail;
+      });
+    }
+
+    function setupCompleted(value = state) {
+      const startupChecked = value.running
+        || Boolean(value.installer?.setupCompleted)
+        || value.installer?.milestones?.some((item) => item.index === 4 && item.state === 'done');
+      return Boolean(value.installed && value.modelConfigured && value.clawchatConnected && startupChecked);
+    }
+
+    function applyLauncherMode() {
+      launcherMode = true;
+      launcherTransitioning = false;
+      work.classList.add('launcher-mode');
+      flow.classList.remove('completing', 'departing');
+      flow.classList.add('hidden');
+      noraMessages.classList.add('launcher-status');
+      render();
+      primaryAction.classList.add('ready-reveal');
+      window.setTimeout(() => primaryAction.classList.remove('ready-reveal'), 900);
+    }
+
+    function enterLauncherMode(animate) {
+      if (launcherMode || launcherTransitioning) return;
+      window.clearTimeout(launcherTransitionTimer);
+      if (!animate) {
+        applyLauncherMode();
+        return;
+      }
+      launcherTransitioning = true;
+      launcher.classList.add('completion-glow');
+      flow.classList.add('completing');
+      launcherTransitionTimer = window.setTimeout(() => {
+        flow.classList.add('departing');
+        launcherTransitionTimer = window.setTimeout(() => {
+          launcher.classList.remove('completion-glow');
+          applyLauncherMode();
+        }, 360);
+      }, 620);
+    }
+
+    function leaveLauncherMode() {
+      window.clearTimeout(launcherTransitionTimer);
+      launcherMode = false;
+      launcherTransitioning = false;
+      launcher.classList.remove('completion-glow');
+      work.classList.remove('launcher-mode');
+      flow.classList.remove('hidden', 'completing', 'departing');
+      noraMessages.classList.remove('launcher-status');
+    }
+
+    function primary() {
+      if (state.busy && state.installer?.phase === 'start') return ['fa-spinner fa-spin', '正在启动'];
+      if (state.busy) return ['fa-spinner fa-spin', '正在处理'];
+      if (!state.installed) return ['fa-download', state.error ? '重新安装' : '安装酒馆'];
+      if (!state.modelConfigured) return ['fa-key', '配置 Nora'];
+      if (!state.clawchatConnected) return ['fa-mobile-screen', '连接 ClawChat'];
+      if (state.running) return ['fa-door-open', '打开酒馆'];
+      return ['fa-power-off', '启动酒馆'];
+    }
+
+    function noraReply() {
+      const task = String(state.installer?.task || '');
+      const phase = String(state.installer?.phase || '');
+      if (state.error) return [`error:${state.error}`, '这里没有完成。查看原因后，我们再试一次。', 'error'];
+      if (state.busy && task === '完成') return null;
+      if (state.busy && phase === 'start') return ['starting', '我正在启动酒馆。'];
+      if (state.busy && phase === 'install' && task === '准备中') return ['checking', '我先检查一下这台电脑。'];
+      if (state.busy && task.includes('Nora')) return ['install-nora', '正在准备我的运行环境。'];
+      if (state.busy && task.includes('酒馆')) return ['install-tavern', '正在安装酒馆。'];
+      if (state.busy) return [`busy:${phase}:${task}`, task && task !== '准备中' ? task : '我正在处理。'];
+      if (launcherMode && state.running) return ['ready', '酒馆已经启动。'];
+      if (launcherMode) return ['launcher-idle', '酒馆已就绪。'];
+      if (!state.installed) return ['welcome', '准备好后，我会自动完成安装。'];
+      if (!state.modelConfigured) return ['model-needed', '现在需要连接一个模型。'];
+      if (!state.clawchatConnected) return ['claw-needed', '接下来，把我连接到 ClawChat。'];
+      if (state.running) return ['ready', '准备好了，酒馆已经启动。'];
+      return ['claw-connected', 'ClawChat 已连接。'];
+    }
+
+    function pushNoraMessage(key, text, tone = '') {
+      if (!key || !text || key === lastNoraMessageKey) return;
+      lastNoraMessageKey = key;
+      const message = document.createElement('article');
+      message.className = `nora-message${tone ? ` ${tone}` : ''}`;
+      const avatar = document.createElement('img');
+      avatar.className = 'nora-message-avatar';
+      avatar.src = 'assets/nora-launcher-portrait.png';
+      avatar.alt = '';
+      const body = document.createElement('div');
+      body.className = 'nora-message-body';
+      const name = document.createElement('div');
+      name.className = 'nora-message-name';
+      name.textContent = 'Nora';
+      const copy = document.createElement('p');
+      copy.className = 'nora-message-text';
+      copy.textContent = text;
+      body.append(name, copy);
+      message.append(avatar, body);
+      noraMessages.append(message);
+      window.requestAnimationFrame(() => { conversationScroll.scrollTop = conversationScroll.scrollHeight; });
+    }
+
+    function syncNoraConversation() {
+      const reply = noraReply();
+      if (reply) pushNoraMessage(...reply);
+    }
+
+    function friendlyError(value) {
+      const message = String(value || '');
+      if (message.includes('No such file or directory') && message.includes('Application Support')) {
+        return '安装目录包含空格，当前版本无法继续安装。';
+      }
+      if (message.includes('上次操作已中断')) return message;
+      if (message.includes('HTTP') || message.includes('下载')) return '下载失败，请检查网络后重试。';
+      if (message.includes('退出码') || message.includes('failed') || message.includes('失败')) {
+        return '安装没有完成，请查看日志后重试。';
+      }
+      return message.split('\n')[0].slice(0, 96) || '安装没有完成，请重试。';
+    }
+
+    function render() {
+      renderMilestones();
+      const [icon, label] = primary();
+      primaryAction.innerHTML = `<i class="fa-solid ${icon}"></i><span>${label}</span>`;
+      primaryAction.disabled = state.busy;
+      const inlineSetupRequired = state.installed && (!state.modelConfigured || !state.clawchatConnected);
+      const starting = state.busy && state.installer?.phase === 'start';
+      primaryAction.hidden = (state.busy && !starting) || inlineSetupRequired;
+      cancelAction.hidden = !state.busy;
+      const hasLauncherAction = !primaryAction.hidden || !cancelAction.hidden;
+      launcherActions.hidden = !hasLauncherAction;
+      launcherActionBar.hidden = !hasLauncherAction;
+      mainContent.classList.toggle('has-launcher-action', hasLauncherAction);
+      modelBack.hidden = !state.modelConfigured;
+      clawBack.hidden = !state.clawchatConnected;
+      toolButtons.forEach((button) => {
+        button.disabled = state.busy || (!state.installed && button.dataset.action !== 'logs');
+      });
+
+      if (state.error) {
+        setStatus('error', '需要处理');
+      } else if (state.busy) {
+        setStatus('busy', '处理中');
+      } else if (!state.modelConfigured && state.installed) {
+        setStatus(null, '需要配置');
+      } else if (!state.clawchatConnected && state.modelConfigured) {
+        setStatus(null, '等待连接');
+      } else if (state.running) {
+        setStatus('ready', '运行中');
+      } else if (state.installed) {
+        setStatus(null, '已安装');
+      } else {
+        setStatus(null, '未安装');
+      }
+
+      taskText.textContent = state.installer?.task
+        || (launcherMode ? (state.running ? '酒馆运行正常' : '酒馆等待启动') : '等待操作');
+      syncNoraConversation();
+      const started = state.installer?.startedAt;
+      elapsedText.textContent = started && state.busy ? formatElapsed(Date.now() - started) : '';
+      footerText.textContent = state.installRoot ? `安装目录：${state.noraHome}` : '所有文件保存在 Nora Tavern 隔离目录。';
+    }
+
+    function formatElapsed(ms) {
+      const seconds = Math.max(0, Math.floor(ms / 1000));
+      const minutes = Math.floor(seconds / 60);
+      return minutes ? `${minutes}分 ${seconds % 60}秒` : `${seconds}秒`;
+    }
+
+    function addLog() {}
+
+    function handleEvent(message) {
+      if (message.event === 'log') addLog(message.line);
+      if (message.event === 'task') {
+        state.installer = { ...(state.installer || {}), task: message.task, startedAt: state.installer?.startedAt || Date.now() };
+        if (message.current && message.total) {
+          progressBar.style.width = `${Math.max(0, Math.min(1, message.current / message.total)) * 100}%`;
+        }
+      }
+      if (message.event === 'milestone') {
+        const installer = state.installer || { milestones: [], startedAt: Date.now() };
+        const milestones = [...(installer.milestones || [])];
+        const existing = milestones.findIndex((item) => item.index === message.index);
+        const next = { index: message.index, label: LABELS[message.index], state: message.state, task: message.task || '' };
+        if (existing >= 0) milestones[existing] = { ...milestones[existing], ...next };
+        else milestones.push(next);
+        state.installer = { ...installer, milestones, task: message.task || installer.task };
+        if (message.state === 'done') {
+          const replies = [
+            ['nora-installed', 'Nora 已经安装好了。'],
+            ['tavern-installed', '酒馆已经安装好了。'],
+            ['model-configured', '模型已连接。'],
+            ['claw-connected', 'ClawChat 已连接。'],
+            ['startup-checked', '启动检查通过。'],
+          ];
+          pushNoraMessage(...replies[message.index]);
+          if (message.index === 4) enterLauncherMode(true);
+        }
+      }
+      if (message.event === 'progress') {
+        const ratio = Number(message.ratio);
+        progressBar.style.width = Number.isFinite(ratio) ? `${Math.max(0, Math.min(1, ratio)) * 100}%` : '0';
+      }
+      render();
+    }
+
+    async function refreshStatus() {
+      try {
+        const result = await bridge.status();
+        state = { ...state, ...result, busy: ['installing', 'start', 'update', 'repair'].includes(result.installer?.phase), error: result.installer?.error || '' };
+      } catch (error) {
+        state.error = error.message || String(error);
+      }
+      render();
+      if (setupCompleted()) enterLauncherMode(statusLoaded);
+      else if (launcherMode || launcherTransitioning) leaveLauncherMode();
+      statusLoaded = true;
+      if (!clawSetup.hidden && state.clawchatConnected) completeClawConnection();
+      if (!state.busy && state.installed && !state.modelConfigured && modelSetup.hidden) await openModelSetup();
+      if (!state.busy && state.modelConfigured && !state.clawchatConnected && clawSetup.hidden) await openClawSetup();
+    }
+
+    async function runAction(action) {
+      if (state.busy) return;
+      state.busy = true;
+      state.error = '';
+      state.installer = { ...(state.installer || {}), phase: action, startedAt: Date.now(), task: '准备中' };
+      progressBar.style.width = '0';
+      render();
+      try {
+        const result = await bridge[action]({ port: state.port, onEvent: handleEvent, onLog: addLog });
+        state = { ...state, ...(result || {}), busy: false, error: '' };
+      } catch (error) {
+        state.busy = false;
+        state.error = error.message || String(error);
+        addLog(state.error);
+      }
+      await refreshStatus();
+    }
+
+    function setModelMessage(kind, text) {
+      const icon = kind === 'success' ? 'fa-circle-check'
+        : kind === 'error' ? 'fa-circle-exclamation'
+        : kind === 'busy' ? 'fa-spinner fa-spin'
+        : 'fa-key';
+      modelMessage.className = `model-message${kind ? ` ${kind}` : ''}`;
+      modelMessage.innerHTML = `<i class="fa-solid ${icon}"></i><span></span>`;
+      modelMessage.querySelector('span').textContent = text;
+    }
+
+    function friendlyModelError(error) {
+      return String(error?.message || error || '配置失败，请重试。')
+        .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '')
+        .slice(0, 220);
+    }
+
+    function selectedProvider() {
+      return modelProviders.find((provider) => provider.id === modelProvider.value) || null;
+    }
+
+    function syncProvider() {
+      const provider = selectedProvider();
+      const custom = Boolean(provider?.custom);
+      modelKeyLink.href = provider?.signupUrl || '#';
+      modelKeyLink.hidden = !provider?.signupUrl;
+      modelBaseUrlField.hidden = !custom;
+      modelNameField.hidden = custom;
+      modelCustomNameField.hidden = !custom;
+      modelName.innerHTML = '<option value="">先连接模型</option>';
+      modelName.disabled = true;
+      modelValidated = false;
+      modelAction.innerHTML = `<i class="fa-solid fa-link"></i><span>${custom ? '连接并测试' : '连接模型'}</span>`;
+      if (custom && state.modelProvider === 'custom') {
+        modelBaseUrl.value = state.modelBaseUrl || '';
+        modelCustomName.value = state.modelName || '';
+      }
+      setModelMessage('', custom ? '支持 OpenAI 兼容接口。' : 'Key 只保存在这台电脑。');
+    }
+
+    function setModelBusy(busy) {
+      modelSetupBusy = busy;
+      modelBack.disabled = busy;
+      modelProvider.disabled = busy;
+      modelKey.disabled = busy;
+      modelBaseUrl.disabled = busy;
+      modelName.disabled = busy || !modelName.value;
+      modelCustomName.disabled = busy;
+      modelAction.disabled = busy;
+    }
+
+    async function openModelSetup() {
+      if (!state.installed || modelSetupBusy) return;
+      clawSetup.hidden = true;
+      modelSetup.hidden = false;
+      window.requestAnimationFrame(() => { conversationScroll.scrollTop = conversationScroll.scrollHeight; });
+      setModelMessage('busy', '正在读取模型服务。');
+      try {
+        const result = await bridge.modelProviders();
+        if (!result?.ok) throw new Error(result?.warning || '无法读取模型服务。');
+        modelProviders = result.providers || [];
+        modelProvider.innerHTML = '';
+        modelProviders.forEach((provider) => {
+          const option = document.createElement('option');
+          option.value = provider.id;
+          option.textContent = provider.label;
+          modelProvider.appendChild(option);
+        });
+        const currentProvider = result.current?.provider || state.modelProvider;
+        if (modelProviders.some((provider) => provider.id === currentProvider)) modelProvider.value = currentProvider;
+        syncProvider();
+      } catch (error) {
+        setModelMessage('error', friendlyModelError(error));
+      }
+    }
+
+    function closeModelSetup() {
+      if (modelSetupBusy) return;
+      modelKey.value = '';
+      modelKey.type = 'password';
+      modelSetup.hidden = true;
+    }
+
+    async function loadModels() {
+      if (modelSetupBusy) return;
+      const key = modelKey.value.trim();
+      if (!key) {
+        setModelMessage('error', '请先填写 API Key。');
+        modelKey.focus();
+        return;
+      }
+      setModelBusy(true);
+      setModelMessage('busy', '正在验证 Key。');
+      try {
+        const result = await bridge.modelOptions({ provider: modelProvider.value, key });
+        const models = result.models || [];
+        modelName.innerHTML = '';
+        models.forEach((name) => {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = name;
+          modelName.appendChild(option);
+        });
+        if (state.modelProvider === modelProvider.value && models.includes(state.modelName)) modelName.value = state.modelName;
+        modelValidated = true;
+        modelAction.innerHTML = '<i class="fa-solid fa-check"></i><span>完成配置</span>';
+        setModelMessage('success', '已连接，请选择模型。');
+      } catch (error) {
+        modelName.innerHTML = '<option value="">先连接模型</option>';
+        setModelMessage('error', friendlyModelError(error));
+      } finally {
+        setModelBusy(false);
+      }
+    }
+
+    async function saveAndTestModel() {
+      const custom = Boolean(selectedProvider()?.custom);
+      const selectedModel = custom ? modelCustomName.value.trim() : modelName.value;
+      if (modelSetupBusy) return;
+      if (!modelKey.value.trim()) {
+        setModelMessage('error', '请先填写 API Key。');
+        modelKey.focus();
+        return;
+      }
+      if (custom && !modelBaseUrl.value.trim()) {
+        setModelMessage('error', '请先填写中转地址。');
+        modelBaseUrl.focus();
+        return;
+      }
+      if (!selectedModel) {
+        setModelMessage('error', custom ? '请填写模型名称。' : '请选择模型。');
+        (custom ? modelCustomName : modelName).focus();
+        return;
+      }
+      setModelBusy(true);
+      setModelMessage('busy', 'Nora 正在尝试说话。');
+      try {
+        const result = await bridge.saveAndTestModel({
+          provider: modelProvider.value,
+          key: modelKey.value.trim(),
+          model: selectedModel,
+          baseUrl: custom ? modelBaseUrl.value.trim() : '',
+        });
+        state.modelConfigured = true;
+        state.modelProvider = result.provider;
+        state.modelName = result.model;
+        state.modelBaseUrl = result.baseUrl || '';
+        modelKey.value = '';
+        setModelMessage('success', '我在。');
+        pushNoraMessage('model-configured', '模型已连接。');
+        await WAIT(700);
+        modelSetupBusy = false;
+        closeModelSetup();
+        await refreshStatus();
+        await openClawSetup();
+      } catch (error) {
+        setModelMessage('error', friendlyModelError(error));
+      } finally {
+        setModelBusy(false);
+      }
+    }
+
+    function setClawState(kind, text) {
+      clawConnectState.className = `claw-state${kind ? ` ${kind}` : ''}`;
+      clawConnectState.querySelector('span:last-child').textContent = text;
+    }
+
+    async function openClawSetup() {
+      if (!state.modelConfigured || clawSetupBusy) return;
+      modelSetup.hidden = true;
+      clawSetup.hidden = false;
+      window.requestAnimationFrame(() => { conversationScroll.scrollTop = conversationScroll.scrollHeight; });
+      setClawState(state.clawchatConnected ? 'success' : '', state.clawchatConnected ? '已连接' : '等待连接');
+      if (state.clawchatConnected) await completeClawConnection();
+    }
+
+    function closeClawSetup() {
+      if (!clawSetupBusy && !clawCompleting) clawSetup.hidden = true;
+    }
+
+    async function connectClawChat() {
+      if (clawSetupBusy || clawCompleting) return;
+      clawSetupBusy = true;
+      clawBack.disabled = true;
+      clawConnectAction.disabled = true;
+      setClawState('', '正在打开 ClawChat');
+      try {
+        await bridge.openClawChat();
+        setClawState('', '等待 ClawChat 完成连接');
+        await refreshStatus();
+      } catch (error) {
+        setClawState('', friendlyError(error));
+      } finally {
+        clawSetupBusy = false;
+        clawBack.disabled = false;
+        clawConnectAction.disabled = false;
+      }
+    }
+
+    async function completeClawConnection() {
+      if (clawCompleting) return;
+      clawCompleting = true;
+      setClawState('success', 'ClawChat 已连接');
+      await WAIT(650);
+      clawSetup.hidden = true;
+      clawCompleting = false;
+      if (!state.running) await runAction('start');
+    }
+
+    primaryAction.addEventListener('click', async () => {
+      if (!state.installed) return runAction('install');
+      if (!state.modelConfigured) return openModelSetup();
+      if (!state.clawchatConnected) return openClawSetup();
+      if (!state.running) return runAction('start');
+      return bridge.openExternal(state.url);
+    });
+    clawBack.addEventListener('click', closeClawSetup);
+    clawConnectAction.addEventListener('click', connectClawChat);
+    cancelAction.addEventListener('click', async () => {
+      await bridge.cancel();
+      state.busy = false;
+      await refreshStatus();
+    });
+    modelBack.addEventListener('click', closeModelSetup);
+    modelProvider.addEventListener('change', () => {
+      modelKey.value = '';
+      modelBaseUrl.value = '';
+      modelCustomName.value = '';
+      syncProvider();
+    });
+    modelKey.addEventListener('input', () => {
+      if (selectedProvider()?.custom) {
+        setModelMessage('', '支持 OpenAI 兼容接口。');
+        return;
+      }
+      modelName.innerHTML = '<option value="">先连接模型</option>';
+      modelName.disabled = true;
+      modelValidated = false;
+      modelAction.innerHTML = '<i class="fa-solid fa-link"></i><span>连接模型</span>';
+      setModelMessage('', 'Key 只保存在这台电脑。');
+    });
+    [modelBaseUrl, modelCustomName].forEach((control) => control.addEventListener('input', () => {
+      setModelMessage('', '支持 OpenAI 兼容接口。');
+    }));
+    modelKeyToggle.addEventListener('click', () => {
+      modelKey.type = modelKey.type === 'password' ? 'text' : 'password';
+      modelKeyToggle.innerHTML = `<i class="fa-solid ${modelKey.type === 'password' ? 'fa-eye' : 'fa-eye-slash'}"></i>`;
+    });
+    modelKeyLink.addEventListener('click', (event) => {
+      event.preventDefault();
+      const provider = selectedProvider();
+      if (provider?.signupUrl) bridge.openExternal(provider.signupUrl);
+    });
+    modelForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      if (selectedProvider()?.custom || modelValidated) saveAndTestModel();
+      else loadModels();
+    });
+    toolButtons.forEach((button) => button.addEventListener('click', async () => {
+      if (button.dataset.action === 'update') await runAction('update');
+      if (button.dataset.action === 'repair') await runAction('repair');
+      if (button.dataset.action === 'logs') await bridge.openLogs();
+      if (button.dataset.action === 'settings') await openModelSetup();
+    }));
+    window.setInterval(() => {
+      if (state.busy) render();
+      else refreshStatus();
+    }, 2000);
+    refreshStatus();
+  </script>
+</body>
+</html>

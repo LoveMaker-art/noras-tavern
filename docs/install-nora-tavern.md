@@ -2,7 +2,7 @@
 
 这是 Nora Tavern 的完全版安装方式。
 
-完全版会把 Nora Tavern 安装到本地 Hermes 环境中。安装完成后，你会得到：
+完全版会把 Nora Tavern 安装到一个独立的本地目录中。安装完成后，你会得到：
 
 - Nora Tavern：诺拉酒馆本体
 - Nora：帮你管理酒馆、可以互动的诺拉
@@ -29,198 +29,91 @@ Hermes、Nora Tavern 和 Nora MCP 都运行在你的电脑上。电脑关机、�
 完整流程是：
 
 ```text
-1. 安装 Hermes
-2. 配置模型，并确认 Hermes 可以正常对话
-3. 接入 ClawChat
-4. 安装 Nora Tavern 到本地 Hermes
-5. 确认 Nora 初始化文件
-6. 重启 Hermes
-7. 第一次让 Nora 检查酒馆
+1. 下载 Nora Tavern Launcher
+2. 一键安装 Nora + Tavern
+3. 配置第一个模型，并确认 Hermes 可以正常对话
+4. 接入 ClawChat
+5. 重启 Hermes
+6. 第一次让 Nora 检查酒馆
 ```
 
-首次安装请使用 `install-nora-tavern`。后续更新再使用 updater。
+首次安装推荐使用 `nora-tavern-launcher.zip` 整合包。后续更新再使用 updater。
 
-## 第一步：打开终端并安装 Hermes
+## 第一步：下载 Nora Tavern Launcher
 
-Nora Tavern 依赖 Hermes Agent 运行。请先安装 Hermes。
+下载 Nora Tavern Launcher 整合包：
 
-Hermes 官方文档：
+[下载 nora-tavern-launcher.zip](https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/nora-tavern-launcher.zip)
 
-- [Hermes Installation](https://hermes-agent.nousresearch.com/docs/getting-started/installation)
-- [Hermes Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart)
+这个整合包已经放好 Nora Tavern 本体、Nora MCP、Hermes skills、`AGENTS.md` 托管说明和 Nora 初始化模板。它会自动检查并安装 Hermes，但不会包含你的模型 API Key、ClawChat 登录态或配对信息。
+
+首次安装器会把 Nora Tavern 放在一个隔离目录里，不会散落安装到用户主目录。
+
+默认安装目录：
+
+Windows：
+
+```text
+%LOCALAPPDATA%\NoraTavern
+```
+
+macOS：
+
+```text
+~/Library/NoraTavern
+```
+
+目录结构：
+
+```text
+Nora Tavern/
+  hermes/   Hermes、Nora skills、AGENTS.md、SOUL.md、MCP 配置
+  tavern/   Tavern 本体、Nora MCP、本地数据、日志、更新缓存
+```
+
+## 第二步：一键安装 Nora + Tavern
 
 ### Windows
 
-打开终端：
+如果你的电脑是 Windows：
 
-1. 点击 Windows 开始菜单。
-2. 搜索 **PowerShell**。
-3. 打开 **Windows PowerShell** 或 **Windows Terminal**。
+1. 解压 `nora-tavern-launcher.zip`。
+2. 打开解压后的 `nora-tavern-launcher` 文件夹。
+3. 双击 `Install-Nora-Tavern.cmd`。
 
-执行 Hermes 官方安装命令：
-
-```powershell
-iex (irm https://hermes-agent.nousresearch.com/install.ps1)
-```
-
-安装完成后，关闭 PowerShell，再重新打开一个新的 PowerShell。
-
-检查 Hermes：
+如果你要换安装目录，打开 PowerShell，进入解压后的文件夹，执行：
 
 ```powershell
-hermes doctor
+.\Install-Nora-Tavern.ps1 --nora-home "D:\Nora Tavern"
 ```
 
 ### macOS
 
-打开终端：
+如果你的电脑是 macOS：
 
-1. 打开 **访达**。
-2. 进入 **应用程序**。
-3. 进入 **实用工具**。
-4. 打开 **终端**。
+1. 解压 `nora-tavern-launcher.zip`。
+2. 打开解压后的 `nora-tavern-launcher` 文件夹。
+3. 双击 `Install-Nora-Tavern.command`。
 
-执行 Hermes 官方安装命令：
-
-```sh
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
-```
-
-重新加载 shell：
+如果系统拦截脚本，打开终端，进入解压后的文件夹，执行：
 
 ```sh
-source ~/.zshrc
+sh ./Install-Nora-Tavern.command
 ```
 
-检查 Hermes：
+如果你要换安装目录：
 
 ```sh
-hermes doctor
-```
-
-## 第二步：配置模型并完成第一次对话
-
-Hermes 安装完成后，先配置一个可用模型。
-
-```sh
-hermes model
-```
-
-按照终端提示选择模型供应商和模型。
-
-如果提示输入 API Key，请粘贴对应模型供应商的 API Key。
-
-配置完成后，启动 Hermes：
-
-```sh
-hermes --tui
-```
-
-或者：
-
-```sh
-hermes
-```
-
-发送一句测试消息：
-
-```text
-你好，请用一句话回复我。
-```
-
-如果 Hermes 能正常回复，说明模型配置成功，可以继续下一步。
-
-## 第三步：接入 ClawChat
-
-ClawChat 是你和 Hermes Agent 对话的入口。Nora Tavern 本体仍然安装在运行 Hermes 的本地机器上。
-
-ClawChat 官方文档：
-
-- [Download and install ClawChat](https://clawling.com/chat/docs/install/)
-- [Connect your own Agent](https://clawling.com/chat/docs/connect-your-agent/)
-
-先安装 ClawChat：
-
-- macOS：从 ClawChat 官网下载 DMG。
-- Windows：从 ClawChat 官网下载 EXE 安装器。
-
-安装并登录后，在 ClawChat 中操作：
-
-```text
-Contacts -> Register Agent -> 选择 Hermes -> 复制激活命令
-```
-
-回到运行 Hermes 的那台机器，在终端中粘贴并执行 ClawChat 给你的激活命令。
-
-注意：激活命令以 ClawChat App 里显示的为准，不要从别人文档里复制旧命令。Pairing code 是一次性的，过期或用过后需要重新生成。
-
-执行完成后，重启 Hermes：
-
-```sh
-hermes --tui
-```
-
-或者：
-
-```sh
-hermes
-```
-
-成功标准：ClawChat 里收到 Hermes Agent 主动发来的 greeting 消息。只看到终端显示激活完成还不够，必须以 ClawChat 里真的收到消息为准。
-
-确认 ClawChat 能和 Hermes 对话后，再继续安装 Nora Tavern。
-
-## 第四步：安装 Nora Tavern 并注册入口
-
-确认 ClawChat 已经能和 Hermes 对话后，回到运行 Hermes 的那台电脑，打开终端，直接执行 Nora Tavern 首次安装命令。
-
-首次安装器会把 Nora Tavern 安装到 Hermes home。默认 Hermes home 通常是：
-
-```text
-~/.hermes
-```
-
-### Windows
-
-如果运行 Hermes 的电脑是 Windows，在 PowerShell 中执行：
-
-```powershell
-$installer = Join-Path $env:TEMP "install-nora-tavern.ps1"
-iwr https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.ps1 -OutFile $installer
-powershell -ExecutionPolicy Bypass -File $installer --apply --confirm
-```
-
-如果你的 Hermes home 不是默认位置：
-
-```powershell
-$installer = Join-Path $env:TEMP "install-nora-tavern.ps1"
-iwr https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.ps1 -OutFile $installer
-powershell -ExecutionPolicy Bypass -File $installer --apply --confirm --hermes-home C:\path\to\hermes-home
-```
-
-### macOS
-
-如果运行 Hermes 的电脑是 macOS，在终端中执行：
-
-```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.sh | sh -s -- --apply --confirm
-```
-
-如果你的 Hermes home 不是默认位置：
-
-```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.sh | sh -s -- --apply --confirm --hermes-home /path/to/hermes-home
+sh ./Install-Nora-Tavern.command --nora-home "/Users/你的用户名/Nora Tavern"
 ```
 
 安装器会完成：
 
-- 下载 Nora Tavern 最新正式发布包
-- 安装 Tavern 本体到 `$HERMES_HOME/apps/tavern-runtime`
-- 安装 Nora MCP 到 `$HERMES_HOME/apps/nora-mcp`
-- 安装运维文件到 `$HERMES_HOME/apps/tavern-ops`
-- 安装 Hermes skills
-- 写入 Nora MCP 配置
-- 合并 Tavern 的 `AGENTS.md` 托管块
+- 检查 Hermes，没有 Hermes 时调用 Hermes 官方安装器
+- 校验整合包中的 Nora Tavern 发布文件
+- 安装 Hermes 到隔离目录的 `hermes/`
+- 安装 Tavern 本体、Nora MCP 和运维文件到隔离目录的 `tavern/`
+- 写入 Nora MCP 配置、Hermes skills、`AGENTS.md` 和 `SOUL.md`
 - 准备并启动本地 Tavern
 - 注册 Tavern 和 Story Profile 的 Liveware 入口
 - 安装每日更新提醒任务
@@ -238,15 +131,95 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 如果 `liveware.status` 是 `updated`，说明 Tavern 和 Story Profile 入口已经注册或刷新成功。
 
-## 第五步：确认 Nora 初始化文件
+## 第三步：配置模型并完成第一次对话
+
+Hermes 已经安装在 Nora Tavern 的隔离目录里。接下来配置第一个可用模型。
+
+Windows 打开 PowerShell，执行：
+
+```powershell
+$env:NORA_TAVERN_HOME = "$env:LOCALAPPDATA\NoraTavern"
+$env:HERMES_HOME = "$env:NORA_TAVERN_HOME\hermes"
+$Hermes = "$env:HERMES_HOME\bin\hermes.exe"
+if (-not (Test-Path $Hermes)) { $Hermes = "$env:HERMES_HOME\bin\hermes.cmd" }
+& $Hermes model
+```
+
+macOS 打开终端，执行：
+
+```sh
+export NORA_TAVERN_HOME="$HOME/Library/NoraTavern"
+export HERMES_HOME="$NORA_TAVERN_HOME/hermes"
+if [ -x "$HERMES_HOME/.local/bin/hermes" ]; then
+  "$HERMES_HOME/.local/bin/hermes" model
+else
+  "$HERMES_HOME/hermes-agent/venv/bin/hermes" model
+fi
+```
+
+按照终端提示选择模型供应商和模型。如果提示输入 API Key，请粘贴对应模型供应商的 API Key。
+
+配置完成后，启动 Hermes 并发送一句测试消息：
+
+Windows：
+
+```powershell
+& $Hermes --tui
+```
+
+macOS：
+
+```sh
+if [ -x "$HERMES_HOME/.local/bin/hermes" ]; then
+  "$HERMES_HOME/.local/bin/hermes" --tui
+else
+  "$HERMES_HOME/hermes-agent/venv/bin/hermes" --tui
+fi
+```
+
+测试消息：
+
+```text
+你好，请用一句话回复我。
+```
+
+如果 Hermes 能正常回复，说明模型配置成功。
+
+## 第四步：接入 ClawChat
+
+ClawChat 是你在手机上和 Nora 对话、打开酒馆入口的地方。Nora Tavern 本体仍然运行在你的电脑上。
+
+ClawChat 官方文档：
+
+- [Download and install ClawChat](https://clawling.com/chat/docs/install/)
+- [Connect your own Agent](https://clawling.com/chat/docs/connect-your-agent/)
+
+先安装 ClawChat：
+
+- macOS：从 ClawChat 官网下载 DMG。
+- Windows：从 ClawChat 官网下载 EXE 安装器。
+
+安装并登录后，在 ClawChat 中操作：
+
+```text
+Contacts -> Register Agent -> 选择 Hermes -> 复制激活命令
+```
+
+回到运行 Hermes 的电脑，在终端中粘贴并执行 ClawChat 给你的激活命令。
+
+注意：激活命令以 ClawChat App 里显示的为准，不要从别人文档里复制旧命令。Pairing code 是一次性的，过期或用过后需要重新生成。
+
+成功标准：ClawChat 里收到 Hermes Agent 主动发来的 greeting 消息。
+
+## 安装器处理了哪些文件
 
 首次安装器会处理这些 Hermes 侧文件：
 
 ```text
-$HERMES_HOME/AGENTS.md
-$HERMES_HOME/config.yaml
-$HERMES_HOME/skills/
-$HERMES_HOME/SOUL.md
+<Nora Tavern 安装目录>/hermes/AGENTS.md
+<Nora Tavern 安装目录>/hermes/config.yaml
+<Nora Tavern 安装目录>/hermes/skills/
+<Nora Tavern 安装目录>/hermes/SOUL.md
 ```
 
 它们分别负责：
@@ -268,38 +241,44 @@ $HERMES_HOME/SOUL.md
 Windows：
 
 ```powershell
-$installer = Join-Path $env:TEMP "install-nora-tavern.ps1"
-iwr https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.ps1 -OutFile $installer
-powershell -ExecutionPolicy Bypass -File $installer --apply --confirm --replace-soul
+.\Install-Nora-Tavern.ps1 --replace-soul
 ```
 
 macOS：
 
 ```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-nora-tavern.sh | sh -s -- --apply --confirm --replace-soul
+sh ./Install-Nora-Tavern.command --replace-soul
 ```
+
+这个参数需要在第二步首次安装时使用。已经安装完成后，不建议再重复运行首次安装器。
 
 覆盖前，安装器会备份旧的 `SOUL.md`。
 
-## 第六步：重启 Hermes
+## 第五步：重启 Hermes
 
 安装器已经写入 skills、MCP 和 AGENTS 配置，但当前正在运行的 Hermes 会话不一定会立即加载新内容。
 
-请退出当前 Hermes，然后重新启动：
+请退出当前 Hermes，然后重新启动。
 
-```sh
-hermes --tui
+Windows：
+
+```powershell
+& $Hermes --tui
 ```
 
-或者：
+macOS：
 
 ```sh
-hermes
+if [ -x "$HERMES_HOME/.local/bin/hermes" ]; then
+  "$HERMES_HOME/.local/bin/hermes" --tui
+else
+  "$HERMES_HOME/hermes-agent/venv/bin/hermes" --tui
+fi
 ```
 
 如果你主要通过 ClawChat 使用 Hermes，请重启运行 Hermes 的本地进程。重启完成后，ClawChat 中应该能重新看到 Agent 在线。
 
-## 第七步：第一次让 Nora 开口
+## 第六步：第一次让 Nora 开口
 
 重新进入 Hermes 或打开 ClawChat 后，发送：
 
@@ -328,18 +307,37 @@ http://127.0.0.1:8799/_liveware/story-profile
 
 如果 Nora 说找不到 Tavern 或 Nora MCP，请先运行：
 
+Windows：
+
+```powershell
+& $Hermes doctor
+```
+
+macOS：
+
 ```sh
-hermes doctor
+if [ -x "$HERMES_HOME/.local/bin/hermes" ]; then
+  "$HERMES_HOME/.local/bin/hermes" doctor
+else
+  "$HERMES_HOME/hermes-agent/venv/bin/hermes" doctor
+fi
 ```
 
 然后检查首次安装器最后输出中的 `runtime.health` 是否为 `true`。
 
 ## 后续更新
 
-首次安装完成后，以后更新 Nora Tavern 使用 updater：
+首次安装完成后，以后更新 Nora Tavern 推荐打开 Nora Tavern Launcher，点击 **更新**。
+
+macOS 如果要用命令行更新，请显式指定隔离目录：
+
+macOS：
 
 ```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
+export NORA_TAVERN_HOME="$HOME/Library/NoraTavern"
+export HERMES_HOME="$NORA_TAVERN_HOME/hermes"
+export TAVERN_DATA_ROOT="$NORA_TAVERN_HOME/tavern"
+curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --hermes-home "$HERMES_HOME" --install-root "$TAVERN_DATA_ROOT" --apply --confirm
 ```
 
 更新说明见 [更新 Nora Tavern](update-nora-tavern.md)。
@@ -348,7 +346,7 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 ### 这会安装 Hermes 吗？
 
-不会。请先按 Hermes 官方文档安装 Hermes。
+会。启动器会调用 Hermes 官方安装器，并把 Hermes 安装到 Nora Tavern 的隔离目录里。
 
 ### 这会覆盖我的模型密钥吗？
 
@@ -366,5 +364,5 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 
 | 命令 | 用途 |
 | --- | --- |
-| `install-nora-tavern.sh` / `install-nora-tavern.ps1` | 空白 Hermes 环境首次安装 Nora Tavern。 |
+| `nora-tavern-launcher.zip` | 首次安装 Hermes 与 Nora Tavern，并注册 Nora Tavern 本地入口。 |
 | `install-tavern-updater.sh` | 已安装 Nora Tavern 后更新版本。 |

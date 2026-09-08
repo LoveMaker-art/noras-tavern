@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>诺拉·酒馆</title>
+  <link rel="icon" href="assets/tavern-icon-dbf4ecbd54ec.png">
+  <link rel="stylesheet" href="assets/css/fontawesome.min.css">
+  <link rel="stylesheet" href="assets/css/solid.min.css">
+  <link rel="stylesheet" href="assets/css/brands.min.css">
+  <style>
+    :root { color-scheme:dark; font-family:"PingFang SC","Microsoft YaHei UI","Segoe UI",sans-serif; font-weight:400; -webkit-font-smoothing:antialiased; color:#eeeae6; background:#101111; --muted:#999b98; --accent:#df8fa0; --green:#a9c9b5; }
+    * { box-sizing:border-box; letter-spacing:0; }
+    body { margin:0; height:100vh; overflow:hidden; display:grid; place-items:center; }
+    button,input,select { font:inherit; }
+    button,a,input,select { -webkit-tap-highlight-color:transparent; }
+    button { cursor:pointer; color:inherit; }
+    button:disabled { cursor:wait; opacity:.5; }
+    button:focus-visible,a:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
+    [hidden] { display:none!important; }
+    .app { width:1120px; height:680px; position:absolute; left:50%; top:50%; overflow:hidden; background:#171a19; transform:translate(-50%,-50%) scale(var(--scale,1)); border:1px solid #343633; border-radius:8px; }
+    .portrait { position:absolute; inset:0 auto 0 0; width:60%; overflow:hidden; cursor:pointer; }
+    .portrait img { height:105%; width:112%; object-fit:cover; object-position:49% 42%; transform:translate(var(--x,0px),var(--y,0px)) scale(1.04); transition:transform .5s ease; }
+    .portrait:after { content:""; position:absolute; inset:0; background:linear-gradient(90deg,transparent 45%,#171a19 98%),linear-gradient(0deg,#111615 0%,transparent 30%); pointer-events:none; }
+    header { position:absolute; left:36px; right:36px; top:25px; min-height:26px; display:flex; align-items:center; justify-content:flex-end; z-index:2; }
+    .wordmark { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:11px; white-space:nowrap; font-family:"Songti SC","STSong","SimSun",serif; font-size:15px; font-weight:400; line-height:1.4; color:#a3a69a; text-shadow:0 2px 16px #000; }
+    .wordmark::before, .wordmark::after { content:""; width:22px; height:1px; background:#777d71; opacity:.45; }
+    .portrait:focus-visible { outline:1px solid #c8919f; outline-offset:-5px; }
+    .portrait-bubble { position:absolute; z-index:3; left:226px; bottom:145px; width:238px; min-height:48px; display:flex; align-items:center; justify-content:center; padding:12px 16px; border:1px solid #a7b8a63d; border-radius:6px; background:rgba(28,36,31,.94); color:#eee9df; font-size:13px; line-height:1.6; box-shadow:0 5px 20px #0003; pointer-events:none; opacity:0; transform:translateY(8px); transition:opacity .25s,transform .25s; }
+    .portrait-bubble.visible { opacity:1; transform:translateY(0); }
+    .status { display:flex; align-items:center; gap:8px; color:#c4c9c2; font-size:11px; }
+    .status:before { content:""; width:5px; height:5px; border-radius:50%; background:var(--green); }
+    .signature { position:absolute; left:36px; bottom:37px; display:flex; align-items:center; gap:10px; color:#b8bcb4; font-size:11px; line-height:1.8; }
+    .signature .separator { color:#71776b; }
+    .source-link { display:inline-flex; align-items:center; gap:7px; min-height:28px; color:#b8bcb4; text-decoration:none; font-size:11px; }
+    .source-link i { font-size:16px; }
+    .source-link:hover { color:var(--accent); }
+    main { position:absolute; top:112px; bottom:30px; left:568px; right:38px; display:flex; flex-direction:column; min-height:0; }
+    .steps { position:absolute; top:0; left:0; right:0; display:flex; gap:8px; height:44px; transition:height .5s,opacity .35s,transform .5s; }
+    .step { flex:1; min-width:0; color:#727b74; font-size:11px; }
+    .step-line { height:2px; background:#363e38; margin-bottom:12px; position:relative; overflow:hidden; }
+    .step.done .step-line { background:var(--green); }
+    .step.done { color:#bac8bd; }
+    .step.active { color:#f0b7c3; font-weight:600; }
+    .step.active .step-line { background:var(--accent); }
+    .step.active.busy .step-line:after { content:""; position:absolute; inset:0; background:#fff; animation:scan 1.4s infinite; }
+    .step i { margin-right:5px; font-size:9px; }
+    .steps.depart { height:0; margin-bottom:0; opacity:0; transform:translateY(-12px); overflow:hidden; }
+    .conversation { position:relative; min-height:0; flex:1; display:flex; flex-direction:column; padding-top:90px; }
+    .scroll { display:flex; flex-direction:column; overflow:hidden; min-height:0; padding:2px 4px 15px 0; flex:1; }
+    .dialogue-group { display:flex; flex-direction:column; min-height:0; flex:0 1 auto; }
+    .previous { position:absolute; top:60px; left:42px; margin:0; font-size:11px; color:#8c9e90; display:flex; align-items:center; gap:9px; }
+    .message { min-width:0; flex-shrink:0; margin-left:42px; animation:arrive .35s both; }
+    .speaker { font-size:12px; color:var(--accent); font-weight:500; display:flex; align-items:center; gap:9px; margin-bottom:9px; }
+    .speaker:after { content:""; height:1px; width:24px; background:#88636b; }
+    .copy { font-size:27px; font-weight:400; line-height:1.5; margin:0; text-wrap:pretty; }
+    .subcopy { font-size:13px; line-height:1.8; color:#b2bcb3; margin:9px 0 0; }
+    .inline { min-height:0; flex:0 1 auto; overflow:auto; scrollbar-width:thin; scrollbar-color:#475047 transparent; margin:18px 0 0 42px; animation:arrive .35s both; }
+    .inline:empty { margin:0; }
+    .button { display:inline-flex; justify-content:center; align-items:center; gap:12px; min-height:40px; padding:0 18px; background:#303b33; border:1px solid #59685a; border-radius:5px; font-size:13px; transition:background .2s,transform .2s; }
+    .button:hover { background:#405045; }
+    .button.primary { background:#dda0ad; color:#251d20; border-color:#dda0ad; font-weight:500; }
+    .button.primary:hover { background:#edb6c1; }
+    .button:active { transform:translateY(1px); }
+    .quiet { border:0; background:none; padding:7px 0; color:#bbc3ba; font-size:12px; display:inline-flex; align-items:center; gap:7px; }
+    .quiet:hover { color:#f0bac5; }
+    .job { border-left:1px solid #58645a; padding-left:16px; }
+    .job-head { display:flex; gap:12px; justify-content:space-between; font-size:12px; color:#c6d4c8; }
+    .meter { height:2px; background:#303c34; margin:14px 0 10px; overflow:hidden; }
+    .meter span { display:block; height:100%; background:var(--green); width:0; transition:width .3s; }
+    .meter.indeterminate span { width:35%!important; animation:scan 1.4s infinite; }
+    .task-actions { margin-top:14px; display:flex; align-items:center; gap:16px; }
+    .field-line { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .field-line .quiet { font-size:11px; padding:0 0 8px; }
+    .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; }
+    .model-feedback.error { color:#e8a3af; }
+    .job-note { font-size:11px; color:#8e9f93; }
+    form { padding-top:4px; }
+    .fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    label { display:block; color:#b7c0b7; font-size:11px; margin-bottom:8px; }
+    .wide { grid-column:1 / -1; }
+    input,select { width:100%; height:37px; min-width:0; border:1px solid #465148; background:#202723; border-radius:4px; color:#eee; padding:0 10px; font-size:12px; outline:none; }
+    input:focus,select:focus { border-color:#c8919f; }
+    .secret { position:relative; }
+    .secret input { padding-right:36px; }
+    .eye { position:absolute; right:0; top:0; width:34px; height:37px; background:none; border:0; color:#9eaca0; }
+    .form-bottom { margin-top:18px; display:flex; justify-content:space-between; align-items:center; gap:15px; }
+    .note { color:#8c9d90; font-size:10px; line-height:1.6; margin:0; }
+    .error { color:#e8a3af; }
+    .pair { border-left:1px solid #57675c; padding:2px 0 3px 17px; }
+    .pair b { font-size:13px; font-weight:500; }
+    .pair p { color:#9caaa0; font-size:12px; line-height:1.8; margin:9px 0 17px; }
+    .management { margin:22px 0 0 42px; flex-shrink:0; display:flex; gap:24px; flex-wrap:wrap; position:relative; }
+    .more { position:absolute; top:38px; left:140px; width:166px; background:#252f28; border:1px solid #4f5e50; padding:6px; border-radius:5px; box-shadow:0 10px 30px #0005; z-index:4; }
+    .more button { display:block; width:100%; padding:10px; background:none; border:0; font-size:12px; text-align:left; border-radius:3px; }
+    .more button:hover { background:#39463b; }
+    .launchbar { flex-shrink:0; height:83px; margin-top:18px; display:flex; flex-direction:column; align-items:flex-end; justify-content:flex-end; gap:10px; }
+    .runtime-state { width:250px; display:flex; align-items:center; gap:7px; font-size:11px; color:#a8b1a9; }
+    .runtime-state:before { content:""; width:5px; height:5px; border-radius:50%; background:#7d837e; }
+    .runtime-state[data-phase="running"]:before { background:var(--green); }
+    .runtime-state[data-phase="starting"]:before, .runtime-state[data-phase="stopping"]:before { background:#d8bd8e; }
+    .runtime-state[data-phase="error"]:before { background:var(--accent); }
+    .runtime-actions { display:flex; align-items:center; gap:14px; width:250px; }
+    .stop { width:49px; height:49px; flex-shrink:0; display:grid; place-items:center; border:1px solid #3e473f; border-radius:4px; background:transparent; color:#a7b1a7; }
+    .stop:hover { border-color:var(--accent); color:var(--accent); }
+    .community-row { display:flex; align-items:center; gap:12px; padding:16px 0; border-bottom:1px solid #354137; }
+    .community-row > i { width:21px; text-align:center; color:#aebdaf; font-size:18px; }
+    .community-label { flex:1; min-width:0; }
+    .community-label b { display:block; font-size:13px; font-weight:500; }
+    .community-label small { display:block; margin-top:5px; color:#93a295; font-size:11px; overflow-wrap:anywhere; }
+    .community-row a { text-decoration:none; }
+    .pending { color:#89958b; font-size:11px; }
+    .launch { height:49px; min-width:187px; font-size:14px; justify-content:space-between; border-radius:4px; padding:0 22px; }
+    .launchbar.enter { animation:arrive .55s both; }
+    .edit-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; font-size:12px; color:#b1bdb3; }
+    .welcome .inline > .button { min-width:144px; min-height:44px; }
+    .daily .inline:not(:empty) { margin-top:18px; }
+    .welcome .conversation, .daily:not(.editing) .conversation { padding-top:0; }
+    .welcome .conversation { margin-bottom:101px; }
+    .welcome .scroll, .daily:not(.editing) .scroll { justify-content:center; padding-left:48px; }
+    .welcome .dialogue-group, .daily:not(.editing) .dialogue-group { width:max-content; max-width:100%; margin-left:auto; margin-right:auto; }
+    .welcome .message,
+    .welcome .inline,
+    .daily:not(.editing) .message,
+    .daily:not(.editing) .inline,
+    .daily:not(.editing) .management { width:auto; margin-left:0; margin-right:0; }
+    .daily.editing .management { display:none; }
+    .settings-row { display:flex; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
+    .settings-row span { color:#a9b9ac; }
+    @keyframes arrive { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
+    @keyframes scan { from { transform:translateX(-100%); opacity:.1; } 50% { opacity:.5; } to { transform:translateX(100%); opacity:.1; } }
+    @media(prefers-reduced-motion:reduce) { *,*:after { animation:none!important; transition:none!important; } }
+  </style>
+</head>
+<body>
+  <!-- Standalone interaction prototype. All installation and connection actions are simulated in memory. -->
+  <div class="app">
+    <div class="portrait" role="button" tabindex="0" aria-label="与诺拉互动"><img src="assets/nora-launcher-portrait.png" alt="诺拉"><div class="portrait-bubble" id="portraitBubble" role="status" aria-live="polite"></div></div>
+    <header><div class="wordmark">诺拉·酒馆</div><div class="status" id="status">首次见面</div></header>
+    <div class="signature"><span>本地启动器</span><span class="separator" aria-hidden="true">｜</span><a class="source-link" href="https://github.com/LoveMaker-art/noras-tavern" target="_blank" rel="noopener noreferrer" title="项目源码 · GitHub" aria-label="项目源码 · GitHub"><i class="fa-brands fa-github" aria-hidden="true"></i><span>项目源码</span></a></div>
+    <main id="main">
+      <nav class="steps" aria-label="安装进度" id="steps"></nav>
+      <section class="conversation" aria-label="诺拉的消息">
+        <div class="scroll" id="scroll">
+          <div class="dialogue-group">
+          <div class="previous" id="previous" hidden></div>
+          <article class="message" id="message">
+            <div><div class="speaker">诺拉</div><p class="copy" id="copy"></p><p class="subcopy" id="subcopy"></p></div>
+          </article>
+          <div class="inline" id="inline"></div>
+        <div class="management" id="management" hidden>
+          <button class="quiet" data-action="model"><i class="fa-solid fa-sliders"></i>模型</button>
+          <button class="quiet" data-action="claw"><i class="fa-solid fa-mobile-screen"></i>ClawChat</button>
+          <button class="quiet" id="moreButton" aria-expanded="false"><i class="fa-solid fa-ellipsis"></i>更多</button>
+          <div class="more" id="more" hidden><button data-action="update">检查更新</button><button data-action="settings">安装信息</button><button data-action="community">社区与作者</button></div>
+        </div>
+        </div>
+        </div>
+      </section>
+      <div class="launchbar" id="launchbar" hidden>
+        <div class="runtime-state" id="runtimeState" role="status" data-phase="idle">未运行</div>
+        <div class="runtime-actions"><button class="button primary launch" id="launch"><span>打开酒馆</span><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></button><button class="stop" id="stop" title="停止 Nora 与酒馆" aria-label="停止 Nora 与酒馆" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i></button></div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const labels = ['Nora', '酒馆', '模型', 'ClawChat', '启动检查'];
+    const scenario = new URLSearchParams(location.search).get('mock');
+    // Populate only with author-provided community destinations.
+    const contacts = { qq: { number:'', url:'' }, discord:'', bilibili:'' };
+    let runtimePhase = 'idle', failNextStart = scenario === 'start-error';
+    let stage = 0, daily = false, busy = false, running = false, model = 'deepseek-chat', provider = 'DeepSeek';
+    function fit() { document.documentElement.style.setProperty('--scale', Math.min(innerWidth / 1120, innerHeight / 680, 1)); }
+    addEventListener('resize', fit); fit();
+    const portrait = document.querySelector('.portrait');
+    portrait.addEventListener('pointermove', e => { const r = portrait.getBoundingClientRect(); portrait.style.setProperty('--x', `${(e.clientX-r.left-r.width/2)/r.width*10}px`); portrait.style.setProperty('--y', `${(e.clientY-r.top-r.height/2)/r.height*6}px`); });
+    portrait.addEventListener('pointerleave', () => { portrait.style.setProperty('--x','0px'); portrait.style.setProperty('--y','0px'); });
+    const portraitReplies = ['在呢。', '钥匙在我这里。', '今天想去哪个世界？', '嗯？我在听。', '故事的开头，由你决定。'];
+    let portraitReplyIndex = 0, portraitBubbleTimer = 0;
+    function greetFromPortrait() {
+      const bubble=$('portraitBubble');
+      clearTimeout(portraitBubbleTimer);
+      bubble.textContent=portraitReplies[portraitReplyIndex++ % portraitReplies.length];
+      bubble.classList.add('visible');
+      bubble.getAnimations().forEach(animation=>animation.cancel());
+      if(!matchMedia('(prefers-reduced-motion: reduce)').matches) bubble.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0)'}],{duration:280,easing:'ease-out'});
+      portraitBubbleTimer=setTimeout(()=>{bubble.classList.remove('visible');},2600);
+    }
+    portrait.addEventListener('click', greetFromPortrait);
+    portrait.addEventListener('keydown', event => {if(event.key==='Enter'||event.key===' '){event.preventDefault();if(!event.repeat)greetFromPortrait();}});
+    function steps() { $('steps').innerHTML = labels.map((label,i) => `<div class="step ${i < stage ? 'done' : i === stage ? 'active' : ''} ${busy && i === stage ? 'busy' : ''}"><div class="step-line"></div><i class="fa-solid ${i < stage ? 'fa-check' : 'fa-minus'}"></i>${label}</div>`).join(''); }
+    function say(text, sub = '', previous = '') {
+      $('copy').textContent = text; $('subcopy').textContent = sub; $('subcopy').hidden = !sub;
+      $('previous').hidden = !previous; $('previous').textContent = previous ? `✓  ${previous}` : '';
+      $('message').getAnimations().forEach(a => a.cancel());
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) $('message').animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'none'}],{duration:300});
+      $('scroll').scrollTop = 0;
+    }
+    function button(text, fn, primary = true) { const b = document.createElement('button'); b.className = `button ${primary ? 'primary' : ''}`; b.textContent = text; b.onclick = fn; return b; }
+    function clearInline() { $('inline').replaceChildren(); }
+    function welcome() {
+      $('main').classList.add('welcome'); $('steps').hidden=true;
+      say('我是诺拉。欢迎来到酒馆。','先把我和酒馆安顿在这台电脑上。');
+      $('inline').append(button('开始安装', install));
+      const note = document.createElement('p'); note.className='note'; note.style.marginTop='13px'; note.textContent='Nora 与酒馆将安装在同一个专属目录。'; $('inline').append(note); steps();
+    }
+    async function job(title, description, duration = 1700) {
+      busy = true; steps(); clearInline();
+      $('inline').innerHTML='<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent">0%</span></div><div class="meter"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div>';
+      $('jobTitle').textContent=title; $('jobNote').textContent=description;
+      for(let i=0;i<=10;i++) { if(!$('meterFill')) break; $('meterFill').style.width=`${i*10}%`; $('jobPercent').textContent=`${i*10}%`; await wait(duration/11); }
+      busy=false;
+    }
+    async function install() {
+      if(busy) return; $('status').textContent='正在安装';
+      $('main').classList.remove('welcome'); $('steps').hidden=false;
+      say('我来准备，你稍等片刻。');
+      await job('安装 Nora','正在展开运行环境'); stage=1; steps();
+      say('接下来，把酒馆准备好。','','Nora 已安装');
+      await job('安装酒馆','正在准备应用与初始文件'); stage=2; steps(); modelForm();
+    }
+    function closeEdit() { $('main').classList.remove('editing'); dailyHome(); }
+    function editHeader(title) { const row=document.createElement('div'); row.className='edit-head'; const label=document.createElement('span'); label.textContent=title; row.append(label); const close=button('返回',closeEdit,false); close.className='quiet'; row.append(close); $('inline').append(row); }
+    function modelForm() {
+      clearInline(); if(daily) { $('main').classList.add('editing'); editHeader('模型设置'); }
+      $('status').textContent=daily ? '已就绪' : '需要你参与';
+      say(daily ? '这次想用哪个模型？' : '连接一个模型，我们继续。','',daily ? '' : 'Nora 与酒馆已安装');
+      const form=document.createElement('form');
+      form.innerHTML='<div class="fields"><div><label for="provider">模型服务</label><select id="provider"><option>DeepSeek</option><option>OpenRouter</option><option>自定义模型</option></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" placeholder="粘贴 API Key" autocomplete="off"><button class="eye" type="button" title="显示或隐藏 Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><label for="model">模型名称</label><input id="model" placeholder="输入模型名称" value="deepseek-chat"></div></div><div class="form-bottom"><p class="note" id="modelNote">Key 仅保存在本机</p><button class="button primary" type="submit">连接并继续 <i class="fa-solid fa-arrow-right"></i></button></div>';
+      $('inline').append(form); $('provider').value=provider; $('model').value=model;
+      const sync=()=>{ $('endpointField').hidden=$('provider').value!=='自定义模型'; if($('provider').value==='DeepSeek') $('model').value='deepseek-chat'; else if($('provider').value==='OpenRouter') $('model').value='anthropic/claude-sonnet-4.6'; else $('model').value=''; };
+      $('provider').onchange=sync; $('endpointField').hidden=provider!=='自定义模型';
+      form.querySelector('.eye').onclick=()=>{$('key').type=$('key').type==='password'?'text':'password';};
+      form.onsubmit=async e=>{ e.preventDefault(); if(busy) return; busy=true; const submit=form.querySelector('[type=submit]'); submit.disabled=true; submit.textContent='正在测试连接'; await wait(800); model=$('model').value || 'deepseek-chat'; provider=$('provider').value; $('key').value=''; busy=false; if(daily) dailyHome('模型已更换。'); else {stage=3; steps(); clawForm();} };
+    }
+    function clawForm() {
+      clearInline(); if(daily) {$('main').classList.add('editing'); editHeader('ClawChat');}
+      say(daily ? '我们也可以在手机上见。' : '把我接到 ClawChat 吧。', '', daily ? '' : '模型已连接');
+      $('inline').insertAdjacentHTML('beforeend','<div class="pair"><b>ClawChat</b><p>在 ClawChat 中与诺拉对话，打开手机上的酒馆。</p><div id="pairAction"></div></div>');
+      $('pairAction').append(button(daily ? '查看连接' : '打开 ClawChat 并连接', async()=>{ if(busy)return; busy=true; $('pairAction').textContent='等待 ClawChat 确认连接…'; await wait(1000); busy=false; if(daily)dailyHome('ClawChat 已连接。'); else {stage=4; steps(); check();} }));
+    }
+    async function check() {
+      $('status').textContent='启动检查'; say('最后检查一下，就好了。','','ClawChat 已连接');
+      await job('检查服务与连接','正在确认酒馆可以访问',1300); stage=5; steps(); running=true;
+      await wait(650); $('steps').classList.add('depart'); await wait(500); daily=true; dailyHome();
+    }
+    function dailyHome(message='') {
+      daily=true; $('main').classList.add('daily'); $('main').classList.remove('editing','welcome'); $('steps').hidden=true; $('management').hidden=false; $('launchbar').hidden=false; $('launchbar').classList.add('enter');
+      $('status').hidden=true; clearInline(); say(message || (running?'准备好了。酒馆交给你。':'欢迎回来。要开始了吗？'), running?'我会在 ClawChat 等你。':'打开酒馆时，我会一起启动。');
+      runtimePhase=running?'running':'idle'; renderRuntime();
+    }
+    function renderRuntime() {
+      const labels={idle:'未运行',running:'运行中',starting:'正在启动…',stopping:'正在停止…',error:'启动失败'};
+      $('runtimeState').textContent=labels[runtimePhase]; $('runtimeState').dataset.phase=runtimePhase;
+      $('launch').disabled=busy; $('stop').disabled=busy;
+      $('stop').hidden=!running;
+      $('launch').querySelector('span').textContent=runtimePhase==='starting'?'正在启动':runtimePhase==='error'?'重试启动':'打开酒馆';
+    }
+    $('launch').onclick=async()=>{
+      if(busy)return; busy=true;
+      if(!running) {runtimePhase='starting';renderRuntime();say('我来启动酒馆。');await wait(1000);
+        if(failNextStart){failNextStart=false;busy=false;runtimePhase='error';renderRuntime();say('酒馆暂时没有启动。','服务未响应，请重试启动。');return;}
+        running=true;
+      } else {renderRuntime();$('launch').querySelector('span').textContent='正在打开';}
+      await wait(500);busy=false;dailyHome('酒馆已打开。');
+    };
+    $('stop').onclick=async()=>{
+      if(busy||!running)return;busy=true;runtimePhase='stopping';renderRuntime();await wait(650);
+      running=false;busy=false;dailyHome('Nora 与酒馆已停止。');say('Nora 与酒馆已停止。','手机连接已断开，数据与配置已保留。');
+    };
+    function community() {
+      clearInline();$('main').classList.add('editing');say('在这里找到我们。');editHeader('社区与作者');
+      const rows=[{label:'QQ 群',icon:'fa-qq',url:contacts.qq.url,number:contacts.qq.number,action:'加入群聊'}, {label:'Discord',icon:'fa-discord',url:contacts.discord,action:'加入社区'}, {label:'B站',icon:'fa-bilibili',url:contacts.bilibili,action:'作者主页'}];
+      for(const item of rows){
+        const row=document.createElement('div');row.className='community-row';
+        const icon=document.createElement('i');icon.className=`fa-brands ${item.icon}`;icon.setAttribute('aria-hidden','true');row.append(icon);
+        const label=document.createElement('div');label.className='community-label';const name=document.createElement('b');name.textContent=item.label;label.append(name);row.append(label);
+        if(item.number){const number=document.createElement('small');number.textContent=item.number;label.append(number);const copy=button('复制群号',async()=>{try{await navigator.clipboard.writeText(item.number);copy.textContent='已复制';}catch{copy.textContent='请手动复制群号';}},false);copy.className='quiet';row.append(copy);}
+        if(item.url){const link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noopener noreferrer';link.className='quiet';link.textContent=item.action;row.append(link);}
+        if(!item.url&&!item.number){const pending=document.createElement('span');pending.className='pending';pending.textContent='待补充';row.append(pending);}
+        $('inline').append(row);
+      }
+    }
+    $('moreButton').onclick=()=>{ $('more').hidden=!$('more').hidden; $('moreButton').setAttribute('aria-expanded',String(!$('more').hidden)); };
+    document.querySelectorAll('[data-action]').forEach(b=>b.onclick=async()=>{
+      if(busy)return; $('more').hidden=true; $('moreButton').setAttribute('aria-expanded','false');
+      const action=b.dataset.action;
+      if(action==='model') modelForm();
+      if(action==='claw') clawForm();
+      if(action==='community') community();
+      if(action==='update') {say('我来检查一下更新。');await job('检查更新','正在查询版本',900);dailyHome('已经是最新版本。');}
+      if(action==='settings') {clearInline();$('main').classList.add('editing');say('都收在这里。');editHeader('安装信息');$('inline').insertAdjacentHTML('beforeend','<div class="settings-row"><span>安装目录</span><b>NoraTavern/</b></div><div class="settings-row"><span>包含内容</span><b>Nora · 酒馆 · 运行环境</b></div>');}
+    });
+    document.addEventListener('click', e=>{if(!$('management').contains(e.target)) {$('more').hidden=true;$('moreButton').setAttribute('aria-expanded','false');}});
+    if((!window.NoraLauncherBridge && !new URLSearchParams(location.search).has('desktop')) || scenario) {
+      if(['ready','running','start-error'].includes(scenario)){running=scenario==='running';stage=5;dailyHome();}else if(scenario==='model'){stage=2;steps();modelForm();}else welcome();
+    }
+  </script>
+  <script src="launcher-controller.js"></script>
+</body>
+</html>

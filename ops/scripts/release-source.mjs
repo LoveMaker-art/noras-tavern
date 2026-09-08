@@ -6,6 +6,22 @@ import { execFileSync } from 'node:child_process';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 
+export const NORA_SYSTEM_REQUIRED_FILES = [
+    'ops/installer/first_install.py', 'ops/installer/nora_system.py', 'ops/installer/nora_profile.py',
+    'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
+    'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
+    'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
+    'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
+    ...['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
+        .map(name => `ops/skills/${name}/SKILL.md`),
+];
+
+export function assertNoraSystemArtifacts(files) {
+    const selected = new Set(files);
+    const missing = NORA_SYSTEM_REQUIRED_FILES.filter(file => !selected.has(file));
+    if (missing.length) throw new Error(`Incomplete Nora system artifacts: ${missing.join(', ')}`);
+}
+
 export function assertSafeReleasePath(relative) {
     const parts = relative.split('/');
     if (!relative || path.isAbsolute(relative) || parts.some(part => !part || part === '..') || /[\r\n\0\\]/.test(relative)) {
@@ -100,6 +116,8 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/scripts/analyze-runtime-phases.mjs',
         'ops/scripts/install-hermes-skills.py',
         'ops/scripts/nora-tavern-update-check.sh',
+        'ops/scripts/nora-tavern-update-check.py',
+        'ops/scripts/nora-instance.py',
         'ops/scripts/nora-tavern-card-send.py',
         'ops/skills/INSTALL.md',
         'ops/skills/agents-tavern.md',

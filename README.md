@@ -22,7 +22,7 @@ Nora Tavern 是一个以“世界”为核心、可以被 Agent 管理的开源 
 
 Nora Tavern 支持两种安装方式：
 
-- **完全版：安装 Nora + Tavern**：完整体验 Hermes Agent 管理能力，让 Nora 协助管理世界、会话、角色、记忆和应用状态。
+- **完全版：安装 Nora + Tavern**：推荐下载 Launcher 整合包，自动安装 Hermes，并一键安装预配置好的 Nora、Tavern、Nora MCP 和 Hermes 技能。
 - **精简版：只安装 Tavern**：仅安装 AI 角色扮演应用本体，可以正常游玩，但不包含 Nora / Agent 管理能力。
 
 请选择安装文档：

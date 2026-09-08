@@ -47,12 +47,20 @@ updater 只负责更新已经安装好的 Nora Tavern。
 - Hermes 已经安装。
 - Nora Tavern 已经完成首次安装。
 - Tavern 中没有正在生成的对话。
-- 你没有手动删除 `$HERMES_HOME/apps/tavern-runtime`、`$HERMES_HOME/apps/nora-mcp`、`$HERMES_HOME/apps/tavern-ops`。
+- 你没有手动删除 Nora Tavern 安装目录里的 `tavern/apps/tavern-runtime`、`tavern/apps/nora-mcp`、`tavern/apps/tavern-ops`。
 
-默认 Hermes home 通常是：
+默认安装目录：
+
+Windows：
 
 ```text
-~/.hermes
+%LOCALAPPDATA%\NoraTavern
+```
+
+macOS：
+
+```text
+~/Library/NoraTavern
 ```
 
 ## 执行更新
@@ -63,16 +71,16 @@ macOS 用户，在终端中执行：
 curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
 ```
 
-如果你的 Hermes home 不是默认位置：
+如果你的安装目录不是默认位置：
 
 ```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm --hermes-home /path/to/hermes-home
+curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm --hermes-home "/path/to/Nora Tavern/hermes" --install-root "/path/to/Nora Tavern/tavern"
 ```
 
 更新器会在更新前创建备份。备份通常位于：
 
 ```text
-$HERMES_HOME/tavern-backups/
+<Nora Tavern 安装目录>/tavern/tavern-backups/
 ```
 
 更新成功后，终端会输出结构化结果。重点看：
@@ -115,14 +123,14 @@ Nora，请检查 Nora Tavern 是否已经更新成功。
 请保留：
 
 - 终端完整输出
-- `$HERMES_HOME/tavern-backups/`
-- `$HERMES_HOME/config.yaml`
-- `$HERMES_HOME/AGENTS.md`
+- `<Nora Tavern 安装目录>/tavern/tavern-backups/`
+- `<Nora Tavern 安装目录>/hermes/config.yaml`
+- `<Nora Tavern 安装目录>/hermes/AGENTS.md`
 
 如果新版 Tavern 无法启动，updater 会尝试恢复更新前的备份，并在终端输出中报告恢复结果。
 
 ## Windows 用户
 
-当前首次安装器已经提供 Windows PowerShell 入口。
+Windows 用户推荐打开 Nora Tavern Launcher，点击 **更新**。
 
-后续 updater 目前以 macOS 的 shell 入口为主。Windows 用户如果需要更新，建议先等待 Windows updater 入口发布。
+后续 updater 的独立命令行入口目前以 macOS 的 shell 入口为主。

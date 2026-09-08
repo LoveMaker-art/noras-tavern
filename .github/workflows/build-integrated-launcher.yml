@@ -1,0 +1,184 @@
+name: Build integrated Nora Tavern launchers
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*-beta.*'
+
+concurrency:
+  group: launcher-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin
+            arch: arm64
+            package_script: pack:mac:arm64
+          - runner: macos-15-intel
+            platform: darwin
+            arch: x64
+            package_script: pack:mac:x64
+          - runner: windows-latest
+            platform: win32
+            arch: x64
+            package_script: pack:win:x64
+          # Restore Windows ARM when the official Liveware CLI ships that target.
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify beta tag matches committed payload version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Fetch official ClawChat plugin for the runtime bundle
+        uses: actions/checkout@v4
+        with:
+          repository: clawling/clawchat-plugin-hermes-agent
+          ref: 8651f7078916e60ed1da9f78ec4d1278fef49dd9
+          path: .build-clawchat-plugin
+          persist-credentials: false
+
+      - name: Keep build inputs outside the release source tree
+        shell: bash
+        run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
+
+      - name: Install Hermes core without browser components (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HERMES_HOME="$RUNNER_TEMP/hermes"
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$RUNNER_TEMP/hermes-install.sh"
+          sh "$RUNNER_TEMP/hermes-install.sh" \
+            --dir "$HERMES_HOME/hermes-agent" \
+            --hermes-home "$HERMES_HOME" \
+            --skip-setup \
+            --skip-browser \
+            --skip-computer-use \
+            --non-interactive
+
+      - name: Install Hermes core without browser components (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
+          Invoke-WebRequest https://hermes-agent.nousresearch.com/install.ps1 -OutFile $installer
+          $stages = @(
+            'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
+            'dependencies', 'path', 'config-templates', 'platform-sdks', 'bootstrap-marker'
+          )
+          foreach ($stage in $stages) {
+            & $installer -HermesHome $env:HERMES_HOME `
+              -InstallDir (Join-Path $env:HERMES_HOME 'hermes-agent') `
+              -Stage $stage -NonInteractive -Json -SkipComputerUse
+            if ($LASTEXITCODE -ne 0) { throw "Hermes stage failed: $stage" }
+          }
+
+      - name: Build integrated runtime
+        shell: bash
+        run: |
+          node ops/scripts/package-hermes-runtime.mjs \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}"
+
+      - name: Install launcher test dependencies
+        working-directory: ops/installer/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Test release channels and update rollback
+        run: node --test ops/tests/launcher_releases.test.cjs ops/tests/launcher_bundle_contract.test.cjs ops/tests/launcher_system_update.test.cjs
+
+      - name: Test Nora initialization and profile synchronization
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install
+
+      - name: Build release payload
+        shell: bash
+        run: |
+          mode=--candidate
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then mode=""; fi
+          node ops/scripts/package-release.mjs $mode \
+            --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+
+      - name: Test real fresh installation before desktop packaging
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node ops/tests/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload"
+
+      - name: Build desktop package
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm ci --no-audit --no-fund
+          npm run "${{ matrix.package_script }}"
+
+      - name: Upload launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/system-assets/*
+          if-no-files-found: error
+
+  publish-beta:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nora-tavern-*
+          path: artifacts
+      - name: Publish only after all platform builds pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
+          done
+          gh release create "$TAG" --verify-tag --draft --prerelease --title "Nora Tavern $TAG 测试版" \
+            --notes '独立 Beta 测试通道，不影响正式安装。包含完整 Hermes、Nora 配置、ClawChat、Liveware 和酒馆。测试目标：首次安装、头像昵称、模型与配对、手机入口，以及 Beta 版本间更新和回滚。无真实 Key 或用户数据。未签名或未公证的平台包可能出现系统安全提示；请核对仓库与校验信息。跨平台构建通过不等于真机交互验收通过。'
+          while IFS= read -r -d '' file; do
+            gh release upload "$TAG" "$file"
+          done < <(find artifacts -type f ! -name '*.blockmap' ! -name 'latest*.yml' -print0)
+          gh release edit "$TAG" --draft=false --prerelease --latest=false
