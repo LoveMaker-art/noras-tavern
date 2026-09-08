@@ -102,6 +102,14 @@ export function createNoraWorldsV2Router({
         return response.json({ enabled: true, schema: 2, userDataRoot: request.user?.directories?.root ?? null });
     });
 
+    router.post('/worlds/:worldId/worldbook-entry', async (request, response) => {
+        try {
+            const result = await resolveCore(request).editWorldbookEntry(request.params.worldId, request.body);
+            response.setHeader('Cache-Control', 'no-store');
+            return response.json(result);
+        } catch (error) { return sendError(response, error); }
+    });
+
     router.post('/imports', async (request, response) => {
         try {
             if (!request.file) throw new NoraWorldCoreError('NORA_CARD_STAGING_INVALID', 'One uploaded character card is required.');

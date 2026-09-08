@@ -1,4 +1,5 @@
 import { Fuse } from '../lib.js';
+import { resolveWorldbookOverride } from './nora-worlds/worldbook-bindings.js';
 
 import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
 import { download, debounce, initScrollHeight, resetScrollHeight, parseJsonFile, extractDataFromPng, getFileBuffer, getCharaFilename, getSortableDelay, escapeRegex, PAGINATION_TEMPLATE, navigation_option, waitUntilCondition, isTrueBoolean, setValueByPath, flashHighlight, select2ModifyOptions, getSelect2OptionId, dynamicSelect2DataViaAjax, highlightRegex, select2ChoiceClickSubscribe, isFalseBoolean, getSanitizedFilename, checkOverwriteExistingData, getStringHash, parseStringArray, cancelDebounce, findChar, onlyUnique, equalsIgnoreCaseAndAccents, uuidv4, normalizeArray, getUniqueName, logSlashCommandWarn, escapeHtml } from './utils.js';
@@ -4338,13 +4339,17 @@ export async function createNewWorldInfo(worldName, { interactive = false } = {}
     return true;
 }
 
+function resolveWorldbookName(name) {
+    return resolveWorldbookOverride(name, chat_metadata);
+}
+
 async function getCharacterLore() {
     const character = characters[this_chid];
     const name = character?.name;
     /** @type {Set<string>} */
     let worldsToSearch = new Set();
 
-    const baseWorldName = character?.data?.extensions?.world;
+    const baseWorldName = resolveWorldbookName(character?.data?.extensions?.world);
     if (baseWorldName) {
         worldsToSearch.add(baseWorldName);
     }
@@ -4353,7 +4358,7 @@ async function getCharacterLore() {
     const fileName = getCharaFilename(this_chid);
     const extraCharLore = world_info.charLore?.find((e) => e.name === fileName);
     if (extraCharLore) {
-        worldsToSearch = new Set([...worldsToSearch, ...extraCharLore.extraBooks]);
+        worldsToSearch = new Set([...worldsToSearch, ...extraCharLore.extraBooks.map(resolveWorldbookName)]);
     }
 
     if (!worldsToSearch.size) {
@@ -4362,17 +4367,17 @@ async function getCharacterLore() {
 
     let entries = [];
     for (const worldName of worldsToSearch) {
-        if (selected_world_info.includes(worldName)) {
+        if (selected_world_info.map(resolveWorldbookName).includes(worldName)) {
             console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in global world info! Skipping...`);
             continue;
         }
 
-        if (chat_metadata[METADATA_KEY] === worldName) {
+        if (resolveWorldbookName(chat_metadata[METADATA_KEY]) === worldName) {
             console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in chat lore! Skipping...`);
             continue;
         }
 
-        if (power_user.persona_description_lorebook === worldName) {
+        if (resolveWorldbookName(power_user.persona_description_lorebook) === worldName) {
             console.debug(`[WI] Character ${name}'s world ${worldName} is already activated in persona lore! Skipping...`);
             continue;
         }
@@ -4396,7 +4401,7 @@ async function getGlobalLore() {
     }
 
     let entries = [];
-    for (const worldName of selected_world_info) {
+    for (const worldName of new Set(selected_world_info.map(resolveWorldbookName))) {
         const data = await loadWorldInfo(worldName);
         const newEntries = data ? Object.keys(data.entries).map((x) => data.entries[x]).map(({ uid, ...rest }) => ({ uid, world: worldName, ...rest })) : [];
         entries = entries.concat(newEntries);
@@ -4408,13 +4413,13 @@ async function getGlobalLore() {
 }
 
 async function getChatLore() {
-    const chatWorld = chat_metadata[METADATA_KEY];
+    const chatWorld = resolveWorldbookName(chat_metadata[METADATA_KEY]);
 
     if (!chatWorld) {
         return [];
     }
 
-    if (selected_world_info.includes(chatWorld)) {
+    if (selected_world_info.map(resolveWorldbookName).includes(chatWorld)) {
         console.debug(`[WI] Chat world ${chatWorld} is already activated in global world info! Skipping...`);
         return [];
     }
@@ -4428,8 +4433,8 @@ async function getChatLore() {
 }
 
 async function getPersonaLore() {
-    const chatWorld = chat_metadata[METADATA_KEY];
-    const personaWorld = power_user.persona_description_lorebook;
+    const chatWorld = resolveWorldbookName(chat_metadata[METADATA_KEY]);
+    const personaWorld = resolveWorldbookName(power_user.persona_description_lorebook);
 
     if (!personaWorld) {
         return [];
@@ -4440,7 +4445,7 @@ async function getPersonaLore() {
         return [];
     }
 
-    if (selected_world_info.includes(personaWorld)) {
+    if (selected_world_info.map(resolveWorldbookName).includes(personaWorld)) {
         console.debug(`[WI] Persona world ${personaWorld} is already activated in global world info! Skipping...`);
         return [];
     }
