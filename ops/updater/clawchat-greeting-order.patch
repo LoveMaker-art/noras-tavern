@@ -1,0 +1,75 @@
+diff --git a/clawchat_gateway/adapter.py b/clawchat_gateway/adapter.py
+index f6c0fa1..124218a 100644
+--- a/clawchat_gateway/adapter.py
++++ b/clawchat_gateway/adapter.py
+@@ -1995,6 +1995,11 @@ class ClawChatAdapter(BasePlatformAdapter):
+             return
+         if self._store is None:
+             return
++        if not self._store.has_sent_activation_bootstrap(
++            platform="hermes", account_id="default",
++            user_id=self._clawchat_config.user_id,
++        ):
++            return
+         if self._liveware_sample_supervisor is not None:
+             # Keep the ONE supervisor per adapter instance — constructing a
+             # second would race the bootstrap "owner has zero apps" gate and
+@@ -2136,6 +2141,13 @@ class ClawChatAdapter(BasePlatformAdapter):
+                     claimed_at=claimed_at,
+                 )
+             raise
++        if self._visible_send_count(conversation_id) <= delivered_before:
++            self._release_activation_bootstrap_claim(
++                conversation_id=conversation_id,
++                claimed_at=claimed_at,
++            )
++            logger.warning("clawchat greeting completed without delivery; App registration remains pending")
++            return
+         self._mark_activation_bootstrap_sent(
+             conversation_id=conversation_id,
+             claimed_at=claimed_at,
+@@ -2172,6 +2184,12 @@ class ClawChatAdapter(BasePlatformAdapter):
+                 conversation_id,
+                 reason,
+             )
++        if marked:
++            # READY may have arrived before the greeting; resume the deferred App path now.
++            try:
++                self._schedule_liveware_sample()
++            except Exception:
++                logger.warning("clawchat post-greeting sample scheduling failed", exc_info=True)
+ 
+     def _release_activation_bootstrap_claim(
+         self,
+diff --git a/clawchat_gateway/storage.py b/clawchat_gateway/storage.py
+index 3c2904a..b98cbed 100644
+--- a/clawchat_gateway/storage.py
++++ b/clawchat_gateway/storage.py
+@@ -605,6 +605,27 @@ class ClawChatStore:
+         finally:
+             conn.close()
+ 
++    def has_sent_activation_bootstrap(
++        self,
++        *,
++        platform: str,
++        account_id: str,
++        user_id: str,
++    ) -> bool:
++        self.initialize()
++        if self._disabled or not user_id:
++            return False
++        conn = sqlite3.connect(self.db_path)
++        try:
++            row = conn.execute(
++                "SELECT bootstrap_sent, conversation_id FROM activations "
++                "WHERE platform = ? AND account_id = ? AND user_id = ?",
++                (platform, account_id, user_id),
++            ).fetchone()
++            return bool(row and row[0] == 1 and row[1])
++        finally:
++            conn.close()
++
+     def get_activation_conversation(
+         self,
+         *,

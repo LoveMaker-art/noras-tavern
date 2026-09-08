@@ -779,6 +779,11 @@ def install(args):
             host_hook = prepare_host_hook_swap(home, source, work / "host-hooks")
             if host_hook:
                 swaps.append(host_hook)
+            gateway_patch = module_at("release_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
+            gateway_swaps, gateway_report = gateway_patch.prepare(home, work / "clawchat-greeting")
+            swaps.extend(gateway_swaps)
+            if gateway_report.get("status") == "pending":
+                log("ClawChat 欢迎消息顺序补丁未应用，插件保留原状：" + "; ".join(gateway_report.get("warnings", [])))
             for relative, prepared in skills.items():
                 target = home / "skills" / relative
                 if not trees_equal(prepared, target):
@@ -795,6 +800,7 @@ def install(args):
                     "version": version,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 log("已是最新版，无需替换文件。")
@@ -826,6 +832,8 @@ def install(args):
                         continue
                     swap_tree(prepared, target, saved)
                     applied.append((name, target, saved))
+                if gateway_swaps:
+                    gateway_report = {**gateway_report, "status": "installed"}
                 if prepared_state is not None:
                     active_state = home / "tavern-state"
                     saved_state = backup / "state"
@@ -871,6 +879,7 @@ def install(args):
                     "updateCheck": update_check,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
@@ -886,6 +895,7 @@ def install(args):
                     log(f"旧备份清理未完成，当前备份仍保留：{retention_error}")
                 reload_required = (
                     mcp_changed or agents_changed or config_changed
+                    or bool(gateway_swaps)
                     or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
                 )
                 result = {
@@ -897,9 +907,10 @@ def install(args):
                     "liveware": liveware,
                     "updateCheck": update_check,
                     "backupRetention": backup_retention,
+                    "clawchatGreeting": gateway_report,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
-                    "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。" if reload_required else "更新已生效。",
+                    "next": "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required else ""))
