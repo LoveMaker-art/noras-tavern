@@ -2,14 +2,20 @@ name: Build integrated Nora Tavern launchers
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: Build all platforms or debug Windows only
+        type: choice
+        default: all
+        options:
+          - all
+          - win32-x64
   push:
-    branches:
-      - 'codex/launcher-beta'
     tags:
       - 'v*-beta.*'
 
 concurrency:
-  group: launcher-${{ github.ref }}
+  group: launcher-${{ github.ref }}-${{ inputs.target || 'all' }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
@@ -24,20 +30,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - runner: macos-15
-            platform: darwin
-            arch: arm64
-            package_script: pack:mac:arm64
-          - runner: macos-15-intel
-            platform: darwin
-            arch: x64
-            package_script: pack:mac:x64
-          - runner: windows-latest
-            platform: win32
-            arch: x64
-            package_script: pack:win:x64
-          # Restore Windows ARM when the official Liveware CLI ships that target.
+        # Tags always build every supported platform. Windows ARM lacks Liveware.
+        include: >-
+          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
+            && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
+            || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
 
