@@ -39,6 +39,10 @@ jobs:
     timeout-minutes: 90
 
     steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
@@ -55,6 +59,9 @@ jobs:
           cache-dependency-path: |
             app/engine/sillytavern/package-lock.json
             nora-mcp/npm-shrinkwrap.json
+
+      - name: Verify embedded Story Profile before preparing runtimes
+        run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
 
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
