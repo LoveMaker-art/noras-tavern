@@ -5,6 +5,19 @@ const path = require('node:path');
 const test = require('node:test');
 const { findBundledRuntime, validateRuntimeLinks } = require('../installer/desktop/runtime');
 
+test('Windows builds use native tar and Node npm CLI without shell path conversion', async () => {
+  const { buildCommand } = await import('../scripts/build-commands.mjs');
+  const options = { platform: 'win32', executable: 'C:\\Program Files\\nodejs\\node.exe', systemRoot: 'C:\\Windows' };
+  assert.deepEqual(buildCommand('tar', ['-a', '-cf', 'D:\\release dir\\runtime.zip'], options), {
+    command: 'C:\\Windows\\System32\\tar.exe', args: ['-a', '-cf', 'D:\\release dir\\runtime.zip'],
+  });
+  assert.deepEqual(buildCommand('npm', ['ci'], options), { command: options.executable,
+    args: ['C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js', 'ci'] });
+  assert.deepEqual(buildCommand('zip', ['-qry', 'launcher.zip', 'launcher'], options), {
+    command: 'C:\\Windows\\System32\\tar.exe', args: ['-a', '-cf', 'launcher.zip', 'launcher'],
+  });
+});
+
 test('desktop bundle carries the profile initializer beside the bridge', () => {
   const pkg = require('../installer/desktop/package.json');
   const entry = pkg.build.extraResources.find(item => item.to === 'nora_profile.py');

@@ -7,6 +7,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import runtimeTools from '../installer/desktop/runtime.js';
+import { buildCommand } from './build-commands.mjs';
 
 const installer = fileURLToPath(new URL('../installer/', import.meta.url));
 const lockPath = path.join(installer, 'clawchat-bundle.lock.json');
@@ -117,7 +118,8 @@ function archiveRuntime(archive) {
     const command = platform === 'win32'
         ? ['tar', ['-a', '-cf', archive, '-C', temporary, 'hermes-runtime']]
         : ['tar', ['--no-xattrs', '-czf', archive, '-C', temporary, 'hermes-runtime']];
-    const result = spawnSync(command[0], command[1], { stdio: 'inherit', env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    const resolved = buildCommand(command[0], command[1]);
+    const result = spawnSync(resolved.command, resolved.args, { stdio: 'inherit', env: { ...process.env, COPYFILE_DISABLE: '1' } });
     if (result.status !== 0) throw new Error('无法创建 Hermes 运行时压缩包。');
 }
 

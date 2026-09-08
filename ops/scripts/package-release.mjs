@@ -3,6 +3,7 @@ import { writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { buildCommand } from './build-commands.mjs';
 import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules } from './release-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -14,7 +15,8 @@ const runtimeManifestPath = runtimeManifestIndex >= 0
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
-    return execFileSync(command, args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
+    const resolved = buildCommand(command, args);
+    return execFileSync(resolved.command, resolved.args, { cwd, stdio: 'inherit', env: { ...process.env, ...extraEnv } });
 }
 
 function copyPackageFile(source, target) {
