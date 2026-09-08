@@ -8,6 +8,7 @@ import sanitize from 'sanitize-filename';
 import { isPathUnderParent } from '../util.js';
 import { NoraWorldCoreError } from './errors.js';
 import { adaptCardForMvuRuntime } from './st-backend-materializer.js';
+import { worldbookOverrides } from '../../public/scripts/nora-worlds/worldbook-bindings.js';
 
 function safeAvatar(value) {
     const avatar = String(value || '').trim();
@@ -159,13 +160,20 @@ export async function readActivationSnapshot(plan, directories, {
         });
     }
     const runtimeCharacter = adaptCardForMvuRuntime(projectRuntimeWorldbookBinding(character, plan)).card;
+    if (plan.knowledge?.some(resource => resource.binding?.embedded)) {
+        delete (runtimeCharacter.data || runtimeCharacter).character_book;
+    }
     const compacted = deduplicateEmbeddedWorldbook(runtimeCharacter, worldbooks);
     const previousChatBook = chat.header?.chat_metadata?.world_info;
-    const replacement = previousChatBook && plan.knowledge?.find(resource => resource.binding?.original_name === previousChatBook);
-    const projectedChat = replacement ? {
+    const overrides = worldbookOverrides(plan.knowledge);
+    const metadata = chat.header?.chat_metadata || {};
+    const projectedChat = {
         ...chat,
-        header: { ...chat.header, chat_metadata: { ...chat.header.chat_metadata, world_info: replacement.binding.name } },
-    } : chat;
+        header: { ...chat.header, chat_metadata: { ...metadata,
+            ...(Object.hasOwn(overrides, previousChatBook) ? { world_info: overrides[previousChatBook] } : {}),
+            nora_world: { ...metadata.nora_world, id: plan.world_id, worldbook_overrides: overrides },
+        } },
+    };
     const resolvedRevision = revision || await measured(
         'revision',
         () => getActivationSnapshotRevision(plan, directories),

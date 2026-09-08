@@ -119,7 +119,9 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     assert.equal((await fs.readdir(directories.worlds)).length, 2, 'No copies created by subsequent or rejected edits');
     if (reopenedCore.addWorldSetting) {
         const added = await reopenedCore.addWorldSetting(b.world_id, { type: 'constant', title: 'New', content: 'New setting', keys: [] }, { expectedRevision: b.revision, idempotencyKey: 'own-setting' });
+        await fs.writeFile(path.join(root, 'settings.json'), JSON.stringify({ world_info_settings: { world_info: { globalSelect: [added.resource.binding.name] } } }));
         const ownEdit = await reopenedCore.editWorldbookEntry(b.world_id, { name: added.resource.binding.name, entry_id: added.entry_id, patch: { content: 'Edited own setting' }, expected_revision: revision(added.book) });
+        assert.notEqual(ownEdit.resource.binding.name, added.resource.binding.name, 'Even owned settings get a private copy when globally referenced');
         const addedAgain = await reopenedCore.addWorldSetting(b.world_id, { type: 'constant', title: 'Another', content: 'Another setting', keys: [] }, { expectedRevision: ownEdit.world.revision, idempotencyKey: 'another-setting' });
         assert.equal(addedAgain.book.entries[added.entry_id].content, 'Edited own setting', 'Adding settings after editing preserves the edit');
     }

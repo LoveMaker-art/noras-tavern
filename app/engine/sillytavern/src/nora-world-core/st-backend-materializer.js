@@ -1,5 +1,7 @@
 import crypto from 'node:crypto';
 import { prepareWorldbookEntryEdit } from './worldbook-entry-edit.js';
+import { isExclusiveWorldbook } from './worldbook-references.js';
+import { withWorldbookLock } from '../worldbook-lock.js';
 import { removeSessionLedger } from '../nora-story-ledger/state-file.js';
 import { requestStoryProjection } from '../nora-story-ledger/profile-projection.js';
 import fs from 'node:fs/promises';
@@ -468,11 +470,12 @@ function nextWorldbookEntryId(entries) {
     return String((used.length ? Math.max(...used) : -1) + 1);
 }
 
-async function persistWorldSetting({ world, setting, operationId, roots, locks }) {
-    const binding = worldSettingsBinding(world);
+async function persistWorldSetting({ world, setting, operationId, roots }) {
+    const existing = world.knowledge.find(item => item.source_key === 'nora:user-settings');
+    const binding = existing ? { name: existing.binding.name, resourceId: existing.resource_id } : worldSettingsBinding(world);
     const filePath = path.join(roots.worlds, `${binding.name}.json`);
     const operationDigest = sha256(stableStringify(setting));
-    return locks.run(`st-worldbook:${binding.name}`, async () => {
+    return withWorldbookLock(filePath, async () => {
         let book;
         try {
             book = JSON.parse(await fs.readFile(filePath, 'utf8'));
@@ -516,7 +519,7 @@ async function persistWorldSetting({ world, setting, operationId, roots, locks }
                 resource_id: binding.resourceId,
                 source_key: 'nora:user-settings',
                 engine: 'sillytavern',
-                binding: { name: binding.name },
+                binding: existing?.binding || { name: binding.name },
                 ownership: 'owned',
             },
             entry_id: entryId,
@@ -596,8 +599,25 @@ export function createStBackendMaterializer({
     if (typeof cardCodec?.decode !== 'function') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST card codec is required.');
 
     return Object.freeze({
-        editWorldbookEntry(world, input) {
-            return prepareWorldbookEntryEdit({ world, input, directory: roots.worlds, locks });
+        async editWorldbookEntry(world, input, { worlds = [] } = {}) {
+            let embedded = null;
+            if (input?.name === '') {
+                if (world.knowledge.some(item => item.source_key === 'embedded-worldbook:0')) {
+                    throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'The embedded Worldbook already has a binding; reopen the editor.');
+                }
+                const avatar = safeBindingName(world.runtime_card.binding.avatar, 'avatar');
+                const sourcePath = path.join(roots.characters, avatar);
+                const { card } = await cardCodec.decode({ buffer: await fs.readFile(sourcePath), format: 'png', sourcePath });
+                const raw = cardData(card).character_book;
+                if (!raw?.entries) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'This World has no embedded Worldbook.');
+                const normalized = Array.isArray(raw.entries) ? raw : { ...raw, entries: Object.values(raw.entries) };
+                const entry = raw.entries[input.entry_id];
+                embedded = { raw, book: convertEmbeddedBook(normalized), entry_id: entry?.id ?? input.entry_id };
+            }
+            const candidate = world.knowledge.find(item => item.binding?.name === input?.name);
+            const exclusive = candidate?.ownership === 'owned'
+                && await isExclusiveWorldbook(world, input?.name, { worlds, roots, cardCodec });
+            return prepareWorldbookEntryEdit({ world, input, directory: roots.worlds, exclusive, embedded });
         },
         addWorldSetting(world, setting, { operationId } = {}) {
             return persistWorldSetting({

@@ -7,6 +7,7 @@ import sanitize from 'sanitize-filename';
 import _ from 'lodash';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { tryParse } from '../util.js';
+import { withWorldbookLock } from '../worldbook-lock.js';
 
 /**
  * Reads a World Info file and returns its contents
@@ -79,7 +80,7 @@ router.post('/get', (request, response) => {
     return response.send(file);
 });
 
-router.post('/delete', (request, response) => {
+router.post('/delete', (request, response, next) => {
     if (!request.body?.name) {
         return response.sendStatus(400);
     }
@@ -88,16 +89,18 @@ router.post('/delete', (request, response) => {
     const filename = sanitize(`${worldInfoName}.json`);
     const pathToWorldInfo = path.join(request.user.directories.worlds, filename);
 
-    if (!fs.existsSync(pathToWorldInfo)) {
-        throw new Error(`World info file ${filename} doesn't exist.`);
-    }
+    return withWorldbookLock(pathToWorldInfo, () => {
+        if (!fs.existsSync(pathToWorldInfo)) {
+            throw new Error(`World info file ${filename} doesn't exist.`);
+        }
 
-    fs.unlinkSync(pathToWorldInfo);
+        fs.unlinkSync(pathToWorldInfo);
 
-    return response.sendStatus(200);
+        return response.sendStatus(200);
+    }).catch(next);
 });
 
-router.post('/import', (request, response) => {
+router.post('/import', (request, response, next) => {
     if (!request.file) return response.sendStatus(400);
 
     const filename = `${path.parse(sanitize(request.file.originalname)).name}.json`;
@@ -128,11 +131,13 @@ router.post('/import', (request, response) => {
         return response.status(400).send('World file must have a name');
     }
 
-    writeFileAtomicSync(pathToNewFile, fileContents);
-    return response.send({ name: worldName });
+    return withWorldbookLock(pathToNewFile, () => {
+        writeFileAtomicSync(pathToNewFile, fileContents);
+        return response.send({ name: worldName });
+    }).catch(next);
 });
 
-router.post('/edit', (request, response) => {
+router.post('/edit', (request, response, next) => {
     if (!request.body) {
         return response.sendStatus(400);
     }
@@ -152,15 +157,16 @@ router.post('/edit', (request, response) => {
     const filename = sanitize(`${request.body.name}.json`);
     const pathToFile = path.join(request.user.directories.worlds, filename);
 
-    // Synchronous compare + atomic write: no other request can interleave in this process.
-    // Optional for upstream clients; Nora editors always provide their read revision.
-    if (request.body.expected_revision !== undefined) {
-        const current = fs.existsSync(pathToFile) ? JSON.parse(fs.readFileSync(pathToFile, 'utf8')) : null;
-        const revision = crypto.createHash('sha256').update(JSON.stringify(current)).digest('hex');
-        if (request.body.expected_revision !== revision) return response.status(409).json({ error: 'NORA_WORLDBOOK_REVISION_CONFLICT' });
-    }
+    return withWorldbookLock(pathToFile, () => {
+        // Compare and publish under the same lock as World Core edits.
+        if (request.body.expected_revision !== undefined) {
+            const current = fs.existsSync(pathToFile) ? JSON.parse(fs.readFileSync(pathToFile, 'utf8')) : null;
+            const revision = crypto.createHash('sha256').update(JSON.stringify(current)).digest('hex');
+            if (request.body.expected_revision !== revision) return response.status(409).json({ error: 'NORA_WORLDBOOK_REVISION_CONFLICT' });
+        }
 
-    writeFileAtomicSync(pathToFile, JSON.stringify(request.body.data, null, 4));
+        writeFileAtomicSync(pathToFile, JSON.stringify(request.body.data, null, 4));
 
-    return response.send({ ok: true });
+        return response.send({ ok: true });
+    }).catch(next);
 });

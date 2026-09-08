@@ -373,7 +373,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             <form id="nora-entry-form" class="nora-form nora-entry-form">
                 <label>${tr("标题")}<input name="comment" value="${escapeHtml(entry.comment || entry.name || '')}"></label>
                 <div class="nora-field-label">${tr("设定类型")}<div class="nora-mode-switch" role="group"><button data-entry-mode="constant" type="button">${tr("常驻设定")}</button><button data-entry-mode="trigger" type="button">${tr("触发设定")}</button></div></div>
-                <label data-entry-keys>${tr("触发词")}<input name="keys" value="${escapeHtml(keys.join('、'))}" placeholder="${tr("多个触发词用逗号或顿号分隔")}"></label>
+                <label data-entry-keys>${tr("触发词")}<textarea name="keys" rows="3" placeholder="${tr("每行一个触发词")}">${escapeHtml(keys.join('\n'))}</textarea></label>
                 <label>${tr("设定内容")}<textarea name="content" rows="14">${escapeHtml(entry.content || '')}</textarea></label>
                 <button class="nora-primary" type="submit">${tr("保存设定")}</button>
             </form>`;
@@ -396,7 +396,9 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             const form = event.currentTarget;
             const submit = form.querySelector('[type="submit"]');
             const data = new FormData(form);
-            const nextKeys = mode === 'trigger' ? String(data.get('keys') || '').split(/[,，、]/).map((item) => item.trim()).filter(Boolean) : [];
+            const keysText = String(data.get('keys') || '');
+            const keysChanged = keysText !== keys.join('\n');
+            const nextKeys = keysChanged ? keysText.split(/\r?\n/).map(item => item.trim()).filter(Boolean) : keys;
             if (mode === 'trigger' && !nextKeys.length) {
                 dialogs.toast(tr("触发设定至少需要一个触发词。"), { tone: 'error' });
                 return;
@@ -411,7 +413,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     if (title !== String(entry.comment || entry.name || '')) patch.comment = title;
                     if (content !== String(entry.content || '')) patch.content = content;
                     if (mode !== (isAlwaysOn(entry) ? 'constant' : 'trigger')) patch.constant = mode === 'constant';
-                    if (mode === 'trigger' && JSON.stringify(nextKeys) !== JSON.stringify(entryKeys(entry))) patch.key = nextKeys;
+                    if (mode === 'trigger' && keysChanged) patch.key = nextKeys;
                     if (!Object.keys(patch).length) { dialogs.close(); return; }
                     const result = await worldbook.saveWorldbookEntry(name, book, id, patch, worldId);
                     persisted = true;

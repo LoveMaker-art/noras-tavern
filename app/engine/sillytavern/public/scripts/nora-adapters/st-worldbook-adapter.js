@@ -1,4 +1,5 @@
 import { contentRevision } from '../nora-controls/revision.js';
+import { worldbookOverrides } from '../nora-worlds/worldbook-bindings.js';
 
 export function createStWorldbookAdapter(runtime) {
     const readRevisions = new WeakMap();
@@ -40,7 +41,7 @@ export function createStWorldbookAdapter(runtime) {
         if (!worldId || current.chatMetadata?.nora_world?.id !== worldId) throw new Error('World changed; reopen the editor.');
         const response = await fetch(`/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/worldbook-entry`, {
             method: 'POST', headers: current.getRequestHeaders(),
-            body: JSON.stringify({ name, entry_id: entryId, patch, expected_revision: readRevisions.get(book) }),
+            body: JSON.stringify({ name, entry_id: entryId, patch, expected_revision: readRevisions.get(book) || (!name ? await contentRevision(book) : undefined) }),
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || result.error?.message || `Worldbook save failed (${response.status}).`);
@@ -50,8 +51,12 @@ export function createStWorldbookAdapter(runtime) {
             const nextName = result.resource.binding.name;
             const character = current.characters[current.characterId];
             const data = character?.data || character;
-            if (data?.extensions?.world === name) data.extensions.world = nextName;
+            if (data && (data.extensions?.world === name || (!name && result.resource.binding.embedded))) {
+                data.extensions = { ...data.extensions, world: nextName };
+            }
+            if (result.resource.binding.embedded && data) delete data.character_book;
             if (current.chatMetadata.world_info === name) current.chatMetadata.world_info = nextName;
+            current.chatMetadata.nora_world.worldbook_overrides = worldbookOverrides(result.world?.knowledge || [result.resource]);
             current.primeWorldInfoSnapshot(nextName, result.book);
             await current.updateWorldInfoList();
         } catch (error) {

@@ -345,7 +345,7 @@ export class NoraWorldCore {
             const current = await this.#store.get(worldId);
             if (!current) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
             if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
-            const edit = await this.#materializer.editWorldbookEntry(current, input);
+            const edit = await this.#materializer.editWorldbookEntry(current, input, { worlds: await this.#store.list() });
             let world = current;
             if (edit.resource.binding.name !== edit.source_name) {
                 try {
@@ -353,7 +353,10 @@ export class NoraWorldCore {
                         if (latest.revision !== current.revision || latest.lifecycle.status !== 'READY') {
                             throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the editor before saving.');
                         }
-                        return { ...latest, knowledge: latest.knowledge.map(item => item.binding.name === edit.source_name ? edit.resource : item), updated_at: this.#now() };
+                        const knowledge = edit.source_name
+                            ? latest.knowledge.map(item => item.binding.name === edit.source_name ? edit.resource : item)
+                            : [...latest.knowledge, edit.resource];
+                        return { ...latest, knowledge, updated_at: this.#now() };
                     });
                 } catch (error) {
                     await edit.abort().catch(() => {});
