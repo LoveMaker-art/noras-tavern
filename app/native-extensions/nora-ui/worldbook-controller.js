@@ -9,10 +9,6 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         return String(character?.data?.extensions?.world || readState().world.metadata?.world_info || '').trim();
     }
 
-    function editableWorldbookName() {
-        return String(worldRuntime.list().find(world => world.active)?.worldbookName || '').trim();
-    }
-
     function activeBindings(character) {
         const embedded = character?.data?.character_book;
         const boundName = runtimeName(character);
@@ -31,8 +27,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         };
         addNamed(character?.data?.extensions?.world, tr("角色绑定"));
         addNamed(readState().world.metadata?.world_info, tr("当前世界绑定"));
-        const editableName = editableWorldbookName();
-        named.forEach((binding) => bindings.push({ ...binding, label: binding.sources.join(' · '), readonly: binding.name !== editableName }));
+        named.forEach((binding) => bindings.push({ ...binding, label: binding.sources.join(' · '), readonly: false }));
         return bindings;
     }
 
@@ -92,7 +87,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         const triggered = visibleEntries.filter(([, entry]) => !isAlwaysOn(entry));
         const background = scenario(character);
         const scenarioEdit = editing ? `<span class="itemActions"><button class="itemEdit" data-worldbook-edit-kind="scenario" type="button" aria-label="${tr("编辑世界背景")}" title="${tr("编辑世界背景")}">${icons.edit}</button></span>` : '';
-        const canEditEntries = editing && runtimeName(character) === editableWorldbookName();
+        const canEditEntries = editing;
         const alwaysHtml = `${background ? `<div class="loreItem loreSummaryItem is-always" data-worldbook-kind="scenario" role="button" tabindex="0" aria-label="${tr("查看世界背景详情")}"><div class="loreSummaryLine"><span class="loreTitle">${tr("世界背景")}</span>${scenarioEdit}</div></div>` : ''}${panelItems(alwaysOn, 'always', canEditEntries)}`;
         return `
             <div class="loreGroupTitle">${tr("常驻设定")}</div>${alwaysHtml || `<p class="pmuted">${tr("暂无常驻设定")}</p>`}
@@ -304,10 +299,6 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             return;
         }
         const name = runtimeName(character);
-        if (!name || name !== editableWorldbookName()) {
-            dialogs.toast(tr("导入原件保持只读；请使用添加设定补充内容。"));
-            return;
-        }
         const modal = dialogs.open(tr("编辑世界书"), '<div></div>', 'nora-worldbook-entry-editor-modal nora-plain-sheet');
         let book;
         try {
@@ -323,18 +314,9 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             dialogs.toast(tr("这条世界书内容已不存在。"), { tone: 'error' });
             return;
         }
-        editEntry(modal, '', book, entryId, {
+        editEntry(modal, name, book, entryId, {
             onBack: dialogs.close,
-            save: async () => {
-                if (name) {
-                    await worldbook.saveWorldbook(name, book);
-                    store.cacheWorldbook(name, book);
-                    return;
-                }
-                await worldbook.updateEmbeddedWorldbook({ avatar: character.avatar, book });
-            },
             onSaved: async () => {
-                await reloadWorlds();
                 dialogs.close();
                 onChanged();
                 dialogs.toast(tr("世界书设定已保存。"));
@@ -380,6 +362,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
 
     function editEntry(modal, name, book, id, options = null) {
         options ||= {};
+        const worldId = readState().world.metadata?.nora_world?.id;
         const available = book.entries || book;
         const entry = available[id];
         if (!entry) return;
@@ -418,28 +401,31 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                 dialogs.toast(tr("触发设定至少需要一个触发词。"), { tone: 'error' });
                 return;
             }
-            const previous = structuredClone(entry);
             let persisted = false;
             submit.disabled = true;
             try {
                 await operations.run('world', async () => {
-                    entry.comment = String(data.get('comment') || '').trim();
-                    entry.constant = mode === 'constant';
-                    if (Array.isArray(entry.keys) && !Array.isArray(entry.key)) entry.keys = nextKeys;
-                    else entry.key = nextKeys;
-                    entry.content = String(data.get('content') || '').trim();
-                    if (options.save) await options.save(book);
-                    else await worldbook.saveWorldbook(name, book);
+                    const patch = {};
+                    const title = String(data.get('comment') || '');
+                    const content = String(data.get('content') || '');
+                    if (title !== String(entry.comment || entry.name || '')) patch.comment = title;
+                    if (content !== String(entry.content || '')) patch.content = content;
+                    if (mode !== (isAlwaysOn(entry) ? 'constant' : 'trigger')) patch.constant = mode === 'constant';
+                    if (mode === 'trigger' && JSON.stringify(nextKeys) !== JSON.stringify(entryKeys(entry))) patch.key = nextKeys;
+                    if (!Object.keys(patch).length) { dialogs.close(); return; }
+                    const result = await worldbook.saveWorldbookEntry(name, book, id, patch, worldId);
                     persisted = true;
+                    name = result.resource.binding.name;
+                    book = result.book;
+                    store.cacheWorldbook(name, book);
+                    await reloadWorlds();
+                    onChanged();
                     if (options.onSaved) await options.onSaved();
                     else renderEntries(modal, book, name, false);
                 });
             } catch (error) {
                 submit.disabled = false;
-                if (!persisted) {
-                    Object.keys(entry).forEach((key) => delete entry[key]);
-                    Object.assign(entry, previous);
-                }
+                persisted ||= Boolean(error.saved);
                 const prefix = persisted ? tr("世界书已保存，但页面刷新失败") : tr("世界书保存失败");
                 dialogs.toast(`${prefix}：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
             }

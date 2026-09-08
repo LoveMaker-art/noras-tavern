@@ -160,6 +160,12 @@ export async function readActivationSnapshot(plan, directories, {
     }
     const runtimeCharacter = adaptCardForMvuRuntime(projectRuntimeWorldbookBinding(character, plan)).card;
     const compacted = deduplicateEmbeddedWorldbook(runtimeCharacter, worldbooks);
+    const previousChatBook = chat.header?.chat_metadata?.world_info;
+    const replacement = previousChatBook && plan.knowledge?.find(resource => resource.binding?.original_name === previousChatBook);
+    const projectedChat = replacement ? {
+        ...chat,
+        header: { ...chat.header, chat_metadata: { ...chat.header.chat_metadata, world_info: replacement.binding.name } },
+    } : chat;
     const resolvedRevision = revision || await measured(
         'revision',
         () => getActivationSnapshotRevision(plan, directories),
@@ -172,7 +178,7 @@ export async function readActivationSnapshot(plan, directories, {
             revision: resolvedRevision,
             plan,
             character: compacted.character,
-            chat,
+            chat: projectedChat,
             worldbooks,
             ...(compacted.binding ? { embedded_worldbook_binding: compacted.binding } : {}),
         }),

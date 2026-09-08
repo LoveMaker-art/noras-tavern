@@ -5,6 +5,7 @@ export { NoraWorldCoreError } from './errors.js';
 export function createNoraWorldCore(options) {
     const core = composeNoraWorldCore(options);
     return Object.freeze({
+        editWorldbookEntry: core.editWorldbookEntry.bind(core),
         addWorldSetting: core.addWorldSetting.bind(core),
         submitWorld: core.submitWorld.bind(core),
         createWorld: core.createWorld.bind(core),

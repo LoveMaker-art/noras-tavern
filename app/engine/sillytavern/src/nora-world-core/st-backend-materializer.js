@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { prepareWorldbookEntryEdit } from './worldbook-entry-edit.js';
 import { removeSessionLedger } from '../nora-story-ledger/state-file.js';
 import { requestStoryProjection } from '../nora-story-ledger/profile-projection.js';
 import fs from 'node:fs/promises';
@@ -595,6 +596,9 @@ export function createStBackendMaterializer({
     if (typeof cardCodec?.decode !== 'function') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST card codec is required.');
 
     return Object.freeze({
+        editWorldbookEntry(world, input) {
+            return prepareWorldbookEntryEdit({ world, input, directory: roots.worlds, locks });
+        },
         addWorldSetting(world, setting, { operationId } = {}) {
             return persistWorldSetting({
                 world,
