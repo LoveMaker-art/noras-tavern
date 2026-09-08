@@ -27,6 +27,7 @@ async function main() {
     XDG_CACHE_HOME: path.join(root, 'cache'), XDG_DATA_HOME: path.join(root, 'data'),
     APPDATA: path.join(root, 'appdata'), LOCALAPPDATA: path.join(root, 'localappdata'),
     TMP: root, TEMP: root, TMPDIR: root, PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
+    PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
     SystemRoot: process.env.SystemRoot || '', WINDIR: process.env.WINDIR || '',
     PYTHONPATH: path.join(home, 'hermes-agent'),
     PATH: [path.join(home, 'clawchat/liveware'), path.join(home, '.local/bin'), path.join(home, 'node/bin'), path.join(home, 'node'),

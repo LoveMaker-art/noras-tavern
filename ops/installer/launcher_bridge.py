@@ -84,6 +84,8 @@ def env_for(nora_home: Path, hermes_home: Path, install_root: Path) -> dict[str,
     env["TAVERN_DATA_ROOT"] = str(install_root)
     env["PYTHONPATH"] = str(hermes_home / "hermes-agent")
     env["PYTHONNOUSERSITE"] = "1"
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
     if os.name == "nt":
         env["USERPROFILE"] = str(hermes_home)
         env["APPDATA"] = str(nora_home / "appdata/roaming")

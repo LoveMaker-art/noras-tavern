@@ -134,6 +134,8 @@ function launcherEnv() {
     PATH: [...pathAdditions(), process.env.PATH || ''].join(path.delimiter),
     PYTHONPATH: path.join(hermesHome(), 'hermes-agent'),
     PYTHONNOUSERSITE: '1',
+    PYTHONUTF8: '1',
+    PYTHONIOENCODING: 'utf-8',
     PIP_CACHE_DIR: path.join(noraHome(), 'cache', 'pip'),
     UV_CACHE_DIR: path.join(noraHome(), 'cache', 'uv'),
     npm_config_cache: path.join(noraHome(), 'cache', 'npm'),

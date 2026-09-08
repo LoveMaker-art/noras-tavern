@@ -138,6 +138,7 @@ function validateRuntime(home, manifest) {
       ...process.env,
       HOME: home,
       HERMES_HOME: home,
+      PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
       PATH: [
         path.dirname(command),
         path.join(home, manifest.nodeBin),
@@ -157,6 +158,7 @@ function validateRuntime(home, manifest) {
       APPDATA: path.join(home, 'appdata'), LOCALAPPDATA: path.join(home, 'localappdata'),
       TMPDIR: home, TMP: home, TEMP: home, XDG_CACHE_HOME: path.join(home, '.cache'),
       PYTHONPATH: path.join(home, 'hermes-agent'), PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
+      PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
       PATH: [path.dirname(command), path.join(home, manifest.nodeBin)].join(path.delimiter),
     },
   });
