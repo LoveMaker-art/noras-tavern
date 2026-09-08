@@ -10,7 +10,7 @@ on:
 
 concurrency:
   group: launcher-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read

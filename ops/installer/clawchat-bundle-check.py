@@ -37,20 +37,23 @@ def check(home):
         if event in {"socket.connect", "socket.getaddrinfo"}:
             network_attempts.append(event)
             raise RuntimeError("Network access is forbidden during the offline bundle probe")
-    sys.addaudithook(offline)
-    sys.path.insert(0, str(home / "hermes-agent"))
-    from hermes_cli.plugins_cmd import cmd_enable
-    cmd_enable("clawchat", allow_tool_override=False)
-    from hermes_cli.plugins import get_plugin_manager
-    manager = get_plugin_manager()
-    manager.discover_and_load()
-    plugin = next((p for p in manager.list_plugins() if p["name"] == "clawchat"), None)
-    if not plugin or not plugin["enabled"] or plugin["error"] or not plugin["tools"] or not plugin["hooks"]:
-        raise RuntimeError("ClawChat registration failed: " + json.dumps(plugin))
-    sys.path.insert(0, str(home / "plugins/clawchat"))
-    from clawchat_gateway.adapter import ClawChatAdapter
-    from clawchat_gateway.liveware_cli import resolve_liveware_path, wait_liveware_cli_ready
-    asyncio.run(wait_liveware_cli_ready())
+    with asyncio.Runner() as runner:
+        # Windows builds its event-loop wakeup socketpair using local TCP.
+        runner.get_loop()
+        sys.addaudithook(offline)
+        sys.path.insert(0, str(home / "hermes-agent"))
+        from hermes_cli.plugins_cmd import cmd_enable
+        cmd_enable("clawchat", allow_tool_override=False)
+        from hermes_cli.plugins import get_plugin_manager
+        manager = get_plugin_manager()
+        manager.discover_and_load()
+        plugin = next((p for p in manager.list_plugins() if p["name"] == "clawchat"), None)
+        if not plugin or not plugin["enabled"] or plugin["error"] or not plugin["tools"] or not plugin["hooks"]:
+            raise RuntimeError("ClawChat registration failed: " + json.dumps(plugin))
+        sys.path.insert(0, str(home / "plugins/clawchat"))
+        from clawchat_gateway.adapter import ClawChatAdapter
+        from clawchat_gateway.liveware_cli import resolve_liveware_path, wait_liveware_cli_ready
+        runner.run(wait_liveware_cli_ready())
     if network_attempts:
         raise RuntimeError("ClawChat attempted network access during offline registration")
     resolved = resolve_liveware_path()
