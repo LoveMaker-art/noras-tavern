@@ -26,7 +26,9 @@ def owned_gateway(nora_home):
         process = psutil.Process(int(record["pid"]))
         if abs(process.create_time() - float(record["created"])) > 0.01:
             return None
-        if process.status() == psutil.STATUS_ZOMBIE or process.cmdline() != record["command"]:
+        # macOS framework Python re-execs argv[0] while retaining PID, birth time and arguments.
+        command = process.cmdline()
+        if process.status() == psutil.STATUS_ZOMBIE or not command or command[1:] != record["command"][1:]:
             return None
         return process
     except (KeyError, ValueError, TypeError, psutil.Error):

@@ -73,6 +73,9 @@ jobs:
         run: |
           set -euo pipefail
           export HERMES_HOME="$RUNNER_TEMP/hermes"
+          export UV_MANAGED_PYTHON=1
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
+          export UV_PYTHON_INSTALL_BIN=0
           curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$RUNNER_TEMP/hermes-install.sh"
           sh "$RUNNER_TEMP/hermes-install.sh" \
             --dir "$HERMES_HOME/hermes-agent" \

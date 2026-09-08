@@ -49,6 +49,18 @@ class LauncherServicesTests(unittest.TestCase):
         (directory / 'gateway.json').write_text(json.dumps(record))
         self.assertIsNone(services.owned_gateway(self.root))
 
+    def test_framework_python_reexec_keeps_the_same_owned_process(self):
+        process = Mock(pid=42)
+        process.create_time.return_value = 123
+        process.status.return_value = 'sleeping'
+        process.cmdline.return_value = ['/Library/Frameworks/Python/Python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        record = {'pid': 42, 'created': 123,
+                  'command': ['/isolated/venv/bin/python', '-m', 'hermes_cli.main', 'gateway', 'run']}
+        with patch.object(services, 'read_json', return_value=record), patch('psutil.Process', return_value=process):
+            self.assertIs(services.owned_gateway(self.root), process)
+            process.cmdline.return_value = ['/other/python', '-m', 'unrelated']
+            self.assertIsNone(services.owned_gateway(self.root))
+
     def test_stop_never_terminates_foreign_gateway(self):
         self.state({'pid': os.getpid()})
         with patch('psutil.Process.terminate') as terminate:
