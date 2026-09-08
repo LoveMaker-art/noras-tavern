@@ -5,7 +5,7 @@ Beta 包从 `codex/launcher-beta` 分支对应的 `v*-beta.*` 标签构建，不
 
 ## 下载与隔离
 
-- Mac Apple 芯片选 `darwin-arm64`，Mac Intel 选 `darwin-x64`，Windows 选 `win-x64`。
+- Mac Apple 芯片下载名称含 `mac-arm64` 的 `.dmg` 或 `.zip`；Mac Intel 选 `mac-x64`；Windows 选 `win-x64-setup.exe` 或 `win-x64.zip`。`nora-system-*` 等组件文件不是给用户双击安装的程序。
 - 从 GitHub Pre-release 下载完整启动器，在空的测试安装目录开始。
 - macOS 数据目录为 `~/Library/NoraTavern-Beta`；Windows 为 `%LOCALAPPDATA%/NoraTavern-Beta`。
 - Beta 各版本共用测试目录，便于保留模型、配对和故事进行更新测试；不读取正式目录或本地候选测试目录。
@@ -33,3 +33,5 @@ Beta 包从 `codex/launcher-beta` 分支对应的 `v*-beta.*` 标签构建，不
 本地自动测试覆盖通道选择、文件校验、资料同步与更新事务。
 CI 构建通过不等于各平台实际界面、用户模型、ClawChat 和手机端验收通过。
 Hermes 跨版本行为还需用对应的两个真实运行时包进行验证，不能只靠模拟文件测试宣布兼容。
+
+本轮结果与尚未覆盖的项目见[验收记录](launcher-beta-acceptance.md)。
