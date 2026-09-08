@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tarfile
 import tempfile
 import time
@@ -147,6 +148,8 @@ def source_from_release(args, work: Path) -> tuple[Path, dict]:
 def runtime_platform() -> tuple[str, str]:
     system = "win32" if os.name == "nt" else "darwin" if sys.platform == "darwin" else sys.platform
     machine = platform.machine().lower()
+    if system == "win32":
+        machine = {"win-amd64": "amd64", "win-arm64": "arm64", "win32": "x86"}.get(sysconfig.get_platform(), machine)
     architecture = "arm64" if machine in {"arm64", "aarch64"} else "x64" if machine in {"x86_64", "amd64"} else machine
     return system, architecture
 

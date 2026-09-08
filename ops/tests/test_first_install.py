@@ -18,6 +18,12 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FirstInstallSnapshotTests(unittest.TestCase):
+    def test_windows_architecture_works_without_processor_environment_variables(self):
+        with patch.object(MODULE.os, "name", "nt"), \
+             patch.object(MODULE.platform, "machine", return_value=""), \
+             patch("sysconfig.get_platform", return_value="win-amd64"):
+            self.assertEqual(MODULE.runtime_platform(), ("win32", "x64"))
+
     def test_failed_cron_registration_is_not_downgraded_to_pending(self):
         from unittest.mock import Mock
         update = SimpleNamespace(install_update_check=Mock(side_effect=RuntimeError("cron registration failed")))
