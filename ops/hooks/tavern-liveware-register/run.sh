@@ -9,4 +9,5 @@ PY="${TAVERN_PYTHON:-}"
 if [ -z "$PY" ]; then
   if [ -x /opt/hermes/.venv/bin/python ]; then PY=/opt/hermes/.venv/bin/python; else PY="$(command -v python3)"; fi
 fi
-exec "$PY" -B "$DATA_ROOT/apps/tavern-ops/updater/liveware_integration.py" --home "$DATA_ROOT" ensure
+export HERMES_HOME
+exec "$PY" -B "$DATA_ROOT/apps/tavern-ops/updater/liveware_integration.py" --home "$DATA_ROOT" startup

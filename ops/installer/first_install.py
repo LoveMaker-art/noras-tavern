@@ -331,6 +331,10 @@ def install(args) -> dict:
         version = manifest.get("versions", {}).get("tavern", "unknown")
         backup = home / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{os.getpid()}"
         prepared_skills = prepare_skills(source, work)
+        patcher = module_at("first_install_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
+        gateway_swaps, gateway_report = patcher.prepare(home, work / "clawchat-greeting")
+        if gateway_report.get("status") == "pending":
+            log("ClawChat 欢迎消息顺序补丁未应用，插件保留原状：" + "; ".join(gateway_report.get("warnings", [])))
         managed_targets = [
             home / "apps/tavern-runtime",
             home / "apps/tavern-ops",
@@ -342,6 +346,7 @@ def install(args) -> dict:
             home / "SOUL.nora-tavern.example.md",
             home / HOST_HOOK,
             *[home / "skills" / relative for relative in prepared_skills],
+            *[target for _, _, target in gateway_swaps],
         ]
         records = snapshot_targets(home, managed_targets, backup)
         try:
@@ -349,6 +354,10 @@ def install(args) -> dict:
             copy_tree(source / "app", home / "apps/tavern-runtime")
             copy_tree(source / "ops", home / "apps/tavern-ops")
             copy_tree(source / "nora-mcp", home / "apps/nora-mcp")
+            for _, prepared, target in gateway_swaps:
+                atomic(target, prepared.read_bytes(), mode=prepared.stat().st_mode & 0o777)
+            if gateway_swaps:
+                gateway_report = {**gateway_report, "status": "installed"}
 
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(home, prepared_skills)
@@ -389,6 +398,7 @@ def install(args) -> dict:
         "runtime": {"pid": runtime.get("native_pid"), "port": args.port, "health": runtime.get("health", {}).get("ok")},
         "liveware": liveware,
         "updateCheck": update_check,
+        "clawchatGreeting": gateway_report,
         "next": "请重新启动 Hermes 会话，然后让 Nora 检查 Tavern 状态。",
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))
