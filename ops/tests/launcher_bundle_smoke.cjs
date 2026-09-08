@@ -10,6 +10,7 @@ const { installBundledHermes, validateRuntimeLinks } = require('../installer/des
 async function main() {
   if (!process.argv[2]) throw new Error('Pass the candidate launcher payload directory');
   const payload = path.resolve(process.argv[2]);
+  const release = JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'), 'utf8'));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-complete-smoke-'));
   const home = path.join(root, 'hermes');
   const tavern = path.join(root, 'tavern');
@@ -22,6 +23,7 @@ async function main() {
   const env = {
     HOME: home, USERPROFILE: home, HERMES_HOME: home, NORA_HERMES_HOME: home,
     NORA_TAVERN_HOME: root, TAVERN_DATA_ROOT: tavern,
+    NORA_RELEASE_CHANNEL: release.channel || 'stable',
     XDG_CACHE_HOME: path.join(root, 'cache'), XDG_DATA_HOME: path.join(root, 'data'),
     APPDATA: path.join(root, 'appdata'), LOCALAPPDATA: path.join(root, 'localappdata'),
     TMP: root, TEMP: root, TMPDIR: root, PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
@@ -77,7 +79,8 @@ from pathlib import Path
 from cron.scheduler_script import _run_job_script
 home = Path(os.environ['HERMES_HOME'])
 fixture = home / 'release-fixture.json'
-fixture.write_text(json.dumps({'tag_name': ${JSON.stringify(receipt.version)}}))
+release = {'tag_name': ${JSON.stringify(receipt.version)}, 'prerelease': True, 'draft': False}
+fixture.write_text(json.dumps([release] if os.environ['NORA_RELEASE_CHANNEL'] == 'beta' else release))
 os.environ['TAVERN_RELEASE_API_URL'] = fixture.as_uri()
 ok, output = _run_job_script('nora-tavern-update-check.py')
 assert ok, output

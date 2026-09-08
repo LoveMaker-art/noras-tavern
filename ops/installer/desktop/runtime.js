@@ -67,6 +67,24 @@ function relocateFiles(home, manifest) {
     }
     fs.writeFileSync(target, text);
   }
+  if (manifest.platform === 'win32') {
+    const python = contained(home, manifest.venvPython);
+    const result = spawnSync(python, ['-I', '-c', [
+      'import sys',
+      'from pathlib import Path',
+      'from importlib.metadata import distributions',
+      'from pip._vendor.distlib.scripts import ScriptMaker',
+      'maker = ScriptMaker(None, str(Path(sys.executable).parent))',
+      'maker.executable = sys.executable',
+      'maker.clobber = True',
+      'maker.variants = {""}',
+      'for distribution in distributions():',
+      '    for entry in distribution.entry_points:',
+      '        if entry.group == "console_scripts":',
+      '            maker.make(entry.name + " = " + entry.value)',
+    ].join('\n')], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+    if (result.status !== 0) throw new Error(`无法重建 Windows 本地命令入口：${result.stderr || result.error?.message}`);
+  }
 }
 
 function initializeHome(home, manifest) {

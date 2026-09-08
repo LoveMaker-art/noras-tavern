@@ -37,9 +37,13 @@ const venvPython = platform === 'win32'
     ? path.join(venv, 'Scripts', 'python.exe')
     : path.join(venv, 'bin', 'python');
 const resolvedPython = fs.realpathSync(venvPython);
-const pythonRoot = platform === 'win32'
-    ? path.dirname(resolvedPython)
-    : path.dirname(path.dirname(resolvedPython));
+const pythonProbe = spawnSync(venvPython, ['-I', '-c', 'import sys;print(sys.base_prefix)'], { encoding: 'utf8' });
+if (pythonProbe.status !== 0) throw new Error('无法定位 Hermes 的基础 Python 环境。');
+const pythonRoot = fs.realpathSync(pythonProbe.stdout.trim());
+if (platform === 'win32') {
+    const seed = spawnSync(venvPython, ['-I', '-m', 'ensurepip'], { encoding: 'utf8' });
+    if (seed.status !== 0) throw new Error(`无法准备离线命令入口重建工具：${seed.stderr}`);
+}
 const managedNodeRoot = path.join(hermesHome, 'node');
 const nodeRoot = fs.existsSync(managedNodeRoot)
     ? managedNodeRoot
@@ -63,6 +67,7 @@ const excludedTopLevel = new Set([
 function shouldCopy(sourceRoot, source, topLevel = false) {
     const relative = path.relative(sourceRoot, source);
     const parts = relative.split(path.sep).filter(Boolean);
+    if (sourceRoot === agent && parts[0] === '.hermes-runtime') return false;
     if (parts.some((part) => excludedNames.has(part))) return false;
     if (topLevel && parts.length && excludedTopLevel.has(parts[0])) return false;
     if (/\.(?:pyc|pyo|log|token)$/i.test(source)) return false;

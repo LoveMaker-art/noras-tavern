@@ -3,6 +3,8 @@ name: Build integrated Nora Tavern launchers
 on:
   workflow_dispatch:
   push:
+    branches:
+      - 'codex/launcher-beta'
     tags:
       - 'v*-beta.*'
 

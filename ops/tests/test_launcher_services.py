@@ -132,6 +132,18 @@ class LauncherServicesTests(unittest.TestCase):
                 [sys.executable, '-B', '-c', code, 'gateway', 'run'], os.environ.copy(), timeout=5)
             self.assertTrue(status['gatewayRunning'])
             self.assertTrue(status['clawchatConnected'])
+        except Exception:
+            # This fixture never uses credentials; retain the evidence before cleanup.
+            import psutil
+            record = services.read_json(self.root / 'installer/gateway.json')
+            print('Fixture gateway record:', record)
+            if record and psutil.pid_exists(record['pid']):
+                process = psutil.Process(record['pid'])
+                print('Fixture process:', process.as_dict(attrs=['pid', 'create_time', 'status', 'cmdline']))
+            print('Fixture state:', services.read_json(self.hermes / 'gateway_state.json'))
+            log = self.root / 'installer/gateway.log'
+            print('Fixture output:', log.read_text() if log.exists() else 'no log')
+            raise
         finally:
             services.stop_gateway(self.root)
         self.assertFalse(services.gateway_status(self.root, self.hermes)['gatewayRunning'])
