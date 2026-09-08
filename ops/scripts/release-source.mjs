@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { buildCommand } from './build-commands.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 
@@ -77,7 +78,8 @@ export function createReleaseSource(root, { candidate = false } = {}) {
     try {
         if (!candidate) {
             const archive = execFileSync('git', ['archive', '--format=tar', commit], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
-            execFileSync('tar', ['-x', '-C', stage], { input: archive, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+            const extract = buildCommand('tar', ['-x', '-C', stage]);
+            execFileSync(extract.command, extract.args, { input: archive, env: { ...process.env, COPYFILE_DISABLE: '1' } });
         }
         for (const relative of files) {
             const source = path.join(candidate ? root : stage, relative);
