@@ -5,6 +5,13 @@ const path = require('node:path');
 const test = require('node:test');
 const { findBundledRuntime, validateRuntimeLinks } = require('../installer/desktop/runtime');
 
+test('relocated Windows Python source never contains unescaped user-directory backslashes', () => {
+  const { relocateText } = require('../installer/desktop/runtime');
+  const text = relocateText("MAPPING = {'hermes': '@@NORA_HERMES_HOME@@/hermes-agent'}",
+    'C:\\Users\\Test User\\Nora', { platform: 'win32', venvPython: 'hermes-agent/venv/Scripts/python.exe' });
+  assert.equal(text, "MAPPING = {'hermes': 'C:/Users/Test User/Nora/hermes-agent'}");
+});
+
 test('Windows builds use native tar and Node npm CLI without shell path conversion', async () => {
   const { buildCommand } = await import('../scripts/build-commands.mjs');
   const options = { platform: 'win32', executable: 'C:\\Program Files\\nodejs\\node.exe', systemRoot: 'C:\\Windows' };

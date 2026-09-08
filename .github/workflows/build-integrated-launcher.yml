@@ -139,6 +139,7 @@ jobs:
       - name: Test real fresh installation before desktop packaging
         shell: bash
         run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
           node ops/tests/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload"
 
@@ -158,6 +159,8 @@ jobs:
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
             release/*/system-assets/*
           if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
 
   publish-beta:
     if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v')

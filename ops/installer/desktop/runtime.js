@@ -57,14 +57,20 @@ function extractArchive(bundle, destination) {
   }
 }
 
+function relocateText(text, home, manifest) {
+  for (const [token, resolve] of Object.entries(TOKENS)) {
+    const native = resolve(home, manifest);
+    // Forward slashes also work in Windows Python literals, unlike unescaped C:\\Users.
+    text = text.split(token).join(manifest.platform === 'win32' ? native.replaceAll('\\', '/') : native);
+  }
+  return text;
+}
+
 function relocateFiles(home, manifest) {
   for (const relative of manifest.relocatableFiles || []) {
     const target = contained(home, relative);
     if (!fs.existsSync(target)) throw new Error(`运行时缺少可迁移文件：${relative}`);
-    let text = fs.readFileSync(target, 'utf8');
-    for (const [token, resolve] of Object.entries(TOKENS)) {
-      text = text.split(token).join(resolve(home, manifest));
-    }
+    const text = relocateText(fs.readFileSync(target, 'utf8'), home, manifest);
     fs.writeFileSync(target, text);
   }
   if (manifest.platform === 'win32') {
@@ -233,6 +239,7 @@ module.exports = {
   installBundledHermes,
   initializeHome,
   relocateFiles,
+  relocateText,
   sha256File,
   validateRuntime,
   validateRuntimeLinks,

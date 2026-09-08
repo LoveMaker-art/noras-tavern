@@ -208,10 +208,12 @@ try {
 
     const replacements = [
         [path.join(agent, 'venv', platform === 'win32' ? 'Scripts' : 'bin', platform === 'win32' ? 'python.exe' : 'python'), '@@NORA_VENV_PYTHON@@'],
-        [agent, path.join('@@NORA_HERMES_HOME@@', 'hermes-agent')],
+        [agent, '@@NORA_HERMES_HOME@@/hermes-agent'],
         [hermesHome, '@@NORA_HERMES_HOME@@'],
         [pythonRoot, '@@NORA_PYTHON_HOME@@'],
-    ].sort((a, b) => b[0].length - a[0].length);
+    ].flatMap(([from, to]) => platform === 'win32'
+        ? [[from.replaceAll('\\', '\\\\'), to], [from.replaceAll('\\', '/'), to], [from, to]]
+        : [[from, to]]).sort((a, b) => b[0].length - a[0].length);
     const relocatableFiles = replaceTextReferences(runtime, replacements);
     const pyvenv = path.join(runtime, 'hermes-agent', 'venv', 'pyvenv.cfg');
     const pyvenvHome = platform === 'win32' ? '@@NORA_PYTHON_HOME@@' : '@@NORA_PYTHON_HOME@@/bin';
