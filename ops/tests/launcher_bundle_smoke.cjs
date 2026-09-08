@@ -10,7 +10,8 @@ const { installBundledHermes, validateRuntimeLinks } = require('../installer/des
 async function main() {
   if (!process.argv[2]) throw new Error('Pass the candidate launcher payload directory');
   const payload = path.resolve(process.argv[2]);
-  const release = JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'), 'utf8'));
+  const runtimeOnly = process.argv.includes('--runtime-only');
+  const release = runtimeOnly ? {} : JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'), 'utf8'));
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-complete-smoke-'));
   const home = path.join(root, 'hermes');
   const tavern = path.join(root, 'tavern');
@@ -49,6 +50,10 @@ async function main() {
     const readiness = JSON.parse(probe.trim().split('\n').pop());
     assert.equal(readiness.ok, true);
     console.log(JSON.stringify(readiness));
+    if (runtimeOnly) {
+      console.log('PASS: bundled runtime works without the original Hermes build directory');
+      return;
+    }
     const installer = process.argv.includes('--source-installer') ? path.resolve(__dirname, '../installer/first_install.py')
       : path.join(payload, 'nora-tavern-first-install-bootstrap.py');
     const output = run([installer,

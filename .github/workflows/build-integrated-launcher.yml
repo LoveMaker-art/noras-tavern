@@ -122,6 +122,14 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
 
+      - name: Verify runtime independently of original installation
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
+          node ops/tests/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
+
       - name: Install launcher test dependencies
         working-directory: ops/installer/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -146,6 +154,7 @@ jobs:
             --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
 
       - name: Test real fresh installation before desktop packaging
+        timeout-minutes: 15
         shell: bash
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"

@@ -75,6 +75,16 @@ function relocateFiles(home, manifest) {
     fs.writeFileSync(target, text);
   }
   if (manifest.platform === 'win32') {
+    // uv's Windows trampoline embeds the build interpreter path. Recreate only
+    // venv launchers/config from bundled CPython, retaining all site-packages.
+    const basePython = contained(home, 'python/python.exe');
+    const venv = path.dirname(path.dirname(contained(home, manifest.venvPython)));
+    const rebuilt = spawnSync(basePython, ['-I', '-m', 'venv', '--without-pip', '--copies', venv], {
+      encoding: 'utf8', timeout: 60000, windowsHide: true,
+    });
+    if (rebuilt.error || rebuilt.status !== 0) {
+      throw new Error(`无法重建 Windows Python 环境：${rebuilt.error?.message || rebuilt.stderr}`);
+    }
     const python = contained(home, manifest.venvPython);
     const result = spawnSync(python, ['-I', '-c', [
       'import sys',
