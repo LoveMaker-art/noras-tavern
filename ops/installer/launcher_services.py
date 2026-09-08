@@ -42,10 +42,24 @@ def gateway_status(nora_home, hermes_home):
     platform = platforms.get("clawchat") or {} if isinstance(platforms, dict) else {}
     if not isinstance(platform, dict):
         platform = {}
+    writer = process
+    if process and state.get("pid") != process.pid:
+        # Windows venv launchers retain a parent and run Python in a child.
+        import psutil
+        writer = None
+        try:
+            command = process.cmdline()
+            for child in process.children(recursive=True):
+                if (child.pid == state.get("pid") and child.status() != psutil.STATUS_ZOMBIE
+                        and child.cmdline()[1:] == command[1:]):
+                    writer = child
+                    break
+        except psutil.Error:
+            writer = None
     state_path = Path(hermes_home) / "gateway_state.json"
-    current = bool(process and state.get("pid") == process.pid
-                   and state_path.stat().st_mtime >= process.create_time()
-                   and platform.get("writer_pid") == process.pid
+    current = bool(writer and state.get("pid") == writer.pid
+                   and state_path.stat().st_mtime >= writer.create_time()
+                   and platform.get("writer_pid") == writer.pid
                    and platform.get("writer_start_time") == state.get("start_time"))
     connected = current and platform.get("state") == "connected"
     return {

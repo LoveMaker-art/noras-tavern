@@ -49,6 +49,15 @@ class LauncherServicesTests(unittest.TestCase):
         (directory / 'gateway.json').write_text(json.dumps(record))
         self.assertIsNone(services.owned_gateway(self.root))
 
+    def test_connection_does_not_adopt_an_unrelated_writer(self):
+        process = Mock(pid=42)
+        process.children.return_value = []
+        process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        self.state({'pid': 43, 'start_time': 1, 'platforms': {'clawchat': {
+            'state': 'connected', 'writer_pid': 43, 'writer_start_time': 1}}})
+        with patch.object(services, 'owned_gateway', return_value=process):
+            self.assertFalse(services.gateway_status(self.root, self.hermes)['clawchatConnected'])
+
     def test_framework_python_reexec_keeps_the_same_owned_process(self):
         process = Mock(pid=42)
         process.create_time.return_value = 123
@@ -60,6 +69,31 @@ class LauncherServicesTests(unittest.TestCase):
             self.assertIs(services.owned_gateway(self.root), process)
             process.cmdline.return_value = ['/other/python', '-m', 'unrelated']
             self.assertIsNone(services.owned_gateway(self.root))
+
+    def test_python_wrapper_child_can_report_connection_and_is_stopped(self):
+        code = '''
+import os, sys, subprocess, time, json
+from pathlib import Path
+if not os.environ.get('NORA_FIXTURE_CHILD'):
+    child = subprocess.Popen([sys.executable, '-B', '-c', os.environ['NORA_FIXTURE_CODE'], 'gateway', 'run'],
+                             env={**os.environ, 'NORA_FIXTURE_CHILD': '1'})
+    child.wait()
+else:
+    pid = os.getpid()
+    Path('gateway_state.json').write_text(json.dumps({'pid': pid, 'start_time': 1,
+        'platforms': {'clawchat': {'state': 'connected', 'writer_pid': pid, 'writer_start_time': 1}}}))
+    time.sleep(60)
+'''
+        try:
+            status = services.start_gateway(self.root, self.hermes,
+                [sys.executable, '-B', '-c', code, 'gateway', 'run'],
+                {**os.environ, 'NORA_FIXTURE_CODE': code}, timeout=3)
+            self.assertTrue(status['clawchatConnected'])
+            self.assertNotEqual(services.read_json(self.hermes / 'gateway_state.json')['pid'],
+                                services.read_json(self.root / 'installer/gateway.json')['pid'])
+        finally:
+            services.stop_gateway(self.root)
+        self.assertFalse(services.gateway_status(self.root, self.hermes)['gatewayRunning'])
 
     def test_stop_never_terminates_foreign_gateway(self):
         self.state({'pid': os.getpid()})
