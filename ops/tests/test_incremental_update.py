@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import ExitStack
 import importlib.util
 import io
 import json
@@ -8,6 +9,7 @@ import tarfile
 import tempfile
 import unittest
 from unittest import mock
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -40,6 +42,49 @@ def archive(path, members):
 
 
 class IncrementalUpdateTests(unittest.TestCase):
+    def test_install_prunes_backups_under_tavern_not_hermes(self):
+        with tempfile.TemporaryDirectory(prefix="nora-install-retention-") as temporary, ExitStack() as stack:
+            root = Path(temporary).resolve()
+            hermes, tavern = root / "hermes", root / "tavern"
+            (hermes / "skills").mkdir(parents=True)
+            old = tavern / "tavern-backups/old"
+            unrelated = hermes / "tavern-backups/preserve"
+            old.mkdir(parents=True)
+            unrelated.mkdir(parents=True)
+            manifest = {"versions": {"tavern": "2.2.9"}, "commit": "a" * 40, "artifacts": {}}
+
+            def extract(_release, source, _manifest, **_kwargs):
+                agents = source / "ops/skills/agents-tavern.md"
+                agents.parent.mkdir(parents=True)
+                agents.write_text("managed instructions")
+                return {"changedModules": []}
+
+            modules = SimpleNamespace(RETIRED=[], ManagedService=SimpleNamespace(discover=lambda *_: None))
+            replacements = {
+                "python_layout": None, "changed_roots": set(), "roots_with_unmanaged_files": set(),
+                "prepare_dependencies": {}, "prepare_skills": {}, "merged_agents": b"managed instructions",
+                "render_mcp": b"mcp_servers: {}", "module_at": modules, "prepare_host_hook_swap": None,
+                "copy_host_backup": None, "port_open": False,
+            }
+            stack.enter_context(mock.patch.dict("os.environ"))
+            stack.enter_context(mock.patch.dict(sys.modules, bundle=BUNDLE))
+            stack.enter_context(mock.patch.object(BUNDLE, "read_bundle", return_value=manifest))
+            stack.enter_context(mock.patch.object(BUNDLE, "extract_bundle", side_effect=extract))
+            for name, result in replacements.items():
+                stack.enter_context(mock.patch.object(UPDATER, name, return_value=result))
+            output = io.StringIO()
+            stack.enter_context(mock.patch("sys.stdout", output))
+            stack.enter_context(mock.patch.object(UPDATER, "log"))
+
+            UPDATER.install(SimpleNamespace(home=hermes, install_root=tavern,
+                                          release_dir=root / "release", manifest_sha256=None))
+
+            result = json.loads(output.getvalue())
+            self.assertEqual(result["backupRetention"]["status"], "pruned")
+            self.assertFalse(old.exists())
+            self.assertTrue(unrelated.is_dir())
+            self.assertEqual(list((tavern / "tavern-backups").iterdir()), [Path(result["backup"])])
+
     def test_successful_update_retains_only_the_current_backup(self):
         with tempfile.TemporaryDirectory(prefix="nora-backup-retention-") as temporary:
             home = Path(temporary)

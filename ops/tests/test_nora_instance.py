@@ -90,6 +90,28 @@ class InstanceTests(unittest.TestCase):
                 self.assertEqual(spawn.call_args.args[0], [sys.executable, "-B",
                     str(Path(temporary).resolve() / "scripts/nora-instance.py"), "recover-existing"])
 
+    def test_existing_recovery_cli_preserves_nondefault_port(self):
+        integration = load("liveware_recovery_port", ROOT / "ops/updater/liveware_integration.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            tavern, hermes = root / "tavern", root / "hermes"
+            state = tavern / "tavern-state/apps.json"
+            state.parent.mkdir(parents=True)
+            state.write_text(json.dumps({
+                "console": {"app_id": "app-tavern", "domain": "app-tavern.apps.clawling.io"},
+                "actor": {"app_id": "app-profile", "domain": "app-profile.apps.clawling.io"},
+            }))
+            with patch.object(sys, "argv", ["liveware_integration.py", "--home", str(tavern),
+                    "--hermes-home", str(hermes), "--port", "18899", "recover-existing"]), \
+                 patch.object(integration, "start_runtime") as start, \
+                 patch.object(integration, "repair") as repair, \
+                 patch.object(integration, "refresh", return_value={"status": "updated"}) as refresh, \
+                 patch("builtins.print"):
+                integration.main()
+            start.assert_called_once_with(tavern, port=18899, hermes_home=hermes)
+            refresh.assert_called_once_with(tavern, 18899, hermes_home=hermes)
+            repair.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

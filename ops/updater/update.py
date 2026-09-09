@@ -925,7 +925,7 @@ def install(args):
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
                 try:
-                    backup_retention = prune_backup_history(home, backup)
+                    backup_retention = prune_backup_history(install_root, backup)
                     log(f"备份保留策略：保留最新 1 份，已清理 {len(backup_retention['removed'])} 份旧备份")
                 except Exception as retention_error:
                     backup_retention = {

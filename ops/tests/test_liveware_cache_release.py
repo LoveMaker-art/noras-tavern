@@ -24,6 +24,54 @@ def load_integration():
 
 
 class LivewareCacheReleaseTests(unittest.TestCase):
+    def test_recover_existing_cli_does_not_create_missing_apps(self):
+        integration = load_integration()
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            with (
+                mock.patch.object(sys, "argv", [str(INTEGRATION), "--home", str(home), "recover-existing"]),
+                mock.patch.object(integration, "start_runtime") as start,
+                mock.patch.object(integration, "repair") as repair,
+                mock.patch.object(integration, "refresh", return_value={"status": "updated"}) as refresh,
+                mock.patch("builtins.print"),
+            ):
+                integration.main()
+                start.assert_not_called()
+                refresh.assert_not_called()
+                repair.assert_not_called()
+                (home / "tavern-state").mkdir()
+                (home / "tavern-state/apps.json").write_text(json.dumps({
+                    "console": {"app_id": "app-tavern", "domain": "app-tavern.apps.clawling.io"},
+                    "actor": {"app_id": "app-profile", "domain": "app-profile.apps.clawling.io"},
+                }))
+                integration.main()
+                start.assert_called_once_with(home, port=8799, hermes_home=None)
+                refresh.assert_called_once_with(home, 8799, hermes_home=None)
+                repair.assert_not_called()
+
+    def test_recovery_rejects_incomplete_invalid_or_shared_identities(self):
+        integration = load_integration()
+        valid = {
+            "console": {"app_id": "app-tavern", "domain": "app-tavern.apps.clawling.io"},
+            "actor": {"app_id": "app-profile", "domain": "app-profile.apps.clawling.io"},
+        }
+        invalid = [None, [], {}, {"console": valid["console"]},
+                   {**valid, "actor": valid["console"]},
+                   {**valid, "actor": {"app_id": "../invalid", "domain": valid["actor"]["domain"]}},
+                   {**valid, "actor": {"app_id": "app-profile", "domain": "unrelated.example"}}]
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            state = home / "tavern-state/apps.json"
+            state.parent.mkdir()
+            for value in invalid:
+                with self.subTest(value=value):
+                    state.write_text(json.dumps(value))
+                    self.assertFalse(integration.identities_complete(home))
+            state.write_text("not json")
+            self.assertFalse(integration.identities_complete(home))
+            state.write_text(json.dumps(valid))
+            self.assertTrue(integration.identities_complete(home))
+
     def test_runtime_release_is_read_from_the_started_tavern(self):
         integration = load_integration()
         release = "0123456789abcdef"

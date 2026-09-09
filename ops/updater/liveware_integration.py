@@ -343,6 +343,24 @@ def initialize(home, port=8799, *, hermes_home=None):
     return repair(home, port, hermes_home=hermes_home)
 
 
+def identities_complete(home):
+    try:
+        document = json.loads((Path(home) / "tavern-state/apps.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    if not isinstance(document, dict):
+        return False
+    for role in ROLES:
+        app = document.get(role)
+        if not isinstance(app, dict):
+            return False
+        if not LIVEWARE_APP_ID_PATTERN.fullmatch(str(app.get("app_id") or "")):
+            return False
+        if not LIVEWARE_DOMAIN_PATTERN.fullmatch(str(app.get("domain") or "")):
+            return False
+    return len({document[role]["app_id"] for role in ROLES}) == len(ROLES)
+
+
 def start_runtime(home, *, port=8799, hermes_home=None):
     hermes_home = hermes_home_for(home, hermes_home)
     app = Path(home) / "apps/tavern-runtime"
