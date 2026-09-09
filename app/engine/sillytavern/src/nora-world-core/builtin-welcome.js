@@ -27,8 +27,9 @@ async function hasResources(directory) {
     }
 }
 
-// Run before the HTTP server accepts requests, so settings cannot race a user save.
-export async function ensureBuiltinWelcome(directories) {
+// Both boot reads await this lock before exposing settings or World actions.
+// The first browser supplies its resolved UI locale; restarts preserve its chat.
+export async function ensureBuiltinWelcome(directories, { locale = 'en' } = {}) {
     const { root, stagingRoot } = worldCorePaths(directories);
     return locks.run(root, async () => {
         const markerPath = path.join(root, 'builtin-welcome.json');
@@ -59,7 +60,7 @@ export async function ensureBuiltinWelcome(directories) {
 
         // Persist the exact command before importing; a restart resumes the same
         // operation, even if the bundled opening has changed in a later release.
-        const command = marker?.command || await stageWelcomeWorld({ idempotencyKey: IDEMPOTENCY_KEY, stagingRoot });
+        const command = marker?.command || await stageWelcomeWorld({ idempotencyKey: IDEMPOTENCY_KEY, stagingRoot, locale });
         if (!marker) await persist({ status: 'pending', command });
         const { world } = await core.createWorld(command, { idempotencyKey: IDEMPOTENCY_KEY });
         if (!settings.extension_settings?.nora_ui?.lastWorldId) {

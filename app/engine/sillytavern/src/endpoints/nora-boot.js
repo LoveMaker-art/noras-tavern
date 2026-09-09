@@ -6,6 +6,8 @@ import { createBootstrapPayload, createShellPayload } from '../nora-bootstrap.js
 import { readAgentUserId } from '../nora-story-profile.js';
 import { normalizeClientMetricPayload, noraTelemetryWriter } from '../nora-performance-telemetry.js';
 import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
+import { ensureBuiltinWelcome } from '../nora-world-core/builtin-welcome.js';
+import { resolveNoraLocale } from '../../public/scripts/nora-i18n/locale.js';
 import { getVersion } from '../util.js';
 
 const MAX_PAYLOAD_BYTES = 96 * 1024;
@@ -23,9 +25,17 @@ const PERSISTED_PHASES = new Set([
 export const router = express.Router();
 let versionPromise;
 
+async function prepareWelcome(request) {
+    // Health probes without a browser locale must not choose the opening language.
+    if (typeof request.query.lang !== 'string' || !request.query.lang.trim()) return;
+    const locale = resolveNoraLocale(new URLSearchParams({ lang: request.query.lang }).toString());
+    await ensureBuiltinWelcome(request.user.directories, { locale });
+}
+
 router.get('/shell', async (request, response) => {
     try {
         response.setHeader('Cache-Control', 'no-store');
+        await prepareWelcome(request);
         return response.json(await createShellPayload({
             assetRelease: request.app.get('noraAssetRelease'),
             listWorldsFn: () => resolveNoraWorldCore(request.user.directories).listWorlds(),
@@ -39,6 +49,8 @@ router.get('/shell', async (request, response) => {
 router.get('/bootstrap', async (request, response) => {
     const csrfToken = typeof request.csrfToken === 'function' ? request.csrfToken() : 'disabled';
     try {
+        response.setHeader('Cache-Control', 'no-store');
+        await prepareWelcome(request);
         return response.json(await createBootstrapPayload({
             csrfToken,
             directories: request.user.directories,

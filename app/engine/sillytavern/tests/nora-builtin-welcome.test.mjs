@@ -8,6 +8,7 @@ import { ensureBuiltinWelcome } from '../src/nora-world-core/builtin-welcome.js'
 import { clearNoraWorldCoreCache, resolveNoraWorldCore, worldCorePaths } from '../src/nora-world-core/runtime.js';
 import { stageWelcomeWorld } from '../src/nora-world-core/st-import-staging.js';
 import { selectBootstrapLastWorldId } from '../src/nora-bootstrap.js';
+import { resolveNoraLocale } from '../public/scripts/nora-i18n/locale.js';
 
 async function fixture(t) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-builtin-welcome-'));
@@ -27,7 +28,7 @@ async function openingFile(directories, worldId) {
 
 test('clean Tavern creates a real Chinese opening and selects it through the existing bootstrap contract', async t => {
     const { directories, settingsPath } = await fixture(t);
-    const result = await ensureBuiltinWelcome(directories);
+    const result = await ensureBuiltinWelcome(directories, { locale: 'zh-cn' });
     assert.equal(result.status, 'complete');
     const core = resolveNoraWorldCore(directories);
     const worlds = await core.listWorlds();
@@ -45,6 +46,30 @@ test('clean Tavern creates a real Chinese opening and selects it through the exi
     assert.equal(selectBootstrapLastWorldId({ settings }), result.worldId);
     assert.equal(JSON.parse(settings).extension_settings.untouched, true);
     assert.equal((await core.prepareOpen(result.worldId)).world_id, result.worldId);
+});
+
+test('the first opening follows the same URL/browser language decision as the UI', async t => {
+    for (const [search, browserLanguage, expectedLocale] of [
+        ['?lang=en', 'zh-CN', 'en'],
+        ['?lang=zh-TW', 'en-US', 'zh-cn'],
+        ['', 'zh-CN', 'zh-cn'],
+        ['', 'en-US', 'en'],
+        ['', '', 'en'],
+        ['?lang=fr', 'zh-CN', 'en'],
+    ]) {
+        const { directories } = await fixture(t);
+        const locale = resolveNoraLocale(search, browserLanguage);
+        assert.equal(locale, expectedLocale);
+        const first = await ensureBuiltinWelcome(directories, { locale });
+        const world = await resolveNoraWorldCore(directories).getWorld(first.worldId);
+        assert.equal(world.name, locale === 'zh-cn' ? '新手引导' : 'Getting started');
+        const chatPath = await openingFile(directories, first.worldId);
+        const chat = await fs.readFile(chatPath, 'utf8');
+        const message = JSON.parse(chat.trim().split('\n')[1]);
+        assert.match(message.mes, locale === 'zh-cn' ? /欢迎来到酒馆/ : /Welcome to Tavern/);
+        await ensureBuiltinWelcome(directories, { locale: locale === 'en' ? 'zh-cn' : 'en' });
+        assert.equal(await fs.readFile(chatPath, 'utf8'), chat, 'a later language change must not rewrite saved chat');
+    }
 });
 
 test('concurrent initialization and later restarts neither duplicate nor reset the story or selection', async t => {
