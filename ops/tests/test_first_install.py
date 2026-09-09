@@ -168,7 +168,7 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
             (home / "cron/jobs.json").write_text(original_jobs)
             for folder in ("app", "nora-mcp", "ops/skills", "ops/installer/templates"):
                 (source / folder).mkdir(parents=True)
-            (source / "ops/skills/agents-tavern.md").write_text("## Environment\n\nNora instructions.\n")
+            (source / "ops/skills/agents-tavern.md").write_bytes(b"## Environment\n\nNora instructions.\n")
             (source / "ops/installer/templates/SOUL.md").write_text("Nora template")
             skill = root / "prepared"
             skill.mkdir()
