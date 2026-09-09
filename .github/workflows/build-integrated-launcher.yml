@@ -163,7 +163,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement
+          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement ops.tests.test_installer_windows_paths
 
       - name: Build release payload
         shell: bash

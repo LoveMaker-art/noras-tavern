@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import importlib.util
 import json
@@ -51,15 +52,6 @@ def filesystem_path(path: str | Path) -> str:
     if value.startswith("\\\\"):
         return "\\\\?\\UNC\\" + value[2:]
     return "\\\\?\\" + value
-
-
-class DependencyTarFile(tarfile.TarFile):
-    # extractall reapplies directory metadata using unnormalized archive names.
-    def chmod(self, tarinfo, targetpath):
-        return super().chmod(tarinfo, filesystem_path(targetpath))
-
-    def utime(self, tarinfo, targetpath):
-        return super().utime(tarinfo, filesystem_path(targetpath))
 
 
 def install_workspace(nora_home: Path):
@@ -201,7 +193,8 @@ def extract_dependency_bundle(release_dir: Path, source: Path) -> dict | None:
         raise RuntimeError("依赖包校验失败，安装包可能不完整")
     source = Path(filesystem_path(source))
     source_root = source.resolve()
-    with DependencyTarFile.open(archive, "r:gz") as stream:
+    with tarfile.open(archive, "r:gz") as stream:
+        members = []
         for member in stream.getmembers():
             target = (source / member.name).resolve()
             if target != source_root and source_root not in target.parents:
@@ -210,7 +203,12 @@ def extract_dependency_bundle(release_dir: Path, source: Path) -> dict | None:
                 link = (target.parent / member.linkname).resolve()
                 if link != source_root and source_root not in link.parents:
                     raise RuntimeError("依赖包包含非法链接：" + member.name)
-        stream.extractall(source)
+            if member.isdir():
+                # extractall uses directory names again for lstat and metadata.
+                member = copy.copy(member)
+                member.name = str(Path(member.name))
+            members.append(member)
+        stream.extractall(source, members=members)
     return value
 
 
