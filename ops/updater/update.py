@@ -17,11 +17,6 @@ import tempfile
 import time
 import uuid
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows has no fcntl.
-    fcntl = None
-
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -44,24 +39,14 @@ def safe(path):
     return value
 
 
-def default_nora_home():
-    if os.environ.get("NORA_TAVERN_HOME"):
-        return safe(os.environ["NORA_TAVERN_HOME"])
-    if sys.platform == "darwin":
-        return safe(Path.home() / "Library/Application Support/Nora Tavern")
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
-        return safe(base / "Nora Tavern")
-    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    return safe(base / "nora-tavern")
-
-
 def default_hermes_home():
-    return safe(os.environ.get("HERMES_HOME") or default_nora_home() / "hermes")
+    return safe(os.environ.get("HERMES_HOME") or (
+        "/opt/data" if sys.platform.startswith("linux") and Path("/opt/data/skills").is_dir()
+        else Path.home() / ".hermes"))
 
 
 def default_install_root():
-    return safe(os.environ.get("TAVERN_DATA_ROOT") or default_nora_home() / "tavern")
+    return safe(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home())
 
 
 def atomic(path, data, mode=0o600):
@@ -132,15 +117,9 @@ def port_open(port=8799):
 
 @contextmanager
 def installer_lock(home):
-    path = Path(home) / "tavern-installer.lock"
-    with path.open("a+") as stream:
-        if fcntl:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            if fcntl:
-                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    from runtime_lock import installation_lock
+    with installation_lock(home, "tavern-installer.lock"):
+        yield
 
 
 def python_layout(app):
@@ -386,7 +365,7 @@ def fallback_python_state(install_root, work, reason):
     return prepared, report
 
 
-def render_mcp(hermes_home, install_root):
+def render_mcp(hermes_home, install_root, port=8799):
     try:
         import yaml
     except ImportError as error:
@@ -405,7 +384,7 @@ def render_mcp(hermes_home, install_root):
         "NORA_MCP_USER_DATA_ROOT": str(install_root / "tavern-state/native/default-user"),
         "NORA_MCP_CONFIG_PATH": str(install_root / "tavern-state/native-runtime/config.yaml"),
         "NORA_MCP_UPLOAD_ROOT": str(install_root / "tavern-state/imports"),
-        "NORA_MCP_BASE_URL": "http://127.0.0.1:8799",
+        "NORA_MCP_BASE_URL": f"http://127.0.0.1:{port}",
         "NORA_MCP_MODE": "operator",
     })
     servers["nora"] = {
@@ -825,6 +804,11 @@ def install(args):
             host_hook = prepare_host_hook_swap(hermes_home, source, work / "host-hooks")
             if host_hook:
                 swaps.append(host_hook)
+            gateway_patch = module_at("release_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
+            gateway_swaps, gateway_report = gateway_patch.prepare(hermes_home, work / "clawchat-greeting")
+            swaps.extend(gateway_swaps)
+            if gateway_report.get("status") == "pending":
+                log("ClawChat 欢迎消息顺序补丁未应用，插件保留原状：" + "; ".join(gateway_report.get("warnings", [])))
             for relative, prepared in skills.items():
                 target = hermes_home / "skills" / relative
                 if not trees_equal(prepared, target):
@@ -841,6 +825,7 @@ def install(args):
                     "version": version,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 log("已是最新版，无需替换文件。")
@@ -872,6 +857,8 @@ def install(args):
                         continue
                     swap_tree(prepared, target, saved)
                     applied.append((name, target, saved))
+                if gateway_swaps:
+                    gateway_report = {**gateway_report, "status": "installed"}
                 if prepared_state is not None:
                     active_state = install_root / "tavern-state"
                     saved_state = backup / "state"
@@ -921,6 +908,7 @@ def install(args):
                     "updateCheck": update_check,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
@@ -936,6 +924,7 @@ def install(args):
                     log(f"旧备份清理未完成，当前备份仍保留：{retention_error}")
                 reload_required = (
                     mcp_changed or agents_changed or config_changed
+                    or bool(gateway_swaps)
                     or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
                 )
                 result = {
@@ -947,9 +936,10 @@ def install(args):
                     "liveware": liveware,
                     "updateCheck": update_check,
                     "backupRetention": backup_retention,
+                    "clawchatGreeting": gateway_report,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
-                    "next": "请在 ClawChat 输入 /restart 重新加载 MCP 和技能。" if reload_required else "更新已生效。",
+                    "next": "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required else ""))

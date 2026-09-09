@@ -113,13 +113,24 @@ def start_gateway(nora_home, hermes_home, command, env, timeout=60):
     raise RuntimeError("Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。")
 
 
-def stop_gateway(nora_home):
+def stop_gateway(nora_home, *, preserve_liveware_home=None):
     import psutil
 
     process = owned_gateway(nora_home)
     if process:
         child_handle = _launched_children.pop(process.pid, None)
         children = process.children(recursive=True)
+        if preserve_liveware_home is not None:
+            executable = (Path(preserve_liveware_home) / "clawchat/liveware" /
+                          ("liveware.exe" if os.name == "nt" else "liveware")).resolve()
+            retained = []
+            for child in children:
+                try:
+                    if Path(child.exe()).resolve() != executable or "agent" not in child.cmdline():
+                        retained.append(child)
+                except psutil.NoSuchProcess:
+                    pass
+            children = retained
         process.terminate()
         _, alive = psutil.wait_procs([process], timeout=15)
         for child in children:

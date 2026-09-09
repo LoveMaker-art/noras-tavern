@@ -14,7 +14,7 @@ MODULE = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(MODULE)
 
 
-class Client:
+class Client(MODULE.NativeSettingsClient):
     def __init__(self, settings, fail_save=False):
         self.current = copy.deepcopy(settings)
         self.secrets = {}

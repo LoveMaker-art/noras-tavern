@@ -1,4 +1,4 @@
 name: tavern-liveware-register
-description: Recover the existing Tavern runtime and App bindings after gateway startup; never create Apps or synchronize models.
+description: Start Tavern, authenticate current ClawChat identity, reconcile its two Liveware Apps with retries, then send a verified entry once. Never synchronize models.
 events:
   - gateway:startup

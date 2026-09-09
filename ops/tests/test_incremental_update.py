@@ -59,7 +59,8 @@ class IncrementalUpdateTests(unittest.TestCase):
                 agents.write_text("managed instructions")
                 return {"changedModules": []}
 
-            modules = SimpleNamespace(RETIRED=[], ManagedService=SimpleNamespace(discover=lambda *_: None))
+            modules = SimpleNamespace(RETIRED=[], ManagedService=SimpleNamespace(discover=lambda *_: None),
+                                      prepare=lambda *_: ([], {"status": "not-installed"}))
             replacements = {
                 "python_layout": None, "changed_roots": set(), "roots_with_unmanaged_files": set(),
                 "prepare_dependencies": {}, "prepare_skills": {}, "merged_agents": b"managed instructions",

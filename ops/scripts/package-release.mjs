@@ -131,6 +131,10 @@ try {
             runtimeManifest.componentProbe !== 'nora-clawchat-check.py') {
             throw new Error('Integrated runtime must include verified ClawChat and Liveware components');
         }
+        const greetingPatchSha256 = digest(fs.readFileSync(path.join(stage, 'ops/updater/clawchat-greeting-order.patch')));
+        if (runtimeManifest.components.clawchat.greetingPatchSha256 !== greetingPatchSha256) {
+            throw new Error('Rebuild the Hermes runtime with the matching shared ClawChat greeting patch before packaging');
+        }
         const runtimeArchive = path.resolve(path.dirname(runtimeManifestPath), runtimeManifest.archive);
         const runtimeBytes = fs.readFileSync(runtimeArchive);
         if (digest(runtimeBytes) !== runtimeManifest.sha256) {

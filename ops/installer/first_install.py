@@ -109,7 +109,13 @@ def default_install_root(root: Path) -> Path:
     return safe(os.environ.get("TAVERN_DATA_ROOT") or root / "tavern")
 
 
-def validate_hermes(home: Path) -> dict:
+def validate_hermes(home: Path, *, dedicated: bool = True) -> dict:
+    if not dedicated:
+        hermes = shutil.which("hermes")
+        if not hermes and not (home / "config.yaml").exists() and not (home / "skills").is_dir():
+            raise RuntimeError("没有找到 Hermes 环境，请先安装 Hermes。")
+        (home / "skills").mkdir(parents=True, exist_ok=True)
+        return {"home": str(home), "hermes": hermes}
     name = "hermes.exe" if os.name == "nt" else "hermes"
     marker = home / "hermes-agent/.hermes-bootstrap-complete"
     hermes = next((
@@ -360,35 +366,8 @@ def install_agents(home: Path, document: str) -> str:
 
 
 def render_mcp(hermes_home: Path, install_root: Path, port: int = 8799) -> bytes:
-    try:
-        import yaml
-    except ImportError as error:
-        raise RuntimeError("Hermes Python 缺少 PyYAML，无法写入 Nora MCP 配置") from error
-    path = hermes_home / "config.yaml"
-    value = yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
-    value = value or {}
-    servers = value.setdefault("mcp_servers", {})
-    current = servers.get("nora") if isinstance(servers.get("nora"), dict) else {}
-    env = current.get("env") if isinstance(current.get("env"), dict) else {}
-    env.update({
-        "NORA_MCP_PROJECT_ROOT": str(install_root / "apps/tavern-runtime"),
-        "NORA_MCP_ST_ROOT": str(install_root / "apps/tavern-runtime/engine/sillytavern"),
-        "NORA_MCP_STATE_ROOT": str(install_root / "tavern-state"),
-        "NORA_MCP_NATIVE_DATA_ROOT": str(install_root / "tavern-state/native"),
-        "NORA_MCP_USER_DATA_ROOT": str(install_root / "tavern-state/native/default-user"),
-        "NORA_MCP_CONFIG_PATH": str(install_root / "tavern-state/native-runtime/config.yaml"),
-        "NORA_MCP_UPLOAD_ROOT": str(install_root / "tavern-state/imports"),
-        "NORA_MCP_BASE_URL": f"http://127.0.0.1:{port}",
-        "NORA_MCP_MODE": "operator",
-    })
-    servers["nora"] = {
-        **current,
-        "command": shutil.which("node") or "node",
-        "args": [str(install_root / "apps/nora-mcp/dist/server.js")],
-        "env": env,
-        "timeout": current.get("timeout", 420),
-    }
-    return yaml.safe_dump(value, allow_unicode=True, sort_keys=False).encode("utf-8")
+    updater = module_at("first_install_mcp", HERE.parent / "updater/update.py")
+    return updater.render_mcp(hermes_home, install_root, port)
 
 
 def install_soul(home: Path, source: Path, *, replace: bool, dedicated: bool = False) -> dict:
@@ -451,9 +430,16 @@ def initialize_liveware(hermes_home: Path, install_root: Path, port: int) -> dic
 def install(args) -> dict:
     if not (args.apply and args.confirm):
         raise RuntimeError("首次安装必须显式传入 --apply --confirm")
-    nora_home = safe(args.nora_home) if args.nora_home else default_nora_home()
-    hermes_home = safe(args.hermes_home) if args.hermes_home else default_hermes_home(nora_home)
-    install_root = safe(args.install_root) if args.install_root else default_install_root(nora_home)
+    dedicated = getattr(args, "dedicated_nora", False)
+    if dedicated:
+        nora_home = safe(args.nora_home) if args.nora_home else default_nora_home()
+        hermes_home = safe(args.hermes_home) if args.hermes_home else default_hermes_home(nora_home)
+        install_root = safe(args.install_root) if args.install_root else default_install_root(nora_home)
+    else:
+        shared = module_at("first_install_shared", HERE.parent / "updater/update.py")
+        hermes_home = safe(args.hermes_home) if args.hermes_home else shared.default_hermes_home()
+        install_root = safe(args.install_root or os.environ.get("TAVERN_DATA_ROOT") or hermes_home)
+        nora_home = safe(args.nora_home) if args.nora_home else hermes_home
     os.environ["NORA_TAVERN_HOME"] = str(nora_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_HOME"] = str(hermes_home)
@@ -463,9 +449,8 @@ def install(args) -> dict:
         raise RuntimeError("酒馆端口必须在 1024 至 65535 之间")
     nora_home.mkdir(parents=True, exist_ok=True)
     event("milestone", index=0, state="running", task="检查 Nora")
-    hermes = validate_hermes(hermes_home)
+    hermes = validate_hermes(hermes_home) if dedicated else validate_hermes(hermes_home, dedicated=False)
     event("task", milestone=0, task="Hermes 核心就绪，继续初始化 Nora")
-    dedicated = getattr(args, "dedicated_nora", False)
     if dedicated and (hermes_home == nora_home or install_root == nora_home or
                       hermes_home.is_relative_to(install_root) or install_root.is_relative_to(hermes_home) or
                       not hermes_home.is_relative_to(nora_home) or not install_root.is_relative_to(nora_home)):
@@ -478,6 +463,12 @@ def install(args) -> dict:
         version = manifest.get("versions", {}).get("tavern", "unknown")
         backup = install_root / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{os.getpid()}"
         prepared_skills = prepare_skills(source, work)
+        patcher = module_at("first_install_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
+        if dedicated and (hermes_home / "nora-components.json").is_file() and not patcher.bundled_patch_ready(hermes_home):
+            raise RuntimeError("内置 ClawChat 缺少匹配的开场白修复，请使用同一版本的完整运行时重新构建安装包。")
+        gateway_swaps, gateway_report = patcher.prepare(hermes_home, work / "clawchat-greeting")
+        if gateway_report.get("status") == "pending":
+            log("ClawChat 欢迎消息顺序补丁未应用，插件保留原状：" + "; ".join(gateway_report.get("warnings", [])))
         tavern_targets = [
             install_root / "apps/tavern-runtime",
             install_root / "apps/tavern-ops",
@@ -502,6 +493,7 @@ def install(args) -> dict:
             *[hermes_home / "scripts" / name for name in
               ("nora-instance.py", "nora-tavern-update-check.py", "nora-tavern-card-send.py")],
             *[hermes_home / "skills" / relative for relative in prepared_skills],
+            *[target for _, _, target in gateway_swaps],
         ]
         tavern_records = snapshot_targets(install_root, tavern_targets, backup / "tavern")
         hermes_records = snapshot_targets(hermes_home, hermes_targets, backup / "hermes")
@@ -512,10 +504,19 @@ def install(args) -> dict:
         runtime_attempted = False
         try:
             event("task", milestone=0, task="配置诺拉")
+            for _, prepared, target in gateway_swaps:
+                atomic(target, prepared.read_bytes(), mode=prepared.stat().st_mode & 0o777)
+            if gateway_swaps:
+                gateway_report = {**gateway_report, "status": "installed"}
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(hermes_home, prepared_skills)
             host_hook = install_host_hook(hermes_home, source)
-            agents = install_agents(hermes_home, (source / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
+            document = (source / "ops/skills/agents-tavern.md").read_bytes()
+            if dedicated:
+                agents = install_agents(hermes_home, document.decode("utf-8"))
+            else:
+                atomic(hermes_home / "AGENTS.md", shared.merged_agents(hermes_home, document))
+                agents = str(hermes_home / "AGENTS.md")
             atomic(hermes_home / "config.yaml", render_mcp(hermes_home, install_root, args.port), mode=0o600)
             soul = install_soul(hermes_home, source, replace=args.replace_soul, dedicated=dedicated)
             if dedicated:
@@ -592,6 +593,7 @@ def install(args) -> dict:
         "runtime": {"pid": runtime.get("native_pid"), "port": args.port, "health": runtime.get("health", {}).get("ok")},
         "liveware": liveware,
         "updateCheck": update_check,
+        "clawchatGreeting": gateway_report,
         "next": "请重新启动 Hermes 会话，然后让 Nora 检查 Tavern 状态。",
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

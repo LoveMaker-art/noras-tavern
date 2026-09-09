@@ -147,34 +147,48 @@ class NativeSettingsClient:
     def configure(self, settings, config):
         nora_ui = ((settings.get("extension_settings") or {}).get("nora_ui") or {})
         preserve_user_model = bool(str(nora_ui.get("activeModel") or "").strip())
+        key = config.get("secret_key", "api_key_custom")
         secret_state = self._request("/api/secrets/read", {})
-        active_custom_secret = next((
-            item.get("id")
-            for item in secret_state.get("api_key_custom") or []
-            if item.get("active") and item.get("id")
-        ), "")
-        if preserve_user_model and not active_custom_secret:
+        previous_id = next((item.get("id") for item in secret_state.get(key) or []
+                            if item.get("active") and item.get("id")), "")
+        active_source = (settings.get("oai_settings") or {}).get("chat_completion_source", "custom")
+        active_key = {"claude": "api_key_claude", "makersuite": "api_key_makersuite"}.get(active_source, "api_key_custom")
+        active_id = next((item.get("id") for item in secret_state.get(active_key) or []
+                          if item.get("active") and item.get("id")), "")
+        if preserve_user_model and not active_id:
             raise NativeModelConfigError("Active user model credential is missing")
-        secret = self._request("/api/secrets/write", {
-            "key": "api_key_custom",
-            "value": config["api_key"],
-            "label": "Nora Hermes default model",
-        })
-        secret_id = str(secret.get("id") or "")
-        if preserve_user_model:
-            self._request("/api/secrets/rotate", {
-                "key": "api_key_custom",
-                "id": active_custom_secret,
-            })
-        saved = self._request("/api/settings/save", update_settings(
-            settings,
-            config,
-            secret_id=secret_id,
-            activate=not preserve_user_model,
-            active_secret_id=active_custom_secret,
-        ))
-        if not secret.get("id") or saved.get("result") != "ok":
-            raise NativeModelConfigError("SillyTavern rejected model configuration")
+        secret_id = ""
+        try:
+            secret_id = str(self._request("/api/secrets/write", {
+                "key": key, "value": config["api_key"], "label": "Nora Hermes default model",
+            }).get("id") or "")
+            if not secret_id:
+                raise NativeModelConfigError("SillyTavern rejected model credential")
+            if preserve_user_model and previous_id:
+                self._request("/api/secrets/rotate", {"key": key, "id": previous_id})
+            updated = update_settings(settings, config, secret_id=secret_id,
+                                      activate=not preserve_user_model, active_secret_id=active_id)
+            if self._request("/api/settings/save", updated).get("result") != "ok":
+                raise NativeModelConfigError("SillyTavern rejected model configuration")
+            actual = self.settings()
+            secrets = self._request("/api/secrets/read", {}).get(key) or []
+            if (actual.get("oai_settings") != updated.get("oai_settings")
+                    or (actual.get("extension_settings") or {}).get("nora_ui") != updated["extension_settings"]["nora_ui"]
+                    or not any(item.get("id") == secret_id for item in secrets)
+                    or (not preserve_user_model and not any(
+                        item.get("id") == secret_id and item.get("active") for item in secrets))):
+                raise NativeModelConfigError("SillyTavern model readback failed")
+        except Exception:
+            # Remove only this transaction's new credential after settings are restored.
+            if secret_id:
+                try:
+                    if self._request("/api/settings/save", settings).get("result") == "ok":
+                        if previous_id:
+                            self._request("/api/secrets/rotate", {"key": key, "id": previous_id})
+                        self._request("/api/secrets/delete", {"key": key, "id": secret_id})
+                except Exception:
+                    pass
+            raise NativeModelConfigError("酒馆模型同步未完成，请重试。") from None
         return secret_id
 
     def settings(self):
@@ -199,33 +213,7 @@ def initialize_launcher_model(config, marker_path, base_url):
     if (ui.get("hermesModel") or ui.get("activeModel") or ui.get("modelProfiles")
             or oai.get("custom_url") or oai.get("custom_model") or oai.get("reverse_proxy") or has_credentials):
         return {"ok": True, "changed": False, "reason": "existing-tavern-model-preserved"}
-    key = config["secret_key"]
-    secret_id = ""
-    try:
-        secret_id = client._request("/api/secrets/write", {
-            "key": key, "value": config["api_key"], "label": "诺拉安装时的默认模型",
-        }).get("id", "")
-        if not secret_id:
-            raise NativeModelConfigError("酒馆未能保存模型密钥")
-        updated = update_settings(settings, config, secret_id=secret_id)
-        if client._request("/api/settings/save", updated).get("result") != "ok":
-            raise NativeModelConfigError("酒馆未能保存模型设置")
-        actual = client.settings()
-        active_secrets = client._request("/api/secrets/read", {}).get(key) or []
-        if (actual.get("oai_settings") != updated["oai_settings"]
-                or (actual.get("extension_settings") or {}).get("nora_ui") != updated["extension_settings"]["nora_ui"]
-                or not any(item.get("id") == secret_id and item.get("active") for item in active_secrets)):
-            raise NativeModelConfigError("酒馆模型回读检查未通过")
-    except Exception:
-        # Restore settings before deleting the newly-created secret. On an
-        # uncertain rollback retain the key, never leave a saved profile dangling.
-        if secret_id:
-            try:
-                if client._request("/api/settings/save", settings).get("result") == "ok":
-                    client._request("/api/secrets/delete", {"key": key, "id": secret_id})
-            except Exception:
-                pass
-        raise NativeModelConfigError("Hermes 模型已保存，但酒馆模型同步未完成，请重试。") from None
+    client.configure(settings, config)
     marker_path.parent.mkdir(parents=True, exist_ok=True)
     temporary = marker_path.with_suffix(".tmp")
     temporary.write_text(json.dumps({"schema": 1, "provider": config["provider"], "model": config["model"]}), encoding="utf-8")

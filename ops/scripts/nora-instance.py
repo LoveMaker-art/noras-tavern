@@ -48,21 +48,20 @@ def main():
         spec = importlib.util.spec_from_file_location("nora_entry", script)
         integration = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(integration)
-        identity = json.loads((root / "tavern-state/apps.json").read_text(encoding="utf-8"))["console"]
-        print(integration.release_launcher_url(identity["domain"], integration.runtime_asset_release(port)))
+        entry = integration.verified_entry(root, port, hermes_home=home)
+        if entry.get("status") != "ready":
+            print(json.dumps(entry, ensure_ascii=False))
+            return 1
+        print(entry["url"])
         return 0
     if args.operation == "recover-existing":
-        if config["schema"] == 1:
-            # Desktop service controls own starts; a gateway hook must not restart Tavern.
-            probe = subprocess.run([sys.executable, "-B", str(root / "apps/tavern-runtime/native_lifecycle.py"),
-                                    "status", "--port", str(port)], env=env, capture_output=True, text=True, timeout=30)
-            if probe.returncode or not json.loads(probe.stdout).get("health", {}).get("ok"):
-                print(json.dumps({"status": "tavern-stopped"}))
-                return 0
-        # The launcher owns first-time App creation; startup hooks only recover identities.
+        # The shared registration worker owns greeting order, retries and App identity.
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
         command = [str(script), "--home", str(root), "--hermes-home", str(home),
-                   "--port", str(port), "refresh" if config["schema"] == 1 else "recover-existing"]
+                   "--port", str(port)]
+        if config["schema"] == 1:
+            command.append("--no-start-runtime")
+        command.append("startup")
     else:
         command = [str(root / "apps/tavern-runtime/native_lifecycle.py"), args.operation]
         if args.operation != "stop":

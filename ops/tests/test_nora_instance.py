@@ -82,6 +82,7 @@ class InstanceTests(unittest.TestCase):
 
     def test_hook_uses_hermes_python_without_shell(self):
         with tempfile.TemporaryDirectory() as temporary, patch.dict(os.environ, HERMES_HOME=temporary):
+            (Path(temporary) / "nora-instance.json").write_text("{}")
             hook = load("hook_test", ROOT / "ops/hooks/tavern-liveware-register/handler.py")
             with patch.object(hook.subprocess, "Popen") as spawn:
                 hook.handle("irrelevant", {})

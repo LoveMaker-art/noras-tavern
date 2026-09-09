@@ -13,6 +13,8 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/installer/first_install.py', 'ops/installer/nora_system.py', 'ops/installer/nora_profile.py',
     'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
     'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
+    'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
+    'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
     ...['references/starter-stories.md', 'scripts/starter-story.py',

@@ -346,12 +346,18 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "hermesHome": str(hermes_home),
         "installRoot": str(install_root),
         "pid": status.get("native_pid"),
+        "warning": "",
     }
     payload.update(read_version(install_root))
     if status.get("inspection_error"):
         payload["warning"] = status["inspection_error"]
     if status.get("error"):
         payload["warning"] = status["error"]
+    if running and paired:
+        registration = nora_system.read_json(install_root / "tavern-state/liveware-ready.json")
+        if registration.get("status") != "ready" and not payload["warning"]:
+            payload["warning"] = ("ClawChat 酒馆入口仍在准备，可先与诺拉对话。" if clawchat_connected
+                                  else "ClawChat 酒馆入口尚未就绪。")
     return payload
 
 
@@ -431,40 +437,25 @@ def command_start(args) -> None:
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
     if service != "nora":
         run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env)
-    if service == "nora":
+    if service != "tavern":
+        emit("task", task="正在连接 ClawChat")
         start_gateway(args.nora_home, args.hermes_home,
                       [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
+    if service == "nora":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
     if service == "tavern" and not clawchat_paired(args.hermes_home):
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
     emit("task", task="正在准备 ClawChat 连接组件")
-    plugin = args.hermes_home / "plugins/clawchat"
     require_bundled_clawchat(args.hermes_home)
-    prepare = (
-        "import asyncio,json,sys; sys.path.insert(0,sys.argv[1]); "
-        "from clawchat_gateway.tools import liveware_login; "
-        "print(json.dumps(asyncio.run(liveware_login())))"
-    )
-    connection = run_json([python_command(args.hermes_home), "-B", "-c", prepare, str(plugin)], env=env, timeout=180)
-    if connection.get("ok") is not True:
-        fail("ClawChat 连接组件未就绪，请检查网络、ClawChat 配对和系统支持情况后重试。")
-    emit("task", task="正在注册 ClawChat 酒馆入口")
-    module_path = args.install_root / "apps/tavern-ops/updater/liveware_integration.py"
-    spec = importlib.util.spec_from_file_location("launcher_liveware", module_path)
-    integration = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(integration)
-    result = integration.initialize(args.install_root, args.port, hermes_home=args.hermes_home)
-    if result.get("status") != "updated":
-        fail("ClawChat 酒馆入口尚未就绪：" + "；".join(result.get("warnings", [])))
+    # The same worker used by the gateway owns login, greeting order and registration.
+    # It is idempotent and must not block local use while waiting for first activation.
+    run_stream([python_command(args.hermes_home), "-B",
+                str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
     if service == "tavern":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
-    # First activation may greet immediately: prepare its real entry before the gateway.
-    emit("task", task="正在连接 ClawChat")
-    start_gateway(args.nora_home, args.hermes_home,
-                  [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if not (status["running"] and status["clawchatConnected"]):
         fail("启动检查未通过，请检查服务连接后重试。")
@@ -481,23 +472,33 @@ def command_stop(args) -> None:
     errors = []
     if service != "tavern":
         try:
-            stop_gateway(args.nora_home)
+            if service == "nora":
+                stop_gateway(args.nora_home, preserve_liveware_home=args.hermes_home)
+            else:
+                stop_gateway(args.nora_home)
         except Exception as error:
             errors.append(str(error))
     if service != "nora":
+        from contextlib import nullcontext
         try:
-            stop_liveware(args.hermes_home)
+            lock = nullcontext()
+            if installed(args.install_root):
+                spec = importlib.util.spec_from_file_location(
+                    "launcher_registration_lock", args.install_root / "apps/tavern-ops/updater/runtime_lock.py")
+                locks = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(locks)
+                lock = locks.installation_lock(args.install_root / "tavern-state", "liveware-registration.lock")
+            # Serialize against registration, then stop the tunnel after the local runtime.
+            with lock:
+                if installed(args.install_root):
+                    lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
+                    run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
+                               env=env_for(args.nora_home, args.hermes_home, args.install_root))
+                stop_liveware(args.hermes_home)
+        except SystemExit:
+            errors.append("酒馆停止命令未完成")
         except Exception as error:
             errors.append(str(error))
-        if installed(args.install_root):
-            try:
-                lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
-                run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
-                           env=env_for(args.nora_home, args.hermes_home, args.install_root))
-            except SystemExit:
-                errors.append("酒馆停止命令未完成")
-            except Exception as error:
-                errors.append(str(error))
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if errors:
         raise RuntimeError("；".join(errors))

@@ -199,6 +199,13 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
                 install_root=str(tavern), port=18899, dedicated_nora=True, force_first_install=False,
                 replace_soul=False, skip_liveware=True)
             from ops.installer import nora_system
+            real_module_at = MODULE.module_at
+            def load_module(name, path):
+                if name == "nora_install_system":
+                    return nora_system
+                if name == "first_install_clawchat_greeting_patch":
+                    return real_module_at(name, ROOT / "ops/updater/clawchat_greeting_patch.py")
+                return real_module_at(name, path)
             def install_reminder(*_args):
                 self.assertEqual((home / "AGENTS.md").read_bytes(), (source / "ops/skills/agents-tavern.md").read_bytes())
                 self.assertEqual((home / "AGENTS.md.bak").read_bytes(), original_agents)
@@ -217,7 +224,7 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
                  patch.object(nora_system, "configure_managed"), \
                  patch.object(nora_system, "managed_problems", return_value=[]), \
                  patch.object(nora_system, "record_files_ready"), \
-                 patch.object(MODULE, "module_at", return_value=nora_system), \
+                 patch.object(MODULE, "module_at", side_effect=load_module), \
                  patch.object(nora_system, "verify_runtime", side_effect=RuntimeError("probe failed")), \
                  patch.object(MODULE, "stop_install_runtime") as stop, \
                  patch.object(MODULE, "event") as event:

@@ -1,13 +1,14 @@
 #!/bin/sh
 set -eu
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-INSTALL_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/../../.." && pwd)
 if [ -z "${HERMES_HOME:-}" ]; then
-  NORA_ROOT=$(CDPATH= cd -- "$INSTALL_ROOT/.." && pwd)
-  HERMES_HOME="$NORA_ROOT/hermes"
+  if [ "$(uname -s 2>/dev/null || true)" = Linux ] && [ -d /opt/data/skills ]; then
+    HERMES_HOME=/opt/data
+  else
+    HERMES_HOME="$HOME/.hermes"
+  fi
 fi
-DATA_ROOT="${TAVERN_DATA_ROOT:-$INSTALL_ROOT}"
+DATA_ROOT="${TAVERN_DATA_ROOT:-$HERMES_HOME}"
 APP_DIR="${TAVERN_APP_DIR:-$DATA_ROOT/apps/tavern-runtime}"
 PYTHON="${TAVERN_PYTHON:-$(command -v python3)}"
 LIFECYCLE="$APP_DIR/native_lifecycle.py"

@@ -64,7 +64,7 @@ class RefinementTests(unittest.TestCase):
             self.assertTrue(json.loads(Path(result['filePath']).read_text())['data']['scenario'])
         self.assertFalse((self.args.install_root / 'tavern-state/world-core').exists())
 
-    def test_gateway_hook_does_not_start_stopped_tavern(self):
+    def test_gateway_hook_delegates_no_start_policy_to_shared_worker(self):
         source = Path(__file__).resolve().parents[1] / 'scripts/nora-instance.py'
         spec = importlib.util.spec_from_file_location('refinement_instance', source)
         module = importlib.util.module_from_spec(spec)
@@ -75,7 +75,8 @@ class RefinementTests(unittest.TestCase):
              patch.object(module.subprocess, 'run', return_value=Mock(returncode=0, stdout='{"health":{"ok":false}}')) as run:
             self.assertEqual(module.main(), 0)
         self.assertEqual(run.call_count, 1)
-        self.assertIn('status', run.call_args.args[0])
+        self.assertIn('--no-start-runtime', run.call_args.args[0])
+        self.assertEqual(run.call_args.args[0][-1], 'startup')
 
     def test_install_does_not_skip_a_newer_pinned_payload(self):
         self.args.release_dir = str(self.root / 'payload')

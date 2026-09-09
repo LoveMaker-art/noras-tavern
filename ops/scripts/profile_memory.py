@@ -10,21 +10,11 @@ import sys
 from pathlib import Path
 
 
-def default_nora_home() -> Path:
-    if os.environ.get("NORA_TAVERN_HOME"):
-        return Path(os.environ["NORA_TAVERN_HOME"]).expanduser().resolve()
-    if sys.platform == "darwin":
-        return (Path.home() / "Library/Application Support/Nora Tavern").resolve()
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
-        return (base / "Nora Tavern").resolve()
-    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    return (base / "nora-tavern").resolve()
-
-
-NORA_HOME = default_nora_home()
-HERMES_HOME = Path(os.environ.get("HERMES_HOME") or NORA_HOME / "hermes").expanduser().resolve()
-DATA_ROOT = Path(os.environ.get("TAVERN_DATA_ROOT") or NORA_HOME / "tavern").expanduser().resolve()
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or (
+    "/opt/data" if sys.platform.startswith("linux") and Path("/opt/data/skills").is_dir()
+    else Path.home() / ".hermes"
+)).expanduser().resolve()
+DATA_ROOT = Path(os.environ.get("TAVERN_DATA_ROOT", HERMES_HOME)).expanduser().resolve()
 RUNTIME = Path(os.environ.get(
     "TAVERN_APP_DIR", DATA_ROOT / "apps/tavern-runtime")).expanduser().resolve()
 STATE = Path(os.environ.get(

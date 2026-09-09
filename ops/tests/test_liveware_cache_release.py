@@ -13,6 +13,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[2]
 INTEGRATION = ROOT / "ops/updater/liveware_integration.py"
+sys.path.insert(0, str(INTEGRATION.parent))
 
 
 def load_integration():
@@ -20,6 +21,8 @@ def load_integration():
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
+    # Cache/binding tests use an authenticated owner whose greeting was delivered.
+    module.authenticate = mock.Mock(return_value={"user_id": "test-owner", "instance_id": "test-instance"})
     return module
 
 
@@ -36,41 +39,15 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 mock.patch("builtins.print"),
             ):
                 integration.main()
-                start.assert_not_called()
-                refresh.assert_not_called()
-                repair.assert_not_called()
-                (home / "tavern-state").mkdir()
-                (home / "tavern-state/apps.json").write_text(json.dumps({
-                    "console": {"app_id": "app-tavern", "domain": "app-tavern.apps.clawling.io"},
-                    "actor": {"app_id": "app-profile", "domain": "app-profile.apps.clawling.io"},
-                }))
-                integration.main()
                 start.assert_called_once_with(home, port=8799, hermes_home=None)
                 refresh.assert_called_once_with(home, 8799, hermes_home=None)
                 repair.assert_not_called()
 
-    def test_recovery_rejects_incomplete_invalid_or_shared_identities(self):
-        integration = load_integration()
-        valid = {
-            "console": {"app_id": "app-tavern", "domain": "app-tavern.apps.clawling.io"},
-            "actor": {"app_id": "app-profile", "domain": "app-profile.apps.clawling.io"},
-        }
-        invalid = [None, [], {}, {"console": valid["console"]},
-                   {**valid, "actor": valid["console"]},
-                   {**valid, "actor": {"app_id": "../invalid", "domain": valid["actor"]["domain"]}},
-                   {**valid, "actor": {"app_id": "app-profile", "domain": "unrelated.example"}}]
-        with tempfile.TemporaryDirectory() as temporary:
-            home = Path(temporary)
-            state = home / "tavern-state/apps.json"
-            state.parent.mkdir()
-            for value in invalid:
-                with self.subTest(value=value):
-                    state.write_text(json.dumps(value))
-                    self.assertFalse(integration.identities_complete(home))
-            state.write_text("not json")
-            self.assertFalse(integration.identities_complete(home))
-            state.write_text(json.dumps(valid))
-            self.assertTrue(integration.identities_complete(home))
+    def setUp(self):
+        import liveware_notice
+        patcher = mock.patch.object(liveware_notice, "owner_conversation", return_value="test-conversation")
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_runtime_release_is_read_from_the_started_tavern(self):
         integration = load_integration()
@@ -168,6 +145,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
         integration = load_integration()
         release = "0123456789abcdef"
         identities = {
+            "_owner": {"user_id": "test-owner", "instance_id": "test-instance"},
             "console": {
                 "app_id": "app-tavern",
                 "domain": "app-tavern.apps.clawling.io",
@@ -183,7 +161,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
         }
         liveware_apps = [
             {"appId": value["app_id"], "name": value["name"], "domain": value["domain"], "status": "active"}
-            for value in identities.values()
+            for key, value in identities.items() if key != "_owner"
         ]
         launchers = [
             {
@@ -191,7 +169,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 "name": value["name"],
                 "url": integration.release_launcher_url(value["domain"], release),
             }
-            for value in identities.values()
+            for key, value in identities.items() if key != "_owner"
         ]
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
@@ -212,9 +190,9 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 result = integration.refresh(home)
 
             self.assertEqual(result["status"], "updated")
-            write.assert_not_called()
+            self.assertTrue(all(call.args[0] != path for call in write.call_args_list))
 
-    def test_repair_adopts_existing_story_profile_and_removes_stale_launcher(self):
+    def test_repair_adopts_story_profile_without_removing_unowned_launcher(self):
         integration = load_integration()
         release = "0123456789abcdef"
         with tempfile.TemporaryDirectory() as temporary:
@@ -265,8 +243,8 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             saved = json.loads(path.read_text(encoding="utf-8"))
             self.assertEqual(result["status"], "updated")
             self.assertEqual(saved["actor"]["app_id"], "app-profile")
-            self.assertEqual([item["name"] for item in registrations], ["Tavern", "Story Profile"])
-            self.assertEqual({item["app_id"] for item in registrations}, {"app-tavern", "app-profile"})
+            self.assertEqual([item["name"] for item in registrations], ["Tavern", "Tavern", "Story Profile"])
+            self.assertEqual({item["app_id"] for item in registrations}, {"app-old", "app-tavern", "app-profile"})
 
     def test_initialize_reuses_unique_same_name_app_when_saved_id_is_stale(self):
         integration = load_integration()

@@ -164,6 +164,15 @@ try {
             fs.copyFileSync(file, target);
         }
         fs.writeFileSync(path.join(runtime, 'plugins', 'clawchat', 'nora-source.json'), JSON.stringify({ repository: 'clawling/clawchat-plugin-hermes-agent', revision: revision.stdout.trim() }));
+        // Apply the shared upstream fix before sealing the component checksums.
+        const greetingPatch = spawnSync(venvPython, ['-B', '-c',
+            'import sys,shutil,tempfile;sys.path.insert(0,sys.argv[1]);from clawchat_greeting_patch import prepare;'
+            + '\nwith tempfile.TemporaryDirectory() as work:'
+            + '\n swaps,report=prepare(sys.argv[2],work)'
+            + '\n assert report["status"] in ("prepared","already-patched"),report'
+            + '\n for _,source,target in swaps: shutil.copy2(source,target)',
+            path.resolve(installer, '../updater'), runtime], { encoding: 'utf8', timeout: 60000 });
+        if (greetingPatch.status !== 0) throw new Error(`ClawChat 开场白补丁未通过：${greetingPatch.stderr || greetingPatch.stdout}`);
         const prepare = spawnSync(venvPython, ['-B', '-c',
             'import sys;sys.path.insert(0,sys.argv[1]);from clawchat_gateway.liveware_cli import ensure_liveware_cli,resolve_liveware_path;ensure_liveware_cli();assert resolve_liveware_path(),"Liveware is unavailable for this platform"', source], {
             env: { ...process.env, HERMES_HOME: runtime, HOME: runtime, USERPROFILE: runtime, PATH: '', PYTHONPATH: agent },
@@ -184,7 +193,8 @@ try {
     const livewarePath = `clawchat/liveware/liveware${platform === 'win32' ? '.exe' : ''}`;
     files[livewarePath] = sha256(path.join(runtime, livewarePath));
     const components = {
-        schema: 1, clawchat: { revision: lock.revision, version: lock.version, review: lock.review },
+        schema: 1, clawchat: { revision: lock.revision, version: lock.version, review: lock.review,
+            greetingPatchSha256: sha256(path.resolve(installer, '../updater/clawchat-greeting-order.patch')) },
         liveware: { path: livewarePath, sha256: files[livewarePath] }, files,
     };
     fs.writeFileSync(path.join(runtime, 'nora-components.json'), JSON.stringify(components, null, 2));
