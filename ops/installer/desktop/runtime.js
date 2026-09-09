@@ -3,6 +3,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
+const { restoreRetained, RETAINED } = require('./uninstall');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
 const TOKENS = {
@@ -224,6 +225,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
     onEvent({ event: 'task', milestone: 0, task: '初始化 Nora', current: 2, total: 3 });
     relocateFiles(hermesHome, bundle.manifest);
     initializeHome(hermesHome, bundle.manifest);
+    const restored = previous && restoreRetained(noraHome, backup, hermesHome);
 
     onEvent({ event: 'task', milestone: 0, task: '检查 Nora', current: 3, total: 3 });
     const version = validateRuntime(hermesHome, bundle.manifest);
@@ -236,6 +238,11 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
       sha256: bundle.manifest.sha256,
       installedAt: new Date().toISOString(),
     }, null, 2)}\n`, { mode: 0o600 });
+    if (restored) {
+      fs.rmSync(path.join(noraHome, RETAINED));
+      // Failure to remove a redundant backup must not roll back a valid runtime.
+      try { fs.rmSync(backup, { recursive: true, force: true }); } catch {}
+    }
     return { ...bundle.manifest, version };
   } catch (error) {
     if (replaced) fs.rmSync(hermesHome, { recursive: true, force: true });

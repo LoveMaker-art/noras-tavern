@@ -9,12 +9,37 @@ import json
 import os
 from pathlib import Path
 import urllib.request
+from urllib.parse import urlparse
 
 import yaml
 
 
 class NativeModelConfigError(RuntimeError):
     pass
+
+
+LAUNCHER_PROVIDERS = {
+    "openrouter": ("OpenRouter", "custom", "api_key_custom", "https://openrouter.ai/api/v1"),
+    "deepseek": ("DeepSeek", "custom", "api_key_custom", "https://api.deepseek.com/v1"),
+    "openai-api": ("OpenAI", "custom", "api_key_custom", "https://api.openai.com/v1"),
+    "anthropic": ("Anthropic", "claude", "api_key_claude", "https://api.anthropic.com/v1"),
+    "gemini": ("Google Gemini", "makersuite", "api_key_makersuite", "https://generativelanguage.googleapis.com/v1beta"),
+    "custom": ("自定义模型", "custom", "api_key_custom", ""),
+}
+
+
+def launcher_config(provider, model, api_key, base_url=""):
+    if provider not in LAUNCHER_PROVIDERS or not model or not api_key:
+        raise NativeModelConfigError("启动器模型配置不完整")
+    label, source, secret_key, endpoint = LAUNCHER_PROVIDERS[provider]
+    if provider == "custom":
+        parsed = urlparse(base_url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname or parsed.username or parsed.password:
+            raise NativeModelConfigError("自定义模型地址无效")
+        endpoint = base_url.rstrip("/")
+    return {"provider": label, "source": source, "secret_key": secret_key,
+            "api_key": api_key, "model": model, "base_url": endpoint,
+            "context": 8192, "max_tokens": 2048}
 
 
 def load_model_config(path):
@@ -63,6 +88,8 @@ def update_settings(settings, config, *, secret_id="", activate=True, active_sec
         "tokens": config["max_tokens"],
         "secretId": secret_id,
     }
+    if "source" in config:
+        nora_ui["hermesModel"].update({"source": config["source"], "secretKey": config["secret_key"]})
     if not activate and active_secret_id:
         active_model = str(nora_ui.get("activeModel") or "").strip()
         profiles = []
@@ -75,15 +102,19 @@ def update_settings(settings, config, *, secret_id="", activate=True, active_sec
     if activate:
         result["main_api"] = "openai"
         oai = dict(result.get("oai_settings") or {})
+        source = config.get("source", "custom")
         oai.update({
-            "chat_completion_source": "custom",
-            "custom_url": config["base_url"],
-            "custom_model": config["model"],
+            "chat_completion_source": source,
             "openai_max_context": config["context"],
             "openai_max_tokens": config["max_tokens"],
             "max_context_unlocked": True,
             "stream_openai": True,
         })
+        if source == "custom":
+            oai.update({"custom_url": config["base_url"], "custom_model": config["model"]})
+        else:
+            oai[{"claude": "claude_model", "makersuite": "google_model"}[source]] = config["model"]
+            oai["reverse_proxy"] = ""
         result["oai_settings"] = oai
         nora_ui["activeModel"] = ""
     extensions["nora_ui"] = nora_ui
@@ -145,6 +176,62 @@ class NativeSettingsClient:
         if not secret.get("id") or saved.get("result") != "ok":
             raise NativeModelConfigError("SillyTavern rejected model configuration")
         return secret_id
+
+    def settings(self):
+        value = self._request("/api/settings/get", {}).get("settings")
+        settings = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(settings, dict):
+            raise NativeModelConfigError("无法读取酒馆模型设置")
+        return settings
+
+
+def initialize_launcher_model(config, marker_path, base_url):
+    """Seed a fresh Tavern only. Subsequent Hermes edits must not change it."""
+    marker_path = Path(marker_path)
+    if marker_path.is_file():
+        return {"ok": True, "changed": False, "reason": "already-initialized"}
+    client = NativeSettingsClient(base_url)
+    settings = client.settings()
+    ui = (settings.get("extension_settings") or {}).get("nora_ui") or {}
+    oai = settings.get("oai_settings") or {}
+    secrets = client._request("/api/secrets/read", {})
+    has_credentials = any(bool(value) for key, value in secrets.items() if key.startswith("api_key_"))
+    if (ui.get("hermesModel") or ui.get("activeModel") or ui.get("modelProfiles")
+            or oai.get("custom_url") or oai.get("custom_model") or oai.get("reverse_proxy") or has_credentials):
+        return {"ok": True, "changed": False, "reason": "existing-tavern-model-preserved"}
+    key = config["secret_key"]
+    secret_id = ""
+    try:
+        secret_id = client._request("/api/secrets/write", {
+            "key": key, "value": config["api_key"], "label": "诺拉安装时的默认模型",
+        }).get("id", "")
+        if not secret_id:
+            raise NativeModelConfigError("酒馆未能保存模型密钥")
+        updated = update_settings(settings, config, secret_id=secret_id)
+        if client._request("/api/settings/save", updated).get("result") != "ok":
+            raise NativeModelConfigError("酒馆未能保存模型设置")
+        actual = client.settings()
+        active_secrets = client._request("/api/secrets/read", {}).get(key) or []
+        if (actual.get("oai_settings") != updated["oai_settings"]
+                or (actual.get("extension_settings") or {}).get("nora_ui") != updated["extension_settings"]["nora_ui"]
+                or not any(item.get("id") == secret_id and item.get("active") for item in active_secrets)):
+            raise NativeModelConfigError("酒馆模型回读检查未通过")
+    except Exception:
+        # Restore settings before deleting the newly-created secret. On an
+        # uncertain rollback retain the key, never leave a saved profile dangling.
+        if secret_id:
+            try:
+                if client._request("/api/settings/save", settings).get("result") == "ok":
+                    client._request("/api/secrets/delete", {"key": key, "id": secret_id})
+            except Exception:
+                pass
+        raise NativeModelConfigError("Hermes 模型已保存，但酒馆模型同步未完成，请重试。") from None
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = marker_path.with_suffix(".tmp")
+    temporary.write_text(json.dumps({"schema": 1, "provider": config["provider"], "model": config["model"]}), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    temporary.replace(marker_path)
+    return {"ok": True, "changed": True, "model": config["model"]}
 
 
 def configure(config_path, settings_path, marker_path, base_url, *, allow_unconfigured=False):

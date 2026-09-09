@@ -20,6 +20,28 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FirstInstallSnapshotTests(unittest.TestCase):
+    def test_retained_tavern_config_is_restored_without_consuming_backup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            retained = root / "tavern-state/nora-retained-config.yaml"
+            retained.parent.mkdir()
+            retained.write_text("custom_setting: true\n", encoding="utf-8")
+            self.assertEqual(MODULE.restore_retained_config(root), retained)
+            self.assertEqual((root / "tavern-state/native-runtime/config.yaml").read_bytes(), retained.read_bytes())
+            self.assertTrue(retained.exists(), "keep until installation verification succeeds")
+
+    def test_retained_config_rejects_redirected_state_directory(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home, outside = root / "home", root / "outside"
+            home.mkdir()
+            outside.mkdir()
+            (outside / "nora-retained-config.yaml").write_text("unrelated", encoding="utf-8")
+            (home / "tavern-state").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(RuntimeError, "隔离目录外"):
+                MODULE.restore_retained_config(home)
+            self.assertFalse((outside / "native-runtime/config.yaml").exists())
+
     def test_agents_replacement_is_exact_repeatable_and_backed_up(self):
         template = (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8")
         originals = (None, b"personal instructions\r\n", b"before\n<!-- BEGIN TAVERN SKILLS -->\nold\n<!-- END TAVERN SKILLS -->\nafter\n")

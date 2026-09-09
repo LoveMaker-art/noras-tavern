@@ -22,6 +22,7 @@ const pkg = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
 for (const file of ['package.json', ...pkg.build.files]) {
   fs.copyFileSync(path.join(source, file), path.join(desktop, file));
 }
+fs.copyFileSync(path.join(source, pkg.build.nsis.include), path.join(desktop, pkg.build.nsis.include));
 // Refresh launcher resources too; the pinned system payload remains unchanged.
 for (const resource of pkg.build.extraResources) {
   if (resource.to === 'payload') continue;

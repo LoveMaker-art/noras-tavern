@@ -38,6 +38,7 @@
       "system-update.js",
       "test-build.js",
       "install-cleanup.js",
+      "uninstall.js",
       "runtime-worker.js",
       "process-output.js"
     ],
@@ -98,6 +99,7 @@
       ]
     },
     "nsis": {
+      "include": "uninstall.nsh",
       "artifactName": "Nora-Tavern-Launcher-${version}-win-${arch}-setup.${ext}",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true

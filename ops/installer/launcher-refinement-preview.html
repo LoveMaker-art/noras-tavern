@@ -345,6 +345,18 @@
     .story-option i { font-size:11px; color:#b4c4b5; }
     .story-option:hover strong { color:#f3bdc9; }
     .greeting-foot { margin-top:14px; padding:11px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #56635445; font-size:11px; color:#9eb3a4; }
+    .completion .subcopy { max-width:350px; font-size:13px; line-height:1.85; }
+    .completion .inline { margin-top:13px!important; }
+    .conversation-entry { margin-bottom:20px; }
+    .conversation-link { display:inline-flex; align-items:center; gap:10px; padding:7px 0; border:0; background:none; color:#e9b3c0; font-size:13px; line-height:1.6; text-align:left; }
+    .conversation-link:hover { color:#ffd8e1; }
+    .conversation-link > span { border-bottom:1px solid #c18f9b66; }
+    .conversation-link .entry-arrow { font-size:10px; opacity:.75; }
+    .conversation-guidance { margin:8px 0 0; padding-left:23px; border-left:1px solid #697e6c66; color:#a8b9ad; font-size:11px; line-height:1.8; }
+    .completion .services { margin-top:0; }
+    .preview-toolbar { max-width:calc(100vw - 20px); }
+    .preview-tabs { min-width:0; overflow-x:auto; scrollbar-width:none; }
+    .preview-tabs button { flex-shrink:0; }
     @keyframes blink { 50% { opacity:.35; } }
     @media(max-height:780px) { .preview-toolbar { top:6px; height:30px; } }
     @media(max-width:520px) { .preview-toolbar { gap:9px; padding:0 8px; } .preview-tabs { gap:9px; } }
@@ -352,7 +364,8 @@
   <aside class="preview-toolbar" aria-label="预览场景">
     <span>交互预览 · 无真实操作</span>
     <div class="preview-tabs" role="tablist" aria-label="预览场景">
-      <button role="tab" data-scene="daily" aria-selected="true">日常启动</button>
+      <button role="tab" data-scene="complete" aria-selected="true">安装完成</button>
+      <button role="tab" data-scene="daily" aria-selected="false">日常启动</button>
       <button role="tab" data-scene="install" aria-selected="false">首次安装</button>
       <button role="tab" data-scene="claw" aria-selected="false">连接 ClawChat</button>
       <button role="tab" data-scene="greeting" aria-selected="false">开场消息</button>
@@ -401,6 +414,19 @@
       $('launchbar').classList.remove('enter');
       say(message||(services.nora==='running'?'准备好了。酒馆交给你。':'随时可以继续。'),services.nora==='running'?'我在 ClawChat 等你。':'诺拉已暂停，酒馆可独立启动。');renderServices();
     };
+    function completionPreview(){
+      services.nora='running';services.tavern='running';stage=5;dailyHome('准备好了。');
+      $('main').classList.add('completion');
+      $('subcopy').hidden=false;$('subcopy').textContent='去 ClawChat 找我聊聊，或直接打开酒馆。';
+      const entry=document.createElement('div');entry.className='conversation-entry';
+      const action=document.createElement('button');action.type='button';action.className='conversation-link';
+      action.innerHTML='<i class="fa-solid fa-comment" aria-hidden="true"></i><span>在 ClawChat 中与诺拉对话</span><i class="fa-solid fa-arrow-up-right-from-square entry-arrow" aria-hidden="true"></i>';
+      action.setAttribute('aria-expanded','false');action.setAttribute('aria-controls','conversationGuidance');
+      const guidance=document.createElement('p');guidance.id='conversationGuidance';guidance.className='conversation-guidance';guidance.hidden=true;guidance.role='status';
+      guidance.textContent='在 ClawChat 联系人中找到诺拉，发一句「你好」。此处仅预览，不会打开真实会话。';
+      action.onclick=()=>{guidance.hidden=!guidance.hidden;action.setAttribute('aria-expanded',String(!guidance.hidden));};
+      entry.append(action,guidance);$('inline').prepend(entry);
+    }
     async function changeService(id,action){
       if(busy)return;busy=true;const ids=id==='all'?['nora','tavern']:[id],mark=++epoch;
       for(const key of ids)services[key]=action==='stop'?'stopping':'starting';renderServices();
@@ -444,7 +470,7 @@
     };
     check=async()=>{
       say('最后检查一下，就好了。');await job('启动检查','检查诺拉、酒馆与手机入口',1400);stage=5;steps();busy=true;lockPreview();
-      await wait(500);$('steps').classList.add('depart');await wait(400);busy=false;services.nora='running';services.tavern='running';dailyHome();
+      await wait(500);$('steps').classList.add('depart');await wait(400);busy=false;completionPreview();
     };
     function greetingPreview(){
       daily=false;$('main').className='greeting-view';$('steps').hidden=true;$('management').hidden=true;$('launchbar').hidden=true;$('status').hidden=false;$('status').textContent='ClawChat · 开场预览';clearInline();say('我叫诺拉。');
@@ -460,14 +486,16 @@
     function switchScene(scene){
       if(busy)return;epoch++;previewScene=scene;clearInline();$('main').className='';$('steps').classList.remove('depart');$('more').hidden=true;$('previous').hidden=true;$('status').hidden=false;
       document.querySelectorAll('[data-scene]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scene===scene)));
-      if(scene==='daily'){services.nora='running';services.tavern='running';dailyHome();}
+      if(scene==='complete')completionPreview();
+      else if(scene==='daily'){services.nora='running';services.tavern='running';dailyHome();}
       else if(scene==='claw'){daily=false;stage=3;$('management').hidden=true;$('steps').hidden=false;$('status').textContent='需要你参与';steps();clawForm();}
       else if(scene==='greeting')greetingPreview();
       else{daily=false;stage=0;$('management').hidden=true;$('launchbar').hidden=true;$('status').textContent='首次见面';welcome();}
     }
     document.querySelectorAll('[data-scene]').forEach(b=>b.onclick=()=>switchScene(b.dataset.scene));
     document.querySelectorAll('[data-action]').forEach(b=>{const original=b.onclick;b.onclick=async()=>{if(busy)return;$('launchbar').hidden=true;await original();};});
-    switchScene(new URLSearchParams(location.search).get('scene')==='claw'?'claw':'daily');
+    const initialScene=new URLSearchParams(location.search).get('scene');
+    switchScene(['complete','daily','install','claw','greeting'].includes(initialScene)?initialScene:'complete');
   </script>
 </body>
 </html>

@@ -69,6 +69,11 @@ if (contextBridge && ipcRenderer) {
     openSettings() {
       return ipcRenderer.invoke('nora:open-settings');
     },
+    uninstall(options = {}) {
+      const listener = (_event, task) => options.onProgress?.(task);
+      ipcRenderer.on('nora:uninstall-progress', listener);
+      return ipcRenderer.invoke('nora:uninstall').finally(() => ipcRenderer.removeListener('nora:uninstall-progress', listener));
+    },
     openExternal(url) {
       return ipcRenderer.invoke('nora:open-external', url);
     },

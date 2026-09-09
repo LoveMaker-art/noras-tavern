@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import importlib.util
 import os
 from pathlib import Path
 import sys
@@ -50,6 +51,27 @@ def main() -> None:
                 or parsed.password
             ):
                 fail("中转地址格式不正确。")
+
+        if action == "sync-tavern":
+            root = Path(os.environ["TAVERN_DATA_ROOT"]).resolve()
+            script = root / "apps/tavern-runtime/native_model_config.py"
+            if not script.is_file() or not script.resolve().is_relative_to(root):
+                fail("未找到酒馆模型配置程序，请先完成酒馆安装。")
+            port = body.get("port")
+            if not isinstance(port, int) or not 1024 <= port <= 65535:
+                fail("酒馆端口无效。")
+            spec = importlib.util.spec_from_file_location("nora_tavern_model", script)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            if not hasattr(module, "initialize_launcher_model"):
+                fail("当前酒馆版本不支持安装时同步模型，请更新酒馆后重试。")
+            marker = root / "tavern-state/launcher-model.json"
+            if marker.is_symlink() or not marker.resolve().is_relative_to(root):
+                fail("酒馆模型记录路径无效。")
+            result = module.initialize_launcher_model(module.launcher_config(provider, model, secret, base_url),
+                marker, f"http://127.0.0.1:{port}")
+            print(json.dumps(result, ensure_ascii=False))
+            return
 
         hermes_home = Path(os.environ["HERMES_HOME"]).resolve()
         agent_root = hermes_home / "hermes-agent"

@@ -189,6 +189,7 @@
           <div class="more" id="more" hidden>
             <button data-action="claw">ClawChat 连接</button><button data-action="update">查看版本</button><button data-action="settings">安装信息</button><button data-action="community">社区与作者</button>
             <button id="stopAll" data-action="stop-all">全部停止</button>
+            <button data-action="uninstall">卸载诺拉·酒馆</button>
             <p class="more-note">关闭窗口后，服务继续运行</p>
           </div>
         </div>
@@ -330,6 +331,7 @@
       if(action==='claw') clawForm();
       if(action==='stop-all') $('stop').click();
       if(action==='community') community();
+      if(action==='uninstall') {clearInline();$('main').classList.add('editing');say('卸载诺拉·酒馆。','这是界面预览，不会删除文件。');editHeader('卸载');$('inline').append(button('返回',closeEdit,false));}
       if(action==='update') {say('我来检查一下更新。');await job('检查更新','正在查询版本',900);dailyHome('已经是最新版本。');}
       if(action==='settings') {clearInline();$('main').classList.add('editing');say('都收在这里。');editHeader('安装信息');$('inline').insertAdjacentHTML('beforeend','<div class="settings-row"><span>安装目录</span><b>NoraTavern/</b></div><div class="settings-row"><span>包含内容</span><b>Nora · 酒馆 · 运行环境</b></div>');}
     });

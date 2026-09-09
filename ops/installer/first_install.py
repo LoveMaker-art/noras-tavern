@@ -329,6 +329,17 @@ def install_skills(home: Path, prepared: dict[str, Path]) -> list[str]:
     return sorted(installed)
 
 
+def restore_retained_config(install_root: Path) -> Path:
+    retained = install_root / "tavern-state/nora-retained-config.yaml"
+    target = install_root / "tavern-state/native-runtime/config.yaml"
+    for candidate in (retained, target):
+        if candidate.is_symlink() or not candidate.resolve().is_relative_to(install_root.resolve()):
+            raise RuntimeError("保留的酒馆配置不能重定向到隔离目录外")
+    if retained.is_file():
+        atomic(target, retained.read_bytes(), mode=0o600)
+    return retained
+
+
 def install_agents(home: Path, document: str) -> str:
     """Keep one previous revision; install() provides transactional rollback."""
     if not document.strip():
@@ -524,6 +535,7 @@ def install(args) -> dict:
             copy_tree(source / "app", install_root / "apps/tavern-runtime")
             copy_tree(source / "ops", install_root / "apps/tavern-ops")
             copy_tree(source / "nora-mcp", install_root / "apps/nora-mcp")
+            retained_config = restore_retained_config(install_root)
             mark_bundled_dependencies(source, install_root, manifest)
             event("task", milestone=1, task="启动并检查酒馆")
             log("准备并启动本地 Tavern")
@@ -541,6 +553,7 @@ def install(args) -> dict:
                 proof = system.verify_runtime(hermes_home, install_root, args.port, sys.executable, dict(os.environ))
                 system.record_initialization(hermes_home, install_root, manifest, proof)
             write_install_receipt(install_root, manifest)
+            retained_config.unlink(missing_ok=True)
             event("milestone", index=1, state="done", task="酒馆安装检查完成")
             event("task", task="系统已安装，等待配置模型和连接 ClawChat")
         except Exception:

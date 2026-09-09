@@ -104,7 +104,7 @@ import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
 import { MacrosParser } from './macros.js';
-import { clearCustomChatCompletion, configureCustomChatCompletion, getChatCompletionModel, hasCustomChatCompletionApiKey, oai_settings } from './openai.js';
+import { clearCustomChatCompletion, configureCustomChatCompletion, configureProviderChatCompletion, getChatCompletionModel, hasCustomChatCompletionApiKey, oai_settings } from './openai.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
@@ -255,6 +255,7 @@ export function getContext() {
         chatCompletionSettings: oai_settings,
         hasCustomChatCompletionApiKey,
         configureCustomChatCompletion,
+        configureProviderChatCompletion,
         clearCustomChatCompletion,
         textCompletionSettings: textgenerationwebui_settings,
         powerUserSettings: power_user,

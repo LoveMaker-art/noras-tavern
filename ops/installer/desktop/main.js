@@ -8,6 +8,8 @@ const releases = require('./releases');
 const systemUpdate = require('./system-update');
 const { testBuild, prepareTestPayload } = require('./test-build');
 const { cleanupInstallTemps } = require('./install-cleanup');
+const uninstall = require('./uninstall');
+const SYSTEM_UNINSTALL = process.argv.find(value => value.startsWith('--nora-uninstall-plan='))?.slice('--nora-uninstall-plan='.length);
 const LOCAL_TEST = testBuild(require('./package.json'));
 const CHANNEL = require('./package.json').noraReleaseChannel || 'stable';
 if (!['stable', 'beta'].includes(CHANNEL)) throw new Error('启动器发布通道无效。');
@@ -38,6 +40,7 @@ let statusRequest = null;
 let cancelled = false;
 let releaseAbort = null;
 let updatingSystem = false;
+let uninstalling = false;
 
 function installerRoot() {
   if (!app) return path.resolve(__dirname, '..');
@@ -610,17 +613,95 @@ function createWindow() {
   });
 }
 
+async function confirmUninstall(planFile, onProgress = () => {}) {
+  if (!app.isPackaged) throw new Error('开发模式不删除应用。请使用安装包测试卸载流程。');
+  if (activeRun || modelBusy) throw new Error('请等待当前任务结束后再卸载。');
+  const home = noraHome();
+  const selection = await dialog.showMessageBox({
+    type: 'question', title: '卸载诺拉·酒馆', message: '要保留数据吗？',
+    detail: `保留数据：删除程序和缓存，保留世界、角色、聊天、配置及 Key，重装可继续使用。已有备份也会保留。\n\n彻底卸载：删除此目录内的所有数据，无法撤销。\n${home}\n\n不会卸载 ClawChat 客户端、删除云端联系人或撤销服务商 Key。`,
+    buttons: ['取消', '保留数据卸载', '彻底卸载'], defaultId: 1, cancelId: 0, noLink: true,
+  });
+  if (selection.response === 0) return false;
+  const mode = selection.response === 1 ? 'keep' : 'all';
+  if (mode === 'all') {
+    const confirmed = await dialog.showMessageBox({ type: 'warning', title: '确认彻底卸载',
+      message: '永久删除本地程序、聊天数据和密钥？', detail: home,
+      buttons: ['取消', '永久删除并卸载'], defaultId: 0, cancelId: 0, noLink: true });
+    if (confirmed.response !== 1) return false;
+  }
+  activeRun = true;
+  try {
+    if (statusRequest) await statusRequest.catch(() => {});
+    onProgress('正在停止诺拉与酒馆。');
+    // Stop only services with this installation's ownership records. An error
+    // aborts the uninstall rather than deleting files underneath a live service.
+    if (findPython()) await runBridge('stop', { service: 'all' });
+    else if (fs.existsSync(path.join(home, 'installer/gateway.json'))
+      || fs.existsSync(path.join(installRoot(), 'tavern-state/native-runtime/runs'))) {
+      throw new Error('缺少停止服务所需的运行环境。请先修复安装，再卸载；尚未删除文件。');
+    }
+    const appPath = process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : null;
+    const plan = uninstall.makePlan({ home, hermesHome: hermesHome(), installRoot: installRoot(), mode, appPath, executable: process.execPath });
+    if (process.platform === 'darwin' && (!appPath.endsWith('.app') || appPath.startsWith('/Volumes/'))) {
+      throw new Error('请先将启动器移入“应用程序”，再执行卸载。');
+    }
+    if (!planFile) {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-uninstall-'));
+      fs.chmodSync(directory, 0o700);
+      planFile = path.join(directory, 'nora-uninstall.json');
+      plan.parentPid = process.pid;
+    }
+    fs.writeFileSync(planFile, JSON.stringify(plan), { mode: 0o600 });
+    onProgress('正在退出启动器，随后清理文件。');
+    if (process.platform === 'darwin') {
+      const child = spawn(process.execPath, [path.join(__dirname, 'uninstall.js'), planFile], {
+        cwd: os.tmpdir(), env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' }, detached: true, stdio: 'ignore',
+      });
+      await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+      child.unref();
+    }
+    app.exit(0);
+    return true;
+  } finally { activeRun = false; }
+}
+
+async function beginUninstall(event) {
+  if (!app.isPackaged) throw new Error('开发模式不会删除应用。请使用安装包测试卸载流程。');
+  if (activeRun || modelBusy || uninstalling) throw new Error('请等待当前任务结束后再卸载。');
+  uninstalling = true;
+  try {
+  if (process.platform === 'win32') {
+    const directory = path.dirname(process.execPath);
+    const candidates = fs.readdirSync(directory).filter(name => /^Uninstall .+\.exe$/i.test(name));
+    if (candidates.length !== 1) throw new Error('未找到唯一的系统卸载程序，请使用 setup 安装版。');
+    const file = path.join(directory, candidates[0]);
+    const child = spawn(file, [], { detached: true, stdio: 'ignore', windowsHide: false });
+    await new Promise((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref(); app.exit(0);
+    return { started: true };
+  }
+  if (process.platform !== 'darwin') throw new Error('当前系统尚不支持此卸载流程。');
+  return { started: await confirmUninstall(undefined, task => {
+    if (!event.sender.isDestroyed()) event.sender.send('nora:uninstall-progress', task);
+  }) };
+  } finally { uninstalling = false; }
+}
+
 if (app && BrowserWindow && ipcMain && shell) {
   fs.mkdirSync(path.join(noraHome(), 'cache', 'tmp'), { recursive: true });
+  uninstall.own(noraHome());
   app.setPath('userData', path.join(noraHome(), 'launcher'));
   const handle = (channel, fn) => ipcMain.handle(channel, (event, ...args) => {
     const expected = require('node:url').pathToFileURL(path.join(installerRoot(), 'launcher-conversation-prototype.html')).href;
     if (event.senderFrame !== event.sender.mainFrame || event.senderFrame.url.split('?')[0] !== expected || MOCK_SCENARIO) {
       throw new Error('启动器页面来源无效。');
     }
+    if (uninstalling && channel !== 'nora:status') throw new Error('正在处理卸载，请稍候。');
     return fn(event, ...args);
   });
   handle('nora:status', async () => {
+    if (uninstalling) return { ...nodeStatus(), busy: true };
     if (statusRequest) return statusRequest;
     statusRequest = (async () => {
     try {
@@ -766,11 +847,22 @@ if (app && BrowserWindow && ipcMain && shell) {
         model: normalized.model,
         baseUrl,
       });
+      let tavern = { ok: true, changed: false, reason: 'setup-complete' };
+      if (!readInstallerState().setupCompleted) {
+        // A previous verification must not let a restarted launcher skip a
+        // failed first-install Tavern synchronization.
+        fs.rmSync(path.join(installerDirectory(), 'model.json'), { force: true });
+        recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在同步酒馆模型' });
+        tavern = await runModelConfigHelper({
+          action: 'sync-tavern', provider: provider.id, keyEnv: provider.keyEnv,
+          key, model: saved.model, baseUrl, port: readInstallerState().port || DEFAULT_PORT,
+        });
+      }
       writeVerifiedModel(noraHome(), saved);
       recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成' });
-      return { ok: true, provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl || '' };
+      return { ok: true, provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl || '', tavern };
     } catch (error) {
-      recordEvent({ event: 'milestone', index: 2, state: 'error', task: '模型测试失败' });
+      recordEvent({ event: 'milestone', index: 2, state: 'error', task: '模型配置未完成' });
       throw error;
     } finally {
       modelBusy = false;
@@ -803,13 +895,22 @@ if (app && BrowserWindow && ipcMain && shell) {
     if (activeRun || modelBusy) throw new Error('请等待当前任务完成。');
     return releases.check({ installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
   });
+  handle('nora:uninstall', beginUninstall);
   handle('nora:open-external', async (_event, url) => {
     await shell.openExternal(externalUrl(url));
     return { ok: true };
   });
 
   if (!app.requestSingleInstanceLock()) app.quit();
-  else app.whenReady().then(createWindow);
+  else app.whenReady().then(async () => {
+    if (!SYSTEM_UNINSTALL) return createWindow();
+    try {
+      const destination = path.resolve(SYSTEM_UNINSTALL);
+      if (process.platform !== 'win32' || path.basename(destination) !== 'nora-uninstall.json'
+        || !destination.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error('系统卸载请求无效。');
+      if (!await confirmUninstall(destination)) app.exit(1);
+    } catch (error) { dialog.showErrorBox('卸载未完成', error.message); app.exit(1); }
+  });
   app.on('second-instance', () => { const win = BrowserWindow.getAllWindows()[0]; if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();

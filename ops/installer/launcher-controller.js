@@ -36,6 +36,10 @@
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
+    $('management').hidden = busy || Boolean(snapshot.busy);
+    document.querySelectorAll('#management [data-action]').forEach(control => {
+      control.hidden = !complete() && control.dataset.action !== 'uninstall';
+    });
     $('launchbar').hidden = !complete();
     $('status').hidden = complete();
     $('launch').disabled = busy || Boolean(snapshot.busy);
@@ -379,6 +383,11 @@
     if (action === 'community') { view = 'community'; community(); }
     if (action === 'update') checkUpdates();
     if (action === 'stop-all') run('stop', { service: 'all' });
+    if (action === 'uninstall') {
+      api.uninstall({ onProgress: task => {
+        busy = true; view = 'uninstall'; clearInline(); say(task); controls();
+      } }).catch(error => { busy = false; fail(error, 'uninstall', route); });
+    }
     if (action === 'settings') {
       view = 'settings'; clearInline(); $('main').classList.add('editing'); say('都收在这里。'); editHeader('安装信息');
       for (const [label, value] of [['安装目录', snapshot.noraHome], ['Nora 系统', snapshot.version || '版本待确认'], ['启动器', versionInfo?.launcherVersion || '版本待确认']]) {

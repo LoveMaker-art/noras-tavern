@@ -50,6 +50,8 @@ export function createModelController({ model, settingsDomain, operations, readS
             context: hermes.context,
             tokens: hermes.tokens,
             secretId: hermes.secretId,
+            source: hermes.source || 'custom',
+            secretKey: hermes.secretKey || 'api_key_custom',
         };
     };
 
