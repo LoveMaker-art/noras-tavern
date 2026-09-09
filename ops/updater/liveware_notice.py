@@ -15,11 +15,11 @@ def owner_conversation(home, user_id):
     path = Path(home) / "clawchat/clawchat.sqlite"
     with closing(sqlite3.connect(f"file:{path}?mode=ro", uri=True)) as db:
         rows = db.execute(
-            "SELECT conversation_id, bootstrap_sent FROM activations "
+            "SELECT conversation_id FROM activations "
             "WHERE platform = 'hermes' AND account_id = 'default' AND user_id = ?",
             (user_id,),
         ).fetchall()
-    if len(rows) != 1 or not rows[0][0] or rows[0][1] != 1:
+    if len(rows) != 1 or not rows[0][0]:
         return None
     return rows[0][0]
 
@@ -69,7 +69,7 @@ def notify_ready(home, entry):
         raise RuntimeError("Verified entry belongs to another ClawChat identity")
     conversation = owner_conversation(home, owner["user_id"])
     if not conversation:
-        return {"status": "waiting-for-greeting"}
+        return {"status": "waiting-for-conversation"}
     path = home / "tavern-state/liveware-entry-notice.json"
     with registration_lock(home):
         saved = json.loads(path.read_text()) if path.exists() else {}

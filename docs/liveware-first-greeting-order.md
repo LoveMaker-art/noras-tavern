@@ -1,57 +1,42 @@
-# First Greeting and Liveware Startup
+# Greeting and Liveware Startup
 
 ## User-visible contract
 
-1. The gateway hook spawns one background worker and returns immediately.
-2. The worker starts the local Tavern runtime, with bounded startup retries.
-   An unbound machine can serve Tavern locally without a greeting or cloud login.
-3. The worker waits for the current ClawChat user's persisted, acknowledged
-   welcome message. Waiting does not consume registration retries.
-4. After delivery, authenticate the current Liveware identity and reconcile the
-   Tavern and Story Profile Apps. Never trust a cloned App ID as ownership proof.
-5. Verify the running asset release, current identity, tunnel reconciliation and
-   launcher URLs before sending the separate Tavern entry. Persist its message
-   ID before sending; retry with that same ID and mark completion only on ACK.
+The gateway hook starts one background worker. The worker starts Tavern,
+authenticates the current Liveware identity, and reconciles Tavern and Story
+Profile Apps. The model greeting runs independently: registration and the App
+entry do not wait for the greeting, and the App may appear first.
 
-The welcome text itself must not contain a fixed or cloned URL. This change does
-not rewrite users' greetings, character cards, model settings or conversations.
+Entry delivery still requires verified current-user/instance ownership, a ready
+tunnel and launcher URL, and the current owner's conversation. Persist the
+message ID before sending, reuse it on retries, and mark delivery only on ACK.
+Worker locking and uncertain-registration recovery remain unchanged.
 
-## Changes from the previous implementation
+The welcome text must not contain a cloned URL. This fix does not rewrite user
+greetings, character cards, model settings, or conversations.
 
-- The remote hotfix waited for the welcome before starting Tavern. Local startup
-  now happens first; only App registration and the entry notice wait for delivery.
-- GitHub's previous hook ran a single `ensure` operation. It now uses a dedicated,
-  locked startup worker with separate waiting, registration and notice phases.
-- Identity reconciliation uses freshly authenticated user/instance ownership,
-  ignores inherited Liveware token environment overrides, and does not unregister
-  same-name launchers outside the current platform App list.
-- Persist an uncertain App creation before issuing the request. Do not retry
-  creation blindly if the response is lost; wait for platform confirmation.
+## Why the ordering gate was removed
 
-## ClawChat companion changes
+Hermes can return from inbound dispatch before its background model turn sends
+the greeting. Checking delivery immediately after dispatch can release the
+bootstrap claim too early. The greeting can then appear without the success
+marker, leaving registration waiting indefinitely. Registration must not depend
+on that marker.
 
-`ops/updater/clawchat-greeting-order.patch` contains the paired gateway changes
-tested against ClawChat commit `8651f7078916e60ed1da9f78ec4d1278fef49dd9`:
+## Existing gateway installations
 
-- Check the current user's `bootstrap_sent = 1` before starting Sample App work.
-- A bootstrap turn with no visible delivery releases its claim instead of
-  reporting success. A failure after delivery retains the success marker to
-  prevent repeating the welcome.
-- Resume deferred Sample App scheduling after persisting welcome delivery.
+`ops/updater/clawchat-greeting-order.patch` now reverses our known legacy ordering
+patch against ClawChat commit `8651f7078916e60ed1da9f78ec4d1278fef49dd9`.
+This restores the original independent Sample App scheduling and bootstrap
+bookkeeping; it does not manually mark any greeting as delivered.
 
-The updater and first installer stage the two source files, validate the patch
-and Python syntax, and include the files in their existing backup/rollback
-transactions. Reapplying an already-installed patch is a no-op. Unrelated plugin
-content is preserved. Incompatible or partially patched source is not overwritten;
-the `clawchatGreeting` result reports `pending` and a warning.
+The updater and first installer stage the two affected gateway files and use
+their existing backup, swap, and rollback transaction. Clean upstream sources
+are a no-op. Unknown or partially patched sources are left unchanged and reported
+as `pending`. Python syntax and absence of the legacy gate are checked before
+any swap. Gateway source changes take effect after the gateway restarts.
 
-These changes take effect in the gateway after restart. A locally healthy Tavern
-does not establish that cloud registration or welcome delivery succeeded. A
-machine with an unsupported gateway patch must not be described as fully fixed.
-
-## Verification and release boundary
-
-Run:
+## Verification
 
 ```sh
 python3 -B -m unittest discover -s ops/tests -p 'test_liveware*.py'
@@ -59,20 +44,11 @@ python3 -B -m unittest discover -s ops/tests -p 'test_updater*.py'
 python3 -B -m unittest discover -s ops/tests -p 'test_first_install.py'
 ```
 
-Coverage includes startup before activation, retry isolation, worker locking,
-current-user delivery checks, failed registration, gateway patch idempotency,
-partial/unknown patch rejection and transaction rollback. Gateway tests execute
-the patched methods with network collaborators replaced, not real cloud requests.
+Tests cover registration and entry delivery with an unsent greeting marker,
+missing/foreign owner conversations, slow or failed model greetings, patch
+restoration, idempotency, partial-source rejection, and transaction rollback.
+Network collaborators are replaced in these tests. They do not establish a real
+cloud activation, App registration, ACK, or external entry-opening result.
 
-On the target unbound machine, the old startup failed the local-start-before-wait
-test; the correction passed, and Tavern's local world-list endpoint returned 200
-while no App identity was created. No user/model messages were sent for this check.
-The 36 focused Liveware tests also passed on that remote machine. Applying the
-companion patch to a temporary export of the complete original gateway produced
-both deployed gateway files byte-for-byte; the actual plugin was not replaced
-by this test. Updater/installer checks additionally passed, with one pre-existing
-environment-dependent updater test skipped.
-
-A real fresh-clone activation, message ACK, two-App registration and external
-entry-opening acceptance test is still required before declaring the entire
-first-run experience verified. This branch does not change the release version.
+This release does not change desktop launcher UI or its first-install completion
+criteria. Desktop integrated packages require a separate build and release.

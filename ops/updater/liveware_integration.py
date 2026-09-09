@@ -315,10 +315,6 @@ def reconcile(home, port=8799, *, create_missing=False):
         atomic_json(ready_path, {"status": "pending"})
         try:
             owner = authenticate(home)
-            from liveware_notice import owner_conversation
-            # Registration itself can expose an App card before the separate entry notice.
-            if not owner_conversation(home, owner["user_id"]):
-                return {"status": "waiting-for-greeting", "warnings": []}
             result = _reconcile(home, port, create_missing=create_missing, owner=owner)
             if result.get("status") == "updated":
                 atomic_json(ready_path, {
@@ -466,27 +462,6 @@ def verified_entry(home, port=8799):
             return {"status": "pending", "warnings": [safe_error(error)]}
 
 
-def wait_for_greeting(home):
-    import sqlite3
-    os.environ["HOME"] = os.environ["HERMES_HOME"] = str(home)
-    sys.path.insert(0, str(Path(home) / "plugins/clawchat"))
-    from clawchat_gateway.profile import load_profile_config, ProfileConfigError
-    from liveware_notice import owner_conversation
-
-    announced = False
-    while True:
-        try:
-            if owner_conversation(home, load_profile_config().user_id):
-                return
-        except (ProfileConfigError, OSError, sqlite3.Error):
-            pass
-        if not announced:
-            print('{"status":"waiting-for-greeting"}', file=sys.stderr, flush=True)
-            announced = True
-        # Waiting for first activation/delivery is not a failed registration attempt.
-        time.sleep(2)
-
-
 def startup(home):
     with registration_lock(home, worker=True) as acquired:
         if not acquired:
@@ -502,7 +477,7 @@ def startup(home):
                 print(safe_error(error), file=sys.stderr, flush=True)
         else:
             return {"status": "runtime-start-failed"}
-        wait_for_greeting(home)
+        # The model greeting runs independently; only Liveware readiness gates the entry.
         result = ensure(home)
         if result.get("status") != "updated":
             return result
