@@ -12,6 +12,7 @@
   let alive = true, pollTimer, taskTimer, startedAt = 0, lastEvent = 0;
   let milestoneStates = [], currentTask = '', operationCancelled = false;
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
+  let sawIncompleteSetup = false, firstCompletionPending = false;
   $('stop').remove(); $('runtimeState').remove();
   const launchHint = document.createElement('p'); launchHint.className = 'launch-hint'; $('launchbar').prepend(launchHint);
   const textError = error => String(error?.message || error || '操作未完成，请重试。')
@@ -24,6 +25,8 @@
     snapshot = { ...snapshot, ...value };
     running = Boolean(snapshot.running);
     daily = complete();
+    if (!daily) sawIncompleteSetup = true;
+    else if (sawIncompleteSetup) { firstCompletionPending = true; sawIncompleteSetup = false; }
   }
   async function readStatus() {
     const value = await api.status();
@@ -42,7 +45,8 @@
     launchHint.hidden = Boolean(snapshot.running);
     launchHint.textContent = action === '正在启动' ? '正在准备酒馆' : '点击后仅启动酒馆';
     $('launch').querySelector('span').textContent = action;
-    document.querySelectorAll('[data-action], #moreButton, .services button').forEach(item => {
+    $('stopAll').dataset.unavailable = String(!serviceRunning());
+    document.querySelectorAll('[data-action], #moreButton, .services button, .conversation-entry button').forEach(item => {
       item.disabled = busy || Boolean(snapshot.busy) || item.dataset.unavailable === 'true';
     });
   }
@@ -78,10 +82,7 @@
       const transitioning = busy && ['start', 'stop', 'restart'].includes(activeAction) && [id, 'all'].includes(activeService);
       const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : isOn ? 'running' : 'stopped';
       const row = document.createElement('div'); row.className = 'service-row'; row.dataset.service = id; row.dataset.state = state;
-      row.innerHTML = `<i class="service-symbol fa-solid fa-${id === 'nora' ? 'wand-magic-sparkles' : 'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${name}<small class="service-detail"></small></div><span class="service-state" role="status"></span>`;
-      row.querySelector('.service-detail').textContent = id === 'nora'
-        ? isOn ? snapshot.clawchatConnected ? '在 ClawChat 中对话' : 'ClawChat 暂未连通' : 'ClawChat 对话暂停'
-        : isOn ? '本地启动 ｜ 打开 ClawChat 启动' : '酒馆入口未运行';
+      row.innerHTML = `<i class="service-symbol fa-solid fa-${id === 'nora' ? 'wand-magic-sparkles' : 'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${name}</div><span class="service-state" role="status"></span>`;
       row.querySelector('.service-state').textContent = { running: '运行中', stopped: '已停止', starting: '启动中', stopping: '停止中' }[state];
       for (const action of ['restart', isOn ? 'stop' : 'start']) {
         const label = ({ restart: '重启', stop: '停止', start: '启动' })[action] + name;
@@ -92,23 +93,55 @@
       }
       group.append(row);
     }
-    const footer = document.createElement('div'); footer.className = 'services-footer'; footer.innerHTML = '<p>关闭窗口后，服务继续运行</p>';
-    const stopAll = button('全部停止', () => run('stop', { service: 'all' }), false); stopAll.className = 'quiet'; stopAll.dataset.unavailable = String(!serviceRunning());
-    footer.append(stopAll); group.append(footer); $('inline').append(group);
+    $('inline').append(group);
   }
   dailyHome = (message = '') => {
     view = 'daily'; daily = true; running = Boolean(snapshot.running);
     $('main').className = 'daily'; $('steps').hidden = true; $('management').hidden = false; hideMenu();
     $('launchbar').classList.remove('enter');
-    say(message || (allRunning() ? '准备好了。酒馆交给你。'
+    const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning;
+    $('main').classList.toggle('completion', introduce);
+    say(message || (introduce ? '酒馆准备好了。' : allRunning() ? '欢迎回来，坐一会儿吧。'
       : snapshot.running ? '酒馆已启动。' : snapshot.gatewayRunning ? '诺拉已启动。' : '随时可以继续。'),
-      snapshot.warning ? textError(snapshot.warning) : snapshot.gatewayRunning
-        ? snapshot.clawchatConnected ? '我在 ClawChat 等你。' : 'ClawChat 暂未连通，可以在下方检查。'
-        : '诺拉已暂停，酒馆可独立启动。');
+      snapshot.warning ? textError(snapshot.warning) : snapshot.gatewayRunning && !snapshot.clawchatConnected
+        ? 'ClawChat 暂未连通，请在更多中检查连接。' : '');
     renderServices();
+    renderConversationEntry();
     controls();
     showVersionNotice();
   };
+  function renderConversationEntry() {
+    if (!snapshot.clawchatPaired) return;
+    const entry = document.createElement('div'); entry.className = 'conversation-entry';
+    const action = document.createElement('button'); action.type = 'button'; action.className = 'conversation-link';
+    action.innerHTML = '<i class="fa-solid fa-comment" aria-hidden="true"></i><span>去 ClawChat 找我</span><i class="fa-solid fa-arrow-up-right-from-square entry-arrow" aria-hidden="true"></i>';
+    const introduce = firstCompletionPending && allRunning();
+    const guidance = document.createElement('p'); guidance.id = 'conversationGuidance'; guidance.className = 'conversation-guidance'; guidance.hidden = !introduce; guidance.setAttribute('role', 'status');
+    guidance.textContent = introduce ? '在 ClawChat 联系人中找到诺拉，发一句「你好」。' : '';
+    action.setAttribute('aria-controls', guidance.id); action.setAttribute('aria-expanded', String(introduce));
+    action.onclick = async () => {
+      if (busy || snapshot.busy || action.disabled) return;
+      firstCompletionPending = false;
+      guidance.hidden = false; action.setAttribute('aria-expanded', 'true');
+      if (!snapshot.gatewayRunning || !snapshot.clawchatConnected) {
+        guidance.textContent = snapshot.gatewayRunning ? 'ClawChat 暂未连通，请先检查连接。' : '诺拉已暂停，请先在下方启动诺拉。';
+        return;
+      }
+      action.disabled = true;
+      guidance.textContent = '正在打开 ClawChat…';
+      try {
+        const result = await api.openClawChatApp();
+        guidance.textContent = result.ok
+          ? '在 ClawChat 联系人中找到诺拉，发一句「你好」。'
+          : '未能打开 ClawChat。请手动打开客户端，在联系人中找到诺拉，发一句「你好」。';
+        guidance.hidden = result.ok && !introduce;
+        action.setAttribute('aria-expanded', String(!guidance.hidden));
+      } catch {
+        guidance.textContent = '未能打开 ClawChat。请手动打开客户端，在联系人中找到诺拉。';
+      } finally { action.disabled = busy || Boolean(snapshot.busy); }
+    };
+    entry.append(action, guidance); $('inline').prepend(entry);
+  }
   closeEdit = () => { if (!busy) { lastFailure = null; route(); } };
 
   function route() {
@@ -185,6 +218,7 @@
   async function run(action, options = {}) {
     if (busy) return;
     const wasComplete = complete();
+    if (wasComplete) firstCompletionPending = false;
     busy = true; operationCancelled = false; activeAction = action; activeService = options.service || 'all'; lastFailure = null;
     if (wasComplete && ['start', 'stop', 'restart'].includes(action)) { dailyHome(); } else taskView(action);
     controls();
@@ -222,6 +256,7 @@
   install = () => { stage = snapshot.hermesInstalled ? 1 : 0; milestoneStates = []; run('install'); };
   async function openTavern() {
     if (busy) return;
+    firstCompletionPending = false;
     if (!snapshot.running) { stage = 4; await run('start', { service: 'tavern', openAfter: true }); return; }
     busy = true; activeAction = 'open'; controls();
     try { await api.openExternal(snapshot.url); busy = false; activeAction = ''; dailyHome('酒馆页面已打开。'); }
@@ -252,7 +287,8 @@
       const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = provider.custom;
       $('getKey').hidden = !provider.signupUrl; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
       $('key').value = ''; $('modelOptions').replaceChildren();
-      $('model').value = snapshot.modelProvider === provider.id ? snapshot.modelName || '' : '';
+      $('model').value = (snapshot.modelProvider === provider.id ? snapshot.modelName : '')
+        || (provider.id === 'deepseek' ? 'deepseek-v4-flash' : '');
       $('endpoint').value = snapshot.modelProvider === provider.id ? snapshot.modelBaseUrl || '' : '';
     };
     $('provider').onchange = syncProvider; syncProvider();
@@ -320,7 +356,7 @@
   }
   function showVersionNotice() {
     if (view !== 'daily' || busy || !versionInfo || $('versionNotice')) return;
-    if (versionInfo.state === 'current') return;
+    if (!versionInfo.available && !['blocked', 'unknown', 'unavailable'].includes(versionInfo.state)) return;
     const notice = document.createElement('div'); notice.id = 'versionNotice'; notice.className = 'note';
     const summary = versionInfo.state === 'unavailable' ? '暂时无法检查更新' : versionInfo.state === 'blocked' ? '最新发布暂不可用于完整安装' : versionInfo.state === 'unknown' ? '本机版本待确认'
       : versionInfo.available ? `发现新版本 ${versionInfo.latest}` : `本机版本高于最新${versionInfo.channel === 'beta' ? 'Beta 测试版' : '正式版'}`;
@@ -342,6 +378,7 @@
     if (action === 'claw') clawForm();
     if (action === 'community') { view = 'community'; community(); }
     if (action === 'update') checkUpdates();
+    if (action === 'stop-all') run('stop', { service: 'all' });
     if (action === 'settings') {
       view = 'settings'; clearInline(); $('main').classList.add('editing'); say('都收在这里。'); editHeader('安装信息');
       for (const [label, value] of [['安装目录', snapshot.noraHome], ['Nora 系统', snapshot.version || '版本待确认'], ['启动器', versionInfo?.launcherVersion || '版本待确认']]) {

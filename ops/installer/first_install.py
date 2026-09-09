@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import ntpath
 import os
 from pathlib import Path
 import shutil
@@ -40,7 +41,30 @@ def safe(path: str | Path) -> Path:
     return value
 
 
+def filesystem_path(path: str | Path) -> str:
+    """Use extended Windows paths for filesystem I/O, not persisted config or commands."""
+    value = os.fspath(path)
+    if os.name != "nt":
+        return value
+    value = ntpath.abspath(value)
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
+def install_workspace(nora_home: Path):
+    root = Path(filesystem_path(nora_home)).resolve()
+    parent = root / ".tmp"
+    if not parent.resolve().is_relative_to(root):
+        raise RuntimeError("安装临时目录越过隔离目录，已停止")
+    parent.mkdir(parents=True, exist_ok=True)
+    return tempfile.TemporaryDirectory(prefix="i-", dir=parent)
+
+
 def atomic(path: Path, data: bytes, mode: int = 0o600) -> None:
+    path = Path(filesystem_path(path))
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
     try:
@@ -167,6 +191,7 @@ def extract_dependency_bundle(release_dir: Path, source: Path) -> dict | None:
     archive = release_dir / str(value.get("archive", ""))
     if not archive.is_file() or hashlib.sha256(archive.read_bytes()).hexdigest() != value.get("sha256"):
         raise RuntimeError("依赖包校验失败，安装包可能不完整")
+    source = Path(filesystem_path(source))
     source_root = source.resolve()
     with tarfile.open(archive, "r:gz") as stream:
         for member in stream.getmembers():
@@ -223,6 +248,7 @@ def assert_first_install_targets(install_root: Path, *, force: bool) -> None:
 
 
 def copy_tree(source: Path, target: Path) -> None:
+    source, target = Path(filesystem_path(source)), Path(filesystem_path(target))
     if target.exists():
         shutil.rmtree(target)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -242,7 +268,7 @@ def install_host_hook(home: Path, source: Path) -> str:
 
 def snapshot_targets(home: Path, targets: list[Path], backup: Path) -> list[dict]:
     records = []
-    root = backup / "targets"
+    root = Path(filesystem_path(backup / "targets"))
     for target in targets:
         relative = target.relative_to(home)
         if not target.resolve().is_relative_to(home.resolve()):
@@ -254,18 +280,18 @@ def snapshot_targets(home: Path, targets: list[Path], backup: Path) -> list[dict
             continue
         destination.parent.mkdir(parents=True, exist_ok=True)
         if target.is_dir():
-            shutil.copytree(target, destination, symlinks=True)
+            shutil.copytree(filesystem_path(target), destination, symlinks=True)
         else:
-            shutil.copy2(target, destination)
+            shutil.copy2(filesystem_path(target), destination)
     atomic(backup / "snapshot.json", (json.dumps(records, indent=2) + "\n").encode("utf-8"), mode=0o600)
     return records
 
 
 def restore_targets(home: Path, records: list[dict], backup: Path) -> None:
-    root = backup / "targets"
+    root = Path(filesystem_path(backup / "targets"))
     for record in sorted(records, key=lambda item: len(Path(item["path"]).parts), reverse=True):
         relative = Path(record["path"])
-        target = home / relative
+        target = Path(filesystem_path(home / relative))
         if target.is_dir():
             shutil.rmtree(target)
         elif target.exists() or target.is_symlink():
@@ -288,11 +314,11 @@ def prepare_skills(source: Path, work: Path) -> dict[str, Path]:
 def install_skills(home: Path, prepared: dict[str, Path]) -> list[str]:
     installed = []
     for relative, origin in prepared.items():
-        target = home / "skills" / relative
+        target = Path(filesystem_path(home / "skills" / relative))
         if target.exists():
             shutil.rmtree(target)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(origin, target)
+        shutil.copytree(filesystem_path(origin), target)
         installed.append(relative)
     return sorted(installed)
 
@@ -422,8 +448,9 @@ def install(args) -> dict:
                       not hermes_home.is_relative_to(nora_home) or not install_root.is_relative_to(nora_home)):
         raise RuntimeError("Nora 和酒馆必须安装在专属隔离目录内")
     assert_first_install_targets(install_root, force=args.force_first_install)
-    with tempfile.TemporaryDirectory(prefix="nora-first-install-") as temporary:
+    with install_workspace(nora_home) as temporary:
         work = Path(temporary)
+        event("task", milestone=0, task="正在解压诺拉与酒馆文件")
         source, manifest = source_from_release(args, work)
         version = manifest.get("versions", {}).get("tavern", "unknown")
         backup = install_root / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{os.getpid()}"

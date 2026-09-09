@@ -60,6 +60,9 @@ if (contextBridge && ipcRenderer) {
     openClawChat() {
       return ipcRenderer.invoke('nora:open-clawchat');
     },
+    openClawChatApp() {
+      return ipcRenderer.invoke('nora:open-clawchat-app');
+    },
     openLogs() {
       return ipcRenderer.invoke('nora:open-logs');
     },

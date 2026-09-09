@@ -87,7 +87,14 @@ test('unpublished candidate launchers install their sealed payload instead of an
     assert.equal(result.noraReleaseChannel, undefined, 'beta channel must not override isolated test home');
     assert.equal(result.build.appId, 'art.lovemaker.nora-tavern-launcher.local-test');
     assert.equal(result.build.icon, pkg.build.icon);
+    assert.equal(result.noraLocalTest.buildId, 'candidate-38e8e898aecc', 'Beta.6 must reuse the Beta.5 installation directory');
     assert.equal(await prepareTestPayload(payload, testBuild(result), result.version), payload);
+    const nextIdentity = { ...identity, commit: 'b'.repeat(40) };
+    writeSystemRelease({ release: root, payload, identity: nextIdentity, launcherVersion: pkg.version });
+    configureCandidateLauncher({ packageFile, payload, identity: nextIdentity });
+    assert.equal(JSON.parse(fs.readFileSync(packageFile)).noraLocalTest.buildId, result.noraLocalTest.buildId);
+    fs.writeFileSync(packageFile, JSON.stringify({ ...pkg, noraTestInstallationId: '../outside' }));
+    assert.throws(() => configureCandidateLauncher({ packageFile, payload, identity: nextIdentity }), /installation identity/);
     fs.writeFileSync(packageFile, JSON.stringify(pkg));
     configureCandidateLauncher({ packageFile, payload, identity: { ...identity, candidate: false } });
     assert.deepEqual(JSON.parse(fs.readFileSync(packageFile)), pkg, 'published packages keep online updates');

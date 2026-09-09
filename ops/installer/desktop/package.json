@@ -1,6 +1,7 @@
 {
   "name": "nora-tavern-launcher",
-  "version": "0.3.0",
+  "version": "0.3.1",
+  "noraTestInstallationId": "candidate-38e8e898aecc",
   "private": true,
   "author": "Nora Tavern",
   "description": "Desktop shell for the Nora Tavern local launcher.",
@@ -35,6 +36,7 @@
       "releases.js",
       "system-update.js",
       "test-build.js",
+      "install-cleanup.js",
       "runtime-worker.js",
       "process-output.js"
     ],

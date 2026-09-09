@@ -15,13 +15,40 @@ function definition(name) {
   return source.slice(statement.start, statement.end);
 }
 
+test('DeepSeek selection defaults to V4 Flash without replacing saved models or other provider defaults', () => {
+  const form = statements.find(item => item.expression?.left?.name === 'modelForm').expression.right;
+  const sync = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'syncProvider'));
+  assert.ok(sync);
+  for (const [provider, snapshot, expected] of [
+    ['deepseek', {}, 'deepseek-v4-flash'],
+    ['deepseek', { modelProvider: 'deepseek', modelName: '' }, 'deepseek-v4-flash'],
+    ['deepseek', { modelProvider: 'openrouter', modelName: 'other-model' }, 'deepseek-v4-flash'],
+    ['deepseek', { modelProvider: 'deepseek', modelName: 'deepseek-v4-pro' }, 'deepseek-v4-pro'],
+    ['openrouter', {}, ''],
+    ['custom', {}, ''],
+    ['custom', { modelProvider: 'custom', modelName: 'relay-model', modelBaseUrl: 'https://example.com/v1' }, 'relay-model'],
+  ]) {
+    const elements = new Map();
+    const $ = id => {
+      if (!elements.has(id)) elements.set(id, { value: '', disabled: false, replaceChildren() {} });
+      return elements.get(id);
+    };
+    const context = vm.createContext({ $, snapshot, selected: () => ({ id: provider, custom: provider === 'custom' }) });
+    vm.runInContext(`${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
+    assert.equal($('model').value, expected, JSON.stringify({ provider, snapshot }));
+    assert.equal($('model').disabled, false, 'the default remains editable');
+    assert.equal($('endpoint').value, snapshot.modelBaseUrl || '');
+  }
+});
+
 function uiContext(values = {}) {
   const elements = new Map();
-  const element = () => ({ hidden: false, append() {}, classList: { remove() {} } });
+  const element = () => ({ hidden: false, append() {}, classList: { remove() {}, toggle() {} } });
   return vm.createContext({
     busy: false, snapshot: {}, view: 'daily',
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
-    hideMenu() {}, renderServices() {}, controls() {}, showVersionNotice() {},
+    hideMenu() {}, renderServices() {}, renderConversationEntry() {}, controls() {}, showVersionNotice() {},
+    firstCompletionPending: false, sawIncompleteSetup: false,
     clearInline() {}, setupStage() {}, stage: 0,
     document: { createElement: element, createTextNode: text => text },
     button: () => ({}), textError: String,
@@ -34,12 +61,79 @@ test('ready greeting requires Tavern, Nora and ClawChat to be ready together', (
     let title;
     const context = uiContext({ snapshot: { running, gatewayRunning, clawchatConnected }, say: value => { title = value; } });
     vm.runInContext(`${definition('allRunning')}\n${definition('dailyHome')}\ndailyHome();`, context);
-    const expected = running && gatewayRunning && clawchatConnected ? '准备好了。酒馆交给你。'
+    const expected = running && gatewayRunning && clawchatConnected ? '欢迎回来，坐一会儿吧。'
       : running ? '酒馆已启动。' : gatewayRunning ? '诺拉已启动。' : '随时可以继续。';
     assert.equal(title, expected, JSON.stringify({ running, gatewayRunning, clawchatConnected }));
     vm.runInContext("dailyHome('酒馆已停止。');", context);
     assert.equal(title, '酒馆已停止。', 'explicit action feedback remains intact');
   }
+});
+
+test('completion greeting is shown after setup finishes, not on an already-installed cold start', () => {
+  const ready = { setupCompleted: true, systemReady: true, running: true, gatewayRunning: true, clawchatConnected: true };
+  const create = () => {
+    const context = uiContext({ say: (...args) => { context.message = args; } });
+    vm.runInContext(`${definition('complete')}\n${definition('syncState')}\n${definition('allRunning')}\n${definition('dailyHome')}`, context);
+    return context;
+  };
+  const cold = create(); cold.ready = ready;
+  vm.runInContext('syncState(ready); dailyHome();', cold);
+  assert.equal(cold.firstCompletionPending, false);
+  assert.equal(cold.message[0], '欢迎回来，坐一会儿吧。');
+  assert.equal(cold.message[1], '');
+  const fresh = create(); fresh.ready = ready;
+  vm.runInContext('syncState({setupCompleted:false}); syncState(ready); dailyHome();', fresh);
+  assert.equal(fresh.firstCompletionPending, true);
+  assert.equal(fresh.message[0], '酒馆准备好了。');
+  assert.equal(fresh.message[1], '', 'first-use guidance belongs beside the conversation entry');
+  vm.runInContext('dailyHome("酒馆已停止。");', fresh);
+  assert.equal(fresh.message[0], '酒馆已停止。');
+});
+
+test('conversation entry opens the client, handles failure and never starts paused services', async () => {
+  for (const mode of ['success', 'first-use', 'unavailable', 'error', 'paused', 'offline', 'unpaired']) {
+    let entry, opens = 0;
+    const element = () => ({ children: [], disabled: false, setAttribute() {}, append(...items) { this.children.push(...items); } });
+    const context = uiContext({
+      snapshot: { clawchatPaired: mode !== 'unpaired', gatewayRunning: mode !== 'paused', clawchatConnected: mode !== 'offline' },
+      firstCompletionPending: mode === 'first-use',
+      document: { createElement: element }, $: () => ({ prepend(value) { entry = value; } }),
+      api: { async openClawChatApp() { opens++; if (mode === 'error') throw Error('missing protocol'); return { ok: ['success', 'first-use'].includes(mode) }; } },
+    });
+    vm.runInContext(`${definition('allRunning')}\n${definition('renderConversationEntry')}\nrenderConversationEntry();`, Object.assign(context, { snapshot: { ...context.snapshot, running: true } }));
+    if (mode === 'unpaired') { assert.equal(entry, undefined); continue; }
+    const [action, guidance] = entry.children;
+    assert.equal(guidance.hidden, mode !== 'first-use');
+    assert.match(action.innerHTML, /去 ClawChat 找我/);
+    await action.onclick();
+    assert.equal(guidance.hidden, mode === 'success');
+    assert.equal(action.disabled, false);
+    assert.equal(opens, ['paused', 'offline'].includes(mode) ? 0 : 1);
+    if (mode === 'first-use') assert.match(guidance.textContent, /联系人中找到诺拉/);
+    if (['unavailable', 'error'].includes(mode)) assert.match(guidance.textContent, /请手动打开/);
+    if (mode === 'paused') assert.match(guidance.textContent, /先在下方启动诺拉/);
+    if (mode === 'offline') assert.match(guidance.textContent, /先检查连接/);
+  }
+});
+
+test('ClawChat client IPC uses a fixed protocol and keeps downloads on a separate route', async () => {
+  const mainSource = read('desktop/main.js');
+  const ast = parse(mainSource, { ecmaVersion: 'latest' });
+  let callback;
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'CallExpression' && node.callee.name === 'handle' && node.arguments[0]?.value === 'nora:open-clawchat-app') callback = node.arguments[1];
+    for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value && typeof value === 'object') visit(value);
+  }
+  visit(ast); assert.ok(callback);
+  for (const fail of [false, true]) {
+    const urls = [];
+    const context = vm.createContext({ shell: { async openExternal(url) { urls.push(url); if (fail) throw Error('not installed'); } } });
+    const result = await vm.runInContext(`(${mainSource.slice(callback.start, callback.end)})()`, context);
+    assert.equal(result.ok, !fail); assert.deepEqual(urls, ['clawchat://']);
+  }
+  assert.ok(read('desktop/preload.js').includes("ipcRenderer.invoke('nora:open-clawchat-app')"));
+  assert.ok(mainSource.includes("shell.openExternal('https://clawling.com/zh/chat/#get')"));
 });
 
 test('version details and the daily notice name the channel actually checked', async () => {
@@ -56,8 +150,7 @@ test('version details and the daily notice name the channel actually checked', a
     context.$ = id => id === 'versionNotice' ? null : { append: value => appended.push(value) };
     context.document.createElement = () => ({ append: value => appended.push(value) });
     vm.runInContext(`${definition('showVersionNotice')}\nshowVersionNotice();`, context);
-    if (state === 'current') assert.deepEqual(appended, []);
-    else assert.equal(appended[0], `本机版本高于最新${channelName} `);
+    assert.deepEqual(appended, [], 'routine version information stays in More');
   }
 });
 
@@ -81,5 +174,29 @@ test('installation messages describe ClawChat access and the full-system update 
   assert.ok(services.includes('ClawChat 连接服务尚未停止'));
   assert.doesNotMatch(bridge + services, /手机(?:连接组件|酒馆入口|连接服务)/);
   assert.ok(definition('taskView').includes("update: '正在更新诺拉与酒馆。'"));
-  assert.ok(source.includes('本地启动 ｜ 打开 ClawChat 启动'), 'approved service copy is unchanged');
+  assert.doesNotMatch(definition('renderServices'), /service-detail|services-footer/, 'service rows do not repeat the conversation and launch entries');
+});
+
+test('daily version notices still surface available updates and abnormal states', () => {
+  for (const state of ['available', 'blocked', 'unknown', 'unavailable']) {
+    const appended = [];
+    const context = uiContext({
+      versionInfo: { state, available: state === 'available', latest: '2.3.0' },
+      $: id => id === 'versionNotice' ? null : { append: value => appended.push(value) },
+      checkUpdates() {},
+    });
+    vm.runInContext(`${definition('showVersionNotice')}\nshowVersionNotice();`, context);
+    assert.equal(appended.length, 1, state);
+    assert.equal(appended[0].id, 'versionNotice');
+  }
+});
+
+test('secondary management actions live in More and stop-all retains its service scope', () => {
+  const html = read('launcher-conversation-prototype.html');
+  const management = html.slice(html.indexOf('<div class="management"'), html.indexOf('<div class="launchbar"'));
+  const [visible, more] = management.split('<div class="more"');
+  assert.match(visible, /data-action="model"/);
+  assert.doesNotMatch(visible, /data-action="(?:claw|update|stop-all)"/);
+  for (const action of ['claw', 'update', 'stop-all']) assert.ok(more.includes(`data-action="${action}"`));
+  assert.ok(source.includes("if (action === 'stop-all') run('stop', { service: 'all' });"));
 });

@@ -10,8 +10,10 @@ export function configureCandidateLauncher({ packageFile, payload, identity }) {
         throw new Error('Candidate launcher identity does not match its payload');
     }
     const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+    const installationId = desktop.noraTestInstallationId || `candidate-${identity.commit.slice(0, 12)}`;
+    if (!/^[a-zA-Z0-9-]{1,64}$/.test(installationId)) throw new Error('Invalid candidate installation identity');
     delete desktop.noraReleaseChannel;
-    desktop.noraLocalTest = { schema: 1, buildId: `candidate-${identity.commit.slice(0, 12)}`,
+    desktop.noraLocalTest = { schema: 1, buildId: installationId,
         systemManifestSha256: crypto.createHash('sha256').update(systemBytes).digest('hex') };
     desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.local-test';
     desktop.build.productName = '诺拉·酒馆测试版';

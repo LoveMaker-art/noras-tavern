@@ -12,7 +12,14 @@ async function main() {
   const payload = path.resolve(process.argv[2]);
   const runtimeOnly = process.argv.includes('--runtime-only');
   const release = runtimeOnly ? {} : JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'), 'utf8'));
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-complete-smoke-'));
+  const testBase = process.platform === 'win32'
+    ? path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'NoraTavern-Tests')
+    : os.tmpdir();
+  fs.mkdirSync(testBase, { recursive: true });
+  // Match the desktop candidate home depth, including the isolated cache directory.
+  const root = fs.mkdtempSync(path.join(testBase, 'launcher-candidate-000000'));
+  const temporary = path.join(root, 'cache', 'tmp');
+  fs.mkdirSync(temporary, { recursive: true });
   const home = path.join(root, 'hermes');
   const tavern = path.join(root, 'tavern');
   const server = net.createServer();
@@ -27,7 +34,7 @@ async function main() {
     NORA_RELEASE_CHANNEL: release.channel || 'stable',
     XDG_CACHE_HOME: path.join(root, 'cache'), XDG_DATA_HOME: path.join(root, 'data'),
     APPDATA: path.join(root, 'appdata'), LOCALAPPDATA: path.join(root, 'localappdata'),
-    TMP: root, TEMP: root, TMPDIR: root, PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
+    TMP: temporary, TEMP: temporary, TMPDIR: temporary, PYTHONDONTWRITEBYTECODE: '1', PYTHONNOUSERSITE: '1',
     PYTHONUTF8: '1', PYTHONIOENCODING: 'utf-8',
     SystemRoot: process.env.SystemRoot || '', WINDIR: process.env.WINDIR || '',
     PYTHONPATH: path.join(home, 'hermes-agent'),

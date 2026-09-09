@@ -7,6 +7,7 @@ const { findBundledRuntime } = require('./runtime');
 const releases = require('./releases');
 const systemUpdate = require('./system-update');
 const { testBuild, prepareTestPayload } = require('./test-build');
+const { cleanupInstallTemps } = require('./install-cleanup');
 const LOCAL_TEST = testBuild(require('./package.json'));
 const CHANNEL = require('./package.json').noraReleaseChannel || 'stable';
 if (!['stable', 'beta'].includes(CHANNEL)) throw new Error('启动器发布通道无效。');
@@ -681,7 +682,12 @@ if (app && BrowserWindow && ipcMain && shell) {
           });
         } finally { releaseAbort = null; }
         if (cancelled) throw new Error('安装已取消。');
-        if (payload.action === 'install') await ensureHermesFromNode(event.sender, payload.runId, selectedPayload);
+        if (payload.action === 'install') {
+          const removed = cleanupInstallTemps(noraHome());
+          if (removed.length) sendBridgeEvent(event.sender, payload.runId,
+            { event: 'task', task: `已清理 ${removed.length} 个上次安装的临时目录` });
+          await ensureHermesFromNode(event.sender, payload.runId, selectedPayload);
+        }
       }
       if (cancelled) throw new Error('安装已取消。');
       const result = payload.action === 'update'
@@ -773,6 +779,14 @@ if (app && BrowserWindow && ipcMain && shell) {
   handle('nora:open-clawchat', async () => {
     await shell.openExternal('https://clawling.com/zh/chat/#get');
     return { ok: true };
+  });
+  handle('nora:open-clawchat-app', async () => {
+    try {
+      await shell.openExternal('clawchat://');
+      return { ok: true };
+    } catch {
+      return { ok: false };
+    }
   });
   handle('nora:open-settings', async () => {
     const target = path.join(hermesHome(), 'config.yaml');

@@ -94,6 +94,7 @@
     .more { flex:0 0 100%; display:flex; flex-wrap:wrap; gap:8px 18px; border-top:1px solid #56635445; padding:10px 0 0; }
     .more button { padding:6px 0; background:none; border:0; font-size:11px; text-align:left; }
     .more button:hover { background:#39463b; }
+    .more-note { flex:0 0 100%; margin:2px 0 0; color:#7f9185; font-size:10px; line-height:1.6; }
     .launchbar { flex-shrink:0; height:83px; margin-top:18px; display:flex; flex-direction:column; align-items:flex-end; justify-content:flex-end; gap:10px; }
     .runtime-state { width:250px; display:flex; align-items:center; gap:7px; font-size:11px; color:#a8b1a9; }
     .runtime-state:before { content:""; width:5px; height:5px; border-radius:50%; background:#7d837e; }
@@ -154,6 +155,15 @@
     .runtime-actions { width:220px; }
     .launch { width:220px; }
     .launch-hint { margin:0; font-size:10px; color:#91a094; }
+    .completion .subcopy { max-width:350px; font-size:13px; line-height:1.85; }
+    .completion .inline { margin-top:13px!important; }
+    .conversation-entry { margin-bottom:20px; }
+    .conversation-link { display:inline-flex; align-items:center; gap:10px; padding:7px 0; border:0; background:none; color:#e9b3c0; font-size:13px; line-height:1.6; text-align:left; }
+    .conversation-link:hover { color:#ffd8e1; }
+    .conversation-link > span { border-bottom:1px solid #c18f9b66; }
+    .conversation-link .entry-arrow { font-size:10px; opacity:.75; }
+    .conversation-guidance { margin:8px 0 0; padding-left:23px; border-left:1px solid #697e6c66; color:#a8b9ad; font-size:11px; line-height:1.8; }
+    .completion .services { margin-top:0; }
     @keyframes blink { 50% { opacity:.35; } }
   </style>
 </head>
@@ -175,9 +185,12 @@
           <div class="inline" id="inline"></div>
         <div class="management" id="management" hidden>
           <button class="quiet" data-action="model"><i class="fa-solid fa-sliders"></i>模型</button>
-          <button class="quiet" data-action="claw"><i class="fa-solid fa-mobile-screen"></i>ClawChat</button>
           <button class="quiet" id="moreButton" aria-expanded="false" aria-controls="more"><i class="fa-solid fa-ellipsis"></i>更多</button>
-          <div class="more" id="more" hidden><button data-action="update">检查更新</button><button data-action="settings">安装信息</button><button data-action="community">社区与作者</button></div>
+          <div class="more" id="more" hidden>
+            <button data-action="claw">ClawChat 连接</button><button data-action="update">查看版本</button><button data-action="settings">安装信息</button><button data-action="community">社区与作者</button>
+            <button id="stopAll" data-action="stop-all">全部停止</button>
+            <p class="more-note">关闭窗口后，服务继续运行</p>
+          </div>
         </div>
         </div>
         </div>
@@ -315,6 +328,7 @@
       const action=b.dataset.action;
       if(action==='model') modelForm();
       if(action==='claw') clawForm();
+      if(action==='stop-all') $('stop').click();
       if(action==='community') community();
       if(action==='update') {say('我来检查一下更新。');await job('检查更新','正在查询版本',900);dailyHome('已经是最新版本。');}
       if(action==='settings') {clearInline();$('main').classList.add('editing');say('都收在这里。');editHeader('安装信息');$('inline').insertAdjacentHTML('beforeend','<div class="settings-row"><span>安装目录</span><b>NoraTavern/</b></div><div class="settings-row"><span>包含内容</span><b>Nora · 酒馆 · 运行环境</b></div>');}
