@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { writeSystemRelease } from './system-release.mjs';
+import { configureCandidateLauncher, writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -231,6 +231,9 @@ try {
     }
     writeSystemRelease({ release, payload: starterPayload, identity,
         launcherVersion: JSON.parse(fs.readFileSync(path.join(starterRoot, 'desktop/package.json'), 'utf8')).version });
+    if (identity.hermesRuntime) configureCandidateLauncher({
+        packageFile: path.join(starterRoot, 'desktop/package.json'), payload: starterPayload, identity,
+    });
     const starterName = 'nora-tavern-launcher.zip';
     run('zip', ['-qry', starterName, 'nora-tavern-launcher'], release);
     const starterBytes = fs.readFileSync(path.join(release, starterName));

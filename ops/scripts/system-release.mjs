@@ -2,6 +2,24 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+export function configureCandidateLauncher({ packageFile, payload, identity }) {
+    if (!identity.candidate) return;
+    const systemBytes = fs.readFileSync(path.join(payload, 'nora-system.json'));
+    const system = JSON.parse(systemBytes);
+    if (system.candidate !== true || system.commit !== identity.commit || system.version !== identity.versions.tavern) {
+        throw new Error('Candidate launcher identity does not match its payload');
+    }
+    const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
+    delete desktop.noraReleaseChannel;
+    desktop.noraLocalTest = { schema: 1, buildId: `candidate-${identity.commit.slice(0, 12)}`,
+        systemManifestSha256: crypto.createHash('sha256').update(systemBytes).digest('hex') };
+    desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.local-test';
+    desktop.build.productName = '诺拉·酒馆测试版';
+    desktop.build.artifactName = `Nora-Tavern-${system.version}-test-\${os}-\${arch}.\${ext}`;
+    desktop.build.nsis.artifactName = `Nora-Tavern-${system.version}-test-win-\${arch}-setup.\${ext}`;
+    fs.writeFileSync(packageFile, JSON.stringify(desktop, null, 2) + '\n');
+}
+
 // Each platform publishes unique names; no shared manifest is overwritten by another build.
 export function writeSystemRelease({ release, payload, identity, launcherVersion }) {
     const runtime = identity.hermesRuntime;

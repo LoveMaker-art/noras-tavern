@@ -64,6 +64,36 @@ test('full Nora packaging requires every managed initialization artifact', async
   }
 });
 
+test('unpublished candidate launchers install their sealed payload instead of an older online beta', async () => {
+  const { writeSystemRelease, configureCandidateLauncher } = await import('../scripts/system-release.mjs');
+  const { testBuild, prepareTestPayload } = require('../installer/desktop/test-build');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-candidate-contract-'));
+  try {
+    const payload = path.join(root, 'payload');
+    const packageFile = path.join(root, 'package.json');
+    fs.mkdirSync(payload);
+    for (const name of ['release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz',
+      'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz', 'nora-hermes-runtime.json',
+      'nora-tavern-dependencies.json', 'nora-tavern-first-install-bootstrap.py']) {
+      fs.writeFileSync(path.join(payload, name), 'fixture');
+    }
+    const identity = { candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.2.10-beta.5' },
+      hermesRuntime: { platform: process.platform, arch: process.arch } };
+    const pkg = { ...require('../installer/desktop/package.json'), noraReleaseChannel: 'beta' };
+    fs.writeFileSync(packageFile, JSON.stringify(pkg));
+    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version });
+    configureCandidateLauncher({ packageFile, payload, identity });
+    const result = JSON.parse(fs.readFileSync(packageFile));
+    assert.equal(result.noraReleaseChannel, undefined, 'beta channel must not override isolated test home');
+    assert.equal(result.build.appId, 'art.lovemaker.nora-tavern-launcher.local-test');
+    assert.equal(result.build.icon, pkg.build.icon);
+    assert.equal(await prepareTestPayload(payload, testBuild(result), result.version), payload);
+    fs.writeFileSync(packageFile, JSON.stringify(pkg));
+    configureCandidateLauncher({ packageFile, payload, identity: { ...identity, candidate: false } });
+    assert.deepEqual(JSON.parse(fs.readFileSync(packageFile)), pkg, 'published packages keep online updates');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('rejects legacy Hermes-only bundles before extracting or changing user data', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-bundle-contract-'));
   try {
