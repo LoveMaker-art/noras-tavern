@@ -1,4 +1,5 @@
 import { Fuse } from '../lib.js';
+import { getWorldCharacterEntries } from './nora-worlds/character-activation.js';
 import { resolveWorldbookOverride } from './nora-worlds/worldbook-bindings.js';
 
 import { saveSettings, substituteParams, getRequestHeaders, chat_metadata, this_chid, characters, saveCharacterDebounced, menu_type, eventSource, event_types, getExtensionPromptByName, saveMetadata, getCurrentChatId, extension_prompt_roles, create_save, createOrEditCharacter, name1, getOneCharacter, select_selected_character } from '../script.js';
@@ -4467,7 +4468,8 @@ export async function getSortedEntries() {
             personaLore,
         ] = await Promise.all([
             getGlobalLore(),
-            getCharacterLore(),
+            getCharacterLore().then(entries => [...entries, ...getWorldCharacterEntries()
+                .map(entry => ({ ...structuredClone(newWorldInfoEntryTemplate), ...entry }))]),
             getChatLore(),
             getPersonaLore(),
         ]);

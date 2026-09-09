@@ -221,6 +221,7 @@ export function normalizeMaterialization(value) {
     });
     return {
         worldName: requireString(result.worldName, 'materialization.worldName', { allowEmpty: true }),
+        ...(result.storyContext === undefined ? {} : { storyContext: normalizeStoryContext(result.storyContext) }),
         runtimeCard: {
             engine: requireString(runtimeCard.engine, 'materialization.runtimeCard.engine'),
             binding: normalizeBinding(runtimeCard.binding, 'materialization.runtimeCard.binding'),
@@ -256,6 +257,11 @@ export function createWorldManifest({ operation, command, materialization, now }
         revision: 0,
         name: materialization.worldName || command.name,
         persona: command.persona,
+        ...(materialization.storyContext === undefined ? {} : { story_context: normalizeStoryContext({
+            ...materialization.storyContext,
+            player: { ...materialization.storyContext.player, profile: { ...materialization.storyContext.player.profile,
+                identity: { ...materialization.storyContext.player.profile.identity, ...command.persona } } },
+        }) }),
         lifecycle: { status: 'READY', error: null },
         source: {
             ...command.source,
