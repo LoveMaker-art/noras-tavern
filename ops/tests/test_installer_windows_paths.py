@@ -30,9 +30,9 @@ def dependency_fixture(directory, member=WORKER):
     directory.mkdir(parents=True)
     archive = directory / "dependencies.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
-        directory = tarfile.TarInfo("nora-mcp/node_modules/zod/v4/mini")
-        directory.type = tarfile.DIRTYPE
-        stream.addfile(directory)
+        entry = tarfile.TarInfo("nora-mcp/node_modules/zod/v4/mini")
+        entry.type = tarfile.DIRTYPE
+        stream.addfile(entry)
         item = tarfile.TarInfo(member)
         item.size = len(b"worker fixture")
         stream.addfile(item, io.BytesIO(b"worker fixture"))

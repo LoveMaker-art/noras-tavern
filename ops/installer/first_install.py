@@ -45,7 +45,7 @@ def filesystem_path(path: str | Path) -> str:
     value = os.fspath(path)
     if os.name != "nt":
         return value
-    value = ntpath.normpath(ntpath.abspath(value))
+    value = ntpath.normpath(ntpath.abspath(value.replace("/", "\\")))
     if value.startswith("\\\\?\\"):
         return value
     if value.startswith("\\\\"):
