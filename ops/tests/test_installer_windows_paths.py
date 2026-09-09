@@ -30,6 +30,9 @@ def dependency_fixture(directory, member=WORKER):
     directory.mkdir(parents=True)
     archive = directory / "dependencies.tar.gz"
     with tarfile.open(archive, "w:gz") as stream:
+        directory = tarfile.TarInfo("nora-mcp/node_modules/zod/v4/mini")
+        directory.type = tarfile.DIRTYPE
+        stream.addfile(directory)
         item = tarfile.TarInfo(member)
         item.size = len(b"worker fixture")
         stream.addfile(item, io.BytesIO(b"worker fixture"))
@@ -41,6 +44,16 @@ def dependency_fixture(directory, member=WORKER):
 
 
 class InstallerPathTests(unittest.TestCase):
+    def test_archive_directory_metadata_normalizes_extended_windows_paths(self):
+        member = tarfile.TarInfo("nora-mcp/node_modules/zod/v4/mini")
+        target = "\\\\?\\C:\\Nora\\source\\" + member.name
+        archive = object.__new__(INSTALLER.DependencyTarFile)
+        with patch.object(INSTALLER.os, "name", "nt"):
+            for method in ("chmod", "utime"):
+                with patch.object(tarfile.TarFile, method) as apply:
+                    getattr(archive, method)(member, target)
+                    apply.assert_called_once_with(member, r"\\?\C:\Nora\source\nora-mcp\node_modules\zod\v4\mini")
+
     def test_install_extracts_reported_worker_with_simulated_legacy_windows_limit(self):
         # Exercise real install staging and tar extraction. Only the OS path limit is simulated.
         with tempfile.TemporaryDirectory() as temporary:

@@ -45,12 +45,21 @@ def filesystem_path(path: str | Path) -> str:
     value = os.fspath(path)
     if os.name != "nt":
         return value
-    value = ntpath.abspath(value)
+    value = ntpath.normpath(ntpath.abspath(value))
     if value.startswith("\\\\?\\"):
         return value
     if value.startswith("\\\\"):
         return "\\\\?\\UNC\\" + value[2:]
     return "\\\\?\\" + value
+
+
+class DependencyTarFile(tarfile.TarFile):
+    # extractall reapplies directory metadata using unnormalized archive names.
+    def chmod(self, tarinfo, targetpath):
+        return super().chmod(tarinfo, filesystem_path(targetpath))
+
+    def utime(self, tarinfo, targetpath):
+        return super().utime(tarinfo, filesystem_path(targetpath))
 
 
 def install_workspace(nora_home: Path):
@@ -192,7 +201,7 @@ def extract_dependency_bundle(release_dir: Path, source: Path) -> dict | None:
         raise RuntimeError("依赖包校验失败，安装包可能不完整")
     source = Path(filesystem_path(source))
     source_root = source.resolve()
-    with tarfile.open(archive, "r:gz") as stream:
+    with DependencyTarFile.open(archive, "r:gz") as stream:
         for member in stream.getmembers():
             target = (source / member.name).resolve()
             if target != source_root and source_root not in target.parents:
