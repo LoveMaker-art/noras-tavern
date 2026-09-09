@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { createStoryContext, editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
+import { editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 
 import { createActivationPlan } from './activation-plan.js';
 import {
@@ -324,7 +324,7 @@ export class NoraWorldCore {
             if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before editing.');
             let context = current.story_context;
             try {
-                if ('character' in patch) context = editStoryCharacter(context ?? createStoryContext(current.persona), patch.character);
+                if ('character' in patch) context = editStoryCharacter(context, patch.character);
                 if ('relationships' in patch) context = normalizeStoryContext({ ...context, relationships: patch.relationships });
                 if (context && patch.persona) {
                     context = normalizeStoryContext(context);

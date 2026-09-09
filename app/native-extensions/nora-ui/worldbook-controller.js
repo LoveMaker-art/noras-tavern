@@ -1,5 +1,4 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
-import { validateWorldCharacterReferences } from '../../engine/sillytavern/public/scripts/nora-worlds/character-activation.js';
 export function createWorldbookController({ worldbook, worldRuntime, operations, store, dialogs, readState, currentCharacter, characterField, select, selectAll, escapeHtml, icons, onChanged, reloadWorlds }) {
     function entries(book) {
         const raw = book?.entries || book || {};
@@ -202,7 +201,6 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             }
             submit.disabled = true;
             try {
-                validateWorldCharacterReferences([content, ...keys]);
                 const result = await operations.run('world', () => worldRuntime.addSetting({
                     type: mode,
                     title: String(data.get('title') || '').trim(),
@@ -278,7 +276,6 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             let persisted = false;
             try {
                 await operations.run('world', async () => {
-                    validateWorldCharacterReferences(value);
                     await worldbook.saveWorldScenario(value && value !== cardScenario ? value : '');
                     persisted = true;
                     onChanged();
@@ -410,7 +407,6 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             submit.disabled = true;
             try {
                 await operations.run('world', async () => {
-                    validateWorldCharacterReferences([String(data.get('content') || ''), ...nextKeys]);
                     const patch = {};
                     const title = String(data.get('comment') || '');
                     const content = String(data.get('content') || '');

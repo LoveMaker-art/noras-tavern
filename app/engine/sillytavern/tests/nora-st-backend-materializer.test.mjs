@@ -11,33 +11,6 @@ import {
     inspectStCard,
 } from '../src/nora-world-core/st-backend-materializer.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
-import { createStoryContext, editStoryCharacter } from '../public/scripts/nora-worlds/story-context.js';
-
-test('imports World Card character arrays while preserving legacy card fields and scripts', async (t) => {
-    const card = complexCard();
-    const storyContext = editStoryCharacter(createStoryContext(), { operation: 'create', id: 'actor:merchant', patch: {
-        name: 'Merchant', description: 'Repairs machines', activation: { mode: 'triggered', keys: ['shop'] },
-    } });
-    card.data.extensions.nora_world = { story_context: storyContext };
-    const current = await harness(t, { card });
-    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
-    const result = await core.createWorld(current.command, { idempotencyKey: 'world-card:characters' });
-    assert.deepEqual(result.world.story_context.characters, storyContext.characters);
-    assert.equal(result.world.story_context.player.profile.identity.name, current.command.persona.name);
-    const runtime = JSON.parse(await fs.readFile(path.join(current.directories.characters, result.world.runtime_card.binding.avatar), 'utf8'));
-    assert.equal(runtime.data.description, card.data.description);
-    assert.deepEqual(runtime.data.extensions.nora_world.story_context, storyContext);
-    assert.ok(runtime.data.extensions.tavern_helper);
-});
-
-test('invalid World Card character arrays refuse import before creating runtime resources', async (t) => {
-    const card = complexCard();
-    card.data.extensions.nora_world = { story_context: { characters: 'invalid' } };
-    const current = await harness(t, { card });
-    await assert.rejects(() => current.materializer.materialize(current.command, identities()));
-    assert.deepEqual(await fs.readdir(current.directories.characters), []);
-    assert.deepEqual(await fs.readdir(current.directories.worlds), []);
-});
 import { adaptCardForMvuRuntime } from '../public/scripts/nora-compat/mvu-compatibility.js';
 
 async function harness(t, options = {}) {

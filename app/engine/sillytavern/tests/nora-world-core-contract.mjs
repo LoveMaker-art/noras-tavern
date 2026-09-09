@@ -20,14 +20,11 @@ const forbidden = [
 // implementation, but verify they cannot acquire browser/ST or I/O dependencies.
 for (const relative of [
     'nora-worlds/world-theme.js',
-    'nora-worlds/worldbook-bindings.js',
     'nora-worlds/story-context.js',
-    'nora-worlds/character-references.js',
     'nora-compat/mvu-compatibility.js',
     'nora-compat/prompt-template-compatibility.js',
 ]) {
-    const schema = fs.readFileSync(path.resolve(moduleRoot, '../../public/scripts', relative), 'utf8')
-        .replace(/^import \{ resolveCharacterReferences \} from '\.\/character-references\.js';$/m, '');
+    const schema = fs.readFileSync(path.resolve(moduleRoot, '../../public/scripts', relative), 'utf8');
     for (const pattern of [...forbidden, /^\s*import\b/m, /\b(?:fetch|process|SillyTavern|localStorage)\b/]) {
         if (pattern.test(schema)) throw new Error(`Shared compatibility module ${relative} must remain platform-independent: ${pattern}`);
     }
@@ -35,9 +32,8 @@ for (const relative of [
 
 for (const file of files) {
     const source = fs.readFileSync(path.join(moduleRoot, file), 'utf8')
-        .replace(/^import \{ worldbookOverrides \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/worldbook-bindings\.js';$/m, '')
         .replace(/^import \{ normalizeWorldTheme \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/world-theme\.js';$/m, '')
-        .replace(/^import \{ (?:createStoryContext, )?(?:editStoryCharacter, )?normalizeStoryContext \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/story-context\.js';$/m, '')
+        .replace(/^import \{ (?:editStoryCharacter, )?normalizeStoryContext \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/story-context\.js';$/m, '')
         .replace(/^import \{\n    adaptCardForMvuRuntime,\n    inspectMvuCompatibility,\n    normalizeTavernHelperScripts,\n\} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/mvu-compatibility\.js';$/m, '')
         .replace(/^import \{ inspectPromptTemplateCompatibility \} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/prompt-template-compatibility\.js';$/m, '');
     for (const pattern of forbidden) {

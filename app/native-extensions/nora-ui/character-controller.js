@@ -1,6 +1,5 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
-import { storyCharacterView, normalizeCharacterActivation } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
-import { resolveCharacterReferences } from '../../engine/sillytavern/public/scripts/nora-worlds/character-references.js';
+import { storyCharacterView } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 export function createCharacterController({
     cards,
     operations,
@@ -151,7 +150,7 @@ export function createCharacterController({
         const columns = Math.min(4, pageGroups.length);
         const mobileColumns = Math.min(2, pageGroups.length);
         const content = libraryGroups.length ? `<div class="nora-card-waterfall" style="--nora-library-columns:${columns};--nora-library-mobile-columns:${mobileColumns}">${cardMarkup}</div>${pager}` : `<p class="nora-sheet-empty">${tr("还没有导入角色卡。")}</p>`;
-        const modal = dialogs.open(tr("世界卡库"), content, 'nora-character-library-modal nora-plain-sheet');
+        const modal = dialogs.open(tr("角色卡库"), content, 'nora-character-library-modal nora-plain-sheet');
         selectAll('[data-library-character]', modal).forEach((button) => button.addEventListener('click', async () => {
             const characterId = Number(button.dataset.libraryCharacter);
             if (operations.isBusy('character-library-detail')) {
@@ -188,7 +187,7 @@ export function createCharacterController({
         const rules = capabilityCount ? `<div class="nora-character-rules ${capabilitiesEnabled ? 'enabled' : ''}"><div><strong>${tr("角色扩展能力")}</strong><span>${t`${capabilities.regexScripts.length} 条显示规则 · ${capabilities.helperScripts.length} 个脚本 · ${capabilitiesEnabled ? tr("已启用") : tr("未启用")}`}</span></div>${capabilitiesEnabled ? '' : `<button data-enable-character-capabilities type="button">${tr("启用")}</button>`}</div>` : '';
         const portrait = character.avatar ? `<img src="/thumbnail?type=avatar&amp;file=${encodeURIComponent(character.avatar)}" alt="">` : '';
         const overview = `<div class="nora-character-overview">${portrait}<div><p class="nora-provenance">${escapeHtml(characterField(character, 'creator') || tr("角色资料"))}</p><p>${t`${worldbookCount} 条世界书 · ${capabilities.regexScripts.length} 条显示规则 · ${capabilities.helperScripts.length} 个脚本`}</p></div></div>`;
-        const back = backToLibrary ? `<button class="nora-sheet-back" data-back-character-library type="button">${tr("‹ 返回世界卡库")}</button>` : '';
+        const back = backToLibrary ? `<button class="nora-sheet-back" data-back-character-library type="button">${tr("‹ 返回角色卡库")}</button>` : '';
         const empty = fields.length ? '' : `<p class="nora-sheet-empty">${tr("该卡主要由内置世界书和扩展脚本构成。")}</p>`;
         const createAction = backToLibrary ? `<div class="nora-sheet-actions"><button class="nora-primary" data-card-create-world type="button">${tr("开启新世界")}</button></div>` : '';
         const modal = dialogs.open(character.name, `${back}<div class="nora-character-detail">${overview}${rules}${fields.map(([label, value]) => `<section><h3>${label}</h3><p>${escapeHtml(value)}</p></section>`).join('')}${empty}</div>${createAction}`, 'nora-detail-modal');
@@ -219,50 +218,11 @@ export function createCharacterController({
 
     function openEditor(characterId = readState().activeCharacterId) {
         const member = worldCharacter(characterId);
-        const creating = characterId === 'new-world-character';
-        const world = (member || creating) ? activeWorldModel() : null;
-        if (creating && !world) return;
-        const character = creating ? { name: '', data: {} } : member ? { ...storyCharacterView(member), data: { description: member.profile.identity.description || '',
+        const world = member ? activeWorldModel() : null;
+        const character = member ? { ...storyCharacterView(member), data: { description: member.profile.identity.description || '',
             personality: member.profile.personality?.summary || '' } } : readState().characters?.[characterId];
         if (!character) return;
-        const activation = normalizeCharacterActivation(member?.activation);
-        const modeFields = (member || creating) ? `<input type="hidden" name="activationMode" value="${activation.mode}"><div class="nora-field-label">${tr("设定类型")}<div class="nora-mode-switch" role="group"><button data-character-mode="constant" type="button">${tr("常驻角色")}</button><button data-character-mode="triggered" type="button">${tr("触发角色")}</button></div></div><div data-character-trigger><label>${tr("触发关键词（每行一个，支持 ST 正则）")}<textarea name="activationKeys" rows="3">${escapeHtml(activation.keys.join('\n'))}</textarea></label><label>${tr("扫描最近消息数（留空跟随世界书）")}<input name="scanDepth" type="number" min="1" max="1000" value="${activation.scanDepth ?? ''}"></label><details><summary>${tr("高级触发设置")}</summary><label>${tr("辅助关键词（每行一个）")}<textarea name="secondaryKeys" rows="2">${escapeHtml(activation.secondaryKeys.join('\n'))}</textarea></label><label>${tr("辅助条件")}<select name="selectiveLogic">${['同时命中任一', '不全部命中', '全部不命中', '同时命中全部'].map((label, index) => `<option value="${index}" ${(activation.selectiveLogic ?? 0) === index ? 'selected' : ''}>${tr(label)}</option>`).join('')}</select></label>${[['sticky', '持续消息数'], ['cooldown', '冷却消息数'], ['delay', '延迟至消息数']].map(([key, label]) => `<label>${tr(label)}<input name="${key}" type="number" min="0" value="${activation[key] ?? 0}"></label>`).join('')}</details><p class="nora-model-note">${tr("使用世界书的关键词扫描规则；提到人物不等于人物实际在场。")}</p></div>` : '';
-        const modal = dialogs.open(tr(creating ? "添加角色设定" : member ? "编辑角色设定" : "编辑原卡基础字段"), `<form id="nora-character-form" class="nora-form nora-entry-form" autocomplete="off"><label>${tr("名字")}<input name="name" required value="${escapeHtml(character.name || '')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label>${modeFields}<label>${tr("角色介绍")}<textarea name="description" rows="9" placeholder="${tr("身份、外貌、背景和在故事中的位置。")}">${escapeHtml(characterField(character, 'description'))}</textarea></label><label>${tr("性格")}<textarea name="personality" rows="7" placeholder="${tr("性格、行为方式和表达习惯。")}">${escapeHtml(characterField(character, 'personality'))}</textarea></label><p class="nora-model-note">${tr("只更新这些角色资料，不会改动角色卡内的脚本、正则或世界书。")}</p><div class="nora-form-actions"><button class="nora-secondary" data-cancel-character type="button">${tr("取消")}</button><button class="nora-primary" type="submit">${tr(creating ? "添加" : "保存角色资料")}</button></div>${member ? `<button type="button" data-delete-character>${tr("删除角色设定")}</button>` : ''} </form>`, 'nora-character-editor-modal nora-plain-sheet');
-        const editor = select('#nora-character-form', modal);
-        const modeInput = editor.querySelector('[name="activationMode"]');
-        const updateMode = () => {
-            selectAll('[data-character-mode]', modal).forEach(button => {
-                button.classList.toggle('active', button.dataset.characterMode === modeInput.value);
-            });
-            const fields = editor.querySelector('[data-character-trigger]');
-            if (fields) {
-                fields.hidden = modeInput.value !== 'triggered';
-                fields.querySelector('[name="activationKeys"]').required = !fields.hidden;
-            }
-        };
-        selectAll('[data-character-mode]', modal).forEach(button => button.addEventListener('click', () => {
-            modeInput.value = button.dataset.characterMode;
-            updateMode();
-        }));
-        editor.querySelector('[data-cancel-character]')?.addEventListener('click', () => {
-            if (!operations.isBusy('world')) dialogs.close();
-        });
-        updateMode();
-        editor.querySelector('[data-delete-character]')?.addEventListener('click', async () => {
-            const accepted = await dialogs.confirm({ title: tr("删除角色设定？"),
-                body: tr("仅删除此人物资料及其人物关系，不删除聊天、MVU 存档或世界卡。指向此人物的占位符将失效，请同时检查世界设定中的引用。"), confirmLabel: tr("删除"), tone: 'danger' });
-            if (!accepted || operations.isBusy('world')) return;
-            try {
-                await operations.run('world', async () => {
-                    if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
-                    await updateWorld({ character: { id: member.id, operation: 'delete' } }, { expectedRevision: world.revision });
-                    await reloadWorlds();
-                    refresh();
-                    dialogs.close();
-                    dialogs.toast(tr("角色设定已删除。"));
-                });
-            } catch (error) { dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
-        });
+        const modal = dialogs.open(tr("编辑常驻角色"), `<form id="nora-character-form" class="nora-form" autocomplete="off"><label>${tr("名字")}<input name="name" required value="${escapeHtml(character.name || '')}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label><label>${tr("角色介绍")}<textarea name="description" rows="9" placeholder="${tr("身份、外貌、背景和在故事中的位置。")}">${escapeHtml(characterField(character, 'description'))}</textarea></label><label>${tr("性格")}<textarea name="personality" rows="7" placeholder="${tr("性格、行为方式和表达习惯。")}">${escapeHtml(characterField(character, 'personality'))}</textarea></label><p class="nora-model-note">${tr("只更新这些角色资料，不会改动角色卡内的脚本、正则或世界书。")}</p><button class="nora-primary" type="submit">${tr("保存角色资料")}</button></form>`, 'nora-character-editor-modal nora-plain-sheet');
         select('#nora-character-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
             if (operations.isBusy('world')) {
@@ -282,37 +242,19 @@ export function createCharacterController({
                         description: String(data.get('description') || '').trim(),
                         personality: String(data.get('personality') || '').trim(),
                     };
-                    resolveCharacterReferences(changes, activeWorldModel()?.storyContext?.characters, { strict: true });
-                    if (member || creating) {
+                    if (member) {
                         if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
-                        const activation = { ...normalizeCharacterActivation(member?.activation), mode: String(data.get('activationMode')),
-                            keys: String(data.get('activationKeys') || '').split(/\r?\n/),
-                            secondaryKeys: String(data.get('secondaryKeys') || '').split(/\r?\n/),
-                            selectiveLogic: Number(data.get('selectiveLogic') || 0),
-                        };
-                        for (const key of ['scanDepth', 'sticky', 'cooldown', 'delay']) {
-                            activation[key] = data.get(key) === '' ? null : Number(data.get(key) || 0);
-                        }
-                        const patch = { name: changes.name, description: changes.description, personality: changes.personality,
-                            activation: normalizeCharacterActivation(activation) };
-                        resolveCharacterReferences(patch.activation, activeWorldModel()?.storyContext?.characters, { strict: true });
-                        await updateWorld({ character: { id: creating ? `character:${crypto.randomUUID()}` : member.id, operation: creating ? 'create' : 'update', patch } }, { expectedRevision: world.revision });
+                        const patch = { name: changes.name, description: changes.description, personality: changes.personality };
+                        await updateWorld({ character: { id: member.id, patch } }, { expectedRevision: world.revision });
                     } else await cards.updateCharacter(changes);
                     persisted = true;
                     await reloadWorlds();
                     refresh();
                     dialogs.close();
-                    dialogs.toast(tr(creating ? "角色设定已添加。" : "角色设定已保存。"));
+                    dialogs.toast(tr("常驻角色资料已保存。"));
                 });
             } catch (error) {
-                if (error?.saved || persisted) {
-                    await reloadWorlds().catch(() => {});
-                    refresh();
-                    dialogs.close();
-                    dialogs.toast(tr("角色设定已保存，重新打开世界后生效。"));
-                    return;
-                }
-                submit.disabled = false;
+                if (!persisted) submit.disabled = false;
                 const prefix = persisted ? tr("角色资料已保存，但页面刷新失败") : tr("角色资料保存失败");
                 dialogs.toast(`${prefix}：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
             }
