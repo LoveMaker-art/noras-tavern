@@ -9,6 +9,7 @@ const systemUpdate = require('./system-update');
 const { testBuild, prepareTestPayload } = require('./test-build');
 const { cleanupInstallTemps } = require('./install-cleanup');
 const uninstall = require('./uninstall');
+const locations = require('./install-location');
 const SYSTEM_UNINSTALL = process.argv.find(value => value.startsWith('--nora-uninstall-plan='))?.slice('--nora-uninstall-plan='.length);
 const LOCAL_TEST = testBuild(require('./package.json'));
 const CHANNEL = require('./package.json').noraReleaseChannel || 'stable';
@@ -41,6 +42,9 @@ let cancelled = false;
 let releaseAbort = null;
 let updatingSystem = false;
 let uninstalling = false;
+let selectingLocation = false;
+let selectedHome;
+const LOCATION_SCOPE = LOCAL_TEST ? `test-${LOCAL_TEST.buildId}` : CHANNEL;
 
 function installerRoot() {
   if (!app) return path.resolve(__dirname, '..');
@@ -53,7 +57,7 @@ function installerRoot() {
   return path.resolve(__dirname, '..');
 }
 
-function noraHome() {
+function defaultNoraHome() {
   if (CHANNEL === 'beta') {
     const base = process.platform === 'darwin' ? path.join(os.homedir(), 'Library')
       : process.platform === 'win32' ? (process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'))
@@ -77,6 +81,16 @@ function noraHome() {
     return path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), 'AppData', 'Local'), 'NoraTavern');
   }
   return path.join(process.env.XDG_DATA_HOME || path.join(os.homedir(), '.local', 'share'), 'nora-tavern');
+}
+
+function noraHome() {
+  return selectedHome ??= locations.readLocation(defaultNoraHome(), LOCATION_SCOPE);
+}
+
+function locationStatus() {
+  return { noraHome: noraHome(), canChooseDirectory: !activeRun && !modelBusy && !selectingLocation
+    && !process.env.NORA_HERMES_HOME && !process.env.NORA_TAVERN_INSTALL_ROOT
+    && locations.canChangeLocation(noraHome()) };
 }
 
 function hermesHome() {
@@ -324,6 +338,7 @@ function nodeStatus(error = '') {
     installRoot: root,
     warning: error || undefined,
     installer: readInstallerState(),
+    ...locationStatus(),
   };
 }
 
@@ -698,10 +713,11 @@ if (app && BrowserWindow && ipcMain && shell) {
       throw new Error('启动器页面来源无效。');
     }
     if (uninstalling && channel !== 'nora:status') throw new Error('正在处理卸载，请稍候。');
+    if (selectingLocation && channel !== 'nora:status') throw new Error('正在选择安装位置，请稍候。');
     return fn(event, ...args);
   });
   handle('nora:status', async () => {
-    if (uninstalling) return { ...nodeStatus(), busy: true };
+    if (uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), busy: true };
     if (statusRequest) return statusRequest;
     statusRequest = (async () => {
     try {
@@ -716,12 +732,30 @@ if (app && BrowserWindow && ipcMain && shell) {
       }
       if (!findPython()) return nodeStatus();
       const runtime = await runBridge('status');
-      return { ...runtime, installer: readInstallerState(), busy: activeRun || modelBusy };
+      return { ...runtime, installer: readInstallerState(), busy: activeRun || modelBusy, ...locationStatus() };
     } catch (error) {
       return nodeStatus(!findPython() ? '' : error.message);
     }
     })().finally(() => { statusRequest = null; });
     return statusRequest;
+  });
+  handle('nora:choose-directory', async event => {
+    if (!locationStatus().canChooseDirectory) throw new Error('已有安装或任务正在进行，不能更改位置。');
+    selectingLocation = true;
+    try {
+      if (statusRequest) await statusRequest.catch(() => {});
+      const selection = await dialog.showOpenDialog(BrowserWindow.fromWebContents(event.sender), {
+        title: '选择安装位置', buttonLabel: '选择此位置', defaultPath: path.dirname(noraHome()),
+        properties: ['openDirectory', 'createDirectory'],
+      });
+      if (selection.canceled || !selection.filePaths.length) return { cancelled: true };
+      selectedHome = locations.selectLocation(selection.filePaths[0], {
+        currentHome: noraHome(), defaultHome: defaultNoraHome(), scope: LOCATION_SCOPE,
+        appPath: app.isPackaged ? (process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : path.dirname(process.execPath)) : __dirname,
+      });
+      fs.mkdirSync(path.join(noraHome(), 'cache', 'tmp'), { recursive: true });
+      return { cancelled: false, noraHome: noraHome() };
+    } finally { selectingLocation = false; }
   });
   handle('nora:run', async (event, payload) => {
     if (modelBusy || activeRun) throw new Error('Nora 正在处理任务，请稍候。');
@@ -827,6 +861,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     modelBusy = true;
     recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在测试 Nora' });
     try {
+      if (statusRequest) await statusRequest.catch(() => {});
       const normalized = await runModelConfigHelper({
         action: 'normalize',
         provider: provider.id,
@@ -859,6 +894,8 @@ if (app && BrowserWindow && ipcMain && shell) {
         });
       }
       writeVerifiedModel(noraHome(), saved);
+      const verification = await runBridge('verify-model');
+      if (!verification.ok) throw new Error(verification.error || '模型配置复核未通过。');
       recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成' });
       return { ok: true, provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl || '', tavern };
     } catch (error) {

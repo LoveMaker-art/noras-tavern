@@ -98,11 +98,11 @@ test('verified model marker contains no secret', () => {
   }
 });
 
-test('custom model marker stores its endpoint without storing the key', () => {
+for (const provider of ['custom', 'custom:local-(127.0.0.1:8080)']) test(`${provider} marker stores its endpoint without storing the key`, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-custom-model-marker-'));
   try {
     writeVerifiedModel(root, {
-      provider: 'custom',
+      provider,
       model: 'relay-model',
       baseUrl: 'https://relay.example/v1/',
       key: 'must-not-be-written',
@@ -110,6 +110,7 @@ test('custom model marker stores its endpoint without storing the key', () => {
     const text = fs.readFileSync(path.join(root, 'installer', 'model.json'), 'utf8');
     assert.doesNotMatch(text, /must-not-be-written/);
     assert.equal(readVerifiedModel(root).baseUrl, 'https://relay.example/v1');
+    assert.equal(readVerifiedModel(root).provider, provider);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

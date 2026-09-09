@@ -38,6 +38,7 @@
       "system-update.js",
       "test-build.js",
       "install-cleanup.js",
+      "install-location.js",
       "uninstall.js",
       "runtime-worker.js",
       "process-output.js"

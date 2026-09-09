@@ -234,12 +234,17 @@ def read_version(install_root: Path) -> dict:
     return {"version": None, "commit": None, "versionSource": "unknown"}
 
 
-def read_verified_model(nora_home: Path, hermes_home: Path) -> dict:
+def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None) -> dict:
+    def reject(reason: str) -> dict:
+        if problems is not None:
+            problems.append(reason)
+        return {}
+
     marker = nora_home / "installer/model.json"
     env_file = hermes_home / ".env"
     config_file = hermes_home / "config.yaml"
     if not marker.is_file() or not config_file.is_file():
-        return {}
+        return reject("未找到模型配置或验证记录")
     try:
         value = json.loads(marker.read_text(encoding="utf-8"))
         provider = str(value.get("provider") or "").strip()
@@ -247,40 +252,43 @@ def read_verified_model(nora_home: Path, hermes_home: Path) -> dict:
         key_env = str(value.get("keyEnv") or "").strip()
         base_url = str(value.get("baseUrl") or "").strip().rstrip("/")
         if value.get("schema") != 1 or not provider or not model:
-            return {}
+            return reject("模型验证记录格式无效")
+        is_custom = provider == "custom" or (provider.startswith("custom:") and bool(provider[7:].strip()))
         env_values = {}
         if env_file.is_file():
             for line in env_file.read_text(encoding="utf-8", errors="replace").splitlines():
                 match = re.match(r"^\s*([A-Z0-9_]+)\s*=\s*(.*)$", line)
                 if match:
                     env_values[match.group(1)] = match.group(2).strip().strip("\"'")
-        if provider != "custom" and (not re.match(r"^[A-Z0-9_]+$", key_env) or not env_values.get(key_env)):
-            return {}
+        if not is_custom and (not re.match(r"^[A-Z0-9_]+$", key_env) or not env_values.get(key_env)):
+            return reject("未找到供应商密钥配置")
 
         try:
             import yaml
         except ImportError:
-            return {}
+            return reject("无法读取模型配置格式")
         try:
             config = yaml.safe_load(config_file.read_text(encoding="utf-8")) or {}
             model_config = config.get("model")
             if not isinstance(model_config, dict):
-                return {}
+                return reject("缺少模型配置")
             if str(model_config.get("provider") or "").strip() != provider:
-                return {}
+                return reject("供应商与验证记录不一致")
             configured_model = str(model_config.get("default") or model_config.get("name") or "").strip()
             if configured_model != model:
-                return {}
-            if provider == "custom":
+                return reject("模型名称与验证记录不一致")
+            if is_custom:
                 configured_base_url = str(model_config.get("base_url") or "").strip().rstrip("/")
                 configured_key = str(model_config.get("api_key") or "").strip()
-                if not base_url or configured_base_url != base_url or not configured_key:
-                    return {}
+                if not base_url or configured_base_url != base_url:
+                    return reject("接口地址与验证记录不一致")
+                if not configured_key:
+                    return reject("未找到自定义模型密钥配置")
         except (OSError, ValueError, AttributeError, yaml.YAMLError):
-            return {}
+            return reject("无法读取模型配置")
         return {"provider": provider, "model": model, "keyEnv": key_env, "baseUrl": base_url}
     except (OSError, ValueError, AttributeError):
-        return {}
+        return reject("无法读取模型验证记录")
 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
@@ -648,6 +656,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8799)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser("verify-model")
     install = sub.add_parser("install")
     install.add_argument("--release-dir")
     for action in ("start", "stop", "restart"):
@@ -670,6 +679,10 @@ def main() -> None:
     require_descendant(args.nora_home, args.install_root, "Tavern 目录")
     if args.command == "status":
         command_status(args)
+    elif args.command == "verify-model":
+        problems = []
+        verified = read_verified_model(args.nora_home, args.hermes_home, problems)
+        emit("result", ok=bool(verified), error=("模型配置复核未通过：" + "；".join(problems)) if problems else "")
     elif args.command == "install":
         command_install(args)
     elif args.command == "start":

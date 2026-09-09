@@ -155,7 +155,7 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test release channels and update rollback
-        run: node --test ops/tests/launcher_releases.test.cjs ops/tests/launcher_bundle_contract.test.cjs ops/tests/launcher_system_update.test.cjs ops/tests/launcher_install_cleanup.test.cjs ops/tests/launcher_copy.test.cjs
+        run: node --test ops/tests/launcher_releases.test.cjs ops/tests/launcher_bundle_contract.test.cjs ops/tests/launcher_system_update.test.cjs ops/tests/launcher_install_cleanup.test.cjs ops/tests/launcher_copy.test.cjs ops/tests/launcher_location.test.cjs ops/tests/launcher_model_recheck.test.cjs
 
       - name: Test Nora initialization and profile synchronization
         shell: bash
@@ -163,7 +163,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement ops.tests.test_installer_windows_paths
+          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement ops.tests.test_installer_windows_paths ops.tests.test_launcher_model_status ops.tests.test_launcher_tavern_model
 
       - name: Build release payload
         shell: bash

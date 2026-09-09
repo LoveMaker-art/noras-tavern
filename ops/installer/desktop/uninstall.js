@@ -166,5 +166,5 @@ function notify(message) {
   spawnSync('/usr/bin/osascript', ['-e', 'on run argv', '-e', 'display dialog (item 1 of argv) with title "诺拉·酒馆" buttons {"好"} default button "好"', '-e', 'end run', message], { timeout: 120000 });
 }
 
-module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS };
+module.exports = { own, makePlan, cleanup, restoreRetained, worker, RETAINED, PROGRAMS, safeRoot, contained };
 if (require.main === module) worker(process.argv[2]);

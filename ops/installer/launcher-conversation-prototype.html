@@ -62,6 +62,12 @@
     .button.primary { background:#dda0ad; color:#251d20; border-color:#dda0ad; font-weight:500; }
     .button.primary:hover { background:#edb6c1; }
     .button:active { transform:translateY(1px); }
+    .install-location { display:flex; align-items:center; gap:8px; margin-top:14px; color:#98aa9d; font-size:11px; line-height:1.7; }
+    .install-location > span { min-width:0; overflow-wrap:anywhere; }
+    .install-location-choose { position:relative; flex:0 0 32px; width:32px; height:32px; border:0; border-radius:4px; background:transparent; color:#a5b5a8; }
+    .install-location-choose:hover { background:#29342d; color:#dda0ad; }
+    .install-location-choose:hover::after,.install-location-choose:focus-visible::after { content:attr(data-tip); position:absolute; right:0; bottom:calc(100% + 6px); padding:5px 8px; background:#343e36; color:#e4e5df; font-size:11px; white-space:nowrap; border-radius:3px; }
+    .install-location-error { color:#dda0ad; font-size:12px; line-height:1.7; margin-top:12px; }
     .quiet { border:0; background:none; padding:7px 0; color:#bbc3ba; font-size:12px; display:inline-flex; align-items:center; gap:7px; }
     .quiet:hover { color:#f0bac5; }
     .job { border-left:1px solid #58645a; padding-left:16px; }

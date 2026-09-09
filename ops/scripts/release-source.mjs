@@ -145,6 +145,8 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     ];
     const omittedFiles = new Set([
         'ops/installer/launcher-refinement-preview.html',
+        'ops/installer/launcher-directory-preview.html',
+        'ops/installer/launcher-directory-preview.js',
         `${engineRoot}default/content/default_Seraphina.png`,
         `${engineRoot}default/content/Eldoria.json`,
         `${engineRoot}public/lib/pdf.min.mjs`,

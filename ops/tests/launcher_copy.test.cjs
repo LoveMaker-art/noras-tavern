@@ -18,6 +18,7 @@ function definition(name) {
 test('DeepSeek selection defaults to V4 Flash without replacing saved models or other provider defaults', () => {
   const form = statements.find(item => item.expression?.left?.name === 'modelForm').expression.right;
   const sync = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'syncProvider'));
+  const saved = form.body.body.find(item => item.declarations?.some(declaration => declaration.id.name === 'savedProvider'));
   assert.ok(sync);
   for (const [provider, snapshot, expected] of [
     ['deepseek', {}, 'deepseek-v4-flash'],
@@ -27,6 +28,7 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
     ['openrouter', {}, ''],
     ['custom', {}, ''],
     ['custom', { modelProvider: 'custom', modelName: 'relay-model', modelBaseUrl: 'https://example.com/v1' }, 'relay-model'],
+    ['custom', { modelProvider: 'custom:local', modelName: 'local-model', modelBaseUrl: 'http://127.0.0.1:8080/v1' }, 'local-model'],
   ]) {
     const elements = new Map();
     const $ = id => {
@@ -34,7 +36,7 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
       return elements.get(id);
     };
     const context = vm.createContext({ $, snapshot, selected: () => ({ id: provider, custom: provider === 'custom' }) });
-    vm.runInContext(`${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
+    vm.runInContext(`${source.slice(saved.start, saved.end)}\n${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
     assert.equal($('model').value, expected, JSON.stringify({ provider, snapshot }));
     assert.equal($('model').disabled, false, 'the default remains editable');
     assert.equal($('endpoint').value, snapshot.modelBaseUrl || '');
@@ -168,9 +170,10 @@ test('an empty model list does not claim the key has connected', async () => {
 test('installation messages describe ClawChat access and the full-system update scope', () => {
   const bridge = read('launcher_bridge.py');
   const services = read('launcher_services.py');
-  for (const text of ['正在准备 ClawChat 连接组件', 'ClawChat 连接组件未就绪', '正在注册 ClawChat 酒馆入口', 'ClawChat 酒馆入口尚未就绪']) {
+  for (const text of ['正在准备 ClawChat 连接组件', 'ClawChat 酒馆入口尚未就绪']) {
     assert.ok(bridge.includes(text), text);
   }
+  assert.ok(bridge.includes('hooks/tavern-liveware-register/handler.py'), 'registration uses the shared hook');
   assert.ok(services.includes('ClawChat 连接服务尚未停止'));
   assert.doesNotMatch(bridge + services, /手机(?:连接组件|酒馆入口|连接服务)/);
   assert.ok(definition('taskView').includes("update: '正在更新诺拉与酒馆。'"));

@@ -39,7 +39,7 @@ test('packaged candidate really installs through the visible UI and survives reo
         }
       }).observe(document.getElementById('steps'), { childList: true, subtree: true, attributes: true });
     });
-    await page.getByRole('button', { name: '开始安装', exact: true }).click();
+    await page.getByRole('button', { name: '安装酒馆', exact: true }).click();
     console.log('Clicked install in the packaged app');
     await page.locator('#provider').waitFor({ state: 'visible', timeout: 180000 });
     status = await page.evaluate(() => window.NoraLauncherBridge.status());

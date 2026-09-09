@@ -275,8 +275,10 @@ function writeVerifiedModel(noraHome, value) {
 function readVerifiedModel(noraHome) {
   try {
     const value = JSON.parse(fs.readFileSync(verifiedModelPath(noraHome), 'utf8'));
-    if (value.schema !== 1 || !PROVIDER_BY_ID.has(value.provider) || !value.model) return null;
-    if (value.provider === 'custom') value.baseUrl = normalizeCustomBaseUrl(value.baseUrl);
+    const custom = value.provider === 'custom' || (typeof value.provider === 'string'
+      && value.provider.startsWith('custom:') && Boolean(value.provider.slice(7).trim()));
+    if (value.schema !== 1 || (!custom && !PROVIDER_BY_ID.has(value.provider)) || !value.model) return null;
+    if (custom) value.baseUrl = normalizeCustomBaseUrl(value.baseUrl);
     return value;
   } catch {
     return null;

@@ -38,6 +38,7 @@ if (contextBridge && ipcRenderer) {
     restart(options) { return runAction('restart', options); },
     pair(options) { return runAction('pair', options); },
     openInstallDirectory() { return ipcRenderer.invoke('nora:open-directory'); },
+    chooseInstallDirectory() { return ipcRenderer.invoke('nora:choose-directory'); },
     checkUpdate() { return ipcRenderer.invoke('nora:check-update'); },
     update(options) {
       return runAction('update', options);

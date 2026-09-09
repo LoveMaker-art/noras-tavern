@@ -34,7 +34,7 @@ test('real controller waits for backend results through install, model, pairing,
       };
     });
     await page.goto(url);
-    await page.getByRole('button', { name: '开始安装', exact: true }).click();
+    await page.getByRole('button', { name: '安装酒馆', exact: true }).click();
     await page.waitForFunction(() => window.calls.includes('install'));
     assert.equal(await page.locator('#provider').count(), 0);
     assert.equal(await page.locator('#jobPercent').textContent(), '');

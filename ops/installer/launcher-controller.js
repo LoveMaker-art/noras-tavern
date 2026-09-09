@@ -162,9 +162,28 @@
       const interrupted = snapshot.hermesInstalled || snapshot.installer?.startedAt;
       say(interrupted ? '接着把酒馆准备好。' : '我是诺拉。欢迎来到酒馆。',
         snapshot.systemProblems?.length ? snapshot.systemProblems.slice(0, 2).join('；') : interrupted ? '已完成的安装会保留。' : '先把我和酒馆安顿在这台电脑上。');
-      $('inline').append(button(serviceRunning() ? '停止并继续' : interrupted ? '继续安装' : '开始安装', serviceRunning() ? () => run('stop') : install));
-      const note = document.createElement('p'); note.className = 'note'; note.style.marginTop = '13px';
-      note.textContent = `安装目录：${snapshot.noraHome || 'NoraTavern'}`; $('inline').append(note);
+      $('inline').append(button(serviceRunning() ? '停止并继续' : interrupted ? '继续安装' : '安装酒馆', serviceRunning() ? () => run('stop') : install));
+      const note = document.createElement('div'); note.className = 'install-location';
+      const location = document.createElement('span'); location.textContent = snapshot.noraHome || 'NoraTavern';
+      location.setAttribute('aria-label', '安装目录'); note.append(location);
+      if (snapshot.canChooseDirectory && typeof api.chooseInstallDirectory === 'function') {
+        const choose = document.createElement('button'); choose.className = 'install-location-choose';
+        choose.type = 'button'; choose.setAttribute('aria-label', '更改安装位置'); choose.dataset.tip = '更改位置';
+        choose.innerHTML = '<i class="fa-solid fa-folder-open" aria-hidden="true"></i>';
+        choose.onclick = async () => {
+          if (busy || snapshot.busy) return;
+          busy = true; choose.disabled = true;
+          $('inline').querySelectorAll('button').forEach(item => { item.disabled = true; }); controls();
+          try { await api.chooseInstallDirectory(); await readStatus(); busy = false; route(); }
+          catch (error) {
+            busy = false; route();
+            const feedback = document.createElement('p'); feedback.className = 'install-location-error';
+            feedback.setAttribute('role', 'alert'); feedback.textContent = textError(error); $('inline').append(feedback);
+          }
+        };
+        note.append(choose);
+      }
+      $('inline').append(note);
       controls(); return;
     }
     if (!snapshot.modelConfigured) { modelForm(); return; }
@@ -285,15 +304,16 @@
     form.innerHTML = '<div class="fields"><div><div class="field-line"><label for="provider">模型服务</label><a class="quiet" id="getKey" target="_blank" rel="noopener noreferrer">获取 Key</a></div><select id="provider"></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" autocomplete="off" placeholder="粘贴 API Key"><button class="eye" type="button" title="显示或隐藏 Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><div class="field-line"><label for="model">模型名称</label><button type="button" class="quiet" id="loadModels">获取模型列表</button></div><input id="model" list="modelOptions" placeholder="选择或输入模型名称"><datalist id="modelOptions"></datalist></div></div><p class="model-feedback" id="feedback" role="status">Key 仅保存在本机</p><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div>';
     $('inline').append(form);
     providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; $('provider').append(option); });
-    $('provider').value = providers.some(p => p.id === snapshot.modelProvider) ? snapshot.modelProvider : providers[0].id;
+    const savedProvider = snapshot.modelProvider?.startsWith('custom:') ? 'custom' : snapshot.modelProvider;
+    $('provider').value = providers.some(p => p.id === savedProvider) ? savedProvider : providers[0].id;
     const selected = () => providers.find(p => p.id === $('provider').value);
     const syncProvider = () => {
       const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = provider.custom;
       $('getKey').hidden = !provider.signupUrl; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
       $('key').value = ''; $('modelOptions').replaceChildren();
-      $('model').value = (snapshot.modelProvider === provider.id ? snapshot.modelName : '')
+      $('model').value = (savedProvider === provider.id ? snapshot.modelName : '')
         || (provider.id === 'deepseek' ? 'deepseek-v4-flash' : '');
-      $('endpoint').value = snapshot.modelProvider === provider.id ? snapshot.modelBaseUrl || '' : '';
+      $('endpoint').value = savedProvider === provider.id ? snapshot.modelBaseUrl || '' : '';
     };
     $('provider').onchange = syncProvider; syncProvider();
     form.querySelector('.eye').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; };
@@ -313,7 +333,7 @@
       if (!payload.key || !payload.model || (selected().custom && !payload.baseUrl)) { feedback('请填写 Key、模型名称和所需的接口地址。', true); return; }
       lock(true); feedback('正在测试模型响应。');
       try { await api.saveAndTestModel(payload); $('key').value = ''; await readStatus(); lock(false);
-        if (!snapshot.modelConfigured) throw new Error('模型配置未通过保存检查。');
+        if (!snapshot.modelConfigured) throw new Error('模型配置复核未通过，请重新连接。');
         if (complete()) {
           dailyHome(snapshot.gatewayRunning ? '模型已保存，重启诺拉后生效。' : '模型已更换。');
           if (snapshot.gatewayRunning) $('inline').append(button('重启诺拉', () => run('restart', { service: 'nora' })));
