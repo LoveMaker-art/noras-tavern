@@ -9,7 +9,11 @@ A full release directly replaces these four official directories:
 | system/tavern-updater | skills/system/tavern-updater |
 | creative/nora-cardforge | skills/creative/nora-cardforge |
 
-The release also replaces the managed Tavern block in `AGENTS.md`, installs Nora MCP configuration while
+The release replaces the entire `AGENTS.md` with the project document, keeping
+only the previous revision in `AGENTS.md.bak`. Existing extra rules are not merged.
+Identical content is a no-op; a failed transaction restores both the document and
+its previous backup. This whole-file ownership is limited to `AGENTS.md`.
+The release installs Nora MCP configuration while
 preserving all unrelated Hermes configuration, and retires the six historical
 Tavern specialist skill directories after placing them in the release backup.
 

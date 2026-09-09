@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "version": 1,
+  "stories": [
+    {
+      "id": "suzhou-rain",
+      "name": "陈屿的苏州雨巷",
+      "file": "suzhou-rain.json",
+      "sha256": "7f7942821c30d58e2e144fde5c3bde13aa66cc2c304fbae358d88eec0d19e45f"
+    },
+    {
+      "id": "xiamen-breeze",
+      "name": "许清禾的厦门海风",
+      "file": "xiamen-breeze.json",
+      "sha256": "0b893a2590428f2bf5f8a967278498ae28bd2ec31e9aacbe46f646dd19da5f76"
+    }
+  ]
+}

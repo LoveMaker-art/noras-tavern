@@ -20,7 +20,6 @@ import time
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-BEGIN, END = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
 HOST_HOOK = Path("hooks/tavern-liveware-register")
 
 
@@ -195,20 +194,12 @@ def install_skills(home: Path, prepared: dict[str, Path]) -> list[str]:
     return sorted(installed)
 
 
-def merge_agents(home: Path, managed: str) -> str:
-    path = home / "AGENTS.md"
-    current = path.read_text(encoding="utf-8") if path.exists() else ""
-    block = managed.strip()
-    first, last = current.find(BEGIN), current.rfind(END)
-    if first >= 0 and last >= first:
-        next_text = current[:first].rstrip() + "\n\n" + block + "\n\n" + current[last + len(END):].lstrip()
-    else:
-        next_text = current.replace(BEGIN, "").replace(END, "").rstrip() + "\n\n" + block + "\n"
-    atomic(path, next_text.encode("utf-8"), mode=0o600)
-    return str(path)
+def install_agents(home: Path, document: str) -> str:
+    context = module_at("first_install_managed_context", ROOT / "ops/updater/managed_context.py")
+    return context.install_agents(home, document)
 
 
-def render_mcp(home: Path) -> bytes:
+def render_mcp(home: Path, port: int = 8799) -> bytes:
     try:
         import yaml
     except ImportError as error:
@@ -227,7 +218,7 @@ def render_mcp(home: Path) -> bytes:
         "NORA_MCP_USER_DATA_ROOT": str(home / "tavern-state/native/default-user"),
         "NORA_MCP_CONFIG_PATH": str(home / "tavern-state/native-runtime/config.yaml"),
         "NORA_MCP_UPLOAD_ROOT": str(home / "tavern-state/imports"),
-        "NORA_MCP_BASE_URL": "http://127.0.0.1:8799",
+        "NORA_MCP_BASE_URL": f"http://127.0.0.1:{port}",
         "NORA_MCP_MODE": "operator",
     })
     servers["nora"] = {
@@ -329,8 +320,11 @@ def install(args) -> dict:
         work = Path(temporary)
         source, manifest = source_from_release(args, work)
         version = manifest.get("versions", {}).get("tavern", "unknown")
-        backup = home / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{os.getpid()}"
+        backup = home / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{time.time_ns()}"
         prepared_skills = prepare_skills(source, work)
+        context = module_at("release_managed_context", source / "ops/updater/managed_context.py")
+        document = context.agents_document((source / "ops/skills/agents-tavern.md").read_bytes())
+        context_swaps, greeting_report = context.prepare_greeting(home, source, work / "greeting")
         patcher = module_at("first_install_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
         gateway_swaps, gateway_report = patcher.prepare(home, work / "clawchat-greeting")
         if gateway_report.get("status") == "pending":
@@ -340,15 +334,17 @@ def install(args) -> dict:
             home / "apps/tavern-ops",
             home / "apps/nora-mcp",
             home / "tavern-state/native-runtime",
-            home / "AGENTS.md",
             home / "config.yaml",
             home / "SOUL.md",
             home / "SOUL.nora-tavern.example.md",
             home / HOST_HOOK,
             *[home / "skills" / relative for relative in prepared_skills],
             *[target for _, _, target in gateway_swaps],
+            *[target for _, _, target in context_swaps],
         ]
         records = snapshot_targets(home, managed_targets, backup)
+        agents_backup = backup / "agents-rollback"
+        context.snapshot_agents(home, agents_backup)
         try:
             log("安装 Nora Tavern 程序文件")
             copy_tree(source / "app", home / "apps/tavern-runtime")
@@ -356,14 +352,16 @@ def install(args) -> dict:
             copy_tree(source / "nora-mcp", home / "apps/nora-mcp")
             for _, prepared, target in gateway_swaps:
                 atomic(target, prepared.read_bytes(), mode=prepared.stat().st_mode & 0o777)
+            for _, prepared, target in context_swaps:
+                atomic(target, prepared.read_bytes(), mode=0o600)
             if gateway_swaps:
                 gateway_report = {**gateway_report, "status": "installed"}
 
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(home, prepared_skills)
             host_hook = install_host_hook(home, source)
-            agents = merge_agents(home, (source / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
-            atomic(home / "config.yaml", render_mcp(home), mode=0o600)
+            agents = context.install_agents(home, document)
+            atomic(home / "config.yaml", render_mcp(home, args.port), mode=0o600)
             soul = install_soul(home, source, replace=args.replace_soul)
 
             log("准备并启动本地 Tavern")
@@ -376,7 +374,10 @@ def install(args) -> dict:
         except Exception:
             log("安装失败，恢复安装前的程序和 Hermes 配置")
             restore_targets(home, records, backup)
+            context.restore_agents(home, agents_backup)
+            shutil.rmtree(agents_backup)
             raise
+        shutil.rmtree(agents_backup)
 
     result = {
         "status": "installed",
@@ -399,6 +400,7 @@ def install(args) -> dict:
         "liveware": liveware,
         "updateCheck": update_check,
         "clawchatGreeting": gateway_report,
+        "greeting": greeting_report,
         "next": "请重新启动 Hermes 会话，然后让 Nora 检查 Tavern 状态。",
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

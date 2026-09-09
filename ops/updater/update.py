@@ -21,6 +21,7 @@ import uuid
 sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
 
 UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Asia/Shanghai)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.sh"
@@ -393,19 +394,8 @@ def render_mcp(home):
 
 
 def merged_agents(home, managed):
-    path = home / "AGENTS.md"
-    current = path.read_text(encoding="utf-8") if path.is_file() else ""
-    block = managed.decode("utf-8").strip()
-    begin, end = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
-    first, last = current.find(begin), current.rfind(end)
-    if first >= 0 and last >= first:
-        prefix = current[:first].rstrip()
-        suffix = current[last + len(end):].strip()
-    else:
-        prefix = current.replace(begin, "").replace(end, "").rstrip()
-        suffix = ""
-    sections = [value for value in (prefix, block, suffix) if value]
-    return ("\n\n".join(sections) + "\n").encode("utf-8")
+    # Keep the public helper name for installer compatibility; no merging remains.
+    return agents_document(managed)
 
 
 def tree_inventory(root):
@@ -488,7 +478,7 @@ def roots_with_unmanaged_files(home, manifest):
 def copy_host_backup(home, backup, service_snapshot):
     host = backup / "host"
     host.mkdir(parents=True)
-    for name in ("AGENTS.md", "config.yaml"):
+    for name in ("config.yaml",):
         source = home / name
         if source.is_file():
             shutil.copy2(source, host / name)
@@ -502,7 +492,7 @@ def copy_host_backup(home, backup, service_snapshot):
 
 def restore_host(home, backup):
     host = backup / "host"
-    for name in ("AGENTS.md", "config.yaml"):
+    for name in ("config.yaml",):
         saved = host / name
         target = home / name
         if saved.is_file():
@@ -767,6 +757,9 @@ def install(args):
             service = service_module.ManagedService.discover(home, old_app)
             service_snapshot = service.snapshot() if service else None
             swaps = []
+            context = module_at("release_managed_context", source / "ops/updater/managed_context.py")
+            context_swaps, greeting_report = context.prepare_greeting(home, source, work / "greeting")
+            swaps.extend(context_swaps)
             if app_changed:
                 swaps.append(("app", source / "app", roots["app"]))
             if ops_changed:
@@ -809,6 +802,8 @@ def install(args):
             backup = home / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             backup.mkdir(parents=True)
             copy_host_backup(home, backup, service_snapshot)
+            agents_backup = backup / "agents-rollback"
+            snapshot_agents(home, agents_backup)
             applied = []
             state_swapped = False
             runtime_stopped = False
@@ -845,7 +840,7 @@ def install(args):
                         raise
                     state_swapped = True
                 if agents_changed:
-                    atomic(home / "AGENTS.md", desired_agents, mode=0o600)
+                    install_agents(home, desired_agents)
                 if config_changed:
                     atomic(home / "config.yaml", mcp_config, mode=0o600)
                 if app_changed:
@@ -895,7 +890,7 @@ def install(args):
                     log(f"旧备份清理未完成，当前备份仍保留：{retention_error}")
                 reload_required = (
                     mcp_changed or agents_changed or config_changed
-                    or bool(gateway_swaps)
+                    or bool(gateway_swaps) or bool(context_swaps)
                     or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
                 )
                 result = {
@@ -910,10 +905,15 @@ def install(args):
                     "clawchatGreeting": gateway_report,
                     "delivery": bundle_report,
                     "dependencies": dependencies,
+                    "greeting": greeting_report,
                     "next": "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
                 log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required else ""))
+                try:
+                    shutil.rmtree(agents_backup)
+                except OSError as cleanup_error:
+                    log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
                 return
             except BaseException as error:
                 log("更新未完成，恢复旧版本")
@@ -936,6 +936,8 @@ def install(args):
                         os.replace(active_state, failed_root / "state")
                     os.replace(backup / "state", active_state)
                 restore_host(home, backup)
+                restore_agents(home, agents_backup)
+                shutil.rmtree(agents_backup)
                 recovery = "restored"
                 if runtime_stopped:
                     try:

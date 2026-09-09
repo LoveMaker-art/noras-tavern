@@ -184,3 +184,37 @@ export async function stageBlankWorld({ idempotencyKey, persona = {}, worldName,
         payload: { runtime_card_kind: 'nora-internal-blank' },
     });
 }
+
+export async function stageWelcomeWorld({ idempotencyKey, stagingRoot }) {
+    const opening = (await fs.readFile(new URL('./builtin/welcome-zh.md', import.meta.url), 'utf8')).trim();
+    if (!opening) throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Tavern welcome text is missing.');
+    const card = {
+        spec: 'chara_card_v3',
+        spec_version: '3.0',
+        data: {
+            name: '新手引导',
+            description: '你是酒馆的主理人，帮助来访者了解酒馆并准备自己的故事。用中文交流。',
+            personality: '',
+            scenario: '',
+            first_mes: opening,
+            mes_example: '',
+            creator_notes: '',
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+            tags: [],
+            creator: 'Nora',
+            character_version: '1',
+            extensions: {},
+        },
+    };
+    return stageCardBuffer({
+        buffer: Buffer.from(JSON.stringify(card)),
+        originalName: 'nora-welcome-zh.json',
+        sourceType: 'character-card',
+        idempotencyKey,
+        persona: { name: '我', description: '' },
+        worldName: '新手引导',
+        stagingRoot,
+    });
+}

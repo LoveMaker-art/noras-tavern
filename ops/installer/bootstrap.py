@@ -93,6 +93,9 @@ def extract_ops_runner(release_dir: Path, destination: Path) -> Path:
     required = {
         "ops/installer/first_install.py",
         "ops/installer/templates/SOUL.md",
+        "ops/installer/templates/greeting.md",
+        "ops/updater/managed_context.py",
+        "ops/scripts/nora-instance.py",
         "ops/updater/bundle.py",
         "ops/scripts/install-hermes-skills.py",
     }

@@ -220,7 +220,7 @@ curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/downloa
 - 安装运维文件到 `$HERMES_HOME/apps/tavern-ops`
 - 安装 Hermes skills
 - 写入 Nora MCP 配置
-- 合并 Tavern 的 `AGENTS.md` 托管块
+- 完整替换 `AGENTS.md` 为诺拉的操作规则，上一版保存在 `AGENTS.md.bak`
 - 准备并启动本地 Tavern
 - 注册 Tavern 和 Story Profile 的 Liveware 入口
 - 安装每日更新提醒任务
@@ -257,6 +257,10 @@ $HERMES_HOME/SOUL.md
 | `config.yaml` | 写入 `mcp_servers.nora`，让 Hermes 能连接 Nora MCP。 |
 | `skills/` | 安装 Tavern、Tavern Ops、Tavern Updater、Nora CardForge。 |
 | `SOUL.md` | Nora 的身份、工作方式和管理边界。 |
+
+`AGENTS.md` 由项目整份管理：首次安装和更新都会替换全文，不保留旧文件中的附加规则。内容相同时不重复写入；内容变化时，`AGENTS.md.bak` 仅保留上一份。安装或更新失败会恢复原文件和原备份。这项全量替换不适用于其他配置、记忆或用户数据。
+
+ClawChat 首次问候使用 `clawchat/greeting.md`，与酒馆内“新手引导”的开场白独立。自定义的问候会被保留，项目示例写入 `clawchat/greeting.nora-example.md`。酒馆引导只在空白实例初始化，不覆盖已有世界或聊天。
 
 `SOUL.md` 默认不会强制覆盖：
 

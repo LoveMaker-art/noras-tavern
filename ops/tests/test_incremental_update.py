@@ -293,18 +293,18 @@ class IncrementalUpdateTests(unittest.TestCase):
             for relative in ("cards/card.json", "apps.json", "model_configs.json", "story_profile.json"):
                 self.assertEqual((prepared / relative).read_bytes(), (old / relative).read_bytes())
 
-    def test_agents_merge_is_idempotent_for_new_and_existing_managed_blocks(self):
+    def test_agents_replacement_is_idempotent_and_removes_unmanaged_rules(self):
         with tempfile.TemporaryDirectory(prefix="nora-agents-merge-") as temporary:
             home = Path(temporary)
             path = home / "AGENTS.md"
             path.write_text("# Personal rules\n\nKeep this.\n", encoding="utf-8")
-            managed = b"<!-- BEGIN TAVERN SKILLS -->\nTavern rules.\n<!-- END TAVERN SKILLS -->\n"
+            managed = b"# AGENTS.md\n\nTavern rules.\n"
             first = UPDATER.merged_agents(home, managed)
             path.write_bytes(first)
             second = UPDATER.merged_agents(home, managed)
             self.assertEqual(second, first)
-            self.assertEqual(first.count(b"BEGIN TAVERN SKILLS"), 1)
-            self.assertIn(b"Keep this.", first)
+            self.assertEqual(first, managed)
+            self.assertNotIn(b"Keep this.", first)
 
     def test_small_update_temporarily_skips_content_check_and_restores_config(self):
         with tempfile.TemporaryDirectory(prefix="nora-content-check-") as temporary:
