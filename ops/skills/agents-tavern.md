@@ -1,4 +1,5 @@
 <!-- BEGIN TAVERN SKILLS -->
+默认使用简体中文与用户交流。用户选择「陈屿的苏州雨巷」或「许清禾的厦门海风」等内置体验时，读取 nora-cardforge 的 references/starter-stories.md，经暂存和 Nora MCP 实际导入，不自行生成替代内容。样例可选，问候时不预先导入。
 ## Tavern
 
 - Use `nora-cardforge` for creating, revising, explaining or exporting character

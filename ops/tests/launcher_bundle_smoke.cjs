@@ -63,8 +63,29 @@ async function main() {
     assert.ok(output.includes('installed'), output.slice(-3000));
     const events = output.split('\n').filter(line => line.startsWith('{"event"')).map(line => JSON.parse(line));
     assert.equal(events.some(event => event.event === 'milestone' && event.index === 4 && event.state === 'done'), false);
+    const noraDone = events.findIndex(event => event.event === 'milestone' && event.index === 0 && event.state === 'done');
+    const tavernBegin = events.findIndex(event => event.event === 'milestone' && event.index === 1 && event.state === 'running');
+    assert.ok(noraDone >= 0 && tavernBegin > noraDone, 'Nora must light before Tavern installation');
     const response = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(response.status, 200);
+    const userRoot = path.join(tavern, 'tavern-state/native/default-user');
+    const welcome = JSON.parse(fs.readFileSync(path.join(userRoot, 'nora-world-core/builtin-welcome.json'), 'utf8'));
+    assert.equal(welcome.status, 'complete');
+    const bootstrapResponse = await fetch(`http://127.0.0.1:${port}/api/nora-boot/bootstrap`);
+    assert.equal(bootstrapResponse.status, 200);
+    assert.equal((await bootstrapResponse.json()).lastWorldId, welcome.worldId);
+    const worldFiles = fs.readdirSync(path.join(userRoot, 'nora-world-core/worlds'));
+    const welcomeWorld = worldFiles.map(file => JSON.parse(fs.readFileSync(path.join(userRoot, 'nora-world-core/worlds', file), 'utf8')))
+      .find(world => world.world_id === welcome.worldId);
+    assert.equal(welcomeWorld.name, '新手引导');
+    const session = welcomeWorld.sessions.items.find(item => item.session_id === welcomeWorld.sessions.default_session_id);
+    const chatFile = path.join(userRoot, 'chats', path.parse(session.binding.avatar).name, `${session.binding.chat_id}.jsonl`);
+    const chat = fs.readFileSync(chatFile, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    const expectedOpening = fs.readFileSync(path.join(tavern, 'apps/tavern-runtime/engine/sillytavern/src/nora-world-core/builtin/welcome-zh.md'), 'utf8').trim();
+    assert.equal(chat.length, 2);
+    assert.equal(chat[1].mes, expectedOpening);
+    assert.ok(expectedOpening.includes('欢迎来到酒馆。'));
+    console.log('PASS: installed Tavern creates the Chinese welcome and bootstrap selects it');
     const receipt = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/installed.json'), 'utf8'));
     const system = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/nora-system.json'), 'utf8'));
     assert.ok(receipt.version);
@@ -77,6 +98,12 @@ async function main() {
     const status = JSON.parse(run([path.resolve(__dirname, '../installer/launcher_bridge.py'),
       '--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port), 'status']).trim());
     assert.equal(status.systemReady, true, JSON.stringify(status.systemProblems));
+    assert.equal(status.noraInstalled, true);
+    const greeting = fs.readFileSync(path.join(home, 'clawchat/greeting.md'), 'utf8');
+    for (const phrase of ['我叫诺拉。', '陈屿的苏州雨巷', '许清禾的厦门海风', 'nora-instance.py', 'app-link']) assert.ok(greeting.includes(phrase));
+    assert.equal(greeting.includes('tavern_cli.py'), false);
+    assert.equal(fs.existsSync(path.join(tavern, 'tavern-state/imports')), false, 'Samples must not be pre-imported');
+    console.log(run([path.resolve(__dirname, 'verify_starter_stories.py')], 120000).trim());
     assert.equal(status.setupCompleted, false);
     assert.equal(status.version, receipt.version);
     const cron = run(['-c', `

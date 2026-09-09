@@ -77,6 +77,8 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
     t.after(() => fs.rmSync(stage, { recursive: true, force: true }));
     const retained = [
         'app/engine/sillytavern/src/nora-story-statistics.js',
+        'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
+        'app/engine/sillytavern/src/nora-world-core/builtin/welcome-zh.md',
         'app/engine/sillytavern/public/webfonts/fa-solid-900.woff2',
         'app/engine/sillytavern/public/webfonts/fa-brands-400.woff2',
         'app/engine/sillytavern/public/locales/lang.json',

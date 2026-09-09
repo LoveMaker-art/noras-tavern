@@ -44,14 +44,15 @@ class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
         self.client.get_my_profile.assert_not_awaited()
         self.client.update_my_profile.assert_not_awaited()
 
-    async def test_owner_locale_controls_name_including_nested_response(self):
-        for locale, nickname in [('en', 'Nora'), ('zh-Hant', '诺拉'), ('zh_CN', '诺拉'), ('', 'Nora')]:
+    async def test_chinese_name_does_not_depend_on_owner_locale(self):
+        for locale, nickname in [('en', '诺拉'), ('zh-Hant', '诺拉'), ('zh_CN', '诺拉'), ('', '诺拉')]:
             with self.subTest(locale=locale):
                 profile.receipt_path(self.home).unlink(missing_ok=True)
                 self.client.get_agent_owner.return_value = {'locale': locale}
                 self.client.get_my_profile.side_effect = [self.before, {'user': {**self.after, 'nickname': nickname}}]
                 await profile.initialize(self.home, 'usr_test', self.client)
                 self.assertEqual(self.client.update_my_profile.call_args.kwargs['nickname'], nickname)
+                self.client.get_agent_owner.assert_not_awaited()
 
     async def test_failed_update_does_not_record_success(self):
         self.client.update_my_profile.side_effect = RuntimeError('network failed')
@@ -149,7 +150,7 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                 self.assertTrue(json.loads(result.stdout)['ok'], result.stdout)
                 self.assertEqual(state['nickname'], '诺拉')
                 self.assertEqual(state['avatar_url'], profile.AVATAR_URL)
-                self.assertEqual(requests, [('GET', '/v1/users/me'), ('GET', '/v1/agents/me/owner'),
+                self.assertEqual(requests, [('GET', '/v1/users/me'),
                                             ('PATCH', '/v1/users/me'), ('GET', '/v1/users/me')])
                 state.update(nickname='custom name', avatar_url='https://example.org/custom.png')
                 requests.clear()

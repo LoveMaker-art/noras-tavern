@@ -25,6 +25,7 @@
   "build": {
     "appId": "art.lovemaker.nora-tavern-launcher",
     "productName": "诺拉·酒馆",
+    "icon": "../assets/nora-launcher-portrait.png",
     "artifactName": "Nora-Tavern-Launcher-${version}-${os}-${arch}.${ext}",
     "files": [
       "main.js",

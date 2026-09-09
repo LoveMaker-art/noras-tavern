@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>诺拉·酒馆</title>
+  <title>诺拉·酒馆 · 交互预览</title>
   <link rel="icon" href="assets/tavern-icon-dbf4ecbd54ec.png">
   <link rel="stylesheet" href="assets/css/fontawesome.min.css">
   <link rel="stylesheet" href="assets/css/solid.min.css">
@@ -92,7 +92,7 @@
     .pair p { color:#9caaa0; font-size:12px; line-height:1.8; margin:9px 0 17px; }
     .management { margin:22px 0 0 42px; flex-shrink:0; display:flex; gap:24px; flex-wrap:wrap; position:relative; }
     .more { flex:0 0 100%; display:flex; flex-wrap:wrap; gap:8px 18px; border-top:1px solid #56635445; padding:10px 0 0; }
-    .more button { padding:6px 0; background:none; border:0; font-size:11px; text-align:left; }
+    .more button { display:block; padding:7px 0; background:none; border:0; color:#bbc3ba; font-size:12px; text-align:left; border-radius:3px; }
     .more button:hover { background:#39463b; }
     .launchbar { flex-shrink:0; height:83px; margin-top:18px; display:flex; flex-direction:column; align-items:flex-end; justify-content:flex-end; gap:10px; }
     .runtime-state { width:250px; display:flex; align-items:center; gap:7px; font-size:11px; color:#a8b1a9; }
@@ -130,31 +130,6 @@
     @keyframes arrive { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
     @keyframes scan { from { transform:translateX(-100%); opacity:.1; } 50% { opacity:.5; } to { transform:translateX(100%); opacity:.1; } }
     @media(prefers-reduced-motion:reduce) { *,*:after { animation:none!important; transition:none!important; } }
-    .daily:not(.editing) .dialogue-group { width:100%; max-width:424px; }
-    .daily:not(.editing) .scroll { padding-left:48px; }
-    .daily:not(.editing) .inline { overflow:visible; }
-    .services { margin-top:9px; width:100%; }
-    .service-row { display:grid; grid-template-columns:30px 1fr auto 32px 32px; align-items:center; gap:9px; min-height:65px; border-bottom:1px solid #56635445; }
-    .service-symbol { color:#a9b8a8; font-size:15px; }
-    .service-name { font-size:13px; font-weight:500; }
-    .service-detail { display:block; color:#7f9185; font-size:10px; margin-top:5px; line-height:1.4; }
-    .service-state { display:flex; align-items:center; gap:6px; color:#8d998f; font-size:11px; }
-    .service-state:before { content:""; width:4px; height:4px; border-radius:50%; background:currentColor; }
-    .service-row[data-state="running"] .service-state { color:#b4d0bc; }
-    .service-row[data-state="starting"] .service-state,.service-row[data-state="stopping"] .service-state { color:#d8bd8e; }
-    .service-row[data-state="starting"] .service-state:before,.service-row[data-state="stopping"] .service-state:before { animation:blink 1s ease-in-out infinite; }
-    .icon-action { position:relative; display:grid; place-items:center; width:32px; height:32px; border:0; border-radius:4px; background:transparent; color:#a3b3a6; font-size:11px; }
-    .icon-action:hover { background:#ffffff0c; color:#efb8c4; }
-    .icon-action[data-tip]:hover:after,.icon-action[data-tip]:focus-visible:after { content:attr(data-tip); position:absolute; right:0; bottom:calc(100% + 4px); padding:5px 7px; border:1px solid #536054; border-radius:3px; background:#232c25; white-space:nowrap; font-size:10px; z-index:5; }
-    .services-footer { display:flex; align-items:center; justify-content:space-between; min-height:37px; gap:12px; }
-    .services-footer p { margin:0; color:#7f9185; font-size:10px; }
-    .services-footer .quiet { font-size:10px; }
-    .management { margin-top:18px; row-gap:5px; }
-    .launchbar { height:68px; margin-top:8px; }
-    .runtime-actions { width:220px; }
-    .launch { width:220px; }
-    .launch-hint { margin:0; font-size:10px; color:#91a094; }
-    @keyframes blink { 50% { opacity:.35; } }
   </style>
 </head>
 <body>
@@ -162,7 +137,7 @@
   <div class="app">
     <div class="portrait" role="button" tabindex="0" aria-label="与诺拉互动"><img src="assets/nora-launcher-portrait.png" alt="诺拉" draggable="false"><div class="portrait-bubble" id="portraitBubble" role="status" aria-live="polite"></div></div>
     <header><div class="wordmark">诺拉·酒馆</div><div class="status" id="status">首次见面</div></header>
-    <div class="signature"><span>本地启动器</span><span class="separator" aria-hidden="true">｜</span><a class="source-link" href="https://github.com/LoveMaker-art/noras-tavern" target="_blank" rel="noopener noreferrer" title="项目地址 · GitHub" aria-label="项目地址 · GitHub"><i class="fa-brands fa-github" aria-hidden="true"></i><span>项目地址</span></a></div>
+    <div class="signature"><span>本地启动器</span><span class="separator" aria-hidden="true">｜</span><a class="source-link" href="https://github.com/LoveMaker-art/noras-tavern" target="_blank" rel="noopener noreferrer" title="项目源码 · GitHub" aria-label="项目源码 · GitHub"><i class="fa-brands fa-github" aria-hidden="true"></i><span>项目源码</span></a></div>
     <main id="main">
       <nav class="steps" aria-label="安装进度" id="steps"></nav>
       <section class="conversation" aria-label="诺拉的消息">
@@ -191,7 +166,7 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-    const labels = ['诺拉', '酒馆', '模型', 'ClawChat', '启动检查'];
+    const labels = ['Nora', '酒馆', '模型', 'ClawChat', '启动检查'];
     const scenario = new URLSearchParams(location.search).get('mock');
     // Populate only with author-provided community destinations.
     const contacts = { qq: { number:'', url:'' }, discord:'', bilibili:'' };
@@ -324,6 +299,175 @@
       if(['ready','running','start-error'].includes(scenario)){running=scenario==='running';stage=5;dailyHome();}else if(scenario==='model'){stage=2;steps();modelForm();}else welcome();
     }
   </script>
-  <script src="launcher-controller.js"></script>
+  <!-- Isolated preview: no desktop bridge, persistence, model requests or imports. -->
+  <style>
+    .preview-toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:18px; z-index:10; padding:0 14px; height:34px; white-space:nowrap; background:#101111ed; border:1px solid #363a36; border-radius:5px; }
+    .preview-toolbar > span { font-size:10px; color:#89958b; }
+    .preview-tabs { display:flex; gap:14px; height:100%; }
+    .preview-tabs button { background:none; border:0; border-bottom:2px solid transparent; font-size:11px; color:#a0aaa2; padding:0 2px; }
+    .preview-tabs button[aria-selected="true"] { color:#efb8c4; border-bottom-color:#df8fa0; }
+    .daily:not(.editing) .dialogue-group { width:100%; max-width:424px; }
+    .daily:not(.editing) .scroll { padding-left:48px; }
+    .daily:not(.editing) .inline { overflow:visible; }
+    .services { margin-top:9px; width:100%; }
+    .pair a.button { color:inherit; }
+    .service-row { display:grid; grid-template-columns:30px 1fr auto 32px 32px; align-items:center; gap:9px; min-height:65px; border-bottom:1px solid #56635445; }
+    .service-symbol { color:#a9b8a8; font-size:15px; }
+    .service-name { font-size:13px; font-weight:500; }
+    .service-detail { display:block; color:#7f9185; font-size:10px; margin-top:5px; line-height:1.4; }
+    .service-state { display:flex; align-items:center; gap:6px; color:#8d998f; font-size:11px; }
+    .service-state:before { content:""; width:4px; height:4px; border-radius:50%; background:currentColor; }
+    .service-row[data-state="running"] .service-state { color:#b4d0bc; }
+    .service-row[data-state="starting"] .service-state,.service-row[data-state="stopping"] .service-state { color:#d8bd8e; }
+    .service-row[data-state="starting"] .service-state:before,.service-row[data-state="stopping"] .service-state:before { animation:blink 1s ease-in-out infinite; }
+    .icon-action { position:relative; display:grid; place-items:center; width:32px; height:32px; border:0; border-radius:4px; background:transparent; color:#a3b3a6; font-size:11px; }
+    .icon-action:hover { background:#ffffff0c; color:#efb8c4; }
+    .icon-action[data-tip]:hover:after,.icon-action[data-tip]:focus-visible:after { content:attr(data-tip); position:absolute; right:0; bottom:calc(100% + 4px); padding:5px 7px; border:1px solid #536054; border-radius:3px; background:#232c25; white-space:nowrap; font-size:10px; z-index:5; }
+    .services-footer { display:flex; align-items:center; justify-content:space-between; min-height:37px; gap:12px; }
+    .services-footer p { margin:0; color:#7f9185; font-size:10px; }
+    .services-footer .quiet { font-size:10px; }
+    .management { margin-top:18px; row-gap:5px; }
+    .launchbar { height:68px; margin-top:8px; }
+    .runtime-actions { width:220px; }
+    .launch { width:220px; }
+    .launch-hint { margin:0; font-size:10px; color:#91a094; }
+    .greeting-view .conversation { padding-top:0; }
+    .greeting-view .copy { font-size:23px; }
+    .greeting-view .scroll { padding-left:24px; }
+    .greeting-view .message,.greeting-view .inline { margin-left:18px; }
+    .greeting-view .dialogue-group { flex:1; min-height:0; }
+    .greeting-body { font-size:12px; color:#c0c9bf; line-height:1.9; }
+    .greeting-body p { margin:0 0 13px; }
+    .story-option { width:100%; padding:11px 0; text-align:left; border:0; border-bottom:1px solid #56635445; background:none; display:flex; align-items:center; gap:14px; }
+    .story-option > span { flex:1; min-width:0; }
+    .story-option strong { display:block; font-weight:500; font-size:12px; color:#e0c5c9; }
+    .story-option small { display:block; margin-top:5px; color:#8fa195; font-size:11px; line-height:1.7; }
+    .story-option i { font-size:11px; color:#b4c4b5; }
+    .story-option:hover strong { color:#f3bdc9; }
+    .greeting-foot { margin-top:14px; padding:11px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #56635445; font-size:11px; color:#9eb3a4; }
+    @keyframes blink { 50% { opacity:.35; } }
+    @media(max-height:780px) { .preview-toolbar { top:6px; height:30px; } }
+    @media(max-width:520px) { .preview-toolbar { gap:9px; padding:0 8px; } .preview-tabs { gap:9px; } }
+  </style>
+  <aside class="preview-toolbar" aria-label="预览场景">
+    <span>交互预览 · 无真实操作</span>
+    <div class="preview-tabs" role="tablist" aria-label="预览场景">
+      <button role="tab" data-scene="daily" aria-selected="true">日常启动</button>
+      <button role="tab" data-scene="install" aria-selected="false">首次安装</button>
+      <button role="tab" data-scene="claw" aria-selected="false">连接 ClawChat</button>
+      <button role="tab" data-scene="greeting" aria-selected="false">开场消息</button>
+    </div>
+  </aside>
+  <script>
+    let previewScene='daily', epoch=0;
+    const services={nora:'running',tavern:'running'};
+    const serviceNames={nora:'诺拉',tavern:'酒馆'};
+    const phaseNames={running:'运行中',stopped:'已停止',starting:'启动中',stopping:'停止中'};
+    const originalModelForm=modelForm;
+    const stories=[
+      {name:'陈屿的苏州雨巷',description:'他带着相机回到故乡，在咖啡馆里遇见沈知微和一本旧相册。'},
+      {name:'许清禾的厦门海风',description:'她带着未完成的书稿暂住海边，却收到一封寄错地址的信。'}
+    ];
+    labels[0]='诺拉';
+    document.querySelector('.source-link span').textContent='项目地址';
+    $('stop').remove(); $('runtimeState').remove();
+    const launchHint=document.createElement('p');launchHint.className='launch-hint';$('launchbar').prepend(launchHint);
+    contacts.qq.number='904830926';contacts.discord='https://discord.gg/2fxP9uYvpV2';
+    fit=()=>document.documentElement.style.setProperty('--scale',Math.min((innerWidth-24)/1120,(innerHeight-92)/680,1));
+    addEventListener('resize',fit);fit();
+    document.querySelector('.app').style.top='calc(50% + 16px)';
+    function lockPreview(){document.querySelectorAll('[data-scene]').forEach(b=>b.disabled=busy);}
+    function iconAction(icon,label,fn){
+      const b=document.createElement('button');b.className='icon-action';b.dataset.tip=label;b.setAttribute('aria-label',label);
+      const i=document.createElement('i');i.className=`fa-solid fa-${icon}`;i.setAttribute('aria-hidden','true');b.append(i);b.onclick=fn;return b;
+    }
+    function renderServices(){
+      clearInline(); const group=document.createElement('div');group.className='services';group.setAttribute('aria-label','服务控制');
+      for(const id of ['nora','tavern']){
+        const state=services[id],isOn=state==='running',row=document.createElement('div');row.className='service-row';row.dataset.state=state;row.dataset.service=id;
+        row.innerHTML=`<i class="service-symbol fa-solid fa-${id==='nora'?'wand-magic-sparkles':'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${serviceNames[id]}<small class="service-detail">${id==='nora'?(isOn?'在 ClawChat 中对话':'ClawChat 对话暂停'):(isOn?'本地启动 ｜ 打开 ClawChat 启动':'酒馆入口未运行')}</small></div><span class="service-state" role="status">${phaseNames[state]}</span>`;
+        const restart=iconAction('rotate-right',`重启${serviceNames[id]}`,()=>changeService(id,'restart'));restart.disabled=busy||!isOn;
+        const toggle=iconAction(isOn?'stop':'play',`${isOn?'停止':'启动'}${serviceNames[id]}`,()=>changeService(id,isOn?'stop':'start'));toggle.disabled=busy;
+        row.append(restart,toggle);group.append(row);
+      }
+      const footer=document.createElement('div');footer.className='services-footer';footer.innerHTML='<p>关闭窗口后，服务继续运行</p>';
+      const stopAll=button('全部停止',()=>changeService('all','stop'),false);stopAll.className='quiet';stopAll.disabled=busy||Object.values(services).every(s=>s==='stopped');footer.append(stopAll);group.append(footer);$('inline').append(group);
+      $('launch').disabled=busy;launchHint.hidden=services.tavern==='running';launchHint.textContent=services.tavern==='starting'?'正在准备酒馆':'点击后仅启动酒馆';
+      $('launch').querySelector('span').textContent=services.tavern==='starting'?'正在启动':'打开酒馆';
+      document.querySelectorAll('[data-action],#moreButton').forEach(b=>b.disabled=busy);lockPreview();
+    }
+    dailyHome=(message='')=>{
+      daily=true;running=services.tavern==='running';$('main').className='daily';$('steps').hidden=true;$('status').hidden=true;$('management').hidden=false;$('launchbar').hidden=false;
+      $('launchbar').classList.remove('enter');
+      say(message||(services.nora==='running'?'准备好了。酒馆交给你。':'随时可以继续。'),services.nora==='running'?'我在 ClawChat 等你。':'诺拉已暂停，酒馆可独立启动。');renderServices();
+    };
+    async function changeService(id,action){
+      if(busy)return;busy=true;const ids=id==='all'?['nora','tavern']:[id],mark=++epoch;
+      for(const key of ids)services[key]=action==='stop'?'stopping':'starting';renderServices();
+      await wait(850);if(mark!==epoch)return;
+      for(const key of ids)services[key]=action==='stop'?'stopped':'running';busy=false;
+      dailyHome(id==='all'?'服务已停止，故事还在。':id==='nora'&&action==='stop'?'诺拉已暂停。':id==='tavern'&&action==='stop'?'酒馆已停止。':`${serviceNames[id]}已${action==='restart'?'重启':'启动'}。`);
+      if(id==='nora'&&action==='stop'){$('subcopy').textContent=services.tavern==='running'?'酒馆仍在运行，诺拉对话与管理已暂停。':'数据与配置都已保留。';}
+      if(id==='tavern'&&action==='stop')$('subcopy').textContent=services.nora==='running'?'仍可在 ClawChat 和诺拉聊天。':'数据与配置都已保留。';
+    }
+    $('launch').onclick=async()=>{
+      if(busy)return;if(services.tavern!=='running')await changeService('tavern','start');
+      dailyHome('酒馆入口已准备好。');$('subcopy').textContent=services.nora==='running'?'可以进入故事了。':'诺拉保持暂停，不会随酒馆一起启动。';
+    };
+    job=async(title,description,duration=1700)=>{
+      busy=true;lockPreview();steps();clearInline();
+      $('inline').innerHTML='<div class="job"><div class="job-head"><span id="jobTitle"></span><span>处理中</span></div><div class="meter indeterminate"><span></span></div><div class="job-note" id="jobNote"></div></div>';
+      $('jobTitle').textContent=title;$('jobNote').textContent=description;await wait(duration);busy=false;lockPreview();
+    };
+    install=async()=>{
+      if(busy)return;$('main').className='';$('steps').hidden=false;$('status').textContent='正在安装';
+      say('我来准备，你稍等片刻。');await job('安装诺拉','展开环境与安装初始文件',1700);
+      stage=1;steps();say('诺拉已安装。接下来是酒馆。');await job('安装酒馆','准备酒馆与本机连接',2600);
+      stage=2;steps();modelForm();
+    };
+    modelForm=()=>{
+      originalModelForm();$('launchbar').hidden=true;
+      $('key').readOnly=true;$('key').placeholder='预览无需填写真实 Key';$('modelNote').textContent='此处仅演示配置流程';
+      $('inline').querySelector('form').onsubmit=async e=>{
+        e.preventDefault();if(busy)return;busy=true;lockPreview();const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;submit.textContent='正在连接';await wait(700);
+        provider=$('provider').value;model=$('model').value;busy=false;lockPreview();if(daily)dailyHome('模型配置已更新。');else{stage=3;steps();clawForm();}
+      };
+    };
+    clawForm=()=>{
+      clearInline();$('launchbar').hidden=true;if(daily){$('main').classList.add('editing');editHeader('ClawChat');}
+      say('把我接到 ClawChat 吧。');
+      $('inline').insertAdjacentHTML('beforeend','<div class="pair"><p>在 ClawChat 获取配对码，然后填在这里。</p><a class="button" href="https://clawling.com/zh/chat/#get" target="_blank" rel="noopener noreferrer" style="text-decoration:none">下载 ClawChat</a></div><form id="pairForm" style="margin-top:18px"><div class="field-line"><label for="pairCode">配对码</label><a class="quiet" href="https://clawling.com/zh/chat/docs/connect-code/" target="_blank" rel="noopener noreferrer">如何获取配对码<i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></a></div><input id="pairCode" type="text" readonly placeholder="预览无需填写真实配对码"><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div></form>');
+      $('pairForm').onsubmit=async e=>{
+        e.preventDefault();if(busy)return;busy=true;lockPreview();const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;submit.textContent='正在确认连接…';await wait(850);busy=false;
+        if(daily){dailyHome();return;}stage=4;steps();check();
+      };
+    };
+    check=async()=>{
+      say('最后检查一下，就好了。');await job('启动检查','检查诺拉、酒馆与手机入口',1400);stage=5;steps();busy=true;lockPreview();
+      await wait(500);$('steps').classList.add('depart');await wait(400);busy=false;services.nora='running';services.tavern='running';dailyHome();
+    };
+    function greetingPreview(){
+      daily=false;$('main').className='greeting-view';$('steps').hidden=true;$('management').hidden=true;$('launchbar').hidden=true;$('status').hidden=false;$('status').textContent='ClawChat · 开场预览';clearInline();say('我叫诺拉。');
+      const body=document.createElement('div');body.className='greeting-body';body.innerHTML='<p>故事是我熟悉也真心喜欢的地方，但你不必每次带着任务来。一个人物、一种氛围、一个没说完的念头，或者只是今天想说的话，我都会认真听。</p><p>想走进故事时，酒馆入口就在这条消息下方。点开「Tavern」卡片就能进入；想先让我替你准备世界、角色或开场，也可以直接告诉我。遇到任何问题，直接问我。</p><p>可以加入 QQ 群一起交流：904830926。</p><p>如果想先试一场：</p>';$('inline').append(body);
+      stories.forEach(story=>{
+        const option=document.createElement('button');option.className='story-option';option.innerHTML=`<span><strong>${story.name}</strong><small>${story.description}</small></span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i>`;
+        option.onclick=async()=>{if(busy)return;busy=true;lockPreview();$('inline').querySelectorAll('button').forEach(b=>b.disabled=true);say(`那就从${story.name.includes('苏州')?'苏州的雨':'厦门的海风'}开始。`);await job('加载体验故事','正在将样例导入酒馆',1500);clearInline();say('故事准备好了。',story.name);$('inline').append(button('返回开场',greetingPreview,false));const note=document.createElement('p');note.className='model-feedback';note.textContent='本次为交互演示，未创建真实世界。';$('inline').append(note);};
+        $('inline').append(option);
+      });
+      const end=document.createElement('div');end.className='greeting-body';end.style.marginTop='12px';end.innerHTML='<p>选一个，我来准备。</p>';$('inline').append(end);
+      const entry=document.createElement('div');entry.className='greeting-foot';entry.innerHTML='<span><i class="fa-solid fa-mug-saucer" aria-hidden="true"></i> Tavern</span><span>酒馆入口 · 示例</span>';$('inline').append(entry);
+    }
+    function switchScene(scene){
+      if(busy)return;epoch++;previewScene=scene;clearInline();$('main').className='';$('steps').classList.remove('depart');$('more').hidden=true;$('previous').hidden=true;$('status').hidden=false;
+      document.querySelectorAll('[data-scene]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scene===scene)));
+      if(scene==='daily'){services.nora='running';services.tavern='running';dailyHome();}
+      else if(scene==='claw'){daily=false;stage=3;$('management').hidden=true;$('steps').hidden=false;$('status').textContent='需要你参与';steps();clawForm();}
+      else if(scene==='greeting')greetingPreview();
+      else{daily=false;stage=0;$('management').hidden=true;$('launchbar').hidden=true;$('status').textContent='首次见面';welcome();}
+    }
+    document.querySelectorAll('[data-scene]').forEach(b=>b.onclick=()=>switchScene(b.dataset.scene));
+    document.querySelectorAll('[data-action]').forEach(b=>{const original=b.onclick;b.onclick=async()=>{if(busy)return;$('launchbar').hidden=true;await original();};});
+    switchScene(new URLSearchParams(location.search).get('scene')==='claw'?'claw':'daily');
+  </script>
 </body>
 </html>

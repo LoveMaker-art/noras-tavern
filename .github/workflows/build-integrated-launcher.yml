@@ -143,7 +143,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install
+          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement
 
       - name: Build release payload
         shell: bash
@@ -177,7 +177,7 @@ jobs:
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
             release/*/system-assets/*
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 14
           compression-level: 0
 
   publish-beta:

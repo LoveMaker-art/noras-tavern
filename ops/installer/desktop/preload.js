@@ -19,7 +19,7 @@ function runAction(action, options = {}) {
     }
   };
   ipcRenderer.on(channel, listener);
-  return ipcRenderer.invoke('nora:run', { action, runId, port: options.port, code: options.code, tag: options.tag })
+  return ipcRenderer.invoke('nora:run', { action, runId, port: options.port, code: options.code, tag: options.tag, service: options.service })
     .finally(() => ipcRenderer.removeListener(channel, listener));
 }
 

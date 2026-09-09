@@ -1,4 +1,5 @@
 import json
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -17,6 +18,9 @@ class NoraSystemTests(unittest.TestCase):
             file = self.home / "skills" / name / "SKILL.md"
             file.parent.mkdir(parents=True)
             file.write_text("test skill")
+        cardforge = Path(__file__).resolve().parents[1] / "skills/creative/nora-cardforge"
+        for name in ("resources/starter-stories", "references", "scripts"):
+            shutil.copytree(cardforge / name, self.home / "skills/creative/nora-cardforge" / name, dirs_exist_ok=True)
         for relative in ("apps/nora-mcp/dist/server.js", "apps/tavern-runtime/native_lifecycle.py", "apps/tavern-runtime/story_profile_runtime/manifest.json"):
             file = self.root / relative
             file.parent.mkdir(parents=True, exist_ok=True)

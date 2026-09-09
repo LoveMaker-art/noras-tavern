@@ -18,6 +18,7 @@ test('real controller waits for backend results through install, model, pairing,
       window.calls = [];
       const action = name => options => {
         window.calls.push(name);
+        window.lastOptions = options;
         options.onEvent?.({ event: 'task', task: `backend-${name}` });
         return new Promise((resolve, reject) => { window.settle = (patch, error) => {
           Object.assign(window.state, patch);
@@ -55,13 +56,32 @@ test('real controller waits for backend results through install, model, pairing,
     await page.evaluate(() => window.settle({ running: true, gatewayRunning: true, clawchatConnected: true, installer: { setupCompleted: true } }));
     await page.locator('#launch').click();
     await page.waitForFunction(() => window.calls.includes('open'));
-    await page.locator('#stop').click();
+    await page.getByRole('button', { name: '停止诺拉', exact: true }).click();
     await page.waitForFunction(() => window.calls.includes('stop'));
-    await page.evaluate(() => window.settle({ running: false, gatewayRunning: false, clawchatConnected: false }));
-    await page.waitForFunction(() => document.getElementById('runtimeState').textContent === '未运行');
+    assert.equal(await page.evaluate(() => window.lastOptions.service), 'nora');
+    await page.evaluate(() => window.settle({ gatewayRunning: false, clawchatConnected: false }));
+    await page.locator('[data-service="nora"][data-state="stopped"]').waitFor();
+    assert.equal(await page.locator('[data-service="tavern"]').getAttribute('data-state'), 'running');
+    await page.locator('#launch').click();
+    await page.waitForFunction(() => window.calls.filter(c => c === 'open').length === 2);
+    assert.equal(await page.evaluate(() => window.state.gatewayRunning), false);
+    await page.getByRole('button', { name: '停止酒馆', exact: true }).click();
+    await page.waitForFunction(() => window.calls.filter(c => c === 'stop').length === 2);
+    assert.equal(await page.evaluate(() => window.lastOptions.service), 'tavern');
+    await page.evaluate(() => window.settle({ running: false }));
+    await page.locator('[data-service="tavern"][data-state="stopped"]').waitFor();
+    await page.locator('#launch').click();
+    await page.waitForFunction(() => window.calls.filter(c => c === 'start').length === 3);
+    assert.equal(await page.evaluate(() => window.lastOptions.service), 'tavern');
+    await page.evaluate(() => window.settle({ running: true }));
+    await page.waitForFunction(() => window.calls.filter(c => c === 'open').length === 3);
+    await page.locator('#moreButton').click();
+    assert.equal(await page.locator('#more').isVisible(), true);
+    assert.equal(await page.locator('.portrait img').getAttribute('draggable'), 'false');
+    if (process.env.NORA_SCREENSHOT) await page.screenshot({ path: process.env.NORA_SCREENSHOT.replace('.png', '-daily.png'), animations: 'disabled' });
     assert.equal(await page.locator('#steps').isVisible(), false);
     assert.equal(await page.locator('#launchbar').isVisible(), true);
     assert.deepEqual(errors, []);
-    assert.deepEqual(await page.evaluate(() => window.calls), ['install', 'model', 'pair', 'start', 'start', 'open', 'stop']);
+    assert.deepEqual(await page.evaluate(() => window.calls), ['install', 'model', 'pair', 'start', 'start', 'open', 'stop', 'open', 'stop', 'start', 'open']);
   } finally { await browser.close(); }
 });

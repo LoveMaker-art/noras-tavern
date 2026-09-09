@@ -11,8 +11,9 @@
   let snapshot = {}, view = 'loading', refreshing = false, activeAction = '', lastFailure = null;
   let alive = true, pollTimer, taskTimer, startedAt = 0, lastEvent = 0;
   let milestoneStates = [], currentTask = '', operationCancelled = false;
-  let versionInfo = null, versionChecking = false, autoVersionChecked = false;
-  const previewDaily = dailyHome;
+  let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
+  $('stop').remove(); $('runtimeState').remove();
+  const launchHint = document.createElement('p'); launchHint.className = 'launch-hint'; $('launchbar').prepend(launchHint);
   const textError = error => String(error?.message || error || '操作未完成，请重试。')
     .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '').slice(0, 360);
 
@@ -35,24 +36,20 @@
     $('launchbar').hidden = !complete();
     $('status').hidden = complete();
     $('launch').disabled = busy || Boolean(snapshot.busy);
-    $('stop').hidden = !serviceRunning();
-    $('stop').disabled = busy || Boolean(snapshot.busy);
-    let phase = 'idle', label = '未运行', action = '打开酒馆';
-    if (serviceRunning()) { phase = 'running'; label = allRunning() ? '运行中' : '部分服务运行中'; }
-    if (snapshot.gatewayRunning && !snapshot.clawchatConnected) label = 'ClawChat 暂未连通';
-    if (lastFailure?.action === 'start') { phase = 'error'; label = '启动未完成'; action = '重试启动'; }
-    if (['start', 'restart'].includes(activeAction)) { phase = 'starting'; label = '正在启动…'; action = '正在启动'; }
-    if (activeAction === 'stop') { phase = 'stopping'; label = '正在停止…'; }
+    let action = '打开酒馆';
+    if (['start', 'restart'].includes(activeAction) && activeService !== 'nora') action = '正在启动';
     if (activeAction === 'open') action = '正在打开';
-    $('runtimeState').dataset.phase = phase;
-    $('runtimeState').textContent = label;
+    launchHint.hidden = Boolean(snapshot.running);
+    launchHint.textContent = action === '正在启动' ? '正在准备酒馆' : '点击后仅启动酒馆';
     $('launch').querySelector('span').textContent = action;
-    document.querySelectorAll('[data-action], #moreButton').forEach(item => { item.disabled = busy; });
+    document.querySelectorAll('[data-action], #moreButton, .services button').forEach(item => {
+      item.disabled = busy || Boolean(snapshot.busy) || item.dataset.unavailable === 'true';
+    });
   }
   function displaySteps() {
     if (complete()) { $('steps').hidden = true; return; }
     $('steps').hidden = false; $('steps').classList.remove('depart');
-    const facts = [snapshot.systemReady, snapshot.installed, snapshot.modelConfigured,
+    const facts = [snapshot.noraInstalled, snapshot.installed, snapshot.modelConfigured,
       snapshot.clawchatPaired && snapshot.clawchatProfileReady !== false, false];
     $('steps').replaceChildren();
     labels.forEach((label, index) => {
@@ -73,17 +70,42 @@
     $('management').hidden = !daily;
     displaySteps(); controls();
   }
-  dailyHome = (message = '') => {
-    view = 'daily'; running = Boolean(snapshot.running);
-    previewDaily(message || (allRunning() ? '准备好了。酒馆交给你。' : '欢迎回来。要开始了吗？'));
-    if (!message && !allRunning()) {
-      const detail = !snapshot.modelConfigured ? '模型配置需要检查，可以在下方重新设置。'
-        : !snapshot.clawchatPaired ? 'ClawChat 配对需要检查，安装文件已经保留。'
-        : snapshot.warning ? textError(snapshot.warning)
-        : serviceRunning() ? '部分服务尚未就绪，点击打开酒馆可重试连接。'
-        : '打开酒馆时，我会一起启动。';
-      $('subcopy').textContent = detail; $('subcopy').hidden = false;
+  function renderServices() {
+    clearInline();
+    const group = document.createElement('div'); group.className = 'services'; group.setAttribute('aria-label', '服务控制');
+    for (const id of ['nora', 'tavern']) {
+      const name = id === 'nora' ? '诺拉' : '酒馆', isOn = Boolean(id === 'nora' ? snapshot.gatewayRunning : snapshot.running);
+      const transitioning = busy && ['start', 'stop', 'restart'].includes(activeAction) && [id, 'all'].includes(activeService);
+      const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : isOn ? 'running' : 'stopped';
+      const row = document.createElement('div'); row.className = 'service-row'; row.dataset.service = id; row.dataset.state = state;
+      row.innerHTML = `<i class="service-symbol fa-solid fa-${id === 'nora' ? 'wand-magic-sparkles' : 'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${name}<small class="service-detail"></small></div><span class="service-state" role="status"></span>`;
+      row.querySelector('.service-detail').textContent = id === 'nora'
+        ? isOn ? snapshot.clawchatConnected ? '在 ClawChat 中对话' : 'ClawChat 暂未连通' : 'ClawChat 对话暂停'
+        : isOn ? '本地启动 ｜ 打开 ClawChat 启动' : '酒馆入口未运行';
+      row.querySelector('.service-state').textContent = { running: '运行中', stopped: '已停止', starting: '启动中', stopping: '停止中' }[state];
+      for (const action of ['restart', isOn ? 'stop' : 'start']) {
+        const label = ({ restart: '重启', stop: '停止', start: '启动' })[action] + name;
+        const control = document.createElement('button'); control.className = 'icon-action'; control.dataset.tip = label; control.setAttribute('aria-label', label);
+        control.dataset.unavailable = String(action === 'restart' && !isOn);
+        control.innerHTML = `<i class="fa-solid fa-${({ restart: 'rotate-right', stop: 'stop', start: 'play' })[action]}" aria-hidden="true"></i>`;
+        control.onclick = () => run(action, { service: id }); row.append(control);
+      }
+      group.append(row);
     }
+    const footer = document.createElement('div'); footer.className = 'services-footer'; footer.innerHTML = '<p>关闭窗口后，服务继续运行</p>';
+    const stopAll = button('全部停止', () => run('stop', { service: 'all' }), false); stopAll.className = 'quiet'; stopAll.dataset.unavailable = String(!serviceRunning());
+    footer.append(stopAll); group.append(footer); $('inline').append(group);
+  }
+  dailyHome = (message = '') => {
+    view = 'daily'; daily = true; running = Boolean(snapshot.running);
+    $('main').className = 'daily'; $('steps').hidden = true; $('management').hidden = false; hideMenu();
+    $('launchbar').classList.remove('enter');
+    say(message || (allRunning() ? '准备好了。酒馆交给你。'
+      : snapshot.running ? '酒馆已启动。' : snapshot.gatewayRunning ? '诺拉已启动。' : '随时可以继续。'),
+      snapshot.warning ? textError(snapshot.warning) : snapshot.gatewayRunning
+        ? snapshot.clawchatConnected ? '我在 ClawChat 等你。' : 'ClawChat 暂未连通，可以在下方检查。'
+        : '诺拉已暂停，酒馆可独立启动。');
+    renderServices();
     controls();
     showVersionNotice();
   };
@@ -114,7 +136,7 @@
   }
   function taskView(action) {
     view = 'task'; setupStage(stage); clearInline(); $('management').hidden = true;
-    const messages = { install: '我来准备，你稍等片刻。', pair: '我来连接 ClawChat。', start: '正在准备 Nora 和酒馆。', stop: '正在停止服务。', update: '正在更新酒馆。', repair: '正在修复安装。' };
+    const messages = { install: '我来准备，你稍等片刻。', pair: '我来连接 ClawChat。', start: '正在准备 Nora 和酒馆。', stop: '正在停止服务。', update: '正在更新诺拉与酒馆。', repair: '正在修复安装。' };
     say(messages[action] || '我正在处理。');
     $('inline').innerHTML = '<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent"></span></div><div class="meter indeterminate"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div><div class="task-actions" id="taskActions"></div>';
     currentTask = '准备中'; startedAt = Date.now(); lastEvent = Date.now();
@@ -163,20 +185,23 @@
   async function run(action, options = {}) {
     if (busy) return;
     const wasComplete = complete();
-    busy = true; operationCancelled = false; activeAction = action; lastFailure = null;
-    taskView(action); controls();
+    busy = true; operationCancelled = false; activeAction = action; activeService = options.service || 'all'; lastFailure = null;
+    if (wasComplete && ['start', 'stop', 'restart'].includes(action)) { dailyHome(); } else taskView(action);
+    controls();
     try {
       const result = await api[action]({ port: snapshot.port || 8799, ...options, onEvent });
       syncState(result); await readStatus();
-      if (['start', 'restart'].includes(action) && !allRunning()) throw new Error('服务尚未全部就绪，请重试。');
+      const selectedRunning = activeService === 'nora' ? snapshot.gatewayRunning && snapshot.clawchatConnected : activeService === 'tavern' ? snapshot.running : allRunning();
+      if (['start', 'restart'].includes(action) && !selectedRunning) throw new Error('所选服务尚未就绪，请重试。');
       if (action === 'start' && !wasComplete && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         $('steps').classList.add('depart');
         await wait(350);
       }
       busy = false; activeAction = ''; clearInterval(taskTimer);
       if (action === 'stop') {
-        if (serviceRunning()) throw new Error('服务尚未完全停止，请重试。');
-        if (wasComplete) { dailyHome('Nora 与酒馆已停止。'); say('Nora 与酒馆已停止。', '手机连接已断开，数据与配置已保留。'); }
+        const stillRunning = activeService === 'nora' ? snapshot.gatewayRunning : activeService === 'tavern' ? snapshot.running : serviceRunning();
+        if (stillRunning) throw new Error('所选服务尚未停止，请重试。');
+        if (wasComplete) dailyHome(activeService === 'all' ? '服务已停止，故事还在。' : activeService === 'nora' ? '诺拉已暂停。' : '酒馆已停止。');
         else route();
       } else if (['start', 'restart'].includes(action)) {
         dailyHome();
@@ -190,23 +215,20 @@
       // Single-use pairing codes are never replayed automatically.
       const retry = action === 'pair'
         ? snapshot.clawchatPaired ? () => run('start') : clawForm
-        : () => run(action, { openAfter: options.openAfter });
+        : () => run(action, options);
       fail(error, action, retry);
     } finally { controls(); }
   }
   install = () => { stage = snapshot.hermesInstalled ? 1 : 0; milestoneStates = []; run('install'); };
   async function openTavern() {
     if (busy) return;
-    if (!snapshot.modelConfigured) { modelForm(); return; }
-    if (!snapshot.clawchatPaired) { clawForm(); return; }
-    if (!allRunning() || lastFailure?.action === 'start') { stage = 4; run('start', { openAfter: true }); return; }
+    if (!snapshot.running) { stage = 4; await run('start', { service: 'tavern', openAfter: true }); return; }
     busy = true; activeAction = 'open'; controls();
     try { await api.openExternal(snapshot.url); busy = false; activeAction = ''; dailyHome('酒馆页面已打开。'); }
     catch (error) { busy = false; activeAction = ''; fail(error, 'open', openTavern); }
     finally { controls(); }
   }
   $('launch').onclick = openTavern;
-  $('stop').onclick = () => run('stop');
 
   modelForm = async () => {
     if (busy) return;
@@ -253,8 +275,8 @@
       try { await api.saveAndTestModel(payload); $('key').value = ''; await readStatus(); lock(false);
         if (!snapshot.modelConfigured) throw new Error('模型配置未通过保存检查。');
         if (complete()) {
-          dailyHome(serviceRunning() ? '模型已保存，重新启动后生效。' : '模型已更换。');
-          if (serviceRunning()) $('inline').append(button('重新启动 Nora 与酒馆', () => run('restart')));
+          dailyHome(snapshot.gatewayRunning ? '模型已保存，重启诺拉后生效。' : '模型已更换。');
+          if (snapshot.gatewayRunning) $('inline').append(button('重启诺拉', () => run('restart', { service: 'nora' })));
         } else route();
       } catch (error) { lock(false); feedback(textError(error).replaceAll(payload.key, '***'), true); }
     };
@@ -265,12 +287,12 @@
     say(snapshot.clawchatPaired ? 'ClawChat 配对已保留。' : '把我接到 ClawChat 吧。');
     if (complete()) editHeader('ClawChat');
     const content = document.createElement('div'); content.className = 'pair';
-    content.innerHTML = '<p>在 ClawChat 的联系人中注册 Hermes Agent，然后把配对码填在这里。</p><div class="task-actions" id="clawActions"></div>';
+    content.innerHTML = '<p>在 ClawChat 获取配对码，然后填在这里。</p><div class="task-actions" id="clawActions"></div>';
     $('inline').append(content);
     $('clawActions').append(button('下载 ClawChat', () => api.openClawChat().catch(error => fail(error, 'claw', clawForm)), false));
-    if (snapshot.clawchatPaired) $('clawActions').append(button(snapshot.clawchatConnected ? '检查并启动' : '重新连接', () => { stage = 4; run('start'); }));
+    if (snapshot.clawchatPaired) $('clawActions').append(button(snapshot.clawchatConnected ? '检查并启动' : '重新连接', () => { stage = 4; run('start', { service: complete() ? 'nora' : 'all' }); }));
     const form = document.createElement('form'); form.style.marginTop = '18px';
-    form.innerHTML = '<label for="pairCode">配对码</label><input id="pairCode" type="password" autocomplete="off" placeholder="粘贴 ClawChat 配对码"><p class="model-feedback" id="pairFeedback"></p><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div>';
+    form.innerHTML = '<div class="field-line"><label for="pairCode">配对码</label><a class="quiet" href="https://clawling.com/zh/chat/docs/connect-code/" target="_blank" rel="noopener noreferrer">如何获取配对码 <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></a></div><input id="pairCode" type="password" autocomplete="off" placeholder="粘贴 ClawChat 配对码"><p class="model-feedback" id="pairFeedback"></p><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div>';
     if (snapshot.clawchatPaired) {
       const replace = button('重新配对', () => { replace.hidden = true; form.hidden = false; }, false); replace.className = 'quiet'; $('inline').append(replace); form.hidden = true;
     }
@@ -285,7 +307,8 @@
     try {
       const result = await api.checkUpdate(); busy = false; versionInfo = result;
       const state = result.state || (result.available ? 'available' : 'current');
-      const title = { available: '发现新版本。', blocked: '最新发布暂不可用于完整安装。', current: '当前系统已是最新正式版。', ahead: '本机版本高于最新正式版。', unknown: '本机版本待确认。', unavailable: '暂时无法检查更新。' }[state];
+      const channelName = result.channel === 'beta' ? 'Beta 测试版' : '正式版';
+      const title = { available: '发现新版本。', blocked: '最新发布暂不可用于完整安装。', current: `当前系统已是最新${channelName}。`, ahead: `本机版本高于最新${channelName}。`, unknown: '本机版本待确认。', unavailable: '暂时无法检查更新。' }[state];
       const versions = `本机 ${result.current || '版本待确认'}${result.latest ? ` · GitHub ${result.latest}` : ''}`;
       say(title, result.error || `${versions}${result.compatibilityError ? ` · ${result.compatibilityError}` : ''}${state === 'blocked' ? '。现有安装不受影响。' : ''}`);
       if (result.available && result.updateSupported) $('inline').append(button('安装更新', () => run('update', { tag: result.latest })));
@@ -300,8 +323,9 @@
     if (versionInfo.state === 'current') return;
     const notice = document.createElement('div'); notice.id = 'versionNotice'; notice.className = 'note';
     const summary = versionInfo.state === 'unavailable' ? '暂时无法检查更新' : versionInfo.state === 'blocked' ? '最新发布暂不可用于完整安装' : versionInfo.state === 'unknown' ? '本机版本待确认'
-      : versionInfo.available ? `发现新版本 ${versionInfo.latest}` : '本机版本高于最新正式版';
-    notice.append(document.createTextNode(summary + ' '), button('查看版本', checkUpdates, false));
+      : versionInfo.available ? `发现新版本 ${versionInfo.latest}` : `本机版本高于最新${versionInfo.channel === 'beta' ? 'Beta 测试版' : '正式版'}`;
+    const details = button('查看版本', checkUpdates, false); details.className = 'quiet';
+    notice.append(document.createTextNode(summary + ' '), details);
     $('inline').append(notice);
   }
   async function checkVersionsInBackground() {

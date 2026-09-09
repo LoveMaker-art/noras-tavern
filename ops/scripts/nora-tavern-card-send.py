@@ -29,6 +29,8 @@ def _locale_code(value: str | None) -> str:
 
 
 def _owner_locale() -> str:
+    if (HERMES_HOME / "nora-instance.json").is_file():
+        return "zh"
     path = HERMES_HOME / "memories" / "owner.md"
     try:
         in_metadata = False

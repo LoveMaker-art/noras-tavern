@@ -66,9 +66,7 @@ async def initialize(home, user_id, client):
         return {"ok": True, "alreadyInitialized": True}
     before = profile_detail(await client.get_my_profile())
     verify_account(before, user_id)
-    owner = profile_detail(await client.get_agent_owner())
-    locale = str(owner.get("locale") or "").strip().lower().replace("_", "-")
-    nickname = "诺拉" if locale == "zh" or locale.startswith("zh-") else "Nora"
+    nickname = "诺拉"
     desired = {"nickname": nickname, "avatar_url": AVATAR_URL}
     # Read-back also recovers a successful PATCH interrupted before the receipt was saved.
     current_avatar = before.get("avatar_url") or before.get("avatarUrl")

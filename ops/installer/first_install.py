@@ -446,6 +446,9 @@ def install(args) -> dict:
             hermes_home / "nora-instance.json",
             hermes_home / "cron/jobs.json",
             hermes_home / "clawchat/greeting.md",
+            hermes_home / "clawchat/nora-greeting.json",
+            hermes_home / "clawchat/greeting.nora-example.md",
+            hermes_home / "nora-installation.json",
             hermes_home / "clawchat-skills",
             *[hermes_home / "scripts" / name for name in
               ("nora-instance.py", "nora-tavern-update-check.py", "nora-tavern-card-send.py")],
@@ -455,14 +458,7 @@ def install(args) -> dict:
         hermes_records = snapshot_targets(hermes_home, hermes_targets, backup / "hermes")
         runtime_attempted = False
         try:
-            event("milestone", index=1, state="running", task="安装酒馆本体")
-            log("安装 Nora Tavern 程序文件")
-            copy_tree(source / "app", install_root / "apps/tavern-runtime")
-            copy_tree(source / "ops", install_root / "apps/tavern-ops")
-            copy_tree(source / "nora-mcp", install_root / "apps/nora-mcp")
-            mark_bundled_dependencies(source, install_root, manifest)
-
-            event("task", milestone=1, task="配置 Nora")
+            event("task", milestone=0, task="配置诺拉")
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(hermes_home, prepared_skills)
             host_hook = install_host_hook(hermes_home, source)
@@ -473,8 +469,20 @@ def install(args) -> dict:
                 system = module_at("nora_install_system", HERE / "nora_system.py")
                 system.configure_managed(hermes_home, install_root, nora_home, args.port, source,
                                          sys.executable, dict(os.environ))
-
-            event("milestone", index=1, state="done", task="酒馆已安装")
+            update_check = install_update_check(hermes_home, source / "ops")
+            if update_check.get("status") != "installed":
+                raise RuntimeError("诺拉更新提醒任务未成功注册")
+            if dedicated:
+                problems = system.managed_problems(hermes_home, install_root, args.port)
+                if problems:
+                    raise RuntimeError("；".join(problems))
+                system.record_files_ready(hermes_home)
+            event("milestone", index=0, state="done", task="诺拉文件安装完成")
+            event("milestone", index=1, state="running", task="安装酒馆本体")
+            copy_tree(source / "app", install_root / "apps/tavern-runtime")
+            copy_tree(source / "ops", install_root / "apps/tavern-ops")
+            copy_tree(source / "nora-mcp", install_root / "apps/nora-mcp")
+            mark_bundled_dependencies(source, install_root, manifest)
             event("task", milestone=1, task="启动并检查酒馆")
             log("准备并启动本地 Tavern")
             runtime_attempted = True
@@ -483,18 +491,15 @@ def install(args) -> dict:
             if not args.skip_liveware:
                 log("尝试初始化 Tavern Liveware 入口")
                 liveware = initialize_liveware(hermes_home, install_root, args.port)
-            update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
-            if update_check.get("status") != "installed":
-                raise RuntimeError("Nora 更新提醒任务未成功注册")
             if not runtime.get("health", {}).get("ok"):
                 raise RuntimeError("酒馆启动后未通过健康检查")
             if dedicated:
                 system = module_at("nora_install_system", HERE / "nora_system.py")
-                event("task", milestone=0, task="验证 Nora 身份、技能与酒馆连接")
+                event("task", milestone=1, task="验证诺拉身份、技能与酒馆连接")
                 proof = system.verify_runtime(hermes_home, install_root, args.port, sys.executable, dict(os.environ))
                 system.record_initialization(hermes_home, install_root, manifest, proof)
             write_install_receipt(install_root, manifest)
-            event("milestone", index=0, state="done", task="Nora 初始化完成")
+            event("milestone", index=1, state="done", task="酒馆安装检查完成")
             event("task", task="系统已安装，等待配置模型和连接 ClawChat")
         except Exception:
             event("milestone", index=1, state="error", task="安装失败")
@@ -503,6 +508,7 @@ def install(args) -> dict:
                 stop_install_runtime(install_root)
             restore_targets(install_root, tavern_records, backup / "tavern")
             restore_targets(hermes_home, hermes_records, backup / "hermes")
+            event("milestone", index=0, state="pending", task="安装已回滚")
             raise
 
     result = {

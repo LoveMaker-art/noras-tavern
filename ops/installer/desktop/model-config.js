@@ -249,7 +249,7 @@ async function loadProviderModels(providerId, key) {
     : provider.modelsUrl;
   const payload = await requestJson(modelsUrl, headers, secret);
   const models = normalizeModels(provider, payload);
-  if (!models.length) throw new Error('Key 已连接，但没有读取到可用模型。');
+  if (!models.length) throw new Error('未获取到可用模型。');
   return { provider: provider.id, keyEnv: provider.keyEnv, models };
 }
 

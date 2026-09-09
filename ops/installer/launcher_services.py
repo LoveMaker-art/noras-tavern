@@ -171,4 +171,4 @@ def stop_liveware(hermes_home):
         process.kill()
     _, alive = psutil.wait_procs(alive, timeout=5)
     if alive:
-        raise RuntimeError('手机连接服务尚未停止，暂不替换系统。')
+        raise RuntimeError('ClawChat 连接服务尚未停止，暂不替换系统。')

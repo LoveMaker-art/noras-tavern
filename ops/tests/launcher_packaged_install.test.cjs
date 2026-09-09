@@ -30,11 +30,22 @@ test('packaged candidate really installs through the visible UI and survives reo
     assert.equal(status.installed, false);
     assert.equal(status.port, 18999);
     console.log('Initial UI:', (await page.locator('body').innerText()).slice(-2000));
+    await page.evaluate(() => {
+      window.sawIndependentNoraStage = false;
+      new MutationObserver(() => {
+        const steps = document.querySelectorAll('#steps .step');
+        if (steps[0]?.classList.contains('done') && steps[1]?.classList.contains('active') && !steps[1]?.classList.contains('done')) {
+          window.sawIndependentNoraStage = true;
+        }
+      }).observe(document.getElementById('steps'), { childList: true, subtree: true, attributes: true });
+    });
     await page.getByRole('button', { name: '开始安装', exact: true }).click();
     console.log('Clicked install in the packaged app');
     await page.locator('#provider').waitFor({ state: 'visible', timeout: 180000 });
     status = await page.evaluate(() => window.NoraLauncherBridge.status());
     assert.equal(status.systemReady, true, JSON.stringify(status.systemProblems));
+    assert.equal(status.noraInstalled, true);
+    assert.equal(await page.evaluate(() => window.sawIndependentNoraStage), true, 'The real UI must show Nora done while Tavern installs');
     assert.equal(status.setupCompleted, false);
     assert.equal(status.modelConfigured, false);
     assert.equal(status.clawchatPaired, false);
@@ -42,6 +53,7 @@ test('packaged candidate really installs through the visible UI and survives reo
     assert.equal(system.proof.managedConfiguration, true);
     assert.equal(system.proof.mcpInstanceRead, true);
     console.log('Real installation reached model configuration; Nora integrity and MCP passed');
+    if (process.env.NORA_SCREENSHOT) await page.screenshot({ path: process.env.NORA_SCREENSHOT });
     await page.evaluate(() => window.NoraLauncherBridge.stop());
     stopped = true;
     await app.close(); app = null;

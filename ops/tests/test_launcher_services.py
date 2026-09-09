@@ -137,7 +137,7 @@ else:
             sync.assert_called_once_with(args)
 
     def test_failed_start_never_emits_completion(self):
-        args = Mock(nora_home=self.root, hermes_home=self.hermes, install_root=self.root / 'tavern', port=8799)
+        args = Mock(nora_home=self.root, hermes_home=self.hermes, install_root=self.root / 'tavern', port=8799, service='nora')
         with patch.object(bridge, 'installed', return_value=True), \
              patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
              patch.object(bridge, 'read_verified_model', return_value={'model': 'test'}), \

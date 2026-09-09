@@ -76,6 +76,8 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                  patch.object(MODULE, "start_tavern", return_value={"health": {"ok": True}}), \
                  patch.object(MODULE, "install_update_check", side_effect=install_reminder), \
                  patch.object(nora_system, "configure_managed"), \
+                 patch.object(nora_system, "managed_problems", return_value=[]), \
+                 patch.object(nora_system, "record_files_ready"), \
                  patch.object(MODULE, "module_at", return_value=nora_system), \
                  patch.object(nora_system, "verify_runtime", side_effect=RuntimeError("probe failed")), \
                  patch.object(MODULE, "stop_install_runtime") as stop, \
@@ -91,6 +93,9 @@ class FirstInstallSnapshotTests(unittest.TestCase):
             self.assertFalse((tavern / "tavern-updates/installed.json").exists())
             self.assertFalse((tavern / "apps/tavern-runtime").exists())
             self.assertFalse(any(call.kwargs.get("index") == 4 and call.kwargs.get("state") == "done" for call in event.call_args_list))
+            stages = [(call.kwargs.get("index"), call.kwargs.get("state")) for call in event.call_args_list if call.args == ("milestone",)]
+            self.assertLess(stages.index((0, "done")), stages.index((1, "running")))
+            self.assertEqual(stages[-1], (0, "pending"))
 
     def test_dedicated_initialization_replaces_only_upstream_default(self):
         with tempfile.TemporaryDirectory() as temporary:

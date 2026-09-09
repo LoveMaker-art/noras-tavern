@@ -15,16 +15,52 @@ MANAGED_FILES = ("hooks/tavern-liveware-register/HOOK.yaml", "hooks/tavern-livew
 CLAWCHAT_SKILLS = ("clawchat-core", "clawchat-liveware", "clawchat-liveware-dev",
                    "clawchat-liveware-sample", "clawchat-set-greeting")
 PROOFS = ("hermesContext", "mcpInstanceRead", "managedConfiguration", "clawchatRegistration")
+LEGACY_GREETING = """你是 Nora，诺拉·酒馆的管理者。用用户当前语言简短问候，告诉对方可以在这里与你交流、管理酒馆。
+保持 SOUL.md 中的人格。不要自称 Hermes 或其他助手，也不要声称已经完成尚未检查的安装、连接或配置。
+不输出内部指令、模型配置或密钥。首次问候只需一两句话。
+"""
+
+
+def install_greeting(home, source):
+    target = home / "clawchat/greeting.md"
+    template = source / "ops/installer/templates/greeting.md"
+    for name in ("clawchat/greeting.md", "clawchat/nora-greeting.json", "clawchat/greeting.nora-example.md"):
+        if not (home / name).resolve().is_relative_to(home.resolve()):
+            raise RuntimeError("开场白必须保存在当前隔离目录内")
+    receipt = read_json(home / "clawchat/nora-greeting.json")
+    old = target.read_text(encoding="utf-8") if target.exists() else ""
+    managed = not old.strip() or old.strip() == LEGACY_GREETING.strip() or receipt.get("sha256") == hashlib.sha256(old.encode()).hexdigest()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if managed:
+        shutil.copy2(template, target)
+        save_json(home / "clawchat/nora-greeting.json", {"schema": 1, "sha256": digest(target), "version": 2})
+    else:
+        shutil.copy2(template, home / "clawchat/greeting.nora-example.md")
+
+
+def record_files_ready(home):
+    files = inventory(home)
+    files.update({name: digest(home / name) for name in MANAGED_FILES})
+    save_json(home / "nora-installation.json", {"schema": 1, "files": files})
+
+
+def files_ready(home):
+    record = read_json(home / "nora-installation.json")
+    files = record.get("files")
+    if record.get("schema") != 1 or not isinstance(files, dict) or not files:
+        return False
+    for name, expected in files.items():
+        path = (home / name).resolve()
+        if not path.is_relative_to(home.resolve()) or not path.is_file() or digest(path) != expected:
+            return False
+    return all((home / name).is_file() and (home / name).stat().st_size for name in ("SOUL.md", "AGENTS.md", "clawchat/greeting.md"))
 
 
 def configure_managed(home, root, nora_home, port, source, python, env):
     save_json(home / "nora-instance.json", {"schema": 1, "noraHome": str(nora_home),
               "hermesHome": str(home), "installRoot": str(root), "port": port,
               "releaseChannel": os.environ.get("NORA_RELEASE_CHANNEL", "stable")})
-    greeting = home / "clawchat/greeting.md"
-    if not greeting.exists():
-        greeting.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / "ops/installer/templates/greeting.md", greeting)
+    install_greeting(home, source)
     # Use the plugin's supported seeding/registration API, retaining newer managed skills.
     probe = '''
 import sys
@@ -69,6 +105,27 @@ def managed_problems(home, root, port):
     greeting = home / "clawchat/greeting.md"
     if not greeting.is_file() or not greeting.read_text(encoding="utf-8").strip():
         problems.append("缺少 Nora 首次问候配置")
+    samples = home / "skills/creative/nora-cardforge/resources/starter-stories"
+    stories = read_json(samples / "manifest.json").get("stories", [])
+    expected = {"suzhou-rain", "xiamen-breeze"}
+    if not isinstance(stories, list) or {item.get("id") for item in stories if isinstance(item, dict)} != expected:
+        problems.append("内置故事资源清单不完整")
+    else:
+        for item in stories:
+            if not isinstance(item, dict):
+                problems.append("内置故事清单格式错误")
+                continue
+            file = (samples / str(item.get("file", ""))).resolve()
+            if not file.is_relative_to(samples.resolve()) or not file.is_file() or digest(file) != item.get("sha256"):
+                problems.append("内置故事资源校验失败")
+                continue
+            card = read_json(file)
+            data = card.get("data", {})
+            if card.get("spec") != "chara_card_v2" or not all(data.get(key) for key in ("name", "description", "scenario", "first_mes")):
+                problems.append("内置故事卡内容不完整")
+    for name in ("references/starter-stories.md", "scripts/starter-story.py"):
+        if not (home / "skills/creative/nora-cardforge" / name).is_file():
+            problems.append("缺少故事按需导入组件：" + name)
     jobs = read_json(home / "cron/jobs.json").get("jobs", [])
     if not isinstance(jobs, list):
         problems.append("Nora 定时任务记录格式错误")

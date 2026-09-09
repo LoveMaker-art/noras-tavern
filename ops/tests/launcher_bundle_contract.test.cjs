@@ -41,6 +41,20 @@ test('desktop bundle carries the profile initializer beside the bridge', () => {
   assert.ok(fs.existsSync(path.resolve(__dirname, '../installer/desktop', entry.from)));
 });
 
+test('Mac and Windows packages use the high-resolution Nora icon', () => {
+  const pkg = require('../installer/desktop/package.json');
+  for (const platform of ['mac', 'win']) {
+    const icon = pkg.build[platform].icon || pkg.build.icon;
+    assert.equal(icon, '../assets/nora-launcher-portrait.png');
+    const bytes = fs.readFileSync(path.resolve(__dirname, '../installer/desktop', icon));
+    assert.equal(bytes.subarray(1, 4).toString(), 'PNG');
+    assert.equal(bytes.readUInt32BE(16), bytes.readUInt32BE(20));
+    assert.ok(bytes.readUInt32BE(16) >= 512, 'packaging needs a full-resolution icon, not the small favicon');
+  }
+  const main = fs.readFileSync(path.resolve(__dirname, '../installer/desktop/main.js'), 'utf8');
+  assert.ok(main.includes("icon: path.join(installerRoot(), 'assets', 'tavern-icon-dbf4ecbd54ec.png')"));
+});
+
 test('full Nora packaging requires every managed initialization artifact', async () => {
   const { assertNoraSystemArtifacts, NORA_SYSTEM_REQUIRED_FILES } = await import('../scripts/release-source.mjs');
   assert.doesNotThrow(() => assertNoraSystemArtifacts(NORA_SYSTEM_REQUIRED_FILES));

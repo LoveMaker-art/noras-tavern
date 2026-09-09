@@ -302,6 +302,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "setupCompleted": False,
             "running": False,
             "hermesInstalled": hermes_ready,
+            "noraInstalled": nora_system.files_ready(hermes_home),
             "modelConfigured": credentials_ready,
             "modelProvider": verified_model.get("provider", ""),
             "modelName": verified_model.get("model", ""),
@@ -330,6 +331,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "systemProblems": system["problems"],
         "running": running,
         "hermesInstalled": hermes_ready,
+        "noraInstalled": nora_system.files_ready(hermes_home),
         "modelConfigured": credentials_ready,
         "modelProvider": verified_model.get("provider", ""),
         "modelName": verified_model.get("model", ""),
@@ -359,14 +361,18 @@ def command_status(args) -> None:
 
 def command_install(args) -> None:
     system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
-    if installed(args.install_root) and system["ready"]:
+    payload = release_dir(args.release_dir)
+    target = nora_system.read_json(payload / "release-manifest.json") if payload else {}
+    current = read_version(args.install_root)
+    matches_target = not payload or (target.get("versions", {}).get("tavern") == current.get("version")
+                                    and bool(target.get("commit")) and target["commit"] == current.get("commit"))
+    if installed(args.install_root) and system["ready"] and matches_target:
         command_status(args)
         return
     if gateway_status(args.nora_home, args.hermes_home).get("gatewayRunning"):
         fail("请先停止 Nora，再继续初始化。现有配置与数据已保留。")
     if installed(args.install_root) and status_payload(args.nora_home, args.hermes_home, args.install_root, args.port).get("running"):
         fail("请先停止酒馆，再继续初始化。现有配置与数据已保留。")
-    payload = release_dir(args.release_dir)
     bootstrap = (payload / "nora-tavern-first-install-bootstrap.py") if payload else (HERE / "bootstrap.py")
     if not bootstrap.is_file():
         fail("没有找到首次安装器。")
@@ -408,20 +414,32 @@ def command_install(args) -> None:
 
 
 def command_start(args) -> None:
+    service = getattr(args, "service", "all")
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
     system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
     if not system["ready"]:
         fail("Nora 初始化未完成：" + "；".join(system["problems"][:3]))
     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
-    if not read_verified_model(args.nora_home, args.hermes_home):
+    if service != "tavern" and not read_verified_model(args.nora_home, args.hermes_home):
         fail("请先配置并测试模型。")
-    if not clawchat_paired(args.hermes_home):
+    if service != "tavern" and not clawchat_paired(args.hermes_home):
         fail("请先连接 ClawChat。")
-    sync_nora_profile(args)
-    emit("milestone", index=4, state="running", task="启动 Nora 与酒馆")
+    if service != "tavern":
+        sync_nora_profile(args)
+    emit("milestone", index=4, state="running", task="正在启动服务")
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
-    emit("task", task="正在准备手机连接组件")
+    if service != "nora":
+        run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env)
+    if service == "nora":
+        start_gateway(args.nora_home, args.hermes_home,
+                      [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
+        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+        return
+    if service == "tavern" and not clawchat_paired(args.hermes_home):
+        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+        return
+    emit("task", task="正在准备 ClawChat 连接组件")
     plugin = args.hermes_home / "plugins/clawchat"
     require_bundled_clawchat(args.hermes_home)
     prepare = (
@@ -431,22 +449,22 @@ def command_start(args) -> None:
     )
     connection = run_json([python_command(args.hermes_home), "-B", "-c", prepare, str(plugin)], env=env, timeout=180)
     if connection.get("ok") is not True:
-        fail("手机连接组件未就绪，请检查网络、ClawChat 配对和系统支持情况后重试。")
-    emit("task", task="正在连接 ClawChat")
-    start_gateway(args.nora_home, args.hermes_home,
-                  [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
-    run_stream(
-        [python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)],
-        env=env_for(args.nora_home, args.hermes_home, args.install_root),
-    )
-    emit("task", task="正在注册手机酒馆入口")
+        fail("ClawChat 连接组件未就绪，请检查网络、ClawChat 配对和系统支持情况后重试。")
+    emit("task", task="正在注册 ClawChat 酒馆入口")
     module_path = args.install_root / "apps/tavern-ops/updater/liveware_integration.py"
     spec = importlib.util.spec_from_file_location("launcher_liveware", module_path)
     integration = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(integration)
     result = integration.initialize(args.install_root, args.port, hermes_home=args.hermes_home)
     if result.get("status") != "updated":
-        fail("手机酒馆入口尚未就绪：" + "；".join(result.get("warnings", [])))
+        fail("ClawChat 酒馆入口尚未就绪：" + "；".join(result.get("warnings", [])))
+    if service == "tavern":
+        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+        return
+    # First activation may greet immediately: prepare its real entry before the gateway.
+    emit("task", task="正在连接 ClawChat")
+    start_gateway(args.nora_home, args.hermes_home,
+                  [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if not (status["running"] and status["clawchatConnected"]):
         fail("启动检查未通过，请检查服务连接后重试。")
@@ -458,15 +476,32 @@ def command_start(args) -> None:
 
 
 def command_stop(args) -> None:
-    emit("task", task="正在停止 Nora 与酒馆")
-    stop_gateway(args.nora_home)
-    stop_liveware(args.hermes_home)
-    if installed(args.install_root):
-        lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
-        run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
-                   env=env_for(args.nora_home, args.hermes_home, args.install_root))
+    service = getattr(args, "service", "all")
+    emit("task", task="正在停止" + {"nora": "诺拉", "tavern": "酒馆", "all": "诺拉与酒馆"}[service])
+    errors = []
+    if service != "tavern":
+        try:
+            stop_gateway(args.nora_home)
+        except Exception as error:
+            errors.append(str(error))
+    if service != "nora":
+        try:
+            stop_liveware(args.hermes_home)
+        except Exception as error:
+            errors.append(str(error))
+        if installed(args.install_root):
+            try:
+                lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
+                run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
+                           env=env_for(args.nora_home, args.hermes_home, args.install_root))
+            except SystemExit:
+                errors.append("酒馆停止命令未完成")
+            except Exception as error:
+                errors.append(str(error))
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
-    if status["running"] or status["gatewayRunning"]:
+    if errors:
+        raise RuntimeError("；".join(errors))
+    if (service != "nora" and status["running"]) or (service != "tavern" and status["gatewayRunning"]):
         fail("服务尚未完全停止，请重试。")
     emit("result", **status)
 
@@ -614,9 +649,8 @@ def main() -> None:
     sub.add_parser("status")
     install = sub.add_parser("install")
     install.add_argument("--release-dir")
-    sub.add_parser("start")
-    sub.add_parser("stop")
-    sub.add_parser("restart")
+    for action in ("start", "stop", "restart"):
+        sub.add_parser(action).add_argument("--service", choices=("all", "nora", "tavern"), default="all")
     sub.add_parser("finish-update")
     sub.add_parser("pair")
     update = sub.add_parser("update")

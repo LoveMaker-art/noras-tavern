@@ -8,11 +8,16 @@ import { buildCommand } from './build-commands.mjs';
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 
 export const NORA_SYSTEM_REQUIRED_FILES = [
+    'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
+    'app/engine/sillytavern/src/nora-world-core/builtin/welcome-zh.md',
     'ops/installer/first_install.py', 'ops/installer/nora_system.py', 'ops/installer/nora_profile.py',
     'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
     'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
+    ...['references/starter-stories.md', 'scripts/starter-story.py',
+        'resources/starter-stories/manifest.json', 'resources/starter-stories/suzhou-rain.json',
+        'resources/starter-stories/xiamen-breeze.json'].map(name => `ops/skills/creative/nora-cardforge/${name}`),
     ...['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
         .map(name => `ops/skills/${name}/SKILL.md`),
 ];
@@ -137,6 +142,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         `${engineRoot}src/tokenizers/`,
     ];
     const omittedFiles = new Set([
+        'ops/installer/launcher-refinement-preview.html',
         `${engineRoot}default/content/default_Seraphina.png`,
         `${engineRoot}default/content/Eldoria.json`,
         `${engineRoot}public/lib/pdf.min.mjs`,

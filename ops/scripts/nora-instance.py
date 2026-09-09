@@ -33,7 +33,7 @@ def configuration(home):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("operation", choices=("check", "status", "start", "stop", "recover-existing"))
+    parser.add_argument("operation", choices=("check", "status", "start", "stop", "recover-existing", "app-link"))
     args = parser.parse_args()
     home = Path(os.environ.get("HERMES_HOME", Path(__file__).resolve().parents[1])).resolve()
     config = configuration(home)
@@ -42,11 +42,27 @@ def main():
         print(json.dumps({"ok": True, "port": port}))
         return 0
     env = {**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(root)}
+    if args.operation == "app-link":
+        import importlib.util
+        script = root / "apps/tavern-ops/updater/liveware_integration.py"
+        spec = importlib.util.spec_from_file_location("nora_entry", script)
+        integration = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(integration)
+        identity = json.loads((root / "tavern-state/apps.json").read_text(encoding="utf-8"))["console"]
+        print(integration.release_launcher_url(identity["domain"], integration.runtime_asset_release(port)))
+        return 0
     if args.operation == "recover-existing":
+        if config["schema"] == 1:
+            # Desktop service controls own starts; a gateway hook must not restart Tavern.
+            probe = subprocess.run([sys.executable, "-B", str(root / "apps/tavern-runtime/native_lifecycle.py"),
+                                    "status", "--port", str(port)], env=env, capture_output=True, text=True, timeout=30)
+            if probe.returncode or not json.loads(probe.stdout).get("health", {}).get("ok"):
+                print(json.dumps({"status": "tavern-stopped"}))
+                return 0
         # The launcher owns first-time App creation; startup hooks only recover identities.
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
         command = [str(script), "--home", str(root), "--hermes-home", str(home),
-                   "--port", str(port), "recover-existing"]
+                   "--port", str(port), "refresh" if config["schema"] == 1 else "recover-existing"]
     else:
         command = [str(root / "apps/tavern-runtime/native_lifecycle.py"), args.operation]
         if args.operation != "stop":

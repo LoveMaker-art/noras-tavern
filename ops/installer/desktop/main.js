@@ -285,6 +285,7 @@ function bridgeArgs(command, options = {}) {
       '--port',
       String(options.port || readInstallerState().port || DEFAULT_PORT),
       command,
+      ...(options.service ? ['--service', options.service] : []),
       ...(options.releaseDir ? ['--release-dir', options.releaseDir] : []),
       ...(options.url ? [options.url] : []),
       ...(options.tag ? ['--tag', options.tag] : []),
@@ -493,11 +494,11 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
         let result = await runBridge('status');
         if (!result.systemReady || releases.compare(result.version, target.version) !== 0) throw new Error('更新后的完整性或版本检查未通过。');
         if (before.setupCompleted) {
-          if (before.running || before.gatewayRunning) result = await runBridge('start', { port: payload.port }, webContents, payload.runId);
-          else {
-            await runBridge('finish-update');
-            result = await runBridge('stop');
-          }
+          await runBridge('finish-update');
+          result = await runBridge('stop');
+          if (before.running || before.gatewayRunning) result = await runBridge('start', {
+            port: payload.port, service: before.running && before.gatewayRunning ? 'all' : before.running ? 'tavern' : 'nora',
+          }, webContents, payload.runId);
         } else result = await runBridge('stop');
         return result;
       },
@@ -567,6 +568,7 @@ function createWindow() {
     resizable: false,
     title: CHANNEL === 'beta' ? '诺拉·酒馆 [Beta 测试]' : LOCAL_TEST ? '诺拉·酒馆 [本地候选测试]' : MOCK_SCENARIO ? '诺拉·酒馆 [界面模拟]' : '诺拉·酒馆',
     backgroundColor: '#111016',
+    icon: path.join(installerRoot(), 'assets', 'tavern-icon-dbf4ecbd54ec.png'),
     autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -645,6 +647,8 @@ if (app && BrowserWindow && ipcMain && shell) {
     if (payload.port !== undefined && (!Number.isInteger(payload.port) || payload.port < 1024 || payload.port > 65535)) throw new Error('端口无效。');
     if (typeof payload.runId !== 'string' || !/^[\w-]{1,100}$/.test(payload.runId)) throw new Error('任务编号无效。');
     if (payload.tag !== undefined && !/^[a-zA-Z0-9._-]{1,100}$/.test(payload.tag)) throw new Error('版本编号无效。');
+    if (payload.service !== undefined && (!['all', 'nora', 'tavern'].includes(payload.service)
+      || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun = true;
     cancelled = false;
     let state = readInstallerState();
@@ -682,7 +686,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       if (cancelled) throw new Error('安装已取消。');
       const result = payload.action === 'update'
         ? await performSystemUpdate(selectedPayload, payload, event.sender)
-        : await runBridge(payload.action, { port: payload.port, code: payload.code, tag: payload.tag,
+        : await runBridge(payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
         ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
       const finalState = readInstallerState();
       writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '' });
@@ -767,7 +771,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     }
   });
   handle('nora:open-clawchat', async () => {
-    await shell.openExternal('https://clawling.com/chat/docs/install/');
+    await shell.openExternal('https://clawling.com/zh/chat/#get');
     return { ok: true };
   });
   handle('nora:open-settings', async () => {
