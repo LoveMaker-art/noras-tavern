@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const test = require('node:test');
-const { parse } = require('../../app/engine/sillytavern/node_modules/acorn');
+const { parse } = require('../installer/desktop/node_modules/acorn');
 
 const read = file => fs.readFileSync(path.join(__dirname, '../installer', file), 'utf8');
 const source = read('launcher-controller.js');
