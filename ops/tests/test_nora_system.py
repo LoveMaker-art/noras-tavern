@@ -26,7 +26,7 @@ class NoraSystemTests(unittest.TestCase):
             file.parent.mkdir(parents=True, exist_ok=True)
             file.write_text("{}")
         (self.home / "SOUL.md").write_text("Nora")
-        (self.home / "AGENTS.md").write_text("<!-- BEGIN TAVERN SKILLS -->\ninstructions")
+        (self.home / "AGENTS.md").write_text("## Environment\n\nProject instructions.\n")
         node = self.home / "node"
         node.touch()
         import yaml
@@ -82,6 +82,20 @@ class NoraSystemTests(unittest.TestCase):
         result = system.inspect(self.home, self.root, 18899)
         self.assertFalse(result["ready"])
         self.assertFalse(result["setupCompleted"])
+
+    def test_empty_or_missing_agents_invalidates_completion(self):
+        self.initialize()
+        system.mark_setup_complete(self.root)
+        path = self.home / "AGENTS.md"
+        for content in ("", " \n", None):
+            with self.subTest(content=content):
+                if content is None:
+                    path.unlink()
+                else:
+                    path.write_text(content)
+                result = system.inspect(self.home, self.root, 18899)
+                self.assertFalse(result["ready"])
+                self.assertFalse(result["setupCompleted"])
 
     def test_custom_personality_is_preserved_on_reopen(self):
         self.initialize()

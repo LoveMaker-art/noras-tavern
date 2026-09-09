@@ -211,7 +211,7 @@ def inspect(home, root, port):
     if not soul.is_file() or not soul.read_text(encoding="utf-8").strip():
         problems.append("缺少 Nora SOUL")
     agents = home / "AGENTS.md"
-    if not agents.is_file() or "<!-- BEGIN TAVERN SKILLS -->" not in agents.read_text(encoding="utf-8"):
+    if not agents.is_file() or not agents.read_text(encoding="utf-8").strip():
         problems.append("缺少 Nora AGENTS 指令")
     try:
         config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8")) or {}
@@ -267,7 +267,8 @@ home = Path.cwd()
 soul = home.joinpath("SOUL.md").read_text().strip()
 assert soul and soul in (load_soul_md(home_override=home) or ""), "SOUL not loaded"
 context = build_context_files_prompt(cwd=str(home), home_override=home)
-assert "<!-- BEGIN TAVERN SKILLS -->" in context, "AGENTS not loaded"
+agents = home.joinpath("AGENTS.md").read_text(encoding="utf-8").strip()
+assert agents and agents in context, "Complete AGENTS not loaded"
 skills = build_skills_system_prompt(skills_dir_override=home / "skills")
 assert all(name in skills for name in ("tavern", "tavern-ops", "nora-cardforge", "tavern-updater")), "skills not loaded"
 external = build_skills_system_prompt(skills_dir_override=home / "clawchat-skills")

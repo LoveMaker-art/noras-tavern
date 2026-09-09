@@ -22,7 +22,6 @@ import platform
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
-BEGIN, END = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
 HOST_HOOK = Path("hooks/tavern-liveware-register")
 
 
@@ -323,16 +322,22 @@ def install_skills(home: Path, prepared: dict[str, Path]) -> list[str]:
     return sorted(installed)
 
 
-def merge_agents(home: Path, managed: str) -> str:
+def install_agents(home: Path, document: str) -> str:
+    """Keep one previous revision; install() provides transactional rollback."""
+    if not document.strip():
+        raise RuntimeError("发布包的 AGENTS.md 为空，已停止替换")
     path = home / "AGENTS.md"
-    current = path.read_text(encoding="utf-8") if path.exists() else ""
-    block = managed.strip()
-    first, last = current.find(BEGIN), current.rfind(END)
-    if first >= 0 and last >= first:
-        next_text = current[:first].rstrip() + "\n\n" + block + "\n\n" + current[last + len(END):].lstrip()
-    else:
-        next_text = current.replace(BEGIN, "").replace(END, "").rstrip() + "\n\n" + block + "\n"
-    atomic(path, next_text.encode("utf-8"), mode=0o600)
+    previous = home / "AGENTS.md.bak"
+    for target in (path, previous):
+        if target.is_symlink() or not target.resolve().is_relative_to(home.resolve()):
+            raise RuntimeError("AGENTS 文件路径越过安装目录或为符号链接，已停止替换")
+    content = document.encode("utf-8")
+    if path.exists():
+        current = path.read_bytes()
+        if current == content:
+            return str(path)
+        atomic(previous, current, mode=0o600)
+    atomic(path, content, mode=0o600)
     return str(path)
 
 
@@ -465,7 +470,6 @@ def install(args) -> dict:
             install_root / "tavern-updates/nora-system.json",
         ]
         hermes_targets = [
-            hermes_home / "AGENTS.md",
             hermes_home / "config.yaml",
             hermes_home / "SOUL.md",
             hermes_home / "SOUL.nora-tavern.example.md",
@@ -483,13 +487,17 @@ def install(args) -> dict:
         ]
         tavern_records = snapshot_targets(install_root, tavern_targets, backup / "tavern")
         hermes_records = snapshot_targets(hermes_home, hermes_targets, backup / "hermes")
+        # Retain recovery copies only while applying or if rollback itself fails.
+        agents_backup = backup / "agents-rollback"
+        agents_records = snapshot_targets(hermes_home,
+            [hermes_home / "AGENTS.md", hermes_home / "AGENTS.md.bak"], agents_backup)
         runtime_attempted = False
         try:
             event("task", milestone=0, task="配置诺拉")
             log("安装 Hermes skills、AGENTS 和 Nora MCP 配置")
             skills = install_skills(hermes_home, prepared_skills)
             host_hook = install_host_hook(hermes_home, source)
-            agents = merge_agents(hermes_home, (source / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
+            agents = install_agents(hermes_home, (source / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
             atomic(hermes_home / "config.yaml", render_mcp(hermes_home, install_root, args.port), mode=0o600)
             soul = install_soul(hermes_home, source, replace=args.replace_soul, dedicated=dedicated)
             if dedicated:
@@ -535,8 +543,11 @@ def install(args) -> dict:
                 stop_install_runtime(install_root)
             restore_targets(install_root, tavern_records, backup / "tavern")
             restore_targets(hermes_home, hermes_records, backup / "hermes")
+            restore_targets(hermes_home, agents_records, agents_backup)
+            shutil.rmtree(filesystem_path(agents_backup))
             event("milestone", index=0, state="pending", task="安装已回滚")
             raise
+        shutil.rmtree(filesystem_path(agents_backup))
 
     result = {
         "status": "installed",

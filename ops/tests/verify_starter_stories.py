@@ -1,6 +1,7 @@
 """Exercise both optional cards through real MCP, only in a disposable smoke instance."""
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -9,7 +10,9 @@ import yaml
 home = Path(os.environ['HERMES_HOME'])
 instance = json.loads((home / 'nora-instance.json').read_text())
 root = Path(instance['installRoot'])
-assert root.parent.name.startswith('nora-complete-smoke-'), 'Never import fixtures into a user installation'
+assert re.fullmatch(r'launcher-candidate-000000[A-Za-z0-9]{6}', root.parent.name), 'Never import fixtures into a user installation'
+assert root.name == 'tavern' and home.resolve() == (root.parent / 'hermes').resolve(), 'Unexpected smoke instance layout'
+assert Path(os.environ['NORA_TAVERN_HOME']).resolve() == root.parent.resolve(), 'Smoke root does not match the active instance'
 config = yaml.safe_load((home / 'config.yaml').read_text())['mcp_servers']['nora']
 samples = []
 for story in ('suzhou-rain', 'xiamen-breeze'):

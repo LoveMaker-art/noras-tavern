@@ -306,6 +306,23 @@ class IncrementalUpdateTests(unittest.TestCase):
             self.assertEqual(first.count(b"BEGIN TAVERN SKILLS"), 1)
             self.assertIn(b"Keep this.", first)
 
+    def test_legacy_merge_accepts_plain_launcher_document_without_duplicates(self):
+        document = (ROOT / "ops/skills/agents-tavern.md").read_bytes()
+        self.assertNotIn(b"TAVERN SKILLS", document)
+        for existing in (b"personal rules\n", b"personal rules\n<!-- BEGIN TAVERN SKILLS -->\nold rules\n<!-- END TAVERN SKILLS -->\npersonal suffix\n"):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as temporary:
+                home = Path(temporary)
+                path = home / "AGENTS.md"
+                path.write_bytes(existing)
+                first = UPDATER.merged_agents(home, document)
+                path.write_bytes(first)
+                self.assertEqual(UPDATER.merged_agents(home, document), first)
+                self.assertEqual(first.count(document.strip()), 1)
+                self.assertIn(b"personal rules", first)
+                if b"personal suffix" in existing:
+                    self.assertIn(b"personal suffix", first)
+                self.assertNotIn(b"old rules", first)
+
     def test_small_update_temporarily_skips_content_check_and_restores_config(self):
         with tempfile.TemporaryDirectory(prefix="nora-content-check-") as temporary:
             config = Path(temporary) / "config.yaml"

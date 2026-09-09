@@ -5,6 +5,8 @@ import sys
 import tempfile
 import unittest
 import os
+import re
+import subprocess
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -18,6 +20,115 @@ SPEC.loader.exec_module(MODULE)
 
 
 class FirstInstallSnapshotTests(unittest.TestCase):
+    def test_agents_replacement_is_exact_repeatable_and_backed_up(self):
+        template = (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8")
+        originals = (None, b"personal instructions\r\n", b"before\n<!-- BEGIN TAVERN SKILLS -->\nold\n<!-- END TAVERN SKILLS -->\nafter\n")
+        for original in originals:
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                home, backup = root / "hermes", root / "backup"
+                home.mkdir()
+                agents = home / "AGENTS.md"
+                if original is not None:
+                    agents.write_bytes(original)
+                (home / "SOUL.md").write_bytes(b"personal soul")
+                (home / ".env").write_bytes(b"TEST_ONLY_SENTINEL=preserve")
+                previous = home / "AGENTS.md.bak"
+                records = MODULE.snapshot_targets(home, [agents, previous], backup)
+                MODULE.install_agents(home, template)
+                self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
+                MODULE.install_agents(home, template)
+                self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
+                if original is not None:
+                    self.assertEqual(previous.read_bytes(), original)
+                    MODULE.install_agents(home, "next version\n")
+                    self.assertEqual(previous.read_bytes(), template.encode("utf-8"))
+                    self.assertEqual(sorted(p.name for p in home.glob("AGENTS*")), ["AGENTS.md", "AGENTS.md.bak"])
+                else:
+                    self.assertFalse(previous.exists())
+                self.assertEqual((home / "SOUL.md").read_bytes(), b"personal soul")
+                self.assertEqual((home / ".env").read_bytes(), b"TEST_ONLY_SENTINEL=preserve")
+                MODULE.restore_targets(home, records, backup)
+                self.assertEqual(agents.read_bytes() if agents.exists() else None, original)
+                self.assertFalse(previous.exists())
+
+    def test_agents_backup_failure_leaves_current_instructions_intact(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            (home / "AGENTS.md").write_bytes(b"current")
+            with patch.object(MODULE, "atomic", side_effect=OSError("backup failed")):
+                with self.assertRaisesRegex(OSError, "backup failed"):
+                    MODULE.install_agents(home, "new")
+            self.assertEqual((home / "AGENTS.md").read_bytes(), b"current")
+
+    def test_agents_rejects_redirected_backup(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            home.mkdir()
+            outside = root / "outside"
+            outside.write_bytes(b"unrelated")
+            (home / "AGENTS.md").write_bytes(b"current")
+            (home / "AGENTS.md.bak").symlink_to(outside)
+            with self.assertRaises(RuntimeError):
+                MODULE.install_agents(home, "new")
+            self.assertEqual(outside.read_bytes(), b"unrelated")
+            self.assertEqual((home / "AGENTS.md").read_bytes(), b"current")
+
+    def test_empty_agents_template_preserves_existing_instructions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            path = home / "AGENTS.md"
+            path.write_bytes(b"original")
+            with self.assertRaises(RuntimeError):
+                MODULE.install_agents(home, " \n")
+            self.assertEqual(path.read_bytes(), b"original")
+
+    def test_agents_routes_match_packaged_skills(self):
+        template = (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8")
+        self.assertNotIn("<!--", template)
+        self.assertNotIn("TAVERN SKILLS", template)
+        installer = MODULE.module_at("nora_agents_skill_inventory", ROOT / "ops/scripts/install-hermes-skills.py")
+        routes = re.findall(r"^- `([^`]+)`\uff1a", template, re.MULTILINE)
+        self.assertCountEqual(routes, [Path(relative).name for relative in installer.SKILLS])
+        for relative in installer.SKILLS:
+            self.assertTrue((ROOT / "ops/skills" / relative / "SKILL.md").is_file())
+        for retired in installer.RETIRED:
+            self.assertNotIn("`" + retired + "`", template)
+        self.assertNotIn("`model-api-manager`", template)
+        from ops.installer import nora_system
+        for name in nora_system.CLAWCHAT_SKILLS:
+            self.assertIn("`" + name + "`", template)
+        self.assertTrue((ROOT / "ops/skills/creative/nora-cardforge/references/starter-stories.md").is_file())
+
+    @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES_ROOT"), "requires an installed Hermes runtime")
+    def test_official_hermes_loader_reads_complete_agents_not_backup(self):
+        hermes = Path(os.environ["NORA_TEST_HERMES_ROOT"]).resolve()
+        python = hermes / ("venv/Scripts/python.exe" if os.name == "nt" else "venv/bin/python3")
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            MODULE.install_agents(home, (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))
+            (home / "AGENTS.md.bak").write_text("BACKUP_MUST_NOT_LOAD", encoding="utf-8")
+            MODULE.install_soul(home, ROOT, replace=False, dedicated=True)
+            probe = '''
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from agent.prompt_builder import build_context_files_prompt, load_soul_md
+home = Path.cwd()
+document = (home / "AGENTS.md").read_text(encoding="utf-8").strip()
+context = build_context_files_prompt(cwd=str(home), home_override=home, skip_soul=True, context_length=8192)
+assert document in context, "AGENTS blocked, truncated or not loaded"
+assert "BACKUP_MUST_NOT_LOAD" not in context, "backup loaded as instructions"
+soul = (home / "SOUL.md").read_text(encoding="utf-8").strip()
+assert soul not in context, "personality duplicated in project context"
+assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separately"
+'''
+            result = subprocess.run([str(python), "-B", "-c", probe, str(hermes)], cwd=home,
+                env={**os.environ, "HERMES_HOME": str(home), "PYTHONDONTWRITEBYTECODE": "1"},
+                capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_windows_architecture_works_without_processor_environment_variables(self):
         with patch.object(MODULE.os, "name", "nt"), \
              patch.object(MODULE.platform, "machine", return_value=""), \
@@ -46,6 +157,9 @@ class FirstInstallSnapshotTests(unittest.TestCase):
             root = Path(temporary)
             source, home, tavern = root / "source", root / "hermes", root / "tavern"
             home.mkdir()
+            original_agents = b"old routing before\n<!-- BEGIN TAVERN SKILLS -->\nold routing\n<!-- END TAVERN SKILLS -->\nuser suffix\r\n"
+            (home / "AGENTS.md").write_bytes(original_agents)
+            (home / "AGENTS.md.bak").write_bytes(b"previous backup")
             (home / "config.yaml").write_text("user_setting: preserved\n")
             (home / "SOUL.md").write_text("custom Nora")
             (home / ".env").write_text("TEST_ONLY_SENTINEL=preserve\n")
@@ -54,7 +168,7 @@ class FirstInstallSnapshotTests(unittest.TestCase):
             (home / "cron/jobs.json").write_text(original_jobs)
             for folder in ("app", "nora-mcp", "ops/skills", "ops/installer/templates"):
                 (source / folder).mkdir(parents=True)
-            (source / "ops/skills/agents-tavern.md").write_text("<!-- BEGIN TAVERN SKILLS -->\nNora\n<!-- END TAVERN SKILLS -->")
+            (source / "ops/skills/agents-tavern.md").write_text("## Environment\n\nNora instructions.\n")
             (source / "ops/installer/templates/SOUL.md").write_text("Nora template")
             skill = root / "prepared"
             skill.mkdir()
@@ -64,6 +178,9 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                 replace_soul=False, skip_liveware=True)
             from ops.installer import nora_system
             def install_reminder(*_args):
+                self.assertEqual((home / "AGENTS.md").read_bytes(), (source / "ops/skills/agents-tavern.md").read_bytes())
+                self.assertEqual((home / "AGENTS.md.bak").read_bytes(), original_agents)
+                self.assertEqual(list(tavern.glob("tavern-first-install-backups/*/hermes/targets/AGENTS.md*")), [])
                 (home / "cron/jobs.json").write_text('{"jobs": [{"id": "nora"}]}')
                 (home / "scripts").mkdir(exist_ok=True)
                 (home / "scripts/nora-tavern-update-check.py").write_text("new script")
@@ -86,6 +203,9 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                     MODULE.install(args)
                 stop.assert_called_once_with(tavern.resolve())
             self.assertEqual((home / "config.yaml").read_text(), "user_setting: preserved\n")
+            self.assertEqual((home / "AGENTS.md").read_bytes(), original_agents)
+            self.assertEqual((home / "AGENTS.md.bak").read_bytes(), b"previous backup")
+            self.assertEqual(list(root.glob(".tmp/i-*")), [])
             self.assertEqual((home / "SOUL.md").read_text(), "custom Nora")
             self.assertEqual((home / ".env").read_text(), "TEST_ONLY_SENTINEL=preserve\n")
             self.assertEqual((home / "cron/jobs.json").read_text(), original_jobs)

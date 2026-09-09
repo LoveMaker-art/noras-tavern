@@ -101,7 +101,14 @@ async function main() {
     assert.equal(system.proof.managedConfiguration, true);
     assert.equal(system.proof.clawchatRegistration, true);
     assert.equal(system.setupCompleted, false, 'Model and ClawChat have not been configured');
-    assert.ok(fs.readFileSync(path.join(home, 'SOUL.md'), 'utf8').includes('你是 Nora'));
+    for (const [installed, template] of [
+      ['SOUL.md', 'installer/templates/SOUL.md'], ['AGENTS.md', 'skills/agents-tavern.md'],
+    ]) {
+      const expected = fs.readFileSync(path.join(tavern, 'apps/tavern-ops', template), 'utf8');
+      assert.equal(fs.readFileSync(path.join(home, installed), 'utf8'), expected, `${installed} differs from the packaged template`);
+      assert.equal(expected, fs.readFileSync(path.resolve(__dirname, '..', template), 'utf8'), `${installed} differs from the build source`);
+    }
+    console.log('PASS: installed SOUL.md and AGENTS.md exactly match package and source');
     const status = JSON.parse(run([path.resolve(__dirname, '../installer/launcher_bridge.py'),
       '--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port), 'status']).trim());
     assert.equal(status.systemReady, true, JSON.stringify(status.systemProblems));

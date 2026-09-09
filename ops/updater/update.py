@@ -423,6 +423,10 @@ def merged_agents(home, managed):
     current = path.read_text(encoding="utf-8") if path.is_file() else ""
     block = managed.decode("utf-8").strip()
     begin, end = "<!-- BEGIN TAVERN SKILLS -->", "<!-- END TAVERN SKILLS -->"
+    # Legacy standalone updates still merge into shared Hermes instructions.
+    # Keep that compatibility wrapper here, not in the launcher's full document.
+    if not block.startswith(begin):
+        block = begin + "\n" + block + "\n" + end
     first, last = current.find(begin), current.rfind(end)
     if first >= 0 and last >= first:
         prefix = current[:first].rstrip()
