@@ -20,24 +20,114 @@ FULL_ARCHIVES = (
 )
 
 
-def default_nora_home():
-    if os.environ.get("NORA_TAVERN_HOME"):
-        return Path(os.environ["NORA_TAVERN_HOME"]).expanduser().resolve()
-    if sys.platform == "darwin":
-        return (Path.home() / "Library/Application Support/Nora Tavern").resolve()
-    if os.name == "nt":
-        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
-        return (base / "Nora Tavern").resolve()
-    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
-    return (base / "nora-tavern").resolve()
-
-
 def default_hermes_home():
-    return Path(os.environ.get("HERMES_HOME") or default_nora_home() / "hermes").expanduser().resolve()
+    return Path(os.environ.get("HERMES_HOME") or (
+        "/opt/data" if sys.platform.startswith("linux") and Path("/opt/data/skills").is_dir()
+        else Path.home() / ".hermes")).expanduser().resolve()
 
 
 def default_install_root():
-    return Path(os.environ.get("TAVERN_DATA_ROOT") or default_nora_home() / "tavern").expanduser().resolve()
+    return Path(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home()).expanduser().resolve()
+
+
+def resolve_update_target(hermes_home=None, install_root=None):
+    """Resolve an existing installation without writing or inventing a new root.
+
+    Kept in the standalone bootstrap so the downloaded entry and bundle runner
+    use the same rules, without an unverified helper download.
+    """
+    home = Path(hermes_home).expanduser().resolve() if hermes_home else default_hermes_home()
+    managed_error = "此实例由诺拉启动器管理，禁止用 Tavern 单体更新器覆盖完整 Nora 系统。请在启动器中检查版本。"
+    if (home / "nora-instance.json").exists():
+        raise RuntimeError(managed_error)
+    if not (home / "skills").is_dir():
+        raise RuntimeError("无法确认 Hermes 安装目录：" + str(home))
+    candidates = {}
+
+    def add(label, value):
+        root = Path(value).expanduser().resolve()
+        if root == Path(root.anchor):
+            raise RuntimeError("拒绝使用文件系统根目录作为安装目录")
+        candidates[label] = root
+
+    if install_root:
+        add("--install-root", install_root)
+    if os.environ.get("TAVERN_DATA_ROOT"):
+        add("TAVERN_DATA_ROOT", os.environ["TAVERN_DATA_ROOT"])
+
+    config_path = home / "config.yaml"
+    if config_path.exists():
+        try:
+            import yaml
+            config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+            server = config.get("mcp_servers", {}).get("nora", {})
+            env = server.get("env", {})
+            if not isinstance(env, dict):
+                raise ValueError("MCP env must be a mapping")
+            suffixes = {
+                "NORA_MCP_PROJECT_ROOT": "apps/tavern-runtime",
+                "NORA_MCP_ST_ROOT": "apps/tavern-runtime/engine/sillytavern",
+                "NORA_MCP_STATE_ROOT": "tavern-state",
+                "NORA_MCP_NATIVE_DATA_ROOT": "tavern-state/native",
+                "NORA_MCP_CONFIG_PATH": "tavern-state/native-runtime/config.yaml",
+                "NORA_MCP_UPLOAD_ROOT": "tavern-state/imports",
+            }
+            for key, suffix in suffixes.items():
+                if key not in env:
+                    continue
+                value = Path(env[key]).expanduser()
+                parts = Path(suffix).parts
+                if not value.is_absolute() or value.parts[-len(parts):] != parts:
+                    raise ValueError("invalid " + key)
+                add("MCP " + key, value.parents[len(parts) - 1])
+            if "NORA_MCP_USER_DATA_ROOT" in env:
+                value = Path(env["NORA_MCP_USER_DATA_ROOT"]).expanduser()
+                if not value.is_absolute() or value.parent.name != "native" or value.parent.parent.name != "tavern-state":
+                    raise ValueError("invalid NORA_MCP_USER_DATA_ROOT")
+                add("MCP NORA_MCP_USER_DATA_ROOT", value.parents[2])
+            args = server.get("args", [])
+            if not isinstance(args, list):
+                raise ValueError("MCP args must be a list")
+            for arg in args:
+                if isinstance(arg, str) and arg.replace("\\", "/").endswith("apps/nora-mcp/dist/server.js"):
+                    value = Path(arg).expanduser()
+                    if not value.is_absolute():
+                        raise ValueError("relative MCP server path")
+                    add("MCP args", value.parents[3])
+        except (ImportError, OSError, ValueError, TypeError, AttributeError) as error:
+            raise RuntimeError("无法核对现有 MCP 配置，已停止更新：" + str(config_path)) from error
+        except yaml.YAMLError as error:
+            raise RuntimeError("无法解析现有 MCP 配置，已停止更新：" + str(config_path)) from error
+
+    # These are evidence locations, not fallback destinations. No recursive scan.
+    known = [home]
+    if os.environ.get("NORA_TAVERN_HOME"):
+        known.append(Path(os.environ["NORA_TAVERN_HOME"]).expanduser() / "tavern")
+    for root in known:
+        if (root / "tavern-updates/installed.json").is_file() or (
+                (root / "apps/tavern-runtime").is_dir() and (root / "tavern-state").is_dir()):
+            add("现有安装 " + str(root), root)
+    if len(set(candidates.values())) > 1:
+        details = "; ".join(label + "=" + str(value) for label, value in candidates.items())
+        raise RuntimeError("安装目录冲突，未修改任何实例。请先核对绑定：" + details)
+    if not candidates:
+        raise RuntimeError("未找到已有酒馆安装，更新器不会创建新实例。首次部署请使用安装流程。")
+    root = next(iter(candidates.values()))
+    if (root / "tavern-updates/nora-system.json").exists():
+        raise RuntimeError(managed_error)
+    app = root / "apps/tavern-runtime"
+    if not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py")) or not (root / "tavern-state").is_dir():
+        raise RuntimeError("目标不是完整的已有酒馆安装，已停止更新：" + str(root))
+    if (root / "tavern-state").is_symlink():
+        raise RuntimeError("数据目录是符号链接，无法保证事务回滚，已停止更新：" + str(root / "tavern-state"))
+    receipt = root / "tavern-updates/installed.json"
+    if receipt.exists():
+        try:
+            if not isinstance(json.loads(receipt.read_text(encoding="utf-8")), dict):
+                raise ValueError("invalid receipt")
+        except (OSError, ValueError) as error:
+            raise RuntimeError("安装记录损坏，已停止更新：" + str(receipt)) from error
+    return home, root
 
 
 def sha(path):
@@ -64,7 +154,7 @@ def checksums(directory):
     return sums
 
 
-def verify_metadata(directory, expected_manifest=None):
+def verify_metadata(directory, expected_manifest=None, *, allow_candidate=False):
     directory = Path(directory)
     sums = checksums(directory)
     for name in METADATA:
@@ -76,7 +166,7 @@ def verify_metadata(directory, expected_manifest=None):
     if expected_manifest and expected_manifest != manifest_sha:
         raise RuntimeError("本地发布清单与指定校验值不一致")
     manifest = json.loads((directory / "release-manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != "tavern-release/v2" or manifest.get("candidate"):
+    if manifest.get("schema") != "tavern-release/v2" or (manifest.get("candidate") and not allow_candidate):
         raise RuntimeError("只允许安装正式 Tavern v2 发布包")
     return manifest, manifest_sha, sums
 
@@ -167,7 +257,7 @@ def extract_runner(directory, destination, manifest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", dest="install_root")
+    parser.add_argument("--data-root", help="旧版同目录部署的安装根")
     parser.add_argument("--install-root")
     parser.add_argument("--hermes-home", dest="hermes_home")
     parser.add_argument("--tag")
@@ -175,23 +265,23 @@ def main():
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--target-commit", help=argparse.SUPPRESS)
     parser.add_argument("--repair", action="store_true")
+    parser.add_argument("--allow-candidate", action="store_true", help="显式允许本地校验过的测试包")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
     if not (args.apply and args.confirm):
         raise RuntimeError("更新命令必须包含 --apply --confirm")
-    hermes_home = Path(args.hermes_home).expanduser().resolve() if args.hermes_home else default_hermes_home()
-    install_root_value = args.install_root
-    if install_root_value:
-        install_root = Path(install_root_value).expanduser().resolve()
-    elif os.environ.get("TAVERN_DATA_ROOT"):
-        install_root = Path(os.environ["TAVERN_DATA_ROOT"]).expanduser().resolve()
-    else:
-        install_root = hermes_home if args.hermes_home else default_install_root()
+    if args.allow_candidate and not args.release_dir:
+        raise RuntimeError("测试包必须通过 --release-dir 明确指定，不从正式发布入口下载")
+    if args.data_root and args.install_root and Path(args.data_root).expanduser().resolve() != Path(args.install_root).expanduser().resolve():
+        raise RuntimeError("--data-root 与 --install-root 冲突，已停止更新")
+    home = args.hermes_home or (args.data_root if not os.environ.get("HERMES_HOME") else None)
+    hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root)
+    print(f"[tavern-updater] 已确认现有安装：{install_root}", file=sys.stderr, flush=True)
     root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"
-    if args.target_commit and not args.repair and installed.is_file():
+    if args.target_commit and not args.repair and not args.allow_candidate and installed.is_file():
         try:
             current = json.loads(installed.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -226,7 +316,7 @@ def main():
             for name in archives:
                 download(base + "/" + name, bundle / name)
         else:
-            manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256)
+            manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256, allow_candidate=args.allow_candidate)
             archives, mode = required_archives(install_root, manifest)
         verify_archives(bundle, archives, sums)
         print(f"[tavern-updater] 下载模式：{mode}，压缩包 {len(archives)} 个", file=sys.stderr, flush=True)
@@ -240,6 +330,8 @@ def main():
             "--release-dir", str(Path(bundle).resolve()),
             "--manifest-sha256", manifest_sha, "--confirm",
         ]
+        if args.allow_candidate:
+            command.append("--allow-candidate")
         result = subprocess.run(command)
         raise SystemExit(result.returncode)
 

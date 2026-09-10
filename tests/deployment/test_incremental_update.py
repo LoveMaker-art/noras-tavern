@@ -47,6 +47,9 @@ class IncrementalUpdateTests(unittest.TestCase):
             root = Path(temporary).resolve()
             hermes, tavern = root / "hermes", root / "tavern"
             (hermes / "skills").mkdir(parents=True)
+            (tavern / "apps/tavern-runtime").mkdir(parents=True)
+            (tavern / "apps/tavern-runtime/native-runtime.json").write_text("{}")
+            (tavern / "tavern-state").mkdir()
             old = tavern / "tavern-backups/old"
             unrelated = hermes / "tavern-backups/preserve"
             old.mkdir(parents=True)
@@ -127,6 +130,8 @@ class IncrementalUpdateTests(unittest.TestCase):
     def test_same_commit_exits_before_release_download(self):
         with tempfile.TemporaryDirectory(prefix="nora-current-version-") as temporary:
             home = Path(temporary)
+            (home / "skills").mkdir()
+            (home / "tavern-state").mkdir()
             record = home / "tavern-updates/installed.json"
             record.parent.mkdir(parents=True)
             record.write_text(json.dumps({"version": "2.1.2", "commit": "abc123"}), encoding="utf-8")

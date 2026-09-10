@@ -21,6 +21,7 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
+from bootstrap import default_hermes_home, default_install_root, resolve_update_target
 
 UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
@@ -38,16 +39,6 @@ def safe(path):
     if value == Path("/"):
         raise RuntimeError("拒绝使用根目录")
     return value
-
-
-def default_hermes_home():
-    return safe(os.environ.get("HERMES_HOME") or (
-        "/opt/data" if sys.platform.startswith("linux") and Path("/opt/data/skills").is_dir()
-        else Path.home() / ".hermes"))
-
-
-def default_install_root():
-    return safe(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home())
 
 
 def atomic(path, data, mode=0o600):
@@ -220,6 +211,53 @@ def same_file(left, right):
         return Path(left).is_file() and Path(right).is_file() and file_sha(left) == file_sha(right)
     except OSError:
         return False
+
+
+def world_data_inventory(state):
+    """Hash existing story resources, excluding logs and runtime bookkeeping."""
+    native = Path(state) / "native"
+    result = {}
+    if not native.is_dir():
+        return result
+    for user in native.iterdir():
+        if not user.is_dir():
+            continue
+        for relative in ("nora-world-core/worlds", "chats", "group chats", "worlds", "characters"):
+            directory = user / relative
+            if not directory.is_dir():
+                continue
+            for file in directory.rglob("*"):
+                if file.is_file():
+                    result[str(file.relative_to(state))] = file_sha(file)
+    return result
+
+
+def verify_worlds(app, state):
+    native = Path(state) / "native"
+    if not native.is_dir():
+        return {}
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("无法验证原有世界：未找到 Node.js")
+    try:
+        result = run([node, HERE / "verify-worlds.mjs", app, native], capture=True, timeout=120)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError("世界读取验证失败：" + (error.stderr or "验证程序退出异常").strip()[:1000]) from error
+    return json.loads(result.stdout)
+
+
+def verify_preserved_worlds(app, state, inventory, worlds):
+    current = world_data_inventory(state)
+    changed = [name for name, digest in inventory.items() if current.get(name) != digest]
+    if changed:
+        raise RuntimeError("原有世界或会话文件发生变化，更新验收失败：" + "; ".join(changed[:5]))
+    loaded = verify_worlds(app, state)
+    for user, expected in worlds.items():
+        actual = {world["worldId"]: world for world in loaded.get(user, [])}
+        if any(actual.get(world["worldId"]) != world for world in expected):
+            raise RuntimeError("原有世界或会话未能完整加载，更新验收失败：" + user)
+    return {"status": "verified", "worlds": sum(len(value) for value in worlds.values()),
+            "files": len(inventory)}
 
 
 def package_dependency_manifests(root):
@@ -493,6 +531,12 @@ def copy_host_backup(hermes_home, install_root, backup, service_snapshot):
         shutil.copy2(marker, host / "native-runtime/dependencies.json")
     if service_snapshot:
         json_write(host / "service.json", service_snapshot)
+    receipts = host / "update-receipts"
+    receipts.mkdir()
+    for name in ("installed.json", "installed-manifest.json"):
+        source = install_root / "tavern-updates" / name
+        if source.is_file():
+            shutil.copy2(source, receipts / name)
 
 
 def restore_host(hermes_home, install_root, backup):
@@ -511,6 +555,15 @@ def restore_host(hermes_home, install_root, backup):
         shutil.copy2(saved_marker, marker)
     else:
         marker.unlink(missing_ok=True)
+    receipts = host / "update-receipts"
+    if receipts.is_dir():
+        for name in ("installed.json", "installed-manifest.json"):
+            target = install_root / "tavern-updates" / name
+            saved = receipts / name
+            if saved.is_file():
+                shutil.copy2(saved, target)
+            else:
+                target.unlink(missing_ok=True)
 
 
 def swap_tree(source, target, backup_target):
@@ -716,16 +769,7 @@ def install_update_check(home, ops_root):
 
 
 def install(args):
-    hermes_home = safe(args.home) if args.home else default_hermes_home()
-    if args.install_root:
-        install_root = safe(args.install_root)
-    elif os.environ.get("TAVERN_DATA_ROOT"):
-        install_root = safe(os.environ["TAVERN_DATA_ROOT"])
-    else:
-        install_root = hermes_home if args.home else default_install_root()
-    if ((hermes_home / "nora-instance.json").is_file()
-            or (install_root / "tavern-updates/nora-system.json").is_file()):
-        raise RuntimeError("此实例由诺拉启动器管理，禁止用 Tavern 单体更新器覆盖完整 Nora 系统。请在启动器中检查版本。")
+    hermes_home, install_root = resolve_update_target(args.home, args.install_root)
     os.environ["HERMES_HOME"] = str(hermes_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
@@ -734,12 +778,15 @@ def install(args):
         raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(hermes_home))
     from bundle import extract_bundle, installed_roots, read_bundle
     with installer_lock(install_root):
+        # Recheck after waiting for another updater, before downloading or writing.
+        resolve_update_target(hermes_home, install_root)
         update_root = install_root / "tavern-updates"
         update_root.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(prefix="direct-", dir=update_root) as temporary:
             work = Path(temporary)
             source = work / "source"
-            manifest = read_bundle(args.release_dir, args.manifest_sha256)
+            manifest = read_bundle(args.release_dir, args.manifest_sha256,
+                                   candidate=getattr(args, "allow_candidate", False))
             roots = installed_roots(install_root)
             old_app = roots["app"]
             old_mcp = roots["nora-mcp"]
@@ -760,6 +807,7 @@ def install(args):
                 app_changed=app_changed,
                 mcp_changed=mcp_changed,
             )
+            resolve_update_target(hermes_home, install_root)
             skills = prepare_skills(source, work / "skills")
             agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
             desired_agents = merged_agents(hermes_home, agents_bytes)
@@ -820,6 +868,7 @@ def install(args):
                 log("已是最新版，无需替换文件。")
                 return
             stamp = time.strftime("%Y%m%d-%H%M%S")
+            resolve_update_target(hermes_home, install_root)
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             backup.mkdir(parents=True)
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
@@ -827,7 +876,9 @@ def install(args):
             snapshot_agents(hermes_home, agents_backup)
             applied = []
             state_swapped = False
+            state_snapshot = False
             runtime_stopped = False
+            story_inventory, story_worlds = {}, {}
             try:
                 if runtime_changed:
                     log("备份旧版本并停止 Tavern")
@@ -836,6 +887,15 @@ def install(args):
                     else:
                         stop_unmanaged(old_app)
                     runtime_stopped = True
+                    if prepared_state is None:
+                        # Startup can quarantine incompatible manifests. Keep the
+                        # entire state, not only program/configuration backups.
+                        shutil.copytree(install_root / "tavern-state", backup / "state")
+                        state_snapshot = True
+                        story_inventory = world_data_inventory(backup / "state")
+                        story_worlds = verify_worlds(old_app, backup / "state")
+                        candidate_app = source / "app" if app_changed else old_app
+                        verify_preserved_worlds(candidate_app, backup / "state", story_inventory, story_worlds)
                 else:
                     log("应用非运行时更新，Tavern 保持运行")
                 for name, prepared, target in swaps:
@@ -879,6 +939,11 @@ def install(args):
                 else:
                     runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
                                "health": {"ok": port_open(8799)}}
+                resolve_update_target(hermes_home, install_root)
+                world_verification = verify_preserved_worlds(
+                    install_root / "apps/tavern-runtime", install_root / "tavern-state",
+                    story_inventory, story_worlds,
+                ) if state_snapshot else {"status": "not-required"}
                 liveware_needed = app_changed or ops_changed or host_hook is not None
                 liveware = refresh_liveware(hermes_home, install_root, install_root / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
                 if ops_changed:
@@ -892,6 +957,9 @@ def install(args):
                     "schema": 2,
                     "version": version,
                     "commit": manifest["commit"],
+                    "candidate": bool(manifest.get("candidate")),
+                    "sourceDigest": manifest.get("sourceDigest"),
+                    "releaseManifestSha256": args.manifest_sha256,
                     "installedAt": int(time.time()),
                     "backup": str(backup),
                     "migration": migration,
@@ -900,6 +968,7 @@ def install(args):
                     "delivery": bundle_report,
                     "dependencies": dependencies,
                     "clawchatGreeting": gateway_report,
+                    "worldVerification": world_verification,
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
@@ -931,6 +1000,7 @@ def install(args):
                     "delivery": bundle_report,
                     "dependencies": dependencies,
                     "greeting": greeting_report,
+                    "worldVerification": world_verification,
                     "next": "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。",
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -950,14 +1020,15 @@ def install(args):
                             active_service.stop()
                         else:
                             stop_unmanaged(active_app)
-                    except Exception:
-                        pass
+                    except Exception as stop_error:
+                        raise RuntimeError("更新失败且无法停止新进程，未覆盖运行中的数据。请保留备份：" + str(backup)) from stop_error
                 failed_root = backup / "failed-new"
                 for name, target, saved in reversed(applied):
                     restore_tree(target, saved, failed_root / name)
-                if state_swapped:
+                if state_swapped or state_snapshot:
                     active_state = install_root / "tavern-state"
                     if active_state.exists():
+                        failed_root.mkdir(parents=True, exist_ok=True)
                         os.replace(active_state, failed_root / "state")
                     os.replace(backup / "state", active_state)
                 restore_host(hermes_home, install_root, backup)
@@ -981,6 +1052,7 @@ def main():
     command.add_argument("--release-dir", type=Path, required=True)
     command.add_argument("--manifest-sha256", required=True)
     command.add_argument("--confirm", action="store_true", required=True)
+    command.add_argument("--allow-candidate", action="store_true")
     args = parser.parse_args()
     install(args)
 

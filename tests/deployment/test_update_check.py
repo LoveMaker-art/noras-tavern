@@ -29,6 +29,23 @@ def load_updater():
 
 
 class UpdateCheckScriptTests(unittest.TestCase):
+    def test_legacy_check_without_data_root_reads_existing_home(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "hermes"
+            marker = home / "apps/tavern-runtime/.tavern-release-version"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("2.2.9")
+            release = root / "release.json"
+            release.write_text(json.dumps({"tag_name": "v2.3.0"}))
+            environment = {key: value for key, value in os.environ.items() if key != "TAVERN_DATA_ROOT"}
+            environment.update(HERMES_HOME=str(home), TAVERN_RELEASE_API_URL=release.as_uri())
+            result = subprocess.run([sys.executable, str(ROOT / "ops/scripts/nora-tavern-update-check.py"), "--check-only"],
+                                    env=environment, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["installed"], "2.2.9")
+            self.assertFalse((root / "tavern").exists())
+
     def run_checker(self, home: Path, release: Path, *arguments: str, sender: Path | None = None):
         environment = {
             **os.environ,

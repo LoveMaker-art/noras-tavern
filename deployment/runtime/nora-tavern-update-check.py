@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -14,8 +15,27 @@ import urllib.request
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path(__file__).resolve().parents[1])).expanduser().resolve()
 INSTANCE = HERMES_HOME / "nora-instance.json"
-DATA_ROOT = Path(json.loads(INSTANCE.read_text(encoding="utf-8"))["installRoot"] if INSTANCE.is_file()
-                 else os.environ.get("TAVERN_DATA_ROOT", HERMES_HOME.parent / "tavern")).expanduser().resolve()
+
+
+def installed_data_root():
+    config_path = HERMES_HOME / "config.yaml"
+    bound = INSTANCE.is_file()
+    if config_path.is_file() and not bound:
+        import yaml
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+        bound = "nora" in config.get("mcp_servers", {})
+    if bound:
+        spec = importlib.util.spec_from_file_location("update_check_instance", Path(__file__).with_name("nora-instance.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        root = Path(module.configuration(HERMES_HOME)["installRoot"]).resolve()
+        if not INSTANCE.is_file() and os.environ.get("TAVERN_DATA_ROOT") and Path(os.environ["TAVERN_DATA_ROOT"]).expanduser().resolve() != root:
+            raise RuntimeError("安装目录与 MCP 绑定冲突，已停止版本检查")
+        return root
+    return Path(os.environ.get("TAVERN_DATA_ROOT") or HERMES_HOME).expanduser().resolve()
+
+
+DATA_ROOT = installed_data_root()
 CHANNEL = json.loads(INSTANCE.read_text(encoding="utf-8")).get("releaseChannel", "stable") if INSTANCE.is_file() else "stable"
 API_URL = os.environ.get(
     "TAVERN_RELEASE_API_URL",
