@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 import { prepareWorldbookEntryEdit } from './worldbook-entry-edit.js';
 import { isExclusiveWorldbook } from './worldbook-references.js';
 import { withWorldbookLock } from '../worldbook-lock.js';
@@ -763,6 +764,8 @@ export function createStBackendMaterializer({
                 throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The ST card codec did not produce a Runtime Card artifact.');
             }
             const prepared = prepareStRuntimeCard(decoded.card);
+            const rawStoryContext = cardData(prepared.card).extensions?.nora_world?.story_context;
+            const storyContext = rawStoryContext === undefined ? undefined : normalizeStoryContext(rawStoryContext);
             const report = inspectPreparedStCard(prepared.card);
             const timestamp = isoDate(now());
             const created = [];
@@ -825,6 +828,7 @@ export function createStBackendMaterializer({
 
                 return {
                     worldName: command?.payload?.world_name_source === 'card' ? report.character_name : command.name,
+                    ...(storyContext === undefined ? {} : { storyContext }),
                     runtimeCard: {
                         engine: 'sillytavern',
                         binding: { avatar },

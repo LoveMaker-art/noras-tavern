@@ -1,5 +1,6 @@
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { renderStoryContext } from '../nora-worlds/story-context.js';
+import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
 function requireRuntime(getContext) {
     const current = getContext();
     const required = ['selectCharacterById', 'updateChatMetadata', 'saveMetadata'];
@@ -29,11 +30,12 @@ function uniqueNames(values) {
 
 export function createStWorldAdapter(getContext) {
     let hasStoryContext = false;
-    function applyStoryContext(context) {
+    function applyStoryContext(context, worldId = null) {
         const current = requireRuntime(getContext);
-        if (!context && !hasStoryContext) return;
+        if (!context && !hasStoryContext) { setWorldCharacterContext(null); return; }
         if (typeof current.setExtensionPrompt !== 'function') throw new Error('World story context is unavailable.');
         current.setExtensionPrompt('nora_world_story_context', renderStoryContext(context), 0, 4, false, 0);
+        setWorldCharacterContext(context, worldId ?? current.chatMetadata?.nora_world?.id ?? '');
         hasStoryContext = Boolean(context);
     }
     function read() {
@@ -139,7 +141,7 @@ export function createStWorldAdapter(getContext) {
             throw new Error('故事运行核心缺少聚合世界快照能力。');
         }
         await current.activateNoraWorldSnapshot(characterId, snapshot);
-        applyStoryContext(snapshot.plan?.story_context);
+        applyStoryContext(snapshot.plan?.story_context, snapshot.plan?.world_id);
         return read();
     }
 

@@ -144,6 +144,30 @@ test('presents one small World Core interface and hides persistence mechanics', 
     assert.deepEqual(inspected.resource_references.knowledge[0].world_ids, [result.world.world_id]);
 });
 
+test('character array CRUD persists across reopen with revision protection and intact legacy resources', async (t) => {
+    const root = await temporaryRoot(t);
+    const adapter = materializer();
+    const core = createNoraWorldCore({ root, materializer: adapter });
+    const { world: original } = await core.createWorld(command(), { idempotencyKey: 'characters:crud' });
+    const actor = (id, mode) => ({ operation: 'create', id, patch: { name: id, description: 'profile', personality: 'calm',
+        activation: { mode, keys: mode === 'triggered' ? ['shop'] : [] } } });
+    let world = await core.updateWorld(original.world_id, { character: actor('actor:a', 'constant') }, { expectedRevision: original.revision });
+    world = await core.updateWorld(world.world_id, { character: actor('actor:b', 'triggered') }, { expectedRevision: world.revision });
+    assert.equal(world.story_context.characters.length, 2);
+    assert.deepEqual(world.runtime_card, original.runtime_card);
+    assert.deepEqual(world.sessions, original.sessions);
+    assert.deepEqual(world.knowledge, original.knowledge);
+    assert.deepEqual(world.persona, original.persona);
+    await assert.rejects(() => core.updateWorld(world.world_id, { character: actor('actor:c', 'constant') }, { expectedRevision: original.revision }), { code: 'NORA_WORLD_REVISION_CONFLICT' });
+    const reopened = createNoraWorldCore({ root, materializer: adapter });
+    assert.deepEqual((await reopened.getWorld(world.world_id)).story_context, world.story_context);
+    world = await reopened.updateWorld(world.world_id, { character: { id: 'actor:b', patch: { activation: { mode: 'constant' } } } }, { expectedRevision: world.revision });
+    assert.equal(world.story_context.characters[1].activation.mode, 'constant');
+    world = await reopened.updateWorld(world.world_id, { character: { id: 'actor:a', operation: 'delete' } }, { expectedRevision: world.revision });
+    assert.deepEqual(world.story_context.characters.map(actor => actor.id), ['actor:b']);
+    assert.deepEqual(world.sessions, original.sessions);
+});
+
 test('adds one owned setting book ahead of imported knowledge and deduplicates retries', async (t) => {
     const root = await temporaryRoot(t);
     const adapter = materializer();

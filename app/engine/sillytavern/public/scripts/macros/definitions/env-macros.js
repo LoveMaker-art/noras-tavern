@@ -3,6 +3,7 @@ import { isMobile } from '../../RossAscends-mods.js';
 import { parseMesExamples, main_api } from '../../../script.js';
 import { power_user } from '../../power-user.js';
 import { formatInstructModeExamples } from '../../instruct-mode.js';
+import { resolveWorldCharacterReference } from '../../nora-worlds/character-activation.js';
 
 /** @typedef {import('../engine/MacroEnv.types.js').MacroEnv} MacroEnv */
 
@@ -22,9 +23,11 @@ export function registerEnvMacros() {
 
     MacroRegistry.registerMacro('char', {
         category: MacroCategory.NAMES,
-        description: 'The character\'s name.',
+        unnamedArgs: [{ name: 'id', optional: true, type: MacroValueType.STRING,
+            description: 'Stable character ID in the current World, not an array index.' }],
+        description: 'The character\'s name, or a World character name selected by stable ID.',
         returns: 'Character name.',
-        handler: ({ env }) => env.names.char,
+        handler: ({ env, unnamedArgs: [id] }) => id === undefined ? env.names.char : resolveWorldCharacterReference(id),
     });
 
     MacroRegistry.registerMacro('group', {
