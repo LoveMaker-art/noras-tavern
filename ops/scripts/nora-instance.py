@@ -55,7 +55,7 @@ def main():
         print(entry["url"])
         return 0
     if args.operation == "recover-existing":
-        # The shared registration worker owns greeting order, retries and App identity.
+        # The shared registration worker owns retries and App identity, not greetings.
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
         command = [str(script), "--home", str(root), "--hermes-home", str(home),
                    "--port", str(port)]

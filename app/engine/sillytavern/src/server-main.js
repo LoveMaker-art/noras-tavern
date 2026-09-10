@@ -76,7 +76,6 @@ import {
 import { PUBLIC_DIRECTORIES, UPLOADS_DIRECTORY } from './constants.js';
 
 import { checkForNewContent } from './endpoints/content-manager.js';
-import { ensureBuiltinWelcome } from './nora-world-core/builtin-welcome.js';
 import { init as settingsInit } from './endpoints/settings.js';
 import { redirectDeprecatedEndpoints, ServerStartup, setupPrivateEndpoints } from './server-startup.js';
 import { diskCache } from './endpoints/characters.js';
@@ -352,7 +351,6 @@ async function preSetupTasks() {
 
     const directories = await getUserDirectoriesList();
     await checkForNewContent(directories);
-    for (const userDirectories of directories) await ensureBuiltinWelcome(userDirectories);
     await diskCache.verify(directories);
     migrateFlatSecrets(directories);
     cleanUploads();

@@ -1,4 +1,8 @@
-"""Stage the paired gateway fix; the caller owns backup, swap and rollback."""
+"""Retire the greeting-order patch; the caller owns backup, swap and rollback.
+
+The legacy patch filename and manifest field remain for bundle compatibility.
+Its new digest identifies removal of the old ordering gates, not their presence.
+"""
 import ast
 import hashlib
 import json
@@ -8,6 +12,15 @@ import shutil
 import subprocess
 
 FILES = ("clawchat_gateway/adapter.py", "clawchat_gateway/storage.py")
+
+
+def validate_independent_sources(directory):
+    for relative in FILES:
+        tree = ast.parse((Path(directory) / relative).read_text(encoding="utf-8"))
+        if any(getattr(node, "name", None) == "has_sent_activation_bootstrap"
+               or getattr(node, "attr", None) == "has_sent_activation_bootstrap"
+               for node in ast.walk(tree)):
+            raise ValueError("Legacy greeting gate is still present; source left unchanged")
 
 
 def bundled_patch_ready(home):
@@ -58,10 +71,14 @@ def prepare(home, destination):
                 capture_output=True, text=True, timeout=15, env=env,
             ).returncode == 0
 
+        # This patch reverses only our known ordering changes. Clean upstream
+        # sources are already in the desired state; partial/unknown edits fail closed.
         if apply("--reverse", "--check"):
+            validate_independent_sources(destination)
             return [], {"status": "already-patched"}
         if not apply("--check") or not apply():
             raise ValueError("Gateway source does not match the supported greeting patch; left unchanged")
+        validate_independent_sources(destination)
         swaps = []
         for relative in FILES:
             prepared = destination / relative

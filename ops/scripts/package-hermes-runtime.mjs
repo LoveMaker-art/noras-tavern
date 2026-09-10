@@ -164,7 +164,7 @@ try {
             fs.copyFileSync(file, target);
         }
         fs.writeFileSync(path.join(runtime, 'plugins', 'clawchat', 'nora-source.json'), JSON.stringify({ repository: 'clawling/clawchat-plugin-hermes-agent', revision: revision.stdout.trim() }));
-        // Apply the shared upstream fix before sealing the component checksums.
+        // Normalize legacy ordering changes before sealing the component checksums.
         const greetingPatch = spawnSync(venvPython, ['-B', '-c',
             'import sys,shutil,tempfile;sys.path.insert(0,sys.argv[1]);from clawchat_greeting_patch import prepare;'
             + '\nwith tempfile.TemporaryDirectory() as work:'

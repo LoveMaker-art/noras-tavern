@@ -316,10 +316,6 @@ def reconcile(home, port=8799, *, create_missing=False, hermes_home=None):
             # Do not revive a tunnel daemon after the launcher has stopped Tavern.
             runtime_asset_release(port)
             owner = authenticate(home, hermes_home=hermes_home)
-            from liveware_notice import owner_conversation
-            # Registration itself can expose an App card before the separate entry notice.
-            if not owner_conversation(hermes_home_for(home, hermes_home), owner["user_id"]):
-                return {"status": "waiting-for-greeting", "warnings": []}
             result = _reconcile(home, port, create_missing=create_missing, owner=owner, hermes_home=hermes_home)
             if result.get("status") == "updated":
                 atomic_json(ready_path, {
@@ -482,29 +478,6 @@ def verified_entry(home, port=8799, *, hermes_home=None):
             return {"status": "pending", "warnings": [safe_error(error)]}
 
 
-def wait_for_greeting(home, *, keep_running=None):
-    import sqlite3
-    os.environ["HOME"] = os.environ["HERMES_HOME"] = str(home)
-    sys.path.insert(0, str(Path(home) / "plugins/clawchat"))
-    from clawchat_gateway.profile import load_profile_config, ProfileConfigError
-    from liveware_notice import owner_conversation
-
-    announced = False
-    while True:
-        if keep_running is not None and not keep_running():
-            return False
-        try:
-            if owner_conversation(home, load_profile_config().user_id):
-                return True
-        except (ProfileConfigError, OSError, sqlite3.Error):
-            pass
-        if not announced:
-            print('{"status":"waiting-for-greeting"}', file=sys.stderr, flush=True)
-            announced = True
-        # Waiting for first activation/delivery is not a failed registration attempt.
-        time.sleep(2)
-
-
 def startup(home, port=8799, *, hermes_home=None, start_local=True):
     with registration_lock(home, worker=True) as acquired:
         if not acquired:
@@ -523,12 +496,7 @@ def startup(home, port=8799, *, hermes_home=None, start_local=True):
                 print(safe_error(error), file=sys.stderr, flush=True)
         else:
             return {"status": "runtime-start-failed"}
-        greeting_home = hermes_home_for(home, hermes_home)
-        if start_local:
-            wait_for_greeting(greeting_home)
-        elif wait_for_greeting(greeting_home, keep_running=lambda: runtime_running(
-                home, port, hermes_home=hermes_home)) is False:
-            return {"status": "tavern-stopped"}
+        # The model greeting runs independently; only Liveware readiness gates the entry.
         result = ensure(home, port, hermes_home=hermes_home, start_local=start_local)
         if result.get("status") != "updated":
             return result
@@ -569,7 +537,7 @@ def main():
             start_runtime(args.home, port=args.port, hermes_home=args.hermes_home)
         result = refresh(args.home, args.port, hermes_home=args.hermes_home)
     print(json.dumps(result, ensure_ascii=False))
-    if result.get("status") not in ("updated", "ready", "already-running", "tavern-stopped", "waiting-for-greeting"):
+    if result.get("status") not in ("updated", "ready", "already-running", "tavern-stopped"):
         raise SystemExit(1)
 
 

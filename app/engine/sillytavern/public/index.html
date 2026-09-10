@@ -379,9 +379,10 @@
                 ...details,
             });
         };
+        const bootLocaleQuery = '?' + new URLSearchParams({ lang: globalThis.__NORA_LOCALE__ });
         recordAssetCacheMilestone('shell-summary-requested');
         const shellResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('shell-summary', '/api/nora-boot/shell');
-        const shellNetworkPromise = fetch('/api/nora-boot/shell', {
+        const shellNetworkPromise = fetch('/api/nora-boot/shell' + bootLocaleQuery, {
             cache: 'no-store',
             credentials: 'same-origin',
             priority: 'high',
@@ -399,7 +400,7 @@
         });
         recordAssetCacheMilestone('runtime-bootstrap-requested');
         const bootstrapResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('runtime-bootstrap', '/api/nora-boot/bootstrap');
-        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap', {
+        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap' + bootLocaleQuery, {
             cache: 'no-store',
             credentials: 'same-origin',
             priority: 'low',

@@ -185,15 +185,20 @@ export async function stageBlankWorld({ idempotencyKey, persona = {}, worldName,
     });
 }
 
-export async function stageWelcomeWorld({ idempotencyKey, stagingRoot }) {
-    const opening = (await fs.readFile(new URL('./builtin/welcome-zh.md', import.meta.url), 'utf8')).trim();
+export async function stageWelcomeWorld({ idempotencyKey, stagingRoot, locale = 'en' }) {
+    const isChinese = locale === 'zh-cn';
+    const language = isChinese ? 'zh' : 'en';
+    const name = isChinese ? '新手引导' : 'Getting started';
+    const opening = (await fs.readFile(new URL(`./builtin/welcome-${language}.md`, import.meta.url), 'utf8')).trim();
     if (!opening) throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Tavern welcome text is missing.');
     const card = {
         spec: 'chara_card_v3',
         spec_version: '3.0',
         data: {
-            name: '新手引导',
-            description: '你是酒馆的主理人，帮助来访者了解酒馆并准备自己的故事。用中文交流。',
+            name,
+            description: isChinese
+                ? '你是酒馆的主理人，帮助来访者了解酒馆并准备自己的故事。用中文交流。'
+                : 'You are the curator of Tavern. Help visitors get to know Tavern and prepare their own stories. Speak English.',
             personality: '',
             scenario: '',
             first_mes: opening,
@@ -210,11 +215,11 @@ export async function stageWelcomeWorld({ idempotencyKey, stagingRoot }) {
     };
     return stageCardBuffer({
         buffer: Buffer.from(JSON.stringify(card)),
-        originalName: 'nora-welcome-zh.json',
+        originalName: `nora-welcome-${language}.json`,
         sourceType: 'character-card',
         idempotencyKey,
-        persona: { name: '我', description: '' },
-        worldName: '新手引导',
+        persona: { name: isChinese ? '我' : 'Me', description: '' },
+        worldName: name,
         stagingRoot,
     });
 }

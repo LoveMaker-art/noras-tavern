@@ -30,12 +30,12 @@ class SharedLogicTests(unittest.TestCase):
         self.home, self.tavern = self.root / "hermes", self.root / "tavern"
         self.home.mkdir()
 
-    def test_greeting_is_read_from_hermes_but_proof_is_written_to_tavern(self):
+    def test_proof_is_written_to_tavern_without_greeting_dependency(self):
         database = self.home / "clawchat/clawchat.sqlite"
         database.parent.mkdir()
         with sqlite3.connect(database) as db:
             db.execute("CREATE TABLE activations(platform, account_id, user_id, conversation_id, bootstrap_sent)")
-            db.execute("INSERT INTO activations VALUES('hermes','default','owner','chat',1)")
+            db.execute("INSERT INTO activations VALUES('hermes','default','owner','chat',0)")
         owner = {"user_id": "owner", "instance_id": "instance"}
         with patch.object(integration, "runtime_asset_release", return_value="a" * 16), \
              patch.object(integration, "authenticate", return_value=owner) as auth, \
@@ -59,20 +59,16 @@ class SharedLogicTests(unittest.TestCase):
     def test_managed_worker_does_not_start_a_stopped_tavern(self):
         with patch.object(integration, "runtime_running", return_value=False), \
              patch.object(integration, "start_runtime") as start, \
-             patch.object(integration, "wait_for_greeting") as wait:
+             patch.object(integration, "ensure") as register:
             self.assertEqual(integration.startup(self.tavern, 18899, hermes_home=self.home,
                                                start_local=False)["status"], "tavern-stopped")
         start.assert_not_called()
-        wait.assert_not_called()
+        register.assert_not_called()
 
-    def test_managed_worker_cancels_when_tavern_stops_during_greeting_wait(self):
-        def wait(home, *, keep_running):
-            self.assertEqual(home, self.home)
-            return keep_running()
+    def test_managed_worker_cancels_when_tavern_stops_before_registration(self):
         with patch.object(integration, "runtime_running", side_effect=[True, False]), \
-             patch.object(integration, "wait_for_greeting", side_effect=wait), \
              patch.object(integration, "start_runtime") as start, \
-             patch.object(integration, "ensure") as register:
+             patch.object(integration, "repair") as register:
             result = integration.startup(self.tavern, 18899, hermes_home=self.home, start_local=False)
         self.assertEqual(result["status"], "tavern-stopped")
         start.assert_not_called()
@@ -114,7 +110,7 @@ class SharedLogicTests(unittest.TestCase):
     def test_prepatched_bundle_is_verified_without_git(self):
         shutil.copytree(ROOT / "ops/tests/fixtures/clawchat-greeting-before", self.home / "plugins/clawchat")
         swaps, report = greeting.prepare(self.home, self.root / "stage")
-        self.assertEqual(report["status"], "prepared")
+        self.assertEqual(report["status"], "already-patched")
         for _, source, target in swaps:
             shutil.copy2(source, target)
         files = {"plugins/clawchat/" + name: hashlib.sha256(

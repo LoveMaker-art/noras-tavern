@@ -457,8 +457,8 @@ def command_start(args) -> None:
         return
     emit("task", task="正在准备 ClawChat 连接组件")
     require_bundled_clawchat(args.hermes_home)
-    # The same worker used by the gateway owns login, greeting order and registration.
-    # It is idempotent and must not block local use while waiting for first activation.
+    # The gateway and launcher share one idempotent registration worker.
+    # Registration and the model greeting run independently.
     run_stream([python_command(args.hermes_home), "-B",
                 str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
     if service == "tavern":

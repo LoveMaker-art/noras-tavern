@@ -1,78 +1,80 @@
-# First Greeting and Liveware Startup
+# Independent Greeting and Liveware Startup
 
 ## User-visible contract
 
-1. The gateway hook spawns one background worker and returns immediately.
-2. The worker starts the local Tavern runtime, with bounded startup retries.
-   An unbound machine can serve Tavern locally without a greeting or cloud login.
-3. The worker waits for the current ClawChat user's persisted, acknowledged
-   welcome message. Waiting does not consume registration retries.
-4. After delivery, authenticate the current Liveware identity and reconcile the
-   Tavern and Story Profile Apps. Never trust a cloned App ID as ownership proof.
-5. Verify the running asset release, current identity, tunnel reconciliation and
-   launcher URLs before sending the separate Tavern entry. Persist its message
-   ID before sending; retry with that same ID and mark completion only on ACK.
+Nora's model greeting and the Hook's Liveware registration run independently.
+Registration does not require `bootstrap_sent` or a successful model response.
+Only the Hook delivers the initial entry card; the model sends a text greeting.
+Their delivery order is not fixed.
 
-The welcome text itself must not contain a fixed or cloned URL. This change does
-not rewrite users' greetings, character cards, model settings or conversations.
+1. The gateway Hook spawns one background registration worker and returns.
+2. The worker starts the local Tavern runtime with bounded retries. For a
+   launcher-managed instance it never restarts a Tavern the user has stopped.
+3. Authenticate the current Liveware identity and reconcile the Tavern and
+   Story Profile Apps. Reuse only verified identities; do not trust cloned IDs.
+4. Verify the current asset release, ownership, tunnels and launcher URLs.
+5. Send the verified entry to the current owner's activation conversation.
+   A missing conversation delays delivery, not registration.
+6. Persist the message ID before sending, reuse it on retries, and mark delivery
+   complete only after the server acknowledges it.
 
-## Changes from the previous implementation
+The greeting is still handled by the official ClawChat/Hermes message path.
+The worker does not generate, resend, or mark a model greeting as delivered.
+The managed `greeting.md` requests one text-only final reply with no tools or
+links. It contains no Python commands and does not query or send an entry.
+The prose refers to a separate card without assuming its position or delivery.
+No new send-acknowledgement ordering mechanism is introduced.
+The two optional starter stories remain in the greeting; importing them is a
+separate, later user-requested action. User-edited greetings retain the existing
+installer preservation policy and are not silently overwritten.
 
-- The remote hotfix waited for the welcome before starting Tavern. Local startup
-  now happens first; only App registration and the entry notice wait for delivery.
-- GitHub's previous hook ran a single `ensure` operation. It now uses a dedicated,
-  locked startup worker with separate waiting, registration and notice phases.
-- Identity reconciliation uses freshly authenticated user/instance ownership,
-  ignores inherited Liveware token environment overrides, and does not unregister
-  same-name launchers outside the current platform App list.
-- Persist an uncertain App creation before issuing the request. Do not retry
-  creation blindly if the response is lost; wait for platform confirmation.
+This does not change persona files, cards, model settings, conversations or
+activation records. The no-tools/no-links rule is a prompt-level constraint,
+not a runtime enforcement layer; real model behavior still needs testing.
 
-## ClawChat companion changes
+## Retiring the Previous Ordering Patch
 
-`ops/updater/clawchat-greeting-order.patch` contains the paired gateway changes
-tested against ClawChat commit `8651f7078916e60ed1da9f78ec4d1278fef49dd9`:
+The old implementation waited for greeting delivery before registration and
+entry sending. Its immediate send-count check assumed the greeting handler
+finished the model turn. Hermes can instead enqueue background work and return,
+leaving a subsequently delivered greeting marked unsent.
 
-- Check the current user's `bootstrap_sent = 1` before starting Sample App work.
-- A bootstrap turn with no visible delivery releases its claim instead of
-  reporting success. A failure after delivery retains the success marker to
-  prevent repeating the welcome.
-- Resume deferred Sample App scheduling after persisting welcome delivery.
+`ops/updater/clawchat-greeting-order.patch` now reverses that known Nora patch
+against ClawChat commit `8651f7078916e60ed1da9f78ec4d1278fef49dd9`. The filename,
+report statuses and `greetingPatchSha256` field remain for existing packaging
+contracts; the new digest identifies the independent-startup revision.
 
-The updater and first installer stage the two source files, validate the patch
-and Python syntax, and include the files in their existing backup/rollback
-transactions. Reapplying an already-installed patch is a no-op. Unrelated plugin
-content is preserved. Incompatible or partially patched source is not overwritten;
-the `clawchatGreeting` result reports `pending` and a warning.
+- Clean supported upstream plugin files are left unchanged.
+- Previously patched files are staged back to supported upstream behavior.
+- Both adapter and storage changes are checked together. Unknown or partial
+  modifications report pending and leave the installed plugin unchanged.
+- Existing first-install/update backup and rollback transactions own the swap.
+- A gateway restart is required after a swap. It is not performed by the
+  staging helper.
+- Existing bundle inventories must match the new digest. Old integrated
+  runtimes must be rebuilt, not relabeled or reused as if they contained the fix.
 
-These changes take effect in the gateway after restart. A locally healthy Tavern
-does not establish that cloud registration or welcome delivery succeeded. A
-machine with an unsupported gateway patch must not be described as fully fixed.
+The official plugin's own bootstrap bookkeeping remains its responsibility;
+Nora no longer interprets it as a delivery acknowledgement or an App gate.
 
-## Verification and release boundary
+## Verification
 
-Run:
+Focused regression commands:
 
 ```sh
+python3 -B -m unittest ops.tests.test_liveware_independent_startup
+python3 -B -m unittest ops.tests.test_liveware_greeting_order
+python3 -B -m unittest ops.tests.test_launcher_shared_logic
 python3 -B -m unittest discover -s ops/tests -p 'test_liveware*.py'
-python3 -B -m unittest discover -s ops/tests -p 'test_updater*.py'
-python3 -B -m unittest discover -s ops/tests -p 'test_first_install.py'
 ```
 
-Coverage includes startup before activation, retry isolation, worker locking,
-current-user delivery checks, failed registration, gateway patch idempotency,
-partial/unknown patch rejection and transaction rollback. Gateway tests execute
-the patched methods with network collaborators replaced, not real cloud requests.
+Coverage includes unsent/delayed/failed greetings, registration before a
+conversation is available, verified-owner Hook delivery, registration failure,
+message acknowledgement retries with a stable ID,
+worker locking, stopped-service behavior, upstream restoration, partial-patch
+rejection, bundle fingerprints and update rollback.
 
-On the target unbound machine, the old startup failed the local-start-before-wait
-test; the correction passed, and Tavern's local world-list endpoint returned 200
-while no App identity was created. No user/model messages were sent for this check.
-The 36 focused Liveware tests also passed on that remote machine. Applying the
-companion patch to a temporary export of the complete original gateway produced
-both deployed gateway files byte-for-byte; the actual plugin was not replaced
-by this test. Updater/installer checks additionally passed, with one pre-existing
-environment-dependent updater test skipped.
-
-A real fresh-clone activation, message ACK, two-App registration and external
-entry-opening acceptance test is still required before declaring the entire
-first-run experience verified. This branch does not change the release version.
+These tests use local fixtures and mocked network collaborators. Real fresh
+installation, cloud registration, entry delivery and opening the entry still
+require target-environment acceptance before release. This change does not
+redesign the launcher or change its separate installation-completion criteria.

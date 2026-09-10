@@ -1,6 +1,7 @@
 import asyncio
 import ast
 from contextlib import closing
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -19,99 +20,65 @@ import liveware_notice as notice
 import clawchat_greeting_patch as gateway_patch
 
 
-class StopWaiting(Exception):
-    pass
-
-
 class GreetingOrderTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
 
-    def test_runtime_starts_before_unbound_greeting_wait(self):
+    def test_runtime_starts_before_registration(self):
         calls = []
         with patch.object(integration, "start_runtime", side_effect=lambda *_, **__: calls.append("runtime")), \
-             patch.object(integration, "wait_for_greeting", side_effect=StopWaiting), \
-             patch.object(integration, "ensure") as register:
-            with self.assertRaises(StopWaiting):
-                integration.startup(self.home)
-            register.assert_not_called()
-        self.assertEqual(calls, ["runtime"])
+             patch.object(integration, "ensure", side_effect=lambda *_, **__: calls.append("apps") or {"status": "pending"}):
+            self.assertEqual(integration.startup(self.home)["status"], "pending")
+        self.assertEqual(calls, ["runtime", "apps"])
 
-    def test_runtime_retry_does_not_register_or_consume_greeting_wait(self):
+    def test_runtime_retries_before_registration(self):
         with patch.object(integration, "start_runtime", side_effect=[OSError("temporary"), 0]) as start, \
              patch.object(integration.time, "sleep"), \
-             patch.object(integration, "wait_for_greeting", side_effect=StopWaiting), \
-             patch.object(integration, "ensure") as register:
-            with self.assertRaises(StopWaiting):
-                integration.startup(self.home)
-            self.assertEqual(start.call_count, 2)
-            register.assert_not_called()
+             patch.object(integration, "ensure", return_value={"status": "pending"}) as register:
+            integration.startup(self.home)
+        self.assertEqual(start.call_count, 2)
+        register.assert_called_once()
 
     def test_runtime_failure_never_registers(self):
         with patch.object(integration, "RETRY_DELAYS", (0, 0)), \
              patch.object(integration, "start_runtime", side_effect=OSError("offline")), \
-             patch.object(integration, "wait_for_greeting") as greeting, \
              patch.object(integration, "ensure") as register:
             self.assertEqual(integration.startup(self.home)["status"], "runtime-start-failed")
-            greeting.assert_not_called()
-            register.assert_not_called()
+        register.assert_not_called()
 
-    def test_success_order_runtime_greeting_apps_verified_notice(self):
+    def test_success_order_runtime_apps_verified_notice(self):
         calls = []
         with patch.object(integration, "start_runtime", side_effect=lambda *_, **__: calls.append("runtime")), \
-             patch.object(integration, "wait_for_greeting", side_effect=lambda _: calls.append("greeting")), \
              patch.object(integration, "ensure", side_effect=lambda *_, **__: calls.append("apps") or {"status": "updated"}), \
              patch.object(integration, "verified_entry", side_effect=lambda *_, **__: calls.append("verify") or {"status": "ready"}), \
              patch.object(notice, "notify_ready", side_effect=lambda *_, **__: calls.append("notice") or {"status": "sent"}):
             self.assertEqual(integration.startup(self.home)["notice"]["status"], "sent")
-        self.assertEqual(calls, ["runtime", "greeting", "apps", "verify", "notice"])
+        self.assertEqual(calls, ["runtime", "apps", "verify", "notice"])
 
     def test_worker_lock_prevents_second_worker(self):
         with integration.registration_lock(self.home, worker=True), \
              patch.object(integration, "start_runtime") as start:
             self.assertEqual(integration.startup(self.home)["status"], "already-running")
-            start.assert_not_called()
+        start.assert_not_called()
 
     def test_failed_registration_never_sends_url(self):
-        with patch.object(integration, "start_runtime"), patch.object(integration, "wait_for_greeting"), \
+        with patch.object(integration, "start_runtime"), \
              patch.object(integration, "ensure", return_value={"status": "pending"}), \
              patch.object(notice, "notify_ready") as send:
             self.assertEqual(integration.startup(self.home)["status"], "pending")
-            send.assert_not_called()
+        send.assert_not_called()
 
-    def test_reconcile_cannot_bypass_greeting_gate(self):
-        with patch.object(integration, "runtime_asset_release", return_value="a" * 16), \
-             patch.object(integration, "authenticate", return_value={"user_id": "owner", "instance_id": "instance"}), \
-             patch.object(notice, "owner_conversation", return_value=None), \
-             patch.object(integration, "_reconcile") as register:
-            self.assertEqual(integration.reconcile(self.home, create_missing=True)["status"], "waiting-for-greeting")
-            register.assert_not_called()
-
-    def test_owner_query_does_not_accept_foreign_or_unsent_greeting(self):
-        path = self.home / "clawchat/clawchat.sqlite"
-        path.parent.mkdir()
-        with closing(sqlite3.connect(path)) as db:
-            db.execute("CREATE TABLE activations(platform, account_id, user_id, conversation_id, bootstrap_sent)")
-            db.executemany("INSERT INTO activations VALUES(?,?,?,?,?)", [
-                ("hermes", "default", "foreign", "foreign-chat", 1),
-                ("hermes", "default", "owner", "owner-chat", 0),
-            ])
-            db.commit()
-            self.assertIsNone(notice.owner_conversation(self.home, "owner"))
-            db.execute("UPDATE activations SET bootstrap_sent=1 WHERE user_id='owner'")
-            db.commit()
-            self.assertEqual(notice.owner_conversation(self.home, "owner"), "owner-chat")
-
-    def test_waiting_does_not_use_registration_retry_budget(self):
-        profile = SimpleNamespace(load_profile_config=lambda: SimpleNamespace(user_id="owner"), ProfileConfigError=ValueError)
-        with patch.dict(sys.modules, {"clawchat_gateway.profile": profile}), \
-             patch.dict("os.environ"), patch.object(sys, "path", list(sys.path)), \
-             patch.object(notice, "owner_conversation", side_effect=[None] * 25 + ["chat"]), \
-             patch.object(integration.time, "sleep") as sleep:
-            integration.wait_for_greeting(self.home)
-            self.assertEqual(sleep.call_count, 25)
+    def test_registration_stays_ready_if_owner_conversation_is_pending(self):
+        with patch.object(integration, "start_runtime"), \
+             patch.object(integration, "ensure", return_value={"status": "updated"}) as register, \
+             patch.object(integration, "verified_entry", return_value={"status": "ready"}), \
+             patch.object(notice, "notify_ready", side_effect=[{"status": "waiting-for-conversation"}, {"status": "sent"}]), \
+             patch.object(integration, "RETRY_DELAYS", (0, 0)):
+            result = integration.startup(self.home)
+        register.assert_called_once()
+        self.assertEqual(result["notice"]["status"], "sent")
 
     def test_missing_plugin_and_unknown_source_are_non_destructive(self):
         self.assertEqual(gateway_patch.prepare(self.home, self.home / "stage")[1]["status"], "not-installed")
@@ -134,6 +101,8 @@ class GatewayPatchTests(unittest.TestCase):
         self.home = Path(self.tmp.name)
         self.plugin = self.home / "plugins/clawchat"
         shutil.copytree(ROOT / "ops/tests/fixtures/clawchat-greeting-before", self.plugin)
+        subprocess.run(["git", "apply", str(self.plugin / "legacy-order.patch")],
+                       cwd=self.plugin, check=True, capture_output=True)
 
     def prepare(self):
         swaps, report = gateway_patch.prepare(self.home, self.home / "stage")
@@ -209,73 +178,83 @@ class GatewayPatchTests(unittest.TestCase):
         adapter._spawn_liveware_sample_task = Mock()
         return adapter
 
-    def test_no_visible_message_does_not_mark_greeting_or_start_sample(self):
-        adapter = self.adapter()
-        asyncio.run(adapter._dispatch_activation_bootstrap())
-        adapter._store.mark_activation_bootstrap_sent.assert_not_called()
-        adapter._store.release_activation_bootstrap_claim.assert_called_once()
-        adapter._spawn_liveware_sample_task.assert_not_called()
+    def test_restores_exact_upstream_sources(self):
+        for _, prepared, target in self.prepare():
+            upstream = ROOT / "ops/tests/fixtures/clawchat-greeting-before" / target.relative_to(self.plugin)
+            self.assertEqual(prepared.read_bytes(), upstream.read_bytes())
 
-    def test_acknowledged_message_marks_then_resumes_sample(self):
-        adapter = self.adapter()
-        calls = []
-        adapter._visible_send_count.side_effect = [0, 1]
-        adapter._store.mark_activation_bootstrap_sent.side_effect = lambda **_: calls.append("mark") or True
-        adapter._store.has_sent_activation_bootstrap.side_effect = lambda **_: calls.append("check") or True
-        adapter._spawn_liveware_sample_task.side_effect = lambda *_a, **_k: calls.append("sample")
-        asyncio.run(adapter._dispatch_activation_bootstrap())
-        self.assertEqual(calls, ["mark", "check", "sample"])
+    def test_legacy_bundle_inventory_cannot_skip_restoration(self):
+        files = {"plugins/clawchat/" + name: hashlib.sha256(
+            (self.plugin / name).read_bytes()).hexdigest() for name in gateway_patch.FILES}
+        legacy_digest = hashlib.sha256((self.plugin / "legacy-order.patch").read_bytes()).hexdigest()
+        (self.home / "nora-components.json").write_text(json.dumps({
+            "files": files, "clawchat": {"greetingPatchSha256": legacy_digest}}))
+        self.assertFalse(gateway_patch.bundled_patch_ready(self.home))
+        self.prepare()
 
-    def test_sample_does_not_start_before_current_owner_greeting(self):
+    def test_clean_upstream_is_unchanged(self):
+        for relative in gateway_patch.FILES:
+            shutil.copy2(ROOT / "ops/tests/fixtures/clawchat-greeting-before" / relative,
+                         self.plugin / relative)
+        swaps, report = gateway_patch.prepare(self.home, self.home / "clean-stage")
+        self.assertEqual((swaps, report), ([], {"status": "already-patched"}))
+
+    def test_sample_starts_while_greeting_is_still_running(self):
         adapter = self.adapter()
         adapter._store.has_sent_activation_bootstrap.return_value = False
-        adapter._schedule_liveware_sample()
-        adapter._spawn_liveware_sample_task.assert_not_called()
-        adapter._store.has_sent_activation_bootstrap.assert_called_once_with(platform="hermes", account_id="default", user_id="owner")
 
-    def test_failed_send_releases_claim_but_does_not_register(self):
+        async def scenario():
+            entered, release = asyncio.Event(), asyncio.Event()
+            async def delayed(_):
+                entered.set()
+                await release.wait()
+            adapter._handle_inbound.side_effect = delayed
+            greeting = asyncio.create_task(adapter._dispatch_activation_bootstrap())
+            try:
+                await entered.wait()
+                adapter._schedule_liveware_sample()
+                adapter._spawn_liveware_sample_task.assert_called_once()
+                self.assertFalse(greeting.done())
+                adapter._store.has_sent_activation_bootstrap.assert_not_called()
+            finally:
+                release.set()
+                await greeting
+
+        asyncio.run(scenario())
+
+    def test_async_dispatch_does_not_reintroduce_our_premature_failure_check(self):
+        adapter = self.adapter()
+
+        async def scenario():
+            tasks = []
+            async def delivered_later():
+                await asyncio.sleep(0)
+            async def queued(_):
+                tasks.append(asyncio.create_task(delivered_later()))
+            adapter._handle_inbound.side_effect = queued
+            await adapter._dispatch_activation_bootstrap()
+            await asyncio.gather(*tasks)
+
+        asyncio.run(scenario())
+        adapter._store.release_activation_bootstrap_claim.assert_not_called()
+        # Preserve the plugin's own bootstrap bookkeeping; Nora no longer treats
+        # this flag as an ACK or as permission to register/send an App.
+        adapter._store.mark_activation_bootstrap_sent.assert_called_once()
+
+    def test_failed_greeting_does_not_block_sample(self):
         adapter = self.adapter()
         adapter._handle_inbound.side_effect = OSError("send failed")
         with self.assertRaises(OSError):
             asyncio.run(adapter._dispatch_activation_bootstrap())
-        adapter._store.mark_activation_bootstrap_sent.assert_not_called()
-        adapter._store.release_activation_bootstrap_claim.assert_called_once()
-        adapter._spawn_liveware_sample_task.assert_not_called()
-
-    def test_failure_after_ack_does_not_release_and_repeat_greeting(self):
-        adapter = self.adapter()
-        adapter._handle_inbound.side_effect = OSError("post-send failure")
-        adapter._visible_send_count.side_effect = [0, 1]
-        with self.assertRaises(OSError):
-            asyncio.run(adapter._dispatch_activation_bootstrap())
-        adapter._store.mark_activation_bootstrap_sent.assert_called_once()
-        adapter._store.release_activation_bootstrap_claim.assert_not_called()
+        adapter._schedule_liveware_sample()
+        adapter._spawn_liveware_sample_task.assert_called_once()
 
     def test_reconnect_without_pending_claim_does_not_send_again(self):
         adapter = self.adapter()
         adapter._store.claim_pending_activation_bootstrap.return_value = None
         asyncio.run(adapter._dispatch_activation_bootstrap())
         adapter._handle_inbound.assert_not_called()
-        adapter._store.mark_activation_bootstrap_sent.assert_not_called()
 
-    def test_gateway_store_requires_current_user_and_exact_sent_flag(self):
-        swaps = self.prepare()
-        source = next(p for _, p, _ in swaps if p.name == "storage.py")
-        cls = next(n for n in ast.parse(source.read_text()).body if isinstance(n, ast.ClassDef))
-        method = next(n for n in cls.body if getattr(n, "name", None) == "has_sent_activation_bootstrap")
-        namespace = {"sqlite3": sqlite3}
-        exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), namespace)
-        store = SimpleNamespace(initialize=lambda: None, _disabled=False, db_path=self.home / "store.sqlite")
-        with closing(sqlite3.connect(store.db_path)) as db:
-            db.execute("CREATE TABLE activations(platform,account_id,user_id,conversation_id,bootstrap_sent)")
-            db.execute("INSERT INTO activations VALUES('hermes','default','owner','chat',0)")
-            db.commit()
-            check = lambda user: namespace["has_sent_activation_bootstrap"](store, platform="hermes", account_id="default", user_id=user)
-            self.assertFalse(check("owner"))
-            db.execute("UPDATE activations SET bootstrap_sent=1")
-            db.commit()
-            self.assertTrue(check("owner"))
-            self.assertFalse(check("foreign"))
 
 
 class EntryNoticeTests(unittest.TestCase):
