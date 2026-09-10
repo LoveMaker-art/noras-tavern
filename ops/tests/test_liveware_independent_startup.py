@@ -1,4 +1,5 @@
 """Registration and entry delivery must not depend on a model greeting."""
+from contextlib import closing
 import json
 from pathlib import Path
 import sqlite3
@@ -23,7 +24,7 @@ class IndependentStartupTests(unittest.TestCase):
         self.tavern = self.root / "tavern"
         database = self.home / "clawchat/clawchat.sqlite"
         database.parent.mkdir(parents=True)
-        with sqlite3.connect(database) as db:
+        with closing(sqlite3.connect(database)) as db, db:
             db.execute("CREATE TABLE activations(platform, account_id, user_id, conversation_id, bootstrap_sent)")
             db.execute("INSERT INTO activations VALUES('hermes','default','owner','chat',0)")
         self.owner = {"user_id": "owner", "instance_id": "instance"}
@@ -60,7 +61,7 @@ class IndependentStartupTests(unittest.TestCase):
             result = integration.startup(self.tavern, hermes_home=self.home)
         self.assertEqual(order, ["runtime", "register", "entry"])
         self.assertEqual(result["notice"]["status"], "sent")
-        with sqlite3.connect(self.home / "clawchat/clawchat.sqlite") as db:
+        with closing(sqlite3.connect(self.home / "clawchat/clawchat.sqlite")) as db, db:
             self.assertEqual(db.execute("SELECT bootstrap_sent FROM activations").fetchone()[0], 0)
         saved = json.loads((self.tavern / "tavern-state/liveware-entry-notice.json").read_text())
         self.assertTrue(saved["sent"])
@@ -68,7 +69,7 @@ class IndependentStartupTests(unittest.TestCase):
     def test_missing_conversation_does_not_send_to_another_user(self):
         modules = {"clawchat_gateway.profile": SimpleNamespace(load_profile_config=lambda: SimpleNamespace(user_id="owner")),
                    "clawchat_gateway.protocol": SimpleNamespace(new_message_id=lambda: "entry-id")}
-        with sqlite3.connect(self.home / "clawchat/clawchat.sqlite") as db:
+        with closing(sqlite3.connect(self.home / "clawchat/clawchat.sqlite")) as db, db:
             db.execute("UPDATE activations SET conversation_id=NULL")
         with patch.dict(sys.modules, modules), patch.dict("os.environ"), \
              patch.object(sys, "path", list(sys.path)), \

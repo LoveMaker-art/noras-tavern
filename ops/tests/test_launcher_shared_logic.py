@@ -1,4 +1,5 @@
 """Contracts between the desktop adapter and the shared Tavern business code."""
+from contextlib import closing
 import hashlib
 import importlib.util
 import json
@@ -33,7 +34,7 @@ class SharedLogicTests(unittest.TestCase):
     def test_proof_is_written_to_tavern_without_greeting_dependency(self):
         database = self.home / "clawchat/clawchat.sqlite"
         database.parent.mkdir()
-        with sqlite3.connect(database) as db:
+        with closing(sqlite3.connect(database)) as db, db:
             db.execute("CREATE TABLE activations(platform, account_id, user_id, conversation_id, bootstrap_sent)")
             db.execute("INSERT INTO activations VALUES('hermes','default','owner','chat',0)")
         owner = {"user_id": "owner", "instance_id": "instance"}
