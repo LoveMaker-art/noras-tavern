@@ -84,7 +84,9 @@ def prepare_greeting(home, source, destination):
     example = checked_path(home, "clawchat/greeting.nora-example.md")
     old = target.read_bytes() if target.is_file() else b""
     record = json.loads(receipt.read_text(encoding="utf-8")) if receipt.is_file() else {}
-    managed = (not old.strip() or old == template or old.strip() == LEGACY_GREETING.encode("utf-8").strip()
+    # Windows text writes use CRLF; that alone does not make a shipped default custom.
+    legacy_default = old.replace(b"\r\n", b"\n").strip() == LEGACY_GREETING.encode("utf-8").strip()
+    managed = (not old.strip() or old == template or legacy_default
                or record.get("sha256") == hashlib.sha256(old).hexdigest())
     desired = [(target if managed else example, template)]
     if managed:

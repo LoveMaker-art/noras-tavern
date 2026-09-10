@@ -49,6 +49,27 @@ class RefinementTests(unittest.TestCase):
         system.install_greeting(self.args.hermes_home, source)
         self.assertEqual(greeting.read_text(), '我自己写的开场')
 
+    def test_legacy_greeting_with_windows_newlines_upgrades(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        greeting.write_bytes(LEGACY_GREETING.replace('\n', '\r\n').encode('utf-8'))
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_bytes(),
+                         (source / 'ops/installer/templates/greeting.md').read_bytes())
+        self.assertEqual(system.read_json(greeting.parent / 'nora-greeting.json')['sha256'],
+                         system.digest(greeting))
+
+    def test_custom_greeting_with_windows_newlines_remains_byte_exact(self):
+        source = Path(__file__).resolve().parents[2]
+        greeting = self.args.hermes_home / 'clawchat/greeting.md'
+        greeting.parent.mkdir()
+        custom = (LEGACY_GREETING + '这是我自己补充的内容。\n').replace('\n', '\r\n').encode('utf-8')
+        greeting.write_bytes(custom)
+        system.install_greeting(self.args.hermes_home, source)
+        self.assertEqual(greeting.read_bytes(), custom)
+        self.assertFalse((greeting.parent / 'nora-greeting.json').exists())
+
     def test_managed_greeting_is_text_only_with_no_entry_lookup(self):
         source = Path(__file__).resolve().parents[2]
         greeting = self.args.hermes_home / 'clawchat/greeting.md'
