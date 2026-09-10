@@ -2,9 +2,11 @@
 
 ## 用户使用
 
+- [下载启动器](../README.md#下载安装包)
 - [安装 Nora + Tavern](install-nora-tavern.md)
-- [只安装 Tavern](install-tavern.md)
-- [更新现有安装](update-nora-tavern.md)
+- [只安装 Tavern（源码方式）](install-tavern.md)
+- [选择更新方式](update-nora-tavern.md#先选择你的安装方式)
+- [卸载与保留数据](launcher-uninstall.md)
 
 ## 当前仓库
 

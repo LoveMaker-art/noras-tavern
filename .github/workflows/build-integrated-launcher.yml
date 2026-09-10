@@ -297,12 +297,14 @@ jobs:
             test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
           done
           node tooling/run.mjs node tooling/release/verify-launcher-release.cjs artifacts "$TAG" "$GITHUB_SHA"
+          node --test tests/launcher-release-notes.test.cjs
+          node tooling/release/launcher-release-notes.cjs artifacts "$TAG" "$GH_REPO" "docs/releases/$TAG.md" release-notes.generated.md
           if [[ "$TAG" == *-beta.* ]]; then
             gh release create "$TAG" --verify-tag --draft --prerelease --title "Nora Tavern $TAG 测试版" \
-              --notes '三平台启动器测试版。包含完整 Nora 系统，无真实 Key 或用户数据。未签名或未公证的平台包可能出现系统安全提示。'
+              --notes-file release-notes.generated.md
           else
             gh release create "$TAG" --verify-tag --draft --title "诺拉·酒馆 $TAG" \
-              --notes-file "docs/releases/$TAG.md"
+              --notes-file release-notes.generated.md
           fi
           while IFS= read -r -d '' file; do
             gh release upload "$TAG" "$file"
