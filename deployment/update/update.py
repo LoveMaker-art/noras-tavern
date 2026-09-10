@@ -240,8 +240,18 @@ def verify_worlds(app, state):
     node = shutil.which("node")
     if not node:
         raise RuntimeError("无法验证原有世界：未找到 Node.js")
+    def node_path(value):
+        # Node's module loader cannot resolve Win32 device-prefixed entry paths.
+        value = str(value)
+        if sys.platform == "win32":
+            if value.startswith("\\\\?\\UNC\\"):
+                return "\\\\" + value[8:]
+            if value.startswith("\\\\?\\"):
+                return value[4:]
+        return value
     try:
-        result = run([node, HERE / "verify-worlds.mjs", app, native], capture=True, timeout=120)
+        result = run([node_path(value) for value in (node, HERE / "verify-worlds.mjs", app, native)],
+                     capture=True, timeout=120)
     except subprocess.CalledProcessError as error:
         raise RuntimeError("世界读取验证失败：" + (error.stderr or "验证程序退出异常").strip()[:1000]) from error
     return json.loads(result.stdout)

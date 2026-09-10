@@ -2,7 +2,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import sys
 import tempfile
 import unittest
@@ -71,6 +71,22 @@ class UpdateTargetTests(unittest.TestCase):
         self.assertEqual(marker.read_text(), "preserve")
         self.assertEqual((self.home / "config.yaml").read_bytes(), before)
         self.assertFalse((self.home / "home").exists())
+
+    def test_world_probe_uses_regular_windows_paths_at_node_boundary(self):
+        state = self.root / "state"
+        (state / "native").mkdir(parents=True)
+        for prefix, expected in [("\\\\?\\C:\\Nora", "C:\\Nora"),
+                                 ("\\\\?\\UNC\\server\\share\\Nora", "\\\\server\\share\\Nora")]:
+            with self.subTest(prefix=prefix), \
+                    patch.object(UPDATER.sys, "platform", "win32"), \
+                    patch.object(UPDATER, "HERE", PureWindowsPath(prefix) / "ops/updater"), \
+                    patch.object(UPDATER.shutil, "which", return_value="node.exe"), \
+                    patch.object(UPDATER.subprocess, "run", return_value=SimpleNamespace(stdout="{}")) as probe:
+                self.assertEqual(UPDATER.verify_worlds(PureWindowsPath(prefix) / "app", state), {})
+                command = probe.call_args.args[0]
+                self.assertEqual(command[1], str(PureWindowsPath(expected) / "ops/updater/verify-worlds.mjs"))
+                self.assertEqual(command[2], str(PureWindowsPath(expected) / "app"))
+                self.assertEqual(probe.call_args.kwargs["check"], True)
 
     def test_separate_existing_tavern_is_found_from_mcp(self):
         tavern = self.root / "separate tavern"
