@@ -1,115 +1,111 @@
-# Tavern development and release guide
+# Development And Release
 
-The root [README](README.md) is the product and update entrypoint. This document is for developers and release maintainers.
-
-## Source boundaries
-
-- `app/engine/sillytavern`, `app/native-extensions`, `app/native_lifecycle.py`, and `app/native_model_config.py` are the Tavern production source.
-- `story-profile/` is the authoritative Story Profile source. `app/story_profile_runtime/` is its generated release snapshot and must not be edited by hand.
-- `nora-mcp/` is the MCP source.
-- `ops/` owns lifecycle, Liveware integration, skills, updater, packaging, and deployment operations.
-- `local-state/`, `release/`, runtime data, credentials, logs, caches, `node_modules`, and installed extension copies are not authored source.
-
-Do not edit a remote runtime as the source of a change. Implement and verify the change in this repository, then deploy an explicitly reviewed delta or release.
+Start with [repository navigation](docs/REPOSITORY.md). Change authored source, not installed runtime files or generated copies. `nora/AGENTS.md` is delivered to Hermes; it is not instructions for repository contributors.
 
 ## Requirements
 
-- Node.js 20 or newer. Current release verification uses Node.js 22.22.3.
-- npm with the committed lockfiles.
-- Python 3.9 or newer for lifecycle, updater, and Story Profile tooling. Updater execution uses Hermes' Python environment with PyYAML.
+- Node.js 24 and npm with committed lockfiles for the release pipeline.
+- Hermes' managed Python with PyYAML for deployment tests. Set `NORA_PYTHON` to its executable; otherwise the runner uses `python3` on macOS or `python` on Windows.
+- Native macOS arm64, macOS x64, and Windows x64 builders for their respective Hermes runtime bundles. A Mac build does not establish Windows compatibility.
 
-## Local setup
+Install development dependencies where they are authored:
 
 ```sh
-cd app/engine/sillytavern
-npm ci
+npm ci --prefix launcher/desktop
+npm ci --prefix app/engine/sillytavern
+npm ci --prefix nora-mcp
 ```
 
-Do not hand-edit `public/dist/nora/entry.js`. Build the Nora bundle from `webpack.nora.config.mjs` through the maintained npm scripts.
+## Source And Delivery Layouts
 
-## Story Profile changes
+Source is grouped by ownership. Existing installations still consume the `ops/` delivery layout. `tooling/source-layout.json` is the only path mapping; builds project source into an isolated directory without rewriting its contents.
 
-One checkout contains both Tavern and the authoritative Story Profile source. After intentionally changing `story-profile/`, refresh and verify the embedded snapshot:
+Deployment modules retain their delivery-relative imports. **Do not execute moved internals directly.** Use `tooling/run.mjs`, which exports current source, maps source arguments, links local dependencies, runs the command, then removes its own temporary directory. Use absolute paths for output directories and external installations.
+
+The runner does not make destructive commands safe. Use isolated test homes and fixtures during development.
+
+The repository index is another source-facing command: `node tooling/checks/index-project.mjs`. It writes the current source inventory to ignored `.codebase-memory/project-index.json`, not over the historical architecture snapshot.
+
+## Tests
+
+Layout tests run directly against authored source:
 
 ```sh
-cd app/engine/sillytavern
-npm run sync:story-profile
-npm run check:story-profile-source
+node --test tests/repository-layout.test.mjs
 ```
 
-The snapshot revision is derived from source content, not Git HEAD. Ordinary builds verify the snapshot but do not silently synchronize changed Story Profile source.
-
-Run Story Profile's offline projection tests from the repository root:
+Deployment tests run against the layout users install:
 
 ```sh
+node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_uninstall.test.cjs
+node tooling/run.mjs python -B -m unittest tests.deployment.test_first_install tests.deployment.test_managed_context tests.deployment.test_incremental_update
+```
+
+Tavern tests that import deployment helpers also use the export:
+
+```sh
+node tooling/run.mjs node --test app/engine/sillytavern/tests/nora-release-source.test.mjs app/engine/sillytavern/tests/nora-launcher-model.test.mjs
+```
+
+Run the engine's npm scripts in the projected tree:
+
+```sh
+node tooling/run.mjs npm --prefix app/engine/sillytavern run test:nora
+node tooling/run.mjs npm --prefix app/engine/sillytavern run lint:owned
+```
+
+Choose focused tests before repository-wide suites. Tests establish only the workflows they exercise, not visual or real-device acceptance.
+
+## Launcher Development
+
+The production page is `launcher/ui/index.html`. `launcher/previews/` contains design experiments, not the desktop entrypoint. Test UI and clicks without repackaging:
+
+```sh
+node tooling/run.mjs --watch node launcher/desktop/node_modules/electron/cli.js launcher/desktop --nora-mock=uninstalled --nora-watch
+```
+
+Use `--nora-mock=installed` for the installed state. For real installation testing omit `--nora-mock` and use the launcher's existing isolated test configuration. The runner mirrors UI/desktop source edits; Electron's existing watcher reloads them. Restart the dev command after deployment-module or dependency changes.
+
+## Story Profile
+
+Edit `story-profile/`, then explicitly regenerate and verify its embedded snapshot:
+
+```sh
+npm --prefix app/engine/sillytavern run sync:story-profile
+npm --prefix app/engine/sillytavern run check:story-profile-source
 python3 -m unittest discover -s story-profile/tests
 ```
 
-## Tavern verification
+Ordinary packaging checks parity but does not silently refresh authored changes. Do not edit `app/story_profile_runtime/` by hand.
 
-From `app/engine/sillytavern`:
+## Packaging
 
-```sh
-npm run test:nora
-npm run lint
-npm run build:nora
-```
-
-Run focused tests appropriate to the changed behavior before broad release checks. A successful build, process health check, or DOM presence check is technical evidence only; it does not prove the target user workflow or Liveware deployment outcome.
-
-## Candidate packaging
-
-From the repository root:
+Run the source-facing packager directly, not through the delivery runner:
 
 ```sh
-sh ops/scripts/package-release.sh --candidate
+node tooling/release/package-release.mjs --candidate --hermes-runtime-manifest /absolute/path/to/nora-hermes-runtime.json
 ```
 
-Candidate mode can snapshot tracked source and non-ignored new source while recording the dirty state and source digest. It is intended for further verification and is not stable release approval. Use `--offline` only when every locked dependency is already available in npm's local cache.
+`--candidate` includes tracked and unignored new source, records dirty state, and creates a local candidate. `--offline` requires all locked npm packages already cached. Omitting `--candidate` requires a clean committed tree. A complete launcher system requires a verified platform-specific Hermes runtime manifest; Tavern-only archives do not establish a complete Nora installation.
 
-## Stable packaging
+The packager exports source, checks Story Profile parity, builds Tavern/MCP, validates the delivery allowlist and hashes, and emits `release/`. It **does not run the test suite**; the manifest records `verification.mode=packaging-only` and `testsExecutedByPackager=false`. There is no separate guaranteed `--fast-after-test` mode.
 
-Stable packaging requires committed, clean source and all mandatory automated checks:
+Verify the payload separately:
 
 ```sh
-sh ops/scripts/package-release.sh
+node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs /absolute/path/to/release/nora-tavern-launcher/payload
 ```
 
-The packager exports the commit into an isolated directory, installs locked dependencies, runs the dependency audit, tests, lint, builds, contracts, and workflow gates, and then archives explicit file lists. Browser acceptance is not a packaging prerequisite and must not be inferred from automated verification.
+This smoke test uses its own installation directory and no real model key or pairing. External routing, model-provider behavior, and desktop acceptance need additional target-environment tests.
 
-Each uniquely named directory under `release/` contains the app, ops, and Nora MCP archives, the release manifest, and SHA-256 checksums. Runtime data, user models, credentials, ignored private files, installed dependencies, and tests are excluded from release payloads.
+The three-platform pipeline is `.github/workflows/build-integrated-launcher.yml`. It verifies runtime, tests deployment, creates the payload, tests fresh installation, builds the desktop shell, and checks packaged icons/content. Publication requires all platform outputs to agree on version and commit.
 
-## Fast packaging after targeted tests
+## Release Rules
 
-Small fixes do not need to repeat the complete repository gate during the
-publishing phase. First run the tests that exercise the changed behavior and
-its directly affected module. After those tests pass, commit the change and use:
+1. Never commit credentials, runtime homes, logs, installed dependencies, or generated release assets.
+2. Keep source identity, Story Profile snapshot, delivery hashes, and platform manifests consistent.
+3. Commit/push, tag, publish, and deploy are separate explicitly authorized operations.
+4. Back up runtime files before authorized deployment and verify the actual target afterwards.
+5. Do not report publication or user acceptance based only on a build or health check.
 
-```sh
-sh ops/scripts/package-release.sh --fast-after-test
-```
-
-This mode still requires a clean committed tree, installs locked build
-dependencies, checks Story Profile source parity, rebuilds required Tavern and
-MCP artifacts, rejects private/runtime files, and emits the same full archives,
-manifest, Bootstrap files, and SHA-256 checksums as a normal release. It does
-not rerun dependency audits, repository-wide tests, lint, architecture
-contracts, or product workflow tests.
-
-The manifest records `verification.mode=fast-after-external-test` and does not
-claim that the packager executed tests. Use normal stable packaging for broad,
-cross-module, dependency, migration, or architecture changes. Packaging never
-pushes a branch, creates a tag, publishes a GitHub Release, or updates a host;
-those remain separately authorized actions.
-
-The pinned `image-size` and `showdown` security backports live under `app/engine/sillytavern/vendor/`. Their `SECURITY.md` files record upstream provenance, changes, licenses, and limitations.
-
-## Release and deployment rules
-
-1. Keep source, generated Story Profile snapshot, build output, package manifest, and release commit consistent.
-2. Do not commit API keys, cookies, tokens, live model configuration, user state, logs, caches, or generated dependency directories.
-3. Publishing a branch does not publish a GitHub Release, and publishing a Release does not update any installed host.
-4. A deployment must back up affected target files, upload only the reviewed artifact or delta, restart through the maintained lifecycle, and perform health plus requested user-workflow verification.
-5. Do not describe a change as deployed or user-verified until it has been demonstrated in the target environment.
-
-The updater source lives in `ops/updater/`. Its compatibility, transaction, migration, recovery, and activation contract is documented in [release-compatibility.md](ops/skills/system/tavern-updater/references/release-compatibility.md).
+The [update guide](docs/update-nora-tavern.md) distinguishes complete-system updates from standalone Tavern updates. Existing upstream license and security notices remain in their component directories.

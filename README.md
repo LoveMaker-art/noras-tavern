@@ -42,12 +42,16 @@ Nora Tavern 支持两种安装方式：
 | `app/story_profile_runtime/` | Story Profile 的内置运行快照，随 Tavern 一起发布，让用户不需要单独安装 Story Profile。 |
 | `story-profile/` | Story Profile 的源码目录。开发者应修改这里，再同步生成 `app/story_profile_runtime/`。 |
 | `nora-mcp/` | Nora MCP 服务源码，让 Hermes Agent 可以读取和管理 Tavern。 |
-| `ops/installer/` | 首次安装器，用于把 Nora Tavern 初始化到本地 Hermes 环境。 |
-| `ops/updater/` | 后续更新器，用于已安装环境的版本更新、备份、迁移和恢复。 |
-| `ops/skills/` | 给 Hermes 使用的 Tavern、Tavern Ops、Tavern Updater、Nora CardForge 技能。 |
+| `nora/` | 诺拉的完整定义：SOUL.md、AGENTS.md、三语 greeting.md、技能和 Hook。 |
+| `launcher/` | 桌面启动器、正式 UI、图像和预览；负责用户交互与本地服务控制。 |
+| `deployment/` | 首次安装、完整系统更新、单独酒馆更新、卸载，以及它们共用的配置和运行逻辑。 |
+| `tooling/` | 构建、打包、发布校验和源码到交付目录的映射。 |
+| `tests/deployment/` | 安装、更新、回滚、卸载及启动器集成测试。 |
 | `docs/` | 安装文档、架构说明、版本记录和 ADR。 |
 
 `release/` 是本地生成的发布候选包目录，`local-state/` 是本地验证和审计记录。普通用户不需要阅读这两个目录。
+
+完整的目录职责、安装与更新链路见 [仓库导航](docs/REPOSITORY.md)。发布包中的 `ops/` 是构建生成的兼容布局，不是另一份源码。
 
 ## Story Profile 快照是什么
 

@@ -68,6 +68,9 @@ jobs:
       - name: Verify embedded Story Profile before preparing runtimes
         run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
 
+      - name: Verify source ownership and compatible delivery layout
+        run: node --test tests/repository-layout.test.mjs
+
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
         with:
@@ -121,7 +124,7 @@ jobs:
         if: inputs.runtime_source_run == ''
         shell: bash
         run: |
-          node ops/scripts/package-hermes-runtime.mjs \
+          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -140,13 +143,13 @@ jobs:
       - name: Restore the exact baseline runtime
         if: inputs.runtime_source_run != ''
         shell: bash
-        run: node ops/scripts/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
 
       - name: Reseal baseline with current ClawChat integration
         if: inputs.runtime_source_run != ''
         shell: bash
         run: |
-          node ops/scripts/package-hermes-runtime.mjs \
+          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -159,14 +162,14 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node ops/tests/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
+          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
 
       - name: Install launcher test dependencies
-        working-directory: ops/installer/desktop
+        working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test release channels and update rollback
-        run: node --test ops/tests/launcher_releases.test.cjs ops/tests/launcher_bundle_contract.test.cjs ops/tests/launcher_system_update.test.cjs ops/tests/launcher_install_cleanup.test.cjs ops/tests/launcher_copy.test.cjs ops/tests/launcher_location.test.cjs ops/tests/launcher_model_recheck.test.cjs ops/tests/launcher_publish.test.cjs
+        run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
 
       - name: Test Nora initialization and profile synchronization
         shell: bash
@@ -174,14 +177,14 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          "$py" -B -m unittest ops.tests.test_nora_system ops.tests.test_nora_profile ops.tests.test_launcher_services ops.tests.test_first_install ops.tests.test_launcher_refinement ops.tests.test_installer_windows_paths ops.tests.test_launcher_model_status ops.tests.test_launcher_tavern_model ops.tests.test_liveware_independent_startup ops.tests.test_liveware_greeting_order ops.tests.test_launcher_shared_logic ops.tests.test_greeting_template
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template
 
       - name: Build release payload
         shell: bash
         run: |
           mode=--candidate
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then mode=""; fi
-          node ops/scripts/package-release.mjs $mode \
+          node tooling/release/package-release.mjs $mode \
             --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
 
       - name: Test real fresh installation before desktop packaging
@@ -191,7 +194,7 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          node ops/tests/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload"
+          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload"
 
       - name: Test Windows fresh installation with legacy path limits
         if: runner.os == 'Windows'
@@ -206,17 +209,17 @@ jobs:
             if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
               throw 'Windows long-path test precondition was not applied'
             }
-            node --test ops/tests/launcher_install_cleanup.test.cjs
+            node tooling/run.mjs node --test tests/deployment/launcher_install_cleanup.test.cjs
             if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
             $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
-            & $python -B -m unittest ops.tests.test_installer_windows_paths -v
+            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths -v
             if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
             Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
             $release = Get-ChildItem release -Directory |
               Where-Object { $_.Name -match '^(candidate|stable)-' } |
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
-            node ops/tests/launcher_bundle_smoke.cjs (Join-Path $release.FullName 'nora-tavern-launcher/payload')
+            node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs (Join-Path $release.FullName 'nora-tavern-launcher/payload')
             if ($LASTEXITCODE -ne 0) { throw 'Windows fresh install failed with LongPathsEnabled=0' }
           } finally {
             if ($null -eq $previous) {
@@ -238,7 +241,7 @@ jobs:
         shell: bash
         run: |
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          node ops/tests/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
+          node tooling/run.mjs node tests/deployment/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
 
       - name: Upload launcher
         uses: actions/upload-artifact@v4
@@ -293,7 +296,7 @@ jobs:
           for platform in darwin-arm64 darwin-x64 win32-x64; do
             test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
           done
-          node ops/scripts/verify-launcher-release.cjs artifacts "$TAG" "$GITHUB_SHA"
+          node tooling/run.mjs node tooling/release/verify-launcher-release.cjs artifacts "$TAG" "$GITHUB_SHA"
           if [[ "$TAG" == *-beta.* ]]; then
             gh release create "$TAG" --verify-tag --draft --prerelease --title "Nora Tavern $TAG 测试版" \
               --notes '三平台启动器测试版。包含完整 Nora 系统，无真实 Key 或用户数据。未签名或未公证的平台包可能出现系统安全提示。'

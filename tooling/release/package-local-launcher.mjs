@@ -16,7 +16,7 @@ if (system.candidate !== true || system.platform !== process.platform || system.
 const source = path.join(root, 'ops/installer/desktop');
 const desktop = path.join(launcher, 'desktop');
 if (!fs.existsSync(path.join(desktop, 'node_modules'))) {
-  fs.symlinkSync(path.join(source, 'node_modules'), path.join(desktop, 'node_modules'), 'junction');
+  fs.symlinkSync(fs.realpathSync(path.join(source, 'node_modules')), path.join(desktop, 'node_modules'), 'junction');
 }
 const pkg = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
 for (const file of ['package.json', ...pkg.build.files]) {

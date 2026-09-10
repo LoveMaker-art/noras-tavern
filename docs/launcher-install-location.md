@@ -18,4 +18,4 @@
 
 ## 验证范围
 
-`ops/tests/launcher_location.test.cjs` 覆盖位置持久化、已有安装保护、通道隔离、路径限制、安装中锁定、外置磁盘离线及卸载后重装。单元测试不等同于三平台的系统目录选择窗口和真实安装验收。
+`tests/deployment/launcher_location.test.cjs` 覆盖位置持久化、已有安装保护、通道隔离、路径限制、安装中锁定、外置磁盘离线及卸载后重装。通过 `tooling/run.mjs` 执行。单元测试不等同于三平台的系统目录选择窗口和真实安装验收。

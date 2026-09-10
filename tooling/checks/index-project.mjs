@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repositoryRoot = resolve(dirname(scriptPath), '../..');
-const outputPath = resolve(repositoryRoot, 'docs/architecture/project-index.json');
+const outputPath = resolve(repositoryRoot, '.codebase-memory/project-index.json');
 const outputRelativePath = posix.normalize(relative(repositoryRoot, outputPath));
 
 const runGit = (args) => execFileSync('git', args, {
@@ -48,12 +48,19 @@ function exclusionReason(path) {
 }
 
 function classifyRole(path) {
-    if (path === 'CONTEXT.md' || path.startsWith('docs/adr/') || path.startsWith('docs/architecture/')) return 'architecture-documentation';
+    if (path === 'CONTEXT.md' || path === 'docs/REPOSITORY.md' || path.startsWith('docs/adr/') || path.startsWith('docs/architecture/')) return 'architecture-documentation';
     if (path.includes('/tests/') || path.startsWith('tests/')) return 'test';
+    if (path.endsWith('/README.md')) return 'documentation';
     if (path.startsWith('story-profile/')) return 'story-profile-source';
     if (path.startsWith('nora-mcp/')) return 'nora-mcp-source';
-    if (path.startsWith('ops/skills/')) return 'hermes-skill-source';
-    if (path.startsWith('ops/updater/')) return 'full-release-updater';
+    if (path.startsWith('nora/skills/')) return 'hermes-skill-source';
+    if (path.startsWith('nora/hooks/')) return 'nora-hook-source';
+    if (path.startsWith('nora/')) return 'nora-definition';
+    if (path.startsWith('launcher/previews/')) return 'launcher-design-preview';
+    if (path.startsWith('launcher/ui/')) return 'launcher-ui-source';
+    if (path.startsWith('launcher/')) return 'launcher-desktop-source';
+    if (path.startsWith('deployment/')) return `deployment-${path.split('/')[1]}`;
+    if (path.startsWith('tooling/')) return 'build-and-check-tool';
     if (path.startsWith('app/story_profile_runtime/')) return 'generated-profile-runtime';
     if (path.startsWith('app/engine/sillytavern/public/dist/nora/') || path === 'app/engine/sillytavern/public/lib-core.js') return 'generated-runtime';
     if (path.startsWith('app/engine/sillytavern/build/') || path.endsWith('webpack.nora.config.mjs') || path.endsWith('webpack.config.js')) return 'build-tool';

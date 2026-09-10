@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildCommand } from './build-commands.mjs';
+import { projectDelivery } from '../../tooling/layout.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 
@@ -14,6 +15,7 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
     'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
     'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
+    'ops/updater/managed_context.py',
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
@@ -105,7 +107,8 @@ export function createReleaseSource(root, { candidate = false } = {}) {
                 fs.writeFileSync(target, bytes, { mode: stat.mode & 0o777 });
             }
         }
-        return { stage, files: Object.keys(hashes), identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
+        const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
+        return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes } };
     } catch (error) {
         fs.rmSync(stage, { recursive: true, force: true });

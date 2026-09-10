@@ -1,4 +1,6 @@
-# Nora Tavern Current Architecture
+# Nora Tavern Architecture Snapshot
+
+> 当前仓库分层与维护入口见 [仓库导航](../REPOSITORY.md)。本文保留历史架构与验收语境，不代表当前源码目录或最新测试状态。
 
 > Latest implemented overlay: [release hardening, 2026-08-30](RELEASE-HARDENING-2026-08-30.md).
 > Its runtime-ready event, serialized Store commits, request deadlines, embedded
