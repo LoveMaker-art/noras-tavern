@@ -12,20 +12,33 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const commit = 'a'.repeat(40);
   const write = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value));
+  const release = { version: '2.2.11', versions: { tavern: '2.2.11' }, commit, candidate: false, archives: {}, modules: {} };
   for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     const [system, arch] = platform.split('-');
-    const asset = `${platform}-payload.json`;
-    write(asset, {});
+    const files = {};
+    const component = (name, value) => {
+      const asset = `${platform}-${name}`;
+      write(asset, value);
+      const bytes = fs.readFileSync(path.join(root, asset));
+      files[name] = { asset, size: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
+    };
+    component('payload.json', {});
+    component('release-manifest.json', release);
+    for (const name of ['nora-hermes-runtime', 'nora-tavern-dependencies']) {
+      const archive = `${name}.tar.gz`;
+      component(archive, {});
+      component(`${name}.json`, { platform: system, arch, archive, sha256: files[archive].sha256 });
+    }
     write(`nora-system-${platform}.json`, {
       version: '2.2.11', commit, candidate: false, channel: 'stable', platform: system, arch,
-      files: { payload: { asset, size: 2, sha256: crypto.createHash('sha256').update('{}').digest('hex') } },
+      files,
     });
     write(`Nora-Tavern-package-verification-${platform}.json`, {
       version: '2.2.11', commit, nativeIcon: true, instructions: { 'ops/installer/templates/greeting.md': 'verified' },
     });
     write(`Nora-Tavern-Launcher-0.3.2-${system === 'darwin' ? 'mac' : 'win'}-${arch}${system === 'darwin' ? '.dmg' : '-setup.exe'}`, {});
   }
-  write('release-manifest.json', { version: '2.2.11', versions: { tavern: '2.2.11' }, commit, candidate: false, archives: {}, modules: {} });
+  write('release-manifest.json', release);
   return { root, run: () => spawnSync(process.execPath, [script, root, 'v2.2.11', commit], { encoding: 'utf8' }) };
 }
 test('complete stable release passes and produces asset checksums', t => {
@@ -50,6 +63,11 @@ test('mixed commits prevent publication', t => {
   const value = JSON.parse(fs.readFileSync(file));
   value.commit = 'b'.repeat(40);
   fs.writeFileSync(file, JSON.stringify(value));
+  assert.notEqual(run().status, 0);
+});
+test('missing platform payload manifest prevents publication', t => {
+  const { root, run } = fixture(t);
+  fs.unlinkSync(path.join(root, 'darwin-arm64-release-manifest.json'));
   assert.notEqual(run().status, 0);
 });
 test('public checksum list excludes unpublished intermediate archives', t => {
