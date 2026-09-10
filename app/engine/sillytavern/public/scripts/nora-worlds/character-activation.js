@@ -14,6 +14,11 @@ export function resolveWorldCharacterReference(id) {
     return resolveCharacterReference(id, state.active?.characters);
 }
 
+export function isWorldCardProfileEnabled(worldId, field) {
+    return !worldId || worldId !== state.worldId || (state.active?.card_profile_enabled !== false
+        && !state.active?.removed_card_fields?.includes(field));
+}
+
 export function validateWorldCharacterReferences(value) {
     resolveCharacterReferences(value, state.active?.characters, { strict: true });
 }
@@ -21,7 +26,7 @@ export function validateWorldCharacterReferences(value) {
 export function getWorldCharacterEntries() {
     const { active, worldId } = state;
     if (!active) return [];
-    return active.characters.filter(character => character.activation?.mode === 'triggered').map(character => {
+    return active.characters.filter(character => character.activation?.mode === 'triggered' && character.activation.enabled !== false).map(character => {
         const activation = character.activation;
         return {
             world: `nora-characters:${worldId}`, uid: character.id,

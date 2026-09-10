@@ -312,7 +312,9 @@ export class NoraWorldCore {
         await this.#initialize();
         const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
         if (!patch || Array.isArray(patch) || typeof patch !== 'object'
-            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships'].includes(key))) invalid('Unsupported World edit.');
+            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled', 'removeSetting'].includes(key))) invalid('Unsupported World edit.');
+        if ('cardProfileEnabled' in patch && typeof patch.cardProfileEnabled !== 'boolean') invalid('Invalid card profile injection state.');
+        if ('removeSetting' in patch && !['card-profile', 'scenario'].includes(patch.removeSetting)) invalid('Invalid World setting removal.');
         if ('name' in patch && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.length > 500)) invalid('Invalid World name.');
         if ('persona' in patch) {
             if (!patch.persona || Array.isArray(patch.persona) || typeof patch.persona !== 'object'
@@ -324,6 +326,10 @@ export class NoraWorldCore {
             if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before editing.');
             let context = current.story_context;
             try {
+                if ('removeSetting' in patch) context = normalizeStoryContext({ ...(context ?? createStoryContext(current.persona)),
+                    removed_card_fields: [...new Set([...(context?.removed_card_fields || []),
+                        ...(patch.removeSetting === 'scenario' ? ['scenario'] : ['description', 'personality', 'scenario'])])] });
+                if ('cardProfileEnabled' in patch) context = normalizeStoryContext({ ...(context ?? createStoryContext(current.persona)), card_profile_enabled: patch.cardProfileEnabled });
                 if ('character' in patch) context = editStoryCharacter(context ?? createStoryContext(current.persona), patch.character);
                 if ('relationships' in patch) context = normalizeStoryContext({ ...context, relationships: patch.relationships });
                 if (context && patch.persona) {

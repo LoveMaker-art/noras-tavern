@@ -214,7 +214,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
 
     function mount({ story }) {
         if (mounted) return;
-        const { state, messages, cards, worldbook, model, mvu, settings: settingsDomain, transport, worlds } = story || {};
+        const { state, messages, cards, worldbook, model, mvu, settings: settingsDomain, transport, worlds, presets } = story || {};
         if (!state || !messages || !cards || !worldbook || !model || !mvu || !settingsDomain || !transport || !worlds) {
             throw new Error('Nora UI mount requires the named story domain interfaces.');
         }
@@ -308,6 +308,8 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             updateComposer: messageController.updateComposer,
         });
         worldbookController = createWorldbookController({
+            activeWorldModel,
+            isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
             worldbook,
             worldRuntime: worlds,
             operations,
@@ -323,6 +325,12 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             onChanged: renderPanel,
             reloadWorlds: () => loadWorlds({ force: true }),
         });
+        let libraryControllerPromise;
+        const ensureLibraryController = () => libraryControllerPromise ??= import('./library-controller.js').then(({ createLibraryController }) => createLibraryController({
+            presets, dialogs, operations,
+            isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
+            refresh, select: $, selectAll: $$, escapeHtml,
+        }));
         let characterControllerPromise;
         ensureCharacterController = () => {
             if (characterController) return Promise.resolve(characterController);
@@ -348,6 +356,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     createWorldFromCard: async (character, control) => (await ensureWorldCreationController()).createFromLibrary(character, control),
                     activeWorldModel,
                     updateWorld: (...args) => worlds.updateActive(...args),
+                    isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
                 });
                 return characterController;
             });
@@ -449,8 +458,10 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             worldbookSummary,
             worldbookController,
             openCharacterLibrary,
+            openPresetLibrary: async () => (await ensureLibraryController()).openPresets(),
             openCharacterSheet,
             openCharacterEditor,
+            toggleCharacterInjection: async (id, control) => (await ensureCharacterController()).toggleInjection(id, control),
             openModelSheet,
             closeDrawers,
             runWorldOperation,

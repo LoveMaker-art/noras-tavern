@@ -3,6 +3,64 @@ import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createStartupController } from '../../../native-extensions/nora-ui/startup-controller.js';
 
+test('a mounted-page navigation cancels an automatic resume that has not been consumed', () => {
+    const source = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    const start = source.indexOf("document.addEventListener('click', (event) => {");
+    const end = source.indexOf('}, true);', start) + '}, true);'.length;
+    let handler;
+    const state = { pendingAction: { name: 'world', source: 'resume', worldId: 'world:last' } };
+    const document = { addEventListener: (_name, callback) => { handler = callback; }, body: { classList: { contains: () => true } } };
+    class Element { closest(selector) { return selector.includes('[data-action]') ? this : null; } }
+    new Function('document', 'state', 'Element', source.slice(start, end))(document, state, Element);
+    handler({ target: new Element() });
+    assert.equal(state.skipResume, true);
+    assert.equal(state.pendingAction, null);
+});
+
+test('real early resume selection hands off after mounting, regardless of bootstrap timing', async t => {
+    const source = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
+    const start = source.indexOf('state.resumePromise = Promise.all([shellPromise, dataPromise])');
+    assert.ok(start >= 0);
+    const end = source.indexOf('.catch(failEarlyShell);', start) + '.catch(failEarlyShell);'.length;
+    const selectResume = new Function('state', 'shellPromise', 'dataPromise', 'document', 'list', 'queueWorld', 'failEarlyShell', 'globalThis', source.slice(start, end));
+    const originalWindow = globalThis.window;
+    t.after(() => { if (originalWindow === undefined) delete globalThis.window; else globalThis.window = originalWindow; });
+    for (const timing of ['before-mount', 'after-mount']) {
+        for (const scenario of ['resume', 'user-world', 'user-panel', 'cancel', 'deleted', 'missing', 'no-history']) {
+            const early = { pendingAction: null, pendingSend: false };
+            globalThis.window = { __NORA_EARLY__: early };
+            let settle;
+            const data = new Promise(resolve => { settle = resolve; });
+            const world = { id: 'world:last', lifecycleStatus: scenario === 'deleted' ? 'DELETED' : 'READY' };
+            selectResume(early, Promise.resolve({ worlds: scenario === 'missing' ? [] : [world] }), data,
+                { body: { classList: { contains: () => true } } }, { querySelectorAll: () => [] },
+                (world, _target, source) => { early.pendingAction = { name: 'world', worldId: world.id, source, clickedAt: 1 }; },
+                error => assert.fail(error.message), { __NORA_BOOT_METRICS__: { milestones: [] } });
+            const opened = [];
+            const startup = createStartupController({
+                select: () => ({}), selectAll: () => [],
+                openWorldById: async id => opened.push(id), runPanelAction: name => opened.push(name),
+            });
+            if (scenario === 'user-world') early.pendingAction = { name: 'world', worldId: 'world:chosen' };
+            if (scenario === 'user-panel') early.pendingAction = { name: 'library' };
+            if (scenario === 'cancel') early.skipResume = true;
+            if (timing === 'before-mount') {
+                settle({ lastWorldId: scenario === 'no-history' ? '' : world.id });
+                await early.resumePromise;
+            }
+            const consumed = startup.consumeEarlyIntent();
+            if (timing === 'after-mount') {
+                await Promise.resolve();
+                assert.deepEqual(opened, [], 'Hydration must wait for resume selection');
+                settle({ lastWorldId: scenario === 'no-history' ? '' : world.id });
+            }
+            await consumed;
+            await startup.consumeEarlyIntent();
+            assert.deepEqual(opened, scenario === 'resume' ? ['world:last'] : scenario === 'user-world' ? ['world:chosen'] : scenario === 'user-panel' ? ['library'] : [], `${timing}: ${scenario}`);
+        }
+    }
+});
+
 test('empty-workspace finalization releases runtime prerequisites at the World list', async (t) => {
     const source = readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
     const name = source.includes('function waitForNoraRuntimeReady()') ? 'waitForNoraRuntimeReady' : 'waitForNoraUsable';

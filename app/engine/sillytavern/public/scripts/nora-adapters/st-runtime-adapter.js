@@ -4,6 +4,7 @@ import { createStModelAdapter } from './st-model-adapter.js';
 import { createStMvuSettingsAdapter } from './st-mvu-settings-adapter.js';
 import { createStSettingsAdapter } from './st-settings-adapter.js';
 import { createStWorldbookAdapter } from './st-worldbook-adapter.js';
+import { createStPresetAdapter } from './st-preset-adapter.js';
 
 function requireRuntime(getContext) {
     const runtime = getContext();
@@ -125,6 +126,7 @@ export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {})
         requestHeaders: () => runtime().getRequestHeaders(),
         ...settings,
         ...worldbooks,
+        ...createStPresetAdapter(runtime),
         ...cards,
         ...messages,
         ...model.actions,

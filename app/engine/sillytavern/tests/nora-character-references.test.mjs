@@ -98,18 +98,36 @@ test('panel copies the exact stable reference, does not open the profile, and ex
     let copied = ''; let toast = ''; let fallback = ''; let stopped = 0; let opened = 0;
     Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async value => { copied = value; } } } });
     const body = { innerHTML: '' };
+    const edit = { addEventListener(_type, handler) { this.click = handler; } };
     const button = { dataset: { copyCharacter: '{{char::character:b}}' }, addEventListener(_type, handler) { this.click = handler; } };
     const card = { dataset: { castCharacter: 'world-character:character:b' }, handlers: {}, addEventListener(type, handler) { this.handlers[type] = handler; } };
+    let world = { id: 'world:a', storyContext: context() };
     const controller = createPanelController({
         dialogs: { toast: value => { toast = value; }, open: (_title, value) => { fallback = value; } },
-        select: () => body, selectAll: query => query === '[data-copy-character]' ? [button] : query === '[data-cast-character]' ? [card] : [],
+        select: () => body, selectAll: query => query === '[data-edit-section="cast"]' ? [edit] : query === '[data-copy-character]' ? [button] : query === '[data-cast-character]' ? [card] : [],
         escapeHtml: value => String(value ?? '').replaceAll('"', '&quot;'), icons: {},
         readState: () => ({ activeCharacterId: 0, model: {} }), settings: () => ({}),
         characterField: (character, key) => character.data?.[key] || '', currentCharacter: () => ({ name: 'Legacy', data: { description: 'Original' } }),
-        activeWorldModel: () => ({ id: 'world:a', storyContext: context() }), currentWorldPersona: () => null,
+        activeWorldModel: () => world, currentWorldPersona: () => null,
         worldbookSummary: () => '', closeDrawers() {}, openCharacterSheet: () => opened++,
     });
     controller.render();
+    assert.doesNotMatch(body.innerHTML, /data-cast-toggle/);
+    assert.doesNotMatch(body.innerHTML, /data-cast-delete/);
+    assert.doesNotMatch(body.innerHTML, /data-action="add-character"/);
+    edit.click({ stopPropagation() {} });
+    assert.equal((body.innerHTML.match(/data-cast-toggle=/g) || []).length, 3);
+    assert.match(body.innerHTML, /nora-lore-dot/);
+    assert.match(body.innerHTML, /data-cast-toggle="card-profile"/);
+    assert.doesNotMatch(body.innerHTML, /data-cast-delete/);
+    assert.match(body.innerHTML, /data-action="add-character"/);
+    edit.click({ stopPropagation() {} });
+    assert.doesNotMatch(body.innerHTML, /data-cast-toggle/);
+    assert.doesNotMatch(body.innerHTML, /data-action="add-character"/);
+    assert.match(body.innerHTML, /castProfileCard loreItem loreSummaryItem/);
+    assert.doesNotMatch(body.innerHTML, /class="cdesc"|class="ctags"|原卡基础字段/);
+    assert.match(body.innerHTML, /class="loreTitle">Legacy/);
+    assert.match(body.innerHTML, /fa-regular fa-copy/);
     assert.equal((body.innerHTML.match(/data-copy-character=/g) || []).length, 2, 'legacy card gets no false reference');
     assert.match(body.innerHTML, /\{\{char::character:b\}\}/);
     await button.click({ stopPropagation: () => stopped++ });
@@ -118,8 +136,22 @@ test('panel copies the exact stable reference, does not open the profile, and ex
     assert.match(toast, /已复制/);
     card.handlers.keydown({ target: button, key: 'Enter' });
     assert.equal(opened, 0);
+    card.handlers.click();
+    assert.equal(opened, 1, 'Compact rows still open character details');
     navigator.clipboard.writeText = async () => { throw new Error('Denied'); };
     await button.click({ stopPropagation() {} });
     assert.match(fallback, /readonly/);
     assert.match(fallback, /\{\{char::character:b\}\}/);
+    world = { id: 'world:a' };
+    edit.click({ stopPropagation() {} });
+    assert.equal((body.innerHTML.match(/data-cast-toggle=/g) || []).length, 1, 'an imported card with no independent cast still has a toggle');
+    assert.match(body.innerHTML, /data-cast-toggle="card-profile"[^>]*aria-pressed="true"/);
+    world.storyContext = { ...createStoryContext(), card_profile_enabled: false };
+    controller.render();
+    assert.match(body.innerHTML, /data-cast-toggle="card-profile"[^>]*aria-pressed="false"/);
+    assert.match(body.innerHTML, /loreSummaryItem is-disabled/);
+    assert.match(body.innerHTML, /class="nora-lore-status">[^<]+/);
+    world.storyContext.removed_card_fields = ['description', 'personality', 'scenario'];
+    controller.render();
+    assert.doesNotMatch(body.innerHTML, /data-cast-character="0"|data-cast-edit="0"|data-cast-delete="card-profile"/);
 });

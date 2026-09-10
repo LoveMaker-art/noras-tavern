@@ -703,6 +703,7 @@
                 return Object.freeze({ start, selectWorld, finish });
             })();
             const queueAction = (name, target, details = {}) => {
+                if (details.source !== 'resume') state.skipResume = true;
                 state.pendingAction = { name, clickedAt: performance.now(), ...details };
                 target?.setAttribute('aria-busy', 'true');
                 runtimeProgress.start();
@@ -791,7 +792,13 @@
                 const target = event.target instanceof Element ? event.target : null;
                 const earlyAction = target?.closest('[data-early-action]');
                 const hydrated = document.body.classList.contains('nora-ui-hydrated');
-                if (hydrated) return;
+                if (hydrated) {
+                    if (target?.closest('[data-world], [data-action], #nora-new-world, [data-early-action]')) {
+                        state.skipResume = true;
+                        if (state.pendingAction?.source === 'resume') state.pendingAction = null;
+                    }
+                    return;
+                }
                 if (target?.closest('#nora-rail-toggle')) document.body.classList.add('nora-rail-open');
                 if (target?.closest('#nora-panel-toggle')) document.body.classList.add('nora-panel-open');
                 if (target?.closest('#nora-scrim')) document.body.classList.remove('nora-rail-open', 'nora-panel-open');
@@ -862,10 +869,10 @@
                 globalThis.__NORA_BOOT_METRICS__.milestones.push({ name: 'fresh-world-data', at: freshDataMs, worlds: shell.worlds?.length || 0, source: 'authoritative-v2-summary' });
                 reveal();
             }).catch(failEarlyShell);
-            Promise.all([shellPromise, dataPromise]).then(([shell, bootstrap]) => {
+            state.resumePromise = Promise.all([shellPromise, dataPromise]).then(([shell, bootstrap]) => {
                 const lastWorldId = String(bootstrap.lastWorldId || '').trim();
                 const resumeWorld = shell.worlds?.find(world => world.id === lastWorldId && world.lifecycleStatus === 'READY');
-                if (!resumeWorld || state.pendingAction || state.skipResume || document.body.classList.contains('nora-ui-hydrated')) return;
+                if (!resumeWorld || state.pendingAction || state.skipResume) return;
                 const target = [...list.querySelectorAll('[data-early-world]')]
                     .find(item => item.dataset.earlyWorld === resumeWorld.id);
                 globalThis.__NORA_BOOT_METRICS__.milestones.push({

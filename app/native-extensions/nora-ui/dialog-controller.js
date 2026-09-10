@@ -90,14 +90,26 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         if (dismissed) onDismiss?.();
     }
 
-    function confirm({ kicker = tr("酒馆"), title, body, confirmLabel = tr("确认"), cancelLabel = tr("取消"), tone = 'primary', details = [], detailsLabel = tr("查看详情") }) {
+    function confirm({ kicker = tr("酒馆"), title, body, confirmLabel = tr("确认"), cancelLabel = tr("取消"), tone = 'primary', details = [], detailsLabel = tr("查看详情"), restoreSheet = false }) {
         return new Promise((resolve) => {
             const modal = select('#nora-modal');
+            const previous = restoreSheet && modal.querySelector?.('.nora-sheet')
+                ? { className: modal.className, nodes: [...modal.childNodes], onclick: modal.onclick, dismiss: dismissHandler } : null;
+            const restore = () => {
+                if (!previous) return;
+                modal.className = previous.className;
+                modal.setAttribute('aria-hidden', 'false');
+                // Reattach the original nodes to retain draft values and event handlers.
+                modal.replaceChildren(...previous.nodes);
+                modal.onclick = previous.onclick;
+                dismissHandler = previous.dismiss;
+            };
             let settled = false;
             const finish = (value) => {
                 if (settled) return;
                 settled = true;
                 close({ dismissed: false });
+                restore();
                 resolve(value);
             };
             const detailMarkup = details.length ? `<details class="nora-dialog-details"><summary>${escapeHtml(detailsLabel)}<span>${details.length}</span></summary><ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></details>` : '';
@@ -107,6 +119,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
             dismissHandler = () => {
                 if (!settled) {
                     settled = true;
+                    restore();
                     resolve(false);
                 }
             };

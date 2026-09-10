@@ -8,6 +8,7 @@ import {
     sameNoraIdentity,
 } from './scripts/nora-chat/identity.js';
 import { prepareWorldRender } from './scripts/nora-worlds/world-render-readiness.js';
+import { isWorldCardProfileEnabled } from './scripts/nora-worlds/character-activation.js';
 import {
     showdown,
     moment,
@@ -3778,6 +3779,7 @@ export function createLazyFields(resolvers) {
 export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
     const currentChid = chid ?? this_chid;
     const character = characters[currentChid];
+    const includeCardProfile = field => currentChid !== this_chid || isWorldCardProfileEnabled(chat_metadata.nora_world?.id, field);
 
     const toCardText = (value) => {
         if (Array.isArray(value)) return value.map(toCardText).filter(Boolean).join('\n');
@@ -3807,15 +3809,15 @@ export function getCharacterCardFieldsLazy({ chid = undefined } = {}) {
             return baseChatReplace(toCardText(character.data?.creator_notes).trim());
         },
         description: () => {
-            if (!character) return '';
+            if (!character || !includeCardProfile('description')) return '';
             return baseChatReplace(toCardText(character.description).trim());
         },
         personality: () => {
-            if (!character) return '';
+            if (!character || !includeCardProfile('personality')) return '';
             return baseChatReplace(toCardText(character.personality).trim());
         },
         scenario: () => {
-            if (!character) return '';
+            if (!character || !includeCardProfile('scenario')) return '';
             const scenarioText = toCardText(chat_metadata.scenario || character.scenario);
             return baseChatReplace(scenarioText.trim());
         },

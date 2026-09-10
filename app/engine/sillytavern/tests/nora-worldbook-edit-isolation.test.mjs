@@ -6,7 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import { createNoraWorldsV2Router } from '../src/endpoints/nora-worlds-v2.js';
-import { createStWorldbookAdapter } from '../public/scripts/nora-adapters/st-worldbook-adapter.js';
+import { createStRuntimeAdapter } from '../public/scripts/nora-adapters/st-runtime-adapter.js';
+import { createStorySurface } from '../public/scripts/nora-story-core/index.js';
 import { readActivationSnapshot } from '../src/nora-world-core/activation-snapshot.js';
 import { createStBackendMaterializer } from '../src/nora-world-core/st-backend-materializer.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
@@ -66,6 +67,7 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     await assert.rejects(core.editWorldbookEntry(a.world_id, { name: sourceName, entry_id: '0', patch: { content: 'bad' }, expected_revision: 'stale' }), /changed/);
     const app = express();
     app.use(express.json());
+    app.post('/api/worldinfo/get', async (request, response) => response.json(await readBook(request.body.name)));
     app.use('/api/nora-worlds-v2', createNoraWorldsV2Router({ resolveCore: () => core }));
     const server = app.listen(0, '127.0.0.1');
     await new Promise(resolve => server.once('listening', resolve));
@@ -75,13 +77,16 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     t.after(() => { globalThis.fetch = nativeFetch; });
     const cache = new Map();
     const browserRuntime = {
+        ...Object.fromEntries(['sendText', 'stopGeneration', 'regenerate', 'commitMessageEdit', 'deleteLastMessage',
+            'saveChat', 'generateRaw', 'configureCustomChatCompletion', 'clearCustomChatCompletion',
+            'hasCustomChatCompletionApiKey', 'activateExtensionNames', 'getActiveExtensionNames'].map(name => [name, () => {}])),
         chatMetadata: { nora_world: { id: a.world_id }, world_info: sourceName },
         characters: [{ data: { extensions: { world: sourceName } } }], characterId: 0,
         getRequestHeaders: () => ({ 'Content-Type': 'application/json' }),
         loadWorldInfo: async () => structuredClone(original),
         primeWorldInfoSnapshot: (name, book) => cache.set(name, book), updateWorldInfoList: async () => {},
     };
-    const adapter = createStWorldbookAdapter(() => browserRuntime);
+    const adapter = createStorySurface(createStRuntimeAdapter(() => browserRuntime), { activate() {} }).worldbook;
     const loaded = await adapter.loadWorldbook(sourceName);
     const edited = await adapter.saveWorldbookEntry(sourceName, loaded, '0', { content: 'Only A changed' }, a.world_id);
     assert.notEqual(edited.resource.binding.name, sourceName);
@@ -117,6 +122,45 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     assert.equal(second.book.entries['1'].content, 'Second edit');
     await assert.rejects(reopenedCore.editWorldbookEntry(a.world_id, { name: edited.resource.binding.name, entry_id: '1', patch: { content: 'stale overwrite' }, expected_revision: revision(edited.book) }), /changed/);
     assert.equal((await fs.readdir(directories.worlds)).length, 2, 'No copies created by subsequent or rejected edits');
+    const toggleController = createWorldbookController({
+        worldbook: adapter,
+        readState: () => ({ world: { metadata: browserRuntime.chatMetadata } }),
+        currentCharacter: () => browserRuntime.characters[0],
+        store: { cachedWorldbook: name => cache.get(name), cacheWorldbook: (name, book) => cache.set(name, book) },
+        operations: { isBusy: () => false, run: async (_key, fn) => fn() },
+        reloadWorlds: async () => {}, onChanged: () => {},
+        dialogs: { normalizeError: error => error.message, toast: message => assert.fail(message) },
+    });
+    const attributes = { 'aria-pressed': 'true' };
+    const control = { getAttribute: name => attributes[name], setAttribute: (name, value) => { attributes[name] = value; }, removeAttribute: name => { delete attributes[name]; } };
+    await toggleController.toggleEntry('1', control);
+    assert.equal((await readBook(second.resource.binding.name)).entries['1'].disable, true, 'UI controller saves through Story surface and HTTP endpoint');
+    assert.equal(control.disabled, false);
+    await toggleController.toggleEntry('1', control);
+    assert.equal((await readBook(second.resource.binding.name)).entries['1'].disable, false, 'Re-enabling reads the latest revision');
+    assert.deepEqual(await readBook(sourceName), original, 'Toggle leaves the shared source unchanged');
+    assert.deepEqual(await core.getWorld(b.world_id), b, 'Toggle leaves the other World unchanged');
+    const deletionNotices = [];
+    const deleteController = createWorldbookController({ worldbook: adapter,
+        readState: () => ({ world: { metadata: browserRuntime.chatMetadata } }),
+        currentCharacter: () => browserRuntime.characters[0],
+        store: { cachedWorldbook: name => cache.get(name), cacheWorldbook: (name, book) => cache.set(name, book) },
+        operations: { isBusy: () => false, run: async (_key, fn) => fn() },
+        reloadWorlds: async () => {}, onChanged() {},
+        dialogs: { confirm: async () => true, normalizeError: error => error.message, toast: message => deletionNotices.push(message) },
+    });
+    const beforeDelete = await readBook(second.resource.binding.name);
+    await deleteController.removeEntry('embedded', '1', {});
+    const afterDelete = await readBook(second.resource.binding.name);
+    assert.equal(Object.hasOwn(afterDelete.entries, '1'), false, 'Deletion reaches the real HTTP endpoint from UI controller');
+    assert.deepEqual(afterDelete.entries['0'], beforeDelete.entries['0']);
+    await assert.rejects(reopenedCore.editWorldbookEntry(a.world_id, { name: second.resource.binding.name, entry_id: '0', operation: 'delete', expected_revision: revision(beforeDelete) }), /changed/);
+    await assert.rejects(reopenedCore.editWorldbookEntry(a.world_id, { name: second.resource.binding.name, entry_id: '1', operation: 'delete', expected_revision: revision(afterDelete) }), /no longer exists/);
+    assert.deepEqual(await readBook(sourceName), original);
+    assert.deepEqual(await core.getWorld(b.world_id), b);
+    assert.equal(await fs.readFile(libraryPath, 'utf8'), library);
+    const reloadedWorld = await createNoraWorldCore({ root: coreRoot, materializer: makeMaterializer() }).getWorld(a.world_id);
+    assert.deepEqual(await readBook(reloadedWorld.knowledge[0].binding.name), afterDelete);
     if (reopenedCore.addWorldSetting) {
         const added = await reopenedCore.addWorldSetting(b.world_id, { type: 'constant', title: 'New', content: 'New setting', keys: [] }, { expectedRevision: b.revision, idempotencyKey: 'own-setting' });
         await fs.writeFile(path.join(root, 'settings.json'), JSON.stringify({ world_info_settings: { world_info: { globalSelect: [added.resource.binding.name] } } }));
