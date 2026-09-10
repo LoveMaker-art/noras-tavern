@@ -97,11 +97,11 @@ Nora Tavern 是一个以世界为核心、可以被 Agent 管理的开源 AI 角
 
 | 你的电脑 | 直接下载 | 打开方式 |
 | :--- | :--- | :--- |
-| **Windows · x64** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.0/Nora-Tavern-Launcher-0.3.3-win-x64-setup.exe)** | 双击安装程序，按提示安装 |
-| **Mac · Apple 芯片** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.0/Nora-Tavern-Launcher-0.3.3-mac-arm64.dmg)** | 打开 DMG，拖入“应用程序” |
-| **Mac · Intel** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.0/Nora-Tavern-Launcher-0.3.3-mac-x64.dmg)** | 打开 DMG，拖入“应用程序” |
+| **Windows · x64** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.2/Nora-Tavern-Launcher-0.3.4-win-x64-setup.exe)** | 双击安装程序，按提示安装 |
+| **Mac · Apple 芯片** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.2/Nora-Tavern-Launcher-0.3.4-mac-arm64.dmg)** | 打开 DMG，拖入“应用程序” |
+| **Mac · Intel** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.2/Nora-Tavern-Launcher-0.3.4-mac-x64.dmg)** | 打开 DMG，拖入“应用程序” |
 
-以上完整安装包对应 **v2.3.0**；系统更新独立发布，已有用户可在启动器中检查更新，无需每次重新下载安装包。**[查看完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
+以上完整安装包对应 **v2.3.2 / 启动器 0.3.4**。旧启动器用户本次需更换一次启动器，**保留原目录和数据，不要彻底卸载**；之后普通内容更新在启动器中完成，无需每次重新下载安装包。**[已有用户更新](docs/update-nora-tavern.md#提示需要更新启动器时)** · **[完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
 
 点击上方链接即可下载，无需翻找附件。Mac 可在“关于本机”中查看芯片类型；Windows ARM 暂不作为原生支持平台。
 
