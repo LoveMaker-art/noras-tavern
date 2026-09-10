@@ -76,11 +76,22 @@ async function main() {
     const response = await fetch(`http://127.0.0.1:${port}/`);
     assert.equal(response.status, 200);
     const userRoot = path.join(tavern, 'tavern-state/native/default-user');
-    const welcome = JSON.parse(fs.readFileSync(path.join(userRoot, 'nora-world-core/builtin-welcome.json'), 'utf8'));
-    assert.equal(welcome.status, 'complete');
-    const bootstrapResponse = await fetch(`http://127.0.0.1:${port}/api/nora-boot/bootstrap`);
+    const welcomeFile = path.join(userRoot, 'nora-world-core/builtin-welcome.json');
+    const healthResponse = await fetch(`http://127.0.0.1:${port}/api/nora-boot/bootstrap`);
+    assert.equal(healthResponse.status, 200);
+    await healthResponse.json();
+    assert.equal(fs.existsSync(welcomeFile), false, 'Health probes must not choose the first welcome language');
+    // The actual page supplies its resolved locale on both boot requests.
+    const [shellResponse, bootstrapResponse] = await Promise.all(['shell', 'bootstrap'].map(endpoint =>
+      fetch(`http://127.0.0.1:${port}/api/nora-boot/${endpoint}?lang=zh-cn`)));
+    assert.equal(shellResponse.status, 200);
     assert.equal(bootstrapResponse.status, 200);
-    assert.equal((await bootstrapResponse.json()).lastWorldId, welcome.worldId);
+    const shell = await shellResponse.json();
+    const bootstrap = await bootstrapResponse.json();
+    const welcome = JSON.parse(fs.readFileSync(welcomeFile, 'utf8'));
+    assert.equal(welcome.status, 'complete');
+    assert.equal(bootstrap.lastWorldId, welcome.worldId);
+    assert.equal(shell.worlds.length, 1);
     const worldFiles = fs.readdirSync(path.join(userRoot, 'nora-world-core/worlds'));
     const welcomeWorld = worldFiles.map(file => JSON.parse(fs.readFileSync(path.join(userRoot, 'nora-world-core/worlds', file), 'utf8')))
       .find(world => world.world_id === welcome.worldId);
@@ -92,7 +103,7 @@ async function main() {
     assert.equal(chat.length, 2);
     assert.equal(chat[1].mes, expectedOpening);
     assert.ok(expectedOpening.includes('欢迎来到酒馆。'));
-    console.log('PASS: installed Tavern creates the Chinese welcome and bootstrap selects it');
+    console.log('PASS: first browser locale creates the Chinese welcome; health probes do not initialize it');
     const receipt = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/installed.json'), 'utf8'));
     const system = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/nora-system.json'), 'utf8'));
     assert.ok(receipt.version);
@@ -114,8 +125,9 @@ async function main() {
     assert.equal(status.systemReady, true, JSON.stringify(status.systemProblems));
     assert.equal(status.noraInstalled, true);
     const greeting = fs.readFileSync(path.join(home, 'clawchat/greeting.md'), 'utf8');
-    for (const phrase of ['我叫诺拉。', '陈屿的苏州雨巷', '许清禾的厦门海风', 'nora-instance.py', 'app-link']) assert.ok(greeting.includes(phrase));
-    assert.equal(greeting.includes('tavern_cli.py'), false);
+    assert.equal(greeting, fs.readFileSync(path.resolve(__dirname, '../installer/templates/greeting.md'), 'utf8'));
+    for (const phrase of ['我叫诺拉。', '我叫諾拉。', "I'm Nora.", 'Story Profile', '本轮不调用工具', '卡片由后台单独发送']) assert.ok(greeting.includes(phrase));
+    for (const removed of ['tavern_cli.py', 'nora-instance.py', 'app-link']) assert.equal(greeting.includes(removed), false);
     assert.equal(fs.existsSync(path.join(tavern, 'tavern-state/imports')), false, 'Samples must not be pre-imported');
     console.log(run([path.resolve(__dirname, 'verify_starter_stories.py')], 120000).trim());
     assert.equal(status.setupCompleted, false);
@@ -126,7 +138,7 @@ from pathlib import Path
 from cron.scheduler_script import _run_job_script
 home = Path(os.environ['HERMES_HOME'])
 fixture = home / 'release-fixture.json'
-release = {'tag_name': ${JSON.stringify(receipt.version)}, 'prerelease': True, 'draft': False}
+release = {'tag_name': ${JSON.stringify(receipt.version)}, 'prerelease': os.environ['NORA_RELEASE_CHANNEL'] == 'beta', 'draft': False}
 fixture.write_text(json.dumps([release] if os.environ['NORA_RELEASE_CHANNEL'] == 'beta' else release))
 os.environ['TAVERN_RELEASE_API_URL'] = fixture.as_uri()
 ok, output = _run_job_script('nora-tavern-update-check.py')

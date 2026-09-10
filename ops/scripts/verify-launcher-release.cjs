@@ -41,5 +41,18 @@ assert.equal(shared.candidate, false);
 assert.equal(shared.versions.tavern, tag.slice(1));
 for (const archive of Object.values(shared.archives)) assert.equal(digest(byName.get(archive.name)), archive.sha256);
 for (const archive of Object.values(shared.modules)) assert.equal(digest(byName.get(archive.name)), archive.sha256);
+// The build also seals intermediate packages which are not public downloads.
+const checksumFile = byName.get('SHA256SUMS');
+if (checksumFile) {
+  const publicChecksums = fs.readFileSync(checksumFile, 'utf8').trim().split('\n').filter(line => {
+    const match = /^([a-f0-9]{64})  (.+)$/.exec(line);
+    assert.ok(match, 'Invalid shared checksum entry');
+    const file = byName.get(match[2]);
+    if (!file) return false;
+    assert.equal(digest(file), match[1]);
+    return true;
+  });
+  fs.writeFileSync(checksumFile, publicChecksums.join('\n') + '\n');
+}
 fs.writeFileSync(path.join(root, 'LAUNCHER-SHA256SUMS'), [...byName].sort().map(([name, file]) => `${digest(file)}  ${name}\n`).join(''));
 console.log(`Verified ${tag}: three platform packages, system components, greeting, icons and shared updater assets.`);

@@ -142,6 +142,17 @@ jobs:
         shell: bash
         run: node ops/scripts/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
 
+      - name: Reseal baseline with current ClawChat integration
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          node ops/scripts/package-hermes-runtime.mjs \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}"
+
       - name: Verify runtime independently of original installation
         timeout-minutes: 15
         shell: bash

@@ -52,3 +52,10 @@ test('mixed commits prevent publication', t => {
   fs.writeFileSync(file, JSON.stringify(value));
   assert.notEqual(run().status, 0);
 });
+test('public checksum list excludes unpublished intermediate archives', t => {
+  const { root, run } = fixture(t);
+  const hash = crypto.createHash('sha256').update('{}').digest('hex');
+  fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${hash}  darwin-arm64-payload.json\n${hash}  unpublished.zip\n`);
+  assert.equal(run().status, 0);
+  assert.equal(fs.readFileSync(path.join(root, 'SHA256SUMS'), 'utf8'), `${hash}  darwin-arm64-payload.json\n`);
+});
