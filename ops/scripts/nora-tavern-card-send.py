@@ -13,7 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/opt/data"))
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(__file__).resolve().parents[1]).expanduser().resolve()
 PLUGIN_ROOT = HERMES_HOME / "plugins" / "clawchat"
 if str(PLUGIN_ROOT) not in sys.path:
     sys.path.insert(0, str(PLUGIN_ROOT))
@@ -29,6 +29,8 @@ def _locale_code(value: str | None) -> str:
 
 
 def _owner_locale() -> str:
+    if (HERMES_HOME / "nora-instance.json").is_file():
+        return "zh"
     path = HERMES_HOME / "memories" / "owner.md"
     try:
         in_metadata = False
@@ -90,7 +92,7 @@ def _markdown(installed: str, latest: str, summary: str = "", locale: str | None
                 "",
                 summary or "No update summary was provided.",
                 "",
-                "**To install it, reply: Update Tavern**",
+                "**Open the Nora launcher and check versions before updating.**",
             )
         )
     return "\n".join(
@@ -104,7 +106,7 @@ def _markdown(installed: str, latest: str, summary: str = "", locale: str | None
             "",
             summary or "发布页暂未提供更新摘要。",
             "",
-            "**如需安装，请回复：更新 Tavern**",
+            "**请打开诺拉启动器检查版本，再选择更新方式。**",
         )
     )
 

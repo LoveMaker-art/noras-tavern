@@ -5,8 +5,18 @@ import signal
 import socket
 import time
 
+try:
+    import psutil
+except ImportError:  # Linux release environments can use /proc without psutil.
+    psutil = None
+
 
 def _argv(pid):
+    if psutil is not None:
+        try:
+            return psutil.Process(int(pid)).cmdline()
+        except (psutil.Error, OSError, ValueError):
+            return []
     try:
         return [os.fsdecode(value) for value in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if value]
     except OSError:
@@ -17,10 +27,16 @@ def process_record(pid, script):
     if not pid:
         return None
     argv = _argv(pid)
-    try:
-        cwd = Path(f"/proc/{pid}/cwd").resolve()
-    except OSError:
-        return None
+    if psutil is not None:
+        try:
+            cwd = Path(psutil.Process(int(pid)).cwd()).resolve()
+        except (psutil.Error, OSError, ValueError):
+            return None
+    else:
+        try:
+            cwd = Path(f"/proc/{pid}/cwd").resolve()
+        except OSError:
+            return None
     expected = Path(script).resolve()
     matched = any(
         (Path(value).resolve() if Path(value).is_absolute() else (cwd / value).resolve()) == expected
@@ -34,11 +50,14 @@ def process_record(pid, script):
 
 def find_processes(script):
     result = []
-    for entry in Path("/proc").iterdir() if Path("/proc").is_dir() else []:
-        if entry.name.isdigit():
-            record = process_record(int(entry.name), script)
-            if record:
-                result.append(record)
+    if psutil is not None:
+        pids = psutil.pids()
+    else:
+        pids = [int(entry.name) for entry in Path("/proc").iterdir() if entry.name.isdigit()] if Path("/proc").is_dir() else []
+    for pid in pids:
+        record = process_record(pid, script)
+        if record:
+            result.append(record)
     return result
 
 

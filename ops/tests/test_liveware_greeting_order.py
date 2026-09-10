@@ -1,6 +1,7 @@
 import asyncio
 import ast
 from contextlib import closing
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
@@ -181,6 +182,15 @@ class GatewayPatchTests(unittest.TestCase):
         for _, prepared, target in self.prepare():
             upstream = ROOT / "ops/tests/fixtures/clawchat-greeting-before" / target.relative_to(self.plugin)
             self.assertEqual(prepared.read_bytes(), upstream.read_bytes())
+
+    def test_legacy_bundle_inventory_cannot_skip_restoration(self):
+        files = {"plugins/clawchat/" + name: hashlib.sha256(
+            (self.plugin / name).read_bytes()).hexdigest() for name in gateway_patch.FILES}
+        legacy_digest = hashlib.sha256((self.plugin / "legacy-order.patch").read_bytes()).hexdigest()
+        (self.home / "nora-components.json").write_text(json.dumps({
+            "files": files, "clawchat": {"greetingPatchSha256": legacy_digest}}))
+        self.assertFalse(gateway_patch.bundled_patch_ready(self.home))
+        self.prepare()
 
     def test_clean_upstream_is_unchanged(self):
         for relative in gateway_patch.FILES:

@@ -1,7 +1,6 @@
 """Bind the two existing Liveware Apps; network failures never undo local code."""
 import json
 from contextlib import contextmanager
-import fcntl
 import os
 from pathlib import Path
 import re
@@ -35,24 +34,21 @@ def safe_error(error):
     return text.strip()[:1200]
 
 
+def hermes_home_for(home, hermes_home=None):
+    return Path(hermes_home or os.environ.get("NORA_HERMES_HOME")
+                or os.environ.get("HERMES_HOME") or home).expanduser().resolve()
+
+
 @contextmanager
 def registration_lock(home, worker=False):
-    path = Path(home) / "tavern-state" / ("liveware-worker.lock" if worker else "liveware-registration.lock")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a+") as stream:
-        try:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | (fcntl.LOCK_NB if worker else 0))
-        except BlockingIOError:
-            yield False
-            return
-        try:
-            yield True
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    from runtime_lock import installation_lock
+    name = "liveware-worker.lock" if worker else "liveware-registration.lock"
+    with installation_lock(Path(home) / "tavern-state", name, blocking=not worker) as acquired:
+        yield acquired
 
 
-def authenticate(home):
-    identity = launcher(home, "liveware_login")
+def authenticate(home, *, hermes_home=None):
+    identity = launcher(home, "liveware_login", hermes_home=hermes_home)
     if not identity.get("user_id") or not identity.get("instance_id"):
         raise RuntimeError("Current ClawChat/Liveware identity is not ready")
     return {key: identity[key] for key in ("user_id", "instance_id")}
@@ -83,16 +79,16 @@ def release_launcher_url(domain, release):
     return f"https://{domain}/?{urlencode({'release': release.lower()})}"
 
 
-def listed_apps(home):
-    value = launcher(home, "list_apps")
+def listed_apps(home, *, hermes_home=None):
+    value = launcher(home, "list_apps", hermes_home=hermes_home)
     value = value.get("apps", value.get("data", [])) if isinstance(value, dict) else value
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise RuntimeError("ClawChat 返回了未知的 App 列表")
     return value
 
 
-def active_apps(home):
-    value = json.loads(cli(home, "app", "list", "--json"))
+def active_apps(home, *, hermes_home=None):
+    value = json.loads(cli(home, "app", "list", "--json", hermes_home=hermes_home))
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise RuntimeError("Liveware 返回了未知的 App 列表")
     return [item for item in value if item.get("status") == "active"]
@@ -115,21 +111,24 @@ def atomic_json(path, value):
             os.unlink(temporary)
 
 
-def binary(home):
+def binary(home, *, hermes_home=None):
+    hermes_home = hermes_home_for(home, hermes_home)
     candidates = [
         os.environ.get("LIVEWARE_BIN"),
+        str(hermes_home / "clawchat/liveware" / ("liveware.exe" if os.name == "nt" else "liveware")),
         shutil.which("liveware"),
         "/opt/clawnest/bin/liveware",
-        str(Path(home) / "clawchat/liveware/liveware"),
     ]
     return next((value for value in candidates if value and Path(value).is_file()), None)
 
 
-def environment(home):
-    env = {**os.environ, "HOME": str(home), "HERMES_HOME": str(home)}
+def environment(home, *, hermes_home=None):
+    hermes_home = hermes_home_for(home, hermes_home)
+    env = {**os.environ, "HOME": str(hermes_home), "USERPROFILE": str(hermes_home),
+           "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(home)}
     for key in ("LIVEWARE_TOKEN", "LIVEWARE_INSTANCE_ID", "LIVEWARE_API_URL"):
         env.pop(key, None)
-    saved = Path(home) / ".clawling/liveware.json"
+    saved = hermes_home / ".clawling/liveware.json"
     if saved.is_file():
         value = json.loads(saved.read_text(encoding="utf-8"))
         for key, field in (
@@ -142,13 +141,13 @@ def environment(home):
     return env
 
 
-def cli(home, *args):
-    executable = binary(home)
+def cli(home, *args, hermes_home=None):
+    executable = binary(home, hermes_home=hermes_home)
     if not executable:
         raise RuntimeError("未找到 Liveware CLI")
     result = subprocess.run(
         [executable, *args],
-        env=environment(home),
+        env=environment(home, hermes_home=hermes_home),
         text=True,
         capture_output=True,
         timeout=45,
@@ -159,8 +158,8 @@ def cli(home, *args):
     return result.stdout
 
 
-def launcher(home, operation, **parameters):
-    plugin = Path(os.environ.get("CLAWCHAT_PLUGIN_DIR") or Path(home) / "plugins/clawchat")
+def launcher(home, operation, *, hermes_home=None, **parameters):
+    plugin = Path(os.environ.get("CLAWCHAT_PLUGIN_DIR") or hermes_home_for(home, hermes_home) / "plugins/clawchat")
     code = (
         "import asyncio,json,sys;from pathlib import Path;sys.path.insert(0,sys.argv[1]);"
         "from clawchat_gateway import tools;"
@@ -174,7 +173,7 @@ def launcher(home, operation, **parameters):
         "\n value.update(user_id=after,instance_id=saved.get('instanceId'))"
         "\nprint(json.dumps(value))"
     )
-    env = environment(home)
+    env = environment(home, hermes_home=hermes_home)
     if operation == "liveware_login":
         for key in ("LIVEWARE_TOKEN", "LIVEWARE_INSTANCE_ID", "LIVEWARE_API_URL"):
             env.pop(key, None)
@@ -214,7 +213,7 @@ def created_identity(output, title):
     return app_identity({"appId": app_id.group(1), "domain": domain.group(1)}, title)
 
 
-def resolve_identity(home, document, role, title, available, *, create_missing):
+def resolve_identity(home, document, role, title, available, *, create_missing, hermes_home=None):
     saved = document.get(role, {}) if isinstance(document.get(role), dict) else {}
     saved_id = saved.get("app_id")
     by_id = [item for item in available if saved_id and item.get("appId") == saved_id]
@@ -235,7 +234,7 @@ def resolve_identity(home, document, role, title, available, *, create_missing):
         raise RuntimeError(title + " 上次创建结果不确定，等待平台列表确认；不会重复创建")
     pending[role] = {"started_at": int(time.time())}
     atomic_json(Path(home) / "tavern-state/apps.json", document)
-    output = cli(home, "app", "create", title, "--agent-type", "hermes")
+    output = cli(home, "app", "create", title, "--agent-type", "hermes", hermes_home=hermes_home)
     identity = created_identity(output, title)
     if identity:
         available = [*available, {
@@ -247,7 +246,7 @@ def resolve_identity(home, document, role, title, available, *, create_missing):
         return identity, available
 
     for _ in range(15):
-        available = active_apps(home)
+        available = active_apps(home, hermes_home=hermes_home)
         by_name = [item for item in available if normalized_name(item.get("name")) == normalized_name(title)]
         if len(by_name) == 1:
             return app_identity(by_name[0], title), available
@@ -257,7 +256,7 @@ def resolve_identity(home, document, role, title, available, *, create_missing):
     raise RuntimeError("Liveware App 创建后未能确认：" + title)
 
 
-def sync_launcher(home, desired, rows, owned_ids):
+def sync_launcher(home, desired, rows, owned_ids, *, hermes_home=None):
     title = desired["name"]
     role_rows = [
         item for item in rows
@@ -272,19 +271,19 @@ def sync_launcher(home, desired, rows, owned_ids):
     previous = [item for item in rows if item.get("app_id") in affected_ids]
     try:
         for app_id in sorted(affected_ids):
-            launcher(home, "unregister_app", app_id=app_id)
-        launcher(home, "register_app", **desired)
+            launcher(home, "unregister_app", app_id=app_id, hermes_home=hermes_home)
+        launcher(home, "register_app", hermes_home=hermes_home, **desired)
     except Exception:
         for item in previous:
             restore = {key: item.get(key) for key in desired}
             if all(restore.values()):
                 try:
-                    launcher(home, "register_app", **restore)
+                    launcher(home, "register_app", hermes_home=hermes_home, **restore)
                 except Exception:
                     pass
         raise
 
-    rows = listed_apps(home)
+    rows = listed_apps(home, hermes_home=hermes_home)
     role_rows = [
         item for item in rows
         if item.get("app_id") == desired["app_id"]
@@ -296,11 +295,11 @@ def sync_launcher(home, desired, rows, owned_ids):
     return rows
 
 
-def bind_with_retry(home, app_id, target, attempts=5):
+def bind_with_retry(home, app_id, target, attempts=5, *, hermes_home=None):
     error = None
     for attempt in range(attempts):
         try:
-            cli(home, "tunnel", "bind", app_id, target)
+            cli(home, "tunnel", "bind", app_id, target, hermes_home=hermes_home)
             return
         except Exception as current:
             error = current
@@ -309,13 +308,15 @@ def bind_with_retry(home, app_id, target, attempts=5):
     raise RuntimeError(f"Liveware 隧道绑定连续失败 {attempts} 次：{error}")
 
 
-def reconcile(home, port=8799, *, create_missing=False):
+def reconcile(home, port=8799, *, create_missing=False, hermes_home=None):
     with registration_lock(home):
         ready_path = Path(home) / "tavern-state/liveware-ready.json"
         atomic_json(ready_path, {"status": "pending"})
         try:
-            owner = authenticate(home)
-            result = _reconcile(home, port, create_missing=create_missing, owner=owner)
+            # Do not revive a tunnel daemon after the launcher has stopped Tavern.
+            runtime_asset_release(port)
+            owner = authenticate(home, hermes_home=hermes_home)
+            result = _reconcile(home, port, create_missing=create_missing, owner=owner, hermes_home=hermes_home)
             if result.get("status") == "updated":
                 atomic_json(ready_path, {
                     "status": "ready", "owner": owner, "host": socket.gethostname(),
@@ -326,7 +327,7 @@ def reconcile(home, port=8799, *, create_missing=False):
             return {"status": "local-installed-liveware-pending", "warnings": [safe_error(error)]}
 
 
-def _reconcile(home, port=8799, *, create_missing=False, owner):
+def _reconcile(home, port=8799, *, create_missing=False, owner, hermes_home=None):
     home = Path(home)
     path = home / "tavern-state/apps.json"
     if not path.is_file() and not create_missing:
@@ -337,7 +338,7 @@ def _reconcile(home, port=8799, *, create_missing=False, owner):
     release = runtime_asset_release(port)
     warnings = []
     try:
-        available = active_apps(home)
+        available = active_apps(home, hermes_home=hermes_home)
     except Exception as error:
         return {
             "status": "local-installed-liveware-pending",
@@ -354,7 +355,7 @@ def _reconcile(home, port=8799, *, create_missing=False, owner):
     for role, (title, prefix) in ROLES.items():
         try:
             identity, available = resolve_identity(
-                home, document, role, title, available, create_missing=create_missing,
+                home, document, role, title, available, create_missing=create_missing, hermes_home=hermes_home,
             )
         except Exception as error:
             warnings.append(f"{title} 身份恢复失败：{error}")
@@ -380,11 +381,11 @@ def _reconcile(home, port=8799, *, create_missing=False, owner):
             continue
         app_id, domain = app["app_id"], app["domain"]
         try:
-            bind_with_retry(home, app_id, f"http://127.0.0.1:{port}{prefix}")
+            bind_with_retry(home, app_id, f"http://127.0.0.1:{port}{prefix}", hermes_home=hermes_home)
             desired = {"app_id": app_id, "name": title, "url": release_launcher_url(domain, release)}
             if launcher_rows is None:
-                launcher_rows = listed_apps(home)
-            launcher_rows = sync_launcher(home, desired, launcher_rows, {item.get("appId") for item in available})
+                launcher_rows = listed_apps(home, hermes_home=hermes_home)
+            launcher_rows = sync_launcher(home, desired, launcher_rows, {item.get("appId") for item in available}, hermes_home=hermes_home)
         except Exception as error:
             warnings.append(f"{title} 刷新失败：{error}")
     return {
@@ -394,23 +395,35 @@ def _reconcile(home, port=8799, *, create_missing=False, owner):
     }
 
 
-def refresh(home, port=8799):
-    return reconcile(home, port, create_missing=False)
+def refresh(home, port=8799, *, hermes_home=None):
+    return reconcile(home, port, create_missing=False, hermes_home=hermes_home)
 
 
-def repair(home, port=8799):
-    return reconcile(home, port, create_missing=True)
+def repair(home, port=8799, *, hermes_home=None):
+    return reconcile(home, port, create_missing=True, hermes_home=hermes_home)
 
 
-def initialize(home, port=8799):
-    return repair(home, port)
+def initialize(home, port=8799, *, hermes_home=None):
+    return repair(home, port, hermes_home=hermes_home)
 
 
-def start_runtime(home):
+
+
+def runtime_running(home, port=8799, *, hermes_home=None):
+    result = subprocess.run(
+        [sys.executable, "-B", str(Path(home) / "apps/tavern-runtime/native_lifecycle.py"),
+         "status", "--port", str(port)],
+        env=environment(home, hermes_home=hermes_home),
+        capture_output=True, text=True, timeout=30, check=False,
+    )
+    return not result.returncode and bool(json.loads(result.stdout).get("health", {}).get("ok"))
+
+
+def start_runtime(home, *, port=8799, hermes_home=None):
     app = Path(home) / "apps/tavern-runtime"
     result = subprocess.run(
-        [sys.executable, "-B", str(app / "native_lifecycle.py"), "start"],
-        env={**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(home)},
+        [sys.executable, "-B", str(app / "native_lifecycle.py"), "start", "--port", str(port)],
+        env=environment(home, hermes_home=hermes_home),
         capture_output=True, text=True, check=False,
     )
     if result.returncode:
@@ -418,14 +431,17 @@ def start_runtime(home):
     return result.returncode
 
 
-def ensure(home, port=8799):
+def ensure(home, port=8799, *, hermes_home=None, start_local=True):
     home = Path(home)
     for delay in RETRY_DELAYS:
         if delay:
             time.sleep(delay)
         try:
-            start_runtime(home)
-            result = repair(home, port)
+            if start_local:
+                start_runtime(home, port=port, hermes_home=hermes_home)
+            elif not runtime_running(home, port, hermes_home=hermes_home):
+                return {"status": "tavern-stopped"}
+            result = repair(home, port, hermes_home=hermes_home)
         except Exception as error:
             result = {"status": "local-installed-liveware-pending", "warnings": [safe_error(error)]}
         if result.get("status") == "updated":
@@ -434,18 +450,18 @@ def ensure(home, port=8799):
     return result
 
 
-def verified_entry(home, port=8799):
+def verified_entry(home, port=8799, *, hermes_home=None):
     with registration_lock(home):
         try:
-            owner = authenticate(home)
-            document = json.loads((Path(home) / "tavern-state/apps.json").read_text())
+            release = runtime_asset_release(port)
+            owner = authenticate(home, hermes_home=hermes_home)
+            document = json.loads((Path(home) / "tavern-state/apps.json").read_text(encoding="utf-8"))
             if document.get("_owner") != owner:
                 raise RuntimeError("Entry ownership has not been verified for this instance")
-            release = runtime_asset_release(port)
-            ready = json.loads((Path(home) / "tavern-state/liveware-ready.json").read_text())
+            ready = json.loads((Path(home) / "tavern-state/liveware-ready.json").read_text(encoding="utf-8"))
             if ready != {"status": "ready", "owner": owner, "host": socket.gethostname(), "port": port, "assetRelease": release}:
                 raise RuntimeError("This instance has not completed tunnel and launcher reconciliation")
-            available, rows = active_apps(home), listed_apps(home)
+            available, rows = active_apps(home, hermes_home=hermes_home), listed_apps(home, hermes_home=hermes_home)
             urls = {}
             for role, (title, _) in ROLES.items():
                 app = document[role]
@@ -462,7 +478,7 @@ def verified_entry(home, port=8799):
             return {"status": "pending", "warnings": [safe_error(error)]}
 
 
-def startup(home):
+def startup(home, port=8799, *, hermes_home=None, start_local=True):
     with registration_lock(home, worker=True) as acquired:
         if not acquired:
             return {"status": "already-running"}
@@ -471,14 +487,17 @@ def startup(home):
             if delay:
                 time.sleep(delay)
             try:
-                start_runtime(home)
+                if start_local:
+                    start_runtime(home, port=port, hermes_home=hermes_home)
+                elif not runtime_running(home, port, hermes_home=hermes_home):
+                    return {"status": "tavern-stopped"}
                 break
             except Exception as error:
                 print(safe_error(error), file=sys.stderr, flush=True)
         else:
             return {"status": "runtime-start-failed"}
         # The model greeting runs independently; only Liveware readiness gates the entry.
-        result = ensure(home)
+        result = ensure(home, port, hermes_home=hermes_home, start_local=start_local)
         if result.get("status") != "updated":
             return result
         for delay in RETRY_DELAYS:
@@ -486,7 +505,9 @@ def startup(home):
                 time.sleep(delay)
             try:
                 from liveware_notice import notify_ready
-                notice = notify_ready(home, verified_entry(home))
+                if not start_local and not runtime_running(home, port, hermes_home=hermes_home):
+                    return {"status": "tavern-stopped"}
+                notice = notify_ready(home, verified_entry(home, port, hermes_home=hermes_home), hermes_home=hermes_home)
                 if notice.get("status") in ("sent", "already-sent"):
                     return {**result, "notice": notice}
             except Exception as error:
@@ -498,22 +519,25 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument("--home", type=Path, required=True)
+    parser.add_argument("--hermes-home", type=Path)
+    parser.add_argument("--port", type=int, default=8799)
+    parser.add_argument("--no-start-runtime", action="store_true")
     parser.add_argument("operation", choices=("ensure", "startup", "entry", "initialize", "recover-existing", "refresh"))
     args = parser.parse_args()
     if args.operation == "startup":
-        result = startup(args.home)
+        result = startup(args.home, args.port, hermes_home=args.hermes_home, start_local=not args.no_start_runtime)
     elif args.operation == "entry":
-        result = verified_entry(args.home)
+        result = verified_entry(args.home, args.port, hermes_home=args.hermes_home)
     elif args.operation == "ensure":
-        result = ensure(args.home)
+        result = ensure(args.home, args.port, hermes_home=args.hermes_home, start_local=not args.no_start_runtime)
     elif args.operation == "initialize":
-        result = initialize(args.home)
+        result = initialize(args.home, args.port, hermes_home=args.hermes_home)
     else:
         if args.operation == "recover-existing":
-            start_runtime(args.home)
-        result = refresh(args.home)
+            start_runtime(args.home, port=args.port, hermes_home=args.hermes_home)
+        result = refresh(args.home, args.port, hermes_home=args.hermes_home)
     print(json.dumps(result, ensure_ascii=False))
-    if result.get("status") not in ("updated", "ready", "already-running"):
+    if result.get("status") not in ("updated", "ready", "already-running", "tavern-stopped"):
         raise SystemExit(1)
 
 

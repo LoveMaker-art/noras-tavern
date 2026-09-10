@@ -1,0 +1,113 @@
+{
+  "name": "nora-tavern-launcher",
+  "version": "0.3.2",
+  "noraTestInstallationId": "candidate-38e8e898aecc",
+  "private": true,
+  "author": "Nora Tavern",
+  "description": "Desktop shell for the Nora Tavern local launcher.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev:mock": "electron . --nora-mock=uninstalled --nora-watch",
+    "dev:mock:installed": "electron . --nora-mock=installed --nora-watch",
+    "dev:real": "electron . --nora-watch",
+    "pack:mac": "electron-builder --mac dmg zip",
+    "pack:mac:arm64": "electron-builder --mac dmg zip --arm64",
+    "pack:mac:x64": "electron-builder --mac dmg zip --x64",
+    "pack:win": "electron-builder --win nsis portable zip --x64",
+    "pack:win:x64": "electron-builder --win nsis zip --x64",
+    "pack:dir": "electron-builder --dir"
+  },
+  "dependencies": { "semver": "7.8.5" },
+  "devDependencies": {
+    "acorn": "8.15.0",
+    "electron": "^38.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "build": {
+    "appId": "art.lovemaker.nora-tavern-launcher",
+    "productName": "诺拉·酒馆",
+    "icon": "../assets/nora-launcher-portrait.png",
+    "artifactName": "Nora-Tavern-Launcher-${version}-${os}-${arch}.${ext}",
+    "files": [
+      "main.js",
+      "model-config.js",
+      "preload.js",
+      "runtime.js",
+      "releases.js",
+      "system-update.js",
+      "test-build.js",
+      "install-cleanup.js",
+      "install-location.js",
+      "uninstall.js",
+      "runtime-worker.js",
+      "process-output.js"
+    ],
+    "extraResources": [
+      {
+        "from": "../nora_profile.py",
+        "to": "nora_profile.py"
+      },
+      {
+        "from": "../nora_system.py",
+        "to": "nora_system.py"
+      },
+      {
+        "from": "../launcher-conversation-prototype.html",
+        "to": "launcher-conversation-prototype.html"
+      },
+      {
+        "from": "../launcher-controller.js",
+        "to": "launcher-controller.js"
+      },
+      {
+        "from": "../launcher_services.py",
+        "to": "launcher_services.py"
+      },
+      {
+        "from": "../launcher-ui-prototype.html",
+        "to": "launcher-ui-prototype.html"
+      },
+      {
+        "from": "../launcher_bridge.py",
+        "to": "launcher_bridge.py"
+      },
+      {
+        "from": "../model_config.py",
+        "to": "model_config.py"
+      },
+      {
+        "from": "../bootstrap.py",
+        "to": "bootstrap.py"
+      },
+      {
+        "from": "../assets",
+        "to": "assets"
+      },
+      {
+        "from": "../payload",
+        "to": "payload"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.games",
+      "identity": "-"
+    },
+    "win": {
+      "target": [
+        "nsis",
+        "portable",
+        "zip"
+      ]
+    },
+    "nsis": {
+      "include": "uninstall.nsh",
+      "artifactName": "Nora-Tavern-Launcher-${version}-win-${arch}-setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "Nora-Tavern-Launcher-${version}-win-${arch}-portable.${ext}"
+    }
+  }
+}

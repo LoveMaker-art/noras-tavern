@@ -1,4 +1,4 @@
-"""Operate only the configured Nora instance, including standalone Hermes installs."""
+"""Operate only the explicitly configured Nora instance, on Windows and macOS."""
 import argparse
 import json
 import os
@@ -48,19 +48,19 @@ def main():
         spec = importlib.util.spec_from_file_location("nora_entry", script)
         integration = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(integration)
-        options = {"hermes_home": home} if config["schema"] == 1 else {}
-        entry = integration.verified_entry(root, port, **options)
+        entry = integration.verified_entry(root, port, hermes_home=home)
         if entry.get("status") != "ready":
             print(json.dumps(entry, ensure_ascii=False))
             return 1
         print(entry["url"])
         return 0
     if args.operation == "recover-existing":
-        # The shared registration worker owns greeting order, retries and App identity.
+        # The shared registration worker owns retries and App identity, not greetings.
         script = root / "apps/tavern-ops/updater/liveware_integration.py"
-        command = [str(script), "--home", str(root)]
+        command = [str(script), "--home", str(root), "--hermes-home", str(home),
+                   "--port", str(port)]
         if config["schema"] == 1:
-            command += ["--hermes-home", str(home), "--port", str(port), "--no-start-runtime"]
+            command.append("--no-start-runtime")
         command.append("startup")
     else:
         command = [str(root / "apps/tavern-runtime/native_lifecycle.py"), args.operation]

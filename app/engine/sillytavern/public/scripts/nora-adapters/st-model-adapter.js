@@ -1,6 +1,7 @@
 export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
     let reconnectPromise = null;
     const customSecretKey = 'api_key_custom';
+    const providerKeys = { custom: customSecretKey, claude: 'api_key_claude', makersuite: 'api_key_makersuite' };
 
     async function secretRequest(path, body) {
         const response = await fetch(`/api/secrets/${path}`, {
@@ -13,14 +14,14 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
         return response.json();
     }
 
-    async function activeModelSecretId() {
+    async function activeModelSecretId(key = customSecretKey) {
         const state = await secretRequest('read', {});
-        return state?.[customSecretKey]?.find(secret => secret?.active)?.id || '';
+        return state?.[key]?.find(secret => secret?.active)?.id || '';
     }
 
-    async function rotateModelSecret(secretId) {
+    async function rotateModelSecret(secretId, key = customSecretKey) {
         if (!secretId) return;
-        await secretRequest('rotate', { key: customSecretKey, id: secretId });
+        await secretRequest('rotate', { key, id: secretId });
     }
 
     async function deleteModelSecret(secretId) {
@@ -45,7 +46,10 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
     }
 
     function assertModelConfigured() {
-        ensureCustomBackendAuth(runtime());
+        const current = runtime();
+        ensureCustomBackendAuth(current);
+        const field = { claude: 'claude_model', makersuite: 'google_model' }[current.chatCompletionSettings?.chat_completion_source];
+        if (field && !String(current.chatCompletionSettings[field] || '').trim()) throw modelConfigurationError();
         return true;
     }
 
@@ -61,11 +65,15 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
         if (current.onlineStatus !== 'no_connection') return;
 
         const settings = current.chatCompletionSettings;
-        if (current.mainApi !== 'openai' || settings?.chat_completion_source !== 'custom') {
+        const source = settings?.chat_completion_source;
+        if (current.mainApi !== 'openai' || !providerKeys[source]) {
             throw new Error('The configured model backend is not connected.');
         }
 
-        reconnectPromise ??= current.configureCustomChatCompletion({
+        const nativeField = { claude: 'claude_model', makersuite: 'google_model' }[source];
+        reconnectPromise ??= nativeField ? current.configureProviderChatCompletion({
+            source, model: settings[nativeField], context: settings.openai_max_context, maxTokens: settings.openai_max_tokens,
+        }) : current.configureCustomChatCompletion({
             url: settings.custom_url,
             model: settings.custom_model,
             context: settings.openai_max_context,
@@ -86,21 +94,27 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
     }
 
     async function configureModel(profile, apiKey = '') {
-        const previousSecretId = await activeModelSecretId();
+        const source = profile.source || 'custom';
+        const secretKey = providerKeys[source];
+        if (!secretKey) throw new Error('Unsupported model provider.');
+        const previousSecretId = await activeModelSecretId(secretKey);
         let secretId = String(profile?.secretId || '').trim();
         try {
             if (String(apiKey).trim()) {
                 const saved = await secretRequest('write', {
-                    key: customSecretKey,
+                    key: secretKey,
                     value: String(apiKey).trim(),
                     label: `Nora model: ${String(profile?.name || profile?.model || 'custom')}`,
                 });
                 secretId = String(saved?.id || '').trim();
                 if (!secretId) throw new Error('Model credential was not saved.');
             } else if (secretId && secretId !== previousSecretId) {
-                await rotateModelSecret(secretId);
+                await rotateModelSecret(secretId, secretKey);
             }
-            await runtime().configureCustomChatCompletion({
+            if (source !== 'custom') await runtime().configureProviderChatCompletion({
+                source, model: profile.model, context: profile.context, maxTokens: profile.tokens,
+            });
+            else await runtime().configureCustomChatCompletion({
                 url: profile.base,
                 model: profile.model,
                 apiKey: '',
@@ -110,7 +124,7 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
             return Object.freeze({ secretId: secretId || previousSecretId });
         } catch (error) {
             if (previousSecretId && previousSecretId !== secretId) {
-                await rotateModelSecret(previousSecretId).catch(() => {});
+                await rotateModelSecret(previousSecretId, secretKey).catch(() => {});
             }
             throw error;
         }

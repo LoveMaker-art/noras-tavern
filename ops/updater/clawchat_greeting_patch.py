@@ -1,5 +1,11 @@
-"""Retire the known greeting-order patch using the caller's backup/rollback."""
+"""Retire the greeting-order patch; the caller owns backup, swap and rollback.
+
+The legacy patch filename and manifest field remain for bundle compatibility.
+Its new digest identifies removal of the old ordering gates, not their presence.
+"""
 import ast
+import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -17,11 +23,32 @@ def validate_independent_sources(directory):
             raise ValueError("Legacy greeting gate is still present; source left unchanged")
 
 
+def bundled_patch_ready(home):
+    """Verified prepatched runtimes do not require Git on the user's computer."""
+    home = Path(home)
+    try:
+        components = json.loads((home / "nora-components.json").read_text(encoding="utf-8"))
+        expected = hashlib.sha256(Path(__file__).with_name("clawchat-greeting-order.patch").read_bytes()).hexdigest()
+        if components.get("clawchat", {}).get("greetingPatchSha256") != expected:
+            return False
+        for relative in FILES:
+            path = home / "plugins/clawchat" / relative
+            key = "plugins/clawchat/" + relative
+            if (path.is_symlink() or not path.resolve().is_relative_to(home.resolve())
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != components.get("files", {}).get(key)):
+                return False
+        return True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def prepare(home, destination):
     plugin = Path(home) / "plugins/clawchat"
     destination = Path(destination)
     if not plugin.is_dir():
         return [], {"status": "not-installed"}
+    if bundled_patch_ready(home):
+        return [], {"status": "already-patched"}
     try:
         # Work only on these two source files, never the plugin checkout or user data.
         for relative in FILES:
@@ -44,8 +71,8 @@ def prepare(home, destination):
                 capture_output=True, text=True, timeout=15, env=env,
             ).returncode == 0
 
-        # Reverse only our known ordering changes. Clean upstream files are
-        # already independent; unknown or partially patched files fail closed.
+        # This patch reverses only our known ordering changes. Clean upstream
+        # sources are already in the desired state; partial/unknown edits fail closed.
         if apply("--reverse", "--check"):
             validate_independent_sources(destination)
             return [], {"status": "already-patched"}

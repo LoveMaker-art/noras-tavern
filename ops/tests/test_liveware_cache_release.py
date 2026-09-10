@@ -27,6 +27,22 @@ def load_integration():
 
 
 class LivewareCacheReleaseTests(unittest.TestCase):
+    def test_recover_existing_cli_does_not_create_missing_apps(self):
+        integration = load_integration()
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary)
+            with (
+                mock.patch.object(sys, "argv", [str(INTEGRATION), "--home", str(home), "recover-existing"]),
+                mock.patch.object(integration, "start_runtime") as start,
+                mock.patch.object(integration, "repair") as repair,
+                mock.patch.object(integration, "refresh", return_value={"status": "updated"}) as refresh,
+                mock.patch("builtins.print"),
+            ):
+                integration.main()
+                start.assert_called_once_with(home, port=8799, hermes_home=None)
+                refresh.assert_called_once_with(home, 8799, hermes_home=None)
+                repair.assert_not_called()
+
     def setUp(self):
         import liveware_notice
         patcher = mock.patch.object(liveware_notice, "owner_conversation", return_value="test-conversation")
@@ -87,7 +103,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             ]
             list_calls = 0
 
-            def fake_launcher(_home, operation, **parameters):
+            def fake_launcher(_home, operation, *, hermes_home=None, **parameters):
                 nonlocal list_calls
                 if operation == "list_apps":
                     list_calls += 1
@@ -106,7 +122,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 mock.patch.object(
                     integration,
                     "cli",
-                    side_effect=lambda _home, *args: json.dumps(liveware_apps) if args == ("app", "list", "--json") else "",
+                    side_effect=lambda _home, *args, hermes_home=None: json.dumps(liveware_apps) if args == ("app", "list", "--json") else "",
                 ),
             ):
                 result = integration.refresh(home)
@@ -165,7 +181,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 mock.patch.object(
                     integration,
                     "cli",
-                    side_effect=lambda _home, *args: json.dumps(liveware_apps)
+                    side_effect=lambda _home, *args, hermes_home=None: json.dumps(liveware_apps)
                     if args == ("app", "list", "--json") else "",
                 ),
                 mock.patch.object(integration, "launcher", return_value={"apps": launchers}),
@@ -199,14 +215,14 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 {"app_id": "app-tavern", "name": "Tavern", "url": "https://app-tavern.apps.clawling.io/"},
             ]
 
-            def fake_cli(_home, *args):
+            def fake_cli(_home, *args, hermes_home=None):
                 if args == ("app", "list", "--json"):
                     return json.dumps(liveware_apps)
                 if args[:2] == ("tunnel", "bind"):
                     return ""
                 raise AssertionError(args)
 
-            def fake_launcher(_home, operation, **parameters):
+            def fake_launcher(_home, operation, *, hermes_home=None, **parameters):
                 if operation == "list_apps":
                     return {"apps": [item.copy() for item in registrations]}
                 if operation == "unregister_app":
@@ -251,7 +267,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             registrations = []
             create_calls = []
 
-            def fake_cli(_home, *args):
+            def fake_cli(_home, *args, hermes_home=None):
                 if args == ("app", "list", "--json"):
                     return json.dumps(liveware_apps)
                 if args[:2] == ("app", "create"):
@@ -261,7 +277,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                     return ""
                 raise AssertionError(args)
 
-            def fake_launcher(_home, operation, **parameters):
+            def fake_launcher(_home, operation, *, hermes_home=None, **parameters):
                 if operation == "list_apps":
                     return {"apps": [item.copy() for item in registrations]}
                 if operation == "unregister_app":
@@ -303,7 +319,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             ]
             create_calls = []
 
-            def fake_cli(_home, *args):
+            def fake_cli(_home, *args, hermes_home=None):
                 if args == ("app", "list", "--json"):
                     return json.dumps(liveware_apps)
                 if args[:2] == ("app", "create"):
@@ -335,8 +351,8 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 result = integration.ensure(home)
 
             self.assertEqual(result, {"status": "updated"})
-            start.assert_called_once_with(home)
-            repair.assert_called_once_with(home, 8799)
+            start.assert_called_once_with(home, port=8799, hermes_home=None)
+            repair.assert_called_once_with(home, 8799, hermes_home=None)
             refresh.assert_not_called()
 
     def test_ensure_repairs_saved_identities_against_liveware_state(self):
@@ -357,8 +373,8 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                 result = integration.ensure(home)
 
             self.assertEqual(result, {"status": "updated"})
-            start.assert_called_once_with(home)
-            repair.assert_called_once_with(home, 8799)
+            start.assert_called_once_with(home, port=8799, hermes_home=None)
+            repair.assert_called_once_with(home, 8799, hermes_home=None)
             refresh.assert_not_called()
 
     def test_repair_persists_tavern_before_story_profile_creation_failure(self):
@@ -368,7 +384,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             home = Path(temporary)
             registrations = []
 
-            def fake_cli(_home, *args):
+            def fake_cli(_home, *args, hermes_home=None):
                 if args == ("app", "list", "--json"):
                     return "[]"
                 if args == ("app", "create", "Tavern", "--agent-type", "hermes"):
@@ -379,7 +395,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                     return ""
                 raise AssertionError(args)
 
-            def fake_launcher(_home, operation, **parameters):
+            def fake_launcher(_home, operation, *, hermes_home=None, **parameters):
                 if operation == "list_apps":
                     return {"apps": [item.copy() for item in registrations]}
                 if operation == "register_app":
@@ -421,7 +437,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
             registrations = []
             attempts = {"app-tavern": 0, "app-profile": 0}
 
-            def fake_cli(_home, *args):
+            def fake_cli(_home, *args, hermes_home=None):
                 if args == ("app", "list", "--json"):
                     return json.dumps(liveware_apps)
                 if args[:2] == ("tunnel", "bind"):
@@ -432,7 +448,7 @@ class LivewareCacheReleaseTests(unittest.TestCase):
                     return ""
                 raise AssertionError(args)
 
-            def fake_launcher(_home, operation, **parameters):
+            def fake_launcher(_home, operation, *, hermes_home=None, **parameters):
                 if operation == "list_apps":
                     return {"apps": [item.copy() for item in registrations]}
                 if operation == "register_app":

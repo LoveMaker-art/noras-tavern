@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>诺拉·酒馆 · 交互预览</title>
+  <link rel="icon" href="assets/tavern-icon-dbf4ecbd54ec.png">
+  <link rel="stylesheet" href="assets/css/fontawesome.min.css">
+  <link rel="stylesheet" href="assets/css/solid.min.css">
+  <link rel="stylesheet" href="assets/css/brands.min.css">
+  <style>
+    :root { color-scheme:dark; font-family:"PingFang SC","Microsoft YaHei UI","Segoe UI",sans-serif; font-weight:400; -webkit-font-smoothing:antialiased; color:#eeeae6; background:#101111; --muted:#999b98; --accent:#df8fa0; --green:#a9c9b5; }
+    * { box-sizing:border-box; letter-spacing:0; }
+    body { margin:0; height:100vh; overflow:hidden; display:grid; place-items:center; }
+    button,input,select { font:inherit; }
+    button,a,input,select { -webkit-tap-highlight-color:transparent; }
+    button { cursor:pointer; color:inherit; }
+    button:disabled { cursor:wait; opacity:.5; }
+    button:focus-visible,a:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
+    [hidden] { display:none!important; }
+    .app { width:1120px; height:680px; position:absolute; left:50%; top:50%; overflow:hidden; background:#171a19; transform:translate(-50%,-50%) scale(var(--scale,1)); border:1px solid #343633; border-radius:8px; }
+    .portrait { position:absolute; inset:0 auto 0 0; width:60%; overflow:hidden; cursor:pointer; }
+    .portrait img { height:105%; width:112%; object-fit:cover; object-position:49% 42%; transform:translate(var(--x,0px),var(--y,0px)) scale(1.04); transition:transform .5s ease; -webkit-user-drag:none; user-select:none; }
+    .portrait:after { content:""; position:absolute; inset:0; background:linear-gradient(90deg,transparent 45%,#171a19 98%),linear-gradient(0deg,#111615 0%,transparent 30%); pointer-events:none; }
+    header { position:absolute; left:36px; right:36px; top:25px; min-height:26px; display:flex; align-items:center; justify-content:flex-end; z-index:2; }
+    .wordmark { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:11px; white-space:nowrap; font-family:"Songti SC","STSong","SimSun",serif; font-size:15px; font-weight:400; line-height:1.4; color:#a3a69a; text-shadow:0 2px 16px #000; }
+    .wordmark::before, .wordmark::after { content:""; width:22px; height:1px; background:#777d71; opacity:.45; }
+    .portrait:focus-visible { outline:1px solid #c8919f; outline-offset:-5px; }
+    .portrait-bubble { position:absolute; z-index:3; left:226px; bottom:145px; width:238px; min-height:48px; display:flex; align-items:center; justify-content:center; padding:12px 16px; border:1px solid #a7b8a63d; border-radius:6px; background:rgba(28,36,31,.94); color:#eee9df; font-size:13px; line-height:1.6; box-shadow:0 5px 20px #0003; pointer-events:none; opacity:0; transform:translateY(8px); transition:opacity .25s,transform .25s; }
+    .portrait-bubble.visible { opacity:1; transform:translateY(0); }
+    .status { display:flex; align-items:center; gap:8px; color:#c4c9c2; font-size:11px; }
+    .status:before { content:""; width:5px; height:5px; border-radius:50%; background:var(--green); }
+    .signature { position:absolute; left:36px; bottom:37px; display:flex; align-items:center; gap:10px; color:#b8bcb4; font-size:11px; line-height:1.8; }
+    .signature .separator { color:#71776b; }
+    .source-link { display:inline-flex; align-items:center; gap:7px; min-height:28px; color:#b8bcb4; text-decoration:none; font-size:11px; }
+    .source-link i { font-size:16px; }
+    .source-link:hover { color:var(--accent); }
+    main { position:absolute; top:112px; bottom:30px; left:568px; right:38px; display:flex; flex-direction:column; min-height:0; }
+    .steps { position:absolute; top:0; left:0; right:0; display:flex; gap:8px; height:44px; transition:height .5s,opacity .35s,transform .5s; }
+    .step { flex:1; min-width:0; color:#727b74; font-size:11px; }
+    .step-line { height:2px; background:#363e38; margin-bottom:12px; position:relative; overflow:hidden; }
+    .step.done .step-line { background:var(--green); }
+    .step.done { color:#bac8bd; }
+    .step.active { color:#f0b7c3; font-weight:600; }
+    .step.active .step-line { background:var(--accent); }
+    .step.active.busy .step-line:after { content:""; position:absolute; inset:0; background:#fff; animation:scan 1.4s infinite; }
+    .step i { margin-right:5px; font-size:9px; }
+    .steps.depart { height:0; margin-bottom:0; opacity:0; transform:translateY(-12px); overflow:hidden; }
+    .conversation { position:relative; min-height:0; flex:1; display:flex; flex-direction:column; padding-top:90px; }
+    .scroll { display:flex; flex-direction:column; overflow:hidden; min-height:0; padding:2px 4px 15px 0; flex:1; }
+    .dialogue-group { display:flex; flex-direction:column; min-height:0; flex:0 1 auto; }
+    .previous { position:absolute; top:60px; left:42px; margin:0; font-size:11px; color:#8c9e90; display:flex; align-items:center; gap:9px; }
+    .message { min-width:0; flex-shrink:0; margin-left:42px; animation:arrive .35s both; }
+    .speaker { font-size:12px; color:var(--accent); font-weight:500; display:flex; align-items:center; gap:9px; margin-bottom:9px; }
+    .speaker:after { content:""; height:1px; width:24px; background:#88636b; }
+    .copy { font-size:27px; font-weight:400; line-height:1.5; margin:0; text-wrap:pretty; }
+    .subcopy { font-size:13px; line-height:1.8; color:#b2bcb3; margin:9px 0 0; }
+    .inline { min-height:0; flex:0 1 auto; overflow:auto; scrollbar-width:thin; scrollbar-color:#475047 transparent; margin:18px 0 0 42px; animation:arrive .35s both; }
+    .inline:empty { margin:0; }
+    .button { display:inline-flex; justify-content:center; align-items:center; gap:12px; min-height:40px; padding:0 18px; background:#303b33; border:1px solid #59685a; border-radius:5px; font-size:13px; transition:background .2s,transform .2s; }
+    .button:hover { background:#405045; }
+    .button.primary { background:#dda0ad; color:#251d20; border-color:#dda0ad; font-weight:500; }
+    .button.primary:hover { background:#edb6c1; }
+    .button:active { transform:translateY(1px); }
+    .quiet { border:0; background:none; padding:7px 0; color:#bbc3ba; font-size:12px; display:inline-flex; align-items:center; gap:7px; }
+    .quiet:hover { color:#f0bac5; }
+    .job { border-left:1px solid #58645a; padding-left:16px; }
+    .job-head { display:flex; gap:12px; justify-content:space-between; font-size:12px; color:#c6d4c8; }
+    .meter { height:2px; background:#303c34; margin:14px 0 10px; overflow:hidden; }
+    .meter span { display:block; height:100%; background:var(--green); width:0; transition:width .3s; }
+    .meter.indeterminate span { width:35%!important; animation:scan 1.4s infinite; }
+    .task-actions { margin-top:14px; display:flex; align-items:center; gap:16px; }
+    .field-line { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .field-line .quiet { font-size:11px; padding:0 0 8px; }
+    .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; }
+    .model-feedback.error { color:#e8a3af; }
+    .job-note { font-size:11px; color:#8e9f93; }
+    form { padding-top:4px; }
+    .fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    label { display:block; color:#b7c0b7; font-size:11px; margin-bottom:8px; }
+    .wide { grid-column:1 / -1; }
+    input,select { width:100%; height:37px; min-width:0; border:1px solid #465148; background:#202723; border-radius:4px; color:#eee; padding:0 10px; font-size:12px; outline:none; }
+    input:focus,select:focus { border-color:#c8919f; }
+    .secret { position:relative; }
+    .secret input { padding-right:36px; }
+    .eye { position:absolute; right:0; top:0; width:34px; height:37px; background:none; border:0; color:#9eaca0; }
+    .form-bottom { margin-top:18px; display:flex; justify-content:space-between; align-items:center; gap:15px; }
+    .note { color:#8c9d90; font-size:10px; line-height:1.6; margin:0; }
+    .error { color:#e8a3af; }
+    .pair { border-left:1px solid #57675c; padding:2px 0 3px 17px; }
+    .pair b { font-size:13px; font-weight:500; }
+    .pair p { color:#9caaa0; font-size:12px; line-height:1.8; margin:9px 0 17px; }
+    .management { margin:22px 0 0 42px; flex-shrink:0; display:flex; gap:24px; flex-wrap:wrap; position:relative; }
+    .more { flex:0 0 100%; display:flex; flex-wrap:wrap; gap:8px 18px; border-top:1px solid #56635445; padding:10px 0 0; }
+    .more button { display:block; padding:7px 0; background:none; border:0; color:#bbc3ba; font-size:12px; text-align:left; border-radius:3px; }
+    .more button:hover { background:#39463b; }
+    .launchbar { flex-shrink:0; height:83px; margin-top:18px; display:flex; flex-direction:column; align-items:flex-end; justify-content:flex-end; gap:10px; }
+    .runtime-state { width:250px; display:flex; align-items:center; gap:7px; font-size:11px; color:#a8b1a9; }
+    .runtime-state:before { content:""; width:5px; height:5px; border-radius:50%; background:#7d837e; }
+    .runtime-state[data-phase="running"]:before { background:var(--green); }
+    .runtime-state[data-phase="starting"]:before, .runtime-state[data-phase="stopping"]:before { background:#d8bd8e; }
+    .runtime-state[data-phase="error"]:before { background:var(--accent); }
+    .runtime-actions { display:flex; align-items:center; gap:14px; width:250px; }
+    .stop { width:49px; height:49px; flex-shrink:0; display:grid; place-items:center; border:1px solid #3e473f; border-radius:4px; background:transparent; color:#a7b1a7; }
+    .stop:hover { border-color:var(--accent); color:var(--accent); }
+    .community-row { display:flex; align-items:center; gap:12px; padding:16px 0; border-bottom:1px solid #354137; }
+    .community-row > i { width:21px; text-align:center; color:#aebdaf; font-size:18px; }
+    .community-label { flex:1; min-width:0; }
+    .community-label b { display:block; font-size:13px; font-weight:500; }
+    .community-label small { display:block; margin-top:5px; color:#93a295; font-size:11px; overflow-wrap:anywhere; }
+    .community-row a { text-decoration:none; }
+    .pending { color:#89958b; font-size:11px; }
+    .launch { height:49px; min-width:187px; font-size:14px; justify-content:space-between; border-radius:4px; padding:0 22px; }
+    .launchbar.enter { animation:arrive .55s both; }
+    .edit-head { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; font-size:12px; color:#b1bdb3; }
+    .welcome .inline > .button { min-width:144px; min-height:44px; }
+    .daily .inline:not(:empty) { margin-top:18px; }
+    .welcome .conversation, .daily:not(.editing) .conversation { padding-top:0; }
+    .welcome .conversation { margin-bottom:101px; }
+    .welcome .scroll, .daily:not(.editing) .scroll { justify-content:center; padding-left:48px; }
+    .welcome .dialogue-group, .daily:not(.editing) .dialogue-group { width:max-content; max-width:100%; margin-left:auto; margin-right:auto; }
+    .welcome .message,
+    .welcome .inline,
+    .daily:not(.editing) .message,
+    .daily:not(.editing) .inline,
+    .daily:not(.editing) .management { width:auto; margin-left:0; margin-right:0; }
+    .daily.editing .management { display:none; }
+    .settings-row { display:flex; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
+    .settings-row span { color:#a9b9ac; }
+    @keyframes arrive { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
+    @keyframes scan { from { transform:translateX(-100%); opacity:.1; } 50% { opacity:.5; } to { transform:translateX(100%); opacity:.1; } }
+    @media(prefers-reduced-motion:reduce) { *,*:after { animation:none!important; transition:none!important; } }
+  </style>
+</head>
+<body>
+  <!-- Standalone interaction prototype. All installation and connection actions are simulated in memory. -->
+  <div class="app">
+    <div class="portrait" role="button" tabindex="0" aria-label="与诺拉互动"><img src="assets/nora-launcher-portrait.png" alt="诺拉" draggable="false"><div class="portrait-bubble" id="portraitBubble" role="status" aria-live="polite"></div></div>
+    <header><div class="wordmark">诺拉·酒馆</div><div class="status" id="status">首次见面</div></header>
+    <div class="signature"><span>本地启动器</span><span class="separator" aria-hidden="true">｜</span><a class="source-link" href="https://github.com/LoveMaker-art/noras-tavern" target="_blank" rel="noopener noreferrer" title="项目源码 · GitHub" aria-label="项目源码 · GitHub"><i class="fa-brands fa-github" aria-hidden="true"></i><span>项目源码</span></a></div>
+    <main id="main">
+      <nav class="steps" aria-label="安装进度" id="steps"></nav>
+      <section class="conversation" aria-label="诺拉的消息">
+        <div class="scroll" id="scroll">
+          <div class="dialogue-group">
+          <div class="previous" id="previous" hidden></div>
+          <article class="message" id="message">
+            <div><div class="speaker">诺拉</div><p class="copy" id="copy"></p><p class="subcopy" id="subcopy"></p></div>
+          </article>
+          <div class="inline" id="inline"></div>
+        <div class="management" id="management" hidden>
+          <button class="quiet" data-action="model"><i class="fa-solid fa-sliders"></i>模型</button>
+          <button class="quiet" data-action="claw"><i class="fa-solid fa-mobile-screen"></i>ClawChat</button>
+          <button class="quiet" id="moreButton" aria-expanded="false" aria-controls="more"><i class="fa-solid fa-ellipsis"></i>更多</button>
+          <div class="more" id="more" hidden><button data-action="update">检查更新</button><button data-action="settings">安装信息</button><button data-action="community">社区与作者</button></div>
+        </div>
+        </div>
+        </div>
+      </section>
+      <div class="launchbar" id="launchbar" hidden>
+        <div class="runtime-state" id="runtimeState" role="status" data-phase="idle">未运行</div>
+        <div class="runtime-actions"><button class="button primary launch" id="launch"><span>打开酒馆</span><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></button><button class="stop" id="stop" title="停止 Nora 与酒馆" aria-label="停止 Nora 与酒馆" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i></button></div>
+      </div>
+    </main>
+  </div>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+    const labels = ['Nora', '酒馆', '模型', 'ClawChat', '启动检查'];
+    const scenario = new URLSearchParams(location.search).get('mock');
+    // Populate only with author-provided community destinations.
+    const contacts = { qq: { number:'', url:'' }, discord:'', bilibili:'' };
+    let runtimePhase = 'idle', failNextStart = scenario === 'start-error';
+    let stage = 0, daily = false, busy = false, running = false, model = 'deepseek-chat', provider = 'DeepSeek';
+    function fit() { document.documentElement.style.setProperty('--scale', Math.min(innerWidth / 1120, innerHeight / 680, 1)); }
+    addEventListener('resize', fit); fit();
+    const portrait = document.querySelector('.portrait');
+    portrait.addEventListener('dragstart', event => event.preventDefault());
+    portrait.addEventListener('pointermove', e => { const r = portrait.getBoundingClientRect(); portrait.style.setProperty('--x', `${(e.clientX-r.left-r.width/2)/r.width*10}px`); portrait.style.setProperty('--y', `${(e.clientY-r.top-r.height/2)/r.height*6}px`); });
+    portrait.addEventListener('pointerleave', () => { portrait.style.setProperty('--x','0px'); portrait.style.setProperty('--y','0px'); });
+    const portraitReplies = ['在呢。', '钥匙在我这里。', '今天想去哪个世界？', '嗯？我在听。', '故事的开头，由你决定。'];
+    let portraitReplyIndex = 0, portraitBubbleTimer = 0;
+    function greetFromPortrait() {
+      const bubble=$('portraitBubble');
+      clearTimeout(portraitBubbleTimer);
+      bubble.textContent=portraitReplies[portraitReplyIndex++ % portraitReplies.length];
+      bubble.classList.add('visible');
+      bubble.getAnimations().forEach(animation=>animation.cancel());
+      if(!matchMedia('(prefers-reduced-motion: reduce)').matches) bubble.animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'translateY(0)'}],{duration:280,easing:'ease-out'});
+      portraitBubbleTimer=setTimeout(()=>{bubble.classList.remove('visible');},2600);
+    }
+    portrait.addEventListener('click', greetFromPortrait);
+    portrait.addEventListener('keydown', event => {if(event.key==='Enter'||event.key===' '){event.preventDefault();if(!event.repeat)greetFromPortrait();}});
+    function steps() { $('steps').innerHTML = labels.map((label,i) => `<div class="step ${i < stage ? 'done' : i === stage ? 'active' : ''} ${busy && i === stage ? 'busy' : ''}"><div class="step-line"></div><i class="fa-solid ${i < stage ? 'fa-check' : 'fa-minus'}"></i>${label}</div>`).join(''); }
+    function say(text, sub = '', previous = '') {
+      $('copy').textContent = text; $('subcopy').textContent = sub; $('subcopy').hidden = !sub;
+      $('previous').hidden = !previous; $('previous').textContent = previous ? `✓  ${previous}` : '';
+      $('message').getAnimations().forEach(a => a.cancel());
+      if (!matchMedia('(prefers-reduced-motion: reduce)').matches) $('message').animate([{opacity:0,transform:'translateY(8px)'},{opacity:1,transform:'none'}],{duration:300});
+      $('scroll').scrollTop = 0;
+    }
+    function button(text, fn, primary = true) { const b = document.createElement('button'); b.className = `button ${primary ? 'primary' : ''}`; b.textContent = text; b.onclick = fn; return b; }
+    function clearInline() { $('inline').replaceChildren(); }
+    function welcome() {
+      $('main').classList.add('welcome'); $('steps').hidden=true;
+      say('我是诺拉。欢迎来到酒馆。','先把我和酒馆安顿在这台电脑上。');
+      $('inline').append(button('开始安装', install));
+      const note = document.createElement('p'); note.className='note'; note.style.marginTop='13px'; note.textContent='Nora 与酒馆将安装在同一个专属目录。'; $('inline').append(note); steps();
+    }
+    async function job(title, description, duration = 1700) {
+      busy = true; steps(); clearInline();
+      $('inline').innerHTML='<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent">0%</span></div><div class="meter"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div>';
+      $('jobTitle').textContent=title; $('jobNote').textContent=description;
+      for(let i=0;i<=10;i++) { if(!$('meterFill')) break; $('meterFill').style.width=`${i*10}%`; $('jobPercent').textContent=`${i*10}%`; await wait(duration/11); }
+      busy=false;
+    }
+    async function install() {
+      if(busy) return; $('status').textContent='正在安装';
+      $('main').classList.remove('welcome'); $('steps').hidden=false;
+      say('我来准备，你稍等片刻。');
+      await job('安装 Nora','正在展开运行环境'); stage=1; steps();
+      say('接下来，把酒馆准备好。','','Nora 已安装');
+      await job('安装酒馆','正在准备应用与初始文件'); stage=2; steps(); modelForm();
+    }
+    function closeEdit() { $('main').classList.remove('editing'); dailyHome(); }
+    function editHeader(title) { const row=document.createElement('div'); row.className='edit-head'; const label=document.createElement('span'); label.textContent=title; row.append(label); const close=button('返回',closeEdit,false); close.className='quiet'; row.append(close); $('inline').append(row); }
+    function modelForm() {
+      clearInline(); if(daily) { $('main').classList.add('editing'); editHeader('模型设置'); }
+      $('status').textContent=daily ? '已就绪' : '需要你参与';
+      say(daily ? '这次想用哪个模型？' : '连接一个模型，我们继续。','',daily ? '' : 'Nora 与酒馆已安装');
+      const form=document.createElement('form');
+      form.innerHTML='<div class="fields"><div><label for="provider">模型服务</label><select id="provider"><option>DeepSeek</option><option>OpenRouter</option><option>自定义模型</option></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" placeholder="粘贴 API Key" autocomplete="off"><button class="eye" type="button" title="显示或隐藏 Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><label for="model">模型名称</label><input id="model" placeholder="输入模型名称" value="deepseek-chat"></div></div><div class="form-bottom"><p class="note" id="modelNote">Key 仅保存在本机</p><button class="button primary" type="submit">连接并继续 <i class="fa-solid fa-arrow-right"></i></button></div>';
+      $('inline').append(form); $('provider').value=provider; $('model').value=model;
+      const sync=()=>{ $('endpointField').hidden=$('provider').value!=='自定义模型'; if($('provider').value==='DeepSeek') $('model').value='deepseek-chat'; else if($('provider').value==='OpenRouter') $('model').value='anthropic/claude-sonnet-4.6'; else $('model').value=''; };
+      $('provider').onchange=sync; $('endpointField').hidden=provider!=='自定义模型';
+      form.querySelector('.eye').onclick=()=>{$('key').type=$('key').type==='password'?'text':'password';};
+      form.onsubmit=async e=>{ e.preventDefault(); if(busy) return; busy=true; const submit=form.querySelector('[type=submit]'); submit.disabled=true; submit.textContent='正在测试连接'; await wait(800); model=$('model').value || 'deepseek-chat'; provider=$('provider').value; $('key').value=''; busy=false; if(daily) dailyHome('模型已更换。'); else {stage=3; steps(); clawForm();} };
+    }
+    function clawForm() {
+      clearInline(); if(daily) {$('main').classList.add('editing'); editHeader('ClawChat');}
+      say(daily ? '我们也可以在手机上见。' : '把我接到 ClawChat 吧。', '', daily ? '' : '模型已连接');
+      $('inline').insertAdjacentHTML('beforeend','<div class="pair"><b>ClawChat</b><p>在 ClawChat 中与诺拉对话，打开手机上的酒馆。</p><div id="pairAction"></div></div>');
+      $('pairAction').append(button(daily ? '查看连接' : '打开 ClawChat 并连接', async()=>{ if(busy)return; busy=true; $('pairAction').textContent='等待 ClawChat 确认连接…'; await wait(1000); busy=false; if(daily)dailyHome('ClawChat 已连接。'); else {stage=4; steps(); check();} }));
+    }
+    async function check() {
+      $('status').textContent='启动检查'; say('最后检查一下，就好了。','','ClawChat 已连接');
+      await job('检查服务与连接','正在确认酒馆可以访问',1300); stage=5; steps(); running=true;
+      await wait(650); $('steps').classList.add('depart'); await wait(500); daily=true; dailyHome();
+    }
+    function dailyHome(message='') {
+      daily=true; $('main').classList.add('daily'); $('main').classList.remove('editing','welcome'); $('steps').hidden=true; $('management').hidden=false; $('launchbar').hidden=false; $('launchbar').classList.add('enter');
+      $('status').hidden=true; clearInline(); say(message || (running?'准备好了。酒馆交给你。':'欢迎回来。要开始了吗？'), running?'我会在 ClawChat 等你。':'打开酒馆时，我会一起启动。');
+      runtimePhase=running?'running':'idle'; renderRuntime();
+    }
+    function renderRuntime() {
+      const labels={idle:'未运行',running:'运行中',starting:'正在启动…',stopping:'正在停止…',error:'启动失败'};
+      $('runtimeState').textContent=labels[runtimePhase]; $('runtimeState').dataset.phase=runtimePhase;
+      $('launch').disabled=busy; $('stop').disabled=busy;
+      $('stop').hidden=!running;
+      $('launch').querySelector('span').textContent=runtimePhase==='starting'?'正在启动':runtimePhase==='error'?'重试启动':'打开酒馆';
+    }
+    $('launch').onclick=async()=>{
+      if(busy)return; busy=true;
+      if(!running) {runtimePhase='starting';renderRuntime();say('我来启动酒馆。');await wait(1000);
+        if(failNextStart){failNextStart=false;busy=false;runtimePhase='error';renderRuntime();say('酒馆暂时没有启动。','服务未响应，请重试启动。');return;}
+        running=true;
+      } else {renderRuntime();$('launch').querySelector('span').textContent='正在打开';}
+      await wait(500);busy=false;dailyHome('酒馆已打开。');
+    };
+    $('stop').onclick=async()=>{
+      if(busy||!running)return;busy=true;runtimePhase='stopping';renderRuntime();await wait(650);
+      running=false;busy=false;dailyHome('Nora 与酒馆已停止。');say('Nora 与酒馆已停止。','手机连接已断开，数据与配置已保留。');
+    };
+    function community() {
+      clearInline();$('main').classList.add('editing');say('在这里找到我们。');editHeader('社区与作者');
+      const rows=[{label:'QQ 群',icon:'fa-qq',url:contacts.qq.url,number:contacts.qq.number,action:'加入群聊'}, {label:'Discord',icon:'fa-discord',url:contacts.discord,action:'加入社区'}, {label:'B站',icon:'fa-bilibili',url:contacts.bilibili,action:'作者主页'}];
+      for(const item of rows){
+        const row=document.createElement('div');row.className='community-row';
+        const icon=document.createElement('i');icon.className=`fa-brands ${item.icon}`;icon.setAttribute('aria-hidden','true');row.append(icon);
+        const label=document.createElement('div');label.className='community-label';const name=document.createElement('b');name.textContent=item.label;label.append(name);row.append(label);
+        if(item.number){const number=document.createElement('small');number.textContent=item.number;label.append(number);const copy=button('复制群号',async()=>{try{await navigator.clipboard.writeText(item.number);copy.textContent='已复制';}catch{copy.textContent='请手动复制群号';}},false);copy.className='quiet';row.append(copy);}
+        if(item.url){const link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noopener noreferrer';link.className='quiet';link.textContent=item.action;row.append(link);}
+        if(!item.url&&!item.number){const pending=document.createElement('span');pending.className='pending';pending.textContent='待补充';row.append(pending);}
+        $('inline').append(row);
+      }
+    }
+    $('moreButton').onclick=()=>{ $('more').hidden=!$('more').hidden; $('moreButton').setAttribute('aria-expanded',String(!$('more').hidden)); };
+    document.querySelectorAll('[data-action]').forEach(b=>b.onclick=async()=>{
+      if(busy)return; $('more').hidden=true; $('moreButton').setAttribute('aria-expanded','false');
+      const action=b.dataset.action;
+      if(action==='model') modelForm();
+      if(action==='claw') clawForm();
+      if(action==='community') community();
+      if(action==='update') {say('我来检查一下更新。');await job('检查更新','正在查询版本',900);dailyHome('已经是最新版本。');}
+      if(action==='settings') {clearInline();$('main').classList.add('editing');say('都收在这里。');editHeader('安装信息');$('inline').insertAdjacentHTML('beforeend','<div class="settings-row"><span>安装目录</span><b>NoraTavern/</b></div><div class="settings-row"><span>包含内容</span><b>Nora · 酒馆 · 运行环境</b></div>');}
+    });
+    document.addEventListener('click', e=>{if(!$('management').contains(e.target)) {$('more').hidden=true;$('moreButton').setAttribute('aria-expanded','false');}});
+    if((!window.NoraLauncherBridge && !new URLSearchParams(location.search).has('desktop')) || scenario) {
+      if(['ready','running','start-error'].includes(scenario)){running=scenario==='running';stage=5;dailyHome();}else if(scenario==='model'){stage=2;steps();modelForm();}else welcome();
+    }
+  </script>
+  <!-- Isolated preview: no desktop bridge, persistence, model requests or imports. -->
+  <style>
+    .preview-toolbar { position:fixed; top:12px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:18px; z-index:10; padding:0 14px; height:34px; white-space:nowrap; background:#101111ed; border:1px solid #363a36; border-radius:5px; }
+    .preview-toolbar > span { font-size:10px; color:#89958b; }
+    .preview-tabs { display:flex; gap:14px; height:100%; }
+    .preview-tabs button { background:none; border:0; border-bottom:2px solid transparent; font-size:11px; color:#a0aaa2; padding:0 2px; }
+    .preview-tabs button[aria-selected="true"] { color:#efb8c4; border-bottom-color:#df8fa0; }
+    .daily:not(.editing) .dialogue-group { width:100%; max-width:424px; }
+    .daily:not(.editing) .scroll { padding-left:48px; }
+    .daily:not(.editing) .inline { overflow:visible; }
+    .services { margin-top:9px; width:100%; }
+    .pair a.button { color:inherit; }
+    .service-row { display:grid; grid-template-columns:30px 1fr auto 32px 32px; align-items:center; gap:9px; min-height:65px; border-bottom:1px solid #56635445; }
+    .service-symbol { color:#a9b8a8; font-size:15px; }
+    .service-name { font-size:13px; font-weight:500; }
+    .service-detail { display:block; color:#7f9185; font-size:10px; margin-top:5px; line-height:1.4; }
+    .service-state { display:flex; align-items:center; gap:6px; color:#8d998f; font-size:11px; }
+    .service-state:before { content:""; width:4px; height:4px; border-radius:50%; background:currentColor; }
+    .service-row[data-state="running"] .service-state { color:#b4d0bc; }
+    .service-row[data-state="starting"] .service-state,.service-row[data-state="stopping"] .service-state { color:#d8bd8e; }
+    .service-row[data-state="starting"] .service-state:before,.service-row[data-state="stopping"] .service-state:before { animation:blink 1s ease-in-out infinite; }
+    .icon-action { position:relative; display:grid; place-items:center; width:32px; height:32px; border:0; border-radius:4px; background:transparent; color:#a3b3a6; font-size:11px; }
+    .icon-action:hover { background:#ffffff0c; color:#efb8c4; }
+    .icon-action[data-tip]:hover:after,.icon-action[data-tip]:focus-visible:after { content:attr(data-tip); position:absolute; right:0; bottom:calc(100% + 4px); padding:5px 7px; border:1px solid #536054; border-radius:3px; background:#232c25; white-space:nowrap; font-size:10px; z-index:5; }
+    .services-footer { display:flex; align-items:center; justify-content:space-between; min-height:37px; gap:12px; }
+    .services-footer p { margin:0; color:#7f9185; font-size:10px; }
+    .services-footer .quiet { font-size:10px; }
+    .management { margin-top:18px; row-gap:5px; }
+    .launchbar { height:68px; margin-top:8px; }
+    .runtime-actions { width:220px; }
+    .launch { width:220px; }
+    .launch-hint { margin:0; font-size:10px; color:#91a094; }
+    .greeting-view .conversation { padding-top:0; }
+    .greeting-view .copy { font-size:23px; }
+    .greeting-view .scroll { padding-left:24px; }
+    .greeting-view .message,.greeting-view .inline { margin-left:18px; }
+    .greeting-view .dialogue-group { flex:1; min-height:0; }
+    .greeting-body { font-size:12px; color:#c0c9bf; line-height:1.9; }
+    .greeting-body p { margin:0 0 13px; }
+    .story-option { width:100%; padding:11px 0; text-align:left; border:0; border-bottom:1px solid #56635445; background:none; display:flex; align-items:center; gap:14px; }
+    .story-option > span { flex:1; min-width:0; }
+    .story-option strong { display:block; font-weight:500; font-size:12px; color:#e0c5c9; }
+    .story-option small { display:block; margin-top:5px; color:#8fa195; font-size:11px; line-height:1.7; }
+    .story-option i { font-size:11px; color:#b4c4b5; }
+    .story-option:hover strong { color:#f3bdc9; }
+    .greeting-foot { margin-top:14px; padding:11px 0; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #56635445; font-size:11px; color:#9eb3a4; }
+    .completion .subcopy { max-width:350px; font-size:13px; line-height:1.85; }
+    .completion .inline { margin-top:13px!important; }
+    .conversation-entry { margin-bottom:20px; }
+    .conversation-link { display:inline-flex; align-items:center; gap:10px; padding:7px 0; border:0; background:none; color:#e9b3c0; font-size:13px; line-height:1.6; text-align:left; }
+    .conversation-link:hover { color:#ffd8e1; }
+    .conversation-link > span { border-bottom:1px solid #c18f9b66; }
+    .conversation-link .entry-arrow { font-size:10px; opacity:.75; }
+    .conversation-guidance { margin:8px 0 0; padding-left:23px; border-left:1px solid #697e6c66; color:#a8b9ad; font-size:11px; line-height:1.8; }
+    .completion .services { margin-top:0; }
+    .preview-toolbar { max-width:calc(100vw - 20px); }
+    .preview-tabs { min-width:0; overflow-x:auto; scrollbar-width:none; }
+    .preview-tabs button { flex-shrink:0; }
+    @keyframes blink { 50% { opacity:.35; } }
+    @media(max-height:780px) { .preview-toolbar { top:6px; height:30px; } }
+    @media(max-width:520px) { .preview-toolbar { gap:9px; padding:0 8px; } .preview-tabs { gap:9px; } }
+  </style>
+  <aside class="preview-toolbar" aria-label="预览场景">
+    <span>交互预览 · 无真实操作</span>
+    <div class="preview-tabs" role="tablist" aria-label="预览场景">
+      <button role="tab" data-scene="complete" aria-selected="true">安装完成</button>
+      <button role="tab" data-scene="daily" aria-selected="false">日常启动</button>
+      <button role="tab" data-scene="install" aria-selected="false">首次安装</button>
+      <button role="tab" data-scene="claw" aria-selected="false">连接 ClawChat</button>
+      <button role="tab" data-scene="greeting" aria-selected="false">开场消息</button>
+    </div>
+  </aside>
+  <script>
+    let previewScene='daily', epoch=0;
+    const services={nora:'running',tavern:'running'};
+    const serviceNames={nora:'诺拉',tavern:'酒馆'};
+    const phaseNames={running:'运行中',stopped:'已停止',starting:'启动中',stopping:'停止中'};
+    const originalModelForm=modelForm;
+    const stories=[
+      {name:'陈屿的苏州雨巷',description:'他带着相机回到故乡，在咖啡馆里遇见沈知微和一本旧相册。'},
+      {name:'许清禾的厦门海风',description:'她带着未完成的书稿暂住海边，却收到一封寄错地址的信。'}
+    ];
+    labels[0]='诺拉';
+    document.querySelector('.source-link span').textContent='项目地址';
+    $('stop').remove(); $('runtimeState').remove();
+    const launchHint=document.createElement('p');launchHint.className='launch-hint';$('launchbar').prepend(launchHint);
+    contacts.qq.number='904830926';contacts.discord='https://discord.gg/2fxP9uYvpV2';
+    fit=()=>document.documentElement.style.setProperty('--scale',Math.min((innerWidth-24)/1120,(innerHeight-92)/680,1));
+    addEventListener('resize',fit);fit();
+    document.querySelector('.app').style.top='calc(50% + 16px)';
+    function lockPreview(){document.querySelectorAll('[data-scene]').forEach(b=>b.disabled=busy);}
+    function iconAction(icon,label,fn){
+      const b=document.createElement('button');b.className='icon-action';b.dataset.tip=label;b.setAttribute('aria-label',label);
+      const i=document.createElement('i');i.className=`fa-solid fa-${icon}`;i.setAttribute('aria-hidden','true');b.append(i);b.onclick=fn;return b;
+    }
+    function renderServices(){
+      clearInline(); const group=document.createElement('div');group.className='services';group.setAttribute('aria-label','服务控制');
+      for(const id of ['nora','tavern']){
+        const state=services[id],isOn=state==='running',row=document.createElement('div');row.className='service-row';row.dataset.state=state;row.dataset.service=id;
+        row.innerHTML=`<i class="service-symbol fa-solid fa-${id==='nora'?'wand-magic-sparkles':'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${serviceNames[id]}<small class="service-detail">${id==='nora'?(isOn?'在 ClawChat 中对话':'ClawChat 对话暂停'):(isOn?'本地启动 ｜ 打开 ClawChat 启动':'酒馆入口未运行')}</small></div><span class="service-state" role="status">${phaseNames[state]}</span>`;
+        const restart=iconAction('rotate-right',`重启${serviceNames[id]}`,()=>changeService(id,'restart'));restart.disabled=busy||!isOn;
+        const toggle=iconAction(isOn?'stop':'play',`${isOn?'停止':'启动'}${serviceNames[id]}`,()=>changeService(id,isOn?'stop':'start'));toggle.disabled=busy;
+        row.append(restart,toggle);group.append(row);
+      }
+      const footer=document.createElement('div');footer.className='services-footer';footer.innerHTML='<p>关闭窗口后，服务继续运行</p>';
+      const stopAll=button('全部停止',()=>changeService('all','stop'),false);stopAll.className='quiet';stopAll.disabled=busy||Object.values(services).every(s=>s==='stopped');footer.append(stopAll);group.append(footer);$('inline').append(group);
+      $('launch').disabled=busy;launchHint.hidden=services.tavern==='running';launchHint.textContent=services.tavern==='starting'?'正在准备酒馆':'点击后仅启动酒馆';
+      $('launch').querySelector('span').textContent=services.tavern==='starting'?'正在启动':'打开酒馆';
+      document.querySelectorAll('[data-action],#moreButton').forEach(b=>b.disabled=busy);lockPreview();
+    }
+    dailyHome=(message='')=>{
+      daily=true;running=services.tavern==='running';$('main').className='daily';$('steps').hidden=true;$('status').hidden=true;$('management').hidden=false;$('launchbar').hidden=false;
+      $('launchbar').classList.remove('enter');
+      say(message||(services.nora==='running'?'准备好了。酒馆交给你。':'随时可以继续。'),services.nora==='running'?'我在 ClawChat 等你。':'诺拉已暂停，酒馆可独立启动。');renderServices();
+    };
+    function completionPreview(){
+      services.nora='running';services.tavern='running';stage=5;dailyHome('准备好了。');
+      $('main').classList.add('completion');
+      $('subcopy').hidden=false;$('subcopy').textContent='去 ClawChat 找我聊聊，或直接打开酒馆。';
+      const entry=document.createElement('div');entry.className='conversation-entry';
+      const action=document.createElement('button');action.type='button';action.className='conversation-link';
+      action.innerHTML='<i class="fa-solid fa-comment" aria-hidden="true"></i><span>在 ClawChat 中与诺拉对话</span><i class="fa-solid fa-arrow-up-right-from-square entry-arrow" aria-hidden="true"></i>';
+      action.setAttribute('aria-expanded','false');action.setAttribute('aria-controls','conversationGuidance');
+      const guidance=document.createElement('p');guidance.id='conversationGuidance';guidance.className='conversation-guidance';guidance.hidden=true;guidance.role='status';
+      guidance.textContent='在 ClawChat 联系人中找到诺拉，发一句「你好」。此处仅预览，不会打开真实会话。';
+      action.onclick=()=>{guidance.hidden=!guidance.hidden;action.setAttribute('aria-expanded',String(!guidance.hidden));};
+      entry.append(action,guidance);$('inline').prepend(entry);
+    }
+    async function changeService(id,action){
+      if(busy)return;busy=true;const ids=id==='all'?['nora','tavern']:[id],mark=++epoch;
+      for(const key of ids)services[key]=action==='stop'?'stopping':'starting';renderServices();
+      await wait(850);if(mark!==epoch)return;
+      for(const key of ids)services[key]=action==='stop'?'stopped':'running';busy=false;
+      dailyHome(id==='all'?'服务已停止，故事还在。':id==='nora'&&action==='stop'?'诺拉已暂停。':id==='tavern'&&action==='stop'?'酒馆已停止。':`${serviceNames[id]}已${action==='restart'?'重启':'启动'}。`);
+      if(id==='nora'&&action==='stop'){$('subcopy').textContent=services.tavern==='running'?'酒馆仍在运行，诺拉对话与管理已暂停。':'数据与配置都已保留。';}
+      if(id==='tavern'&&action==='stop')$('subcopy').textContent=services.nora==='running'?'仍可在 ClawChat 和诺拉聊天。':'数据与配置都已保留。';
+    }
+    $('launch').onclick=async()=>{
+      if(busy)return;if(services.tavern!=='running')await changeService('tavern','start');
+      dailyHome('酒馆入口已准备好。');$('subcopy').textContent=services.nora==='running'?'可以进入故事了。':'诺拉保持暂停，不会随酒馆一起启动。';
+    };
+    job=async(title,description,duration=1700)=>{
+      busy=true;lockPreview();steps();clearInline();
+      $('inline').innerHTML='<div class="job"><div class="job-head"><span id="jobTitle"></span><span>处理中</span></div><div class="meter indeterminate"><span></span></div><div class="job-note" id="jobNote"></div></div>';
+      $('jobTitle').textContent=title;$('jobNote').textContent=description;await wait(duration);busy=false;lockPreview();
+    };
+    install=async()=>{
+      if(busy)return;$('main').className='';$('steps').hidden=false;$('status').textContent='正在安装';
+      say('我来准备，你稍等片刻。');await job('安装诺拉','展开环境与安装初始文件',1700);
+      stage=1;steps();say('诺拉已安装。接下来是酒馆。');await job('安装酒馆','准备酒馆与本机连接',2600);
+      stage=2;steps();modelForm();
+    };
+    modelForm=()=>{
+      originalModelForm();$('launchbar').hidden=true;
+      $('key').readOnly=true;$('key').placeholder='预览无需填写真实 Key';$('modelNote').textContent='此处仅演示配置流程';
+      $('inline').querySelector('form').onsubmit=async e=>{
+        e.preventDefault();if(busy)return;busy=true;lockPreview();const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;submit.textContent='正在连接';await wait(700);
+        provider=$('provider').value;model=$('model').value;busy=false;lockPreview();if(daily)dailyHome('模型配置已更新。');else{stage=3;steps();clawForm();}
+      };
+    };
+    clawForm=()=>{
+      clearInline();$('launchbar').hidden=true;if(daily){$('main').classList.add('editing');editHeader('ClawChat');}
+      say('把我接到 ClawChat 吧。');
+      $('inline').insertAdjacentHTML('beforeend','<div class="pair"><p>在 ClawChat 获取配对码，然后填在这里。</p><a class="button" href="https://clawling.com/zh/chat/#get" target="_blank" rel="noopener noreferrer" style="text-decoration:none">下载 ClawChat</a></div><form id="pairForm" style="margin-top:18px"><div class="field-line"><label for="pairCode">配对码</label><a class="quiet" href="https://clawling.com/zh/chat/docs/connect-code/" target="_blank" rel="noopener noreferrer">如何获取配对码<i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></a></div><input id="pairCode" type="text" readonly placeholder="预览无需填写真实配对码"><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div></form>');
+      $('pairForm').onsubmit=async e=>{
+        e.preventDefault();if(busy)return;busy=true;lockPreview();const submit=e.currentTarget.querySelector('[type=submit]');submit.disabled=true;submit.textContent='正在确认连接…';await wait(850);busy=false;
+        if(daily){dailyHome();return;}stage=4;steps();check();
+      };
+    };
+    check=async()=>{
+      say('最后检查一下，就好了。');await job('启动检查','检查诺拉、酒馆与手机入口',1400);stage=5;steps();busy=true;lockPreview();
+      await wait(500);$('steps').classList.add('depart');await wait(400);busy=false;completionPreview();
+    };
+    function greetingPreview(){
+      daily=false;$('main').className='greeting-view';$('steps').hidden=true;$('management').hidden=true;$('launchbar').hidden=true;$('status').hidden=false;$('status').textContent='ClawChat · 开场预览';clearInline();say('我叫诺拉。');
+      const body=document.createElement('div');body.className='greeting-body';body.innerHTML='<p>故事是我熟悉也真心喜欢的地方，但你不必每次带着任务来。一个人物、一种氛围、一个没说完的念头，或者只是今天想说的话，我都会认真听。</p><p>想走进故事时，酒馆入口就在这条消息下方。点开「Tavern」卡片就能进入；想先让我替你准备世界、角色或开场，也可以直接告诉我。遇到任何问题，直接问我。</p><p>可以加入 QQ 群一起交流：904830926。</p><p>如果想先试一场：</p>';$('inline').append(body);
+      stories.forEach(story=>{
+        const option=document.createElement('button');option.className='story-option';option.innerHTML=`<span><strong>${story.name}</strong><small>${story.description}</small></span><i class="fa-solid fa-arrow-right" aria-hidden="true"></i>`;
+        option.onclick=async()=>{if(busy)return;busy=true;lockPreview();$('inline').querySelectorAll('button').forEach(b=>b.disabled=true);say(`那就从${story.name.includes('苏州')?'苏州的雨':'厦门的海风'}开始。`);await job('加载体验故事','正在将样例导入酒馆',1500);clearInline();say('故事准备好了。',story.name);$('inline').append(button('返回开场',greetingPreview,false));const note=document.createElement('p');note.className='model-feedback';note.textContent='本次为交互演示，未创建真实世界。';$('inline').append(note);};
+        $('inline').append(option);
+      });
+      const end=document.createElement('div');end.className='greeting-body';end.style.marginTop='12px';end.innerHTML='<p>选一个，我来准备。</p>';$('inline').append(end);
+      const entry=document.createElement('div');entry.className='greeting-foot';entry.innerHTML='<span><i class="fa-solid fa-mug-saucer" aria-hidden="true"></i> Tavern</span><span>酒馆入口 · 示例</span>';$('inline').append(entry);
+    }
+    function switchScene(scene){
+      if(busy)return;epoch++;previewScene=scene;clearInline();$('main').className='';$('steps').classList.remove('depart');$('more').hidden=true;$('previous').hidden=true;$('status').hidden=false;
+      document.querySelectorAll('[data-scene]').forEach(b=>b.setAttribute('aria-selected',String(b.dataset.scene===scene)));
+      if(scene==='complete')completionPreview();
+      else if(scene==='daily'){services.nora='running';services.tavern='running';dailyHome();}
+      else if(scene==='claw'){daily=false;stage=3;$('management').hidden=true;$('steps').hidden=false;$('status').textContent='需要你参与';steps();clawForm();}
+      else if(scene==='greeting')greetingPreview();
+      else{daily=false;stage=0;$('management').hidden=true;$('launchbar').hidden=true;$('status').textContent='首次见面';welcome();}
+    }
+    document.querySelectorAll('[data-scene]').forEach(b=>b.onclick=()=>switchScene(b.dataset.scene));
+    document.querySelectorAll('[data-action]').forEach(b=>{const original=b.onclick;b.onclick=async()=>{if(busy)return;$('launchbar').hidden=true;await original();};});
+    const initialScene=new URLSearchParams(location.search).get('scene');
+    switchScene(['complete','daily','install','claw','greeting'].includes(initialScene)?initialScene:'complete');
+  </script>
+</body>
+</html>

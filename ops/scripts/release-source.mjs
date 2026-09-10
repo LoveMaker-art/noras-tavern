@@ -3,8 +3,32 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { buildCommand } from './build-commands.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
+
+export const NORA_SYSTEM_REQUIRED_FILES = [
+    'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
+    'app/engine/sillytavern/src/nora-world-core/builtin/welcome-zh.md',
+    'ops/installer/first_install.py', 'ops/installer/nora_system.py', 'ops/installer/nora_profile.py',
+    'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
+    'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
+    'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
+    'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
+    'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
+    'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
+    ...['references/starter-stories.md', 'scripts/starter-story.py',
+        'resources/starter-stories/manifest.json', 'resources/starter-stories/suzhou-rain.json',
+        'resources/starter-stories/xiamen-breeze.json'].map(name => `ops/skills/creative/nora-cardforge/${name}`),
+    ...['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
+        .map(name => `ops/skills/${name}/SKILL.md`),
+];
+
+export function assertNoraSystemArtifacts(files) {
+    const selected = new Set(files);
+    const missing = NORA_SYSTEM_REQUIRED_FILES.filter(file => !selected.has(file));
+    if (missing.length) throw new Error(`Incomplete Nora system artifacts: ${missing.join(', ')}`);
+}
 
 export function assertSafeReleasePath(relative) {
     const parts = relative.split('/');
@@ -61,7 +85,8 @@ export function createReleaseSource(root, { candidate = false } = {}) {
     try {
         if (!candidate) {
             const archive = execFileSync('git', ['archive', '--format=tar', commit], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
-            execFileSync('tar', ['-x', '-C', stage], { input: archive, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+            const extract = buildCommand('tar', ['-x', '-C', stage]);
+            execFileSync(extract.command, extract.args, { input: archive, env: { ...process.env, COPYFILE_DISABLE: '1' } });
         }
         for (const relative of files) {
             const source = path.join(candidate ? root : stage, relative);
@@ -99,8 +124,9 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/scripts/analyze-boot-metrics.mjs',
         'ops/scripts/analyze-runtime-phases.mjs',
         'ops/scripts/install-hermes-skills.py',
-        'ops/scripts/nora-instance.py',
         'ops/scripts/nora-tavern-update-check.sh',
+        'ops/scripts/nora-tavern-update-check.py',
+        'ops/scripts/nora-instance.py',
         'ops/scripts/nora-tavern-card-send.py',
         'ops/skills/INSTALL.md',
         'ops/skills/agents-tavern.md',
@@ -118,6 +144,9 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         `${engineRoot}src/tokenizers/`,
     ];
     const omittedFiles = new Set([
+        'ops/installer/launcher-refinement-preview.html',
+        'ops/installer/launcher-directory-preview.html',
+        'ops/installer/launcher-directory-preview.js',
         `${engineRoot}default/content/default_Seraphina.png`,
         `${engineRoot}default/content/Eldoria.json`,
         `${engineRoot}public/lib/pdf.min.mjs`,

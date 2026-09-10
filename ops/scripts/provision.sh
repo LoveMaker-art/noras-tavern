@@ -8,4 +8,4 @@ PY="${TAVERN_PYTHON:-}"
 if [ -z "$PY" ]; then
   if [ -x /opt/hermes/.venv/bin/python ]; then PY=/opt/hermes/.venv/bin/python; else PY="$(command -v python3)"; fi
 fi
-exec "$PY" -B "${TAVERN_DATA_ROOT:-$HERMES_HOME}/apps/tavern-ops/updater/liveware_integration.py" --home "${TAVERN_DATA_ROOT:-$HERMES_HOME}" initialize
+exec "$PY" -B "${TAVERN_DATA_ROOT:-$HERMES_HOME}/apps/tavern-ops/updater/liveware_integration.py" --home "${TAVERN_DATA_ROOT:-$HERMES_HOME}" --hermes-home "$HERMES_HOME" initialize

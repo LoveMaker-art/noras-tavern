@@ -41,7 +41,7 @@ def download(url: str, target: Path) -> None:
             output.write(chunk)
 
 
-def verify_release(directory: Path) -> str:
+def verify_release(directory: Path, *, allow_candidate: bool = False) -> str:
     checks = {}
     for line in (directory / "SHA256SUMS").read_text(encoding="utf-8").splitlines():
         digest, name = line.split(None, 1)
@@ -52,7 +52,7 @@ def verify_release(directory: Path) -> str:
         if name != "SHA256SUMS" and sha(directory / name) != checks.get(name):
             raise RuntimeError("发布文件校验失败：" + name)
     manifest = json.loads((directory / "release-manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("schema") != "tavern-release/v2" or manifest.get("candidate"):
+    if manifest.get("schema") != "tavern-release/v2" or (manifest.get("candidate") and not allow_candidate):
         raise RuntimeError("首次安装默认只允许正式 Nora Tavern v2 发布包")
     return checks["release-manifest.json"]
 
@@ -95,7 +95,10 @@ def extract_ops_runner(release_dir: Path, destination: Path) -> Path:
         "ops/installer/templates/SOUL.md",
         "ops/installer/templates/greeting.md",
         "ops/updater/managed_context.py",
+        "ops/installer/nora_system.py",
         "ops/scripts/nora-instance.py",
+        "ops/scripts/nora-tavern-update-check.py",
+        "ops/hooks/tavern-liveware-register/handler.py",
         "ops/updater/bundle.py",
         "ops/scripts/install-hermes-skills.py",
     }
@@ -110,10 +113,15 @@ def main() -> None:
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--hermes-home", "--data-root", dest="hermes_home")
+    parser.add_argument("--nora-home")
+    parser.add_argument("--install-root")
     parser.add_argument("--port", type=int, default=8799)
     parser.add_argument("--replace-soul", action="store_true")
+    parser.add_argument("--dedicated-nora", action="store_true")
     parser.add_argument("--skip-liveware", action="store_true")
     parser.add_argument("--force-first-install", action="store_true")
+    parser.add_argument("--allow-candidate", action="store_true")
+    parser.add_argument("--skip-hermes-install", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
@@ -132,7 +140,7 @@ def main() -> None:
             )
             for name in ASSETS:
                 download(base + "/" + name, release_dir / name)
-        manifest_sha = verify_release(release_dir)
+        manifest_sha = verify_release(release_dir, allow_candidate=args.allow_candidate)
         installer = extract_ops_runner(release_dir, work / "runner")
         command = [
             sys.executable, "-u", "-B", str(installer),
@@ -143,12 +151,20 @@ def main() -> None:
         ]
         if args.hermes_home:
             command += ["--hermes-home", args.hermes_home]
+        if args.nora_home:
+            command += ["--nora-home", args.nora_home]
+        if args.install_root:
+            command += ["--install-root", args.install_root]
         if args.replace_soul:
             command.append("--replace-soul")
+        if args.dedicated_nora:
+            command.append("--dedicated-nora")
         if args.skip_liveware:
             command.append("--skip-liveware")
         if args.force_first_install:
             command.append("--force-first-install")
+        if args.allow_candidate:
+            command.append("--allow-candidate")
         result = subprocess.run(command)
         raise SystemExit(result.returncode)
 

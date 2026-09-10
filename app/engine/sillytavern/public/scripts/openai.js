@@ -6053,6 +6053,34 @@ export async function configureCustomChatCompletion({ url, model, apiKey = '', c
     await getStatusOpen();
 }
 
+/** Connects a managed Hermes model using ST's native provider protocol. */
+export async function configureProviderChatCompletion({ source, model, context, maxTokens }) {
+    const modelField = { claude: 'claude_model', makersuite: 'google_model' }[source];
+    if (!modelField || !String(model || '').trim()) throw new Error('Native provider and model are required.');
+    const maxContext = Number(context), maxResponse = Number(maxTokens);
+    if (!Number.isFinite(maxContext) || maxContext < 1 || !Number.isFinite(maxResponse) || maxResponse < 1) {
+        throw new Error('Context and maximum response sizes must be positive numbers.');
+    }
+    const mainApiChanged = main_api !== 'openai';
+    const sourceChanged = oai_settings.chat_completion_source !== source;
+    cancelStatusCheck('Managed provider profile changed');
+    model_list = [];
+    oai_settings.chat_completion_source = source;
+    oai_settings[modelField] = String(model).trim();
+    oai_settings.reverse_proxy = '';
+    oai_settings.openai_max_context = maxContext;
+    oai_settings.openai_max_tokens = maxResponse;
+    oai_settings.stream_openai = true;
+    changeMainAPI('openai');
+    forceCharacterEditorTokenize();
+    updateFeatureSupportFlags();
+    saveSettingsDebounced();
+    if (mainApiChanged) await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: 'openai' });
+    if (sourceChanged) await eventSource.emit(event_types.CHATCOMPLETION_SOURCE_CHANGED, source);
+    startStatusLoading();
+    await getStatusOpen();
+}
+
 /**
  * Clears the active custom chat-completion endpoint, model, and stored keys.
  * @returns {Promise<void>}

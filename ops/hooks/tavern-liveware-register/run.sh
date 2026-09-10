@@ -10,4 +10,7 @@ if [ -z "$PY" ]; then
   if [ -x /opt/hermes/.venv/bin/python ]; then PY=/opt/hermes/.venv/bin/python; else PY="$(command -v python3)"; fi
 fi
 export HERMES_HOME
-exec "$PY" -B "$DATA_ROOT/apps/tavern-ops/updater/liveware_integration.py" --home "$DATA_ROOT" startup
+if [ -f "$HERMES_HOME/nora-instance.json" ]; then
+  exec "$PY" -B "$HERMES_HOME/scripts/nora-instance.py" recover-existing
+fi
+exec "$PY" -B "$DATA_ROOT/apps/tavern-ops/updater/liveware_integration.py" --home "$DATA_ROOT" --hermes-home "$HERMES_HOME" startup

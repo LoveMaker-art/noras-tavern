@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -31,6 +32,9 @@ DOCUMENT = (ROOT / "ops/skills/agents-tavern.md").read_bytes()
 
 class ManagedContextTests(unittest.TestCase):
     def setUp(self):
+        environment = patch.dict(os.environ)
+        environment.start()
+        self.addCleanup(environment.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
@@ -112,7 +116,7 @@ class ManagedContextTests(unittest.TestCase):
 
     def test_optional_stories_stage_in_standalone_instance_without_importing(self):
         self.apply_greeting()
-        (self.home / "config.yaml").write_bytes(INSTALLER.render_mcp(self.home, 18765))
+        (self.home / "config.yaml").write_bytes(INSTALLER.render_mcp(self.home, self.home, 18765))
         resources = ROOT / "ops/skills/creative/nora-cardforge/resources/starter-stories"
         for story in ("suzhou-rain", "xiamen-breeze"):
             result = STORIES.stage(self.home, resources, story, "request-1")
@@ -141,13 +145,14 @@ class ManagedContextTests(unittest.TestCase):
         (self.home / "USER.md").write_bytes(b"user memory")
         return SimpleNamespace(apply=True, confirm=True, hermes_home=self.home,
                                source_root=source, force_first_install=True, replace_soul=False,
+                               nora_home=self.home, install_root=self.home, dedicated_nora=False,
                                port=18765, skip_liveware=True)
 
     def test_first_install_success_and_retry_do_not_duplicate_rules_or_backups(self):
         args = self.installation_fixture()
         with patch.object(INSTALLER, "prepare_skills", return_value={}), \
              patch.object(INSTALLER, "start_tavern", return_value={"health": {"ok": True}}), \
-             patch.object(INSTALLER, "install_update_check", return_value={}), \
+             patch.object(INSTALLER, "install_update_check", return_value={"status": "installed"}), \
              patch("builtins.print"):
             INSTALLER.install(args)
             INSTALLER.install(args)
@@ -162,7 +167,9 @@ class ManagedContextTests(unittest.TestCase):
     def test_first_install_failure_restores_context_and_removes_new_greeting(self):
         args = self.installation_fixture()
         with patch.object(INSTALLER, "prepare_skills", return_value={}), \
-             patch.object(INSTALLER, "start_tavern", side_effect=RuntimeError("failed startup")):
+             patch.object(INSTALLER, "start_tavern", side_effect=RuntimeError("failed startup")), \
+             patch.object(INSTALLER, "install_update_check", return_value={"status": "installed"}), \
+             patch.object(INSTALLER, "stop_install_runtime"):
             with self.assertRaisesRegex(RuntimeError, "failed startup"):
                 INSTALLER.install(args)
         self.assertEqual((self.home / "AGENTS.md").read_bytes(), b"old rules")
@@ -213,7 +220,7 @@ class ManagedContextTests(unittest.TestCase):
                     stack.enter_context(patch.object(bundle, "read_bundle", return_value={"versions": {"tavern": "2.2.10"}, "commit": "test"}))
                     stack.enter_context(patch.object(bundle, "extract_bundle", side_effect=extract))
                     stack.enter_context(patch("builtins.print"))
-                    args = SimpleNamespace(home=home, release_dir=case, manifest_sha256="test")
+                    args = SimpleNamespace(home=home, install_root=home, release_dir=case, manifest_sha256="test")
                     if failure:
                         with self.assertRaisesRegex(RuntimeError, "test receipt failure"):
                             UPDATER.install(args)

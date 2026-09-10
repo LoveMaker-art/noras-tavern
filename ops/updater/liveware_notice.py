@@ -8,7 +8,7 @@ import sqlite3
 import sys
 from types import SimpleNamespace
 
-from liveware_integration import atomic_json, registration_lock
+from liveware_integration import atomic_json, hermes_home_for, registration_lock
 
 
 def owner_conversation(home, user_id):
@@ -32,7 +32,7 @@ async def send_notice(home, owner, conversation, message_id, url):
     from clawchat_gateway.standalone_send import _drop_inbound, READY_TIMEOUT_SECONDS
     from clawchat_gateway.profile import load_profile_config
 
-    raw = yaml.safe_load((Path(home) / "config.yaml").read_text()) or {}
+    raw = yaml.safe_load((Path(home) / "config.yaml").read_text(encoding="utf-8")) or {}
     extra = raw.get("platforms", {}).get("clawchat", {}).get("extra", {})
     config = ClawChatConfig.from_platform_config(SimpleNamespace(extra=extra))
     connection = ClawChatConnection(config, on_message=_drop_inbound)
@@ -55,24 +55,25 @@ async def send_notice(home, owner, conversation, message_id, url):
         await connection.stop()
 
 
-def notify_ready(home, entry):
+def notify_ready(home, entry, *, hermes_home=None):
     if entry.get("status") != "ready":
         return {"status": "pending"}
     home = Path(home)
-    os.environ["HOME"] = os.environ["HERMES_HOME"] = str(home)
-    sys.path.insert(0, str(home / "plugins/clawchat"))
+    hermes_home = hermes_home_for(home, hermes_home)
+    os.environ["HOME"] = os.environ["HERMES_HOME"] = str(hermes_home)
+    sys.path.insert(0, str(hermes_home / "plugins/clawchat"))
     from clawchat_gateway.profile import load_profile_config
     from clawchat_gateway.protocol import new_message_id
 
     owner = entry["owner"]
     if load_profile_config().user_id != owner["user_id"]:
         raise RuntimeError("Verified entry belongs to another ClawChat identity")
-    conversation = owner_conversation(home, owner["user_id"])
+    conversation = owner_conversation(hermes_home, owner["user_id"])
     if not conversation:
         return {"status": "waiting-for-conversation"}
     path = home / "tavern-state/liveware-entry-notice.json"
     with registration_lock(home):
-        saved = json.loads(path.read_text()) if path.exists() else {}
+        saved = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
         same_target = saved.get("owner") == owner and saved.get("conversation") == conversation
         if same_target and saved.get("sent"):
             return {"status": "already-sent", "message_id": saved["message_id"]}
@@ -85,7 +86,7 @@ def notify_ready(home, entry):
         if saved["url"] != entry["url"]:
             raise RuntimeError("Pending entry URL changed; delivery needs review")
         # Persist the message ID before sending. Retries reuse it for server-side deduplication.
-        asyncio.run(send_notice(home, owner, conversation, saved["message_id"], saved["url"]))
+        asyncio.run(send_notice(hermes_home, owner, conversation, saved["message_id"], saved["url"]))
         saved["sent"] = True
         atomic_json(path, saved)
         return {"status": "sent", "message_id": saved["message_id"]}

@@ -20,6 +20,26 @@ FULL_ARCHIVES = (
 )
 
 
+def default_nora_home():
+    if os.environ.get("NORA_TAVERN_HOME"):
+        return Path(os.environ["NORA_TAVERN_HOME"]).expanduser().resolve()
+    if sys.platform == "darwin":
+        return (Path.home() / "Library/Application Support/Nora Tavern").resolve()
+    if os.name == "nt":
+        base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local")
+        return (base / "Nora Tavern").resolve()
+    base = Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share")
+    return (base / "nora-tavern").resolve()
+
+
+def default_hermes_home():
+    return Path(os.environ.get("HERMES_HOME") or default_nora_home() / "hermes").expanduser().resolve()
+
+
+def default_install_root():
+    return Path(os.environ.get("TAVERN_DATA_ROOT") or default_nora_home() / "tavern").expanduser().resolve()
+
+
 def sha(path):
     digest = hashlib.sha256()
     with Path(path).open("rb") as stream:
@@ -147,7 +167,9 @@ def extract_runner(directory, destination, manifest):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--data-root", "--hermes-home", dest="home", default=os.environ.get("HERMES_HOME", "/opt/data"))
+    parser.add_argument("--data-root", dest="install_root")
+    parser.add_argument("--install-root")
+    parser.add_argument("--hermes-home", dest="hermes_home")
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--manifest-sha256")
@@ -158,8 +180,15 @@ def main():
     args = parser.parse_args()
     if not (args.apply and args.confirm):
         raise RuntimeError("更新命令必须包含 --apply --confirm")
-    home = Path(args.home).expanduser().resolve()
-    root = home / "tavern-updates"
+    hermes_home = Path(args.hermes_home).expanduser().resolve() if args.hermes_home else default_hermes_home()
+    install_root_value = args.install_root
+    if install_root_value:
+        install_root = Path(install_root_value).expanduser().resolve()
+    elif os.environ.get("TAVERN_DATA_ROOT"):
+        install_root = Path(os.environ["TAVERN_DATA_ROOT"]).expanduser().resolve()
+    else:
+        install_root = hermes_home if args.hermes_home else default_install_root()
+    root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"
     if args.target_commit and not args.repair and installed.is_file():
@@ -168,10 +197,10 @@ def main():
         except (OSError, ValueError):
             current = {}
         required_install = (
-            home / "apps/tavern-runtime/native-runtime.json",
-            home / "apps/tavern-runtime/engine/sillytavern/server.js",
-            home / "apps/tavern-ops/updater/update.py",
-            home / "apps/nora-mcp/dist/server.js",
+            install_root / "apps/tavern-runtime/native-runtime.json",
+            install_root / "apps/tavern-runtime/engine/sillytavern/server.js",
+            install_root / "apps/tavern-ops/updater/update.py",
+            install_root / "apps/nora-mcp/dist/server.js",
         )
         if current.get("commit") == args.target_commit and all(path.is_file() for path in required_install):
             print(json.dumps({
@@ -193,19 +222,21 @@ def main():
             for name in METADATA:
                 download(base + "/" + name, bundle / name)
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256)
-            archives, mode = required_archives(home, manifest)
+            archives, mode = required_archives(install_root, manifest)
             for name in archives:
                 download(base + "/" + name, bundle / name)
         else:
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256)
-            archives, mode = required_archives(home, manifest)
+            archives, mode = required_archives(install_root, manifest)
         verify_archives(bundle, archives, sums)
         print(f"[tavern-updater] 下载模式：{mode}，压缩包 {len(archives)} 个", file=sys.stderr, flush=True)
         runner = work / "runner"
         extract_runner(bundle, runner, manifest)
         command = [
             sys.executable, "-u", "-B", str(runner / "ops/updater/update.py"),
-            "--hermes-home", str(home), "install",
+            "--hermes-home", str(hermes_home),
+            "--install-root", str(install_root),
+            "install",
             "--release-dir", str(Path(bundle).resolve()),
             "--manifest-sha256", manifest_sha, "--confirm",
         ]
