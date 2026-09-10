@@ -56,9 +56,13 @@ async function main() {
   if (system.candidate) await prepareTestPayload(payload, testBuild(metadata), metadata.version);
   const manifest = JSON.parse(fs.readFileSync(path.join(payload, 'release-manifest.json')));
   const instructions = {};
-  for (const relative of ['ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md']) {
+  for (const relative of ['ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md']) {
     instructions[relative] = digest(fs.readFileSync(path.resolve(__dirname, '../..', relative)));
     assert.equal(manifest.artifacts[relative], instructions[relative], `Packaged instruction hash differs: ${relative}`);
+  }
+  if (!system.candidate && system.channel === 'stable') {
+    assert.ok(!metadata.noraLocalTest, 'Stable launcher must not use an isolated candidate profile');
+    assert.equal(metadata.noraReleaseChannel || 'stable', 'stable');
   }
   const report = { platform: process.platform, arch: process.arch, commit: system.commit, version: system.version,
     launcherVersion: metadata.version, assets: assetHashes, instructions, nativeIcon: true,

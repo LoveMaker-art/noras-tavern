@@ -1,6 +1,6 @@
 {
   "name": "nora-tavern-launcher",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "noraTestInstallationId": "candidate-38e8e898aecc",
   "private": true,
   "author": "Nora Tavern",
@@ -90,7 +90,8 @@
       }
     ],
     "mac": {
-      "category": "public.app-category.games"
+      "category": "public.app-category.games",
+      "identity": "-"
     },
     "win": {
       "target": [
