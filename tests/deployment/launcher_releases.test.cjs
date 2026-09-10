@@ -116,10 +116,11 @@ test('unsupported launcher and candidate release are rejected', async t => {
 test('platform manifest produced by packager is consumed without modifying the payload', async t => {
   const f = fixture(t);
   const { writeSystemRelease } = await import('../scripts/system-release.mjs');
-  const output = writeSystemRelease({ release: f.root, payload: f.bundledRoot, launcherVersion: '0.3.0',
+  const output = writeSystemRelease({ release: f.root, payload: f.bundledRoot, launcherVersion: '0.3.4',
     identity: { commit: f.system.commit, versions: { tavern: '2.2.8' }, hermesRuntime: { platform: 'darwin', arch: 'arm64' } } });
   const manifest = JSON.parse(fs.readFileSync(path.join(output, 'nora-system-darwin-arm64.json')));
-  releases.validateSystem(manifest, f.release, 'darwin', 'arm64', '0.3.0');
+  releases.validateSystem(manifest, f.release, 'darwin', 'arm64', '0.3.4');
+  assert.throws(() => releases.validateSystem(manifest, f.release, 'darwin', 'arm64', '0.3.3'), /升级启动器/);
   for (const [name, item] of Object.entries(manifest.files)) {
     assert.equal(await releases.hash(path.join(output, item.asset)), item.sha256);
     assert.equal(await releases.hash(path.join(f.bundledRoot, name)), item.sha256);

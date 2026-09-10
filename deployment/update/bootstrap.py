@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import subprocess
@@ -20,6 +21,19 @@ FULL_ARCHIVES = (
 )
 
 
+def filesystem_path(path):
+    """Use extended Windows paths for I/O, never for saved instance bindings."""
+    value = os.fspath(path)
+    if os.name != "nt":
+        return value
+    value = ntpath.normpath(ntpath.abspath(value.replace("/", "\\")))
+    if value.startswith("\\\\?\\"):
+        return value
+    if value.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + value[2:]
+    return "\\\\?\\" + value
+
+
 def default_hermes_home():
     return Path(os.environ.get("HERMES_HOME") or (
         "/opt/data" if sys.platform.startswith("linux") and Path("/opt/data/skills").is_dir()
@@ -30,7 +44,36 @@ def default_install_root():
     return Path(os.environ.get("TAVERN_DATA_ROOT") or default_hermes_home()).expanduser().resolve()
 
 
-def resolve_update_target(hermes_home=None, install_root=None):
+def managed_instance(home, root):
+    """Authorize the desktop adapter only inside its recoverable transaction."""
+    home, root = Path(home).resolve(), Path(root).resolve()
+    try:
+        instance = json.loads((home / "nora-instance.json").read_text(encoding="utf-8"))
+        expected = {"noraHome": root, "hermesHome": root / "hermes", "installRoot": root / "tavern"}
+        if instance.get("schema") != 1 or home != expected["hermesHome"]:
+            raise ValueError("invalid instance")
+        for name, path in expected.items():
+            value = Path(instance[name])
+            if not value.is_absolute() or value.resolve() != path or path.is_symlink():
+                raise ValueError("invalid " + name)
+        port = instance["port"]
+        if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
+            raise ValueError("invalid port")
+        system = json.loads((expected["installRoot"] / "tavern-updates/nora-system.json").read_text(encoding="utf-8"))
+        if system.get("schema") != 1:
+            raise ValueError("invalid system receipt")
+    except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+        raise RuntimeError("无法核对启动器实例记录，已停止更新") from error
+    try:
+        journal = json.loads((root / "installer/system-update/journal.json").read_text(encoding="utf-8"))
+        if journal.get("schema") != 1 or journal.get("phase") != "applying":
+            raise ValueError("not applying")
+    except (OSError, ValueError, AttributeError) as error:
+        raise RuntimeError("启动器更新事务未就绪，请从启动器执行更新") from error
+    return instance
+
+
+def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=None):
     """Resolve an existing installation without writing or inventing a new root.
 
     Kept in the standalone bootstrap so the downloaded entry and bundle runner
@@ -38,7 +81,8 @@ def resolve_update_target(hermes_home=None, install_root=None):
     """
     home = Path(hermes_home).expanduser().resolve() if hermes_home else default_hermes_home()
     managed_error = "此实例由诺拉启动器管理，禁止用 Tavern 单体更新器覆盖完整 Nora 系统。请在启动器中检查版本。"
-    if (home / "nora-instance.json").exists():
+    instance = managed_instance(home, managed_home) if managed_home else None
+    if (home / "nora-instance.json").exists() and not instance:
         raise RuntimeError(managed_error)
     if not (home / "skills").is_dir():
         raise RuntimeError("无法确认 Hermes 安装目录：" + str(home))
@@ -52,6 +96,8 @@ def resolve_update_target(hermes_home=None, install_root=None):
 
     if install_root:
         add("--install-root", install_root)
+    if instance:
+        add("启动器实例", instance["installRoot"])
     if os.environ.get("TAVERN_DATA_ROOT"):
         add("TAVERN_DATA_ROOT", os.environ["TAVERN_DATA_ROOT"])
 
@@ -64,6 +110,8 @@ def resolve_update_target(hermes_home=None, install_root=None):
             env = server.get("env", {})
             if not isinstance(env, dict):
                 raise ValueError("MCP env must be a mapping")
+            if instance and env.get("NORA_MCP_BASE_URL") != f"http://127.0.0.1:{instance['port']}":
+                raise ValueError("MCP port differs from the managed instance")
             suffixes = {
                 "NORA_MCP_PROJECT_ROOT": "apps/tavern-runtime",
                 "NORA_MCP_ST_ROOT": "apps/tavern-runtime/engine/sillytavern",
@@ -113,7 +161,7 @@ def resolve_update_target(hermes_home=None, install_root=None):
     if not candidates:
         raise RuntimeError("未找到已有酒馆安装，更新器不会创建新实例。首次部署请使用安装流程。")
     root = next(iter(candidates.values()))
-    if (root / "tavern-updates/nora-system.json").exists():
+    if (root / "tavern-updates/nora-system.json").exists() and not instance:
         raise RuntimeError(managed_error)
     app = root / "apps/tavern-runtime"
     if not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py")) or not (root / "tavern-state").is_dir():
@@ -260,6 +308,7 @@ def main():
     parser.add_argument("--data-root", help="旧版同目录部署的安装根")
     parser.add_argument("--install-root")
     parser.add_argument("--hermes-home", dest="hermes_home")
+    parser.add_argument("--managed-home", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--manifest-sha256")
@@ -276,12 +325,13 @@ def main():
     if args.data_root and args.install_root and Path(args.data_root).expanduser().resolve() != Path(args.install_root).expanduser().resolve():
         raise RuntimeError("--data-root 与 --install-root 冲突，已停止更新")
     home = args.hermes_home or (args.data_root if not os.environ.get("HERMES_HOME") else None)
-    hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root)
+    hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root,
+                                                     managed_home=args.managed_home)
     print(f"[tavern-updater] 已确认现有安装：{install_root}", file=sys.stderr, flush=True)
     root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"
-    if args.target_commit and not args.repair and not args.allow_candidate and installed.is_file():
+    if args.target_commit and not args.repair and not args.allow_candidate and not args.managed_home and installed.is_file():
         try:
             current = json.loads(installed.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -299,7 +349,7 @@ def main():
                 "commit": args.target_commit,
             }, ensure_ascii=False, indent=2))
             return
-    with tempfile.TemporaryDirectory(prefix="install-", dir=root) as temporary:
+    with tempfile.TemporaryDirectory(prefix="install-", dir=filesystem_path(root)) as temporary:
         work = Path(temporary)
         bundle = args.release_dir
         if bundle is None:
@@ -318,6 +368,8 @@ def main():
         else:
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256, allow_candidate=args.allow_candidate)
             archives, mode = required_archives(install_root, manifest)
+            if all((bundle / name).is_file() for name in FULL_ARCHIVES):
+                archives, mode = list(FULL_ARCHIVES), "local"
         verify_archives(bundle, archives, sums)
         print(f"[tavern-updater] 下载模式：{mode}，压缩包 {len(archives)} 个", file=sys.stderr, flush=True)
         runner = work / "runner"
@@ -326,6 +378,7 @@ def main():
             sys.executable, "-u", "-B", str(runner / "ops/updater/update.py"),
             "--hermes-home", str(hermes_home),
             "--install-root", str(install_root),
+            *(["--managed-home", str(args.managed_home.resolve())] if args.managed_home else []),
             "install",
             "--release-dir", str(Path(bundle).resolve()),
             "--manifest-sha256", manifest_sha, "--confirm",

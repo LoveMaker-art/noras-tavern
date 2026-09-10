@@ -51,6 +51,20 @@ test('process termination during replacement leaves recoverable journal', async 
   assert.equal(update.pending(home), false);
   assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
 });
+test('previous service selection is restored only after rollback restores its files', async t => {
+  const home = fixture(t);
+  let restored = false;
+  await assert.rejects(update.perform({ home, target: 'beta.2', stop: async () => {},
+    apply: async () => fs.writeFileSync(path.join(home, 'tavern/version'), 'beta.2'),
+    verify: async () => { throw new Error('unhealthy'); },
+    restoreRunning: async () => {
+      assert.equal(update.pending(home), false);
+      assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
+      restored = true;
+    },
+  }), /已恢复原系统/);
+  assert.equal(restored, true);
+});
 test('failed service stop makes no installation changes', async t => {
   const home = fixture(t);
   await assert.rejects(update.perform({ home, target: 'beta.2', stop: async () => { throw new Error('busy'); } }), /busy/);
@@ -66,9 +80,11 @@ test('runtime replacement preserves user state without copying old binaries over
     fs.writeFileSync(path.join(root, 'clawchat/liveware/liveware'), root === old ? 'old' : 'new');
   }
   fs.writeFileSync(path.join(old, 'clawchat/nora-profile.json'), 'profile receipt');
+  fs.writeFileSync(path.join(old, 'nora-instance.json'), 'instance binding');
   await update.restoreUserHome(old, next);
   assert.equal(fs.readFileSync(path.join(next, '.env'), 'utf8'), 'test-only-key-and-pairing');
   assert.equal(fs.readFileSync(path.join(next, 'SOUL.md'), 'utf8'), 'custom soul');
+  assert.equal(fs.readFileSync(path.join(next, 'nora-instance.json'), 'utf8'), 'instance binding');
   assert.equal(fs.readFileSync(path.join(next, 'clawchat/nora-profile.json'), 'utf8'), 'profile receipt');
   for (const file of ['hermes-agent/core', 'plugins/clawchat/plugin.py', 'clawchat/liveware/liveware']) {
     assert.equal(fs.readFileSync(path.join(next, file), 'utf8'), 'new');

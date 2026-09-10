@@ -34,7 +34,7 @@ export function configureCandidateLauncher({ packageFile, payload, identity }) {
 }
 
 // Each platform publishes unique names; no shared manifest is overwritten by another build.
-export function writeSystemRelease({ release, payload, identity, launcherVersion, minimumLauncherVersion = '0.3.0' }) {
+export function writeSystemRelease({ release, payload, identity, launcherVersion, minimumLauncherVersion = '0.3.4' }) {
     const runtime = identity.hermesRuntime;
     if (!runtime) return null;
     const platform = `${runtime.platform}-${runtime.arch}`;

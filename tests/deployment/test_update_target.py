@@ -165,6 +165,46 @@ class UpdateTargetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "启动器"):
             self.bootstrap(["--hermes-home", str(self.home)])
 
+    def managed_installation(self):
+        tavern = self.root / "tavern"
+        self.installation(tavern)
+        (self.home / "config.yaml").write_bytes(UPDATER.render_mcp(self.home, tavern, 18899))
+        (self.home / "nora-instance.json").write_text(json.dumps({
+            "schema": 1, "noraHome": str(self.root), "hermesHome": str(self.home),
+            "installRoot": str(tavern), "port": 18899,
+        }))
+        (tavern / "tavern-updates/nora-system.json").write_text(json.dumps({"schema": 1}))
+        journal = self.root / "installer/system-update/journal.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_text(json.dumps({"schema": 1, "phase": "applying"}))
+        return tavern
+
+    def test_managed_update_requires_matching_instance_and_active_transaction(self):
+        tavern = self.managed_installation()
+        self.assertEqual(BOOTSTRAP.resolve_update_target(
+            self.home, tavern, managed_home=self.root), (self.home, tavern))
+        journal = self.root / "installer/system-update/journal.json"
+        journal.unlink()
+        with self.assertRaisesRegex(RuntimeError, "事务"):
+            BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
+
+    def test_managed_update_rejects_stale_mcp_binding(self):
+        tavern = self.managed_installation()
+        (self.home / "config.yaml").write_bytes(UPDATER.render_mcp(self.home, self.root / "wrong-tavern", 18899))
+        with self.assertRaisesRegex(RuntimeError, "冲突"):
+            BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
+
+    def test_managed_update_rejects_a_different_mcp_port(self):
+        tavern = self.managed_installation()
+        self.bind(tavern)
+        with self.assertRaisesRegex(RuntimeError, "配置"):
+            BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
+
+    def test_managed_update_cannot_authorize_a_different_installation(self):
+        tavern = self.managed_installation()
+        with self.assertRaisesRegex(RuntimeError, "实例"):
+            BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root / "other")
+
     def test_malformed_configuration_is_not_treated_as_missing(self):
         self.installation(self.home)
         (self.home / "config.yaml").write_text("mcp_servers: [broken")

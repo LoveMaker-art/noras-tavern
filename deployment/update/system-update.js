@@ -46,7 +46,7 @@ async function recover(home, stop) {
   await save(home, { phase: 'rolled-back' });
   return true;
 }
-async function perform({ home, target, stop, apply, verify, onEvent = () => {} }) {
+async function perform({ home, target, stop, apply, verify, restoreRunning, onEvent = () => {} }) {
   if (pending(home)) throw new Error('上次更新尚待恢复。');
   const { root, directory } = locations(home);
   for (const name of NAMES) if (!fs.statSync(path.join(root, name)).isDirectory()) throw new Error('当前安装不完整。');
@@ -70,13 +70,17 @@ async function perform({ home, target, stop, apply, verify, onEvent = () => {} }
     onEvent({ event: 'task', task: '更新未完成，正在恢复原系统' });
     try { await recover(home, stop); }
     catch { throw new Error('更新未完成，自动恢复也未完成。旧系统备份已保留，请重新打开启动器恢复。'); }
+    if (restoreRunning) {
+      try { await restoreRunning(); }
+      catch { throw new Error('更新未完成，原系统和数据已恢复，但服务未能重新启动。请从启动器重试启动。'); }
+    }
     throw new Error(`更新未完成，已恢复原系统和数据：${error.message}`);
   }
 }
 
 async function restoreUserHome(previous, current) {
   const programs = new Set(['hermes-agent', 'python', 'node', 'nora-components.json', 'nora-clawchat-check.py',
-    'gateway.pid', 'gateway.lock', 'gateway_state.json', 'nora-instance.json']);
+    'gateway.pid', 'gateway.lock', 'gateway_state.json']);
   for (const entry of await fsp.readdir(previous, { withFileTypes: true })) {
     if (programs.has(entry.name)) continue;
     const source = path.join(previous, entry.name), target = path.join(current, entry.name);

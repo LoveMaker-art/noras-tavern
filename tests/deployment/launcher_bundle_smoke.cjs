@@ -6,6 +6,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawnSync } = require('node:child_process');
 const { installBundledHermes, validateRuntimeLinks } = require('../installer/desktop/runtime');
+const systemUpdate = require('../installer/desktop/system-update');
 
 async function main() {
   if (!process.argv[2]) throw new Error('Pass the candidate launcher payload directory');
@@ -147,6 +148,47 @@ print('PASS: actual Hermes cron script execution, local release fixture, no mode
 `]);
     console.log(cron.trim());
     console.log('PASS: real runtime, Nora identity / skills / Hook loader, ClawChat registration, cron execution, MCP instance read; setup still pending');
+    const updateIndex = process.argv.indexOf('--update-release');
+    if (updateIndex >= 0) {
+      const selected = path.join(root, 'update-payload');
+      fs.cpSync(path.resolve(process.argv[updateIndex + 1]), selected, { recursive: true });
+      const dependencies = JSON.parse(fs.readFileSync(path.join(payload, 'nora-tavern-dependencies.json')));
+      for (const name of ['nora-tavern-dependencies.json', dependencies.archive]) {
+        fs.copyFileSync(path.join(payload, name), path.join(selected, name));
+      }
+      const target = JSON.parse(fs.readFileSync(path.join(selected, 'release-manifest.json')));
+      assert.ok(target.versions.tavern, 'Rehearsal requires an explicit local release');
+      // Reuse dependencies only when the actual package lock files match the baseline.
+      const baseline = JSON.parse(fs.readFileSync(path.join(payload, 'release-manifest.json')));
+      for (const name of ['app/engine/sillytavern/package-lock.json', 'nora-mcp/npm-shrinkwrap.json']) {
+        assert.equal(target.artifacts[name], baseline.artifacts[name], `${name} requires a new dependency bundle`);
+      }
+      const protectedPaths = [path.join(home, '.env'), path.join(home, 'SOUL.md'), path.join(home, 'nora-instance.json'), chatFile,
+        ...fs.readdirSync(path.join(userRoot, 'nora-world-core/worlds'))
+          .map(file => path.join(userRoot, 'nora-world-core/worlds', file))];
+      const before = protectedPaths.map(file => fs.readFileSync(file));
+      const stop = async () => run([path.join(tavern, 'apps/tavern-runtime/native_lifecycle.py'), 'stop']);
+      await systemUpdate.perform({ home: root, target: target.versions.tavern, stop,
+        apply: async () => {
+          console.log(run([path.join(selected, 'tavern-updater-bootstrap.py'), '--hermes-home', home,
+            '--install-root', tavern, '--managed-home', root, '--release-dir', selected,
+            '--allow-candidate', '--apply', '--confirm'], 240000).slice(-3500));
+        },
+        verify: async () => {
+          const result = JSON.parse(run([path.resolve(__dirname, '../installer/launcher_bridge.py'),
+            '--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port), 'status']).trim());
+          assert.equal(result.systemReady, true, JSON.stringify(result.systemProblems));
+          assert.equal(result.version, target.versions.tavern);
+          protectedPaths.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index], file));
+          const installed = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/installed.json')));
+          assert.equal(installed.sourceDigest, target.sourceDigest);
+          assert.equal(installed.worldVerification.status, 'verified');
+          assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
+          return result;
+        },
+      });
+      console.log('PASS: installed payload -> shared updater; actual Hermes/MCP verification, custom port, world/chat bytes and user configuration retained');
+    }
   } finally {
     const lifecycle = path.join(tavern, 'apps/tavern-runtime/native_lifecycle.py');
     if (python && fs.existsSync(lifecycle)) {

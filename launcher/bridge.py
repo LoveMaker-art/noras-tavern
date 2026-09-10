@@ -8,6 +8,7 @@ spawn this bridge and forward its JSON events to ``window.NoraLauncherBridge``.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -572,11 +573,23 @@ def command_pair(args) -> None:
 
 
 def command_update(args, *, repair: bool = False) -> None:
-    if (args.install_root / "tavern-updates/nora-system.json").is_file():
-        fail("旧版酒馆更新器不支持完整 Nora 系统迁移。请在检查更新中查看发布说明；现有系统未修改。")
+    managed = (args.install_root / "tavern-updates/nora-system.json").is_file()
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
     bootstrap = args.install_root / "apps/tavern-ops/updater/bootstrap.py"
+    selected = release_dir(args.release_dir) if getattr(args, "release_dir", None) else None
+    if managed:
+        if not selected or repair:
+            fail("请从启动器的检查更新入口更新完整系统。")
+        bootstrap = selected / "tavern-updater-bootstrap.py"
+        manifest = json.loads((selected / "release-manifest.json").read_text(encoding="utf-8"))
+        if not bootstrap.is_file() or hashlib.sha256(bootstrap.read_bytes()).hexdigest() != manifest.get("bootstrap", {}).get("sha256"):
+            fail("更新器校验失败，当前安装未修改。")
+        instance = nora_system.read_json(args.hermes_home / "nora-instance.json")
+        if instance.get("port") != args.port:
+            fail("启动器端口与实例记录不一致，已停止更新。")
+        if gateway_status(args.nora_home, args.hermes_home).get("running"):
+            fail("更新前必须先停止诺拉。")
     if not bootstrap.is_file():
         fail("没有找到更新器，请先修复安装目录。")
     emit("step", index=0, label="检查版本")
@@ -594,6 +607,10 @@ def command_update(args, *, repair: bool = False) -> None:
     ]
     if repair:
         command.append("--repair")
+    if selected:
+        command += ["--release-dir", str(selected)]
+    if managed:
+        command += ["--managed-home", str(args.nora_home)]
     if getattr(args, "tag", None):
         if not re.fullmatch(r"[a-zA-Z0-9._-]{1,100}", args.tag):
             fail("版本编号无效。")
@@ -665,6 +682,7 @@ def main() -> None:
     sub.add_parser("pair")
     update = sub.add_parser("update")
     update.add_argument("--tag")
+    update.add_argument("--release-dir")
     sub.add_parser("check-update")
     sub.add_parser("repair")
     sub.add_parser("open-logs")

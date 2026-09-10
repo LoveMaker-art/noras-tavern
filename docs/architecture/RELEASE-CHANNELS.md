@@ -49,6 +49,13 @@ require a verified download.
 
 ## Installer Downloads
 
+Launcher 0.3.4 switches installed systems to the common updater. The first full
+release carrying this change requires `minimumLauncherVersion: 0.3.4`; older
+shells must be replaced once, without uninstalling their data. Subsequent
+component releases inherit that minimum from the verified full baseline.
+Both full and component payloads include `tavern-updater-bootstrap.py`, pinned
+by the target release manifest. Do not remove it from the desktop payload.
+
 Component release notes link directly to the last real full installers and
 clearly label their version. `component-release.json` retains that installer tag,
 the runtime baseline tag and reused hashes. Chained component releases retain

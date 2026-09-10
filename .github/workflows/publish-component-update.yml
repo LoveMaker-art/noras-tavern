@@ -54,7 +54,7 @@ jobs:
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
           node --test tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
           node tooling/run.mjs node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
-          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_incremental_update tests.deployment.test_update_check
+          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update
       - name: Build only shared application and updater components
         run: node tooling/release/package-release.mjs --components-only
       - name: Reuse verified environments and seal three system manifests

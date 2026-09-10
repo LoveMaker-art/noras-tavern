@@ -8,7 +8,6 @@ import copy
 import hashlib
 import importlib.util
 import json
-import ntpath
 import os
 from pathlib import Path
 import shutil
@@ -42,16 +41,7 @@ def safe(path: str | Path) -> Path:
 
 
 def filesystem_path(path: str | Path) -> str:
-    """Use extended Windows paths for filesystem I/O, not persisted config or commands."""
-    value = os.fspath(path)
-    if os.name != "nt":
-        return value
-    value = ntpath.normpath(ntpath.abspath(value.replace("/", "\\")))
-    if value.startswith("\\\\?\\"):
-        return value
-    if value.startswith("\\\\"):
-        return "\\\\?\\UNC\\" + value[2:]
-    return "\\\\?\\" + value
+    return _shared_paths.filesystem_path(path)
 
 
 def install_workspace(nora_home: Path):
@@ -87,6 +77,9 @@ def module_at(name: str, path: Path):
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+_shared_paths = module_at("nora_install_paths", ROOT / "ops/updater/bootstrap.py")
 
 
 def default_nora_home() -> Path:

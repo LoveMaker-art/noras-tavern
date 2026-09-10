@@ -499,6 +499,11 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
   const onEvent = message => sendBridgeEvent(webContents, payload.runId, message);
   try {
     return await systemUpdate.perform({ home: noraHome(), target: target.version, stop: stopForUpdate, onEvent,
+      restoreRunning: async () => {
+        if (before.setupCompleted && (before.running || before.gatewayRunning)) await runBridge('start', {
+          port: payload.port, service: before.running && before.gatewayRunning ? 'all' : before.running ? 'tavern' : 'nora',
+        }, webContents, payload.runId);
+      },
       apply: async backup => {
         const bundle = findBundledRuntime(selectedPayload);
         const marker = JSON.parse(fs.readFileSync(path.join(hermesHome(), 'hermes-agent/.hermes-bootstrap-complete')));
@@ -507,7 +512,7 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
           onEvent({ event: 'task', task: '保留模型、配对和会话配置' });
           await systemUpdate.restoreUserHome(path.join(backup, 'hermes'), hermesHome());
         }
-        await runBridge('install', { port: payload.port, releaseDir: selectedPayload }, webContents, payload.runId);
+        await runBridge('update', { port: payload.port, releaseDir: selectedPayload }, webContents, payload.runId);
       },
       verify: async () => {
         let result = await runBridge('status');

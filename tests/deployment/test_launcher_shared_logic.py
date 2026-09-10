@@ -137,6 +137,36 @@ class SharedLogicTests(unittest.TestCase):
             self.assertEqual(update.default_hermes_home(), self.home)
             self.assertEqual(update.default_install_root(), self.home)
 
+    def test_desktop_update_uses_verified_target_updater_not_first_installer(self):
+        payload = self.root / "payload"
+        payload.mkdir()
+        bootstrap = payload / "tavern-updater-bootstrap.py"
+        bootstrap.write_bytes(b"# pinned target updater\n")
+        (payload / "release-manifest.json").write_text(json.dumps({
+            "bootstrap": {"sha256": hashlib.sha256(bootstrap.read_bytes()).hexdigest()}}))
+        record = self.tavern / "tavern-updates/nora-system.json"
+        record.parent.mkdir(parents=True)
+        record.write_text('{"schema":1}')
+        (self.home / "nora-instance.json").write_text('{"port":18899}')
+        args = SimpleNamespace(nora_home=self.root, hermes_home=self.home, install_root=self.tavern,
+                               port=18899, release_dir=str(payload), tag=None)
+        with patch.object(bridge, "installed", return_value=True), \
+             patch.object(bridge, "python_command", return_value=sys.executable), \
+             patch.object(bridge, "gateway_status", return_value={"running": False}), \
+             patch.object(bridge, "status_payload", return_value={}), \
+             patch.object(bridge, "emit"), patch.object(bridge, "run_stream") as run:
+            bridge.command_update(args)
+        command = run.call_args.args[0]
+        self.assertEqual(command[3], str(bootstrap))
+        self.assertEqual(command[command.index("--managed-home") + 1], str(self.root))
+        self.assertEqual(command[command.index("--release-dir") + 1], str(payload))
+        self.assertNotIn("--force-first-install", command)
+        bootstrap.write_bytes(b"changed")
+        with patch.object(bridge, "installed", return_value=True), patch.object(bridge, "run_stream") as run:
+            with self.assertRaises(SystemExit):
+                bridge.command_update(args)
+            run.assert_not_called()
+
     def test_shared_hermes_instructions_use_full_project_ownership(self):
         (self.home / "AGENTS.md").write_text("My unrelated instructions\n")
         merged = update.merged_agents(self.home, b"# Nora\n")

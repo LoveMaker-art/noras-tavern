@@ -52,6 +52,10 @@ def configure_managed(home, root, nora_home, port, source, python, env):
               "hermesHome": str(home), "installRoot": str(root), "port": port,
               "releaseChannel": os.environ.get("NORA_RELEASE_CHANNEL", "stable")})
     install_greeting(home, source)
+    seed_clawchat_skills(home, python, env)
+
+
+def seed_clawchat_skills(home, python, env):
     # Use the plugin's supported seeding/registration API, retaining newer managed skills.
     probe = '''
 import sys

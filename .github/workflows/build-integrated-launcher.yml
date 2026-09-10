@@ -178,6 +178,7 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
 
       - name: Build release payload
         shell: bash
@@ -187,16 +188,17 @@ jobs:
           node tooling/release/package-release.mjs $mode \
             --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
 
-      - name: Test real fresh installation before desktop packaging
+      - name: Test real fresh installation and managed update before desktop packaging
         if: runner.os != 'Windows'
         timeout-minutes: 15
         shell: bash
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload"
+          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload" \
+            --update-release "$release_dir/nora-tavern-launcher/payload"
 
-      - name: Test Windows fresh installation with legacy path limits
+      - name: Test Windows installation and managed update with legacy path limits
         if: runner.os == 'Windows'
         timeout-minutes: 15
         shell: pwsh
@@ -219,8 +221,9 @@ jobs:
               Where-Object { $_.Name -match '^(candidate|stable)-' } |
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
-            node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs (Join-Path $release.FullName 'nora-tavern-launcher/payload')
-            if ($LASTEXITCODE -ne 0) { throw 'Windows fresh install failed with LongPathsEnabled=0' }
+            $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
+            node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs $payload --update-release $payload
+            if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
           } finally {
             if ($null -eq $previous) {
               Remove-ItemProperty -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue

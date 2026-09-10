@@ -47,7 +47,7 @@ function fixture(t, platform = 'darwin-arm64') {
     };
     current.archives = {};
     for (const name of ['nora-tavern-app.tar.gz', 'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz',
-        'nora-tavern-first-install-bootstrap.py', 'first-install-manifest.json']) {
+        'nora-tavern-first-install-bootstrap.py', 'first-install-manifest.json', 'tavern-updater-bootstrap.py']) {
         write(release, name, 'new-'+name);
         if (name.endsWith('.tar.gz')) current.archives[name] = { name, sha256: fileDigest(path.join(release, name)) };
     }

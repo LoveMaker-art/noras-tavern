@@ -10,7 +10,7 @@ import { assertNoraSystemArtifacts } from './release-source.mjs';
 export const PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const REPO = 'LoveMaker-art/noras-tavern';
 const CORE = ['nora-tavern-app.tar.gz', 'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz',
-    'nora-tavern-first-install-bootstrap.py', 'first-install-manifest.json'];
+    'nora-tavern-first-install-bootstrap.py', 'first-install-manifest.json', 'tavern-updater-bootstrap.py'];
 const IMMUTABLE_PREFIXES = ['launcher/', 'deployment/install/', 'deployment/shared/',
     'deployment/uninstall/', 'tooling/runtime/'];
 const IMMUTABLE_FILES = ['deployment/update/releases.js', 'deployment/update/system-update.js',

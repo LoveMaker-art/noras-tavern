@@ -206,6 +206,7 @@ try {
         'nora-tavern-ops.tar.gz',
         'nora-tavern-nora-mcp.tar.gz',
         'nora-tavern-first-install-bootstrap.py',
+        'tavern-updater-bootstrap.py',
         'first-install-manifest.json',
         ...runtimePayloadNames,
     ]) {
