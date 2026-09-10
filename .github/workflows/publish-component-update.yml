@@ -1,0 +1,67 @@
+name: Publish system update (reuse environments)
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline_tag:
+        description: Published stable tag with verified Hermes and dependencies to reuse
+        required: true
+        type: string
+
+# Both release paths share a lock; they must never upload to one tag concurrently.
+concurrency:
+  group: nora-release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BASELINE_TAG: ${{ inputs.baseline_tag }}
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Verify committed release identity
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies
+        run: |
+          python -m pip install PyYAML==6.0.2
+          npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Verify release contracts and update preservation
+        run: |
+          node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
+          node --test tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
+          node tooling/run.mjs node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
+          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_incremental_update tests.deployment.test_update_check
+      - name: Build only shared application and updater components
+        run: node tooling/release/package-release.mjs --components-only
+      - name: Reuse verified environments and seal three system manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$(find release -maxdepth 1 -type d -name 'stable-*' | sort | tail -n 1)"
+          node tooling/release/package-component-update.mjs "$release_dir" "$BASELINE_TAG" artifacts
+      - name: Publish verified update components
+        run: node tooling/release/publish-release.mjs artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" components

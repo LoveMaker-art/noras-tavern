@@ -1,4 +1,4 @@
-name: Build integrated Nora Tavern launchers
+name: Build full Nora Tavern installers
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ on:
       - 'v*-beta.*'
 
 concurrency:
-  group: launcher-${{ github.ref }}-${{ inputs.target || 'all' }}
+  group: nora-release-${{ github.ref }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
@@ -296,21 +296,5 @@ jobs:
           for platform in darwin-arm64 darwin-x64 win32-x64; do
             test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
           done
-          node tooling/run.mjs node tooling/release/verify-launcher-release.cjs artifacts "$TAG" "$GITHUB_SHA"
           node --test tests/launcher-release-notes.test.cjs
-          node tooling/release/launcher-release-notes.cjs artifacts "$TAG" "$GH_REPO" "docs/releases/$TAG.md" release-notes.generated.md
-          if [[ "$TAG" == *-beta.* ]]; then
-            gh release create "$TAG" --verify-tag --draft --prerelease --title "Nora Tavern $TAG 测试版" \
-              --notes-file release-notes.generated.md
-          else
-            gh release create "$TAG" --verify-tag --draft --title "诺拉·酒馆 $TAG" \
-              --notes-file release-notes.generated.md
-          fi
-          while IFS= read -r -d '' file; do
-            gh release upload "$TAG" "$file"
-          done < <(find artifacts -type f ! -name '*.blockmap' ! -name 'latest*.yml' -print0)
-          if [[ "$TAG" == *-beta.* ]]; then
-            gh release edit "$TAG" --draft=false --prerelease --latest=false
-          else
-            gh release edit "$TAG" --draft=false --prerelease=false --latest
-          fi
+          node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full

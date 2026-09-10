@@ -35,3 +35,11 @@ test('invalid destinations and ambiguous download sections fail closed', () => {
   assert.throws(() => renderReleaseNotes({ ...inputs, tag: 'latest' }));
   assert.throws(() => renderReleaseNotes({ ...inputs, notes: '## 下载\nFirst\n## 下载\nSecond' }), /Multiple/);
 });
+
+test('component updates link to actual baseline installers, never nonexistent new-tag installers', () => {
+  const result = renderReleaseNotes({ ...inputs, tag: 'v2.3.1', installerTag: 'v2.3.0' });
+  for (const name of inputs.assetNames) assert.ok(result.includes(`/releases/download/v2.3.0/${name}`));
+  assert.ok(!result.includes('/releases/download/v2.3.1/'));
+  assert.match(result, /v2.3.1 发布系统更新组件/);
+  assert.match(result, /完整安装包沿用 v2.3.0/);
+});

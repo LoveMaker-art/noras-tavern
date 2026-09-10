@@ -28,8 +28,9 @@ function downloadSection(repository, tag, assetNames) {
   ].join('\n');
 }
 
-function renderReleaseNotes({ repository, tag, assetNames, notes }) {
-  const section = downloadSection(repository, tag, assetNames);
+function renderReleaseNotes({ repository, tag, assetNames, notes, installerTag = tag }) {
+  const section = downloadSection(repository, installerTag, assetNames) + (installerTag === tag ? '' :
+    `\n\n本次 ${tag} 发布系统更新组件；完整安装包沿用 ${installerTag}。已有用户直接在启动器检查更新，无需重新下载安装包。`);
   const lines = notes.trim().split(/\r?\n/);
   const headings = lines.flatMap((line, index) => /^## 下载\s*$/.test(line) ? [index] : []);
   assert.ok(headings.length <= 1, 'Multiple download sections');
@@ -50,8 +51,11 @@ if (require.main === module) {
   const assetNames = fs.readdirSync(root, { recursive: true })
     .filter(name => fs.statSync(path.join(root, name)).isFile()).map(name => path.basename(name));
   const notes = fs.existsSync(notesFile) ? fs.readFileSync(notesFile, 'utf8') : null;
+  const updateFile = path.join(root, 'component-release.json');
+  const update = fs.existsSync(updateFile) ? JSON.parse(fs.readFileSync(updateFile)) : null;
   assert.ok(notes || tag.includes('-beta.'), 'Stable releases require authored release notes');
-  fs.writeFileSync(outputFile, renderReleaseNotes({ repository, tag, assetNames, notes: notes ||
+  fs.writeFileSync(outputFile, renderReleaseNotes({ repository, tag,
+    assetNames: update ? update.installers : assetNames, installerTag: update?.installerTag || tag, notes: notes ||
     `# 诺拉·酒馆 ${tag}\n\n## 测试说明\n\n三平台启动器测试版，包含完整 Nora 系统，不含个人密钥或用户数据。安装后仍需配置模型和连接 IM 平台。未签名或未公证的平台包可能出现系统安全提示。\n` }));
 }
 

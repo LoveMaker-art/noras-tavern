@@ -101,7 +101,7 @@ Nora Tavern 是一个以世界为核心、可以被 Agent 管理的开源 AI 角
 | **Mac · Apple 芯片** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.0/Nora-Tavern-Launcher-0.3.3-mac-arm64.dmg)** | 打开 DMG，拖入“应用程序” |
 | **Mac · Intel** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.0/Nora-Tavern-Launcher-0.3.3-mac-x64.dmg)** | 打开 DMG，拖入“应用程序” |
 
-以上安装包对应正式版 **v2.3.0**。**[查看完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
+以上完整安装包对应 **v2.3.0**；系统更新独立发布，已有用户可在启动器中检查更新，无需每次重新下载安装包。**[查看完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
 
 点击上方链接即可下载，无需翻找附件。Mac 可在“关于本机”中查看芯片类型；Windows ARM 暂不作为原生支持平台。
 

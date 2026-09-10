@@ -8,10 +8,12 @@ import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, di
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
+const componentsOnly = process.argv.includes('--components-only');
 const runtimeManifestIndex = process.argv.indexOf('--hermes-runtime-manifest');
 const runtimeManifestPath = runtimeManifestIndex >= 0
     ? path.resolve(process.argv[runtimeManifestIndex + 1] || '')
     : null;
+if (componentsOnly && runtimeManifestPath) throw new Error('Component builds reuse published environments; do not supply --hermes-runtime-manifest');
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -47,7 +49,7 @@ try {
     run('npm', ['run', 'build'], mcp);
     run('npm', ['run', 'build:nora']);
     const members = collectRuntimeFiles(stage, files);
-    if (runtimeManifestPath) assertNoraSystemArtifacts(members);
+    if (runtimeManifestPath || componentsOnly) assertNoraSystemArtifacts(members);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
     const checksums = [];
@@ -193,6 +195,7 @@ try {
     const payloadChecksums = [...checksums, `${digest(payloadManifest)}  release-manifest.json`];
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), payloadChecksums.join('\n') + '\n');
 
+    if (!componentsOnly) {
     const starterRoot = path.join(release, 'nora-tavern-launcher');
     const starterPayload = path.join(starterRoot, 'payload');
     fs.mkdirSync(starterPayload, { recursive: true });
@@ -252,6 +255,7 @@ try {
     fs.writeFileSync(path.join(release, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
     checksums.push(`${digest(fs.readFileSync(path.join(release, 'release-manifest.json')))}  release-manifest.json`);
     fs.writeFileSync(path.join(release, 'SHA256SUMS'), checksums.join('\n') + '\n');
+    }
     const classification = candidate ? 'candidate' : 'stable';
     console.log(`release=${release}\nclassification=${classification}`);
 } finally {
