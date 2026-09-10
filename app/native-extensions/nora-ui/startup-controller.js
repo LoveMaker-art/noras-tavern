@@ -27,6 +27,8 @@ export function createStartupController({
     async function consumeEarlyIntent() {
         const early = window.__NORA_EARLY__;
         if (!early) return;
+        // Mounting can finish before bootstrap. Consume only after resume selection settles.
+        await early.resumePromise;
         const pendingAction = early.pendingAction;
         early.pendingAction = null;
         selectAll('[aria-busy="true"]', select('#nora-layout')).forEach(node => node.removeAttribute('aria-busy'));

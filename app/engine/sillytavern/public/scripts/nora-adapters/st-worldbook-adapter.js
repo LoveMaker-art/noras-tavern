@@ -36,12 +36,12 @@ export function createStWorldbookAdapter(runtime) {
         readRevisions.set(book, await contentRevision(book));
     }
 
-    async function saveWorldbookEntry(name, book, entryId, patch, worldId) {
+    async function saveWorldbookEntry(name, book, entryId, patch, worldId, { operation = 'update' } = {}) {
         const current = runtime();
         if (!worldId || current.chatMetadata?.nora_world?.id !== worldId) throw new Error('World changed; reopen the editor.');
         const response = await fetch(`/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/worldbook-entry`, {
             method: 'POST', headers: current.getRequestHeaders(),
-            body: JSON.stringify({ name, entry_id: entryId, patch, expected_revision: readRevisions.get(book) || (!name ? await contentRevision(book) : undefined) }),
+            body: JSON.stringify({ name, entry_id: entryId, patch, operation, expected_revision: readRevisions.get(book) || (!name ? await contentRevision(book) : undefined) }),
         });
         const result = await response.json();
         if (!response.ok) throw new Error(result.detail || result.error?.message || `Worldbook save failed (${response.status}).`);

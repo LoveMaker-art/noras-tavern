@@ -8,11 +8,12 @@ const DOMAIN_METHODS = Object.freeze({
     state: ['snapshot', 'subscribe', 'whenReady'],
     messages: ['runSlash', 'prepareMutation', 'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage'],
     cards: ['isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'patchCharacter', 'deleteCharacterCards', 'savePersona'],
-    worldbook: ['loadWorldbook', 'saveWorldbook', 'saveWorldScenario', 'updateEmbeddedWorldbook'],
+    worldbook: ['loadWorldbook', 'saveWorldbook', 'saveWorldbookEntry', 'saveWorldScenario', 'updateEmbeddedWorldbook'],
     model: ['assertModelConfigured', 'configureModel', 'clearModelConfiguration', 'deleteModelSecret'],
     mvu: ['status', 'setEnabled', 'useStoryModel', 'useIndependentModel'],
     settings: ['uiSettings', 'saveUiSettings', 'setHostPersonality'],
     transport: ['requestHeaders'],
+    presets: ['listPresets', 'importPreset', 'applyPreset'],
 });
 
 function createDomain(runtime, name, methods) {

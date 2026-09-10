@@ -16,11 +16,15 @@ export async function prepareWorldbookEntryEdit({ world, input, directory, exclu
     const name = resource.binding.name;
     if (path.basename(name) !== name || name === '.' || name === '..') fail('NORA_WORLD_INVALID', 'Invalid Worldbook binding.');
     const patch = input?.patch;
-    if (!patch || Array.isArray(patch) || typeof patch !== 'object' || !Object.keys(patch).length
-        || Object.keys(patch).some(key => !['comment', 'content', 'key', 'constant'].includes(key))
+    const deleting = input?.operation === 'delete';
+    if (input?.operation !== undefined && !['update', 'delete'].includes(input.operation)) fail('NORA_WORLD_INVALID', 'Invalid Worldbook operation.');
+    if (deleting && patch != null) fail('NORA_WORLD_INVALID', 'Deletion cannot include entry changes.');
+    if (!deleting && (!patch || Array.isArray(patch) || typeof patch !== 'object' || !Object.keys(patch).length
+        || Object.keys(patch).some(key => !['comment', 'content', 'key', 'constant', 'disable'].includes(key))
         || ['comment', 'content'].some(key => key in patch && (typeof patch[key] !== 'string' || patch[key].length > 100000))
         || ('constant' in patch && typeof patch.constant !== 'boolean')
-        || ('key' in patch && (!Array.isArray(patch.key) || patch.key.length > 100 || patch.key.some(key => typeof key !== 'string' || key.length > 500)))) {
+        || ('disable' in patch && typeof patch.disable !== 'boolean')
+        || ('key' in patch && (!Array.isArray(patch.key) || patch.key.length > 100 || patch.key.some(key => typeof key !== 'string' || key.length > 500))))) {
         fail('NORA_WORLD_INVALID', 'Invalid Worldbook entry changes.');
     }
     return withWorldbookLock(path.join(directory, `${name || world.world_id}.json`), async () => {
@@ -38,7 +42,10 @@ export async function prepareWorldbookEntryEdit({ world, input, directory, exclu
             fail('NORA_WORLD_INVALID', 'Worldbook entry no longer exists.');
         }
         const book = structuredClone(source);
-        Object.assign(book.entries[id], patch);
+        if (deleting) {
+            // Keep sibling IDs stable even when an imported book used an array.
+            book.entries = Object.fromEntries(Object.entries(book.entries).filter(([key]) => key !== id));
+        } else Object.assign(book.entries[id], patch);
         const owned = resource.ownership === 'owned' && exclusive;
         const targetName = owned ? name : `nora-worldbook-${digest([world.world_id, resource.resource_id]).slice(0, 24)}-${crypto.randomUUID()}`;
         const targetPath = path.join(directory, `${targetName}.json`);

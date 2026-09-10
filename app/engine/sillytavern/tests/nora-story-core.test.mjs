@@ -4,11 +4,12 @@ import test from 'node:test';
 import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-story-core/index.js';
 
 const domainMethods = [
+    'listPresets', 'importPreset', 'applyPreset',
     'patchCharacter',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',
     'isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'deleteCharacterCards', 'savePersona',
-    'loadWorldbook', 'saveWorldbook', 'saveWorldScenario', 'updateEmbeddedWorldbook',
+    'loadWorldbook', 'saveWorldbook', 'saveWorldbookEntry', 'saveWorldScenario', 'updateEmbeddedWorldbook',
     'assertModelConfigured', 'configureModel', 'clearModelConfiguration', 'deleteModelSecret', 'uiSettings', 'saveUiSettings', 'setHostPersonality', 'requestHeaders',
     'status', 'setEnabled', 'useStoryModel', 'useIndependentModel',
 ];
@@ -27,6 +28,7 @@ test('story surface exposes only explicit headless domains', () => {
     assert.equal(story.cards.resolveCharacter(), 'resolveCharacter');
     assert.equal(story.cards.rerenderCharacterChat(), 'rerenderCharacterChat');
     assert.equal(story.worldbook.loadWorldbook(), 'loadWorldbook');
+    assert.equal(story.worldbook.saveWorldbookEntry, runtime.saveWorldbookEntry);
     assert.equal(story.model.assertModelConfigured(), 'assertModelConfigured');
     assert.equal(story.model.configureModel(), 'configureModel');
     assert.equal(story.mvu.setEnabled(), 'setEnabled');

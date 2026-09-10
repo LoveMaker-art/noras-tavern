@@ -149,6 +149,12 @@ test('projected characters use the actual ST scanner for match, non-match, secon
     assert.match(both.worldInfoBefore, /Carol repairs machines/);
     assert.equal((await scan(['enter shop'], 4)).allActivatedEntries.size, 0);
     assert.equal((await scan(['enter shop'])).allActivatedEntries.size, 1);
+    context = editStoryCharacter(context, { id: 'actor:b', patch: { activation: { ...context.characters[0].activation, enabled: false } } });
+    setWorldCharacterContext(context, 'world:scan');
+    assert.equal((await scan(['enter shop'])).allActivatedEntries.size, 0, 'disabled roles cannot activate even on matching keywords');
+    context = editStoryCharacter(context, { id: 'actor:b', patch: { activation: { ...context.characters[0].activation, enabled: true } } });
+    setWorldCharacterContext(context, 'world:scan');
+    assert.equal((await scan(['enter shop'])).allActivatedEntries.size, 1, 'reenabled roles retain their original rules');
     setWorldCharacterContext(null);
     assert.equal((await scan(['enter shop'])).allActivatedEntries.size, 0);
 });

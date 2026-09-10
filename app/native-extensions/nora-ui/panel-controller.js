@@ -21,8 +21,10 @@ export function createPanelController({
     worldbookSummary,
     worldbookController,
     openCharacterLibrary,
+    openPresetLibrary = () => {},
     openCharacterSheet,
     openCharacterEditor,
+    toggleCharacterInjection,
     openModelSheet,
     closeDrawers,
     runWorldOperation,
@@ -38,7 +40,8 @@ export function createPanelController({
     let worldSettingsWorldKey = '';
 
     function hasCharacterProfile(character) {
-        return ['description', 'personality', 'scenario'].some(key => String(characterField(character, key) || '').trim());
+        const removed = activeWorldModel()?.storyContext?.removed_card_fields || [];
+        return ['description', 'personality', 'scenario'].some(key => !removed.includes(key) && String(characterField(character, key) || '').trim());
     }
 
     function currentCast() {
@@ -46,11 +49,12 @@ export function createPanelController({
         const cast = (world?.storyContext?.characters || []).map(character => ({
             character: storyCharacterView(character), index: `world-character:${character.id}`,
             mode: character.activation?.mode || 'constant',
+            enabled: character.activation?.enabled !== false,
         }));
         const character = currentCharacter();
         const characterId = readState().activeCharacterId;
         if (world && hasCharacterProfile(character) && Number.isInteger(characterId) && characterId >= 0) {
-            cast.unshift({ character, index: characterId, mode: 'legacy' });
+            cast.unshift({ character, index: characterId, mode: 'legacy', enabled: world.storyContext?.card_profile_enabled !== false });
         }
         return cast;
     }
@@ -96,14 +100,14 @@ export function createPanelController({
         const castFoldClass = castFolded ? ' folded' : '';
         const settingsFoldClass = worldSettingsFolded ? ' folded' : '';
         const activeCharacterId = readState().activeCharacterId;
-        const emptyCastEdit = castEditing && character && Number.isInteger(activeCharacterId) && activeCharacterId >= 0
+        const emptyCastEdit = castEditing && character && !world?.storyContext?.removed_card_fields?.length && Number.isInteger(activeCharacterId) && activeCharacterId >= 0
             ? `<div class="emptyEditRow"><span>${tr("暂无角色设定")}</span><button class="itemEdit" data-cast-edit="${activeCharacterId}" type="button" aria-label="${tr("编辑基础角色资料")}" title="${tr("编辑基础角色资料")}">${icons.edit}</button></div>`
             : `<p class="pmuted">${tr("暂无角色设定")}</p>`;
-        const castHtml = cast.length ? cast.map(({ character: member, index, mode }) => {
-            const tags = Array.isArray(member?.tags) ? member.tags.filter(Boolean) : [];
+        const castHtml = cast.length ? cast.map(({ character: member, index, mode, enabled = true }) => {
             const reference = mode === 'legacy' ? '' : characterReference(index.slice('world-character:'.length));
-            const copy = reference ? `<button class="sectionEdit" data-copy-character="${escapeHtml(reference)}" type="button" title="${escapeHtml(reference)}">${tr('复制引用')}</button>` : '';
-            return `<div class="castCard castProfileCard" data-cast-character="${index}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(member.name || tr("未命名角色"))}资料`}"><p class="pmuted">${tr(mode === 'triggered' ? '触发角色' : mode === 'legacy' ? '原卡基础字段（保留原注入方式）' : '常驻角色')}</p><div class="castTop"><p class="cname">${escapeHtml(member.name || tr("未命名角色"))}</p>${copy}${castEditing ? `<span class="itemActions"><button class="itemEdit" data-cast-edit="${index}" type="button" aria-label="${tr("编辑角色设定")}" title="${tr("编辑角色设定")}">${icons.edit}</button></span>` : ''}</div><p class="cdesc">${escapeHtml(characterField(member, 'description') || tr("暂无角色资料"))}</p>${tags.length ? `<div class="ctags">${tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}</div>` : ''}</div>`;
+            const copy = reference ? `<button class="itemEdit" data-copy-character="${escapeHtml(reference)}" type="button" aria-label="${tr('复制引用')}" title="${tr('复制引用')}：${escapeHtml(reference)}"><i class="fa-regular fa-copy" aria-hidden="true"></i></button>` : '';
+            const toggle = castEditing ? `<button class="nora-lore-toggle" data-cast-toggle="${mode === 'legacy' ? 'card-profile' : index}" type="button" aria-pressed="${enabled}" aria-label="${tr(enabled ? '关闭角色注入' : '开启角色注入')}" title="${tr(enabled ? '关闭角色注入' : '开启角色注入')}"><span class="nora-lore-dot" aria-hidden="true"></span></button>` : '';
+            return `<div class="castCard castProfileCard loreItem loreSummaryItem${enabled ? '' : ' is-disabled'}" data-cast-character="${index}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(member.name || tr("未命名角色"))}资料`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(member.name || tr("未命名角色"))}</span>${enabled ? '' : `<small class="nora-lore-status">${tr('已关闭')}</small>`}${copy}${toggle}${castEditing ? `<span class="itemActions"><button class="itemEdit" data-cast-edit="${index}" type="button" aria-label="${tr("编辑角色设定")}" title="${tr("编辑角色设定")}">${icons.edit}</button></span>` : ''}</div></div>`;
         }).join('') : emptyCastEdit;
         const reviewHref = buildCuratorReviewLink({ agentUserId: agentUserId(), worldName: world?.name });
         const reviewLink = reviewHref
@@ -113,10 +117,10 @@ export function createPanelController({
         const actorSection = `<div class="pSection actorSec"><div class="pHead">${tr("故事主理人")}</div>${reviewLink}<a class="pLink" href="${escapeHtml(archiveHref)}"><i class="fa-solid fa-book-open" aria-hidden="true"></i>${tr("主理人的故事档案")}</a></div>`;
         const modelDisplay = projectTextModelDisplay({ nativeModel: readState().model, uiSettings: settings() });
         const modelSection = `<div class="pSection modelSection"><div class="pHead">${tr("模型")}</div><div class="modelGroup"><div class="modelUnit"><div class="modelUnitHead">${tr("文本模型")}</div><p class="mdlCur">${escapeHtml(modelDisplay.label)}</p><button class="actorMore" data-action="model" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr("切换 / 管理")}</button></div></div></div>`;
-        const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("世界卡库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("打开世界卡库")}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
+        const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("世界卡库")}</button><button class="actorMore" data-action="preset-library" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr('预设库')}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
         body.innerHTML = `
             <div class="pSection"><div class="pHead pHeadAction"><span>${tr("我的角色")}</span><button class="sectionEdit" data-action="profile" type="button" ${world ? '' : 'disabled'}>${tr("编辑")}</button></div>${world ? `<p class="pname">${escapeHtml(persona?.name || tr("我"))}</p><p class="pdesc">${escapeHtml(persona?.description || tr("补充你在这个世界中的身份与性格"))}</p>` : `<p class="pmuted">${tr("选择世界后设置我的角色。")}</p>`}</div>
-            ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${castFoldClass}" data-fold="cast"><span>${tr("角色设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="cast" type="button">${castEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${castFoldClass}" id="nora-cast-body">${castHtml}<button class="nora-add-setting" data-action="add-character" type="button">${icons.plus}${cast.length ? tr("添加设定") : tr("添加第一条设定")}</button></div></div>` : `<div class="pSection"><div class="pHead">${tr("角色设定")}</div><p class="pmuted">${tr("选择世界后显示角色设定。")}</p></div>`}
+            ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${castFoldClass}" data-fold="cast"><span>${tr("角色设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="cast" type="button">${castEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${castFoldClass}" id="nora-cast-body">${castHtml}${castEditing ? `<button class="nora-add-setting" data-action="add-character" type="button">${icons.plus}${cast.length ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}</div></div>` : `<div class="pSection"><div class="pHead">${tr("角色设定")}</div><p class="pmuted">${tr("选择世界后显示角色设定。")}</p></div>`}
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${settingsFoldClass}" data-fold="settings"><span>${tr("世界设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="worldbook" type="button">${worldbookEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${settingsFoldClass}" id="nora-settings-body">${worldbookSummary(character, worldbookEditing)}</div></div>` : `<div class="pSection"><div class="pHead">${tr("世界设定")}</div><p class="pmuted">${tr("选择世界后查看世界书。")}</p></div>`}
             ${world ? capabilitySection(world) : ''}
             ${librarySection}
@@ -129,6 +133,11 @@ export function createPanelController({
             event.stopPropagation();
             closeDrawers();
             openCharacterEditor(button.dataset.castEdit.startsWith('world-character:') ? button.dataset.castEdit : Number(button.dataset.castEdit));
+        }));
+        selectAll('[data-cast-toggle]', body).forEach(button => button.addEventListener('click', async (event) => {
+            event.stopPropagation();
+            try { await toggleCharacterInjection(button.dataset.castToggle, button); }
+            catch (error) { dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
         }));
         selectAll('[data-copy-character]', body).forEach(button => button.addEventListener('click', async (event) => {
             event.stopPropagation();
@@ -153,10 +162,10 @@ export function createPanelController({
         selectAll('[data-worldbook-kind]', body).forEach((item) => {
             const open = () => worldbookController.openEntryDetail(item.dataset.worldbookKind, item.dataset.entryId);
             item.addEventListener('click', (event) => {
-                if (!event.target.closest('[data-action]')) open();
+                if (!event.target.closest('[data-action], input, button')) open();
             });
             item.addEventListener('keydown', (event) => {
-                if (!['Enter', ' '].includes(event.key) || event.target.closest('[data-action]')) return;
+                if (!['Enter', ' '].includes(event.key) || event.target.closest('[data-action], input, button')) return;
                 event.preventDefault();
                 open();
             });
@@ -165,6 +174,10 @@ export function createPanelController({
             event.stopPropagation();
             closeDrawers();
             worldbookController.openEntryEditor(button.dataset.worldbookEditKind, button.dataset.entryId);
+        }));
+        selectAll('[data-worldbook-toggle]', body).forEach(control => control.addEventListener('click', (event) => {
+            event.stopPropagation();
+            void worldbookController.toggleEntry(control.dataset.worldbookToggle, control);
         }));
         selectAll('[data-add-world-setting]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
@@ -207,7 +220,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, model: openModelSheet };
+        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, model: openModelSheet };
         actions[action]?.();
     }
 

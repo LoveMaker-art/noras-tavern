@@ -1,6 +1,6 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { validateWorldCharacterReferences } from '../../engine/sillytavern/public/scripts/nora-worlds/character-activation.js';
-export function createWorldbookController({ worldbook, worldRuntime, operations, store, dialogs, readState, currentCharacter, characterField, select, selectAll, escapeHtml, icons, onChanged, reloadWorlds }) {
+export function createWorldbookController({ worldbook, worldRuntime, operations, store, dialogs, readState, currentCharacter, characterField, select, selectAll, escapeHtml, icons, onChanged, reloadWorlds, isGenerating = () => false, activeWorldModel = () => null }) {
     function entries(book) {
         const raw = book?.entries || book || {};
         return Array.isArray(raw) ? raw.map((entry, index) => [String(index), entry]) : Object.entries(raw);
@@ -55,6 +55,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
     }
 
     function scenario(character) {
+        if (activeWorldModel()?.storyContext?.removed_card_fields?.includes('scenario')) return '';
         return String(readState().world.metadata?.scenario || characterField(character, 'scenario') || '').trim();
     }
 
@@ -73,17 +74,24 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         return Boolean(entry?.constant) || entryKeys(entry).length === 0;
     }
 
+    function isDisabled(entry) {
+        return entry?.disable === true || entry?.enabled === false;
+    }
+
     function panelItems(items, type, editing = false) {
         return items.map(([id, entry]) => {
             const title = entryTitle(entry);
             const editAction = editing ? `<span class="itemActions"><button class="itemEdit" data-worldbook-edit-kind="embedded" data-entry-id="${escapeHtml(id)}" type="button" aria-label="${t`编辑${escapeHtml(title)}`}" title="${t`编辑${escapeHtml(title)}`}">${icons.edit}</button></span>` : '';
-            return `<div class="loreItem loreSummaryItem is-${type}" data-worldbook-kind="embedded" data-entry-id="${escapeHtml(id)}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(title)}详情`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(title)}</span>${editAction}</div></div>`;
+            const disabled = isDisabled(entry);
+            const action = disabled ? t`启用${title}` : t`关闭${title}`;
+            const toggle = editing ? `<button class="nora-lore-toggle" type="button" data-worldbook-toggle="${escapeHtml(id)}" aria-pressed="${!disabled}" aria-label="${escapeHtml(action)}" title="${escapeHtml(action)}"><span class="nora-lore-dot" aria-hidden="true"></span></button>` : '';
+            return `<div class="loreItem loreSummaryItem is-${type}${disabled ? ' is-disabled' : ''}" data-worldbook-kind="embedded" data-entry-id="${escapeHtml(id)}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(title)}详情`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(title)}</span>${disabled ? `<small class="nora-lore-status">${tr('已关闭')}</small>` : ''}${toggle}${editAction}</div></div>`;
         }).join('');
     }
 
     function summary(character, editing = false) {
         const visibleEntries = entries(displayed(character))
-            .filter(([, entry]) => entry && typeof entry === 'object' && !entry.disable);
+            .filter(([, entry]) => entry && typeof entry === 'object');
         const alwaysOn = visibleEntries.filter(([, entry]) => isAlwaysOn(entry));
         const triggered = visibleEntries.filter(([, entry]) => !isAlwaysOn(entry));
         const background = scenario(character);
@@ -93,7 +101,99 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         return `
             <div class="loreGroupTitle">${tr("常驻设定")}</div>${alwaysHtml || `<p class="pmuted">${tr("暂无常驻设定")}</p>`}
             <div class="loreGroupTitle is-triggered">${tr("触发设定")}</div>${panelItems(triggered, 'triggered', canEditEntries) || `<p class="pmuted">${tr("暂无触发设定")}</p>`}
-            <button class="nora-add-setting" data-add-world-setting type="button">${icons.plus}${visibleEntries.length || background ? tr("添加设定") : tr("添加第一条设定")}</button>`;
+            ${editing ? `<button class="nora-add-setting" data-add-world-setting type="button">${icons.plus}${visibleEntries.length || background ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}`;
+    }
+
+    function deleteButton() {
+        return `<button class="nora-setting-delete" data-delete-setting type="button">${tr('删除')}</button>`;
+    }
+
+    async function removeEntry(kind, entryId, control = {}, namedBook = null) {
+        const worldId = readState().world.metadata?.nora_world?.id;
+        const world = activeWorldModel();
+        if (!worldId || control.disabled) return;
+        if (isGenerating() || operations.isBusy('world')) {
+            dialogs.toast(tr('请等待当前生成或保存完成后再删除。'));
+            return;
+        }
+        control.disabled = true;
+        let persisted = false;
+        try {
+            const character = currentCharacter();
+            const name = namedBook ?? runtimeName(character);
+            if (namedBook && !activeBindings(character).some(item => item.name === namedBook)) throw new Error(tr('世界书绑定已改变，请重新打开编辑。'));
+            const book = kind === 'scenario' ? null : namedBook ? await worldbook.loadWorldbook(namedBook, { fresh: true }) : await load(character, { force: true });
+            const entry = kind === 'scenario' ? null : entries(book).find(([id]) => id === String(entryId))?.[1];
+            if (kind !== 'scenario' && !entry) throw new Error(tr('这条世界书内容已不存在。'));
+            const accepted = await dialogs.confirm({ title: kind === 'scenario' ? tr('删除世界背景？') : t`删除「${entryTitle(entry)}」？`,
+                body: tr('仅从当前世界移除这条设定，不删除其他设定、聊天记录或卡库原件。'), confirmLabel: tr('删除'), tone: 'danger', restoreSheet: true });
+            if (!accepted) return;
+            if (readState().world.metadata?.nora_world?.id !== worldId) throw new Error(tr('当前世界已改变，请重新操作。'));
+            if (isGenerating() || operations.isBusy('world')) throw new Error(tr('请等待当前生成或保存完成后再删除。'));
+            await operations.run('world', async () => {
+                if (readState().world.metadata?.nora_world?.id !== worldId || isGenerating()) throw new Error(tr('当前世界状态已改变，请重新操作。'));
+                if (kind === 'scenario') {
+                    if (world?.id !== worldId) throw new Error(tr('当前世界已改变，请重新操作。'));
+                    await worldRuntime.updateActive({ removeSetting: 'scenario' }, { expectedRevision: world.revision });
+                    persisted = true;
+                } else {
+                    const result = await worldbook.saveWorldbookEntry(name, book, entryId, null, worldId, { operation: 'delete' });
+                    persisted = true;
+                    store.cacheWorldbook(result.resource.binding.name, result.book);
+                }
+                await reloadWorlds();
+            });
+            dialogs.toast(tr('世界设定已删除。'));
+        } catch (error) {
+            persisted ||= Boolean(error.saved);
+            dialogs.toast(persisted ? tr('删除已保存，请重新打开世界以刷新显示。') : dialogs.normalizeError(error), { tone: 'error' });
+        } finally {
+            control.disabled = false;
+            if (readState().world.metadata?.nora_world?.id === worldId) onChanged();
+        }
+        return persisted;
+    }
+
+    async function toggleEntry(entryId, control) {
+        const enabled = control.getAttribute('aria-pressed') !== 'true';
+        const worldId = readState().world.metadata?.nora_world?.id;
+        if (isGenerating()) {
+            dialogs.toast(tr('正在生成或同步变量，请等本轮完成后再切换设定。'));
+            return;
+        }
+        if (!worldId || operations.isBusy('world')) {
+            dialogs.toast(tr('世界书正在保存，请稍候。'));
+            return;
+        }
+        control.disabled = true;
+        control.setAttribute('aria-busy', 'true');
+        let persisted = false;
+        try {
+            await operations.run('world', async () => {
+                const character = currentCharacter();
+                const name = runtimeName(character);
+                const book = await load(character, { force: true });
+                if (readState().world.metadata?.nora_world?.id !== worldId) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
+                if (isGenerating()) throw new Error(tr('正在生成或同步变量，请等本轮完成后再切换设定。'));
+                const entry = entries(book).find(([id]) => id === String(entryId))?.[1];
+                if (!entry) throw new Error(tr('这条世界书内容已不存在。'));
+                if (isDisabled(entry) !== !enabled) {
+                    const result = await worldbook.saveWorldbookEntry(name, book, entryId, { disable: !enabled }, worldId);
+                    persisted = true;
+                    control.setAttribute('aria-pressed', String(enabled));
+                    store.cacheWorldbook(result.resource.binding.name, result.book);
+                    await reloadWorlds();
+                }
+            });
+        } catch (error) {
+            persisted ||= Boolean(error.saved);
+            const prefix = persisted ? tr('世界书已保存，但页面刷新失败') : tr('世界书保存失败');
+            dialogs.toast(`${prefix}：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
+        } finally {
+            control.disabled = false;
+            control.removeAttribute('aria-busy');
+            if (readState().world.metadata?.nora_world?.id === worldId) onChanged();
+        }
     }
 
     async function openEntryDetail(kind, entryId = '') {
@@ -119,7 +219,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             }
             const keys = entryKeys(entry);
             title = entryTitle(entry);
-            mode = isAlwaysOn(entry) ? mode : t`触发词：${keys.join('、')}`;
+            mode = isDisabled(entry) ? tr('已关闭') : isAlwaysOn(entry) ? mode : t`触发词：${keys.join('、')}`;
             content = String(entry.content || '').trim();
         }
         dialogs.open(title, `<div class="nora-lore-detail">
@@ -231,18 +331,31 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
     }
 
     function editScenario(modal, character, returnToWorldbook = true) {
+        modal.classList?.add('nora-fixed-editor');
+        const worldId = readState().world.metadata?.nora_world?.id;
         const cardScenario = String(characterField(character, 'scenario') || '').trim();
         const hasOverride = Boolean(String(readState().world.metadata?.scenario || '').trim());
         const background = scenario(character);
         select('.nora-sheet-body', modal).innerHTML = `
-            <form id="nora-scenario-form" class="nora-form nora-scenario-form">
+            <form id="nora-scenario-form" class="nora-form nora-scenario-form nora-editor-form">
+                <div class="nora-editor-fields">
                 <div class="nora-editor-intro"><strong>${tr("世界背景")}</strong><span>${hasOverride ? tr("当前世界使用独立设定") : tr("当前使用角色卡原设定")}</span></div>
                 <label>${tr("故事舞台")}<textarea name="scenario" rows="14" placeholder="${tr("描述这个世界始终成立的背景、时间、地点和关系。")}">${escapeHtml(background)}</textarea></label>
-                <div class="nora-form-actions">
                     <button class="nora-secondary" data-reset-scenario type="button" ${cardScenario ? '' : 'disabled'}>${tr("恢复原始设定")}</button>
-                    <button class="nora-primary" type="submit">${tr("保存")}</button>
+                </div>
+                <div class="nora-form-actions nora-editor-toolbar">
+                    ${worldId ? deleteButton() : ''}<span class="nora-editor-toolbar-spacer"></span>
+                    <button class="nora-secondary" data-cancel-setting type="button">${tr('取消')}</button>
+                    <button class="nora-primary" type="submit">${tr('保存')}</button>
                 </div>
             </form>`;
+        select('[data-cancel-setting]', modal)?.addEventListener('click', () => {
+            if (!operations.isBusy('world')) dialogs.close();
+        });
+        select('[data-delete-setting]', modal)?.addEventListener('click', async event => {
+            if (readState().world.metadata?.nora_world?.id !== worldId) return;
+            if (await removeEntry('scenario', '', event.currentTarget)) dialogs.close();
+        });
         select('[data-reset-scenario]', modal).addEventListener('click', async (event) => {
             if (operations.isBusy('world')) {
                 dialogs.toast(tr("世界书正在保存，请稍候。"));
@@ -328,6 +441,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
     }
 
     function renderEntries(modal, book, name, readonly) {
+        modal.classList?.remove('nora-fixed-editor');
         const available = entries(book).filter(([, entry]) => entry && typeof entry === 'object');
         const groups = [
             [tr("常驻设定"), 'always', available.filter(([, entry]) => isAlwaysOn(entry))],
@@ -351,7 +465,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         const entry = Array.isArray(available) ? available[Number(id)] : available[id];
         if (!entry) return;
         const keys = entryKeys(entry);
-        const mode = isAlwaysOn(entry) ? tr("常驻：每轮进入上下文") : t`触发词：${keys.join('、')}`;
+        const mode = isDisabled(entry) ? tr('已关闭') : isAlwaysOn(entry) ? tr("常驻：每轮进入上下文") : t`触发词：${keys.join('、')}`;
         select('.nora-sheet-body', modal).innerHTML = `
             <button class="nora-sheet-back" data-back-entries type="button">${tr("‹ 返回条目列表")}</button>
             <div class="nora-lore-detail">
@@ -364,6 +478,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
     }
 
     function editEntry(modal, name, book, id, options = null) {
+        modal.classList?.add('nora-fixed-editor');
         options ||= {};
         const worldId = readState().world.metadata?.nora_world?.id;
         const available = book.entries || book;
@@ -372,14 +487,31 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         let mode = isAlwaysOn(entry) ? 'constant' : 'trigger';
         const keys = entryKeys(entry);
         select('.nora-sheet-body', modal).innerHTML = `
-            <button class="nora-sheet-back" data-back-entries type="button">${tr("‹ 返回设定条目")}</button>
-            <form id="nora-entry-form" class="nora-form nora-entry-form">
+            <form id="nora-entry-form" class="nora-form nora-entry-form nora-editor-form">
+                <div class="nora-editor-fields">
+                <button class="nora-sheet-back" data-back-entries type="button">${tr("‹ 返回设定条目")}</button>
                 <label>${tr("标题")}<input name="comment" value="${escapeHtml(entry.comment || entry.name || '')}"></label>
                 <div class="nora-field-label">${tr("设定类型")}<div class="nora-mode-switch" role="group"><button data-entry-mode="constant" type="button">${tr("常驻设定")}</button><button data-entry-mode="trigger" type="button">${tr("触发设定")}</button></div></div>
                 <label data-entry-keys>${tr("触发词")}<textarea name="keys" rows="3" placeholder="${tr("每行一个触发词")}">${escapeHtml(keys.join('\n'))}</textarea></label>
                 <label>${tr("设定内容")}<textarea name="content" rows="14">${escapeHtml(entry.content || '')}</textarea></label>
-                <button class="nora-primary" type="submit">${tr("保存设定")}</button>
+                </div>
+                <div class="nora-form-actions nora-editor-toolbar">
+                    ${worldId ? deleteButton() : ''}<span class="nora-editor-toolbar-spacer"></span>
+                    <button class="nora-secondary" data-cancel-setting type="button">${tr('取消')}</button>
+                    <button class="nora-primary" type="submit">${tr('保存')}</button>
+                </div>
             </form>`;
+        select('[data-cancel-setting]', modal)?.addEventListener('click', () => {
+            if (!operations.isBusy('world')) dialogs.close();
+        });
+        select('[data-delete-setting]', modal)?.addEventListener('click', async event => {
+            if (readState().world.metadata?.nora_world?.id !== worldId) return;
+            if (runtimeName() !== name && !activeBindings(currentCharacter()).some(item => item.name === name)) {
+                dialogs.toast(tr('世界书绑定已改变，请重新打开编辑。'));
+                return;
+            }
+            if (await removeEntry('embedded', id, event.currentTarget, name || null)) dialogs.close();
+        });
         const syncMode = () => {
             selectAll('[data-entry-mode]', modal).forEach((button) => button.classList.toggle('active', button.dataset.entryMode === mode));
             select('[data-entry-keys]', modal).classList.toggle('hidden', mode !== 'trigger');
@@ -392,7 +524,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         syncMode();
         select('#nora-entry-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
-            if (operations.isBusy('world')) {
+            if (operations.isBusy('world') || isGenerating()) {
                 dialogs.toast(tr("世界书正在保存，请稍候。"));
                 return;
             }
@@ -438,5 +570,5 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         });
     }
 
-    return Object.freeze({ entries, summary, scenario, prime, open, openAdd, openEntryDetail, openEntryEditor });
+    return Object.freeze({ entries, summary, scenario, prime, open, openAdd, openEntryDetail, openEntryEditor, toggleEntry, removeEntry });
 }

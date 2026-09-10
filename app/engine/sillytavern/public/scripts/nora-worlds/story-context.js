@@ -8,8 +8,9 @@ const invalid = () => { throw new TypeError('Invalid World story context or enti
 
 export function normalizeCharacterActivation(value = { mode: 'constant' }) {
     if (!object(value) || !['constant', 'triggered'].includes(value.mode)) invalid();
-    const allowed = ['mode', 'keys', 'secondaryKeys', 'selectiveLogic', 'scanDepth', 'sticky', 'cooldown', 'delay', 'caseSensitive', 'matchWholeWords'];
+    const allowed = ['enabled', 'mode', 'keys', 'secondaryKeys', 'selectiveLogic', 'scanDepth', 'sticky', 'cooldown', 'delay', 'caseSensitive', 'matchWholeWords'];
     if (Object.keys(value).some(key => !allowed.includes(key))) invalid();
+    if ('enabled' in value && typeof value.enabled !== 'boolean') invalid();
     const result = { ...value };
     for (const key of ['keys', 'secondaryKeys']) {
         const values = value[key] ?? [];
@@ -36,6 +37,9 @@ export function normalizeStoryContext(value) {
     if (!object(value) || value.schema_version !== 1 || !Array.isArray(value.characters)
         || !Array.isArray(value.relationships) || !object(value.player)) invalid();
     const result = clone(value);
+    if ('card_profile_enabled' in result && typeof result.card_profile_enabled !== 'boolean') invalid();
+    if ('removed_card_fields' in result && (!Array.isArray(result.removed_card_fields)
+        || result.removed_card_fields.some(field => !['description', 'personality', 'scenario'].includes(field)))) invalid();
     const ids = new Set(['__user__']);
     for (const character of result.characters) {
         if (!object(character) || !id(character.id) || ids.has(character.id) || !object(character.profile)
@@ -68,13 +72,15 @@ export function storyEntityBindings(context, playerName = '') {
 export function renderStoryContext(value, { characterIds = null, includePlayer = true } = {}) {
     if (!value) return '';
     const context = normalizeStoryContext(value);
-    const selected = context.characters.filter(character => characterIds
-        ? characterIds.includes(character.id) : character.activation?.mode !== 'triggered');
+    const disabledIds = new Set(context.characters.filter(character => character.activation?.enabled === false).map(character => character.id));
+    const selected = context.characters.filter(character => !disabledIds.has(character.id) && (characterIds
+        ? characterIds.includes(character.id) : character.activation?.mode !== 'triggered'));
     const ids = new Set(selected.map(character => character.id));
     if (includePlayer) ids.add('__user__');
     // Relationships are background of the selected entities, not an attendance list.
     // Carry direct relationships only; never expand the other participant's profile.
-    const relationships = context.relationships.filter(edge => edge.participants.some(id => ids.has(id)));
+    const relationships = context.relationships.filter(edge => !edge.participants.some(id => disabledIds.has(id))
+        && edge.participants.some(id => ids.has(id)));
     const referencedIds = new Set(relationships.flatMap(edge => edge.participants).filter(id => !ids.has(id)));
     const referencedCharacters = context.characters.filter(character => referencedIds.has(character.id))
         .map(character => ({ id: character.id, name: character.profile.identity.name }));

@@ -3,6 +3,35 @@ import test from 'node:test';
 
 import { createDialogController } from '../../../native-extensions/nora-ui/dialog-controller.js';
 
+test('editor confirmation restores the same draft nodes and handlers on accept, cancel and dismissal', async () => {
+    for (const action of ['accept', 'cancel', 'dismiss']) {
+        const draft = { value: 'unsaved edit', listener: () => {} };
+        const modal = { className: 'nora-modal open nora-test-editor', childNodes: [draft], attrs: {},
+            querySelector: () => draft, setAttribute(key, value) { this.attrs[key] = value; },
+            replaceChildren(...nodes) { this.childNodes = nodes; },
+            set innerHTML(value) { this.childNodes = []; this.markup = value; },
+        };
+        modal.classList = { contains: value => modal.className.split(' ').includes(value) };
+        const controls = new Map();
+        const select = selector => {
+            if (selector === '#nora-modal') return modal;
+            if (!controls.has(selector)) controls.set(selector, { addEventListener(_type, fn) { this.click = fn; }, focus() {} });
+            return controls.get(selector);
+        };
+        const dialogs = createDialogController({ select, selectAll: () => [], escapeHtml: String });
+        const result = dialogs.confirm({ title: 'Delete?', body: 'Confirm', restoreSheet: true });
+        assert.equal(modal.childNodes.length, 0);
+        if (action === 'dismiss') dialogs.close();
+        else select(action === 'accept' ? '.nora-confirm-submit' : '.nora-confirm-cancel').click();
+        assert.equal(await result, action === 'accept');
+        assert.equal(modal.childNodes[0], draft);
+        assert.equal(modal.childNodes[0].value, 'unsaved edit');
+        assert.equal(modal.childNodes[0].listener, draft.listener);
+        assert.equal(modal.className, 'nora-modal open nora-test-editor');
+        assert.equal(modal.attrs['aria-hidden'], 'false');
+    }
+});
+
 test('a persistent notice renders adaptive sections and exposes a working close action', () => {
     const element = { dataset: {}, hidden: true, innerHTML: '' };
     const close = {

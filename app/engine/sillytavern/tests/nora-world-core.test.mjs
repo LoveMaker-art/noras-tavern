@@ -125,7 +125,7 @@ test('presents one small World Core interface and hides persistence mechanics', 
         'settleCapabilityAttempt',
         'submitWorld',
         'updateWorld',
-    ]);
+    ].sort());
 
     const result = await core.createWorld(command(), { idempotencyKey: 'import:test:one' });
 
@@ -149,18 +149,39 @@ test('character array CRUD persists across reopen with revision protection and i
     const adapter = materializer();
     const core = createNoraWorldCore({ root, materializer: adapter });
     const { world: original } = await core.createWorld(command(), { idempotencyKey: 'characters:crud' });
+    const toggled = await core.updateWorld(original.world_id, { cardProfileEnabled: false }, { expectedRevision: original.revision });
+    assert.equal(toggled.story_context.card_profile_enabled, false);
+    assert.deepEqual(toggled.runtime_card, original.runtime_card);
+    const enabled = await core.updateWorld(original.world_id, { cardProfileEnabled: true }, { expectedRevision: toggled.revision });
+    await assert.rejects(() => core.updateWorld(original.world_id, { cardProfileEnabled: 'false' }, { expectedRevision: enabled.revision }), { code: 'NORA_WORLD_INVALID' });
     const actor = (id, mode) => ({ operation: 'create', id, patch: { name: id, description: 'profile', personality: 'calm',
         activation: { mode, keys: mode === 'triggered' ? ['shop'] : [] } } });
-    let world = await core.updateWorld(original.world_id, { character: actor('actor:a', 'constant') }, { expectedRevision: original.revision });
+    let world = await core.updateWorld(original.world_id, { character: actor('actor:a', 'constant') }, { expectedRevision: enabled.revision });
     world = await core.updateWorld(world.world_id, { character: actor('actor:b', 'triggered') }, { expectedRevision: world.revision });
     assert.equal(world.story_context.characters.length, 2);
     assert.deepEqual(world.runtime_card, original.runtime_card);
     assert.deepEqual(world.sessions, original.sessions);
+    const revisionBeforeRemoval = world.revision;
+    world = await core.updateWorld(world.world_id, { removeSetting: 'scenario' }, { expectedRevision: world.revision });
+    assert.deepEqual(world.story_context.removed_card_fields, ['scenario']);
+    world = await core.updateWorld(world.world_id, { removeSetting: 'card-profile' }, { expectedRevision: world.revision });
+    assert.deepEqual(new Set(world.story_context.removed_card_fields), new Set(['description', 'personality', 'scenario']));
+    assert.deepEqual((await createNoraWorldCore({ root, materializer: adapter }).getWorld(world.world_id)).story_context.removed_card_fields, world.story_context.removed_card_fields);
+    assert.deepEqual(world.runtime_card, original.runtime_card);
+    await assert.rejects(() => core.updateWorld(world.world_id, { removeSetting: 'card-profile' }, { expectedRevision: revisionBeforeRemoval }), { code: 'NORA_WORLD_REVISION_CONFLICT' });
+    await assert.rejects(() => core.updateWorld(world.world_id, { removeSetting: 'all' }, { expectedRevision: world.revision }), { code: 'NORA_WORLD_INVALID' });
     assert.deepEqual(world.knowledge, original.knowledge);
     assert.deepEqual(world.persona, original.persona);
     await assert.rejects(() => core.updateWorld(world.world_id, { character: actor('actor:c', 'constant') }, { expectedRevision: original.revision }), { code: 'NORA_WORLD_REVISION_CONFLICT' });
     const reopened = createNoraWorldCore({ root, materializer: adapter });
     assert.deepEqual((await reopened.getWorld(world.world_id)).story_context, world.story_context);
+    const other = await core.createWorld(command(), { idempotencyKey: 'characters:other-world' });
+    const activation = world.story_context.characters[1].activation;
+    world = await reopened.updateWorld(world.world_id, { character: { id: 'actor:b', patch: { activation: { ...activation, enabled: false } } } }, { expectedRevision: world.revision });
+    assert.equal((await createNoraWorldCore({ root, materializer: adapter }).getWorld(world.world_id)).story_context.characters[1].activation.enabled, false);
+    assert.deepEqual(await core.getWorld(other.world.world_id), other.world, 'toggling one World leaves the other manifest unchanged');
+    assert.deepEqual(world.runtime_card, original.runtime_card);
+    assert.deepEqual(world.knowledge, original.knowledge);
     world = await reopened.updateWorld(world.world_id, { character: { id: 'actor:b', patch: { activation: { mode: 'constant' } } } }, { expectedRevision: world.revision });
     assert.equal(world.story_context.characters[1].activation.mode, 'constant');
     world = await reopened.updateWorld(world.world_id, { character: { id: 'actor:a', operation: 'delete' } }, { expectedRevision: world.revision });
