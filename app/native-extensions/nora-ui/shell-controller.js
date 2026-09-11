@@ -5,6 +5,25 @@ import { createViewportController } from './viewport-controller.js';
 export function createShellController({ select, selectAll, icons, messageView, exposeMessageApi }) {
     const composerFormats = createComposerFormatController();
     const viewport = createViewportController();
+    const railMedia = window.matchMedia('(max-width: 760px)');
+    const railPreference = 'nora.ui.world-rail-collapsed';
+    let railCollapsed = false;
+    try { railCollapsed = window.localStorage.getItem(railPreference) === 'true'; } catch { /* Storage may be unavailable in embedded browsers. */ }
+
+    function renderRail() {
+        const expanded = railMedia.matches ? document.body.classList.contains('nora-rail-open') : !railCollapsed;
+        document.body.classList.toggle('nora-rail-collapsed', railCollapsed);
+        const button = select('#nora-rail-toggle');
+        const label = tr(expanded ? '收起世界栏' : '展开世界栏');
+        button.setAttribute('aria-controls', 'nora-rail');
+        button.setAttribute('aria-expanded', String(expanded));
+        button.setAttribute('aria-label', label);
+        button.setAttribute('title', label);
+        const rail = select('#nora-rail');
+        if (!expanded && rail.contains(document.activeElement)) button.focus({ preventScroll: true });
+        rail.setAttribute('aria-hidden', String(!expanded));
+        rail.inert = !expanded;
+    }
 
     function removeNestedLayoutCopies() {
         selectAll('#nora-layout').filter(layout => layout.parentElement !== document.body).forEach(layout => layout.remove());
@@ -66,10 +85,13 @@ export function createShellController({ select, selectAll, icons, messageView, e
         composerFormats.mount(layout);
         messageView.mountRuntime({ chatHost: select('#nora-chat'), runtimeHost: select('#nora-runtime') });
         document.body.classList.add('nora-product');
+        renderRail();
         exposeMessageApi();
     }
 
     function bindLayoutEvents(handlers) {
+        railCollapsed = document.body.classList.contains('nora-rail-collapsed');
+        renderRail();
         select('#nora-rail-toggle').addEventListener('click', () => openDrawer('rail'));
         select('#nora-panel-toggle').addEventListener('click', () => openDrawer('panel'));
         select('#nora-scrim').addEventListener('click', closeDrawers);
@@ -84,17 +106,29 @@ export function createShellController({ select, selectAll, icons, messageView, e
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape') { handlers.closeModal(); closeDrawers(); }
         });
+        railMedia.addEventListener('change', () => {
+            document.body.classList.remove('nora-rail-open');
+            renderRail();
+        });
         viewport.mount();
         document.body.classList.add('nora-ui-hydrated');
     }
 
     function openDrawer(which) {
+        if (which === 'rail' && !railMedia.matches) {
+            railCollapsed = !railCollapsed;
+            try { window.localStorage.setItem(railPreference, String(railCollapsed)); } catch { /* Keep the control usable without persistence. */ }
+            renderRail();
+            return;
+        }
         document.body.classList.toggle(`nora-${which}-open`);
         document.body.classList.remove(which === 'rail' ? 'nora-panel-open' : 'nora-rail-open');
+        renderRail();
     }
 
     function closeDrawers() {
         document.body.classList.remove('nora-rail-open', 'nora-panel-open');
+        renderRail();
     }
 
     function prepareShell() {

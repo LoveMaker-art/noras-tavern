@@ -192,7 +192,7 @@ body.nora-world-deleting .nora-world-list { pointer-events: none; opacity: .62; 
 .nora-primary { border: 1px solid var(--nora-brand); background: var(--nora-brand); color: #fff; font-size: 13px; font-weight: 650; }
 
 #nora-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; background: var(--nora-bg); }
-#nora-topbar { position: relative; display: none; min-height: 54px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
+#nora-topbar { position: relative; display: flex; min-height: 54px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
 .nora-title-wrap { position: absolute; top: 50%; left: 50%; max-width: calc(100% - 116px); transform: translate(-50%, -50%); text-align: center; }
 .nora-title { display: flex; align-items: center; justify-content: center; gap: 6px; font-size: 15px; font-weight: 600; line-height: 1.2; }
 .nora-title span:last-child, .nora-subtitle { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -679,11 +679,19 @@ body.nora-product .popup .popup-button-close { display: none; }
     body.nora-panel-open #nora-scrim { visibility: visible; opacity: 1; }
 }
 
-@media (min-width: 761px) { #nora-rail-toggle { display: none; } }
+#nora-rail-toggle { display: inline-flex; width: 40px; height: 40px; border-radius: 6px; }
+#nora-rail-toggle:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+@media (min-width: 1021px) { #nora-panel-toggle { display: none; } }
+@media (min-width: 761px) {
+    #nora-rail { overflow: hidden; transition: width .18s ease, padding .18s ease, opacity .18s ease; }
+    #nora-rail > * { width: 187px; }
+    body.nora-rail-collapsed #nora-rail { width: 0; padding-left: 0; padding-right: 0; border-right: 0; opacity: 0; visibility: hidden; pointer-events: none; }
+}
 
 @media (max-width: 760px) {
     #nora-rail { position: fixed; z-index: 1002; top: 0; bottom: auto; left: 0; width: 78%; max-width: 300px; height: var(--nora-vh); max-height: 100dvh; padding-top: max(0px, env(safe-area-inset-top, 0px)); transform: translateX(-110%); box-shadow: var(--nora-shadow); transition: transform .24s cubic-bezier(.2, .7, .3, 1); }
-    body.nora-rail-open #nora-rail { transform: none; }
+    #nora-rail { visibility: hidden; }
+    body.nora-rail-open #nora-rail { transform: none; visibility: visible; }
     body.nora-rail-open #nora-scrim { visibility: visible; opacity: 1; }
     #nora-chat { padding: 20px 14px 10px; }
     #nora-input, #nora-chat #curEditTextarea, #nora-chat .reasoning_edit_textarea { font-size: 16px !important; }
@@ -694,6 +702,8 @@ body.nora-product .popup .popup-button-close { display: none; }
     .nora-notice-actions { gap: 5px; }
     #nora-composer { padding: 10px 12px calc(10px + max(env(safe-area-inset-bottom, 0px), 8px)); }
 }
+
+@media (prefers-reduced-motion: reduce) { #nora-rail { transition: none; } }
 
 @media (max-width: 560px) {
     .nora-modal { padding: 10px; }

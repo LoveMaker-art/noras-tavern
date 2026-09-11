@@ -129,7 +129,7 @@
         .nora-rail-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--nora-line); }
         .nora-outline-button { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--nora-brand); border-radius: 8px; background: transparent; color: var(--nora-brand-ink); cursor: pointer; }
         #nora-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
-        #nora-topbar { position: relative; display: none; min-height: 54px; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
+        #nora-topbar { position: relative; display: flex; min-height: 54px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
         #nora-panel-toggle { margin-left: auto; }
         .nora-title-wrap { position: absolute; top: 50%; left: 50%; max-width: calc(100% - 116px); transform: translate(-50%, -50%); text-align: center; }
         .nora-title { display: flex; justify-content: center; gap: 6px; font-weight: 600; }
@@ -162,7 +162,10 @@
         #nora-scrim { position: fixed; inset: 0; z-index: 1001; visibility: hidden; border: 0; background: rgba(0, 0, 0, .55); opacity: 0; }
         #nora-runtime { position: fixed; left: -10000px; top: -10000px; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
         @media (max-width: 1020px) { #nora-topbar { display: flex; } #nora-panel { position: fixed; z-index: 1002; top: 0; right: 0; width: 80%; max-width: 320px; height: var(--nora-vh); visibility: hidden; opacity: 0; } body.nora-panel-open #nora-panel { visibility: visible; opacity: 1; } body.nora-panel-open #nora-scrim { visibility: visible; opacity: 1; } }
-        @media (min-width: 761px) { #nora-rail-toggle { display: none; } }
+        #nora-rail-toggle { display: inline-flex; width: 40px; height: 40px; border-radius: 6px; }
+        #nora-rail-toggle:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+        @media (min-width: 1021px) { #nora-panel-toggle { display: none; } }
+        @media (min-width: 761px) { body.nora-rail-collapsed #nora-rail { width: 0; padding-left: 0; padding-right: 0; border-right: 0; visibility: hidden; overflow: hidden; pointer-events: none; } }
         @media (max-width: 760px) { #nora-rail { position: fixed; z-index: 1002; top: 0; left: 0; width: 78%; max-width: 300px; height: var(--nora-vh); transform: translateX(-110%); } body.nora-rail-open #nora-rail { transform: none; } body.nora-rail-open #nora-scrim { visibility: visible; opacity: 1; } #nora-input { font-size: 16px; } }
     </style>
     <script>
@@ -785,6 +788,29 @@
             }
             retry.addEventListener('click', () => location.reload());
             const cachedWorlds = null;
+            function renderEarlyRail(toggle = false) {
+                const mobile = matchMedia('(max-width: 760px)').matches;
+                if (toggle && mobile) document.body.classList.toggle('nora-rail-open');
+                if (toggle && !mobile) {
+                    document.body.classList.toggle('nora-rail-collapsed');
+                    try { localStorage.setItem('nora.ui.world-rail-collapsed', String(document.body.classList.contains('nora-rail-collapsed'))); } catch {}
+                }
+                const expanded = mobile ? document.body.classList.contains('nora-rail-open') : !document.body.classList.contains('nora-rail-collapsed');
+                const button = document.getElementById('nora-rail-toggle');
+                button.setAttribute('aria-controls', 'nora-rail');
+                button.setAttribute('aria-expanded', String(expanded));
+                button.setAttribute('aria-label', tr(expanded ? '收起世界栏' : '展开世界栏'));
+                button.title = button.getAttribute('aria-label');
+                document.getElementById('nora-rail').inert = !expanded;
+                document.getElementById('nora-rail').setAttribute('aria-hidden', String(!expanded));
+            }
+            try { document.body.classList.toggle('nora-rail-collapsed', localStorage.getItem('nora.ui.world-rail-collapsed') === 'true'); } catch {}
+            renderEarlyRail();
+            matchMedia('(max-width: 760px)').addEventListener('change', () => {
+                if (document.body.classList.contains('nora-ui-hydrated')) return;
+                document.body.classList.remove('nora-rail-open');
+                renderEarlyRail();
+            });
             try {
                 localStorage.removeItem('nora-early-worlds');
                 localStorage.removeItem('nora-early-worlds:v2');
@@ -800,9 +826,9 @@
                     }
                     return;
                 }
-                if (target?.closest('#nora-rail-toggle')) document.body.classList.add('nora-rail-open');
-                if (target?.closest('#nora-panel-toggle')) document.body.classList.add('nora-panel-open');
-                if (target?.closest('#nora-scrim')) document.body.classList.remove('nora-rail-open', 'nora-panel-open');
+                if (target?.closest('#nora-rail-toggle')) { document.body.classList.remove('nora-panel-open'); renderEarlyRail(true); }
+                if (target?.closest('#nora-panel-toggle')) { document.body.classList.add('nora-panel-open'); document.body.classList.remove('nora-rail-open'); renderEarlyRail(); }
+                if (target?.closest('#nora-scrim')) { document.body.classList.remove('nora-rail-open', 'nora-panel-open'); renderEarlyRail(); }
                 if (target?.closest('#nora-new-world')) queueAction('new-world', target.closest('#nora-new-world'));
                 const earlyWorld = target?.closest('[data-early-world]');
                 if (earlyWorld) {
