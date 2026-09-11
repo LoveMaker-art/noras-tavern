@@ -183,6 +183,8 @@ jobs:
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks
+          export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_model_provider_skill
 
       - name: Build release payload
         shell: bash

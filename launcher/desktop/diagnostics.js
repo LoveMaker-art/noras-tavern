@@ -2,6 +2,57 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
+const MAX_LOG_BYTES = 10 * 1024 * 1024;
+
+function trimLegacyLog(file) {
+  const size = fs.statSync(file).size;
+  if (size <= MAX_LOG_BYTES) return;
+  const marker = Buffer.from(`${JSON.stringify({ event: 'log.history-trimmed', timestamp: new Date().toISOString(), originalBytes: size })}\n`);
+  const tail = Buffer.alloc(MAX_LOG_BYTES - marker.length);
+  const fd = fs.openSync(file, 'r');
+  let read;
+  try { read = fs.readSync(fd, tail, 0, tail.length, size - tail.length); }
+  finally { fs.closeSync(fd); }
+  // Drop the partial first record, retaining only complete recent JSONL lines.
+  const bytes = tail.subarray(0, read);
+  const newline = bytes.indexOf(10);
+  fs.writeFileSync(file, Buffer.concat([marker, newline < 0 ? Buffer.alloc(0) : bytes.subarray(newline + 1)]), { mode: 0o600 });
+}
+
+function appendLogLine(file, line) {
+  let size = 0;
+  try { size = fs.statSync(file).size; }
+  catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (size && size + Buffer.byteLength(line) > MAX_LOG_BYTES) {
+    for (const name of [file, `${file}.1`]) {
+      try { trimLegacyLog(name); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    fs.rmSync(`${file}.2`, { force: true });
+    try { fs.renameSync(`${file}.1`, `${file}.2`); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    fs.renameSync(file, `${file}.1`);
+  }
+  fs.appendFileSync(file, line, { mode: 0o600 });
+}
+
+function appendRecord(file, record) {
+  const json = JSON.stringify(record);
+  if (Buffer.byteLength(json) + 1 <= MAX_LOG_BYTES) {
+    appendLogLine(file, `${json}\n`);
+    return;
+  }
+  // Oversized records remain recoverable without splitting UTF-8 or JSON escapes.
+  const encoded = Buffer.from(json).toString('base64');
+  const chunkSize = MAX_LOG_BYTES - 1024;
+  const id = randomUUID();
+  const total = Math.ceil(encoded.length / chunkSize);
+  for (let index = 0; index < total; index++) {
+    appendLogLine(file, `${JSON.stringify({ event: 'log.fragment', id, index, total, encoding: 'base64-json',
+      data: encoded.slice(index * chunkSize, (index + 1) * chunkSize) })}\n`);
+  }
+}
+
 // Explicit fields avoid accidentally serializing request bodies or environments.
 function errorDetails(error, seen = new Set()) {
   if (!error || typeof error !== 'object') return { message: String(error) };
@@ -55,7 +106,7 @@ function createDiagnostics({ primary, fallback }) {
     const record = { ...fields, timestamp: new Date().toISOString(), runId, stage, elapsedMs: Date.now() - started, event };
     const append = file => {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.appendFileSync(file, `${JSON.stringify(clean(record))}\n`, { mode: 0o600 });
+      appendRecord(file, clean(record));
       lastFile = file;
     };
     try { append(primary()); }

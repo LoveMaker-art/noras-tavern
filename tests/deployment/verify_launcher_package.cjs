@@ -51,6 +51,8 @@ async function main() {
   const html = fs.readFileSync(path.join(resources, 'launcher-conversation-prototype.html'), 'utf8');
   assert.ok(html.includes('src="assets/nora-launcher-portrait.png"'), 'UI does not reference the packaged Nora portrait');
   const metadata = JSON.parse(asar.extractFile(path.join(resources, 'app.asar'), 'package.json'));
+  const sourceMetadata = JSON.parse(fs.readFileSync(path.join(source, 'desktop/package.json')));
+  assert.equal(metadata.version, sourceMetadata.version, 'Packaged launcher version differs from source');
   const diagnostics = {};
   for (const name of ['main.js', 'diagnostics.js', 'runtime.js', 'runtime-worker.js']) {
     const bytes = asar.extractFile(path.join(resources, 'app.asar'), name);
@@ -65,12 +67,18 @@ async function main() {
   if (system.candidate) await prepareTestPayload(payload, testBuild(metadata), metadata.version);
   const manifest = JSON.parse(fs.readFileSync(path.join(payload, 'release-manifest.json')));
   const instructions = {};
-  for (const relative of ['ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md']) {
+  for (const relative of ['ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
+    'ops/skills/system/model-provider-config/SKILL.md', 'ops/skills/system/model-provider-config/scripts/configure_provider.py']) {
     instructions[relative] = digest(fs.readFileSync(path.resolve(__dirname, '../..', relative)));
     assert.equal(manifest.artifacts[relative], instructions[relative], `Packaged instruction hash differs: ${relative}`);
   }
   if (!system.candidate && system.channel === 'stable') {
     assert.ok(!metadata.noraLocalTest, 'Stable launcher must not use an isolated candidate profile');
+    assert.ok(!metadata.noraTestInstallationId, 'Stable launcher must not contain a test installation identifier');
+    // Electron Builder strips its build configuration from app.asar.
+    const buildMetadata = JSON.parse(fs.readFileSync(path.join(dist, '../package.json')));
+    assert.equal(buildMetadata.build.appId, 'art.lovemaker.nora-tavern-launcher');
+    assert.equal(buildMetadata.build.productName, '诺拉·酒馆');
     assert.equal(metadata.noraReleaseChannel || 'stable', 'stable');
   }
   const report = { platform: process.platform, arch: process.arch, commit: system.commit, version: system.version,

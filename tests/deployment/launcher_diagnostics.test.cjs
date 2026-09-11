@@ -210,3 +210,83 @@ test('an inaccessible install directory still writes the failure to the fallback
     assert.doesNotThrow(() => JSON.stringify(errorDetails(cycle)));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+
+const maxLogBytes = 10 * 1024 * 1024;
+function retainedRecords(file) {
+  return [ `${file}.2`, `${file}.1`, file ].filter(name => fs.existsSync(name)).flatMap(name => {
+    assert.ok(fs.statSync(name).size <= maxLogBytes, name);
+    return fs.readFileSync(name, 'utf8').trim().split('\n').map(JSON.parse);
+  });
+}
+
+for (const useFallback of [false, true]) {
+  test(`logs retain three bounded files across restarts (${useFallback ? 'fallback' : 'primary'})`, () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-log-rotation-'));
+    try {
+      const file = path.join(root, 'install.log');
+      const options = { primary: () => {
+        if (useFallback) throw new Error('disk missing');
+        return file;
+      }, fallback: file };
+      const line = '诺'.repeat(1024 * 1024);
+      for (let sequence = 0; sequence < 11; sequence++) {
+        const diagnostics = createDiagnostics(options);
+        diagnostics.write('fixture', { sequence, line });
+        assert.equal(diagnostics.lastFile, file);
+      }
+      assert.deepEqual(fs.readdirSync(root).sort(), ['install.log', 'install.log.1', 'install.log.2']);
+      const records = retainedRecords(file);
+      assert.deepEqual(records.map(record => record.sequence), [3, 4, 5, 6, 7, 8, 9, 10]);
+      assert.ok(records.every(record => record.line === line));
+      if (useFallback) assert.ok(records.every(record => record.logWriteError.message === 'disk missing'));
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+test('oversized records are bounded, redacted, and reconstructable without losing unicode', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-log-fragments-'));
+  try {
+    const file = path.join(root, 'install.log');
+    const diagnostics = createDiagnostics({ primary: () => file, fallback: path.join(root, 'fallback.log') });
+    diagnostics.addSecret('fixture-private-value');
+    const line = '世界'.repeat(2 * 1024 * 1024) + 'fixture-private-value-tail';
+    diagnostics.write('fixture.large', { line });
+    const fragments = retainedRecords(file);
+    assert.ok(fragments.length > 1);
+    assert.ok(fragments.every((part, index) => part.event === 'log.fragment' && part.id === fragments[0].id
+      && part.total === fragments.length && part.index === index && part.encoding === 'base64-json'));
+    const record = JSON.parse(Buffer.from(fragments.map(part => part.data).join(''), 'base64').toString('utf8'));
+    assert.equal(record.event, 'fixture.large');
+    assert.equal(record.line, line.replace('fixture-private-value', '[REDACTED]'));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('legacy oversized logs keep bounded recent complete lines and mark history removal', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-log-legacy-'));
+  try {
+    const file = path.join(root, 'install.log');
+    const old = `${JSON.stringify({ event: 'old', line: 'x'.repeat(1024 * 1024) })}\n`;
+    fs.writeFileSync(file, old.repeat(11) + `${JSON.stringify({ event: 'recent' })}\n`);
+    createDiagnostics({ primary: () => file, fallback: path.join(root, 'fallback.log') }).write('new');
+    const records = retainedRecords(file);
+    assert.equal(records[0].event, 'log.history-trimmed');
+    assert.ok(records[0].originalBytes > maxLogBytes);
+    assert.deepEqual(records.slice(-2).map(record => record.event), ['recent', 'new']);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('rotation errors use the fallback and preserve the original operation error', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-log-rotate-error-'));
+  try {
+    const file = path.join(root, 'install.log');
+    const fallback = path.join(root, 'fallback', 'install.log');
+    fs.writeFileSync(file, 'x'.repeat(maxLogBytes));
+    fs.mkdirSync(`${file}.2`);
+    const diagnostics = createDiagnostics({ primary: () => file, fallback });
+    assert.doesNotThrow(() => diagnostics.error('install.failed', new Error('original operation failure')));
+    const [record] = retainedRecords(fallback);
+    assert.equal(record.error.message, 'original operation failure');
+    assert.ok(record.logWriteError.code);
+    assert.equal(diagnostics.lastFile, fallback);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
