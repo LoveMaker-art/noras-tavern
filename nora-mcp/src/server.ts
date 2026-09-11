@@ -227,6 +227,15 @@ server.tool("nora.mvu_model.configure", "Configure Nora's independent MVU parser
 }, async (request) => textResult(await nora.configureMvuModel(request)));
 
 const transport = new StdioServerTransport();
+server.tool("nora.library.list", "List independently reusable character profiles, player personas or worldbooks. Does not apply them to a World.", {
+  kind: z.enum(["character", "persona", "worldbook"]),
+}, async ({ kind }) => textResult(await nora.libraryList(kind)));
+server.tool("nora.library.read", "Read a listed profile by id, or a worldbook by source. Inspect before reusing. No model call.", {
+  id: z.string().regex(/^[a-f0-9]{64}$/).optional(), source: z.object({ kind: z.enum(["book", "card"]), name: z.string().min(1) }).optional(),
+}, async request => textResult(await nora.libraryRead(request)));
+server.tool("nora.library.save", "Save a reusable template ONLY to the library, never to the current World. Character data: name, description, personality, optional activation. Persona: name, description. Worldbook: full entries. Same name/content reuses; conflicting content requires another name. Does not extract people or run scripts/models.", {
+  kind: z.enum(["character", "persona", "worldbook"]), name: z.string().trim().min(1).max(200), data: z.record(z.unknown()), confirm: z.literal(true),
+}, async request => textResult(await nora.librarySave(request)));
 server.tool("nora.background.import", "Import a PNG/JPEG/WebP within the configured upload directory, at most 12 MiB. Returns a persistent content-addressed background URL; does NOT change any World. Applying it uses theme.apply.", {
   filePath: z.string().min(1), confirm: z.literal(true),
 }, async request => textResult(await nora.importBackground(request.filePath)));

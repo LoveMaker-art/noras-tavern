@@ -21,7 +21,7 @@ function cardFormat(fileName) {
     return format;
 }
 
-async function persistImmutable(filePath, buffer) {
+export async function persistImmutable(filePath, buffer) {
     try {
         const stat = await fs.lstat(filePath);
         if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -128,7 +128,7 @@ export async function stageStCardImport({
 }
 
 // Read only a regular card in the authenticated user's library. Preserve all card bytes.
-export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey, stagingRoot }) {
+export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey, stagingRoot, resolveSource }) {
     if (typeof avatar !== 'string' || !avatar || /[\\/\0]/.test(avatar)
         || path.basename(avatar) !== avatar || path.extname(avatar).toLowerCase() !== '.png'
         || !path.isAbsolute(String(charactersRoot || ''))) {
@@ -136,6 +136,11 @@ export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey,
     }
     let handle;
     try {
+        if (resolveSource) {
+            const source = await resolveSource(avatar);
+            return await stageCardBuffer({ buffer: source.buffer, originalName: `${path.parse(avatar).name}.${source.format}`,
+                sourceType: 'character-card', idempotencyKey, stagingRoot, payload: { library_avatar: avatar } });
+        }
         handle = await fs.open(path.join(charactersRoot, avatar), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         const stat = await handle.stat();
         if (!stat.isFile() || stat.size < 1 || stat.size > MAX_CARD_BYTES) throw new Error('Invalid library file');

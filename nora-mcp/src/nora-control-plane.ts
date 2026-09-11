@@ -131,6 +131,12 @@ export class NoraControlPlane {
       },
       noraDomains: [
         {
+          domain: "library",
+          storage: "World Core library-profiles; native worlds for worldbooks",
+          location: path.join(this.config.userDataRoot, "nora-world-core", "library-profiles"),
+          readTools: ["nora.library.list", "nora.library.read"], writeTools: ["nora.library.save"],
+        },
+        {
           domain: "world_core",
           storage: "default-user/nora-world-core",
           location: path.join(this.config.userDataRoot, "nora-world-core"),
@@ -334,6 +340,22 @@ export class NoraControlPlane {
 
   async importLibrary(avatar: string, idempotencyKey: string): Promise<unknown> {
     return this.worldMutation("POST", "/api/nora-worlds-v2/library-imports", { avatar }, idempotencyKey);
+  }
+
+  async libraryList(kind: "character" | "persona" | "worldbook"): Promise<unknown> {
+    return this.http.get(kind === "worldbook" ? "/api/nora-worlds-v2/library/worldbooks" : `/api/nora-worlds-v2/library/profiles?kind=${kind}`);
+  }
+
+  async libraryRead(request: { id?: string; source?: { kind: "book" | "card"; name: string } }): Promise<unknown> {
+    return request.source
+      ? this.http.post("/api/nora-worlds-v2/library/worldbooks/read", { source: request.source })
+      : this.http.post("/api/nora-worlds-v2/library/profiles/read", { id: request.id });
+  }
+
+  async librarySave(request: { kind: "character" | "persona" | "worldbook"; name: string; data: Record<string, unknown> }): Promise<unknown> {
+    return request.kind === "worldbook"
+      ? this.http.post("/api/nora-worlds-v2/library/worldbooks/import", { name: request.name, book: request.data })
+      : this.http.post("/api/nora-worlds-v2/library/profiles/save", request);
   }
 
   async importBackground(filePath: string): Promise<unknown> {

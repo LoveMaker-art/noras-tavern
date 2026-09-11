@@ -1,6 +1,6 @@
 ---
 name: tavern
-description: Manage worlds, chats, visuals, plugins and story profiles.
+description: Manage worlds, chats, visuals, plugins and story profiles; find and save reusable personas, character profiles and worldbooks.
 version: 1.25.1
 author: ClawChat Tavern
 license: AGPL-3.0-only
@@ -24,6 +24,10 @@ changes belong to `tavern-updater`. Product source development is separate work.
 Use for requested Tavern world/card, background/font/color, Persona/worldbook/model, conversation/ledger, plugin/MVU or archive
 operations. It is an operator guide for this product, not a general roleplay
 authoring or application-development skill.
+
+Also use for finding or saving reusable player personas, character profiles
+and worldbooks in the library. Library storage is separate from applying
+material to a World; read the library section of references/worlds.md.
 
 ## Prerequisites
 
@@ -49,6 +53,7 @@ substituting the relevant file. Load a second reference only for a real second t
 
 | Requested outcome | Reference |
 | --- | --- |
+| Find/read/save library personas, character profiles or worldbooks; check supported reuse paths | [worlds: library](references/worlds.md#reusable-library-material) |
 | Find/create/import/repair/delete a world; edit its Persona, background, runtime card or worldbook; switch/delete a saved text model | [worlds](references/worlds.md) |
 | Read/send/stop/regenerate/suggest replies; edit history; inspect or control story compression | [chat and ledger](references/chat-ledger.md) |
 | Inspect/control installed plugins, Helper scripts/buttons, Regex, MVU variables or MVU models; diagnose a card button | [plugins](references/plugins.md) |
@@ -57,9 +62,12 @@ substituting the relevant file. Load a second reference only for a real second t
 
 ## Procedure
 
-1. Resolve the intended World, Session and scope from current tool results.
-   Reuse explicit IDs when still valid; query names when necessary. Ask if
-   multiple candidates remain. A library avatar is not a worldId or sessionId.
+1. Resolve the intended object and scope from the user's request and current
+   tool results. Library-only actions resolve the source material or library
+   entry; they do not require an active World. World-bound actions still resolve
+   the intended World and, when needed, Session. Reuse explicit IDs when valid;
+   ask if multiple candidates remain. A library avatar or profile ID is not a
+   worldId or sessionId.
 2. Use the actual registered tool schema. References use logical names such as
    `nora.world.list`; this Hermes registers that as `mcp__nora__nora_world_list`.
    Use the current tool directory, or Tool Search/describe when tools are deferred.

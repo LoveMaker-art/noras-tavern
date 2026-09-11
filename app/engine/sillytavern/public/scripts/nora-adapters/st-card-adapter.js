@@ -397,7 +397,25 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         await current.getCharacters();
     }
 
+    async function importLibraryCard(file) {
+        const format = file?.name?.split('.').pop()?.toLowerCase();
+        if (!['png', 'json', 'charx', 'yaml', 'yml'].includes(format)) throw new Error('请选择 PNG、JSON、CHARX 或 YAML 角色卡。');
+        if (!file.size || file.size > 32 * 1024 * 1024) throw new Error('请选择不超过 32 MB 的角色卡。');
+        const headers = new Headers(runtime().getRequestHeaders());
+        headers.delete('Content-Type');
+        const body = new FormData();
+        body.append('avatar', file);
+        body.append('file_type', format);
+        const response = await fetch('/api/nora-worlds-v2/library/cards/import', { method: 'POST', headers, body });
+        if (!response.ok) throw new Error(`角色卡导入失败 (${response.status})。`);
+        const result = await response.json();
+        if (result.error || !result.file_name) throw new Error('角色卡内容无法识别。');
+        // Storing a card must not select it, create a World, or enable its scripts.
+        return result;
+    }
+
     return Object.freeze({
+        importLibraryCard,
         isSystemCharacter,
         resolveCharacter,
         characterCapabilities,

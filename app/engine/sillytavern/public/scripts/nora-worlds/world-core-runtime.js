@@ -79,6 +79,7 @@ export function createWorldCoreRuntime(runtime, {
             name: manifest.name,
             persona: { ...manifest.persona },
             storyContext: manifest.story_context,
+            libraryWorldbooks: (manifest.knowledge || []).map(item => ({ sourceKey: item.source_key, name: item.binding?.name })),
             ui: manifest.ui,
             persistent: true,
             available: lifecycleReady,
@@ -329,6 +330,22 @@ export function createWorldCoreRuntime(runtime, {
         return { world: model(world), saved: true, runtimeApplied };
     }
 
+    async function importLibraryItem(worldId, input) {
+        const current = manifestById(worldId);
+        if (runtime.read().metadata?.nora_world?.id !== worldId) throw new Error('当前世界已改变，请重新打开导入预览。');
+        const result = await client.importLibraryItem(worldId, { ...input, expected_revision: input.expected_revision ?? current.revision });
+        manifests = manifests.map(item => item.world_id === worldId ? result.world : item);
+        emit();
+        if (runtime.read().metadata?.nora_world?.id === worldId) {
+            try {
+                const snapshot = await client.prepareSnapshot(worldId);
+                if (runtime.read().metadata?.nora_world?.id === worldId) await executeSnapshot(snapshot, runtime, { measure });
+            }
+            catch (error) { throw Object.assign(new Error('已添加到世界，请重新打开该世界以载入。'), { saved: true, cause: error }); }
+        }
+        return { ...result, world: model(result.world), saved: true };
+    }
+
     async function addSetting(setting, { expectedRevision, idempotencyKey = null } = {}) {
         const worldId = String(runtime.read().metadata?.nora_world?.id || '').trim();
         const current = manifestById(worldId);
@@ -368,6 +385,15 @@ export function createWorldCoreRuntime(runtime, {
         repair,
         retryPendingCreation,
         usesRuntimeCard,
+        listLibraryWorldbooks: (...args) => client.listLibraryWorldbooks(...args),
+        listLibraryCards: (...args) => client.listLibraryCards(...args),
+        listLibraryProfiles: (...args) => client.listLibraryProfiles(...args),
+        readLibraryProfile: (...args) => client.readLibraryProfile(...args),
+        saveLibraryProfile: (...args) => client.saveLibraryProfile(...args),
+        deleteLibraryProfile: (...args) => client.deleteLibraryProfile(...args),
+        saveLibraryWorldbook: (...args) => client.saveLibraryWorldbook(...args),
+        readLibraryWorldbook: (...args) => client.readLibraryWorldbook(...args),
+        importLibraryItem,
         importCard,
         createBlank,
         createFromLibrary,

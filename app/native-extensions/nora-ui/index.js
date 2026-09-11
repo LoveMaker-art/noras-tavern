@@ -308,6 +308,8 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             updateComposer: messageController.updateComposer,
         });
         worldbookController = createWorldbookController({
+            openLibrary: async target => (await ensureLibraryController()).openWorldbooks(target),
+            saveLibraryBook: async (name, book) => (await ensureLibraryController()).openSaveBook(name, book),
             activeWorldModel,
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
             worldbook,
@@ -327,15 +329,16 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         });
         let libraryControllerPromise;
         const ensureLibraryController = () => libraryControllerPromise ??= import('./library-controller.js').then(({ createLibraryController }) => createLibraryController({
-            presets, dialogs, operations,
+            worlds, presets, dialogs, operations, activeWorldModel, characterField,
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
-            refresh, select: $, selectAll: $$, escapeHtml,
+            openCards: openCharacterLibrary, refresh, select: $, selectAll: $$, escapeHtml,
         }));
         let characterControllerPromise;
         ensureCharacterController = () => {
             if (characterController) return Promise.resolve(characterController);
             characterControllerPromise ??= import('./character-controller.js').then(({ createCharacterController }) => {
                 characterController = createCharacterController({
+                    listLibraryCards: () => worlds.listLibraryCards(),
                     cards,
                     operations,
                     dialogs,
@@ -354,6 +357,10 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     refresh,
                     isCharacterInWorld: character => worlds.usesRuntimeCard?.(character) || false,
                     createWorldFromCard: async (character, control) => (await ensureWorldCreationController()).createFromLibrary(character, control),
+                    openWorldbookLibrary: async () => (await ensureLibraryController()).openWorldbooks(),
+                    openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
+                    saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
+                    addRoleFromCard: async character => (await ensureLibraryController()).openRoleImport(character),
                     activeWorldModel,
                     updateWorld: (...args) => worlds.updateActive(...args),
                     isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
@@ -459,6 +466,8 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             worldbookController,
             openCharacterLibrary,
             openPresetLibrary: async () => (await ensureLibraryController()).openPresets(),
+            openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
+            saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
             openCharacterSheet,
             openCharacterEditor,
             toggleCharacterInjection: async (id, control) => (await ensureCharacterController()).toggleInjection(id, control),

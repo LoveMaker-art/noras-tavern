@@ -171,7 +171,9 @@ export async function readActivationSnapshot(plan, directories, {
         ...chat,
         header: { ...chat.header, chat_metadata: { ...metadata,
             ...(Object.hasOwn(overrides, previousChatBook) ? { world_info: overrides[previousChatBook] } : {}),
-            nora_world: { ...metadata.nora_world, id: plan.world_id, worldbook_overrides: overrides },
+            nora_world: { ...metadata.nora_world, id: plan.world_id, worldbook_overrides: overrides,
+                library_worldbooks: plan.knowledge.filter(resource => resource.source_key.startsWith('library:'))
+                    .map(resource => ({ name: resource.binding.name, title: resource.binding.display_name || resource.binding.name })) },
         } },
     };
     const resolvedRevision = revision || await measured(

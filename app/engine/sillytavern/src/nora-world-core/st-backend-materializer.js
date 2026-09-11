@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { createWorldbookLibrary } from './library-worldbooks.js';
+import { createCardLibrary } from './library-cards.js';
 import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 import { prepareWorldbookEntryEdit } from './worldbook-entry-edit.js';
 import { isExclusiveWorldbook } from './worldbook-references.js';
@@ -598,8 +600,21 @@ export function createStBackendMaterializer({
         throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST card staging root must be absolute.');
     }
     if (typeof cardCodec?.decode !== 'function') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'ST card codec is required.');
+    const library = createWorldbookLibrary({ roots, cardCodec, convertEmbeddedBook });
+    const cardLibrary = createCardLibrary({ roots, stagingRoot: staging, cardCodec, locks });
 
     return Object.freeze({
+        listLibraryCards: cardLibrary.list,
+        saveLibraryCard: cardLibrary.save,
+        readLibraryCardSource: cardLibrary.source,
+        listLibraryWorldbooks: library.list,
+        readLibraryWorldbook: library.read,
+        saveLibraryWorldbook: library.save,
+        async prepareLibraryWorldbook(world, input) {
+            const prepared = await library.prepare(world, input);
+            try { return { ...prepared, declared: prepared.book ? capabilityInspection({ data: {} }, [prepared.book]).declared : [] }; }
+            catch (error) { await prepared.abort().catch(() => {}); throw error; }
+        },
         async editWorldbookEntry(world, input, { worlds = [] } = {}) {
             let embedded = null;
             if (input?.name === '') {
@@ -767,6 +782,9 @@ export function createStBackendMaterializer({
             const rawStoryContext = cardData(prepared.card).extensions?.nora_world?.story_context;
             const storyContext = rawStoryContext === undefined ? undefined : normalizeStoryContext(rawStoryContext);
             const report = inspectPreparedStCard(prepared.card);
+            if (command?.payload?.runtime_card_kind !== 'nora-internal-blank') {
+                await cardLibrary.save({ buffer: sourceBuffer, format }, identities.worlds || []);
+            }
             const timestamp = isoDate(now());
             const created = [];
             try {

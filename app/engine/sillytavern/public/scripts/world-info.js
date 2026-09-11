@@ -4354,6 +4354,11 @@ async function getCharacterLore() {
     if (baseWorldName) {
         worldsToSearch.add(baseWorldName);
     }
+    if (chat_metadata.nora_world?.id) {
+        for (const book of chat_metadata.nora_world.library_worldbooks || []) {
+            if (typeof book?.name === 'string' && book.name) worldsToSearch.add(resolveWorldbookName(book.name));
+        }
+    }
 
     // TODO: Maybe make the utility function not use the window context?
     const fileName = getCharaFilename(this_chid);

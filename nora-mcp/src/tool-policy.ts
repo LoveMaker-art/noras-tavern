@@ -7,6 +7,7 @@ import { NoraRequestError } from "./errors.js";
 import type { NoraHttpClient } from "./http.js";
 
 export const READ_TOOLS = new Set([
+  "nora.library.list", "nora.library.read",
   "nora.control.catalog", "nora.control.clients", "nora.control.read", "nora.control.operation",
   "nora.status", "nora.control_map", "nora.config_locations", "nora.local_index",
   "nora.world.list", "nora.world.inspect", "nora.world.open_plan", "nora.world.snapshot", "nora.operation.get",
@@ -15,6 +16,7 @@ export const READ_TOOLS = new Set([
   "st.mvu.settings.get", "st.mvu.entries", "st.extension.registry", "st.plugin.registry", "st.regex.registry", "st.quick_reply.registry",
 ]);
 export const WRITE_TOOLS = new Set([
+  "nora.library.save",
   "nora.background.import",
   "nora.control.execute",
   "nora.world.create", "nora.world.import", "nora.world.import_library", "nora.world.repair", "nora.world.delete", "nora.operation.retry",

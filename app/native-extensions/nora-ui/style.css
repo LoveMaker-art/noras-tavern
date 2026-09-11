@@ -436,7 +436,9 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-scrim { position: fixed; top: 0; left: 0; z-index: 1001; width: 100vw; height: var(--nora-vh); max-height: 100dvh; visibility: hidden; border: 0; background: var(--nora-scrim); opacity: 0; transition: opacity .22s, visibility .22s; }
 .nora-modal { position: fixed; top: 0; left: 0; z-index: 1100; display: none; width: 100vw; height: var(--nora-vh); max-height: 100dvh; align-items: center; justify-content: center; padding: 24px; background: var(--nora-scrim); }
 .nora-modal.open { display: flex; }
-.nora-dialog { border: 1px solid var(--nora-line); border-radius: 8px; background: var(--nora-surface); box-shadow: var(--nora-shadow); color: var(--nora-ink); animation: nora-modal-in .18s cubic-bezier(.2, .7, .3, 1); }
+.nora-dialog { border: 1px solid var(--nora-line); border-radius: 8px; background: var(--nora-surface); box-shadow: var(--nora-shadow); color: var(--nora-ink); }
+.nora-dialog--entering { animation: nora-modal-in .18s cubic-bezier(.2, .7, .3, 1); }
+@media (prefers-reduced-motion: reduce) { .nora-dialog--entering { animation: none; } }
 .nora-dialog--confirm { width: min(408px, 100%); padding: 23px 23px 19px; }
 .nora-dialog-kicker { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; color: var(--nora-muted); font-size: 11px; font-weight: 650; line-height: 1; }
 .nora-dialog-kicker b { color: var(--nora-brand); font-size: 12px; }
@@ -737,6 +739,35 @@ body.nora-product .popup .popup-button-close { display: none; }
 #nora-chat .mes_reasoning_details:is([data-state="pending"], [data-state="thinking"]) .mes_reasoning_header_title::before { content:''; display:inline-block; width:10px; height:10px; margin-right:8px; border:1.5px solid var(--nora-line); border-top-color:var(--nora-brand); border-radius:50%; animation:nora-reasoning-spin 1s linear infinite; vertical-align:middle; }
 @keyframes nora-reasoning-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { #nora-chat .mes_reasoning_header_title::before { animation:none !important; } }
+.nora-library-tabs { display:flex; gap:20px; border-bottom:1px solid var(--nora-line); margin-bottom:16px; overflow-x:auto; min-width:0; }
+.nora-library-tabs button { flex:0 0 auto; white-space:nowrap; border:0; border-radius:0; background:none; padding:10px 2px; color:var(--nora-muted); }
+.nora-library-editor-actions { display:flex; flex:0 0 auto; flex-wrap:wrap; justify-content:flex-end; align-items:center; gap:4px; width:100%; min-width:0; margin:0 0 8px; padding:2px 0; }
+.nora-library-editor-actions button { display:inline-flex; align-items:center; justify-content:center; gap:6px; flex:0 1 auto; width:auto; max-width:100%; min-width:0; min-height:34px; margin:0; padding:6px 9px; border:0; border-radius:4px; box-shadow:none; background:transparent; color:var(--nora-muted); font:12px/20px var(--nora-sans); letter-spacing:0; text-align:center; cursor:pointer; }
+.nora-library-editor-actions button > i { flex:0 0 14px; width:14px; font-size:12px; text-align:center; }
+.nora-library-editor-actions button > span { min-width:0; overflow-wrap:anywhere; }
+.nora-library-editor-actions button:not(:disabled):hover { background:var(--nora-brand-tint); color:var(--nora-ink); }
+.nora-library-editor-actions button:focus-visible { background:var(--nora-brand-tint); color:var(--nora-ink); outline:2px solid var(--nora-brand); outline-offset:1px; }
+.nora-library-editor-actions button:disabled { opacity:.45; cursor:default; }
+.nora-library-field { display:grid; gap:6px; min-width:0; }
+.nora-library-heading { display:flex; flex:0 0 auto; align-items:center; justify-content:space-between; gap:8px; min-width:0; }
+.nora-library-heading > label { flex:0 0 auto; margin:0; }
+.nora-library-heading > .nora-sheet-back { flex:0 1 auto; min-width:0; margin:0; text-align:left; overflow-wrap:anywhere; }
+.nora-library-heading > .nora-library-editor-actions { flex:0 1 auto; flex-wrap:nowrap; width:auto; margin:0 0 0 auto; padding:0; }
+@media (pointer:coarse) { .nora-library-editor-actions button { min-height:40px; } }
+.nora-profile-text { white-space:pre-wrap; overflow-wrap:anywhere; }
+.nora-library-tabs button[aria-current="page"] { color:var(--nora-ink); border-bottom:2px solid currentColor; }
+.nora-library-subtabs { display:flex; flex:0 0 auto; align-self:flex-start; max-width:100%; gap:4px; padding:3px; border:1px solid var(--nora-line); border-radius:6px; }
+.nora-library-subtabs button { flex:1 1 0; min-width:0; min-height:32px; padding:5px 12px; border:0; border-radius:4px; background:transparent; color:var(--nora-muted); font-size:13px; line-height:20px; white-space:normal; overflow-wrap:anywhere; }
+.nora-library-subtabs button[aria-current="page"] { background:var(--nora-brand-tint); color:var(--nora-ink); }
+.nora-library-subtabs button:focus-visible { outline:2px solid var(--nora-brand); outline-offset:1px; }
+.nora-library-toolbar { display:flex; justify-content:flex-end; margin-bottom:12px; }
+.nora-library-list { display:flex; flex-direction:column; }
+.nora-library-list > .nora-library-row { display:flex; flex-direction:column; gap:5px; text-align:left; padding:12px 0; border:0; border-bottom:1px solid var(--nora-line); border-radius:0; background:none; color:inherit; overflow-wrap:anywhere; }
+.nora-library-row small { opacity:.65; }
+.nora-library-book-entry { padding:12px 0; border-bottom:1px solid var(--nora-line); overflow-wrap:anywhere; }
+.nora-library-book-entry summary { cursor:pointer; }
+.nora-library-book-entry summary small { margin-left:12px; opacity:.6; }
+.nora-library-book-entry p { white-space:pre-wrap; }
 .nora-library-check { display:flex; align-items:center; gap:8px; margin-top:16px; }
 .nora-library-check input[type="checkbox"] { width:16px; height:16px; flex:none; margin:0; }
 .nora-preset-modal .nora-sheet { width:min(520px, 100%); height:min(620px, 84vh); max-height:calc(var(--nora-vh, 100dvh) - 20px); }
@@ -768,3 +799,44 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-preset-footer { flex-wrap:wrap; justify-content:flex-end; }
 .nora-preset-footer .nora-library-check { flex:1 1 180px; margin:0; min-width:0; font-size:12px; }
 .nora-preset-footer > button { min-width:112px; margin-left:auto; }
+
+.nora-world-library-modal .nora-sheet { width:min(620px, 100%); height:min(680px, 84vh); max-height:calc(var(--nora-vh, 100dvh) - 20px); }
+.nora-world-library-modal .nora-sheet-body { display:flex; flex-direction:column; gap:12px; min-height:0; overflow:hidden; }
+.nora-world-library-modal .nora-sheet > header h2 { min-width:0; overflow-wrap:anywhere; }
+.nora-world-library-modal .nora-library-tabs { flex:0 0 auto; margin:0; }
+.nora-library-search { display:flex; align-items:center; gap:6px; flex:0 0 auto; margin:0; }
+.nora-library-search input { flex:1; min-width:0; width:0; height:40px; padding:8px 10px; border:1px solid var(--nora-line); border-radius:6px; background:var(--nora-surface); color:var(--nora-ink); font-size:13px; }
+.nora-library-search .nora-icon-button { flex:0 0 40px; width:40px; height:40px; }
+.nora-library-results { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; }
+.nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(4, minmax(0, 1fr)); gap:12px; justify-content:start; padding:2px 2px 8px; }
+.nora-world-library-modal .nora-card-library-item { width:100%; height:218px; box-shadow:none; }
+.nora-world-library-modal .nora-card-library-open { grid-template-rows:140px minmax(0, 1fr); }
+.nora-world-library-modal .nora-card-library-open img { height:140px; }
+.nora-world-library-modal .nora-card-library-open > span { padding:8px; }
+.nora-world-library-modal .nora-card-library-open > span::before { display:none; }
+.nora-world-library-modal .nora-card-library-open strong { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; white-space:normal; overflow-wrap:anywhere; line-height:17px; height:34px; }
+.nora-world-library-modal .nora-card-library-open small { margin-top:4px; font-size:11px; }
+.nora-world-library-modal .nora-library-list { gap:0; }
+.nora-world-library-modal .nora-library-row { border:0; border-bottom:1px solid var(--nora-line); border-radius:0; padding:14px 4px; gap:6px; }
+.nora-world-library-modal .nora-library-row strong { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; line-height:1.5; }
+.nora-world-library-modal .nora-library-row small { color:var(--nora-muted); overflow-wrap:anywhere; font-size:11px; line-height:1.6; }
+.nora-library-detail-modal .nora-sheet-body { padding:0; gap:0; }
+.nora-library-detail-scroll { flex:1; min-height:0; overflow-y:auto; padding:15px 18px 20px; overscroll-behavior:contain; }
+.nora-library-detail-scroll .nora-library-book-entry { border-bottom:1px solid var(--nora-line); padding:12px 0; }
+.nora-library-detail-scroll .nora-library-book-entry summary { font-size:13px; cursor:pointer; overflow-wrap:anywhere; }
+.nora-library-detail-scroll .nora-library-book-entry summary small { margin-left:8px; color:var(--nora-muted); font-size:11px; }
+.nora-library-detail-scroll p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.7; }
+.nora-library-management { margin-top:18px; color:var(--nora-muted); font-size:12px; overflow-wrap:anywhere; }
+.nora-library-management > summary { cursor:pointer; padding:8px 0; }
+.nora-library-management > .nora-delete-button { width:auto; min-height:40px; padding:8px; gap:6px; }
+.nora-library-target { display:block; color:var(--nora-muted); font-size:12px; line-height:1.5; overflow-wrap:anywhere; }
+.nora-library-footer { flex:0 0 auto; display:flex; flex-direction:column; gap:10px; padding:12px 18px max(12px, env(safe-area-inset-bottom)); border-top:1px solid var(--nora-line); background:var(--nora-surface); }
+.nora-library-footer .nora-sheet-actions { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+.nora-library-footer button { min-width:0; min-height:40px; white-space:normal; overflow-wrap:anywhere; }
+.nora-library-footer > button { align-self:flex-end; }
+@media (max-width:560px) {
+    .nora-world-library-modal .nora-card-waterfall { grid-template-columns:repeat(2, minmax(0, 1fr)); }
+    .nora-world-library-modal .nora-card-library-item { height:212px; }
+    .nora-world-library-modal .nora-card-library-open { grid-template-rows:134px minmax(0, 1fr); }
+    .nora-world-library-modal .nora-card-library-open img { height:134px; }
+}

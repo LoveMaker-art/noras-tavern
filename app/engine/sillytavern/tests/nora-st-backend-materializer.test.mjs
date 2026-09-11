@@ -356,7 +356,9 @@ test('materializes one Runtime Card, collision-safe Worldbook and canonical init
 
     const repeated = await current.materializer.materialize(current.command, identities());
     assert.deepEqual(repeated, result);
-    assert.equal((await fs.readdir(current.directories.characters)).length, 1);
+    const cardFiles = await fs.readdir(current.directories.characters);
+    assert.equal(cardFiles.length, 2);
+    assert.equal(cardFiles.filter(file => file.startsWith('nora-card-')).length, 1, 'Retain one library original beside the runtime copy');
     assert.equal((await fs.readdir(current.directories.worlds)).length, 1);
 });
 
@@ -610,7 +612,9 @@ test('treats an unmarked matching Worldbook as external and never compensates it
     );
 
     assert.ok((await fs.stat(path.join(current.directories.worlds, 'External Lore.json'))).isFile());
-    assert.deepEqual(await fs.readdir(current.directories.characters), []);
+    const remaining = await fs.readdir(current.directories.characters);
+    assert.equal(remaining.length, 1);
+    assert.match(remaining[0], /^nora-card-[a-f0-9]{64}\.png$/, 'Compensate runtime resources, not the successfully imported library original');
     assert.deepEqual(await fs.readdir(current.directories.chats), []);
 });
 
@@ -627,7 +631,9 @@ test('never removes a shared Worldbook during compensation', async (t) => {
     );
 
     assert.equal((await fs.readdir(current.directories.worlds)).length, 1);
-    assert.deepEqual(await fs.readdir(current.directories.characters), []);
+    const remaining = await fs.readdir(current.directories.characters);
+    assert.equal(remaining.length, 1);
+    assert.match(remaining[0], /^nora-card-[a-f0-9]{64}\.png$/, 'Compensate runtime resources, not the successfully imported library original');
     assert.deepEqual(await fs.readdir(current.directories.chats), []);
 });
 

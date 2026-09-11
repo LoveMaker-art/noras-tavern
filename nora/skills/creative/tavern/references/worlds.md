@@ -1,11 +1,75 @@
 # Worlds and character cards
 
+## Reusable library material
+
+Separate library storage from applying material to a World. For library reads
+and saves, discover the installed `nora.library.list/read/save` schemas. If an
+operation is absent, report the missing capability without changing files,
+creating a substitute World or restarting services.
+
+| UI category | Meaning and tool kind |
+| --- | --- |
+| 世界卡 | Complete card; not a kind accepted by `nora.library.save` |
+| 角色 / 我的角色 | Player identity: `persona` |
+| 角色 / 其他角色 | Reusable character profile: `character` |
+| 世界书 | Lore entries: `worldbook` |
+
+### Find and save
+
+1. Resolve whether the user wants a read, a library save, or a World change.
+   An explicit save request authorizes that save; ask about ambiguous targets
+   or changed scope, not for redundant approval. A read request stays read-only.
+2. Read the selected source through the supported tools, or use the material
+   explicitly supplied by the user. Identify the exact persona, character or
+   book. Keep a World runtime narrator card separate from an independent cast
+   member. Do not infer multiple people from prose or rewrite source content
+   merely to store it. Substantial card authoring remains with `nora-cardforge`.
+3. Preserve supported data. Persona uses name and description. Character uses
+   name, description, personality, activation and, when present and supported,
+   its structured profile. Preserve enabled state and trigger parameters.
+   Worldbook data preserves complete entries, including disabled entries and
+   supported metadata. Profiles are not complete cards: they do not carry
+   openings, avatars, executable scripts, Regex or MVU state. Unresolved
+   cross-character references and external dependencies must be disclosed.
+4. List the relevant kind and inspect same-name candidates before saving.
+   Distinguish the library label from the character's own name. Same-kind,
+   same-name, equivalent content reuses the existing item; conflicting content
+   requires a user-approved distinct library name. Different labels do not
+   imply backend content-wide deduplication for profiles or standalone books.
+   Let the backend perform its final checks; never overwrite, merge, delete
+   duplicates or rename on the user's behalf without the corresponding request.
+5. Save with the installed schema and authorized confirm flag. Read back the
+   returned profile id or worldbook source, and check the intended name,
+   fields, entry count and enabled/trigger state. Interpret reused separately
+   from a new save. On an uncertain write result, inspect current state before
+   retrying; do not retry under an invented new name.
+6. Report the destination category and whether the item was saved or reused.
+   State that the current World was not changed. Report normalization or
+   unsupported data rather than claiming a complete round-trip without evidence.
+
+### Reuse boundaries
+
+Complete-card creation/import follows Create or import below. The current
+`library.save` tool does not store complete cards; a request to store only a
+complete card must not silently become a request to create a World.
+
+There is no general library-apply MCP tool in the inspected implementation.
+For an authorized Persona replacement, read the stored persona, then use the
+existing `world.update` live-page workflow only if available for the intended
+World. For independent characters or a whole worldbook, the current UI provides
+the library picker; saving or reading alone does not add them to a World.
+Report an unavailable write path, not a successful application. A saved library
+template is not a live link that automatically updates existing World copies.
+
 ## Locate or inspect
 
 - `nora.world.list` finds authoritative worlds. `nora.world.inspect` supplies
   the selected world's details and activation plan; `nora.world.snapshot`
   supplies activation state. Use returned identifiers, not guessed paths.
-- `st.character.list` / `st.character.inspect` inspect reusable library cards.
+- `st.character.list` / `st.character.inspect` inspect ST card records, which may
+  include World runtime cards. They are not an authoritative library-only
+  catalog. Confirm the selected card's provenance and World bindings before
+  presenting it as a library original; disclose unknown provenance.
   `st.worldbook.list` / `inspect` / `entries` inspect worldbooks. A readable
   worldbook is not evidence that it belongs exclusively to the selected World.
 - `nora.world.open_plan` reads a plan: it neither opens a page nor executes MVU.

@@ -22,6 +22,8 @@ export function createPanelController({
     worldbookController,
     openCharacterLibrary,
     openPresetLibrary = () => {},
+    openProfileLibrary = () => {},
+    saveProfile = () => {},
     openCharacterSheet,
     openCharacterEditor,
     toggleCharacterInjection,
@@ -170,6 +172,10 @@ export function createPanelController({
                 open();
             });
         });
+        selectAll('[data-attached-worldbook]', body).forEach(button => button.addEventListener('click', () => {
+            closeDrawers();
+            void worldbookController.openNamed(button.dataset.attachedWorldbook);
+        }));
         selectAll('[data-worldbook-edit-kind]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
             closeDrawers();
@@ -238,7 +244,13 @@ export function createPanelController({
         if (!activeWorldModel()) return;
         const editingWorld = activeWorldModel();
         const persona = currentWorldPersona();
-        const modal = dialogs.open(tr("我的角色"), `<form id="nora-persona-form" class="nora-form" autocomplete="off"><label>${tr("名字")}<input name="name" value="${escapeHtml(persona.name)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label><label>${tr("故事中的你")}<textarea name="description" rows="10" placeholder="${tr("身份、性格、外貌，以及希望角色了解的背景。")}" autocomplete="off">${escapeHtml(persona.description)}</textarea></label><button class="nora-primary" type="submit">${tr("保存到当前世界")}</button></form>`);
+        const modal = dialogs.open(tr("我的角色"), `<form id="nora-persona-form" class="nora-form" autocomplete="off"><div class="nora-library-field"><div class="nora-library-heading" data-persona-library-heading><label for="nora-persona-name">${tr("名字")}</label></div><input id="nora-persona-name" name="name" value="${escapeHtml(persona.name)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div><label>${tr("故事中的你")}<textarea name="description" rows="10" placeholder="${tr("身份、性格、外貌，以及希望角色了解的背景。")}" autocomplete="off">${escapeHtml(persona.description)}</textarea></label><button class="nora-primary" type="submit">${tr("保存到当前世界")}</button></form>`);
+        const personaForm = select('#nora-persona-form', modal);
+        select('[data-persona-library-heading]', modal)?.insertAdjacentHTML?.('beforeend', `<div class="nora-library-editor-actions"><button type="button" data-pick-persona><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('从库选择')}</span></button><button type="button" data-save-persona><i class="fa-regular fa-bookmark" aria-hidden="true"></i><span>${tr('另存到库')}</span></button></div>`);
+        select('[data-pick-persona]', modal)?.addEventListener('click', () => openProfileLibrary('persona', editingWorld));
+        select('[data-save-persona]', modal)?.addEventListener('click', () => saveProfile('persona', {
+            name: personaForm.elements.name.value.trim(), description: personaForm.elements.description.value,
+        }));
         select('#nora-persona-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
             const form = event.currentTarget;

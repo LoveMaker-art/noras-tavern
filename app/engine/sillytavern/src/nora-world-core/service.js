@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import { createProfileLibrary } from './library-profiles.js';
+import { resolveCharacterReferences } from '../../public/scripts/nora-worlds/character-references.js';
 import { createStoryContext, editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 
 import { createActivationPlan } from './activation-plan.js';
@@ -56,6 +58,7 @@ function normalizeWorldSetting(value, expectedRevision) {
 
 export class NoraWorldCore {
     #store;
+    #profiles;
     #journal;
     #mutations;
     #locks;
@@ -65,8 +68,9 @@ export class NoraWorldCore {
     #initialized = null;
     #tasks = new Map();
 
-    constructor({ store, journal, mutations, locks, materializer, createId, now }) {
+    constructor({ store, journal, mutations, locks, materializer, createId, now, profiles }) {
         this.#store = store;
+        this.#profiles = profiles;
         this.#journal = journal;
         this.#mutations = mutations;
         this.#locks = locks;
@@ -245,6 +249,7 @@ export class NoraWorldCore {
                         worldId: operation.world_id,
                         sessionId: operation.session_id,
                         runtimeCardResourceId: operation.runtime_card_resource_id,
+                        worlds: await this.#store.list(),
                     }));
                 } catch (error) {
                     throw asWorldCoreError(
@@ -343,6 +348,81 @@ export class NoraWorldCore {
         });
         if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
         return world;
+    }
+
+    async listLibraryWorldbooks() {
+        await this.#initialize();
+        return this.#materializer.listLibraryWorldbooks(await this.#store.list());
+    }
+
+    async listLibraryCards() {
+        await this.#initialize();
+        return this.#materializer.listLibraryCards(await this.#store.list());
+    }
+    async saveLibraryCard(input) {
+        await this.#initialize();
+        return this.#materializer.saveLibraryCard(input, await this.#store.list());
+    }
+    readLibraryCardSource(avatar) { return this.#materializer.readLibraryCardSource(avatar); }
+
+    listLibraryProfiles(kind) { return this.#profiles.list(kind); }
+    readLibraryProfile(id) { return this.#profiles.read(id); }
+    saveLibraryProfile(input) { return this.#profiles.save(input); }
+    deleteLibraryProfile(id, revision) { return this.#profiles.remove(id, revision); }
+
+    async readLibraryWorldbook(source) {
+        await this.#initialize();
+        return this.#materializer.readLibraryWorldbook(source);
+    }
+
+    async saveLibraryWorldbook(name, book) {
+        await this.#initialize();
+        return this.#locks.run('library:worldbooks', () => this.#materializer.saveLibraryWorldbook(name, book));
+    }
+
+    async importLibraryItem(worldId, input) {
+        await this.#initialize();
+        if (!input || (!input.character && !input.source)) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'Choose a character or Worldbook.');
+        return this.#locks.run(`mutation-world:${worldId}`, async () => {
+            const current = await this.#store.get(worldId);
+            if (!current) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
+            if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
+            if (!Number.isInteger(input.expected_revision) || input.expected_revision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the import preview.');
+            let context = current.story_context;
+            if (input.character) {
+                if (input.character.operation !== 'create') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'Library import can only add characters.');
+                try {
+                    context = editStoryCharacter(context ?? createStoryContext(current.persona), input.character);
+                    resolveCharacterReferences(input.character.patch, context.characters, { strict: true });
+                }
+                catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+            }
+            const prepared = input.source ? await this.#materializer.prepareLibraryWorldbook(current, input) : null;
+            try {
+                if (prepared?.book) {
+                    try { resolveCharacterReferences(prepared.book.entries, context?.characters || [], { strict: true }); }
+                    catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+                }
+                const world = await this.#store.update(worldId, latest => {
+                    if (latest.revision !== current.revision || latest.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the import preview.');
+                    const capabilities = cloneJson(latest.capabilities);
+                    for (const capability of prepared?.declared || []) {
+                        if (capabilities.declared.includes(capability)) continue;
+                        capabilities.declared.push(capability);
+                        capabilities.items[capability] = { status: 'PENDING', attempts: 0 };
+                    }
+                    capabilities.status = Object.values(capabilities.items).some(item => item.status === 'DEGRADED') ? 'DEGRADED'
+                        : Object.values(capabilities.items).some(item => item.status === 'PENDING') ? 'PENDING' : 'READY';
+                    return { ...latest, ...(context ? { story_context: context } : {}),
+                        knowledge: prepared && !prepared.reused ? [...latest.knowledge, prepared.resource] : latest.knowledge,
+                        capabilities, updated_at: this.#now() };
+                });
+                return { world, reused: prepared?.reused || false };
+            } catch (error) {
+                await prepared?.abort().catch(() => {});
+                throw error;
+            }
+        });
     }
 
     async editWorldbookEntry(worldId, input) {
@@ -691,5 +771,6 @@ export function composeNoraWorldCore({
     const store = new WorldStore({ root, locks });
     const journal = new OperationJournal({ root, locks, now });
     const mutations = new MutationJournal({ root, locks, now });
-    return new NoraWorldCore({ store, journal, mutations, locks, materializer, createId, now });
+    const profiles = createProfileLibrary({ root, locks });
+    return new NoraWorldCore({ store, journal, mutations, locks, materializer, createId, now, profiles });
 }

@@ -443,6 +443,27 @@ export function createWorldCoreClient(getHeaders, {
 
     return Object.freeze({
         status: () => request('/status', { headers: requestHeaders(getHeaders) }),
+        listLibraryCards: () => request('/library/cards', { headers: requestHeaders(getHeaders) }),
+        listLibraryProfiles: kind => request(`/library/profiles?kind=${encodeURIComponent(kind)}`, { headers: requestHeaders(getHeaders) }),
+        readLibraryProfile: id => request('/library/profiles/read', { method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ id }) }),
+        saveLibraryProfile: input => request('/library/profiles/save', { method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify(input) }),
+        deleteLibraryProfile: (id, revision) => request('/library/profiles/delete', { method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ id, revision }) }),
+        listLibraryWorldbooks: () => request('/library/worldbooks', { headers: requestHeaders(getHeaders) }),
+        saveLibraryWorldbook: (name, book) => request('/library/worldbooks/import', {
+            method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ name, book }),
+        }),
+        readLibraryWorldbook: source => request('/library/worldbooks/read', {
+            method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ source }),
+        }),
+        importLibraryItem: async (worldId, input) => {
+            const result = await request(`/worlds/${encodeURIComponent(worldId)}/library`, {
+                method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify(input),
+            });
+            snapshotEpochs.set(worldId, (snapshotEpochs.get(worldId) || 0) + 1);
+            snapshotCache.delete(worldId);
+            snapshotRequests.delete(worldId);
+            return result;
+        },
         list: async () => (await request('/worlds', { headers: requestHeaders(getHeaders) })).worlds || [],
         importCard,
         createBlank,

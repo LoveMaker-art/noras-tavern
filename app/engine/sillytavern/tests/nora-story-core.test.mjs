@@ -5,7 +5,7 @@ import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-
 
 const domainMethods = [
     'listPresets', 'importPreset', 'applyPreset',
-    'patchCharacter',
+    'patchCharacter', 'importLibraryCard',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',
     'isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'deleteCharacterCards', 'savePersona',
@@ -26,6 +26,7 @@ test('story surface exposes only explicit headless domains', () => {
     assert.equal(story.state.snapshot(), 'snapshot');
     assert.equal(story.messages.sendText(), 'sendText');
     assert.equal(story.cards.resolveCharacter(), 'resolveCharacter');
+    assert.equal(story.cards.importLibraryCard(), 'importLibraryCard');
     assert.equal(story.cards.rerenderCharacterChat(), 'rerenderCharacterChat');
     assert.equal(story.worldbook.loadWorldbook(), 'loadWorldbook');
     assert.equal(story.worldbook.saveWorldbookEntry, runtime.saveWorldbookEntry);

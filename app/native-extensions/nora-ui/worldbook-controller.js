@@ -1,6 +1,6 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { validateWorldCharacterReferences } from '../../engine/sillytavern/public/scripts/nora-worlds/character-activation.js';
-export function createWorldbookController({ worldbook, worldRuntime, operations, store, dialogs, readState, currentCharacter, characterField, select, selectAll, escapeHtml, icons, onChanged, reloadWorlds, isGenerating = () => false, activeWorldModel = () => null }) {
+export function createWorldbookController({ worldbook, worldRuntime, operations, store, dialogs, readState, currentCharacter, characterField, select, selectAll, escapeHtml, icons, onChanged, reloadWorlds, isGenerating = () => false, activeWorldModel = () => null, openLibrary = () => {}, saveLibraryBook = () => {} }) {
     function entries(book) {
         const raw = book?.entries || book || {};
         return Array.isArray(raw) ? raw.map((entry, index) => [String(index), entry]) : Object.entries(raw);
@@ -28,6 +28,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         };
         addNamed(character?.data?.extensions?.world, tr("角色绑定"));
         addNamed(readState().world.metadata?.world_info, tr("当前世界绑定"));
+        for (const book of readState().world.metadata?.nora_world?.library_worldbooks || []) addNamed(book.name, tr('从库添加'));
         named.forEach((binding) => bindings.push({ ...binding, label: binding.sources.join(' · '), readonly: false }));
         return bindings;
     }
@@ -101,7 +102,19 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         return `
             <div class="loreGroupTitle">${tr("常驻设定")}</div>${alwaysHtml || `<p class="pmuted">${tr("暂无常驻设定")}</p>`}
             <div class="loreGroupTitle is-triggered">${tr("触发设定")}</div>${panelItems(triggered, 'triggered', canEditEntries) || `<p class="pmuted">${tr("暂无触发设定")}</p>`}
+            ${(readState().world.metadata?.nora_world?.library_worldbooks || []).map(book => `<button class="actorMore" type="button" data-attached-worldbook="${escapeHtml(book.name)}">${escapeHtml(book.title || book.name)}</button>`).join('')}
             ${editing ? `<button class="nora-add-setting" data-add-world-setting type="button">${icons.plus}${visibleEntries.length || background ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}`;
+    }
+
+    async function openNamed(name) {
+        const worldId = readState().world.metadata?.nora_world?.id;
+        if (!worldId || !activeBindings(currentCharacter()).some(item => item.name === name)) return;
+        try {
+            const book = await worldbook.loadWorldbook(name, { fresh: true });
+            if (readState().world.metadata?.nora_world?.id !== worldId) return;
+            const modal = dialogs.open(book.name || book.originalData?.name || tr('世界书'), '', 'nora-world-settings-modal');
+            renderEntries(modal, book, name, false);
+        } catch (error) { dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
     }
 
     function deleteButton() {
@@ -262,15 +275,18 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
     }
 
     function openAdd() {
+        const target = activeWorldModel();
         let mode = 'constant';
         const modal = dialogs.open(tr("添加世界设定"), `
             <form id="nora-add-setting-form" class="nora-form nora-entry-form">
-                <label>${tr("标题")}<input name="title" maxlength="500" placeholder="${tr("例如：雨夜规则")}"></label>
+                <div class="nora-library-field"><div class="nora-library-heading" data-book-library-heading><label for="nora-setting-title">${tr("标题")}</label></div><input id="nora-setting-title" name="title" maxlength="500" placeholder="${tr("例如：雨夜规则")}"></div>
                 <div class="nora-field-label">${tr("设定类型")}<div class="nora-mode-switch" role="group"><button data-entry-mode="constant" type="button">${tr("常驻设定")}</button><button data-entry-mode="trigger" type="button">${tr("触发设定")}</button></div></div>
                 <label data-entry-keys>${tr("触发词")}<input name="keys" maxlength="5000" placeholder="${tr("多个触发词用逗号或顿号分隔")}"></label>
                 <label>${tr("设定内容")}<textarea name="content" rows="14" maxlength="100000" required placeholder="${tr("写下模型需要遵守或在触发时获知的设定")}"></textarea></label>
                 <div class="nora-form-actions"><button class="nora-secondary" data-cancel-setting type="button">${tr("取消")}</button><button class="nora-primary" type="submit">${tr("添加")}</button></div>
             </form>`, 'nora-worldbook-add-modal nora-plain-sheet');
+        select('[data-book-library-heading]', modal)?.insertAdjacentHTML?.('beforeend', `<div class="nora-library-editor-actions"><button type="button" data-pick-book><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('从库选择')}</span></button></div>`);
+        select('[data-pick-book]', modal)?.addEventListener('click', () => openLibrary(target));
         const syncMode = () => {
             selectAll('[data-entry-mode]', modal).forEach((button) => button.classList.toggle('active', button.dataset.entryMode === mode));
             select('[data-entry-keys]', modal).classList.toggle('hidden', mode !== 'trigger');
@@ -452,10 +468,11 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             return `<article class="is-${type}"><button class="nora-entry-summary" data-view-entry="${escapeHtml(id)}" type="button" aria-label="${t`查看${escapeHtml(title)}详情`}"><strong>${escapeHtml(title)}</strong></button>${readonly ? '' : `<button data-edit-entry="${escapeHtml(id)}" type="button">${tr("编辑")}</button>`}</article>`;
         }).join('');
         select('.nora-sheet-body', modal).innerHTML = `
-            <button class="nora-sheet-back" data-back-world-settings type="button">${tr("‹ 返回世界书")}</button>
+            <div class="nora-library-heading"><button class="nora-sheet-back" data-back-world-settings type="button">${tr("‹ 返回世界书")}</button><div class="nora-library-editor-actions"><button type="button" data-save-whole-book><i class="fa-regular fa-bookmark" aria-hidden="true"></i><span>${tr('另存整本到库')}</span></button></div></div>
             <div class="nora-entry-list">${groups.map(([label, type, items]) => items.length ? `<section class="is-${type}"><h3>${label}</h3>${renderGroup(items, type)}</section>` : '').join('') || `<p class="nora-sheet-empty">${tr("这里还没有设定条目。")}</p>`}</div>
             ${readonly ? `<p class="nora-readonly-note">${tr("角色卡内嵌世界书会原样保留，避免修改复杂卡本体。")}</p>` : ''}`;
         select('[data-back-world-settings]', modal).addEventListener('click', open);
+        select('[data-save-whole-book]', modal)?.addEventListener('click', () => saveLibraryBook(book.name || book.originalData?.name || name, book));
         selectAll('[data-view-entry]', modal).forEach((button) => button.addEventListener('click', () => renderEntryDetail(modal, book, name, readonly, button.dataset.viewEntry)));
         if (!readonly) selectAll('[data-edit-entry]', modal).forEach((button) => button.addEventListener('click', () => editEntry(modal, name, book, button.dataset.editEntry)));
     }
@@ -489,7 +506,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         select('.nora-sheet-body', modal).innerHTML = `
             <form id="nora-entry-form" class="nora-form nora-entry-form nora-editor-form">
                 <div class="nora-editor-fields">
-                <button class="nora-sheet-back" data-back-entries type="button">${tr("‹ 返回设定条目")}</button>
+                <div class="nora-library-heading"><button class="nora-sheet-back" data-back-entries type="button">${tr("‹ 返回设定条目")}</button><div class="nora-library-editor-actions"><button type="button" data-save-entry-library><i class="fa-regular fa-bookmark" aria-hidden="true"></i><span>${tr('另存此条到库')}</span></button></div></div>
                 <label>${tr("标题")}<input name="comment" value="${escapeHtml(entry.comment || entry.name || '')}"></label>
                 <div class="nora-field-label">${tr("设定类型")}<div class="nora-mode-switch" role="group"><button data-entry-mode="constant" type="button">${tr("常驻设定")}</button><button data-entry-mode="trigger" type="button">${tr("触发设定")}</button></div></div>
                 <label data-entry-keys>${tr("触发词")}<textarea name="keys" rows="3" placeholder="${tr("每行一个触发词")}">${escapeHtml(keys.join('\n'))}</textarea></label>
@@ -517,6 +534,12 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
             select('[data-entry-keys]', modal).classList.toggle('hidden', mode !== 'trigger');
         };
         select('[data-back-entries]', modal).addEventListener('click', () => options.onBack ? options.onBack() : renderEntries(modal, book, name, false));
+        select('[data-save-entry-library]', modal)?.addEventListener('click', () => {
+            const data = new FormData(select('#nora-entry-form', modal));
+            const savedEntry = { ...structuredClone(entry), comment: String(data.get('comment') || ''), content: String(data.get('content') || ''),
+                constant: mode === 'constant', key: String(data.get('keys') || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean) };
+            saveLibraryBook(savedEntry.comment, { entries: { [id]: savedEntry } });
+        });
         selectAll('[data-entry-mode]', modal).forEach((button) => button.addEventListener('click', () => {
             mode = button.dataset.entryMode;
             syncMode();
@@ -570,5 +593,5 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
         });
     }
 
-    return Object.freeze({ entries, summary, scenario, prime, open, openAdd, openEntryDetail, openEntryEditor, toggleEntry, removeEntry });
+    return Object.freeze({ entries, summary, scenario, prime, open, openNamed, openAdd, openEntryDetail, openEntryEditor, toggleEntry, removeEntry });
 }
