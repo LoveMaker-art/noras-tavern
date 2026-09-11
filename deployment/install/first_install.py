@@ -604,5 +604,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
+        import traceback
+        traceback.print_exc(file=sys.stderr)
         print("[nora-tavern-install] 安装失败：" + str(error), file=sys.stderr)
         raise SystemExit(1)

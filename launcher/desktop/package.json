@@ -1,7 +1,7 @@
 {
   "name": "nora-tavern-launcher",
-  "version": "0.3.4",
-  "noraTestInstallationId": "candidate-38e8e898aecc",
+  "version": "0.3.5-diagnostics.1",
+  "noraTestInstallationId": "diagnostics-20260911",
   "private": true,
   "author": "Nora Tavern",
   "description": "Desktop shell for the Nora Tavern local launcher.",
@@ -41,6 +41,7 @@
       "install-location.js",
       "uninstall.js",
       "runtime-worker.js",
+      "diagnostics.js",
       "process-output.js"
     ],
     "extraResources": [

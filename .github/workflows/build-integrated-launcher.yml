@@ -171,6 +171,9 @@ jobs:
       - name: Test release channels and update rollback
         run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
 
+      - name: Test installation diagnostics on the target platform
+        run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs
+
       - name: Test Nora initialization and profile synchronization
         shell: bash
         run: |
@@ -179,6 +182,7 @@ jobs:
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks
 
       - name: Build release payload
         shell: bash

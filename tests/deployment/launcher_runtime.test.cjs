@@ -13,6 +13,38 @@ const componentFixture = {
   components: { clawchat: { revision: 'a'.repeat(40) }, liveware: { sha256: 'b'.repeat(64) }, files: {} },
 };
 
+test('copy failure remains primary when rollback and temp cleanup also fail', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-runtime-errors-'));
+  const originalRm = fs.rmSync;
+  try {
+    const payload = path.join(root, 'payload');
+    const source = path.join(root, 'source/hermes-runtime/hermes-agent/skills/apple');
+    fs.mkdirSync(source, { recursive: true });
+    fs.writeFileSync(path.join(source, 'SKILL.md'), 'fixture');
+    fs.mkdirSync(payload);
+    const archive = path.join(payload, 'runtime.tar.gz');
+    assert.equal(spawnSync('tar', ['-czf', archive, '-C', path.join(root, 'source'), 'hermes-runtime']).status, 0);
+    fs.writeFileSync(path.join(payload, 'nora-hermes-runtime.json'), JSON.stringify({
+      ...componentFixture, schema: 1, platform: process.platform, arch: process.arch,
+      archive: 'runtime.tar.gz', sha256: sha256(archive), nodeLinks: {},
+    }));
+    const home = path.join(root, 'home');
+    const primary = Object.assign(new Error('original copy failure'), { code: 'EPERM', syscall: 'symlink' });
+    t.mock.method(fs, 'cpSync', () => { throw primary; });
+    t.mock.method(fs, 'rmSync', () => { throw new Error('cleanup failure'); });
+    assert.throws(() => installBundledHermes({ payloadRoot: payload, noraHome: home, hermesHome: path.join(home, 'hermes') }), error => {
+      assert.equal(error, primary);
+      assert.equal(error.context.operation, 'copy-skill');
+      assert.ok(error.context.destination.endsWith(path.join('skills', 'apple')));
+      assert.deepEqual(error.secondaryErrors.map(item => item.operation), ['rollback', 'cleanup']);
+      return true;
+    });
+  } finally {
+    t.mock.restoreAll();
+    originalRm(root, { recursive: true, force: true });
+  }
+});
+
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }

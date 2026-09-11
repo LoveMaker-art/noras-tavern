@@ -51,6 +51,15 @@ async function main() {
   const html = fs.readFileSync(path.join(resources, 'launcher-conversation-prototype.html'), 'utf8');
   assert.ok(html.includes('src="assets/nora-launcher-portrait.png"'), 'UI does not reference the packaged Nora portrait');
   const metadata = JSON.parse(asar.extractFile(path.join(resources, 'app.asar'), 'package.json'));
+  const diagnostics = {};
+  for (const name of ['main.js', 'diagnostics.js', 'runtime.js', 'runtime-worker.js']) {
+    const bytes = asar.extractFile(path.join(resources, 'app.asar'), name);
+    assert.deepEqual(bytes, fs.readFileSync(path.join(source, 'desktop', name)), `Packaged diagnostic code differs: ${name}`);
+    diagnostics[name] = digest(bytes);
+  }
+  const bridge = fs.readFileSync(path.join(resources, 'launcher_bridge.py'));
+  assert.deepEqual(bridge, fs.readFileSync(path.join(source, 'launcher_bridge.py')));
+  assert.ok(bridge.toString().includes("AGENTS_CONNECT_TYPE='nora-tavern'"));
   const payload = path.join(resources, 'payload');
   const system = JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json')));
   if (system.candidate) await prepareTestPayload(payload, testBuild(metadata), metadata.version);
@@ -65,7 +74,7 @@ async function main() {
     assert.equal(metadata.noraReleaseChannel || 'stable', 'stable');
   }
   const report = { platform: process.platform, arch: process.arch, commit: system.commit, version: system.version,
-    launcherVersion: metadata.version, assets: assetHashes, instructions, nativeIcon: true,
+    launcherVersion: metadata.version, assets: assetHashes, instructions, diagnostics, nativeIcon: true,
     iconContainerSha256: digest(fs.readFileSync(executable)) };
   fs.writeFileSync(path.join(dist, `Nora-Tavern-package-verification-${process.platform}-${process.arch}.json`), JSON.stringify(report, null, 2) + '\n');
   console.log('PASS: packaged Nora portrait, native icon, instruction hashes and candidate payload integrity');

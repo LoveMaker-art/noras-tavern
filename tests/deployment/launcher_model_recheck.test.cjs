@@ -20,6 +20,7 @@ visit(parse(source, { ecmaVersion: 'latest' }));
 for (const ok of [true, false]) test(`model completion follows shared recheck: ${ok ? 'success' : 'failure'}`, async () => {
   const order = [], events = [];
   const context = vm.createContext({
+    diagnostics: { addSecret() {}, error() {}, clean: value => value },
     activeRun: false, modelBusy: false, statusRequest: Promise.resolve(),
     requireProvider: () => ({ id: 'custom', keyEnv: '' }), normalizeCustomBaseUrl: value => value,
     recordEvent: event => { events.push(event); order.push(event.state); },

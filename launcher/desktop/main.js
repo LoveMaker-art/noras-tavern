@@ -3,6 +3,16 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { createDiagnostics } = require('./diagnostics');
+const diagnostics = createDiagnostics({
+  primary: () => path.join(installerDirectory(), 'install.log'),
+  fallback: path.join(app.getPath('appData'), 'NoraTavern', 'diagnostics', 'install.log'),
+});
+for (const [name, value] of Object.entries(process.env)) {
+  if (/(?:API_KEY|TOKEN|SECRET|PASSWORD|PAIR_CODE)$/i.test(name)) diagnostics.addSecret(value);
+}
+// Observe fatal startup errors without suppressing Electron's normal exit.
+process.on('uncaughtExceptionMonitor', (error, origin) => diagnostics.error('main.uncaught', error, { origin }));
 const { findBundledRuntime } = require('./runtime');
 const releases = require('./releases');
 const systemUpdate = require('./system-update');
@@ -256,6 +266,7 @@ function sanitizeLine(value) {
 }
 
 function recordEvent(message) {
+  diagnostics.event(message);
   if (!['milestone', 'task', 'progress', 'log'].includes(message.event)) return;
   const state = readInstallerState();
   if (message.event === 'milestone' && Number.isInteger(message.index)) {
@@ -272,10 +283,6 @@ function recordEvent(message) {
     state.progress = message;
   }
   writeInstallerState(state);
-  if (message.event === 'log' && message.line) {
-    fs.mkdirSync(installerDirectory(), { recursive: true });
-    fs.appendFileSync(path.join(installerDirectory(), 'install.log'), `${new Date().toISOString()} ${sanitizeLine(message.line)}\n`, { mode: 0o600 });
-  }
 }
 
 function bridgeScript() {
@@ -351,10 +358,12 @@ function parseJsonLine(line) {
 }
 
 function sendBridgeEvent(webContents, runId, message) {
+  if (message.event !== 'result') message = diagnostics.clean(message);
   if (message.event === 'milestone' && message.index === 4 && readInstallerState().phase === 'installing') {
     message = { event: 'task', milestone: 1, task: '正在检查酒馆安装文件' };
   }
   recordEvent(message);
+  if (message.event === 'diagnostic') return;
   if (webContents && !webContents.isDestroyed() && runId) {
     webContents.send(`nora:bridge-event:${runId}`, message);
   }
@@ -362,6 +371,9 @@ function sendBridgeEvent(webContents, runId, message) {
 
 function runProcess(command, args, webContents, runId) {
   return new Promise((resolve, reject) => {
+    const started = Date.now();
+    let timedOut = false;
+    diagnostics.write('process.start', { command: [command, ...args], cwd: installerRoot() });
     sendBridgeEvent(webContents, runId, { event: 'command', command: [command, ...args] });
     const proc = spawn(command, args, {
       env: { ...launcherEnv(), ...(command === process.execPath ? { ELECTRON_RUN_AS_NODE: '1' } : {}) },
@@ -369,29 +381,35 @@ function runProcess(command, args, webContents, runId) {
       detached: process.platform !== 'win32',
     });
     activeProcess = proc;
+    diagnostics.write('process.spawned', { pid: proc.pid });
     proc.cancelSafe = !args.includes(path.join(__dirname, 'runtime-worker.js'));
     let errorMessage = '';
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
     proc.stdin.end();
-    const timeout = setTimeout(() => terminateProcess(proc), 30 * 60 * 1000);
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      diagnostics.write('process.timeout', { pid: proc.pid, timeoutMs: 30 * 60 * 1000 });
+      terminateProcess(proc);
+    }, 30 * 60 * 1000);
     consumeLines(proc.stdout, (line) => {
         const clean = sanitizeLine(line);
         if (clean) sendBridgeEvent(webContents, runId, parseJsonLine(clean));
     });
     consumeLines(proc.stderr, (line) => {
-        errorMessage = (errorMessage + '\n' + line).slice(-4000);
-        const clean = sanitizeLine(line);
+        const clean = diagnostics.clean(sanitizeLine(line));
+        errorMessage = (errorMessage + '\n' + clean).slice(-4000);
         if (clean) sendBridgeEvent(webContents, runId, { event: 'log', line: clean, stream: 'stderr' });
     });
-    proc.on('error', error => { clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
-    proc.on('close', (code) => {
+    proc.on('error', error => { diagnostics.error('process.error', error, { pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
+    proc.on('close', (code, signal) => {
+      diagnostics.write('process.exit', { pid: proc.pid, exitCode: code, signal, timedOut, cancelled, durationMs: Date.now() - started });
       clearInterval(heartbeat);
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) resolve();
-      else reject(new Error((errorMessage || `命令执行失败，退出码 ${code}`).trim()));
+      else reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
     });
   });
 }
@@ -418,6 +436,9 @@ function payloadDirectory() {
 async function ensureHermesFromNode(webContents, runId, payloadRoot) {
   const bundle = findBundledRuntime(payloadRoot);
   if (!bundle) throw new Error('发布包缺少完整 Hermes 运行环境。');
+  diagnostics.write('runtime.selected', { archive: bundle.archive, sha256: bundle.manifest.sha256,
+    platform: bundle.manifest.platform, arch: bundle.manifest.arch,
+    python: bundle.manifest.venvPython, components: bundle.manifest.components });
   if (findHermes()) {
     const marker = JSON.parse(fs.readFileSync(path.join(hermesHome(), 'hermes-agent', '.hermes-bootstrap-complete'), 'utf8'));
     if (marker.sha256 !== bundle.manifest.sha256) throw new Error('已有 Hermes 与目标完整系统版本不匹配。已保留原有配置，请使用匹配版本的完整包进行迁移。');
@@ -436,13 +457,19 @@ async function ensureHermesFromNode(webContents, runId, payloadRoot) {
 
 function runBridge(command, options = {}, webContents = null, runId = '') {
   return new Promise((resolve, reject) => {
+    diagnostics.addSecret(options.code);
+    const started = Date.now();
+    let timedOut = false;
     let proc;
     try {
       const spec = bridgeArgs(command, options);
+      if (command !== 'status') diagnostics.write('process.start', { command: [spec.command, ...spec.args], cwd: installerRoot() });
       proc = spawn(spec.command, spec.args, { env: launcherEnv(), cwd: installerRoot(), detached: command !== 'status' && process.platform !== 'win32', windowsHide: true });
+      if (command !== 'status') diagnostics.write('process.spawned', { pid: proc.pid });
       if (command !== 'status') activeProcess = proc;
       proc.stdin.end(command === 'pair' ? JSON.stringify({ code: options.code }) : undefined);
     } catch (error) {
+      diagnostics.error('bridge.spawn-error', error, { command });
       reject(error);
       return;
     }
@@ -451,26 +478,33 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
-    const timeout = setTimeout(() => terminateProcess(proc), command === 'status' ? 90000 : 30 * 60 * 1000);
+    const timeoutMs = command === 'status' ? 90000 : 30 * 60 * 1000;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      diagnostics.write('process.timeout', { command, pid: proc.pid, timeoutMs });
+      terminateProcess(proc);
+    }, timeoutMs);
     consumeLines(proc.stdout, (line) => {
         const message = parseJsonLine(sanitizeLine(line));
         if (message.event === 'result') {
           result = { ...message };
           delete result.event;
         } else if (message.event === 'error') {
-          errorMessage = message.message || line;
+          errorMessage = diagnostics.clean(message.message || line);
         }
         if (command !== 'status') sendBridgeEvent(webContents, runId, message);
     });
     consumeLines(proc.stderr, (line) => {
+      line = diagnostics.clean(line);
       errorMessage = (errorMessage + '\n' + line).slice(-4000);
-      if (webContents && runId) {
+      if (command !== 'status') {
           const clean = sanitizeLine(line);
           if (clean) sendBridgeEvent(webContents, runId, { event: 'log', line: clean, stream: 'stderr' });
-      }
+      } else diagnostics.event({ event: 'log', stream: 'stderr', line, command });
     });
-    proc.on('error', (error) => { clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
-    proc.on('close', (code) => {
+    proc.on('error', (error) => { diagnostics.error('bridge.process-error', error, { command, pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
+    proc.on('close', (code, signal) => {
+      if (command !== 'status' || code !== 0) diagnostics.write('process.exit', { command, pid: proc.pid, exitCode: code, signal, timedOut, cancelled, durationMs: Date.now() - started });
       clearInterval(heartbeat);
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
@@ -479,7 +513,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
         resolve(result);
         return;
       }
-      reject(new Error((errorMessage || `命令执行失败，退出码 ${code}`).trim()));
+      reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
     });
   });
 }
@@ -535,6 +569,7 @@ function modelConfigScript() {
 }
 
 function runModelConfigHelper(payload) {
+  diagnostics.addSecret(payload.key);
   return new Promise((resolve, reject) => {
     const python = findPython();
     if (!python) {
@@ -709,6 +744,9 @@ async function beginUninstall(event) {
 }
 
 if (app && BrowserWindow && ipcMain && shell) {
+  diagnostics.write('launcher.start', { version: app.getVersion(), channel: CHANNEL,
+    platform: process.platform, arch: process.arch, osRelease: os.release(),
+    node: process.versions.node, electron: process.versions.electron, executable: process.execPath });
   fs.mkdirSync(path.join(noraHome(), 'cache', 'tmp'), { recursive: true });
   uninstall.own(noraHome());
   app.setPath('userData', path.join(noraHome(), 'launcher'));
@@ -772,20 +810,26 @@ if (app && BrowserWindow && ipcMain && shell) {
       || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun = true;
     cancelled = false;
-    let state = readInstallerState();
-    state = writeInstallerState({
-      ...state,
-      port: payload.port || state.port || DEFAULT_PORT,
-      phase: payload.action === 'install' ? 'installing' : payload.action,
-      startedAt: Date.now(),
-      error: '',
-      task: payload.action === 'install' ? '准备安装' : state.task,
-      setupCompleted: payload.action === 'install' ? false : Boolean(state.setupCompleted),
-      milestones: payload.action === 'install'
-        ? MILESTONES.map((label, index) => ({ index, label, state: 'pending', task: '' }))
-        : state.milestones,
-    });
+    diagnostics.addSecret(payload.code);
+    diagnostics.begin(payload.runId, { action: payload.action, version: app.getVersion(), channel: CHANNEL,
+      platform: process.platform, arch: process.arch, osRelease: os.release(),
+      node: process.versions.node, electron: process.versions.electron });
     try {
+      diagnostics.write('install.paths', { noraHome: noraHome(), hermesHome: hermesHome(),
+        installRoot: installRoot(), payloadRoot: payloadDirectory() });
+      let state = readInstallerState();
+      state = writeInstallerState({
+        ...state,
+        port: payload.port || state.port || DEFAULT_PORT,
+        phase: payload.action === 'install' ? 'installing' : payload.action,
+        startedAt: Date.now(),
+        error: '',
+        task: payload.action === 'install' ? '准备安装' : state.task,
+        setupCompleted: payload.action === 'install' ? false : Boolean(state.setupCompleted),
+        milestones: payload.action === 'install'
+          ? MILESTONES.map((label, index) => ({ index, label, state: 'pending', task: '' }))
+          : state.milestones,
+      });
       let selectedPayload;
       if (['install', 'update'].includes(payload.action)) {
         if (payload.action === 'update' && LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用 Beta 发布包。');
@@ -801,6 +845,7 @@ if (app && BrowserWindow && ipcMain && shell) {
             onEvent: message => sendBridgeEvent(event.sender, payload.runId, message),
           });
         } finally { releaseAbort = null; }
+        diagnostics.write('release.selected', { payloadRoot: selectedPayload });
         if (cancelled) throw new Error('安装已取消。');
         if (payload.action === 'install') {
           const removed = cleanupInstallTemps(noraHome());
@@ -816,13 +861,19 @@ if (app && BrowserWindow && ipcMain && shell) {
         ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
       const finalState = readInstallerState();
       writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '' });
+      diagnostics.finish('success');
       return result;
     } catch (error) {
-      const failed = readInstallerState();
-      const milestones = failed.milestones.map((item) => item.state === 'running'
-        ? { ...item, state: 'error', task: '失败' }
-        : item);
-      writeInstallerState({ ...failed, milestones, phase: cancelled ? 'cancelled' : 'error', error: cancelled ? '' : error.message || String(error) });
+      diagnostics.error('run.failed', error, { cancelled });
+      try {
+        const failed = readInstallerState();
+        const milestones = failed.milestones.map((item) => item.state === 'running'
+          ? { ...item, state: 'error', task: '失败' }
+          : item);
+        writeInstallerState({ ...failed, milestones, phase: cancelled ? 'cancelled' : 'error', error: cancelled ? '' : diagnostics.clean(error.message || String(error)) });
+      } catch (stateError) { diagnostics.error('state.write-failed', stateError); }
+      diagnostics.finish(cancelled ? 'cancelled' : 'error');
+      error.message = diagnostics.clean(error.message || String(error));
       throw error;
     } finally {
       activeRun = false;
@@ -840,11 +891,12 @@ if (app && BrowserWindow && ipcMain && shell) {
     return { ok: true };
   });
   handle('nora:open-logs', async () => {
-    const installerLog = path.join(installerDirectory(), 'install.log');
-    const runtimeLog = path.join(installRoot(), 'tavern-state', 'native-runtime', 'runs', 'production', 'native.log');
-    const target = fs.existsSync(installerLog) ? installerLog : runtimeLog;
+    const installerLog = diagnostics.lastFile || path.join(installerDirectory(), 'install.log');
+    const target = fs.existsSync(installerLog) ? installerLog
+      : path.join(installRoot(), 'tavern-state', 'native-runtime', 'runs', 'production', 'native.log');
     if (!fs.existsSync(target)) return { ok: false, warning: '日志文件还不存在。' };
-    await shell.openPath(target);
+    const openError = await shell.openPath(target);
+    if (openError) return { ok: false, warning: openError };
     return { ok: true };
   });
   handle('nora:model-providers', async () => {
@@ -859,6 +911,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
     const provider = requireProvider(payload?.provider);
     const key = String(payload?.key || '').trim();
+    diagnostics.addSecret(key);
     const model = String(payload?.model || '').trim();
     const baseUrl = provider.id === 'custom' ? normalizeCustomBaseUrl(payload?.baseUrl) : '';
     if (!key || key.length > 8192 || /[\r\n]/.test(key)) throw new Error('请输入有效的 API Key。');
@@ -904,7 +957,9 @@ if (app && BrowserWindow && ipcMain && shell) {
       recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成' });
       return { ok: true, provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl || '', tavern };
     } catch (error) {
+      diagnostics.error('model.failed', error);
       recordEvent({ event: 'milestone', index: 2, state: 'error', task: '模型配置未完成' });
+      error.message = diagnostics.clean(error.message || String(error));
       throw error;
     } finally {
       modelBusy = false;

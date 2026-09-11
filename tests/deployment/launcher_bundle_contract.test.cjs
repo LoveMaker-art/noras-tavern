@@ -79,7 +79,8 @@ test('unpublished candidate launchers install their sealed payload instead of an
     }
     const identity = { candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.2.10-beta.5' },
       hermesRuntime: { platform: process.platform, arch: process.arch } };
-    const pkg = { ...require('../installer/desktop/package.json'), noraReleaseChannel: 'beta' };
+    const pkg = { ...require('../installer/desktop/package.json'), noraReleaseChannel: 'beta',
+      noraTestInstallationId: 'candidate-38e8e898aecc' };
     fs.writeFileSync(packageFile, JSON.stringify(pkg));
     writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version });
     configureCandidateLauncher({ packageFile, payload, identity });

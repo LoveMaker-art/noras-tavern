@@ -117,13 +117,13 @@ function wizard(t, responses) {
   const f = fixture(t), dialogs = [], exits = [];
   const main = path.resolve(__dirname, '../installer/desktop/main.js');
   const localRequire = createRequire(main);
-  const electron = { app: { isPackaged: true, exit: code => exits.push(code) },
+  const electron = { app: { isPackaged: true, getPath: () => f.directory, exit: code => exits.push(code) },
     dialog: { showMessageBox: async options => { dialogs.push(options); return { response: responses.shift() }; } } };
   const context = vm.createContext({
     require: name => name === 'electron' ? electron : name === 'node:child_process'
       ? { spawnSync: () => ({ status: 1 }) } : localRequire(name),
     __dirname: path.dirname(main), console, setTimeout, clearTimeout,
-    process: { platform: 'win32', argv: [], env: { NORA_TAVERN_HOME: f.home }, execPath: path.join(f.directory, 'launcher.exe') },
+    process: { platform: 'win32', argv: [], on() {}, env: { NORA_TAVERN_HOME: f.home }, execPath: path.join(f.directory, 'launcher.exe') },
   });
   vm.runInContext(fs.readFileSync(main, 'utf8'), context);
   const planFile = path.join(f.directory, 'nora-uninstall.json');

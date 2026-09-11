@@ -6,6 +6,8 @@ Electron 主进程和 preload 源码在这里。正式 UI 位于 `launcher/ui/in
 
 详见 [开发与发布说明](../../CONTRIBUTING.md) 和 [启动器职责](../README.md)。
 
+安装失败的日志位置、记录内容和隐私边界见 [安装诊断日志](../../docs/launcher-install-diagnostics.md)。
+
 ## 产品流程
 
 1. 读取安装位置、组件版本和实际服务状态，区分首次安装与日常启动。

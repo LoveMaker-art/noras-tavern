@@ -18,6 +18,8 @@ import urllib.request
 import webbrowser
 import re
 import importlib.util
+import traceback
+import time
 
 try:
     from . import nora_system, nora_profile
@@ -185,6 +187,7 @@ ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
 def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None:
+    started = time.monotonic()
     emit("command", command=command)
     process = subprocess.Popen(
         command,
@@ -194,6 +197,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
         env=env,
         bufsize=1,
     )
+    emit("diagnostic", operation="subprocess-start", pid=process.pid, command=command)
     assert process.stdout is not None
     for line in process.stdout:
         line = ANSI.sub("", line).rstrip()
@@ -201,13 +205,15 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
             try:
                 message = json.loads(line)
             except ValueError:
-                emit("log", line=line)
+                emit("log", line=line, stream="combined")
             else:
                 if isinstance(message, dict) and message.get("event"):
                     emit(message.pop("event"), **message)
                 else:
-                    emit("log", line=line)
+                    emit("log", line=line, stream="combined")
     code = process.wait()
+    emit("diagnostic", operation="subprocess-exit", pid=process.pid, exitCode=code,
+         durationMs=round((time.monotonic() - started) * 1000))
     if code:
         fail(f"命令执行失败，退出码 {code}")
 
@@ -552,9 +558,13 @@ def command_pair(args) -> None:
     run_stream([hermes, "plugins", "enable", "clawchat"], env=env)
     emit("task", task="正在激活 ClawChat")
     # Activation code travels over stdin, never in argv or launcher logs.
+    # Scope the connect attribution to this child; plugin files and local
+    # credential storage keep their Hermes identity.
     activation = (
-        "import json,sys,runpy; data=json.load(sys.stdin); "
-        "sys.path.insert(0,data['agent']); sys.argv=[data['cli'],'activate',data['code'],'--no-restart'] + (['--repair'] if data['repair'] else []); "
+        "import json,sys,runpy; from pathlib import Path; data=json.load(sys.stdin); "
+        "sys.path.insert(0,data['agent']); sys.path.insert(0,str(Path(data['cli']).parent)); "
+        "from clawchat_gateway import api_client; api_client.AGENTS_CONNECT_TYPE='nora-tavern'; "
+        "sys.argv=[data['cli'],'activate',data['code'],'--no-restart'] + (['--repair'] if data['repair'] else []); "
         "runpy.run_path(data['cli'],run_name='__main__')"
     )
     result = subprocess.run([python_command(args.hermes_home), "-B", "-c", activation],
@@ -734,6 +744,8 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
+        emit("diagnostic", component="python", executable=sys.executable, version=sys.version)
         main()
     except Exception as error:
+        traceback.print_exc(file=sys.stderr)
         fail(str(error))

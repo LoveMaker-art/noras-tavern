@@ -1,6 +1,7 @@
 import json
 import io
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import sys
@@ -135,6 +136,56 @@ else:
             emit.side_effect = on_emit
             bridge.command_pair(args)
             sync.assert_called_once_with(args)
+
+    def test_launcher_pairing_type_is_scoped_to_activation_process(self):
+        plugin = self.hermes / 'plugins/clawchat'
+        package = plugin / 'clawchat_gateway'
+        package.mkdir(parents=True)
+        (package / '__init__.py').write_text('')
+        client = package / 'api_client.py'
+        original = 'AGENTS_CONNECT_PLATFORM = "hermes"\nAGENTS_CONNECT_TYPE = "clawbot"\n'
+        client.write_text(original)
+        cli = plugin / 'clawchat_cli.py'
+        cli.write_text(
+            'import json, sys\nfrom pathlib import Path\n'
+            'sys.path.insert(0, str(Path(__file__).parent))\n'
+            'from clawchat_gateway import api_client\n'
+            'print(json.dumps({"platform": api_client.AGENTS_CONNECT_PLATFORM, '
+            '"type": api_client.AGENTS_CONNECT_TYPE, "args": sys.argv[1:]}))\n'
+        )
+        args = Mock(nora_home=self.root, hermes_home=self.hermes,
+                    install_root=self.root / 'tavern', port=18999)
+        run_child = subprocess.run
+        for paired in (False, True):
+            with self.subTest(paired=paired):
+                def activate(command, **kwargs):
+                    self.assertNotIn('test-only-code', ' '.join(command))
+                    result = run_child(command, **kwargs)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    payload = json.loads(result.stdout)
+                    self.assertEqual(payload['platform'], 'hermes')
+                    self.assertEqual(payload['type'], 'nora-tavern')
+                    self.assertEqual(payload['args'], ['activate', 'test-only-code', '--no-restart']
+                                     + (['--repair'] if paired else []))
+                    return result
+
+                with patch.object(bridge.sys, 'stdin', io.StringIO('{"code":"test-only-code"}')), \
+                     patch.object(bridge, 'hermes_command', return_value='hermes'), \
+                     patch.object(bridge, 'python_command', return_value=sys.executable), \
+                     patch.object(bridge, 'require_bundled_clawchat'), \
+                     patch.object(bridge, 'run_stream'), \
+                     patch.object(bridge.subprocess, 'run', side_effect=activate), \
+                     patch.object(bridge, 'clawchat_paired', side_effect=[paired, True]), \
+                     patch.object(bridge, 'stop_gateway'), \
+                     patch.object(bridge, 'command_status'), \
+                     patch.object(bridge, 'sync_nora_profile'), patch.object(bridge, 'emit'):
+                    bridge.command_pair(args)
+                self.assertEqual(client.read_text(), original)
+
+        ordinary = run_child([sys.executable, '-B', str(cli), 'activate', 'test-only-code'],
+                             capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(ordinary.stdout)['platform'], 'hermes')
+        self.assertEqual(json.loads(ordinary.stdout)['type'], 'clawbot')
 
     def test_failed_start_never_emits_completion(self):
         args = Mock(nora_home=self.root, hermes_home=self.hermes, install_root=self.root / 'tavern', port=8799, service='nora')

@@ -51,11 +51,18 @@ function extractionCommand(archive, destination, platform = process.platform, sy
   };
 }
 
+function commandFailure(message, result, command) {
+  return Object.assign(new Error(message, { cause: result.error }), {
+    exitCode: result.status, signal: result.signal,
+    context: { command, stdout: result.stdout, stderr: result.stderr },
+  });
+}
+
 function extractArchive(bundle, destination) {
   const command = extractionCommand(bundle.archive, destination);
   const result = spawnSync(command.file, command.args, { encoding: 'utf8', windowsHide: true, timeout: 600000 });
   if (result.status !== 0) {
-    throw new Error(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`);
+    throw commandFailure(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`, result, [command.file, ...command.args]);
   }
 }
 
@@ -84,7 +91,7 @@ function relocateFiles(home, manifest) {
       encoding: 'utf8', timeout: 60000, windowsHide: true,
     });
     if (rebuilt.error || rebuilt.status !== 0) {
-      throw new Error(`无法重建 Windows Python 环境：${rebuilt.error?.message || rebuilt.stderr}`);
+      throw commandFailure(`无法重建 Windows Python 环境：${rebuilt.error?.message || rebuilt.stderr}`, rebuilt, [basePython, '-I', '-m', 'venv', '--without-pip', '--copies', venv]);
     }
     const python = contained(home, manifest.venvPython);
     const result = spawnSync(python, ['-I', '-c', [
@@ -101,7 +108,7 @@ function relocateFiles(home, manifest) {
       '        if entry.group == "console_scripts":',
       '            maker.make(entry.name + " = " + entry.value)',
     ].join('\n')], { encoding: 'utf8', timeout: 60000, windowsHide: true });
-    if (result.status !== 0) throw new Error(`无法重建 Windows 本地命令入口：${result.stderr || result.error?.message}`);
+    if (result.status !== 0) throw commandFailure(`无法重建 Windows 本地命令入口：${result.stderr || result.error?.message}`, result, [python, '-I', '-c', '<rebuild-console-scripts>']);
   }
 }
 
@@ -119,7 +126,14 @@ function initializeHome(home, manifest) {
     for (const entry of fs.readdirSync(sourceSkills, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const target = path.join(home, 'skills', entry.name);
-      if (!fs.existsSync(target)) fs.cpSync(path.join(sourceSkills, entry.name), target, { recursive: true });
+      if (!fs.existsSync(target)) {
+        const source = path.join(sourceSkills, entry.name);
+        try { fs.cpSync(source, target, { recursive: true }); }
+        catch (error) {
+          error.context = { operation: 'copy-skill', source, destination: target };
+          throw error;
+        }
+      }
     }
   }
 
@@ -140,7 +154,7 @@ function validateRuntime(home, manifest) {
   const node = contained(home, path.join(manifest.nodeBin, process.platform === 'win32' ? 'node.exe' : 'node'));
   const npm = contained(home, process.platform === 'win32' ? 'node/node_modules/npm/bin/npm-cli.js' : 'node/lib/node_modules/npm/bin/npm-cli.js');
   const npmCheck = spawnSync(node, [npm, '--version'], { encoding: 'utf8', timeout: 15000, windowsHide: true });
-  if (npmCheck.error || npmCheck.status !== 0) throw new Error('内置 Node.js / npm 不完整或无法执行。');
+  if (npmCheck.error || npmCheck.status !== 0) throw commandFailure('内置 Node.js / npm 不完整或无法执行。', npmCheck, [node, npm, '--version']);
   const command = contained(home, manifest.probe.command);
   const result = spawnSync(command, manifest.probe.args || ['--version'], {
     encoding: 'utf8',
@@ -159,7 +173,7 @@ function validateRuntime(home, manifest) {
     },
   });
   if (result.error || result.status !== 0) {
-    throw new Error(`Hermes 运行时校验失败：${result.error?.message || result.stderr || result.stdout || '未知错误'}`);
+    throw commandFailure(`Hermes 运行时校验失败：${result.error?.message || result.stderr || result.stdout || '未知错误'}`, result, [command, ...(manifest.probe.args || ['--version'])]);
   }
   const check = spawnSync(contained(home, manifest.venvPython), ['-B', contained(home, manifest.componentProbe)], {
     encoding: 'utf8', timeout: 60000, windowsHide: true,
@@ -175,7 +189,7 @@ function validateRuntime(home, manifest) {
     },
   });
   if (check.error || check.status !== 0) {
-    throw new Error(`ClawChat / Liveware 离线加载检查失败：${check.error?.message || check.stderr || check.stdout}`);
+    throw commandFailure(`ClawChat / Liveware 离线加载检查失败：${check.error?.message || check.stderr || check.stdout}`, check, [contained(home, manifest.venvPython), '-B', contained(home, manifest.componentProbe)]);
   }
   return (result.stdout || result.stderr || '').trim();
 }
@@ -209,6 +223,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
   const backup = path.join(noraHome, 'installer', 'backups', `hermes-partial-${Date.now()}`);
   let previous = false;
   let replaced = false;
+  let failure;
   try {
     onEvent({ event: 'task', milestone: 0, task: '释放 Nora 核心', current: 1, total: 3 });
     extractArchive(bundle, work);
@@ -245,11 +260,20 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
     }
     return { ...bundle.manifest, version };
   } catch (error) {
-    if (replaced) fs.rmSync(hermesHome, { recursive: true, force: true });
-    if (previous && fs.existsSync(backup)) fs.renameSync(backup, hermesHome);
+    failure = error;
+    try {
+      if (replaced) fs.rmSync(hermesHome, { recursive: true, force: true });
+      if (previous && fs.existsSync(backup)) fs.renameSync(backup, hermesHome);
+    } catch (rollbackError) {
+      error.secondaryErrors = [...(error.secondaryErrors || []), { operation: 'rollback', error: rollbackError }];
+    }
     throw error;
   } finally {
-    fs.rmSync(work, { recursive: true, force: true });
+    try { fs.rmSync(work, { recursive: true, force: true }); }
+    catch (cleanupError) {
+      if (failure) failure.secondaryErrors = [...(failure.secondaryErrors || []), { operation: 'cleanup', error: cleanupError }];
+      else throw cleanupError;
+    }
   }
 }
 
