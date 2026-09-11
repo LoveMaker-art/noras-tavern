@@ -85,7 +85,7 @@ try {
         tavern: fs.readFileSync(path.join(stage, 'app/.tavern-release-version'), 'utf8').trim(),
         mcp: JSON.parse(fs.readFileSync(path.join(mcp, 'package.json'))).version,
         storyProfile: profile.sourceRevision,
-        skills: Object.fromEntries(['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
+        skills: Object.fromEntries(['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater', 'system/model-provider-config']
             .map(name => [name, digest(fs.readFileSync(path.join(stage, 'ops/skills', name, 'SKILL.md')))])),
         agents: digest(fs.readFileSync(path.join(stage, 'ops/skills/agents-tavern.md'))),
     };

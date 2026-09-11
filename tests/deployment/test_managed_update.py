@@ -68,7 +68,8 @@ class ManagedUpdateTests(unittest.TestCase):
                     write(source / "ops/hooks/tavern-liveware-register" / name, "new hook")
                 return {"changedModules": ["tavern-engine", "updater"]}
 
-            def skills(_source, destination):
+            def skills(_source, destination, *, local=False):
+                self.assertTrue(local)
                 result = {}
                 for relative in nora_system.SKILLS:
                     dest = destination / relative

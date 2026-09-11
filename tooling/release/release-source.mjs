@@ -19,10 +19,11 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
+    'ops/skills/system/model-provider-config/scripts/configure_provider.py',
     ...['references/starter-stories.md', 'scripts/starter-story.py',
         'resources/starter-stories/manifest.json', 'resources/starter-stories/suzhou-rain.json',
         'resources/starter-stories/xiamen-breeze.json'].map(name => `ops/skills/creative/nora-cardforge/${name}`),
-    ...['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater']
+    ...['creative/tavern', 'creative/tavern-ops', 'creative/nora-cardforge', 'system/tavern-updater', 'system/model-provider-config']
         .map(name => `ops/skills/${name}/SKILL.md`),
 ];
 
@@ -134,7 +135,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         'ops/skills/INSTALL.md',
         'ops/skills/agents-tavern.md',
     ]);
-    const skillRoots = ['ops/skills/creative/tavern/', 'ops/skills/creative/tavern-ops/', 'ops/skills/system/tavern-updater/', 'ops/skills/creative/nora-cardforge/'];
+    const skillRoots = ['ops/skills/creative/tavern/', 'ops/skills/creative/tavern-ops/', 'ops/skills/system/tavern-updater/', 'ops/skills/creative/nora-cardforge/', 'ops/skills/system/model-provider-config/'];
     // Upstream sample content and text fonts remain in the source reference,
     // not the installed product. Nora uses system fonts. Font Awesome is an
     // icon dependency (including extension controls), not a text-font choice.
@@ -170,6 +171,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
             file === `${root}SKILL.md` || file.startsWith(`${root}references/`)
             || (root.includes('nora-cardforge/') && !['tests/', 'agents/'].some(exclude => file.startsWith(root + exclude)))
             || file === 'ops/skills/system/tavern-updater/scripts/update.py'
+            || file === 'ops/skills/system/model-provider-config/scripts/configure_provider.py'
         ))
     )
         && !omittedRoots.some(root => file.startsWith(root)) && !omittedFiles.has(file) && !isUnshippedLocale(file)

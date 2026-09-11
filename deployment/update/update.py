@@ -337,9 +337,9 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, 
     return report
 
 
-def prepare_skills(source, destination):
+def prepare_skills(source, destination, *, local=False):
     installer = module_at("simple_skill_installer", source / "ops/scripts/install-hermes-skills.py")
-    return installer.prepare_skill_trees(source, destination)
+    return installer.prepare_skill_trees(source, destination, **({"local": True} if local else {}))
 
 
 def prepare_host_hook_swap(hermes_home, source, prepared_root):
@@ -837,7 +837,7 @@ def install(args):
                 **({"bundled": True} if bundled else {}),
             )
             resolve()
-            skills = prepare_skills(source, work / "skills")
+            skills = prepare_skills(source, work / "skills", local=bool(instance))
             agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
             desired_agents = merged_agents(hermes_home, agents_bytes)
             mcp_config = render_mcp(hermes_home, install_root, port)

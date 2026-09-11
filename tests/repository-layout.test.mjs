@@ -39,7 +39,8 @@ test('candidate projection preserves every authored byte and requires the full N
     for (const [source, delivery] of entries) {
         assert.equal(digest(fs.readFileSync(path.join(exported.stage, delivery))), exported.identity.sourceFiles[source], source);
     }
-    for (const file of ['nora/SOUL.md', 'nora/AGENTS.md', 'nora/greeting.md', 'launcher/ui/index.html', 'launcher/ui/assets/nora-launcher-portrait.png']) {
+    for (const file of ['nora/SOUL.md', 'nora/AGENTS.md', 'nora/greeting.md', 'launcher/ui/index.html', 'launcher/ui/assets/nora-launcher-portrait.png',
+        'nora/skills/system/model-provider-config/SKILL.md', 'nora/skills/system/model-provider-config/scripts/configure_provider.py']) {
         assert.ok(exported.identity.sourceFiles[file], file);
     }
     assert.equal(exported.files.includes('nora/SOUL.md'), false, 'No second delivery copy');

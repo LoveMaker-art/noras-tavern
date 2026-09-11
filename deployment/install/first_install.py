@@ -313,7 +313,7 @@ def restore_targets(home: Path, records: list[dict], backup: Path) -> None:
 
 def prepare_skills(source: Path, work: Path) -> dict[str, Path]:
     installer = module_at("nora_tavern_skill_installer", source / "ops/scripts/install-hermes-skills.py")
-    return installer.prepare_skill_trees(source, work / "prepared-skills")
+    return installer.prepare_skill_trees(source, work / "prepared-skills", local=True)
 
 
 def install_skills(home: Path, prepared: dict[str, Path]) -> list[str]:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare the four official Tavern skill directories for direct replacement."""
+"""Prepare the official Tavern skills and optional local launcher skills."""
 import argparse
 import json
 from pathlib import Path
@@ -11,6 +11,7 @@ SKILLS = (
     "system/tavern-updater",
     "creative/nora-cardforge",
 )
+LOCAL_SKILLS = ("system/model-provider-config",)
 RETIRED = (
     "tavern-world",
     "tavern-runtime-plugins",
@@ -29,12 +30,12 @@ TAVERN_SCRIPTS = (
 )
 
 
-def prepare_skill_trees(release, destination):
+def prepare_skill_trees(release, destination, *, local=False):
     release, destination = Path(release), Path(destination)
     source = release / "ops/skills"
     destination.mkdir(parents=True, exist_ok=True)
     prepared = {}
-    for relative in SKILLS:
+    for relative in SKILLS + (LOCAL_SKILLS if local else ()):
         origin = source / relative
         if not (origin / "SKILL.md").is_file():
             raise RuntimeError("发布包缺少技能：" + relative)

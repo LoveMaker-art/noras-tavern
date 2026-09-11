@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
@@ -19,6 +20,27 @@ PROVIDER_KEYS = {
     "gemini": "GEMINI_API_KEY",
     "custom": "",
 }
+
+
+def local_selection_record(home: Path) -> Path:
+    """Resolve the launcher's record from this managed instance, not defaults."""
+    instance = json.loads((home / "nora-instance.json").read_text(encoding="utf-8"))
+    root = Path(instance["noraHome"])
+    if (instance.get("schema") != 1 or not root.is_absolute()
+            or root.resolve() != home.parent
+            or Path(instance["hermesHome"]).resolve() != home):
+        raise ValueError("当前目录不是启动器管理的 Nora 实例。")
+    marker = root / "installer/model.json"
+    for file in [marker, *(home / name for name in ("config.yaml", ".env", "auth.json"))]:
+        if file.is_symlink() or not file.resolve().is_relative_to(root.resolve()):
+            raise ValueError("模型配置路径越过当前安装目录。")
+    # Validate before Hermes loads config: malformed input must not trigger its
+    # automatic corrupt-config backup or overwrite a user's broken file.
+    import yaml
+    config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    if not isinstance(config, dict):
+        raise ValueError("现有模型配置格式无效，未修改配置。")
+    return marker
 
 
 def fail(message: str, secret: str = "") -> None:
@@ -49,6 +71,7 @@ def main() -> None:
                 or not parsed.hostname
                 or parsed.username
                 or parsed.password
+                or (action == "save-local" and (parsed.query or parsed.fragment))
             ):
                 fail("中转地址格式不正确。")
 
@@ -77,6 +100,7 @@ def main() -> None:
         agent_root = hermes_home / "hermes-agent"
         if not agent_root.is_dir():
             fail("没有找到 Nora 核心。")
+        marker = local_selection_record(hermes_home) if action == "save-local" else None
         sys.path.insert(0, str(agent_root))
 
         from hermes_cli.web_server_config import _apply_model_assignment_sync, _normalize_main_model_assignment
@@ -94,13 +118,17 @@ def main() -> None:
                 "baseUrl": base_url,
             }, ensure_ascii=False))
             return
-        if action != "save":
+        if action not in {"save", "save-local"}:
             fail("不支持这个配置操作。")
         if not secret or len(secret) > 8192 or "\n" in secret or "\r" in secret:
             fail("API Key 无效。")
+        if action == "save-local" and any(char.isspace() for char in secret):
+            fail("API Key 不能包含空白字符。", secret)
 
         # Keep the previous credentials usable if a later config write fails.
         paths = [hermes_home / name for name in (".env", "config.yaml", "auth.json")]
+        if marker:
+            paths.append(marker)
         previous = {path: path.read_bytes() if path.exists() else None for path in paths}
         try:
             if provider == "custom":
@@ -113,12 +141,27 @@ def main() -> None:
                 save_provider_env_credential(expected_key, secret)
                 result = _apply_model_assignment_sync(scope="main", provider=normalized_provider,
                                                       model=normalized_model, task="", base_url="", api_key="")
+            if marker:
+                import yaml
+                config = yaml.safe_load((hermes_home / "config.yaml").read_text(encoding="utf-8"))
+                saved = config.get("model", {})
+                if (saved.get("provider") != result.get("provider")
+                        or saved.get("default") != result.get("model")):
+                    raise ValueError("模型配置写入后复核失败。")
+                from nora_system import save_json
+                save_json(marker, {
+                    "schema": 1, "provider": result["provider"], "model": result["model"],
+                    "keyEnv": expected_key, "baseUrl": base_url,
+                    "validation": "configuration-only",
+                    "savedAt": datetime.now(timezone.utc).isoformat(),
+                })
         except Exception:
             for path, contents in previous.items():
                 if contents is None:
                     path.unlink(missing_ok=True)
                 else:
                     temporary = path.with_name(path.name + ".nora-rollback")
+                    path.parent.mkdir(parents=True, exist_ok=True)
                     temporary.write_bytes(contents)
                     os.chmod(temporary, 0o600)
                     temporary.replace(path)
@@ -129,6 +172,7 @@ def main() -> None:
             "model": result.get("model", model),
             "keyEnv": expected_key,
             "baseUrl": base_url,
+            **({"activation": "next-session", "validation": "configuration-only"} if marker else {}),
         }, ensure_ascii=False))
     except SystemExit:
         raise
