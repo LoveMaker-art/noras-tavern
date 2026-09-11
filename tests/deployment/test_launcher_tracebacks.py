@@ -4,9 +4,31 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
+import io
+import contextlib
+import json
+from unittest.mock import patch
+import ast
 
 
 class LauncherTracebackTests(unittest.TestCase):
+    def test_status_keeps_its_single_json_document_contract(self):
+        root = Path(__file__).resolve().parent
+        script = root.parent / "installer/launcher_bridge.py"
+        tree = ast.parse(script.read_text(encoding="utf-8"))
+        # Keep the real CLI entrypoint, stubbing only inspection of installed services.
+        tree.body = [ast.parse("def status_payload(*args): return {'installed': False}").body[0]
+                     if isinstance(node, ast.FunctionDef) and node.name == "status_payload" else node
+                     for node in tree.body]
+        output = io.StringIO()
+        with patch.object(sys, "argv", ["bridge", "--nora-home", str(root),
+                                       "--hermes-home", str(root / "hermes"),
+                                       "--install-root", str(root / "tavern"), "status"]), \
+             contextlib.redirect_stdout(output):
+            exec(compile(ast.fix_missing_locations(tree), str(script), "exec"),
+                 {"__name__": "__main__", "__file__": str(script), "__package__": "ops.installer"})
+        self.assertEqual(json.loads(output.getvalue()), {"event": "result", "installed": False})
+
     def test_entrypoints_report_exception_type_and_call_site(self):
         installer = Path(__file__).resolve().parents[1] / "installer"
         cases = [

@@ -700,6 +700,8 @@ def main() -> None:
     open_url = sub.add_parser("open-url")
     open_url.add_argument("url")
     args = parser.parse_args()
+    if args.command != "status":
+        emit("diagnostic", component="python", executable=sys.executable, version=sys.version)
     args.nora_home = safe(args.nora_home) if args.nora_home else default_nora_home()
     args.hermes_home = safe(args.hermes_home) if args.hermes_home else default_hermes_home(args.nora_home)
     args.install_root = safe(args.install_root) if args.install_root else default_install_root(args.nora_home)
@@ -744,7 +746,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     try:
-        emit("diagnostic", component="python", executable=sys.executable, version=sys.version)
         main()
     except Exception as error:
         traceback.print_exc(file=sys.stderr)
