@@ -336,14 +336,18 @@ export function createWorldCoreRuntime(runtime, {
         const result = await client.importLibraryItem(worldId, { ...input, expected_revision: input.expected_revision ?? current.revision });
         manifests = manifests.map(item => item.world_id === worldId ? result.world : item);
         emit();
+        let runtimeApplied = false;
         if (runtime.read().metadata?.nora_world?.id === worldId) {
             try {
                 const snapshot = await client.prepareSnapshot(worldId);
-                if (runtime.read().metadata?.nora_world?.id === worldId) await executeSnapshot(snapshot, runtime, { measure });
+                if (runtime.read().metadata?.nora_world?.id === worldId) {
+                    await executeSnapshot(snapshot, runtime, { measure });
+                    runtimeApplied = true;
+                }
             }
-            catch (error) { throw Object.assign(new Error('已添加到世界，请重新打开该世界以载入。'), { saved: true, cause: error }); }
+            catch (error) { throw Object.assign(new Error('已添加到世界，请重新打开该世界以载入。'), { code: 'NORA_WORLD_PROJECTION_FAILED', saved: true, cause: error }); }
         }
-        return { ...result, world: model(result.world), saved: true };
+        return { ...result, world: model(result.world), saved: true, runtimeApplied };
     }
 
     async function addSetting(setting, { expectedRevision, idempotencyKey = null } = {}) {

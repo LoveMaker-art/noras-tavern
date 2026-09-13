@@ -53,13 +53,26 @@ Complete-card creation/import follows Create or import below. The current
 `library.save` tool does not store complete cards; a request to store only a
 complete card must not silently become a request to create a World.
 
-There is no general library-apply MCP tool in the inspected implementation.
-For an authorized Persona replacement, read the stored persona, then use the
-existing `world.update` live-page workflow only if available for the intended
-World. For independent characters or a whole worldbook, the current UI provides
-the library picker; saving or reading alone does not add them to a World.
-Report an unavailable write path, not a successful application. A saved library
-template is not a live link that automatically updates existing World copies.
+Discover `world.library.apply` through `nora.control.catalog`; application requires
+the intended live World/Session. Read the selected library item and `world.inspect`
+before writing. Saving or reading alone does not add material to a World.
+
+- Persona: use `world.update` with `{persona:{name,description}}`; this replaces
+  the player's identity, not another character.
+- Character: use `world.library.apply` with `input.character` containing a new
+  stable `id`, `operation:"create"` and `patch` from the read profile's `data`.
+  Preserve supported profile and activation fields; never substitute the narrator.
+- Worldbook: use `input.source` and `input.source_revision` from the selected
+  book read. For an embedded book, source is `{kind:"card",name:<avatar>}`;
+  for a standalone book, `{kind:"book",name:<returned name>}`. Preserve all
+  entries, including disabled ones. Do not turn the book into one prose setting.
+
+Pass `expectedRevision` from `world.inspect`. Character and book can share one
+application when requested together; World Core commits them together or rejects
+the change. It copies the book into this World and reuses an existing source
+binding. A saved template is not a live link to existing World copies. Importing
+material does not authorize script execution or a model call; capabilities may
+still await activation. Inspect the World and books afterward.
 
 ## Locate or inspect
 
@@ -106,9 +119,9 @@ execution on a page. The agent must not mark capabilities READY itself.
 First inspect the World. A Python-migrated World may contain independent
 `story_context.characters`. Its Runtime Card is a narrator resource, not any one
 of those characters. The card-field controls below do not edit that cast.
-Independent cast editing currently uses the Tavern UI/World Core service; this
-MCP has no cast-write schema. Report that boundary instead of changing the
-narrator's description and claiming the participating character was updated.
+Use `world.inspect` to read independent characters and `world.update` to edit
+one by ID, as described below. Do not change the narrator's description and claim
+the participating character was updated.
 
 Use the live-page control protocol in SKILL.md:
 
@@ -135,6 +148,9 @@ edit files to bypass it. All operations below use the live-page protocol in SKIL
 | Requested change | Read action | Write action / parameters |
 | --- | --- | --- |
 | My character (Persona), or World name | `world.inspect` | `world.update`: patch `{persona:{name,description}}` or `{name}`, expectedRevision |
+| Independent character | `world.inspect` | `world.update`: patch `{character:{id,operation,patch}}`, expectedRevision |
+| New World setting | `world.inspect` | `world.setting.add`: setting `{type:"constant" or "trigger",title,content,keys?}`, expectedRevision |
+| Apply a library character/book | Library read, then `world.inspect` | `world.library.apply`: input as above, expectedRevision |
 | World background used in the current session | `scenario.inspect` | `scenario.update`: text, expectedRevision; empty text restores the card's background |
 | A Worldbook entry | `worldbook.list`, then `worldbook.inspect` with name | `worldbook.update-entry`: name, entryId, patch, expectedRevision |
 | Delete one Worldbook entry | `worldbook.inspect` | `worldbook.delete-entry`: name, entryId, expectedRevision |
@@ -145,6 +161,28 @@ Persona belongs to the authoritative World manifest and applies again when opene
 Do not change the player's Persona by editing the AI character's description.
 Background overrides live in session metadata; editing card.scenario may not change
 the effective background while an override exists.
+
+Independent characters use `operation:"create"`, `"update"` or `"delete"`.
+For create, choose a stable new ID and keep it on retries. For update/delete,
+use an inspected ID; `__user__` is the Persona, not a cast-edit target. Supported
+patch fields: name, description, personality, profile, persistent_status,
+activation. Activation uses `mode:"constant"` or `"triggered"`, `enabled`, and
+trigger `keys`; preserve existing secondary keys and trigger parameters. Do not
+replace the whole character array. Deletion also removes its relationships.
+
+New settings use `type:"constant"` or `"trigger"` (not `"triggered"`); triggers
+require nonempty `keys`. They start enabled, like UI-created settings. To disable,
+read the returned book/entry and use `worldbook.update-entry` with `disable:true`.
+Do not pass unsupported ST metadata to setting.add; use the whole-book path for
+complex imported entries. A setting's persistent key comes from the control's
+idempotencyKey, not a new random key inside the request.
+
+For multiple characters or settings, execute sequentially and reread the World
+revision before each new write. This is not an all-or-nothing batch. Stop on a
+conflict, busy state or uncertain result; report confirmed items without rolling
+them back. Reuse the same payload/key for an uncertain transport retry, and inspect
+before planning a corrected action. `saved:true` with `runtimeApplied:false` or
+`reopenRequired:true` means stored but not confirmed live; do not add it again.
 
 Worldbooks: use the returned resource name and entry ID, not a list index guessed
 from visible order. Allowed patches: comment, content, key, keysecondary, constant,

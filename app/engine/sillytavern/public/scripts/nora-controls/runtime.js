@@ -110,17 +110,18 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             // Do not nest story generation inside another generation action.
             if (!definition.readOnly && !isStop && !command.action.startsWith('story.') && currentScope.worldId) {
                 const result = await dispatch().execute({ type: 'sidecar.run', key: 'runtime-controls',
-                    run: () => apply(command.action, params) });
+                    run: () => apply(command.action, params, command) });
                 if (result.status !== 'completed') throw result.error || controlError('NORA_CONTROL_BUSY', 'Control action was not completed.');
                 return result.value;
             }
-            return await apply(command.action, params);
+            return await apply(command.action, params, command);
         } finally { if (!definition.readOnly && !isStop) mutating = false; }
     }
-    async function apply(action, params) {
+    async function apply(action, params, command) {
+        if (scope().worldId !== command.worldId || scope().sessionId !== command.sessionId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World/Session changed before execution.');
         if (action.startsWith('theme.')) return themeAction(action, params);
         const context = getContext();
-        if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params);
+        if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params, command);
         if (params.scope === 'character' && !CONTROL_ACTIONS[action].readOnly && action !== 'helper.permissions' && action !== 'regex.permission') await assertOwnedCard();
         if (action === 'plugins.list') return { plugins: await plugins(), quickReply: { available: false, reason: 'frontend-module-not-installed' }, backend: ['nora.ledger.*', 'nora.story.*'] };
         if (action.startsWith('plugins.')) {

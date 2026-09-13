@@ -1,6 +1,6 @@
 ---
 name: tavern
-description: Manage worlds, chats, visuals, plugins and story profiles; find and save reusable personas, character profiles and worldbooks.
+description: Manage worlds, chats, visuals, plugins and story profiles; find, save and apply reusable personas, character profiles and worldbooks.
 version: 1.25.1
 author: ClawChat Tavern
 license: AGPL-3.0-only
@@ -25,7 +25,7 @@ Use for requested Tavern world/card, background/font/color, Persona/worldbook/mo
 operations. It is an operator guide for this product, not a general roleplay
 authoring or application-development skill.
 
-Also use for finding or saving reusable player personas, character profiles
+Also use for finding, saving or applying reusable player personas, character profiles
 and worldbooks in the library. Library storage is separate from applying
 material to a World; read the library section of references/worlds.md.
 
@@ -53,7 +53,7 @@ substituting the relevant file. Load a second reference only for a real second t
 
 | Requested outcome | Reference |
 | --- | --- |
-| Find/read/save library personas, character profiles or worldbooks; check supported reuse paths | [worlds: library](references/worlds.md#reusable-library-material) |
+| Find/read/save/apply library personas, character profiles or worldbooks | [worlds: library](references/worlds.md#reusable-library-material) |
 | Find/create/import/repair/delete a world; edit its Persona, background, runtime card or worldbook; switch/delete a saved text model | [worlds](references/worlds.md) |
 | Read/send/stop/regenerate/suggest replies; edit history; inspect or control story compression | [chat and ledger](references/chat-ledger.md) |
 | Inspect/control installed plugins, Helper scripts/buttons, Regex, MVU variables or MVU models; diagnose a card button | [plugins](references/plugins.md) |

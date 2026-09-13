@@ -20,6 +20,7 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     const { setConfigFilePath } = await importEngine('src/util.js');
     setConfigFilePath(path.join(engine, 'default/config.yaml'));
     const { createNoraWorldCore } = await importEngine('src/nora-world-core/index.js');
+    const { createStBackendMaterializer } = await importEngine('src/nora-world-core/st-backend-materializer.js');
     const { createNoraWorldsV2Router } = await importEngine('src/endpoints/nora-worlds-v2.js');
     const { router: ledgerRouter } = await importEngine('src/endpoints/nora-story-ledger.js');
     const { router: controlsRouter } = await importEngine('src/endpoints/nora-controls.js');
@@ -37,6 +38,7 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     // This fixture substitutes card materialization, not World Core or ledger logic.
     // No configured provider and only two rounds: no external model can be called.
     const core = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: {
+        ...createStBackendMaterializer({ directories, stagingRoot: directories.uploads }),
         materialize: async (_command, ids) => {
             const avatar = ids.worldId.replace(':', '-') + '.png';
             const chatId = ids.sessionId.replace(':', '-');
@@ -119,7 +121,13 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     const localFetch = (route, options) => fetch(base + route, options);
     context.getRequestHeaders = headers;
     context.characterId = 0; context.characters = [{ avatar: world.runtime_card.binding.avatar }];
+    const projectedBooks = []; let failBookProjection = false;
     const worlds = createWorldCoreRuntime({ read: () => ({ characters: context.characters, metadata: context.chatMetadata }),
+        applyStoryContext: value => { context.storyContext = value; },
+        applyWorldbook: async (name, book) => {
+            if (failBookProjection) throw new Error('private projection failure');
+            projectedBooks.push({ name, book });
+        },
         savePersona: async persona => { context.persona = persona; } }, {
         client: createWorldCoreClient(headers, { fetchImpl: localFetch, pendingStore: null }),
     });
@@ -153,6 +161,75 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     assert.equal(personaSaved.runtimeApplied, true);
     assert.equal(context.persona.name, 'Player via MCP');
     assert.equal((await core.prepareOpen(scope.worldId)).persona.name, 'Player via MCP');
+    // New actions traverse stdio MCP, HTTP, broker, live executor and real World storage.
+    // This fixture simulates projection, not a browser or a model response.
+    const control = async (action, params, key, read = false) => {
+        const args = { ...target, action, params, idempotencyKey: key, ...(read ? {} : { confirm: true }) };
+        const submitted = await call(read ? 'nora.control.read' : 'nora.control.execute', args);
+        assert.equal(submitted.isError, false, JSON.stringify(submitted.data));
+        const receipt = await until(async () => {
+            const { data } = await call('nora.control.operation', { operationId: submitted.data.id });
+            return ['completed', 'unknown', 'failed'].includes(data.status) ? data : null;
+        });
+        return { receipt, args };
+    };
+    const inspectWorld = async key => (await control('world.inspect', {}, key, true)).receipt.result;
+    assert.equal(catalog.data.actions['world.setting.add'].readOnly, false);
+    assert.equal(catalog.data.actions['world.library.apply'].readOnly, false);
+    for (const [id, activation] of [['first', { mode: 'constant' }], ['second', { mode: 'triggered', enabled: false, keys: ['rain'] }]]) {
+        const before = await inspectWorld(`roles:before:${id}`);
+        const edited = await control('world.update', { expectedRevision: before.revision,
+            patch: { character: { id, operation: 'create', patch: { name: id, description: id, activation } } } }, `roles:create:${id}`);
+        assert.equal(edited.receipt.result.runtimeApplied, true);
+    }
+    const roles = await inspectWorld('roles:after');
+    assert.equal(roles.characters.length, 2, 'Two independent characters; Persona is separate');
+    assert.equal(roles.characters.find(item => item.id === 'second').activation.enabled, false);
+    assert.deepEqual(context.storyContext.characters, roles.characters);
+    for (const type of ['constant', 'trigger']) {
+        const before = await inspectWorld(`settings:before:${type}`);
+        const added = await control('world.setting.add', { expectedRevision: before.revision,
+            setting: { type, title: type, content: `Lore ${type}`, ...(type === 'trigger' ? { keys: ['rain'] } : {}) } }, `settings:add:${type}`);
+        assert.equal(added.receipt.status, 'completed', JSON.stringify(added.receipt));
+        assert.equal(added.receipt.result.runtimeApplied, true);
+        const replay = await call('nora.control.execute', added.args);
+        assert.equal(replay.data.id, added.receipt.id);
+        assert.equal(replay.data.status, 'completed');
+    }
+    assert.equal(projectedBooks.length, 2, 'same key never reapplies a setting');
+    assert.equal(Object.keys(projectedBooks.at(-1).book.entries).length, 2);
+    const beforeFailure = await inspectWorld('settings:before-failure');
+    failBookProjection = true;
+    const failed = await control('world.setting.add', { expectedRevision: beforeFailure.revision,
+        setting: { type: 'constant', content: 'Saved but not projected' } }, 'settings:projection-failure');
+    assert.equal(failed.receipt.status, 'unknown');
+    assert.equal(failed.receipt.result.saved, true);
+    assert.equal(failed.receipt.result.runtimeApplied, false);
+    assert.equal(failed.receipt.result.reopenRequired, true);
+    assert.ok(!JSON.stringify(failed.receipt.result).includes('private projection'));
+    const savedAfterFailure = await core.getWorld(scope.worldId);
+    const failedReplay = await call('nora.control.execute', failed.args);
+    assert.equal(failedReplay.data.id, failed.receipt.id);
+    assert.equal(failedReplay.data.status, 'unknown');
+    assert.deepEqual(await core.getWorld(scope.worldId), savedAfterFailure, 'An uncertain receipt never creates another setting');
+    failBookProjection = false;
+    const beforeBook = await inspectWorld('library:before');
+    const savedBook = await core.saveLibraryWorldbook('MCP source', { entries: { 0: { uid: 0, content: 'Disabled lore', disable: true, constant: true, key: [] } } });
+    const preview = await core.readLibraryWorldbook(savedBook.source);
+    const applied = await control('world.library.apply', { expectedRevision: beforeBook.revision,
+        input: { source: preview.source, source_revision: preview.revision,
+            character: { id: 'library-role', operation: 'create', patch: { name: 'Library role', description: 'Independent' } } } }, 'library:apply');
+    // The fixture intentionally has no decodable runtime card for snapshot loading.
+    assert.equal(applied.receipt.status, 'unknown');
+    assert.equal(applied.receipt.result.saved, true);
+    assert.equal(applied.receipt.result.reopenRequired, true);
+    const afterBook = await core.getWorld(scope.worldId);
+    assert.ok(afterBook.story_context.characters.some(item => item.id === 'library-role'));
+    const ownedBook = afterBook.knowledge.find(item => item.source_key === preview.source_key);
+    assert.equal(ownedBook.ownership, 'owned');
+    const copied = JSON.parse(await fs.readFile(path.join(directories.worlds, ownedBook.binding.name + '.json')));
+    assert.equal(copied.entries[0].disable, true);
+    assert.deepEqual((await core.readLibraryWorldbook(savedBook.source)).book, preview.book);
     // New visual controls exercise the same real broker/World storage. No browser/visual claim.
     assert.equal(catalog.data.actions['theme.inspect'].readOnly, true);
     const themeRead = await call('nora.control.read', { ...target, action: 'theme.inspect', params: {}, idempotencyKey: 'theme:inspect' });

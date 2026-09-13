@@ -16,6 +16,9 @@ export function startControlClient({ controls, headers, fetcher = (...args) => f
         try { reply = { status: 'completed', result: await controls.execute(command) }; } catch (error) {
             // Execution may have had side effects before rejecting; never infer safe retry.
             reply = { status: 'unknown', result: { code: error.code || 'NORA_CONTROL_EXECUTION_FAILED', message: 'Control action did not confirm completion; inspect current state before retrying.' } };
+            if (error.code === 'NORA_WORLD_PROJECTION_FAILED' && error.saved === true) {
+                Object.assign(reply.result, { saved: true, runtimeApplied: false, reopenRequired: true });
+            }
         }
         for (let attempt = 0; attempt < 5 && !stopped; attempt++) {
             try {

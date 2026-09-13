@@ -9,9 +9,11 @@ export function createPanelActions({ getContext, story, request, character, asse
     const models = createModelProfiles({ model: story.model, settings: () => story.settings.uiSettings(), persist: save });
     async function plan() {
         const worldId = getContext().chatMetadata?.nora_world?.id;
+        const sessionId = getContext().chatMetadata?.nora_session?.id;
         character();
         const result = (await request(`/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/open-plan`)).plan;
-        if (result?.world_id !== worldId || result.runtime_card?.binding?.avatar !== character().avatar) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World binding changed.');
+        if (getContext().chatMetadata?.nora_world?.id !== worldId || getContext().chatMetadata?.nora_session?.id !== sessionId
+            || result?.world_id !== worldId || result.runtime_card?.binding?.avatar !== character().avatar) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World binding changed.');
         return result;
     }
     async function modelRevision() {
@@ -19,7 +21,7 @@ export function createPanelActions({ getContext, story, request, character, asse
         // Hash configuration/secret references, but never return credentials or secret IDs.
         return revision([settings.activeModel, settings.modelProfiles, settings.hermesModel]);
     }
-    return async function apply(action, params) {
+    return async function apply(action, params, command = {}) {
         if (action.startsWith('models.')) {
             if (action === 'models.list') return { models: models.list(), revision: await modelRevision(), scope: 'global' };
             if (await modelRevision() !== params.expectedRevision) throw stale();
@@ -28,12 +30,31 @@ export function createPanelActions({ getContext, story, request, character, asse
         }
         if (action === 'world.inspect') {
             const current = await plan();
-            return { worldId: current.world_id, name: current.name, persona: current.persona, revision: String(current.world_revision) };
+            return { worldId: current.world_id, name: current.name, persona: current.persona,
+                characters: current.story_context?.characters ?? [], relationships: current.story_context?.relationships ?? [],
+                cardProfileEnabled: current.story_context?.card_profile_enabled !== false, revision: String(current.world_revision) };
         }
         if (action === 'world.update') {
             const current = await plan();
             if (String(current.world_revision) !== params.expectedRevision) throw stale();
             return story.worlds.updateActive(params.patch, { expectedRevision: current.world_revision });
+        }
+        if (action === 'world.setting.add' || action === 'world.library.apply') {
+            const current = await plan();
+            if (String(current.world_revision) !== params.expectedRevision) throw stale();
+            if (action === 'world.setting.add') {
+                const { setting } = params;
+                if (Object.keys(setting).some(key => !['type', 'title', 'content', 'keys'].includes(key))
+                    || !['constant', 'trigger'].includes(setting.type) || typeof setting.content !== 'string'
+                    || (setting.title !== undefined && typeof setting.title !== 'string')
+                    || (setting.keys !== undefined && (!Array.isArray(setting.keys) || setting.keys.some(key => typeof key !== 'string')))
+                    || (setting.type === 'constant' && setting.keys?.length)) throw invalid();
+                if (typeof command.idempotencyKey !== 'string' || !command.idempotencyKey.trim()) throw invalid();
+                return story.worlds.addSetting(setting, { expectedRevision: current.world_revision, idempotencyKey: command.idempotencyKey });
+            }
+            const { input } = params;
+            if (Object.keys(input).some(key => !['character', 'source', 'source_revision'].includes(key))) throw invalid();
+            return story.worlds.importLibraryItem(current.world_id, { ...input, expected_revision: current.world_revision });
         }
         if (action.startsWith('scenario.')) {
             const card = character();

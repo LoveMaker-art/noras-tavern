@@ -69,6 +69,40 @@ test('live World projection never applies the saved persona to a switched World'
     assert.equal((await core.getWorld(world.world_id)).persona.name, 'Saved');
 });
 
+test('library application reports successful, failed and skipped live projection without losing saved roles', async t => {
+    const { core, world, command } = await fixture(t);
+    const other = (await core.createWorld({ ...command, name: 'Untouched' }, { idempotencyKey: 'untouched' })).world;
+    const state = { characters: [{ avatar: world.runtime_card.binding.avatar }], metadata: {
+        nora_world: { id: world.world_id }, nora_session: { id: world.sessions.default_session_id },
+    } };
+    let mode = 'success'; let projections = 0;
+    const runtime = createWorldCoreRuntime({ read: () => state }, {
+        client: { list: () => core.listWorlds(), importLibraryItem: (id, input) => core.importLibraryItem(id, input),
+            prepareSnapshot: async id => {
+                if (mode === 'switched') state.metadata.nora_world.id = other.world_id;
+                return { plan: await core.prepareOpen(id) };
+            } },
+        executeSnapshot: async () => { if (mode === 'failed') throw new Error('projection failed'); projections++; },
+    });
+    await runtime.refresh();
+    for (const next of ['success', 'failed', 'switched']) {
+        mode = next;
+        const current = await core.getWorld(world.world_id);
+        const input = { expected_revision: current.revision,
+            character: { id: next, operation: 'create', patch: { name: next, description: 'Role', activation: { mode: 'triggered', enabled: false, keys: ['rain'] } } } };
+        if (mode === 'failed') await assert.rejects(runtime.importLibraryItem(world.world_id, input), { code: 'NORA_WORLD_PROJECTION_FAILED', saved: true });
+        else {
+            const result = await runtime.importLibraryItem(world.world_id, input);
+            assert.equal(result.saved, true);
+            assert.equal(result.runtimeApplied, mode === 'success');
+        }
+        assert.ok((await core.getWorld(world.world_id)).story_context.characters.some(item => item.id === next));
+    }
+    assert.equal(projections, 1);
+    assert.deepEqual(await core.getWorld(other.world_id), other);
+    assert.equal((await core.getWorld(world.world_id)).story_context.characters.length, 3);
+});
+
 function modelFixture() {
     const settings = { activeModel: 'custom', hermesModel: { base: 'https://example.invalid', provider: 'provider', model: 'flash', secretId: 'hidden' },
         modelProfiles: [{ id: 'custom', name: 'Custom', model: 'model', base: 'https://example.invalid', secretId: 'shared' },
@@ -102,7 +136,7 @@ test('two callers cannot switch models concurrently; persistence failures remain
     assert.equal(f.settings.activeModel, '');
 });
 
-function panelFixture() {
+function panelFixture(options = {}) {
     const models = modelFixture();
     const plan = { world_id: 'world:one', world_revision: 3, name: 'World', persona: { name: 'Me', description: '' },
         runtime_card: { binding: { avatar: 'runtime.png' }, ownership: 'owned' },
@@ -118,11 +152,53 @@ function panelFixture() {
         worldbook: { loadWorldbook: async () => structuredClone(book), saveWorldbook: async (_name, next, options) => { book = next; savedRevision = options.expectedRevision; },
             saveWorldScenario: async text => { context.chatMetadata.scenario = text.trim(); } } };
     const controls = createRuntimeControls({ getContext: () => context, story, assertIdle: () => {}, globalRef: {},
-        fetcher: async () => ({ ok: true, json: async () => ({ plan }) }),
-        dispatch: () => ({ execute: async input => ({ status: 'completed', value: await input.run() }) }) });
-    const execute = (action, params = {}) => controls.execute({ action, params, confirm: true, worldId: plan.world_id, sessionId: 'session:one' });
-    return { execute, context, plan, models, get book() { return book; }, get savedRevision() { return savedRevision; }, get worldPatch() { return worldPatch; } };
+        fetcher: async () => ({ ok: true, json: async () => { options.onPlan?.(context); return { plan }; } }),
+        dispatch: () => ({ execute: async input => ({ status: 'completed', value: await input.run() }) }), ...options.controls });
+    const execute = (action, params = {}, extra = {}) => controls.execute({ action, params, confirm: true, worldId: plan.world_id, sessionId: 'session:one', ...extra });
+    return { execute, context, plan, models, story, get book() { return book; }, get savedRevision() { return savedRevision; }, get worldPatch() { return worldPatch; } };
 }
+
+test('new World controls reuse adapters, preserve revisions/keys, and reject unsupported fields', async () => {
+    const f = panelFixture(); const calls = [];
+    f.plan.story_context = { characters: [{ id: 'one', activation: { enabled: false } }], relationships: [], card_profile_enabled: false };
+    const inspected = await f.execute('world.inspect');
+    assert.deepEqual(inspected.characters, f.plan.story_context.characters);
+    assert.equal(inspected.cardProfileEnabled, false);
+    f.story.worlds.addSetting = async (...args) => { calls.push(args); return { saved: true, runtimeApplied: true }; };
+    f.story.worlds.importLibraryItem = async (...args) => { calls.push(args); return { saved: true, runtimeApplied: false }; };
+    const params = { setting: { type: 'trigger', title: 'Rain', content: 'Wet', keys: ['rain'] }, expectedRevision: '3' };
+    assert.equal((await f.execute('world.setting.add', params, { idempotencyKey: 'same-request' })).runtimeApplied, true);
+    assert.deepEqual(calls[0], [params.setting, { expectedRevision: 3, idempotencyKey: 'same-request' }]);
+    await assert.rejects(f.execute('world.setting.add', params), { code: 'NORA_CONTROL_INVALID' });
+    await assert.rejects(f.execute('world.setting.add', { ...params, expectedRevision: '2' }), { code: 'NORA_CONTROL_EDIT_STALE' });
+    await assert.rejects(f.execute('world.setting.add', { ...params, setting: { ...params.setting, disable: true } }, { idempotencyKey: 'bad' }), { code: 'NORA_CONTROL_INVALID' });
+    const input = { source: { kind: 'book', name: 'Source' }, source_revision: 'hash' };
+    const result = await f.execute('world.library.apply', { input, expectedRevision: '3' });
+    assert.equal(result.runtimeApplied, false);
+    assert.deepEqual(calls[1], ['world:one', { ...input, expected_revision: 3 }]);
+    await assert.rejects(f.execute('world.library.apply', { input: { ...input, expected_revision: 999 }, expectedRevision: '3' }), { code: 'NORA_CONTROL_INVALID' });
+    assert.equal(calls.length, 2);
+});
+
+test('World controls refuse busy generation, MVU analysis and target changes across async boundaries', async () => {
+    const params = { input: { source: { kind: 'book', name: 'Source' }, source_revision: 'hash' }, expectedRevision: '3' };
+    for (const controls of [
+        { assertIdle: () => { throw Object.assign(new Error('busy'), { code: 'NORA_CONTROL_BUSY' }); } },
+        { globalRef: { Mvu: { isDuringExtraAnalysis: () => true } } },
+    ]) {
+        await assert.rejects(panelFixture({ controls }).execute('world.library.apply', params), { code: 'NORA_CONTROL_BUSY' });
+    }
+    for (const field of ['nora_world', 'nora_session']) {
+        const f = panelFixture({ onPlan: context => { context.chatMetadata[field].id = 'switched'; } });
+        await assert.rejects(f.execute('world.library.apply', params), { code: 'NORA_CONTROL_SCOPE_CHANGED' });
+    }
+    let f;
+    f = panelFixture({ controls: { dispatch: () => ({ execute: async input => {
+        f.context.chatMetadata.nora_session.id = 'switched';
+        return { status: 'completed', value: await input.run() };
+    } }) } });
+    await assert.rejects(f.execute('world.library.apply', params), { code: 'NORA_CONTROL_SCOPE_CHANGED' });
+});
 
 test('control actions edit World persona, real scenario override, and global model via existing services', async () => {
     const f = panelFixture(); const before = await f.execute('world.inspect');
@@ -166,8 +242,8 @@ test('ST worldbook endpoint atomically rejects an outdated Nora revision without
     let status = 200;
     const res = { status(value) { status = value; return this; }, send() { return this; }, json() { return this; } };
     const req = { user: { directories: { worlds: root } }, body: { name: 'book', data: { entries: { 0: { content: 'new' } } }, expected_revision: await contentRevision(initial) } };
-    edit(req, res); assert.equal(status, 200);
-    req.body.data = initial; edit(req, res); assert.equal(status, 409);
+    await edit(req, res); assert.equal(status, 200);
+    req.body.data = initial; await edit(req, res); assert.equal(status, 409);
     assert.equal(JSON.parse(await fs.readFile(path.join(root, 'book.json'))).entries[0].content, 'new');
 });
 
