@@ -40,8 +40,15 @@ export function normalizeWorldTheme(value = {}) {
 }
 export function worldThemeCatalog() {
     return { version: 1, scope: 'world', colors: Object.keys(THEME_COLORS), enums, content_width: { min: 360, max: 760 }, assets,
-        replacement: 'apply replaces the full ui object; inspect and preserve omitted fields when making a partial user change; clear restores default styling',
+        replacement: 'apply replaces World overrides only; preserve unrequested overrides from ui, not effectiveUi. Omitted fields inherit the user global theme; clear restores global defaults.',
         boundaries: 'Existing story stage and right panel only; world rail, controls, prompts, cards and iframe internals are unchanged.' };
+}
+export function resolveWorldTheme(globalUi = {}, worldUi = {}) {
+    const defaults = normalizeWorldTheme(globalUi);
+    const local = normalizeWorldTheme(worldUi);
+    // An explicit World image owns both device fallbacks; never mix unrelated images.
+    return { version: 1, theme: { ...defaults.theme, ...local.theme },
+        assets: Object.keys(local.assets).length ? local.assets : defaults.assets };
 }
 export function projectWorldTheme(value) {
     const { theme, assets } = normalizeWorldTheme(value);

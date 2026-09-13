@@ -32,6 +32,7 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nora-mcp-e2e-')));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
     const directories = { root };
+    await fs.writeFile(path.join(root, 'settings.json'), JSON.stringify({ extension_settings: { nora_ui: {} } }));
     for (const name of ['characters', 'chats', 'worlds', 'backgrounds', 'uploads']) {
         directories[name] = path.join(root, name); await fs.mkdir(directories[name]);
     }
@@ -136,7 +137,9 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
     const mvu = createStMvuSettingsAdapter(() => context, { readMvuRuntime: () => mvuRuntime });
     const { createStoryActionDispatcher } = await importEngine('../../native-extensions/nora-ui/story-action-dispatcher.js');
     const dispatcher = createStoryActionDispatcher({ messages: { isGenerating: () => false }, getSessionKey: () => scope.sessionId });
-    const controls = createRuntimeControls({ getContext: () => context, story: { worlds, mvu, messages: { isGenerating: () => false } },
+    const globalSettings = {};
+    const controls = createRuntimeControls({ getContext: () => context, story: { worlds, mvu,
+        settings: { uiSettings: () => globalSettings }, messages: { isGenerating: () => false } },
         fetcher: localFetch, dispatch: () => dispatcher, assertIdle: () => {} });
     const page = startControlClient({ controls, headers: () => ({ 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture-token', Cookie: 'session=fixture' }),
         fetcher: (route, options) => fetch(base + route, options), pause: ms => new Promise(resolve => setTimeout(resolve, Math.min(ms, 10))) });
@@ -174,6 +177,21 @@ test('stdio MCP → shared HTTP → actual World Core/ledger routes, isolated in
         return { receipt, args };
     };
     const inspectWorld = async key => (await control('world.inspect', {}, key, true)).receipt.result;
+    const globalBefore = (await control('theme.global.inspect', {}, 'global:inspect', true)).receipt.result;
+    const beforeGlobalWorld = await core.getWorld(scope.worldId);
+    const globalSaved = await control('theme.global.apply', { ui: { theme: { background: '#111', text: '#eee' } },
+        expectedRevision: globalBefore.revision }, 'global:apply');
+    assert.equal(globalSaved.receipt.status, 'completed');
+    assert.equal(globalSaved.receipt.result.saved, true);
+    assert.equal(globalSaved.receipt.result.reopenRequired, true, 'No real UI renderer in this fixture');
+    assert.equal(globalSettings.globalTheme.theme.text, '#eee');
+    assert.deepEqual(await core.getWorld(scope.worldId), beforeGlobalWorld, 'Global changes do not rewrite the World');
+    const effective = (await control('theme.inspect', {}, 'global:effective', true)).receipt.result;
+    assert.equal(effective.effectiveUi.theme.text, '#eee');
+    assert.equal(effective.ui.theme.text, undefined, 'Inherited fields stay out of World overrides');
+    const globalCleared = await control('theme.global.clear', { expectedRevision: globalSaved.receipt.result.revision }, 'global:clear');
+    assert.equal(globalCleared.receipt.result.saved, true);
+    assert.deepEqual(globalSettings.globalTheme.theme, {});
     assert.equal(catalog.data.actions['world.setting.add'].readOnly, false);
     assert.equal(catalog.data.actions['world.library.apply'].readOnly, false);
     for (const [id, activation] of [['first', { mode: 'constant' }], ['second', { mode: 'triggered', enabled: false, keys: ['rain'] }]]) {

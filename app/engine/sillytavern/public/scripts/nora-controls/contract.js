@@ -3,9 +3,12 @@ const action = (description, fields = {}, options = {}) => Object.freeze({ descr
 export const CONTROL_ACTIONS = Object.freeze({
     'theme.catalog': action('Read supported original World Visuals theme fields, fonts and scope', {}, { readOnly: true }),
     'theme.backgrounds': action('List existing ST background images without downloading them', {}, { readOnly: true }),
+    'theme.global.inspect': action('Read this user\'s GLOBAL default theme, revision and renderer; applies across Worlds without changing their overrides', {}, { readOnly: true }),
+    'theme.global.apply': action('Replace this user\'s GLOBAL default ui; preserve unrequested fields from theme.global.inspect. World-specific overrides still win. No model call, no World reload, no world rail changes.', { ui: 'object', expectedRevision: 'string' }),
+    'theme.global.clear': action('Clear only this user\'s GLOBAL theme, keep all World-specific themes, images and story data', { expectedRevision: 'string' }),
     'theme.inspect': action('Read current World visual configuration, revision and renderer state', {}, { readOnly: true }),
     'theme.apply': action('Replace current World visual config only; preserve unmodified fields from inspect; no new UI controls', { ui: 'object', expectedRevision: 'string' }),
-    'theme.clear': action('Restore default appearance for current World; keep story data and image assets', { expectedRevision: 'string' }),
+    'theme.clear': action('Clear current World overrides to follow global defaults; keep story data and image assets', { expectedRevision: 'string' }),
     'world.inspect': action('Read active World name, persona, characters, relationships, card profile state and authoritative revision', {}, { readOnly: true }),
     'world.update': action('Patch active World through World Core: name, persona, character {id, operation:create|update|delete, patch}, relationships, cardProfileEnabled. Character patch supports name, description, personality, profile, persistent_status, activation (mode:constant|triggered, enabled, keys). Never replace the character array or edit library originals.', { patch: 'object', expectedRevision: 'string' }),
     'world.setting.add': action('Add one World-owned setting: setting {type:constant|trigger, title, content, keys?}. Trigger requires keys. Uses the control idempotency key; inspect World revision first.', { setting: 'object', expectedRevision: 'string' }),

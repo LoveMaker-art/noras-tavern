@@ -1,15 +1,18 @@
-import { projectWorldTheme } from '../../engine/sillytavern/public/scripts/nora-worlds/world-theme.js';
+import { normalizeWorldTheme, projectWorldTheme, resolveWorldTheme } from '../../engine/sillytavern/public/scripts/nora-worlds/world-theme.js';
 
 // Style existing elements only; ownership lets reset/switch restore their previous inline values.
-export function createWorldThemeController(select) {
+export function createWorldThemeController(select, readGlobalTheme = () => ({})) {
     const owned = new Map();
     let lastKey; let state = { ready: false };
     function render(world) {
         const targets = ['#nora-stage', '#nora-panel'].map(select);
         if (targets.some(target => !target)) { lastKey = undefined; state = { ready: false }; return state; }
-        const key = JSON.stringify([world?.id, world?.ui]);
+        let globalUi; let globalThemeInvalid = false;
+        try { globalUi = normalizeWorldTheme(readGlobalTheme()); }
+        catch { globalUi = normalizeWorldTheme({}); globalThemeInvalid = true; }
+        const key = JSON.stringify([world?.id, world?.ui, globalUi, globalThemeInvalid]);
         if (key === lastKey && targets.every(target => owned.has(target))) return state;
-        const projected = projectWorldTheme(world?.ui);
+        const projected = projectWorldTheme(resolveWorldTheme(globalUi, world?.ui));
         for (const [target, originals] of owned) {
             if (!targets.includes(target)) {
                 for (const [name, previous] of originals) restore(target, name, previous);
@@ -27,7 +30,7 @@ export function createWorldThemeController(select) {
             else target.setAttribute('data-world-reading-surface', projected.readingSurface);
         }
         lastKey = key;
-        state = { ready: true, worldId: world?.id || '', applied: true, visualVerified: false };
+        state = { ready: true, worldId: world?.id || '', applied: true, globalThemeInvalid, visualVerified: false };
         return state;
     }
     function restore(target, name, previous) {

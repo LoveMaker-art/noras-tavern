@@ -8,6 +8,7 @@ import { resolveNoraWorldCore, worldCorePaths } from '../nora-world-core/runtime
 import { normalizeIdempotencyKey, operationIdForKey } from '../nora-world-core/domain.js';
 import { stageBlankWorld, stageLibraryCard, stageStCardImport } from '../nora-world-core/st-import-staging.js';
 import { validateThemeAssets, importThemeBackground } from '../nora-world-core/theme-assets.js';
+import { readGlobalTheme, saveGlobalTheme } from '../nora-world-core/global-theme.js';
 
 function defaultResolveCore(request) {
     return resolveNoraWorldCore(request.user.directories);
@@ -135,6 +136,16 @@ export function createNoraWorldsV2Router({
         catch (error) { return sendError(response, error); }
     });
 
+    router.get('/theme', (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try { return response.json(readGlobalTheme(request.user.directories)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/theme', async (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try { return response.json(await saveGlobalTheme(request.user.directories, request.body)); }
+        catch (error) { return sendError(response, error); }
+    });
     router.post('/backgrounds/import', async (request, response) => {
         try {
             if (!request.file?.path) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'One uploaded background image is required.');

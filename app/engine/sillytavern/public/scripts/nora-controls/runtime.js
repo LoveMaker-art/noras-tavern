@@ -66,7 +66,11 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
     }
     async function request(route, body) {
         const response = await fetcher(route, { method: body === undefined ? 'GET' : 'POST', headers: getContext().getRequestHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
-        if (!response.ok) throw controlError('NORA_CONTROL_BACKEND_FAILED', 'Backend rejected control change.');
+        if (!response.ok) {
+            const payload = await response.json().catch(() => null);
+            const code = /^NORA_[A-Z_]+$/.test(payload?.error?.code) ? payload.error.code : 'NORA_CONTROL_BACKEND_FAILED';
+            throw controlError(code, 'Backend rejected control change; inspect current state before retrying.');
+        }
         return response.json();
     }
     async function assertOwnedCard() {
@@ -90,7 +94,9 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             effect: name === 'third-party/nora-mvu' ? 'use-mvu.runtime' : 'reload-required' }));
     }
     let mutating = false;
-    const themeAction = createThemeActions({ getContext, request, story, readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false } });
+    const themeAction = createThemeActions({ getContext, request, story,
+        readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false },
+        renderTheme: () => globalRef.NoraUI?.refreshTheme?.() || { ready: false } });
     const panelAction = createPanelActions({ getContext, story, request, character, assertOwnedCard, save });
     async function execute(command) {
         const definition = validateControl(command);

@@ -220,7 +220,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         }
         mounted = true;
         uiStore = createUiStore(state, settingsDomain, worlds);
-        worldThemeController = createWorldThemeController(selector => $(selector));
+        worldThemeController = createWorldThemeController(selector => $(selector), () => settingsDomain.uiSettings().globalTheme ?? {});
         const notifyStoryProfileCheckpoint = (requestedWorldId = '') => {
             const worldId = String(requestedWorldId || activeWorldModel()?.id || '').trim();
             if (!worldId) return;
@@ -510,5 +510,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
 
     const prepareShell = () => shellController.prepareShell();
 
-    window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions, themeState: () => worldThemeController?.inspect() || { ready: false } });
+    window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions,
+        refreshTheme: () => worldThemeController?.render(activeWorldModel()) || { ready: false },
+        themeState: () => worldThemeController?.inspect() || { ready: false } });
 })();

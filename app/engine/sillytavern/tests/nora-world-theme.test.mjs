@@ -3,7 +3,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { normalizeWorldTheme, projectWorldTheme } from '../public/scripts/nora-worlds/world-theme.js';
+import { normalizeWorldTheme, projectWorldTheme, resolveWorldTheme } from '../public/scripts/nora-worlds/world-theme.js';
+import { readGlobalTheme, saveGlobalTheme } from '../src/nora-world-core/global-theme.js';
+import { mergeRuntimeSettings } from '../src/settings-runtime.js';
 import { createWorldThemeController } from '../../../native-extensions/nora-ui/world-theme-controller.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
 import { importThemeBackground, validateThemeAssets } from '../src/nora-world-core/theme-assets.js';
@@ -52,6 +54,104 @@ test('renderer modifies only existing stage/panel styles and restores overrides 
     renderer.render({ id: 'b', ui: {} });
     assert.equal(stage.style.getPropertyValue('--world-font'), '');
     assert.equal(renderer.inspect().visualVerified, false);
+});
+
+test('global defaults follow World switches, update without reload, and never touch rail or overrides', () => {
+    const stage = element(), panel = element(), rail = element();
+    let defaults = { theme: { text: '#fff', background: '#111', font: 'modern' }, assets: {
+        background_desktop: '/backgrounds/global.png', background_mobile: '/backgrounds/mobile.png' } };
+    const a = { id: 'a', ui: { theme: { font: 'classic' }, assets: { background: '/backgrounds/local.png' } } };
+    const before = structuredClone(a);
+    const renderer = createWorldThemeController(s => ({ '#nora-stage': stage, '#nora-panel': panel, '#nora-rail': rail })[s], () => defaults);
+    renderer.render(a);
+    assert.equal(stage.style.getPropertyValue('--nora-ink'), '#fff');
+    assert.equal(stage.style.getPropertyValue('--world-image-mobile'), 'url("/backgrounds/local.png")');
+    defaults = { theme: { text: '#ddd', background: '#222' } };
+    renderer.render(a);
+    assert.equal(stage.style.getPropertyValue('--nora-ink'), '#ddd');
+    assert.match(stage.style.getPropertyValue('--nora-sans'), /Times/);
+    renderer.render({ id: 'b' });
+    assert.equal(stage.style.getPropertyValue('--nora-ink'), '#ddd');
+    assert.equal(stage.style.getPropertyValue('--world-image-mobile'), '');
+    assert.equal(stage.style.getPropertyValue('--nora-sans'), '');
+    assert.equal(rail.style.getPropertyValue('--nora-ink'), '');
+    defaults = {};
+    renderer.render(a);
+    assert.equal(stage.style.getPropertyValue('--nora-ink'), '');
+    assert.match(stage.style.getPropertyValue('--nora-sans'), /Times/);
+    assert.deepEqual(a, before);
+    defaults = { theme: { text: 'invalid' } };
+    assert.doesNotThrow(() => renderer.render(a));
+    assert.equal(renderer.inspect().globalThemeInvalid, true);
+    assert.deepEqual(resolveWorldTheme({}, {}), normalizeWorldTheme({}));
+});
+
+async function globalFixture(t) {
+    const root = await temporary(t);
+    const directories = { root, backgrounds: path.join(root, 'backgrounds') };
+    await fs.mkdir(directories.backgrounds);
+    const source = { username: 'Keep', oai_settings: { model: 'unchanged' }, extension_settings: {
+        mvu: { enabled: true }, nora_ui: { lastWorldId: 'world:a', modelProfiles: [{ id: 'kept' }] } } };
+    await fs.writeFile(path.join(root, 'settings.json'), JSON.stringify(source));
+    return { directories, source, load: async () => JSON.parse(await fs.readFile(path.join(root, 'settings.json'), 'utf8')) };
+}
+
+test('global theme persists only its field; stale/concurrent writes and missing backgrounds fail safely', async t => {
+    const { directories, source, load } = await globalFixture(t);
+    const before = readGlobalTheme(directories);
+    const ui = { theme: { background: '#111', text: '#fff' } };
+    const results = await Promise.allSettled([saveGlobalTheme(directories, { ui, expectedRevision: before.revision }),
+        saveGlobalTheme(directories, { ui: { theme: { text: '#eee' } }, expectedRevision: before.revision })]);
+    assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
+    assert.equal(results.find(r => r.status === 'rejected').reason.code, 'NORA_WORLD_REVISION_CONFLICT');
+    const saved = readGlobalTheme(directories);
+    const persisted = await load();
+    delete persisted.extension_settings.nora_ui.globalTheme;
+    assert.deepEqual(persisted, source);
+    for (const invalid of [{ theme: { text: 'red;display:none' } }, { assets: { background: '/backgrounds/missing.png' } }]) {
+        await assert.rejects(saveGlobalTheme(directories, { ui: invalid, expectedRevision: saved.revision }), { code: 'NORA_WORLD_INVALID' });
+        assert.deepEqual(readGlobalTheme(directories), saved);
+    }
+    const cleared = await saveGlobalTheme(directories, { ui: {}, expectedRevision: saved.revision });
+    assert.deepEqual(cleared.ui, normalizeWorldTheme({}));
+    assert.deepEqual(mergeRuntimeSettings(await load(), source).extension_settings.nora_ui.globalTheme, cleared.ui, 'An old page cannot restore cleared global overrides');
+});
+
+test('global theme HTTP is user scoped and runtime settings retain authoritative theme while saving other values', async t => {
+    const a = await globalFixture(t), b = await globalFixture(t);
+    const router = createNoraWorldsV2Router();
+    const post = router.stack.find(item => item.route?.path === '/theme' && item.route.methods.post).route.stack[0].handle;
+    let status = 200, payload;
+    const response = { setHeader() {}, status(code) { status = code; return this; }, json(value) { payload = value; return this; } };
+    const request = { user: { directories: a.directories }, body: { ui: { theme: { text: '#abc' } }, expectedRevision: readGlobalTheme(a.directories).revision } };
+    await post(request, response);
+    assert.equal(status, 200); assert.equal(payload.saved, true);
+    await post(request, response); assert.equal(status, 409);
+    assert.equal(readGlobalTheme(b.directories).ui.theme.text, undefined);
+    const current = await a.load();
+    const next = structuredClone(a.source); next.extension_settings.nora_ui.lastWorldId = 'world:b';
+    const merged = mergeRuntimeSettings(current, next);
+    assert.equal(merged.extension_settings.nora_ui.lastWorldId, 'world:b');
+    assert.equal(merged.extension_settings.nora_ui.globalTheme.theme.text, '#abc');
+    assert.equal(next.extension_settings.nora_ui.globalTheme, undefined, 'Do not mutate the submitted settings');
+});
+
+test('global MCP actions work without an active World, do not invoke full settings save, and report projection failures', async t => {
+    const { directories } = await globalFixture(t);
+    let state = {}; let failRender = false;
+    const request = async (_route, body) => body ? saveGlobalTheme(directories, body) : readGlobalTheme(directories);
+    const actions = createThemeActions({ getContext: () => ({}), request,
+        story: { settings: { uiSettings: () => state, saveUiSettings: () => assert.fail('No full settings save') }, worlds: { refresh: () => assert.fail('No World reload') } },
+        readTheme: () => ({ ready: true }), renderTheme: () => { if (failRender) throw Error('detached'); return { ready: true }; } });
+    const initial = await actions('theme.global.inspect', {});
+    const result = await actions('theme.global.apply', { ui: { theme: { text: '#fff' } }, expectedRevision: initial.revision });
+    assert.equal(result.saved, true); assert.equal(result.reopenRequired, false);
+    assert.equal(state.globalTheme.theme.text, '#fff');
+    failRender = true;
+    const cleared = await actions('theme.global.clear', { expectedRevision: result.revision });
+    assert.equal(cleared.saved, true); assert.equal(cleared.reopenRequired, true);
+    assert.deepEqual(readGlobalTheme(directories).ui, normalizeWorldTheme({}));
+    assert.throws(() => validateControl({ action: 'theme.global.apply', params: { ui: {}, expectedRevision: result.revision } }), { code: 'NORA_CONFIRMATION_REQUIRED' });
 });
 
 async function temporary(t) {
