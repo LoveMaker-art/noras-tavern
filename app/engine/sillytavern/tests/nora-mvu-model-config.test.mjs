@@ -32,8 +32,8 @@ test('MVU model config persists only non-secret endpoint, model and generation l
         schema: 'nora-mvu-model/v3',
         base_url: 'https://api.example.com/v1',
         model: 'mvu-fast',
-        context: 64000,
-        max_tokens: 20000,
+        context: 30000,
+        max_tokens: 4000,
     });
     assert.doesNotMatch(fs.readFileSync(path.join(root, NORA_MVU_MODEL_FILE), 'utf8'), /must-not-be-written|api_key/);
     assert.deepEqual(store.read(), saved);

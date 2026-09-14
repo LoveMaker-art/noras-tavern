@@ -447,6 +447,9 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             updateComposer: messageController.updateComposer,
             isGenerating: messageController.isGenerating,
             onWorldLeaving: notifyStoryProfileCheckpoint,
+            openModal,
+            closeModal,
+            openRestartWorldSheet: async world => (await ensureWorldCreationController()).openRestartWorldSheet(world),
         });
         panelController = createPanelController({
             settingsDomain,
@@ -466,6 +469,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             worldbookController,
             openCharacterLibrary,
             openPresetLibrary: async () => (await ensureLibraryController()).openPresets(),
+            openWorldPreset: async () => (await ensureLibraryController()).openWorldPreset(),
             openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
             saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
             openCharacterSheet,

@@ -1,6 +1,8 @@
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { renderStoryContext } from '../nora-worlds/story-context.js';
 import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
+import { createWorldPreset, normalizeWorldPreset, validateWorldPresetParameters, validateWorldPresetModelLimits, WORLD_PRESET_FIELDS } from '../nora-worlds/world-preset.js';
+import { worldPresetProjection } from '../nora-worlds/world-preset-projection.js';
 function requireRuntime(getContext) {
     const current = getContext();
     const required = ['selectCharacterById', 'updateChatMetadata', 'saveMetadata'];
@@ -30,6 +32,53 @@ function uniqueNames(values) {
 
 export function createStWorldAdapter(getContext) {
     let hasStoryContext = false;
+    let presetBaseline;
+    function captureWorldPreset() {
+        const current = requireRuntime(getContext);
+        current.getChatCompletionPromptManager();
+        const settings = current.chatCompletionSettings;
+        const fields = current.chatCompletionPresetFields;
+        const preset = { prompts: settings.prompts, prompt_order: settings.prompt_order };
+        for (const key of WORLD_PRESET_FIELDS) {
+            const setting = fields[key]?.[1];
+            if (setting && settings[setting] !== undefined) preset[key] = settings[setting];
+        }
+        const value = createWorldPreset(settings.preset_settings_openai || 'Default', preset);
+        presetBaseline ??= structuredClone(value);
+        return value;
+    }
+    function defaultWorldPreset() {
+        return structuredClone(presetBaseline || captureWorldPreset());
+    }
+    function validateWorldPreset(value) {
+        validateWorldPresetParameters(value.preset, requireRuntime(getContext).getChatCompletionModelLimits?.());
+    }
+    function applyWorldPreset(value) {
+        const snapshot = normalizeWorldPreset(value);
+        const current = requireRuntime(getContext);
+        if (current.isGenerating?.()) throw new Error('请等待当前生成完成。');
+        const baseline = defaultWorldPreset();
+        const settings = current.chatCompletionSettings;
+        const manager = current.getChatCompletionPromptManager();
+        const project = () => {
+            for (const key of WORLD_PRESET_FIELDS) {
+                const setting = current.chatCompletionPresetFields[key]?.[1];
+                if (!setting) continue;
+                const field = snapshot.preset[key] ?? baseline.preset[key];
+                if (field === undefined) delete settings[setting];
+                else settings[setting] = field;
+            }
+            settings.prompts = structuredClone(snapshot.preset.prompts);
+            settings.prompt_order = structuredClone(snapshot.preset.prompt_order);
+            manager.sanitizeServiceSettings();
+        };
+        project();
+        worldPresetProjection.bind(current.chatMetadata?.nora_world?.id, () => {
+            validateWorldPresetModelLimits(snapshot.preset, current.getChatCompletionModelLimits?.());
+            project();
+        });
+        // No preset selection event: world switching must not execute template scripts.
+    }
     function applyStoryContext(context, worldId = null) {
         const current = requireRuntime(getContext);
         if (!context && !hasStoryContext) { setWorldCharacterContext(null); return; }
@@ -142,6 +191,7 @@ export function createStWorldAdapter(getContext) {
         }
         await current.activateNoraWorldSnapshot(characterId, snapshot);
         applyStoryContext(snapshot.plan?.story_context, snapshot.plan?.world_id);
+        if (snapshot.plan?.preset) applyWorldPreset(snapshot.plan.preset);
         return read();
     }
 
@@ -178,8 +228,9 @@ export function createStWorldAdapter(getContext) {
         }
         const result = await current.closeCurrentChat();
         applyStoryContext(null);
+        worldPresetProjection.clear();
         return result;
     }
 
-    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, applyWorldbook, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
+    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, applyWorldbook, activate, activateSnapshot, applyStoryContext, captureWorldPreset, defaultWorldPreset, validateWorldPreset, applyWorldPreset, saveMetadata, savePersona, deleteChat, closeChat });
 }

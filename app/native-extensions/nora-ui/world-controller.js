@@ -22,6 +22,9 @@ export function createWorldController({
     closeDrawers,
     refresh,
     onWorldLeaving = () => {},
+    openModal,
+    closeModal,
+    openRestartWorldSheet,
 }) {
     let loadPromise;
     let queuedSelection;
@@ -74,25 +77,26 @@ export function createWorldController({
         const list = select('#nora-world-list');
         if (!list) return;
         const operation = store.read().worldStatus?.operation;
-        const operationLabel = operation?.kind === 'IMPORT' ? tr("正在导入角色卡…") : tr("正在恢复世界导入…");
+        const operationLabel = operation?.kind === 'RESTART' ? tr('正在准备新开局…')
+            : operation?.kind === 'IMPORT' ? tr("正在导入角色卡…") : tr("正在创建世界…");
         const operationHtml = operation?.status === 'RUNNING'
             ? `<div class="nora-world-progress" role="status"><span class="nora-progress-dot" aria-hidden="true"></span><span>${operationLabel}</span></div>`
             : operation?.status === 'FAILED' && operation.error?.retryable
-                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr("导入暂时中断，可继续")}</span><button data-retry-world-import type="button">${tr("重试")}</button></div>`
+                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr("世界创建暂时中断，可继续")}</span><button data-retry-world-import type="button">${tr("重试")}</button></div>`
                 : '';
         const worldsHtml = worlds.length ? worlds.map((world) => {
             const name = world.name || tr("未命名世界");
             const repair = !world.available
                 ? `<button class="nora-world-repair" data-repair-world="${escapeHtml(world.id)}" type="button">${tr("重新检查")}</button>`
                 : '';
-            const remove = `<button class="nora-delete-button nora-world-delete" data-delete-world="${escapeHtml(world.id)}" type="button" aria-label="${t`删除世界 ${escapeHtml(name)}`}" title="${tr("删除世界")}">${icons?.trash || '×'}</button>`;
+            const remove = `<button class="nora-icon-button nora-world-more" data-world-options="${escapeHtml(world.id)}" type="button" aria-label="${t`世界操作 ${escapeHtml(name)}`}" title="${tr('世界操作')}"><i class="fa-solid fa-ellipsis" aria-hidden="true"></i></button>`;
             return `<div class="nora-world ${world.active ? 'active' : ''}${world.available === false ? ' needs-repair' : ''}" data-world="${escapeHtml(world.id)}" role="button" tabindex="0" aria-label="${t`打开世界 ${escapeHtml(name)}`}"><div class="nora-world-copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(world.meta)}</small></div><div class="nora-world-actions">${repair}${remove}</div></div>`;
         }).join('') : `<div class="nora-rail-empty"><span>✦</span><p>${tr("还没有世界")}</p><small>${tr("导入角色卡开始第一场故事")}</small></div>`;
         list.innerHTML = operationHtml + worldsHtml;
     }
 
     function listKeydown(event) {
-        if (event.target.closest('[data-delete-world], [data-repair-world], [data-retry-world-import]')) return;
+        if (event.target.closest('[data-world-options], [data-delete-world], [data-repair-world], [data-retry-world-import]')) return;
         const world = event.target.closest('.nora-world[data-world]');
         if (!world || !['Enter', ' '].includes(event.key)) return;
         event.preventDefault();
@@ -213,6 +217,20 @@ export function createWorldController({
     }
 
     async function selectWorld(event) {
+        const optionsButton = event.target instanceof Element ? event.target.closest('[data-world-options]') : null;
+        if (optionsButton) {
+            event.preventDefault();
+            event.stopPropagation();
+            const world = models().find(item => item.id === optionsButton.dataset.worldOptions);
+            if (!world) return;
+            const modal = openModal(world.name || tr('世界操作'), `<div class="nora-choice-list">
+                <button data-world-restart type="button" ${world.available ? '' : 'disabled'}><strong>${tr('重新开局')}</strong><span>${tr('沿用设定，开始一场新的故事')}</span></button>
+                <button data-world-remove type="button"><strong>${tr('删除世界')}</strong><span>${tr('删除这个世界及其故事记录')}</span></button>
+            </div>`, 'nora-world-modal nora-plain-sheet');
+            select('[data-world-restart]', modal).addEventListener('click', () => openRestartWorldSheet(world));
+            select('[data-world-remove]', modal).addEventListener('click', () => { closeModal(); void deleteWorld(world.id); });
+            return;
+        }
         const retryImport = event.target instanceof Element ? event.target.closest('[data-retry-world-import]') : null;
         if (retryImport) {
             retryImport.disabled = true;

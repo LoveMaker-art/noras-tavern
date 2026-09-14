@@ -1,5 +1,93 @@
 export function createStPresetAdapter(runtime) {
     const manager = () => runtime().getPresetManager('openai');
+    let saving = false;
+    const globalOrder = preset => preset.prompt_order?.find(item => String(item.character_id) === '100001')?.order || [];
+    const liveRevision = () => {
+        const settings = runtime().chatCompletionSettings;
+        return JSON.stringify([manager().getSelectedPresetName(), settings.prompts, settings.prompt_order]);
+    };
+
+    function toggleablePresetEntries(preset) {
+        const promptManager = runtime().getChatCompletionPromptManager();
+        return (preset.prompts || []).filter(prompt => promptManager.isPromptToggleAllowed(prompt)).map(prompt => prompt.identifier);
+    }
+
+    function readPreset(name, { storedOnly = false } = {}) {
+        const current = manager();
+        const { presets, preset_names } = current.getPresetList();
+        const stored = presets[preset_names[name]];
+        if (!stored) throw new Error('预设不存在，请重新打开预设库。');
+        const promptManager = runtime().getChatCompletionPromptManager();
+        const active = !storedOnly && current.getSelectedPresetName() === name;
+        const settings = runtime().chatCompletionSettings;
+        const preset = structuredClone(active ? { ...stored, prompts: settings.prompts, prompt_order: settings.prompt_order } : stored);
+        return { name, current: active, storedOnly, preset, revision: JSON.stringify(stored), runtimeRevision: liveRevision(),
+            toggleable: (preset.prompts || []).filter(prompt => promptManager.isPromptToggleAllowed(prompt)).map(prompt => prompt.identifier) };
+    }
+
+    async function savePresetEntries(snapshot, changes, { apply = false, enableScripts = false } = {}) {
+        if (saving || runtime().isGenerating?.()) throw new Error('请等待当前生成或保存完成。');
+        const latest = readPreset(snapshot.name, { storedOnly: snapshot.storedOnly });
+        if (latest.revision !== snapshot.revision || (!snapshot.storedOnly && latest.runtimeRevision !== snapshot.runtimeRevision)) {
+            throw new Error('预设已改变，请重新打开后再编辑。');
+        }
+        if (!Array.isArray(changes)) throw new Error('预设条目修改无效。');
+        const current = manager(), { presets, preset_names } = current.getPresetList();
+        const index = preset_names[snapshot.name];
+        const updated = structuredClone(presets[index]);
+        const running = structuredClone(runtime().chatCompletionSettings.prompt_order || []);
+        const patch = (target, change) => {
+            target.prompt_order ||= [];
+            let group = target.prompt_order.find(item => String(item.character_id) === '100001');
+            if (!group) target.prompt_order.push(group = { character_id: 100001, order: [] });
+            const entry = group.order.find(item => item.identifier === change.identifier);
+            if (entry) entry.enabled = change.enabled;
+            else group.order.push({ identifier: change.identifier, enabled: change.enabled });
+        };
+        const seen = new Set();
+        for (const change of changes) {
+            const prompt = latest.preset.prompts?.find(item => item.identifier === change.identifier);
+            const listed = globalOrder(latest.preset).some(item => item.identifier === change.identifier);
+            if (!prompt || !latest.toggleable.includes(change.identifier) || typeof change.enabled !== 'boolean'
+                || seen.has(change.identifier) || (!listed && change.add !== true)) throw new Error('预设条目不可切换，请重新打开检查。');
+            seen.add(change.identifier);
+            // Runtime defaults may be absent from an older imported preset.
+            if (!updated.prompts.some(item => item.identifier === change.identifier)) updated.prompts.push(structuredClone(prompt));
+            patch(updated, change);
+            patch({ prompt_order: running }, change);
+        }
+        saving = true;
+        try {
+            // Native updateList also reapplies the preset and fires script events.
+            await current.savePreset(snapshot.name, updated, { skipUpdate: true });
+            if (JSON.stringify(presets[index]) !== snapshot.revision) {
+                throw Object.assign(new Error('预设已保存，但本地状态已改变，请重新加载后检查。'), { saved: true });
+            }
+            presets[index] = updated;
+            if (apply) {
+                try {
+                    if (liveRevision() !== snapshot.runtimeRevision || runtime().isGenerating?.()) throw new Error('当前使用状态已改变');
+                    if (snapshot.current) {
+                        const settings = runtime().chatCompletionSettings;
+                        const previous = settings.prompt_order;
+                        settings.prompt_order = running;
+                        try { await runtime().saveSettingsStrict(); } catch (error) {
+                            if (settings.prompt_order === running) settings.prompt_order = previous;
+                            throw error;
+                        }
+                        const prompts = runtime().getChatCompletionPromptManager();
+                        if (prompts.containerElement) prompts.render(false);
+                    } else {
+                        await applyPreset(snapshot.name, { enableScripts });
+                        await runtime().saveSettingsStrict();
+                    }
+                } catch (error) {
+                    throw Object.assign(new Error('预设已保存，但未能完成应用，请重试应用。', { cause: error }), { saved: true });
+                }
+            }
+            return readPreset(snapshot.name);
+        } finally { saving = false; }
+    }
     function listPresets() {
         const current = manager();
         const { presets, preset_names } = current.getPresetList();
@@ -44,11 +132,21 @@ export function createStPresetAdapter(runtime) {
         // Filter before ST emits preset events, so helper subscribers never see unapproved scripts.
         presets[index] = projected;
         settings.bind_preset_to_connection = false;
-        try { await current.selectPreset(current.findPreset(name)); }
-        finally {
+        try { await current.selectPreset(current.findPreset(name)); } finally {
             settings.bind_preset_to_connection = previousBinding;
             presets[index] = original;
         }
     }
-    return { listPresets, importPreset, applyPreset };
+    async function deletePreset(snapshot) {
+        if (saving || runtime().isGenerating?.()) throw new Error('请等待当前生成或保存完成。');
+        const latest = readPreset(snapshot.name, { storedOnly: true });
+        if (latest.revision !== snapshot.revision) throw new Error('预设已改变，请重新打开后再编辑。');
+        saving = true;
+        try {
+            if (!await manager().deletePreset(snapshot.name, { skipSwitch: true })) {
+                throw new Error('模板删除失败，请重试。');
+            }
+        } finally { saving = false; }
+    }
+    return { listPresets, importPreset, applyPreset, readPreset, savePresetEntries, toggleablePresetEntries, deletePreset };
 }

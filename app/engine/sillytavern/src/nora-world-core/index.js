@@ -20,6 +20,7 @@ export function createNoraWorldCore(options) {
         addWorldSetting: core.addWorldSetting.bind(core),
         submitWorld: core.submitWorld.bind(core),
         createWorld: core.createWorld.bind(core),
+        restartWorld: core.restartWorld.bind(core),
         retryOperation: core.retryOperation.bind(core),
         getOperation: core.getOperation.bind(core),
         getWorld: core.getWorld.bind(core),

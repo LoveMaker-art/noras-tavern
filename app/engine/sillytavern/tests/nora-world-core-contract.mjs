@@ -23,6 +23,7 @@ for (const relative of [
     'nora-worlds/worldbook-bindings.js',
     'nora-worlds/story-context.js',
     'nora-worlds/character-references.js',
+    'nora-worlds/world-preset.js',
     'nora-compat/mvu-compatibility.js',
     'nora-compat/prompt-template-compatibility.js',
 ]) {
@@ -37,6 +38,7 @@ for (const file of files) {
     const source = fs.readFileSync(path.join(moduleRoot, file), 'utf8')
         .replace(/^import \{ worldbookOverrides \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/worldbook-bindings\.js';$/m, '')
         .replace(/^import \{ normalizeWorldTheme \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/world-theme\.js';$/m, '')
+        .replace(/^import \{ normalizeWorldPreset(?:, validateWorldPresetParameters)? \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/world-preset\.js';$/m, '')
         .replace(/^import \{ (?:createStoryContext, )?(?:editStoryCharacter, )?normalizeStoryContext \} from '\.\.\/\.\.\/public\/scripts\/nora-worlds\/story-context\.js';$/m, '')
         .replace(/^import \{\n    adaptCardForMvuRuntime,\n    inspectMvuCompatibility,\n    normalizeTavernHelperScripts,\n\} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/mvu-compatibility\.js';$/m, '')
         .replace(/^import \{ inspectPromptTemplateCompatibility \} from '\.\.\/\.\.\/public\/scripts\/nora-compat\/prompt-template-compatibility\.js';$/m, '');

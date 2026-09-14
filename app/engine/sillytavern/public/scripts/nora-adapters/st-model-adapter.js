@@ -72,12 +72,10 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
 
         const nativeField = { claude: 'claude_model', makersuite: 'google_model' }[source];
         reconnectPromise ??= nativeField ? current.configureProviderChatCompletion({
-            source, model: settings[nativeField], context: settings.openai_max_context, maxTokens: settings.openai_max_tokens,
+            source, model: settings[nativeField],
         }) : current.configureCustomChatCompletion({
             url: settings.custom_url,
             model: settings.custom_model,
-            context: settings.openai_max_context,
-            maxTokens: settings.openai_max_tokens,
         });
         try {
             await reconnectPromise;
@@ -112,14 +110,12 @@ export function createStModelAdapter(runtime, { reportStage = () => {} } = {}) {
                 await rotateModelSecret(secretId, secretKey);
             }
             if (source !== 'custom') await runtime().configureProviderChatCompletion({
-                source, model: profile.model, context: profile.context, maxTokens: profile.tokens,
+                source, model: profile.model,
             });
             else await runtime().configureCustomChatCompletion({
                 url: profile.base,
                 model: profile.model,
                 apiKey: '',
-                context: profile.context,
-                maxTokens: profile.tokens,
             });
             return Object.freeze({ secretId: secretId || previousSecretId });
         } catch (error) {

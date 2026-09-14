@@ -2,6 +2,7 @@ import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i1
 import { describePreset } from './preset-presentation.js';
 import { libraryTabs, beginLibraryView } from './library-tabs.js';
 import { normalizeCharacterActivation } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
+import { createWorldPreset, validateWorldPresetParameters, WORLD_PRESET_PARAMETERS } from '../../engine/sillytavern/public/scripts/nora-worlds/world-preset.js';
 
 export function createLibraryController({ worlds, presets, dialogs, operations, activeWorldModel, isGenerating,
     characterField, openCards, refresh, select: $, selectAll: $$, escapeHtml: html }) {
@@ -255,7 +256,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             const render = () => {
                 const query = presetQuery.trim().toLocaleLowerCase();
                 const items = library.items.map((item, index) => ({ item, index })).filter(({ item }) => item.name.toLocaleLowerCase().includes(query));
-                results.innerHTML = items.map(({ item, index }) => `<button type="button" class="nora-preset-row${item.name === library.selected ? ' is-current' : ''}" data-preset="${index}" ${item.name === library.selected ? 'aria-current="true"' : ''}><strong>${html(item.name)}</strong><span>${item.name === library.selected ? `<i class="fa-solid fa-check" aria-hidden="true"></i><small>${tr('使用中')}</small>` : '<i class="fa-solid fa-chevron-right" aria-hidden="true"></i>'}</span></button>`).join('') || `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的预设' : '暂无预设')}</p>`;
+                results.innerHTML = items.map(({ item, index }) => `<button type="button" class="nora-preset-row" data-preset="${index}"><strong>${html(item.name)}</strong><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`).join('') || `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的预设' : '暂无预设')}</p>`;
                 $$('[data-preset]', results).forEach(button => button.addEventListener('click', () => openPreset(library.items[Number(button.dataset.preset)])));
                 results.scrollTop = presetScroll;
             };
@@ -269,32 +270,299 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
         } catch (error) { errorToast(error); }
     }
 
-    function openPreset(item) {
-        const view = describePreset(item.preset);
-        const current = presets.listPresets().selected === item.name;
-        const rows = view.rows.map(prompt => {
-            const status = !view.configured ? tr('顺序未配置') : !prompt.listed ? tr('未加入顺序') : prompt.enabled ? tr('已启用') : tr('已禁用');
-            return `<details class="nora-preset-prompt${prompt.enabled === false ? ' is-disabled' : ''}"><summary><span>${html(prompt.name || prompt.identifier)}</span><small>${status}</small></summary><p>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p></details>`;
-        }).join('');
-        const modal = dialogs.open(item.name, `<div class="nora-preset-detail-scroll"><button type="button" class="nora-sheet-back" data-back><i class="fa-solid fa-chevron-left" aria-hidden="true"></i> ${tr('预设库')}</button>
-            <div class="nora-preset-meta"><span>${tr('全局预设')}</span>${current ? `<span><i class="fa-solid fa-check" aria-hidden="true"></i> ${tr('使用中')}</span>` : ''}</div>
-            ${view.parameters.length ? `<dl class="nora-preset-parameters">${view.parameters.map(parameter => `<div><dt>${tr(parameter.label)}</dt><dd>${html(parameter.value)}</dd></div>`).join('')}</dl>` : ''}
-            <details class="nora-preset-prompts"><summary>${tr('提示词条目')} <small>${view.rows.length}</small></summary>${rows || `<p class="nora-sheet-empty">${tr('暂无条目')}</p>`}</details></div>
-            <footer class="nora-form-actions nora-editor-toolbar nora-preset-footer">${view.scripts ? `<label class="nora-library-check"><input type="checkbox" data-scripts>${tr('启用嵌入式脚本')} (${view.scripts})</label>` : ''}<button type="button" data-apply class="nora-primary">${tr(current ? '重新应用' : '应用预设')}</button></footer>`, 'nora-preset-modal nora-preset-detail-modal nora-plain-sheet');
-        $('[data-back]', modal).addEventListener('click', openPresets);
-        $('[data-apply]', modal).addEventListener('click', async event => {
-            if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
-            const button = event.currentTarget;
-            const accepted = await dialogs.confirm({ title: tr('应用此预设？'), body: tr('将更换全局提示词与生成参数，切换世界后仍使用此预设。模型地址和密钥保持不变。'), confirmLabel: tr('应用'), restoreSheet: true });
-            if (!accepted || busy()) return;
-            button.disabled = true;
+    async function openWorldPreset() {
+        const world = activeWorldModel();
+        if (!world) return dialogs.toast(tr('请先进入一个世界。'));
+        if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
+        try {
+            const ready = await worlds.ensureReady(world.id);
+            if (activeWorldModel()?.id !== world.id) return;
+            openPreset({ name: ready.preset.name }, { world: ready });
+        } catch (error) { errorToast(error); }
+    }
+
+    function openPreset(item, editor = {}) {
+        let snapshot;
+        const world = editor.world;
+        try {
+            if (world) {
+                const preset = structuredClone(editor.draft || world.preset.preset);
+                snapshot = { preset, toggleable: presets.toggleablePresetEntries(preset) };
+            } else snapshot = presets.readPreset(item.name, { storedOnly: true });
+        }
+        catch (error) { errorToast(error); return; }
+        let view = describePreset(snapshot.preset);
+        let presetName = item.name;
+        let templateChanged = editor.templateChanged;
+        let panel = null;
+        let expectedRevision = world?.revision;
+        const changes = new Map();
+        const parameterChanges = new Map();
+        let saving = false;
+        let savedPending = false;
+        let savedDraft = false;
+        let persistedPreset = world?.preset;
+        const draftPreset = () => {
+            const draft = structuredClone(snapshot.preset);
+            for (const [key, value] of parameterChanges) draft[key] = value;
+            let group = draft.prompt_order.find(entry => String(entry.character_id) === '100001');
+            if (!group) draft.prompt_order.push(group = { character_id: 100001, order: [] });
+            for (const change of changes.values()) {
+                const entry = group.order.find(entry => entry.identifier === change.identifier);
+                if (entry) entry.enabled = change.enabled;
+                else group.order.push({ identifier: change.identifier, enabled: change.enabled });
+            }
+            return draft;
+        };
+        const dirty = () => world
+            ? JSON.stringify([presetName, draftPreset()]) !== JSON.stringify([persistedPreset.name, persistedPreset.preset])
+            : changes.size > 0;
+        const parameterError = () => {
+            if (!world) return '';
+            try { validateWorldPresetParameters(draftPreset()); return ''; } catch (error) { return error.message; }
+        };
+        const parameterField = (field, slider = false) => {
+            const value = snapshot.preset[field.key] ?? '';
+            const limits = `min="${field.min}" max="${field.max}" step="${field.step}"`;
+            return `<div class="nora-preset-parameter"><label for="nora-preset-${field.key}">${tr(field.label)}${slider ? '' : ' <small>token</small>'}</label><div class="nora-preset-parameter-inputs">${slider ? `<input type="range" data-preset-range="${field.key}" ${limits} value="${html(value)}" aria-label="${tr(field.label)}">` : ''}<input id="nora-preset-${field.key}" type="number" inputmode="${slider ? 'decimal' : 'numeric'}" data-preset-parameter="${field.key}" ${limits} value="${html(value)}" placeholder="${tr('未设置')}"></div></div>`;
+        };
+        const renderFields = () => {
+            const parameterEditor = `<div class="nora-form nora-preset-parameter-editor"><div class="nora-form-grid">${WORLD_PRESET_PARAMETERS.slice(0, 2).map(field => parameterField(field)).join('')}</div><details data-advanced-parameters><summary>${tr('高级参数')}</summary><div class="nora-preset-sampling">${WORLD_PRESET_PARAMETERS.slice(2).map(field => parameterField(field, true)).join('')}</div></details><p class="nora-preset-parameter-error" data-parameter-error role="alert" hidden></p></div>`;
+            const rows = view.rows.map((prompt, index) => {
+                const status = !view.configured ? tr('顺序未配置') : !prompt.listed ? tr('未加入顺序') : prompt.enabled ? tr('已启用') : tr('已禁用');
+                const allowed = snapshot.toggleable.includes(prompt.identifier);
+                return `<div class="nora-preset-prompt-row${prompt.enabled === false ? ' is-disabled' : ''}" data-prompt-row="${index}"><details class="nora-preset-prompt"><summary><span>${html(prompt.name || prompt.identifier)}</span><small data-prompt-status>${status}</small></summary><p>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p></details>
+                <div class="nora-preset-entry-action">${allowed ? `<input type="checkbox" role="switch" class="nora-preset-toggle" data-prompt-toggle="${index}" aria-label="${html(prompt.name || prompt.identifier)}" ${prompt.enabled ? 'checked' : ''} ${prompt.listed ? '' : 'hidden'}>
+                <button type="button" class="nora-icon-button" data-prompt-add="${index}" title="${tr('加入执行顺序')}" aria-label="${tr('加入执行顺序')}：${html(prompt.name || prompt.identifier)}" ${prompt.listed ? 'hidden' : ''}><i class="fa-solid fa-plus" aria-hidden="true"></i></button>` : `<span class="nora-preset-locked" title="${tr('此条目由引擎管理，不支持切换')}" aria-label="${tr('此条目由引擎管理，不支持切换')}" tabindex="0"><i class="fa-solid fa-lock" aria-hidden="true"></i></span>`}</div></div>`;
+            }).join('');
+            return `${world ? parameterEditor : view.parameters.length ? `<dl class="nora-preset-parameters">${view.parameters.map(parameter => `<div><dt>${tr(parameter.label)}</dt><dd>${html(parameter.value)}</dd></div>`).join('')}</dl>` : ''}
+                <details class="nora-preset-prompts" open><summary>${tr('提示词条目')} <small>${view.rows.length}</small></summary>${rows || `<p class="nora-sheet-empty">${tr('暂无条目')}</p>`}</details>`;
+        };
+        const modal = dialogs.open(world ? tr('编辑预设') : item.name, `<div class="nora-preset-detail-scroll">${world ? `<button type="button" class="nora-preset-selector" data-change-preset aria-expanded="false" aria-controls="nora-preset-choices" title="${tr('更换预设')}"><strong data-current-preset>${html(presetName)}</strong><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
+            <section id="nora-preset-choices" class="nora-preset-chooser" data-preset-chooser hidden><div class="nora-preset-search"><input type="search" data-search aria-label="${tr('搜索预设')}" placeholder="${tr('搜索预设')}"><button type="button" class="nora-icon-button" data-chooser-cancel title="${tr('取消更换')}" aria-label="${tr('取消更换')}"><i class="fa-solid fa-xmark" aria-hidden="true"></i></button></div><div class="nora-preset-results" data-results></div></section>` : `<button type="button" class="nora-sheet-back" data-back><i class="fa-solid fa-chevron-left" aria-hidden="true"></i> ${tr('预设库')}</button>`}
+            <div class="nora-preset-meta"><span>${world ? html(world.name) : tr('预设模板')}</span><span class="nora-preset-save-state" data-preset-state role="status"></span></div>
+            <div data-preset-fields>${renderFields()}</div></div>
+            <footer class="nora-form-actions nora-editor-toolbar nora-preset-footer"><div class="nora-preset-actions" data-editor-actions>
+                ${world ? `<button type="button" class="nora-preset-save-link" data-save-as>${tr('另存到预设库')}</button><button type="button" class="nora-secondary" data-editor-cancel>${tr('取消')}</button>` : `<button type="button" class="nora-icon-button nora-preset-delete" data-delete-preset title="${tr('删除模板')}" aria-label="${tr('删除模板')}"><i class="fa-solid fa-trash-can" aria-hidden="true"></i></button>`}<button type="button" data-apply class="nora-primary" disabled>${tr(world ? '保存' : '保存模板')}</button></div>
+                ${world ? `<form class="nora-form nora-preset-copy-form" data-save-preset-form hidden><label>${tr('库中名称')}<input name="name" maxlength="150" required autocomplete="off"></label><p class="nora-preset-parameter-error" data-copy-error role="alert" hidden></p><div class="nora-preset-copy-actions"><button type="button" class="nora-secondary" data-copy-cancel>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></div></form>` : ''}</footer>`, 'nora-preset-modal nora-preset-detail-modal nora-plain-sheet nora-fixed-editor');
+        const updateActions = () => {
+            const error = parameterError();
+            const errorNode = $('[data-parameter-error]', modal);
+            if (errorNode) { errorNode.textContent = error; errorNode.hidden = !error; }
+            $('[data-preset-state]', modal).textContent = tr(savedPending ? '已保存，待应用' : dirty() ? '未保存' : '');
+            const apply = $('[data-apply]', modal);
+            apply.disabled = saving || Boolean(panel) || Boolean(error) || (!dirty() && !savedPending);
+            apply.textContent = tr(saving ? '正在保存' : savedPending ? '重试应用' : world ? '保存' : '保存模板');
+            $$('[data-prompt-toggle], [data-prompt-add], [data-preset-parameter], [data-preset-range]', modal).forEach(control => { control.disabled = saving; });
+            $$('[data-save-as], [data-change-preset], [data-delete-preset]', modal).forEach(control => { control.disabled = saving || Boolean(error); });
+            $$('[data-editor-cancel], [data-copy-cancel], [data-chooser-cancel], [data-search], [data-choice], [data-save-preset-form] input, [data-save-preset-form] button[type="submit"]', modal).forEach(control => { control.disabled = saving; });
+            const copySubmit = $('[data-save-preset-form] button[type="submit"]', modal);
+            if (copySubmit) copySubmit.disabled = saving || Boolean(error);
+        };
+        const bindFields = () => {
+            $$('[data-preset-parameter], [data-preset-range]', modal).forEach(input => input.addEventListener('input', () => {
+                if (saving) return;
+                const key = input.dataset.presetParameter || input.dataset.presetRange;
+                const value = input.value.trim() === '' ? NaN : Number(input.value);
+                if (value === snapshot.preset[key]) parameterChanges.delete(key);
+                else parameterChanges.set(key, value);
+                const number = $(`[data-preset-parameter="${key}"]`, modal);
+                if (number !== input) number.value = input.value;
+                const range = $(`[data-preset-range="${key}"]`, modal);
+                if (range && range !== input && Number.isFinite(value)) range.value = input.value;
+                savedPending = false;
+                updateActions();
+            }));
+            const updateEntry = (index, enabled, add = false) => {
+                const original = view.rows[index];
+                if (!original || saving) return;
+                if (!savedDraft && original.listed && enabled === original.enabled && !add) changes.delete(original.identifier);
+                else changes.set(original.identifier, { identifier: original.identifier, enabled, ...(add || !original.listed ? { add: true } : {}) });
+                savedPending = false;
+                const row = $(`[data-prompt-row="${index}"]`, modal);
+                row.classList.toggle('is-disabled', !enabled);
+                $('[data-prompt-status]', row).textContent = tr(enabled ? '已启用' : '已禁用');
+                const input = $(`[data-prompt-toggle="${index}"]`, modal);
+                input.hidden = false; input.checked = enabled;
+                $(`[data-prompt-add="${index}"]`, modal).hidden = true;
+                updateActions();
+            };
+            $$('[data-prompt-toggle]', modal).forEach(input => input.addEventListener('change', () => updateEntry(Number(input.dataset.promptToggle), input.checked)));
+            $$('[data-prompt-add]', modal).forEach(button => button.addEventListener('click', () => {
+                const index = Number(button.dataset.promptAdd);
+                updateEntry(index, true, true);
+                $(`[data-prompt-toggle="${index}"]`, modal).focus();
+            }));
+        };
+        bindFields();
+        $('[data-delete-preset]', modal)?.addEventListener('click', async () => {
+            if (saving || busy()) return;
+            saving = true; updateActions();
+            let deleted = false;
             try {
-                await operations.run('library', () => presets.applyPreset(item.name, { enableScripts: Boolean($('[data-scripts]', modal)?.checked) }));
+                const body = `${item.name}\n${tr('仅删除预设库中的模板，已应用到各个世界的独立副本不受影响。')}${dirty() ? `\n${tr('本次未保存的修改也会丢弃。')}` : ''}`;
+                if (!await dialogs.confirm({ title: tr('删除模板？'), body, confirmLabel: tr('删除模板'), restoreSheet: true })) return;
+                await operations.run('library', () => presets.deletePreset(snapshot));
+                deleted = true;
+                dialogs.setCloseGuard(null);
                 await openPresets();
-                refresh();
+                dialogs.toast(tr('模板已删除，世界中的副本保持不变。'));
             } catch (error) { errorToast(error); }
-            finally { button.disabled = false; }
+            finally { saving = false; if (!deleted) updateActions(); }
         });
+        const canLeave = async () => {
+            if (saving) return false;
+            if (savedPending) return dialogs.confirm({ title: tr('离开待应用的预设？'), body: tr('预设已保存，但尚未应用。离开不会撤销已保存的内容。'),
+                confirmLabel: tr('离开'), cancelLabel: tr('继续编辑'), restoreSheet: true });
+            return !dirty() || dialogs.confirm({ title: tr('放弃未保存的修改？'), body: tr('关闭后，本次修改不会保存。'),
+                confirmLabel: tr('放弃修改'), cancelLabel: tr('继续编辑'), restoreSheet: true });
+        };
+        dialogs.setCloseGuard(() => {
+            if (saving) return false;
+            if (panel) { closePanel(); return false; }
+            return canLeave();
+        });
+        $('[data-editor-cancel]', modal)?.addEventListener('click', () => dialogs.close());
+        $('[data-back]', modal)?.addEventListener('click', async () => { if (await canLeave()) openPresets(); });
+        async function save() {
+            if (saving || panel || busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
+            if (parameterError()) return;
+            let reopened = false;
+            if (!dirty() && !savedPending) return;
+            saving = true; updateActions();
+            const expanded = $$('[data-prompt-row]', modal).filter(row => $('details', row).open).map(row => view.rows[Number(row.dataset.promptRow)].identifier);
+            const promptsOpen = $('.nora-preset-prompts', modal).open;
+            const advancedOpen = $('[data-advanced-parameters]', modal)?.open;
+            const scrollTop = $('.nora-preset-detail-scroll', modal).scrollTop;
+            try {
+                let savedWorld;
+                const options = { apply: false };
+                await operations.run('library', async () => {
+                    if (isGenerating()) throw new Error(tr('请等待当前生成或保存完成。'));
+                    if (world) {
+                        if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
+                        const value = createWorldPreset(presetName, draftPreset(), templateChanged ? changes.size + parameterChanges.size > 0 : (world.preset.modified || dirty()));
+                        const result = await worlds.updateActive({ preset: value }, { expectedRevision });
+                        savedWorld = result.world;
+                        if (!result.runtimeApplied) throw Object.assign(new Error(tr('预设已保存，请回到对应世界查看。')), { saved: true });
+                    } else await presets.savePresetEntries(snapshot, [...changes.values()], options);
+                });
+                changes.clear(); savedPending = false;
+                dialogs.setCloseGuard(null);
+                // Keep the user on the same preset after saving, rather than returning to the library.
+                if (world && activeWorldModel()?.id !== world.id) { reopened = true; dialogs.close({ dismissed: false }); refresh(); return; }
+                const next = world ? openPreset({ name: savedWorld.preset.name }, { world: savedWorld }) : openPreset(item);
+                reopened = Boolean(next);
+                if (next) {
+                    $('.nora-preset-prompts', next).open = promptsOpen;
+                    if (world) $('[data-advanced-parameters]', next).open = advancedOpen;
+                    const nextRows = describePreset(world ? savedWorld.preset.preset : presets.readPreset(item.name, { storedOnly: true }).preset).rows;
+                    nextRows.forEach((row, index) => { if (expanded.includes(row.identifier)) $(`[data-prompt-row="${index}"] details`, next).open = true; });
+                    $('.nora-preset-detail-scroll', next).scrollTop = scrollTop;
+                }
+                refresh();
+                dialogs.toast(tr(world ? '已应用到当前世界。' : '模板已保存，世界中的副本保持不变。'));
+            } catch (error) {
+                if (error.saved) {
+                    if (world) {
+                        const stored = worlds.list().find(item => item.id === world.id);
+                        if (stored) { expectedRevision = stored.revision; persistedPreset = stored.preset; }
+                    }
+                    else snapshot = presets.readPreset(item.name, { storedOnly: true });
+                    savedPending = true; savedDraft = true;
+                }
+                errorToast(error);
+            } finally { saving = false; if (!reopened) updateActions(); }
+        }
+        $('[data-apply]', modal).addEventListener('click', save);
+        function closePanel() {
+            const previous = panel;
+            panel = null;
+            $('[data-preset-chooser]', modal).hidden = true;
+            $('[data-change-preset]', modal).setAttribute('aria-expanded', 'false');
+            $('[data-save-preset-form]', modal).hidden = true;
+            $('[data-editor-actions]', modal).hidden = false;
+            updateActions();
+            $(previous === 'copy' ? '[data-save-as]' : '[data-change-preset]', modal).focus();
+        }
+        let choices = [];
+        const renderChoices = query => {
+            const normalized = query.trim().toLocaleLowerCase();
+            $('[data-results]', modal).innerHTML = choices.map((item, index) => ({ item, index })).filter(({ item }) => item.name.toLocaleLowerCase().includes(normalized))
+                .map(({ item, index }) => `<button type="button" class="nora-preset-row${item.name === presetName ? ' is-current' : ''}" data-choice="${index}" ${item.name === presetName ? 'aria-current="true"' : ''}><strong>${html(item.name)}</strong>${item.name === presetName ? `<span><i class="fa-solid fa-check" aria-hidden="true"></i>${tr('当前')}</span>` : ''}</button>`).join('') || `<p class="nora-sheet-empty">${tr('没有匹配的预设')}</p>`;
+            $$('[data-choice]', modal).forEach(button => button.addEventListener('click', () => {
+                if (saving || panel !== 'choose') return;
+                const name = choices[Number(button.dataset.choice)].name;
+                if (name === presetName) { closePanel(); return; }
+                try {
+                    const candidate = presets.readPreset(name, { storedOnly: true });
+                    const info = describePreset(candidate.preset);
+                    const order = candidate.preset.prompt_order.find(group => String(group.character_id) === '100001') || { character_id: 100001, order: [] };
+                    const selected = createWorldPreset(candidate.name, { ...draftPreset(), ...candidate.preset, prompt_order: [order] });
+                    const toggleable = presets.toggleablePresetEntries(selected.preset);
+                    snapshot = { preset: selected.preset, toggleable };
+                    presetName = selected.name;
+                    templateChanged = true;
+                    view = describePreset(snapshot.preset);
+                    changes.clear(); parameterChanges.clear(); savedPending = false;
+                    $('[data-current-preset]', modal).textContent = presetName;
+                    $('[data-preset-fields]', modal).innerHTML = renderFields();
+                    bindFields();
+                    closePanel();
+                    $('.nora-preset-detail-scroll', modal).scrollTop = 0;
+                    if (info.scripts) dialogs.toast(tr('已载入提示词与生成参数，模板内嵌脚本未启用。'));
+                } catch (error) { errorToast(error); }
+            }));
+        };
+        $('[data-change-preset]', modal)?.addEventListener('click', () => {
+            if (saving || parameterError()) return;
+            if (panel === 'choose') { closePanel(); return; }
+            try { choices = presets.listPresets().items; } catch (error) { errorToast(error); return; }
+            if (panel) closePanel();
+            panel = 'choose';
+            $('[data-preset-chooser]', modal).hidden = false;
+            $('[data-change-preset]', modal).setAttribute('aria-expanded', 'true');
+            $('[data-search]', modal).value = '';
+            renderChoices(''); updateActions();
+            $('.nora-preset-detail-scroll', modal).scrollTop = 0;
+            $('[data-search]', modal).focus();
+        });
+        $('[data-search]', modal)?.addEventListener('input', event => renderChoices(event.currentTarget.value));
+        $('[data-chooser-cancel]', modal)?.addEventListener('click', () => { if (!saving) closePanel(); });
+        $('[data-save-as]', modal)?.addEventListener('click', () => {
+            if (saving || parameterError()) return;
+            if (panel) closePanel();
+            panel = 'copy';
+            $('[data-editor-actions]', modal).hidden = true;
+            $('[data-save-preset-form]', modal).hidden = false;
+            $('[data-copy-error]', modal).hidden = true;
+            const input = $('[data-save-preset-form] input', modal);
+            const suffix = ' - ' + tr('副本');
+            input.value = presetName.slice(0, 150 - suffix.length) + suffix;
+            updateActions(); input.focus();
+        });
+        $('[data-copy-cancel]', modal)?.addEventListener('click', () => { if (!saving) closePanel(); });
+        $$('[data-preset-chooser], [data-save-preset-form]', modal).forEach(container => container.addEventListener('keydown', event => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault(); event.stopPropagation();
+            if (!saving) closePanel();
+        }));
+        $('[data-save-preset-form]', modal)?.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (saving || panel !== 'copy' || parameterError()) return;
+            if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
+            const name = event.currentTarget.elements.name.value.trim();
+            const errorNode = $('[data-copy-error]', modal);
+            saving = true; updateActions(); errorNode.hidden = true;
+            try {
+                await operations.run('library', () => presets.importPreset(name, draftPreset()));
+                saving = false;
+                closePanel(); dialogs.toast(tr('已存入预设库。'));
+            } catch (error) { errorNode.textContent = dialogs.normalizeError(error); errorNode.hidden = false; }
+            finally { saving = false; updateActions(); }
+        });
+        updateActions();
+        return modal;
     }
 
     function openJsonImport(kind) {
@@ -324,5 +592,5 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             finally { button.disabled = false; }
         });
     }
-    return { openWorldbooks, openPresets, openRoleImport, openProfiles, openSaveProfile, openSaveBook };
+    return { openWorldbooks, openPresets, openWorldPreset, openRoleImport, openProfiles, openSaveProfile, openSaveBook };
 }

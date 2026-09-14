@@ -22,6 +22,7 @@ export function createPanelController({
     worldbookController,
     openCharacterLibrary,
     openPresetLibrary = () => {},
+    openWorldPreset = () => {},
     openProfileLibrary = () => {},
     saveProfile = () => {},
     openCharacterSheet,
@@ -39,6 +40,7 @@ export function createPanelController({
     let worldbookEditing = false;
     let castFolded = true;
     let worldSettingsFolded = true;
+    let presetFolded = true;
     let worldSettingsWorldKey = '';
 
     function hasCharacterProfile(character) {
@@ -98,9 +100,11 @@ export function createPanelController({
             worldbookEditing = false;
             castFolded = true;
             worldSettingsFolded = true;
+            presetFolded = true;
         }
         const castFoldClass = castFolded ? ' folded' : '';
         const settingsFoldClass = worldSettingsFolded ? ' folded' : '';
+        const presetFoldClass = presetFolded ? ' folded' : '';
         const activeCharacterId = readState().activeCharacterId;
         const emptyCastEdit = castEditing && character && !world?.storyContext?.removed_card_fields?.length && Number.isInteger(activeCharacterId) && activeCharacterId >= 0
             ? `<div class="emptyEditRow"><span>${tr("暂无角色设定")}</span><button class="itemEdit" data-cast-edit="${activeCharacterId}" type="button" aria-label="${tr("编辑基础角色资料")}" title="${tr("编辑基础角色资料")}">${icons.edit}</button></div>`
@@ -124,6 +128,7 @@ export function createPanelController({
             <div class="pSection"><div class="pHead pHeadAction"><span>${tr("我的角色")}</span><button class="sectionEdit" data-action="profile" type="button" ${world ? '' : 'disabled'}>${tr("编辑")}</button></div>${world ? `<p class="pname">${escapeHtml(persona?.name || tr("我"))}</p><p class="pdesc">${escapeHtml(persona?.description || tr("补充你在这个世界中的身份与性格"))}</p>` : `<p class="pmuted">${tr("选择世界后设置我的角色。")}</p>`}</div>
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${castFoldClass}" data-fold="cast"><span>${tr("角色设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="cast" type="button">${castEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${castFoldClass}" id="nora-cast-body">${castHtml}${castEditing ? `<button class="nora-add-setting" data-action="add-character" type="button">${icons.plus}${cast.length ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}</div></div>` : `<div class="pSection"><div class="pHead">${tr("角色设定")}</div><p class="pmuted">${tr("选择世界后显示角色设定。")}</p></div>`}
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${settingsFoldClass}" data-fold="settings"><span>${tr("世界设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="worldbook" type="button">${worldbookEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${settingsFoldClass}" id="nora-settings-body">${worldbookSummary(character, worldbookEditing)}</div></div>` : `<div class="pSection"><div class="pHead">${tr("世界设定")}</div><p class="pmuted">${tr("选择世界后查看世界书。")}</p></div>`}
+            ${world ? `<div class="pSection pFold nora-world-preset-section"><div class="pHead pHeadFold${presetFoldClass}" data-fold="preset"><span>${tr('预设')}</span><span class="headRight"><button class="sectionEdit" data-action="world-preset" type="button">${tr('编辑')}</button><span class="arr">▼</span></span></div><div class="pFoldBody${presetFoldClass}" id="nora-preset-body"><p class="pname">${escapeHtml(world.preset?.name || tr('当前配置'))}${world.preset?.modified ? ` <small class="pmuted">${tr('已调整')}</small>` : ''}</p></div></div>` : ''}
             ${world ? capabilitySection(world) : ''}
             ${librarySection}
             <footer class="lwFoot"><span class="mark">✦</span>tavern</footer>`;
@@ -208,6 +213,7 @@ export function createPanelController({
         selectAll('[data-fold]', body).forEach(header => header.addEventListener('click', () => {
             if (header.dataset.fold === 'cast') castFolded = !castFolded;
             if (header.dataset.fold === 'settings') worldSettingsFolded = !worldSettingsFolded;
+            if (header.dataset.fold === 'preset') presetFolded = !presetFolded;
             render();
         }));
         selectAll('[data-edit-section="cast"]', body).forEach(button => button.addEventListener('click', (event) => {
@@ -226,7 +232,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, model: openModelSheet };
+        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         actions[action]?.();
     }
 

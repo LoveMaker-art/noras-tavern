@@ -39,7 +39,7 @@ def launcher_config(provider, model, api_key, base_url=""):
         endpoint = base_url.rstrip("/")
     return {"provider": label, "source": source, "secret_key": secret_key,
             "api_key": api_key, "model": model, "base_url": endpoint,
-            "context": 8192, "max_tokens": 2048}
+            "context": 30000, "max_tokens": 4000}
 
 
 def load_model_config(path):
@@ -50,8 +50,8 @@ def load_model_config(path):
     api_key = str(provider.get("api_key") or model.get("api_key") or "")
     base_url = str(provider.get("api") or provider.get("base_url") or model.get("base_url") or "").rstrip("/")
     model_name = str(model.get("default") or "")
-    context = int(model.get("context_length") or 200000)
-    max_tokens = int(model.get("max_tokens") or 30000)
+    context = int(model.get("context_length") or 30000)
+    max_tokens = int(model.get("max_tokens") or 4000)
     if not api_key or not base_url or not model_name:
         raise NativeModelConfigError("Hermes model configuration is incomplete")
     return {

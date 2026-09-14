@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-story-core/index.js';
 
 const domainMethods = [
-    'listPresets', 'importPreset', 'applyPreset',
+    'listPresets', 'importPreset', 'applyPreset', 'readPreset', 'savePresetEntries', 'toggleablePresetEntries', 'deletePreset',
     'patchCharacter', 'importLibraryCard',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',
@@ -35,6 +35,8 @@ test('story surface exposes only explicit headless domains', () => {
     assert.equal(story.mvu.setEnabled(), 'setEnabled');
     assert.equal(story.settings.uiSettings(), 'uiSettings');
     assert.equal(story.transport.requestHeaders(), 'requestHeaders');
+    assert.equal(story.presets.readPreset, runtime.readPreset);
+    assert.equal(story.presets.savePresetEntries, runtime.savePresetEntries);
     assert.equal(story.worlds, worlds);
     assert.equal('runtime' in story, false);
     assert.equal('whenReady' in story, false);

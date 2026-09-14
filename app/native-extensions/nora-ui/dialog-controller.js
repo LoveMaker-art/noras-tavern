@@ -5,6 +5,8 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     let cancelConfirmation;
     let version = 0;
     let viewKey;
+    let closeGuard;
+    let checkingClose = false;
 
     function normalizeError(error) {
         if (error?.code === 'NORA_LEDGER_HISTORY_LOCKED') return tr("这段历史已被剧情账本保护，无法编辑。若正在发送，请等发送结束后重试。");
@@ -79,6 +81,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         version++;
         viewKey = reuseKey;
         dismissHandler = null;
+        closeGuard = null;
         modal.className = `nora-modal open ${className}`;
         modal.setAttribute('aria-hidden', 'false');
         if (body) {
@@ -112,6 +115,14 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     }
 
     function close({ dismissed = true } = {}) {
+        if (dismissed && closeGuard) {
+            if (checkingClose) return;
+            const guard = closeGuard;
+            checkingClose = true;
+            return Promise.resolve().then(guard).then(allowed => {
+                if (allowed && closeGuard === guard) close({ dismissed: false });
+            }).finally(() => { checkingClose = false; });
+        }
         version++;
         viewKey = undefined;
         const modal = select('#nora-modal');
@@ -122,6 +133,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         modal.onclick = null;
         const onDismiss = dismissHandler;
         dismissHandler = null;
+        closeGuard = null;
         if (dismissed) onDismiss?.();
     }
 
@@ -135,7 +147,8 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
             modal.querySelector?.('.nora-sheet')?.classList?.remove('nora-dialog--entering');
             const previous = restoreSheet && modal.querySelector?.('.nora-sheet')
                 ? { className: modal.className, nodes: [...modal.childNodes], onclick: modal.onclick, dismiss: dismissHandler,
-                    focus: modal.ownerDocument?.activeElement } : null;
+                    focus: modal.ownerDocument?.activeElement, closeGuard } : null;
+            closeGuard = null;
             const restore = () => {
                 if (!previous) return;
                 modal.className = previous.className;
@@ -145,6 +158,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
                 modal.onclick = previous.onclick;
                 dismissHandler = previous.dismiss;
                 viewKey = previousKey;
+                closeGuard = previous.closeGuard;
                 if (previous.focus?.isConnected) previous.focus.focus({ preventScroll: true });
             };
             let settled = false;
@@ -181,5 +195,6 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         });
     }
 
-    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm, get version() { return version; } });
+    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm,
+        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; } });
 }

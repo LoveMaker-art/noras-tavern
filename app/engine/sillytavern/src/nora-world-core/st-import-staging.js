@@ -58,7 +58,7 @@ export async function persistImmutable(filePath, buffer) {
     }
 }
 
-async function stageCardBuffer({
+export async function stageCardBuffer({
     buffer,
     originalName,
     sourceType,

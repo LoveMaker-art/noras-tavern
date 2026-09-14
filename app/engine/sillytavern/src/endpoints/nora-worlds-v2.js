@@ -229,6 +229,18 @@ export function createNoraWorldsV2Router({
         } catch (error) { return sendError(response, error); }
     });
 
+    router.post('/worlds/:worldId/restarts', async (request, response) => {
+        try {
+            const result = await resolveCore(request).restartWorld(request.params.worldId, {
+                name: request.body?.name, idempotencyKey: request.body?.idempotency_key,
+                expectedRevision: request.body?.expected_revision,
+            });
+            return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
+                operation: publicOperation(result.operation), world: result.world, reused: result.reused,
+            });
+        } catch (error) { return sendError(response, error); }
+    });
+
     router.post('/worlds', async (request, response) => {
         try {
             const directories = request.user.directories;

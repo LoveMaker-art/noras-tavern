@@ -97,8 +97,8 @@ const HEADLESS_DEFAULTS = Object.freeze({
         'top_p': 1,
         'top_k': 0,
         'max_chat_history': 2,
-        '最大上下文token数': 64000,
-        '最大回复token数': 20000,
+        '最大上下文token数': 30000,
+        '最大回复token数': 4000,
         'api方案列表': [],
         '当前api方案': '',
     },
@@ -348,8 +348,8 @@ export function initializeHeadlessMvuSettings(context) {
             '模型来源': '与插头相同',
             '请求方式': '依次请求，失败后重试',
             '请求次数': 1,
-            '最大上下文token数': 64000,
-            '最大回复token数': 20000,
+            '最大上下文token数': currentContextLimit ?? 30000,
+            '最大回复token数': currentTokenLimit ?? 4000,
         },
     } : previousVersion < 5 ? {
         '额外模型解析配置': {

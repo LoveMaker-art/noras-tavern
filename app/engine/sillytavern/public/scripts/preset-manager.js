@@ -820,8 +820,9 @@ class PresetManager {
     /**
      * Deletes a preset by name. If not provided, deletes the currently selected preset.
      * @param {string} [name] Name of the preset to delete.
+     * @param {{skipSwitch?: boolean}} [options] Keep the current runtime configuration when deleting a library template.
      */
-    async deletePreset(name) {
+    async deletePreset(name, { skipSwitch = false } = {}) {
         const { preset_names, presets } = this.getPresetList();
         const value = name ? (this.isKeyedApi() ? this.findPreset(name) : name) : this.getSelectedPreset();
         const nameToDelete = name || this.getSelectedPresetName();
@@ -830,6 +831,15 @@ class PresetManager {
             toastr.info(t`Cannot delete GUI preset`);
             return;
         }
+
+        if (!this.getAllPresets().includes(nameToDelete)) return false;
+        const switchPresets = !skipSwitch && (!name || this.getSelectedPresetName() == name);
+        const response = await fetch('/api/presets/delete', {
+            method: 'POST',
+            headers: getRequestHeaders(),
+            body: JSON.stringify({ name: nameToDelete, apiId: this.apiId }),
+        });
+        if (!response.ok) return false;
 
         if (this.isKeyedApi()) {
             const index = preset_names.indexOf(nameToDelete);
@@ -845,20 +855,12 @@ class PresetManager {
         }
 
         // switch in UI only when deleting currently selected preset
-        const switchPresets = !name || this.getSelectedPresetName() == name;
-
         if (Object.keys(preset_names).length && switchPresets) {
             const nextPresetName = Array.isArray(preset_names) ? preset_names[0] : Object.keys(preset_names)[0];
             await this.selectPreset(this.findPreset(nextPresetName));
         }
 
-        const response = await fetch('/api/presets/delete', {
-            method: 'POST',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({ name: nameToDelete, apiId: this.apiId }),
-        });
-
-        return response.ok;
+        return true;
     }
 
     /**

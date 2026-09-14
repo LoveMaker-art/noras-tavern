@@ -13,7 +13,7 @@ const DOMAIN_METHODS = Object.freeze({
     mvu: ['status', 'setEnabled', 'useStoryModel', 'useIndependentModel'],
     settings: ['uiSettings', 'saveUiSettings', 'setHostPersonality'],
     transport: ['requestHeaders'],
-    presets: ['listPresets', 'importPreset', 'applyPreset'],
+    presets: ['listPresets', 'importPreset', 'applyPreset', 'readPreset', 'savePresetEntries', 'toggleablePresetEntries', 'deletePreset'],
 });
 
 function createDomain(runtime, name, methods) {

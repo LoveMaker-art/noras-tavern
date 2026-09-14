@@ -33,6 +33,10 @@ for (const [source, modelField, secretKey] of [
         assert.equal(ui.activeModel, '');
         assert.deepEqual(requests.find(request => request.url.endsWith('/rotate')).payload, { key: secretKey, id: 'managed' });
         assert.equal(connections.at(-1).source, source);
+        for (const call of connections) {
+            assert.equal(call.context, undefined, 'Reconnect and select do not overwrite the World context budget');
+            assert.equal(call.maxTokens, undefined, 'Reconnect and select do not overwrite the World response budget');
+        }
         assert.equal(projectTextModelDisplay({ nativeModel: runtime.chatCompletionSettings, uiSettings: ui }).label, 'Fixture Provider · fixture-model');
     });
 }
@@ -47,4 +51,6 @@ test('OpenAI-compatible imported defaults retain the original custom protocol', 
     assert.equal(configured.url, 'https://relay.invalid/v1');
     assert.equal(configured.model, 'relay-model');
     assert.equal(configured.apiKey, '', 'key stays in backend secret store');
+    assert.equal(configured.context, undefined);
+    assert.equal(configured.maxTokens, undefined);
 });

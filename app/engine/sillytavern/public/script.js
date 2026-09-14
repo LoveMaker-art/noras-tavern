@@ -235,6 +235,7 @@ import { loader } from './scripts/action-loader.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
+import { worldPresetProjection } from './scripts/nora-worlds/world-preset-projection.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/workspace-user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
@@ -4679,6 +4680,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (isNoraProductMode()) {
         await ensureNoraFullChatLoaded();
         await globalThis.__NORA_GENERATION_PREREQUISITES_PROMISE__;
+        if (!dryRun) worldPresetProjection.restore(chat_metadata?.nora_world?.id);
     }
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
