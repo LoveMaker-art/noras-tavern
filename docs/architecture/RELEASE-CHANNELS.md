@@ -56,8 +56,10 @@ component releases inherit that minimum from the verified full baseline.
 Both full and component payloads include `tavern-updater-bootstrap.py`, pinned
 by the target release manifest. Do not remove it from the desktop payload.
 
-Component release notes link directly to the last real full installers and
-clearly label their version. `component-release.json` retains that installer tag,
+Release notes contain only the current version's changes, fixes and relevant
+notices. Do not append recurring download tables, installation instructions or
+collapsed installation guides; README owns the download entry points.
+`component-release.json` retains the actual full installer tag,
 the runtime baseline tag and reused hashes. Chained component releases retain
 the original installer links and check they still exist. No old installer is
 renamed or presented as newly built.
@@ -73,7 +75,8 @@ resolution; installed users continue using the existing version/update controls.
 the unchanged launcher download/validation implementation, including reuse of
 local matching archives, missing remote assets, dependency changes, corrupt
 archives, full-build requirements and verification without installer binaries.
-`tests/launcher-release-notes.test.cjs` checks the actual download destinations.
+`tests/launcher-release-notes.test.cjs` checks summary preservation, absence of
+automatically added installation guidance and installer identity validation.
 These are packaging/contract tests, not three-platform native installation tests.
 
 The component workflow also runs world-preservation and rollback regression
