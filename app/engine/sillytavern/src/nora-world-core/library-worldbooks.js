@@ -4,6 +4,8 @@ import crypto from 'node:crypto';
 import { NoraWorldCoreError } from './errors.js';
 import { stableStringify } from './domain.js';
 import { writeJsonAtomic } from './atomic-json.js';
+import { withWorldbookLock } from '../worldbook-lock.js';
+import { isUnreferencedWorldbook } from './worldbook-references.js';
 
 const digest = value => crypto.createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
@@ -23,7 +25,10 @@ function convertBook(input, convert) {
 async function readFile(root, name) {
     if (typeof name !== 'string' || !name || /[/\\]/.test(name) || name.includes('\0') || path.basename(name) !== name || name === '.' || name === '..') invalid('Invalid library filename.');
     const file = path.join(root, name);
-    const stat = await fs.lstat(file);
+    const stat = await fs.lstat(file).catch(error => {
+        if (error.code === 'ENOENT') invalid('资料已不存在，请刷新库后重试。');
+        throw error;
+    });
     if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32 * 1024 * 1024) invalid('Unsafe or oversized library file.');
     return fs.readFile(file);
 }
@@ -54,25 +59,17 @@ export function createWorldbookLibrary({ roots, cardCodec, convertEmbeddedBook }
 
     async function list(worlds) {
         const owned = new Set(worlds.flatMap(world => world.knowledge.filter(item => item.ownership === 'owned').map(item => item.binding.name)));
-        const runtimeCards = new Set(worlds.map(world => world.runtime_card?.binding?.avatar));
         const items = [];
         const warnings = [];
         const add = async source => {
             try {
                 const item = await read(source);
-                if (item.book.extensions?.nora_resource?.world_id) return;
+                if (item.book.extensions?.nora_resource) return;
                 items.push({ source, source_name: item.source_name, source_key: item.source_key, name: item.name, revision: item.revision, count: item.count });
             } catch (error) { warnings.push({ source, message: error.message }); }
         };
         for (const filename of await fs.readdir(roots.worlds)) {
             if (filename.endsWith('.json') && !owned.has(filename.slice(0, -5))) await add({ kind: 'book', name: filename.slice(0, -5) });
-        }
-        for (const filename of await fs.readdir(roots.characters)) {
-            if (!filename.endsWith('.png') || runtimeCards.has(filename) || filename.startsWith('Nora_Blank_World--')) continue;
-            try {
-                const { card } = await cardCodec.decode({ buffer: await readFile(roots.characters, filename), format: 'png' });
-                if ((card.data || card).character_book?.entries) await add({ kind: 'card', name: filename });
-            } catch (error) { warnings.push({ source: { kind: 'card', name: filename }, message: error.message }); }
         }
         return { items, warnings };
     }
@@ -106,7 +103,7 @@ export function createWorldbookLibrary({ roots, cardCodec, convertEmbeddedBook }
             let stored;
             try { stored = await read({ kind: 'book', name: file.slice(0, -5) }); }
             catch { continue; }
-            if (stored.book.extensions?.nora_resource?.world_id || stored.name !== book.name) continue;
+            if (stored.book.extensions?.nora_resource || stored.name !== book.name) continue;
             if (stableStringify(stored.book) !== stableStringify(book)) invalid('库中已有同名世界书，请更换名称后另存；不会覆盖原世界书。');
             return { source: stored.source, name: stored.name, reused: true };
         }
@@ -114,5 +111,24 @@ export function createWorldbookLibrary({ roots, cardCodec, convertEmbeddedBook }
         await writeJsonAtomic(path.join(roots.worlds, `${filename}.json`), book);
         return { source: { kind: 'book', name: filename }, name: book.name };
     }
-    return { list, read, prepare, save };
+    async function remove(source, revision, worlds) {
+        if (source?.kind !== 'book' || typeof source.name !== 'string' || !source.name) invalid('只能删除库中独立世界书，不能删除卡内世界书。');
+        // Validate the name before deriving the lock path; read also rejects symlinks.
+        await readFile(roots.worlds, `${source.name}.json`);
+        const file = path.join(roots.worlds, `${source.name}.json`);
+        return withWorldbookLock(file, async () => {
+            const item = await read(source);
+            if (typeof revision !== 'string' || item.revision !== revision) {
+                throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', '世界书已变化，请重新打开后再删除。');
+            }
+            if (item.book.extensions?.nora_resource || !await isUnreferencedWorldbook(source.name, { worlds, roots, cardCodec })) {
+                throw new NoraWorldCoreError('NORA_WORLD_INVALID', '世界书仍被引用，或引用情况无法确认；未删除。');
+            }
+            const latest = await read(source);
+            if (latest.revision !== revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', '世界书已变化，请重新打开后再删除。');
+            await fs.unlink(file);
+            return { deleted: true, source: item.source };
+        });
+    }
+    return { list, read, prepare, save, remove };
 }

@@ -15,6 +15,7 @@ export function createNoraWorldCore(options) {
         listLibraryWorldbooks: core.listLibraryWorldbooks.bind(core),
         readLibraryWorldbook: core.readLibraryWorldbook.bind(core),
         saveLibraryWorldbook: core.saveLibraryWorldbook.bind(core),
+        deleteLibraryWorldbook: core.deleteLibraryWorldbook.bind(core),
         importLibraryItem: core.importLibraryItem.bind(core),
         editWorldbookEntry: core.editWorldbookEntry.bind(core),
         addWorldSetting: core.addWorldSetting.bind(core),

@@ -11,6 +11,7 @@ function fixture(options = {}) {
     };
     let markup = ''; let modalClass = ''; let world = { id: 'world:a', name: 'Target' }; let generating = false;
     const imported = []; const created = []; const roles = []; const deleted = []; const toasts = [];
+    const bookPreviews = [];
     const characters = [{ name: 'Alice', avatar: 'alice.png', data: { description: 'Long description', creator: 'Author' } }];
     const controller = createCharacterController({
         listLibraryCards: options.listLibraryCards,
@@ -24,9 +25,10 @@ function fixture(options = {}) {
         select: node, selectAll: () => [], escapeHtml: value => String(value ?? '').replaceAll('<', '&lt;').replaceAll('"', '&quot;'),
         icons: {}, reloadWorlds: async () => {}, refresh() {}, isCharacterInWorld: () => Boolean(world),
         createWorldFromCard: card => created.push(card), addRoleFromCard: card => roles.push(card),
+        openCardWorldbook: (source, onBack) => bookPreviews.push({ source, onBack }),
         activeWorldModel: () => world, isGenerating: () => generating,
     });
-    return { controller, characters, node, imported, created, roles, deleted, toasts, markup: () => markup, css: () => modalClass,
+    return { controller, characters, node, imported, created, roles, deleted, toasts, bookPreviews, markup: () => markup, css: () => modalClass,
         setWorld: value => { world = value; }, setGenerating: value => { generating = value; } };
 }
 
@@ -54,6 +56,21 @@ test('card list and detail share frame; deletion stays in detail and protects in
     assert.match(f.markup(), /data-card-add-role type="button" disabled/);
     await f.node('[data-library-delete]').handlers.click();
     assert.deepEqual(f.deleted, [{ avatars: ['alice.png'], deleteChats: true }]);
+});
+
+test('complete card exposes its embedded book without creating a standalone library item', () => {
+    const f = fixture();
+    f.characters[0].data.character_book = { entries: [{ content: 'Rules' }] };
+    f.controller.openSheet(0, true);
+    assert.match(f.markup(), /data-card-worldbook/);
+    assert.match(f.markup(), /nora-library-action nora-library-action-danger/);
+    assert.doesNotMatch(f.markup(), /nora-delete-button/);
+    f.node('[data-card-worldbook]').handlers.click();
+    assert.deepEqual(f.bookPreviews[0].source, { kind: 'card', name: 'alice.png' });
+    f.bookPreviews[0].onBack();
+    assert.match(f.markup(), /data-card-worldbook/);
+    assert.equal(f.imported.length, 0);
+    assert.equal(f.created.length, 0);
 });
 
 test('backend catalog excludes runtime copies even when cards are shallow, and preserves distinct originals', async () => {

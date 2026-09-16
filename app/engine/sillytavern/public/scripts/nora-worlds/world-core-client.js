@@ -456,6 +456,9 @@ export function createWorldCoreClient(getHeaders, {
         saveLibraryProfile: input => request('/library/profiles/save', { method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify(input) }),
         deleteLibraryProfile: (id, revision) => request('/library/profiles/delete', { method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ id, revision }) }),
         listLibraryWorldbooks: () => request('/library/worldbooks', { headers: requestHeaders(getHeaders) }),
+        deleteLibraryWorldbook: (source, revision) => request('/library/worldbooks/delete', {
+            method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ source, revision }),
+        }),
         saveLibraryWorldbook: (name, book) => request('/library/worldbooks/import', {
             method: 'POST', headers: requestHeaders(getHeaders), body: JSON.stringify({ name, book }),
         }),

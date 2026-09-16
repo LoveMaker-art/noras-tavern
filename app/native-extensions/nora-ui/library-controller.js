@@ -79,12 +79,12 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             const modal = dialogs.open(item.name, `<div class="nora-library-detail-scroll"><button type="button" data-back class="nora-sheet-back">${tr('返回')}</button><h3>${html(item.data.name)}</h3>
                 <p class="nora-profile-text">${html(item.data.description)}</p>${item.data.personality ? `<details><summary>${tr('性格')}</summary><p class="nora-profile-text">${html(item.data.personality)}</p></details>` : ''}
                 ${item.kind === 'character' ? `<p>${tr(item.data.activation.mode === 'triggered' ? '触发角色' : '常驻角色')} · ${tr(item.data.activation.enabled === false ? '已禁用' : '已启用')}</p>` : ''}
-                ${target ? '' : `<details class="nora-library-management"><summary>${tr('管理')}</summary><button type="button" data-save-as>${tr('另存为')}</button><button type="button" data-profile-delete class="nora-setting-delete">${tr('删除')}</button></details>`}</div>
+                ${target ? '' : `<details class="nora-library-management"><summary>${tr('管理')}</summary><div class="nora-library-actions"><button type="button" class="nora-library-action" data-save-as><i class="fa-solid fa-copy" aria-hidden="true"></i><span>${tr('另存为')}</span></button><button type="button" data-profile-delete class="nora-library-action nora-library-action-danger"><i class="fa-solid fa-trash-can" aria-hidden="true"></i><span>${tr('删除')}</span></button></div></details>`}</div>
                 <footer class="nora-library-footer">${targetLabel(world)}<button type="button" class="nora-primary" data-use ${world ? '' : 'disabled'}>${tr(item.kind === 'persona' ? '替换我的角色' : '添加角色设定')}</button></footer>`, 'nora-detail-modal nora-world-library-modal nora-library-detail-modal nora-plain-sheet');
             $('[data-back]', modal).addEventListener('click', () => openProfiles(item.kind, target));
             $('[data-save-as]', modal)?.addEventListener('click', () => openSaveProfile(item.kind, item.data, `${item.name} ${tr('副本')}`));
             if (!target) {
-                $('.nora-library-management', modal)?.insertAdjacentHTML?.('beforeend', `<button type="button" data-export-profile>${tr('导出 JSON')}</button>`);
+                $('.nora-library-actions', modal)?.insertAdjacentHTML?.('afterbegin', `<button type="button" class="nora-library-action" data-export-profile><i class="fa-solid fa-file-export" aria-hidden="true"></i><span>${tr('导出 JSON')}</span></button>`);
                 $('[data-export-profile]', modal)?.addEventListener('click', () => {
                     const url = URL.createObjectURL(new Blob([JSON.stringify({ schema: item.schema, kind: item.kind, name: item.name, data: item.data }, null, 2)], { type: 'application/json' }));
                     const link = document.createElement('a'); link.href = url; link.download = `${item.name.replace(/[/\\:*?"<>|]/g, '_')}.json`;
@@ -92,11 +92,16 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                 });
             }
             $('[data-profile-delete]', modal)?.addEventListener('click', async event => {
-                if (!await dialogs.confirm({ title: tr('删除库中资料？'), body: tr('已添加到世界的副本保持不变。'), confirmLabel: tr('删除'), restoreSheet: true })) return;
+                const button = event.currentTarget;
+                if (button.disabled || busy()) return;
+                button.disabled = true;
                 try {
+                    if (!await dialogs.confirm({ title: tr('删除库中资料？'), body: tr('已添加到世界的副本保持不变。'), confirmLabel: tr('删除'), tone: 'danger', restoreSheet: true })) return;
+                    if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
                     await operations.run('library', () => worlds.deleteLibraryProfile(id, item.revision));
                     await openProfiles(item.kind);
                 } catch (error) { errorToast(error); }
+                finally { button.disabled = false; }
             });
             $('[data-use]', modal).addEventListener('click', async event => {
                 if (!world || busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
@@ -206,20 +211,30 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
         });
     }
 
-    async function openBook(source, target = null) {
+    async function openBook(source, target = null, onBack = null) {
         try {
             const world = target || activeWorldModel();
             const item = await worlds.readLibraryWorldbook(source);
             const alreadyAttached = attached(item, world);
             const rows = Object.values(item.book.entries).map(entry => `<details class="nora-library-book-entry"><summary>${html(entry.comment || tr('未命名条目'))}<small>${entry.disable ? tr('已禁用') : tr('已启用')}</small></summary><p>${html(entry.content)}</p></details>`).join('');
-            const modal = dialogs.open(item.name, `<div class="nora-library-detail-scroll"><button type="button" class="nora-sheet-back" data-back>${tr('返回世界书库')}</button><p class="nora-library-target">${item.count} ${tr('条目')}${source.kind === 'card' ? ` · ${tr('来自角色卡')} ${html(item.source_name || '')}` : ''}</p>${rows || `<p>${tr('暂无条目')}</p>`}<details class="nora-library-management"><summary>${tr('来源文件')}</summary><p>${html(source.name)}</p></details></div>
+            const management = target ? '' : `<details class="nora-library-management"><summary>${tr('管理')}</summary><div class="nora-library-actions"><button type="button" class="nora-library-action" data-save-book-copy><i class="fa-solid fa-copy" aria-hidden="true"></i><span>${tr('另存独立世界书')}</span></button>${source.kind === 'book' && !item.book.extensions?.nora_resource ? `<button type="button" class="nora-library-action nora-library-action-danger" data-delete-book><i class="fa-solid fa-trash-can" aria-hidden="true"></i><span>${tr('删除世界书')}</span></button>` : ''}</div><p>${html(source.name)}</p></details>`;
+            const modal = dialogs.open(item.name, `<div class="nora-library-detail-scroll"><button type="button" class="nora-sheet-back" data-back>${tr(onBack ? '返回完整卡' : '返回世界书库')}</button><p class="nora-library-target">${item.count} ${tr('条目')}${source.kind === 'card' ? ` · ${tr('来自角色卡')} ${html(item.source_name || '')}` : ''}</p>${rows || `<p>${tr('暂无条目')}</p>`}${management}</div>
                 <footer class="nora-library-footer">${targetLabel(world)}<button type="button" class="nora-primary" data-attach ${world && !alreadyAttached ? '' : 'disabled'}>${tr(alreadyAttached ? '已添加' : '添加到当前世界')}</button></footer>`, 'nora-detail-modal nora-world-library-modal nora-library-detail-modal nora-plain-sheet');
-            $('[data-back]', modal).addEventListener('click', () => openWorldbooks(target));
-            const management = $('.nora-library-management', modal);
-            if (!target && management) {
-                management.insertAdjacentHTML?.('beforeend', `<button type="button" data-save-book-copy>${tr('另存独立世界书')}</button>`);
-                $('[data-save-book-copy]', modal)?.addEventListener('click', () => openSaveBook(item.name, item.book));
-            }
+            $('[data-back]', modal).addEventListener('click', () => onBack ? onBack() : openWorldbooks(target));
+            $('[data-save-book-copy]', modal)?.addEventListener('click', () => openSaveBook(item.name, item.book));
+            $('[data-delete-book]', modal)?.addEventListener('click', async event => {
+                const button = event.currentTarget;
+                if (button.disabled || busy()) return;
+                button.disabled = true;
+                try {
+                    if (!await dialogs.confirm({ title: tr('删除库中世界书？'), body: tr('只删除库中原件，已添加到世界的独立副本保持不变。仍被直接引用的世界书不能删除。'), confirmLabel: tr('删除'), tone: 'danger', restoreSheet: true })) return;
+                    if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
+                    await operations.run('library', () => worlds.deleteLibraryWorldbook(item.source, item.revision));
+                    await openWorldbooks();
+                    dialogs.toast(tr('库中世界书已删除。'));
+                } catch (error) { errorToast(error); }
+                finally { button.disabled = false; }
+            });
             $('[data-attach]', modal).addEventListener('click', event => { if (!alreadyAttached) return commit(world, { source, source_revision: item.revision }, event.currentTarget); });
         } catch (error) { errorToast(error); }
     }
@@ -231,8 +246,8 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             if (!view.isCurrent()) return;
             const world = activeWorldModel();
             const query = bookQuery.trim().toLocaleLowerCase();
-            const matches = items.map((item, index) => ({ item, index })).filter(({ item }) => `${item.name} ${item.source_name || ''}`.toLocaleLowerCase().includes(query));
-            const modal = view.open(tr('世界卡库'), `${tabs}<form class="nora-library-search" data-book-search-form><input type="search" data-book-search value="${html(bookQuery)}" placeholder="${tr('搜索世界书或来源角色')}" aria-label="${tr('搜索世界书或来源角色')}"><button class="nora-icon-button" type="submit" title="${tr('搜索')}" aria-label="${tr('搜索')}"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></button><button class="nora-icon-button" type="button" data-import title="${tr('导入世界书')}" aria-label="${tr('导入世界书')}"><i class="fa-solid fa-file-import" aria-hidden="true"></i></button></form><div class="nora-library-results"><div class="nora-library-list">${matches.map(({ item, index }) => `<button type="button" class="nora-library-row" data-book="${index}"><strong>${html(item.name)}</strong><small>${item.count} ${tr('条目')} · ${item.source.kind === 'card' ? `${tr('来自角色卡')} ${html(item.source_name || '')}` : tr('独立世界书')}${attached(item, world) ? ` · ${tr('已添加')}` : ''}</small></button>`).join('') || `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的世界书' : '暂无世界书')}</p>`}</div>${warnings.length ? `<details class="nora-library-management"><summary>${warnings.length} ${tr('个来源读取失败')}</summary>${warnings.map(item => `<p>${html(item.source.name)}: ${html(item.message)}</p>`).join('')}</details>` : ''}</div>`, 'nora-detail-modal nora-world-library-modal nora-plain-sheet');
+            const matches = items.map((item, index) => ({ item, index })).filter(({ item }) => item.name.toLocaleLowerCase().includes(query));
+            const modal = view.open(tr('世界卡库'), `${tabs}<form class="nora-library-search" data-book-search-form><input type="search" data-book-search value="${html(bookQuery)}" placeholder="${tr('搜索世界书')}" aria-label="${tr('搜索世界书')}"><button class="nora-icon-button" type="submit" title="${tr('搜索')}" aria-label="${tr('搜索')}"><i class="fa-solid fa-magnifying-glass" aria-hidden="true"></i></button><button class="nora-icon-button" type="button" data-import title="${tr('导入世界书')}" aria-label="${tr('导入世界书')}"><i class="fa-solid fa-file-import" aria-hidden="true"></i></button></form><div class="nora-library-results"><div class="nora-library-list">${matches.map(({ item, index }) => `<button type="button" class="nora-library-row" data-book="${index}"><strong>${html(item.name)}</strong><small>${item.count} ${tr('条目')} · ${tr('独立世界书')}${attached(item, world) ? ` · ${tr('已添加')}` : ''}</small></button>`).join('') || `<p class="nora-sheet-empty" role="status">${tr(query ? '没有匹配的世界书' : '暂无世界书')}</p>`}</div>${warnings.length ? `<details class="nora-library-management"><summary>${warnings.length} ${tr('个来源读取失败')}</summary>${warnings.map(item => `<p>${html(item.source.name)}: ${html(item.message)}</p>`).join('')}</details>` : ''}</div>`, 'nora-detail-modal nora-world-library-modal nora-plain-sheet');
             $('[data-book-search-form]', modal)?.addEventListener('submit', event => {
                 event.preventDefault();
                 bookQuery = $('[data-book-search]', modal).value;
@@ -592,5 +607,5 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             finally { button.disabled = false; }
         });
     }
-    return { openWorldbooks, openPresets, openWorldPreset, openRoleImport, openProfiles, openSaveProfile, openSaveBook };
+    return { openWorldbooks, openBook, openPresets, openWorldPreset, openRoleImport, openProfiles, openSaveProfile, openSaveBook };
 }

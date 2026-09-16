@@ -54,11 +54,15 @@ test('library HTTP imports isolate books, atomically add roles, reject races and
     };
     const catalog = await request('/library/worldbooks');
     assert.equal(catalog.status, 200);
-    assert.ok(catalog.data.items.some(item => item.source.name === 'source.png'));
+    assert.deepEqual(catalog.data.items, [], 'Creating Worlds does not automatically add reusable books');
+    assert.ok(catalog.data.items.every(item => item.source.kind === 'book'), 'Only standalone book files belong in the library list');
+    assert.ok(!catalog.data.items.some(item => item.source.name === 'source.png'), 'Embedded books are not standalone library items');
+    await fs.writeFile(path.join(directories.characters, 'broken.png'), 'not a card');
+    assert.deepEqual((await request('/library/worldbooks')).data.warnings, [], 'Standalone listing does not scan unrelated cards');
     const preview = (await request('/library/worldbooks/read', { source: { kind: 'card', name: 'source.png' } })).data;
     assert.equal(preview.source_name, card.data?.name || card.name);
     assert.equal((await request('/library/worldbooks/read', { source: { name: 'source.png', kind: 'card', ignored: 'metadata' } })).data.source_key, preview.source_key);
-    assert.equal(catalog.data.items.find(item => item.source.name === 'source.png').source_key, preview.source_key);
+    assert.ok(preview.source_key, 'Explicit embedded-book reads remain supported without listing them');
     assert.equal(preview.book.entries['7'].disable, true);
     assert.equal(preview.book.entries['7'].depth, 7);
     const input = { source: preview.source, source_revision: preview.revision, expected_revision: a.revision,
@@ -124,8 +128,23 @@ test('library HTTP imports isolate books, atomically add roles, reject races and
     const againBook = await request('/library/worldbooks/import', { name: 'Saved independent book', book: preview.book });
     assert.deepEqual(againBook.data.source, retryBook.data.source);
     assert.equal(againBook.data.reused, true);
+    const standaloneCatalog = (await request('/library/worldbooks')).data;
+    assert.equal(standaloneCatalog.items.length, catalog.data.items.length + 1);
+    assert.ok(standaloneCatalog.items.every(item => item.source.kind === 'book'));
+    assert.ok(standaloneCatalog.items.some(item => item.source.name === retryBook.data.source.name));
+    const standalone = (await request('/library/worldbooks/read', { source: retryBook.data.source })).data;
+    assert.deepEqual(standalone.book.entries, preview.book.entries, 'Explicit save preserves disabled entries and trigger metadata');
+    assert.deepEqual(await fs.readFile(path.join(directories.characters, 'source.png')), bytes, 'Saving an independent book never edits its source card');
     const changedBook = structuredClone(preview.book); changedBook.entries['7'].content = 'Different';
     assert.equal((await request('/library/worldbooks/import', { name: 'Saved independent book', book: changedBook })).status, 400);
+    assert.equal((await request('/library/worldbooks/delete', { source: standalone.source, revision: 'stale' })).status, 409);
+    assert.equal((await request('/library/worldbooks/delete', { source: standalone.source, revision: standalone.revision })).status, 400, 'Unknown card references block deletion');
+    await fs.unlink(path.join(directories.characters, 'broken.png'));
+    await fs.unlink(path.join(directories.characters, 'link.png'));
+    assert.equal((await request('/library/worldbooks/delete', { source: standalone.source, revision: standalone.revision })).status, 200);
+    assert.deepEqual((await request('/library/worldbooks')).data.items, []);
+    assert.deepEqual(await fs.readFile(path.join(directories.characters, 'source.png')), bytes);
+    assert.deepEqual(await core.getWorld(b.world_id), currentB, 'Deleting a saved book leaves Worlds unchanged');
     const latestA = await core.getWorld(a.world_id);
     const badReference = await request(`/worlds/${a.world_id}/library`, { expected_revision: latestA.revision,
         character: { id: 'broken-ref', operation: 'create', patch: { name: 'Broken', description: '{{char::nonexistent}}' } } });

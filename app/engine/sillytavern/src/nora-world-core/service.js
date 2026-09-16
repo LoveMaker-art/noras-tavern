@@ -417,6 +417,11 @@ export class NoraWorldCore {
         return this.#locks.run('library:worldbooks', () => this.#materializer.saveLibraryWorldbook(name, book));
     }
 
+    async deleteLibraryWorldbook(source, revision) {
+        await this.#initialize();
+        return this.#locks.run('library:worldbooks', async () => this.#materializer.deleteLibraryWorldbook(source, revision, await this.#store.list()));
+    }
+
     async importLibraryItem(worldId, input) {
         await this.#initialize();
         if (!input || (!input.character && !input.source)) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'Choose a character or Worldbook.');
