@@ -337,6 +337,13 @@ export function createWorldCoreClient(getHeaders, {
         });
     }
 
+    async function restartWorld({ worldId, name, expectedRevision, idempotencyKey } = {}) {
+        return submitCreation({ idempotencyKey, kind: 'restart', path: `/worlds/${encodeURIComponent(worldId)}/restarts`,
+            headers: requestHeaders(getHeaders),
+            body: JSON.stringify({ name, expected_revision: expectedRevision, idempotency_key: idempotencyKey }),
+        });
+    }
+
     async function createBlank({ idempotencyKey, persona = {}, name } = {}) {
         return submitCreation({
             idempotencyKey,
@@ -467,6 +474,7 @@ export function createWorldCoreClient(getHeaders, {
         list: async () => (await request('/worlds', { headers: requestHeaders(getHeaders) })).worlds || [],
         importCard,
         createBlank,
+        restartWorld,
         createFromLibrary,
         addWorldSetting,
         updateWorld: async (worldId, patch, expectedRevision) => (await request(`/worlds/${encodeURIComponent(worldId)}`, {

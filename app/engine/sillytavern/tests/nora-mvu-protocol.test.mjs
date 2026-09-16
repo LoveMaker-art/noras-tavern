@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createRequire } from 'node:module';
+import { requireCardForge } from './nora-cardforge-fixture.mjs';
 import * as wire from '../public/scripts/nora-compat/mvu-protocol.js';
 import { adaptCardForMvuRuntime } from '../public/scripts/nora-compat/mvu-compatibility.js';
 
-const require = createRequire(import.meta.url);
-const { createMvuPatch } = require('../../../../nora/skills/creative/nora-cardforge/src/mvu/mvu-compiler.js');
-const { applyPatchSet } = require('../../../../nora/skills/creative/nora-cardforge/src/core/patch-engine.js');
-const { createEmptyCard } = require('../../../../nora/skills/creative/nora-cardforge/src/core/card-model.js');
+const { createMvuPatch } = requireCardForge('./src/mvu/mvu-compiler.js');
+const { applyPatchSet } = requireCardForge('./src/core/patch-engine.js');
+const { createEmptyCard } = requireCardForge('./src/core/card-model.js');
 const envelope = operations => ({ protocol: wire.NORA_MVU_PROTOCOL, operations });
 
 test('extra-model task explains the observed story and pre-turn state instead of asking for roleplay', () => {

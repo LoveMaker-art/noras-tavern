@@ -1,3 +1,4 @@
+import './fixtures/nora-zh-locale.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStPresetAdapter } from '../public/scripts/nora-adapters/st-preset-adapter.js';
@@ -69,8 +70,9 @@ function ui() {
     let content = ''; let generating = false; const calls = [];
     const items = [{ name: 'Alpha', preset }, { name: 'Beta', preset }];
     const controller = createLibraryController({
-        presets: { listPresets: () => ({ items, selected: 'Alpha' }), applyPreset: async (...args) => calls.push(args) },
-        dialogs: { open: (_title, body) => { content = body; return {}; }, close() {}, toast() {}, normalizeError: e => e.message, confirm: async () => true },
+        presets: { listPresets: () => ({ items, selected: 'Alpha' }), applyPreset: async (...args) => calls.push(args),
+            readPreset: name => ({ name, current: name === 'Alpha', preset, revision: '1', runtimeRevision: '1', toggleable: ['a', 'b', 'c'] }) },
+        dialogs: { open: (_title, body) => { content = body; return {}; }, close() {}, setCloseGuard() {}, toast() {}, normalizeError: e => e.message, confirm: async () => true },
         operations: { isBusy: () => false, run: async (_key, fn) => fn() }, isGenerating: () => generating,
         select: selector => selector === '[data-scripts]' && !content.includes('data-scripts') ? null : node(selector),
         selectAll: (selector, root) => selector === '[data-preset]' ? [...root.innerHTML.matchAll(/data-preset="(\d+)"/g)].map(match => {
@@ -81,10 +83,10 @@ function ui() {
     return { controller, node, calls, content: () => content, generating: value => { generating = value; } };
 }
 
-test('search preserves query on return, marks current selection, and distinguishes no results', async () => {
+test('template search preserves query on return without implying a global active preset', async () => {
     const f = ui();
     await f.controller.openPresets();
-    assert.match(f.node('[data-preset-results]').innerHTML, /aria-current="true"/);
+    assert.doesNotMatch(f.node('[data-preset-results]').innerHTML, /aria-current="true"/);
     assert.doesNotMatch(f.node('[data-preset-results]').innerHTML, /聊天补全预设/);
     const search = f.node('[data-preset-search]');
     search.value = 'bEtA'; search.handlers.input({ currentTarget: search });
@@ -92,7 +94,7 @@ test('search preserves query on return, marks current selection, and distinguish
     f.node('row-1').handlers.click();
     assert.match(f.content(), /nora-preset-footer/);
     assert.doesNotMatch(f.content(), /data-scripts/);
-    assert.doesNotMatch(f.content(), /<details[^>]* open/);
+    assert.match(f.content(), /<details[^>]* open/);
     assert.ok(f.content().indexOf('nora-preset-footer') > f.content().indexOf('nora-preset-prompts'));
     await f.node('[data-back]').handlers.click();
     assert.match(f.content(), /value="bEtA"/);
@@ -100,12 +102,12 @@ test('search preserves query on return, marks current selection, and distinguish
     assert.match(f.node('[data-preset-results]').innerHTML, /没有匹配/);
 });
 
-test('apply without a script checkbox preserves false consent and generation guard', async () => {
+test('unchanged library templates cannot apply globally or execute scripts', async () => {
     const f = ui();
     await f.controller.openPresets(); f.node('row-1').handlers.click();
     const button = f.node('[data-apply]');
     f.generating(true); await button.handlers.click({ currentTarget: button });
     assert.equal(f.calls.length, 0);
     f.generating(false); await button.handlers.click({ currentTarget: button });
-    assert.deepEqual(f.calls, [['Beta', { enableScripts: false }]]);
+    assert.deepEqual(f.calls, []);
 });

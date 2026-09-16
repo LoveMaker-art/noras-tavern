@@ -14,6 +14,69 @@ export function createWorldCreationController({
 }) {
     // Keep a failed/uncertain intent stable until creation AND activation succeed.
     const libraryIntents = new Map();
+    const restartIntents = new Map();
+
+    function openRestartWorldSheet(source) {
+        if (isGenerating()) { showToast(tr('请等待当前回复结束，再开启新世界。')); return; }
+        if (operations.isBusy('world')) { showToast(tr('世界正在更新，请稍候。')); return; }
+        const previous = restartIntents.get(source.id);
+        const modal = openModal(tr('重新开局'), `<form class="nora-form" data-restart-form>
+            <p class="nora-sheet-intro">${tr('沿用人物、世界设定与预设，从开场重新开始。原世界与故事记录都会保留。')}</p>
+            <label>${tr('新世界名称')}<input name="name" required maxlength="80" autocomplete="off"></label>
+            <p class="nora-field-help">${tr('不带入聊天记录、剧情进度和已变化的角色状态。')}</p>
+            <div class="nora-sheet-actions"><button class="nora-secondary" data-restart-cancel type="button">${tr('取消')}</button><button class="nora-primary" type="submit">${tr('开始新故事')}</button></div>
+        </form>`, 'nora-world-modal nora-plain-sheet');
+        const form = select('[data-restart-form]', modal);
+        const input = form.querySelector('[name="name"]');
+        const suffix = ` · ${tr('新篇')}`;
+        input.value = previous?.name || `${String(source.name || tr('未命名世界')).slice(0, 80 - suffix.length)}${suffix}`;
+        if (previous) input.readOnly = true;
+        select('[data-restart-cancel]', modal).addEventListener('click', closeModal);
+        form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (isGenerating()) { showToast(tr('请等待当前回复结束，再开启新世界。')); return; }
+            if (operations.isBusy('world')) return;
+            const name = input.value.trim();
+            if (!name) { input.focus(); return; }
+            const intent = restartIntents.get(source.id) || { key: 'browser:' + crypto.randomUUID(), name, revision: source.revision, worldId: '' };
+            restartIntents.set(source.id, intent);
+            input.readOnly = true;
+            const submit = form.querySelector('[type="submit"]');
+            submit.textContent = tr('正在准备新开局…');
+            const completed = await runWorldOperation(async () => {
+                if (!intent.worldId) {
+                    try {
+                        const world = await worldRuntime.restartWorld({ worldId: source.id, name: intent.name,
+                            expectedRevision: intent.revision, idempotencyKey: intent.key });
+                        intent.worldId = world.id;
+                    } catch (error) {
+                        if (error.retryable === false || ['NORA_WORLD_REVISION_CONFLICT', 'NORA_WORLD_NOT_FOUND', 'NORA_WORLD_NOT_READY', 'NORA_WORLD_INVALID'].includes(error.code)) {
+                            restartIntents.delete(source.id);
+                            input.readOnly = false;
+                            await loadWorlds({ force: true });
+                            source = worldRuntime.list().find(world => world.id === source.id) || source;
+                        }
+                        throw error;
+                    }
+                }
+                await loadWorlds({ force: true });
+                refresh();
+            }, { control: submit, errorLabel: tr('新开局暂未完成'), logLabel: 'World restart failed' });
+            if (completed) {
+                try {
+                    const opened = await openWorldById(intent.worldId, { interactionId: 'world-restart-' + Date.now() });
+                    if (opened === false) throw new Error(tr('请在世界列表中重新打开，原世界已保存。'));
+                    restartIntents.delete(source.id);
+                    closeModal();
+                } catch (error) {
+                    showToast(tr('世界已创建，但打开失败：') + normalizeError(error), { tone: 'error', duration: 4200 });
+                }
+            }
+            submit.disabled = false;
+            submit.textContent = intent.worldId ? tr('打开新世界') : tr('重试');
+        });
+        input.focus();
+    }
     async function createFromLibrary(character, control) {
         const avatar = character?.avatar;
         if (!avatar) return;
@@ -144,6 +207,7 @@ export function createWorldCreationController({
 
     return Object.freeze({
         openNewWorldSheet,
+        openRestartWorldSheet,
         openBlankWorldSheet,
         handleCharacterImport,
         createFromLibrary,

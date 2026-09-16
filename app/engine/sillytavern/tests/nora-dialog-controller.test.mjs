@@ -42,6 +42,34 @@ function sheetFixture() {
         modal, header, title, close, select, body: () => body, rebuilds: () => rebuilds };
 }
 
+test('an editor close guard protects the same sheet from button, backdrop and programmatic dismissal', async () => {
+    const f = sheetFixture();
+    f.dialogs.open('Editor', '<form></form>');
+    let allowed = false, checks = 0;
+    f.dialogs.setCloseGuard(async () => { checks++; return allowed; });
+    await f.dialogs.close();
+    assert.equal(f.modal.classList.contains('open'), true);
+    assert.equal(checks, 1);
+    allowed = true;
+    await f.dialogs.close();
+    assert.equal(f.modal.classList.contains('open'), false);
+    f.dialogs.open('Other', '<p>Other</p>');
+    f.dialogs.close();
+    assert.equal(checks, 2, 'The previous editor guard must not leak to another sheet');
+});
+
+test('a delayed close decision cannot close a replacement sheet', async () => {
+    const f = sheetFixture();
+    f.dialogs.open('Editor', '<form></form>');
+    let resolve;
+    f.dialogs.setCloseGuard(() => new Promise(done => { resolve = done; }));
+    const closing = f.dialogs.close();
+    await Promise.resolve();
+    f.dialogs.open('New', '<p>New</p>');
+    resolve(true); await closing;
+    assert.equal(f.modal.classList.contains('open'), true);
+});
+
 test('ordinary list/detail/editor navigation reuses the shell without a library key', () => {
     const f = sheetFixture();
     f.dialogs.open('List', '<p>List</p>', 'list');

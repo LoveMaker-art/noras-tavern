@@ -60,6 +60,8 @@ class LauncherTavernModelTests(unittest.TestCase):
                     result = MODULE.initialize_launcher_model(config, self.marker, "http://127.0.0.1:18999")
                 self.assertTrue(result["changed"])
                 oai = client.current["oai_settings"]
+                self.assertEqual(oai["openai_max_context"], 30000)
+                self.assertEqual(oai["openai_max_tokens"], 4000)
                 self.assertEqual(oai["chat_completion_source"], source)
                 self.assertEqual(oai[{"custom": "custom_model", "claude": "claude_model", "makersuite": "google_model"}[source]], "fixture-model")
                 ui = client.current["extension_settings"]["nora_ui"]
@@ -68,6 +70,17 @@ class LauncherTavernModelTests(unittest.TestCase):
                 self.assertNotIn("fixture-secret", json.dumps(client.current))
                 self.assertNotIn("fixture-secret", self.marker.read_text())
                 self.assertEqual(client.secrets[key][0]["id"], ui["hermesModel"]["secretId"])
+
+    def test_hermes_missing_limits_use_defaults_and_explicit_limits_are_preserved(self):
+        config_file = Path(self.temp.name) / "config.yaml"
+        config = {"model": {"default": "fixture", "api_key": "fixture-secret", "base_url": "https://relay.invalid/v1"}}
+        config_file.write_text(json.dumps(config))
+        loaded = MODULE.load_model_config(config_file)
+        self.assertEqual((loaded["context"], loaded["max_tokens"]), (30000, 4000))
+        config["model"].update({"context_length": 64000, "max_tokens": 12000})
+        config_file.write_text(json.dumps(config))
+        loaded = MODULE.load_model_config(config_file)
+        self.assertEqual((loaded["context"], loaded["max_tokens"]), (64000, 12000))
 
     def test_existing_model_is_never_overwritten(self):
         client = Client(self.settings)

@@ -4,8 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { createRequire } from 'node:module';
-const { compileWorld } = createRequire(import.meta.url)('../../../../nora/skills/creative/nora-cardforge/src/project/world-authoring.js');
+import { requireCardForge } from './nora-cardforge-fixture.mjs';
+const { compileWorld } = requireCardForge('./src/project/world-authoring.js');
 
 import {
     convertEmbeddedBook,

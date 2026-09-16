@@ -166,7 +166,7 @@ export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
         for (const world of worlds) {
             const avatar = world.runtime_card?.binding?.avatar;
             const key = world.source?.sha256 || avatar;
-            if (!avatar || sources.has(key) || legacySources.has(key) || world.source?.type === 'blank-world') continue;
+            if (!avatar || sources.has(key) || legacySources.has(key) || ['blank-world', 'world-restart'].includes(world.source?.type)) continue;
             if (catalog.some(item => item.avatar === avatar)) continue;
             legacySources.add(key);
             try {

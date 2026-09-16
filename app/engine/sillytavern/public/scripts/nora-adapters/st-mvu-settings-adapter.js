@@ -83,7 +83,7 @@ export function createStMvuSettingsAdapter(runtime, {
                 '额外模型解析配置': { '模型来源': '与插头相同' },
             });
         },
-        useIndependentModel({ model, contextLimit = 64000, maxTokens = 20000 }) {
+        useIndependentModel({ model, contextLimit = 30000, maxTokens = 4000 }) {
             return apply({
                 '更新方式': '额外模型解析',
                 '额外模型解析配置': {
@@ -91,8 +91,8 @@ export function createStMvuSettingsAdapter(runtime, {
                     'api地址': NORA_MVU_MODEL_PROXY_URL,
                     '密钥': '',
                     '模型名称': String(model || '').trim(),
-                    '最大上下文token数': Math.min(1000000, Math.max(512, Number(contextLimit) || 64000)),
-                    '最大回复token数': Math.min(128000, Math.max(1, Number(maxTokens) || 20000)),
+                    '最大上下文token数': Math.min(1000000, Math.max(512, Number(contextLimit) || 30000)),
+                    '最大回复token数': Math.min(128000, Math.max(1, Number(maxTokens) || 4000)),
                 },
             });
         },

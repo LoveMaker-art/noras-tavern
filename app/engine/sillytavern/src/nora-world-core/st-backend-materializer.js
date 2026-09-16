@@ -20,6 +20,8 @@ import { cloneJson, sha256, stableStringify, importedPersona } from './domain.js
 import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 import { createStCardCodec } from './st-card-codec.js';
+import { stageCardBuffer } from './st-import-staging.js';
+import { restartStoryContext } from './world-restart.js';
 
 export { adaptCardForMvuRuntime };
 
@@ -335,6 +337,7 @@ function initialChat({ command, identities, report, avatar, worldbookName, times
         },
         nora_session: { id: identities.sessionId, version: 1 },
         ...(worldbookName ? { world_info: worldbookName } : {}),
+        ...(typeof command.payload?.restart?.scenario === 'string' ? { scenario: command.payload.restart.scenario } : {}),
     };
     const chat = [{
         user_name: command.persona?.name || 'User',
@@ -604,6 +607,47 @@ export function createStBackendMaterializer({
     const cardLibrary = createCardLibrary({ roots, stagingRoot: staging, cardCodec, locks });
 
     return Object.freeze({
+        async stageRestart(world, { name, idempotencyKey }) {
+            const paths = stPaths(world, roots);
+            const session = paths.sessions.find(item => item.session.session_id === world.sessions.default_session_id);
+            if (!session) throw new NoraWorldCoreError('NORA_ST_BINDING_INVALID', '原世界的默认会话缺失。');
+            for (const filePath of [paths.runtimeCard, session.filePath, ...paths.knowledge.map(item => item.filePath)]) {
+                const issues = [];
+                await inspectRegularFile(filePath, 'missing-or-unsafe', issues);
+                if (issues.length) throw new NoraWorldCoreError('NORA_ST_RESOURCE_UNSAFE', '世界资源缺失或不可读取，请先修复原世界。');
+            }
+            const sourceBuffer = await fs.readFile(paths.runtimeCard);
+            const decoded = await cardCodec.decode({ buffer: sourceBuffer, format: 'png', sourcePath: paths.runtimeCard });
+            const card = cloneJson(decoded.card);
+            // Scenario is an authored World override currently persisted in the ST header.
+            // Read only the header, and carry no other session metadata or messages.
+            let metadata;
+            const handle = await fs.open(session.filePath, 'r');
+            try {
+                for await (const line of handle.readLines()) { metadata = JSON.parse(line).chat_metadata; break; }
+            } finally { await handle.close(); }
+            if (metadata?.nora_world?.id !== world.world_id) throw new NoraWorldCoreError('NORA_ST_BINDING_INVALID', '原世界的会话归属不一致，请先修复。');
+            const data = card.data || card;
+            data.extensions = { ...data.extensions };
+            delete data.extensions.nora_world;
+            const storyContext = restartStoryContext(world.story_context);
+            if (storyContext) data.extensions.nora_world = { story_context: storyContext };
+            const books = [];
+            for (const { resource, filePath } of paths.knowledge) {
+                books.push({ sourceKey: resource.source_key, binding: cloneJson(resource.binding),
+                    book: JSON.parse(await fs.readFile(filePath, 'utf8')) });
+            }
+            if (!books.some(item => item.sourceKey === 'embedded-worldbook:0') && data.character_book?.entries) {
+                books.push({ sourceKey: 'embedded-worldbook:0', binding: { name: data.extensions.world || data.character_book.name || 'World' },
+                    book: convertEmbeddedBook(data.character_book) });
+            }
+            const buffer = await cardCodec.encodeRuntimeCard({ card, sourceBuffer });
+            return stageCardBuffer({ buffer, originalName: 'world-restart.png', sourceType: 'world-restart',
+                idempotencyKey, persona: world.persona, worldName: name, stagingRoot: staging,
+                payload: { restart: { source_world_id: world.world_id, source_revision: world.revision,
+                    books, ...(typeof metadata.scenario === 'string' ? { scenario: metadata.scenario } : {}),
+                    ...(world.preset ? { preset: world.preset } : {}), ...(world.ui ? { ui: world.ui } : {}) } } });
+        },
         listLibraryCards: cardLibrary.list,
         saveLibraryCard: cardLibrary.save,
         readLibraryCardSource: cardLibrary.source,
@@ -802,7 +846,8 @@ export function createStBackendMaterializer({
                 prepared = { ...prepared, card: projected, changed: true };
             }
             const report = inspectPreparedStCard(prepared.card);
-            if (command?.payload?.runtime_card_kind !== 'nora-internal-blank') {
+            const restart = command?.payload?.restart;
+            if (!restart && command?.payload?.runtime_card_kind !== 'nora-internal-blank') {
                 await cardLibrary.save({ buffer: sourceBuffer, format }, identities.worlds || []);
             }
             const timestamp = isoDate(now());
@@ -815,7 +860,26 @@ export function createStBackendMaterializer({
                 const avatar = `${runtimeBase}.png`;
                 const runtimePath = path.join(roots.characters, avatar);
 
-                const worldbook = await locks.run(
+                const copiedBooks = [];
+                if (restart) {
+                    for (const [index, item] of restart.books.entries()) {
+                        const name = `Nora_Restart_${sha256(worldId).slice(0, 16)}_${index}`;
+                        const book = cloneJson(item.book);
+                        book.extensions = { ...book.extensions, nora_resource: {
+                            schema: 1, kind: item.sourceKey === 'nora:user-settings' ? 'world-settings' : 'world-restart',
+                            world_id: worldId, operation_id: operationId,
+                        } };
+                        const filePath = path.join(roots.worlds, `${name}.json`);
+                        const persisted = await ensureFile(filePath, `${JSON.stringify(book, null, 4)}\n`);
+                        if (persisted.created) created.push({ filePath, digest: persisted.digest });
+                        copiedBooks.push({ sourceKey: item.sourceKey, engine: 'sillytavern', ownership: 'owned',
+                            binding: { ...item.binding, name, original_names: [...new Set([
+                                item.binding.name, item.binding.original_name, ...(item.binding.original_names || []),
+                            ].filter(Boolean))] } });
+                    }
+                }
+                const copiedEmbedded = copiedBooks.find(item => item.sourceKey === 'embedded-worldbook:0');
+                const worldbook = restart ? (copiedEmbedded ? { name: copiedEmbedded.binding.name } : null) : await locks.run(
                     `st-worldbook:${report.worldbooks[0]?.preferred_name || '<none>'}`,
                     () => resolveWorldbook({
                         directory: roots.worlds,
@@ -878,13 +942,14 @@ export function createStBackendMaterializer({
                         binding: { avatar, chat_id: chatId },
                         openingState: report.opening_state,
                     },
-                    knowledge: worldbook ? [{
+                    knowledge: restart ? copiedBooks : worldbook ? [{
                         sourceKey: report.worldbooks[0].source_key,
                         engine: 'sillytavern',
                         binding: { name: worldbook.name },
                         ownership: worldbook.ownership,
                     }] : [],
-                    declaredCapabilities: [...report.declared_capabilities],
+                    declaredCapabilities: [...new Set([...report.declared_capabilities,
+                        ...(restart ? capabilityInspection(prepared.card, restart.books.map(item => item.book)).declared : [])])],
                 };
             } catch (error) {
                 await compensate(created, new Set(Object.values(roots))).catch(cleanupError => {

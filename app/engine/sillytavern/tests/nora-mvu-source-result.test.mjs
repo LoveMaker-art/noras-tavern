@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { createMvuUpdateObserver } from '../public/scripts/nora-compat/mvu-update-observer.js';
 import * as protocol from '../public/scripts/nora-compat/mvu-protocol.js';
 import { isMvuUpdateInstructionEntry } from '../public/scripts/nora-compat/mvu-compatibility.js';
+import { cardForgeRoot, requireCardForge } from './nora-cardforge-fixture.mjs';
 
 // Run against the pinned, patched upstream checkout with its immutable deps.
 // Parser, native schema, command executor, Zod adapter and transaction functions
@@ -431,10 +432,8 @@ test('built-in Nora requests omit upstream creative framing; legacy keeps it', {
 });
 
 test('authored plot routing survives CardForge parsing and actual MVU filtering', { skip: !source }, async () => {
-    const require = createRequire(import.meta.url);
-    const forge = '../../../../nora/skills/creative/nora-cardforge/';
-    const { parseCardMarkdown } = require(`${forge}src/card-md/card-md.js`);
-    const { card } = parseCardMarkdown(fs.readFileSync(new URL(`${forge}fixtures/portable-world/card.md`, import.meta.url), 'utf8'));
+    const { parseCardMarkdown } = requireCardForge('./src/card-md/card-md.js');
+    const { card } = parseCardMarkdown(fs.readFileSync(new URL('fixtures/portable-world/card.md', cardForgeRoot), 'utf8'));
     const authored = card.data.character_book.entries;
     const plot = authored.find(e => e.comment === '[mvu_plot]叙事规则');
     assert.ok(plot, 'the authoring example separates prose instructions from mechanics');

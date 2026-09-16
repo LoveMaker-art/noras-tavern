@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import { normalizeWorldPreset } from '../../public/scripts/nora-worlds/world-preset.js';
 import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 import { normalizeWorldTheme } from '../../public/scripts/nora-worlds/world-theme.js';
 
@@ -269,6 +270,8 @@ export function createWorldManifest({ operation, command, materialization, now }
         revision: 0,
         name: materialization.worldName || command.name,
         persona,
+        ...(command.payload?.restart?.preset ? { preset: cloneJson(command.payload.restart.preset) } : {}),
+        ...(command.payload?.restart?.ui ? { ui: cloneJson(command.payload.restart.ui) } : {}),
         ...(materialization.storyContext === undefined ? {} : { story_context: normalizeStoryContext({
             ...materialization.storyContext,
             player: { ...materialization.storyContext.player, profile: { ...materialization.storyContext.player.profile,
@@ -382,6 +385,7 @@ export function validateWorldManifest(value) {
         world_id: requireId(manifest.world_id, 'manifest.world_id'),
         ...(manifest.ui === undefined ? {} : { ui: normalizeWorldTheme(manifest.ui) }),
         ...(manifest.story_context === undefined ? {} : { story_context: normalizeStoryContext(manifest.story_context) }),
+        ...(manifest.preset === undefined ? {} : { preset: normalizeWorldPreset(manifest.preset) }),
         revision,
         name: requireString(manifest.name, 'manifest.name'),
         persona: {

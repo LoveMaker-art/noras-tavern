@@ -72,7 +72,7 @@ test('all seven array edit targets remain available', () => {
     assert.doesNotMatch(render(), /data-copy-character|fa-copy/);
 });
 
-test('v2.3.5 deployment keeps independent-world-preset UI', { skip: !sourceDir }, () => {
+test('v2.3.5 integration keeps independent-world-preset UI', () => {
     assert.match(render(), /data-action="world-preset"/);
     assert.match(render(), /Independent preset/);
 });

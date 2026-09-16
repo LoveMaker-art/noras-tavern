@@ -456,8 +456,8 @@
         "top_p_openai": 1,
         "top_k_openai": 0,
         "stream_openai": true,
-        "openai_max_context": 4095,
-        "openai_max_tokens": 300,
+        "openai_max_context": 30000,
+        "openai_max_tokens": 4000,
         "prompts": [
             {
                 "name": "Main Prompt",

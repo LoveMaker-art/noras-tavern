@@ -606,7 +606,7 @@ test('headless MVU defaults to the bounded Nora update transaction without UI no
     assert.equal(settings['额外模型解析配置']['应答格式'], '聊天消息');
     assert.equal(settings['额外模型解析配置']['模型来源'], '与插头相同');
     assert.equal(settings['额外模型解析配置']['请求次数'], 1);
-    assert.equal(settings['额外模型解析配置']['最大回复token数'], 20000);
+    assert.equal(settings['额外模型解析配置']['最大回复token数'], 4000);
     assert.equal(settings['通知']['额外模型解析中'], false);
     assert.equal(settings['通知']['变量更新出错'], false);
 });
@@ -647,8 +647,8 @@ test('headless settings migration enables the bounded variable-model transaction
 
     const first = initializeHeadlessMvuSettings(context);
     assert.equal(first['更新方式'], '额外模型解析');
-    assert.equal(first['额外模型解析配置']['最大上下文token数'], 64000);
-    assert.equal(first['额外模型解析配置']['最大回复token数'], 20000);
+    assert.equal(first['额外模型解析配置']['最大上下文token数'], 30000);
+    assert.equal(first['额外模型解析配置']['最大回复token数'], 4000);
     assert.equal(context.extensionSettings.nora_mvu.settingsVersion, 5);
 
     context.extensionSettings.mvu_settings['更新方式'] = '随AI输出';

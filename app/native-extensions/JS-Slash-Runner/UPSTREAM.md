@@ -21,6 +21,17 @@ ST's prompt collector, so neither can become a literal `undefined` message. All
 ordinary character, World Info, and chat-history prompt processing remains
 upstream-compatible.
 
+The managed `generateRaw` dispatcher forwards `custom_api` to prompt collection.
+When a custom request supplies numeric `max_context` / `max_tokens`, the prompt
+collector uses those budgets; omitted values retain the active preset defaults.
+This does not mutate the active preset or change the request's prompt content.
+The reproducible vendor transformation is `node apply-generation-budget.mjs`
+from this directory. It checks the pinned bundle bindings and refuses unknown
+versions. The separate patch under `nora-mvu/upstream/slash-runner.patch` alone
+does not update this loaded extension: MVU calls the runtime helper API.
+`tests/nora-mvu-shipped-budget.test.mjs` in the engine executes the shipped
+dispatcher, collector and output override paths to guard this distinction.
+
 Nora's control adapter is connected in the readable prefix of `dist/index.js`.
 `nora-control-adapter.js` wraps the existing global/character/preset reactive
 stores and their native persistence functions. It does not replace the script

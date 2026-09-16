@@ -79,6 +79,7 @@ export function createWorldCoreRuntime(runtime, {
             name: manifest.name,
             persona: { ...manifest.persona },
             storyContext: manifest.story_context,
+            preset: manifest.preset ? structuredClone(manifest.preset) : null,
             libraryWorldbooks: (manifest.knowledge || []).map(item => ({ sourceKey: item.source_key, name: item.binding?.name })),
             ui: manifest.ui,
             persistent: true,
@@ -141,14 +142,14 @@ export function createWorldCoreRuntime(runtime, {
     }
 
     async function activate(worldOrId) {
-        const manifest = manifestById(worldOrId);
+        const manifest = await ensurePreset(manifestById(worldOrId));
         const snapshot = await client.prepareSnapshot(manifest.world_id);
         await executeSnapshot(snapshot, runtime, { measure });
         return model(manifest);
     }
 
     async function ensureReady(worldOrId) {
-        const manifest = manifestById(worldOrId);
+        const manifest = await ensurePreset(manifestById(worldOrId));
         const avatar = String(manifest.runtime_card?.binding?.avatar || '');
         const session = defaultSession(manifest);
         const chatId = normalizeChatId(session?.binding?.chat_id);
@@ -157,6 +158,7 @@ export function createWorldCoreRuntime(runtime, {
             && normalizeChatId(state.chatId) === chatId
             && String(state.metadata?.nora_world?.id || '') === manifest.world_id
             && String(state.metadata?.nora_session?.id || '') === String(session?.session_id || '')) {
+            if (manifest.preset) runtime.applyWorldPreset(manifest.preset);
             return model(manifest);
         }
         const snapshot = await client.prepareSnapshot(manifest.world_id);
@@ -165,12 +167,15 @@ export function createWorldCoreRuntime(runtime, {
     }
 
     async function runCreation(kind, create) {
+        const activeId = runtime.read().metadata?.nora_world?.id;
+        const inheritedPreset = kind === 'RESTART' ? null : manifests.find(item => item.world_id === activeId)?.preset || runtime.captureWorldPreset?.();
         setOperation({ status: 'RUNNING', kind, operationId: null, error: null });
         try {
             const result = await create();
             setOperation({ status: 'RUNNING', operationId: result.operation?.operation_id || null });
             await refreshCharacters();
             manifests = await client.list();
+            if (result.world && inheritedPreset) await ensurePreset(manifestById(result.world.world_id), inheritedPreset);
             const created = list().find(world => world.id === result.world?.world_id);
             if (!created) throw new Error('The created World was committed but is absent from the authoritative list.');
             setOperation({ status: 'COMPLETED', operationId: result.operation?.operation_id || null, error: null });
@@ -310,6 +315,7 @@ export function createWorldCoreRuntime(runtime, {
     async function updateActive(patch, { expectedRevision } = {}) {
         const worldId = runtime.read().metadata?.nora_world?.id;
         const current = manifestById(worldId);
+        if (patch.preset) runtime.validateWorldPreset?.(patch.preset);
         const world = await client.updateWorld(worldId, patch, expectedRevision ?? current.revision);
         manifests = manifests.map(item => item.world_id === worldId ? world : item);
         // The manifest is authoritative. A failed live projection must not roll it back.
@@ -317,17 +323,32 @@ export function createWorldCoreRuntime(runtime, {
         let runtimeApplied = false;
         if (runtime.read().metadata?.nora_world?.id === worldId) {
             try {
+                if (patch.preset) runtime.applyWorldPreset(world.preset);
                 if (patch.persona) await runtime.savePersona(world.persona);
                 if (world.story_context) runtime.applyStoryContext(world.story_context);
                 runtimeApplied = true;
             } catch (error) {
                 emit();
-                throw Object.assign(new Error('World was saved, but its live persona could not be applied. Reopen the World.'),
+                throw Object.assign(new Error('世界设置已保存，但运行配置未能应用，请重新打开世界。'),
                     { code: 'NORA_WORLD_PROJECTION_FAILED', saved: true, cause: error });
             }
         }
         emit();
         return { world: model(world), saved: true, runtimeApplied };
+    }
+
+    async function ensurePreset(manifest, initial = null) {
+        if (manifest.preset || !runtime.defaultWorldPreset) return manifest;
+        const preset = initial || runtime.defaultWorldPreset();
+        let world;
+        try { world = await client.updateWorld(manifest.world_id, { preset }, manifest.revision); } catch (error) {
+            if (error.code !== 'NORA_WORLD_REVISION_CONFLICT') throw error;
+            manifests = await client.list();
+            world = manifestById(manifest.world_id);
+            if (!world.preset) throw error;
+        }
+        manifests = manifests.map(item => item.world_id === world.world_id ? world : item);
+        return world;
     }
 
     async function importLibraryItem(worldId, input) {
@@ -400,6 +421,7 @@ export function createWorldCoreRuntime(runtime, {
         importLibraryItem,
         importCard,
         createBlank,
+        restartWorld: options => runCreation('RESTART', () => client.restartWorld(options)),
         createFromLibrary,
         addSetting,
         updateActive,
