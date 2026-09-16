@@ -73,6 +73,32 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     };
 }
 
+test('MVU handoff ends pending story feedback without disabling cancellation', () => {
+    const previousDocument = globalThis.document;
+    globalThis.document = { body: { classList: { toggle() {} } } };
+    try {
+        let thinking = false;
+        let mvu = false;
+        const { controller, send } = createHarness({ storyActive: true, messageView: {
+            beginPending: () => { thinking = true; },
+            clearPending: () => { thinking = false; },
+            showMvuTransaction: status => { mvu = status === 'syncing'; },
+        } });
+        controller.syncGenerating();
+        assert.equal(thinking, true);
+        controller.setMvuTransaction({ status: 'syncing' });
+        assert.equal(thinking, false);
+        assert.equal(mvu, true);
+        assert.equal(send.innerHTML, 'stop');
+        controller.setGenerating(false);
+        controller.syncGenerating();
+        assert.equal(thinking, false, 'generic generation events during MVU must not restart story thinking');
+        controller.setMvuTransaction({ status: 'committed' });
+        controller.syncGenerating();
+        assert.equal(thinking, false);
+    } finally { globalThis.document = previousDocument; }
+});
+
 test('skipped and interrupted MVU transactions clear syncing without a red failure', () => {
     for (const status of ['skipped', 'cancelled', 'stale']) {
         const shown = [];

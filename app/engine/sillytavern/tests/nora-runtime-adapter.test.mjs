@@ -308,6 +308,23 @@ test('whenReady resolves to a Nora snapshot instead of the raw ST context', asyn
     assert.equal(readyState.activeChatId, 'phase-1-chat');
 });
 
+test('user snapshot transactions never become assistant MVU progress', () => {
+    const runtime = createRuntime(() => {});
+    runtime.chat.push({ is_user: true, mes: 'user input' });
+    const listeners = new Map();
+    runtime.eventSource = { on: (event, handler) => listeners.set(event, handler) };
+    runtime.eventTypes = {};
+    const received = [];
+    createStRuntimeAdapter(() => runtime).subscribe({ mvuTransactionChanged: event => received.push(event) });
+    for (const phase of ['started', 'committed', 'failed']) {
+        listeners.get(`nora_mvu_transaction_${phase}`)({ message_id: 1, chat_id: runtime.chatId });
+    }
+    assert.deepEqual(received, []);
+    listeners.get('nora_mvu_transaction_started')({ message_id: 0, chat_id: runtime.chatId });
+    assert.equal(received.length, 1);
+    assert.equal(received[0].status, 'syncing');
+});
+
 test('subscribe projects MVU transaction events without polling the runtime', () => {
     const runtime = createRuntime(() => {});
     const listeners = new Map();

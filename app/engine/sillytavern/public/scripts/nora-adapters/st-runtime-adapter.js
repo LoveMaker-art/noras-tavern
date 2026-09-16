@@ -105,9 +105,13 @@ export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {})
         on(events.GENERATION_STOPPED, () => handlers.generationChanged?.(false));
         const isCurrentTransaction = detail => !detail?.chat_id ||
             String(detail.chat_id).replace(/\.jsonl$/i, '') === snapshot().activeChatId;
-        on(MVU_TRANSACTION_EVENTS.started, detail => isCurrentTransaction(detail) && handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
+        // MESSAGE_SENT also persists MVU snapshots. That is not an assistant
+        // variable update and must not start (or finish) its progress indicator.
+        const isVisibleTransaction = detail => isCurrentTransaction(detail)
+            && runtime().chat?.[detail?.message_id]?.is_user !== true;
+        on(MVU_TRANSACTION_EVENTS.started, detail => isVisibleTransaction(detail) && handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
         for (const terminal of ['committed', 'failed']) {
-            on(MVU_TRANSACTION_EVENTS[terminal], detail => isCurrentTransaction(detail) && handlers.mvuTransactionChanged?.({
+            on(MVU_TRANSACTION_EVENTS[terminal], detail => isVisibleTransaction(detail) && handlers.mvuTransactionChanged?.({
                 ...detail, status: projectMvuTransaction(detail, terminal).status,
             }));
         }

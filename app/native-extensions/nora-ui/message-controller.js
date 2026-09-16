@@ -228,7 +228,7 @@ export function createMessageController({
     }
 
     function setGenerating(value) {
-        if (value && !generating) messageView.beginPending?.('', getSessionKey());
+        if (value && !generating && !mvuSyncing) messageView.beginPending?.('', getSessionKey());
         if (!value) messageView.clearPending?.();
         generating = value;
         updateComposer();
@@ -244,6 +244,7 @@ export function createMessageController({
         if (transaction.status === 'syncing') {
             mvuSyncing = true;
             mvuSession = getSessionKey();
+            messageView.clearPending?.();
             messageView.showMvuTransaction?.('syncing');
         } else if (mvuSyncing && mvuSession === getSessionKey()) {
             mvuSyncing = false;
