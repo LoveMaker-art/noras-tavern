@@ -332,6 +332,11 @@ test('subscribe projects MVU transaction events without polling the runtime', ()
         { message_id: 4, diagnostics: { modified: false, command_count: 0 }, status: 'no-change' },
         { message_id: 5, error_code: 'MVU_REQUEST_FAILED', status: 'failed' },
     ]);
+    listeners.get('nora_mvu_transaction_failed')?.({ chat_id: 'another-world', outcome: 'stale' });
+    assert.equal(received.length, 4, 'a terminal event from another World must not reach this UI');
+    listeners.get('nora_mvu_transaction_committed')?.({ outcome: 'skipped' });
+    listeners.get('nora_mvu_transaction_failed')?.({ outcome: 'cancelled' });
+    assert.deepEqual(received.slice(-2).map(item => item.status), ['skipped', 'cancelled']);
     release();
     assert.equal(listeners.size, 0);
 });

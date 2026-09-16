@@ -1,37 +1,50 @@
-# Quality Gates
+# 制卡质量门禁
 
-Read this reference when `build` fails or reports publication issues.
+## 新卡构建
 
-## Hard Gates
+`build` 按顺序检查源文件、字段定义、生成结果、状态绑定、卡结构与打包。
+任何硬失败都停止交付，不通过删功能、补无关 description 或伪造报告绕过。
 
-The build stops for missing required card fields, empty or dead worldbook entries,
-overly generic trigger keys, invalid Regex, missing MVU paths, unsafe status HTML,
-invalid project paths, malformed PNG metadata, or failed round-trip parsing.
+| 检查 | 必须满足 |
+| --- | --- |
+| 功能文件 | 配置明确引用的文件存在；不存在不能静默跳过 |
+| 世界人物 | `world.persona` 和角色数组类型正确；ID 唯一、触发角色有关键词；只生成 World Core 人物，不复制世界书人物条目 |
+| 概要与设定 | Description 供用户阅读；整卡 Personality/Scenario 留空。人工核对：去掉概要后，背景、玩法与人物定义仍完整且按条件可达 |
+| 字段契约 | 版本、属性、类型、路径合法；无重复或父子冲突 |
+| 初值 | 与字段类型、枚举、范围一致；容器逐项符合定义 |
+| 生成一致性 | 初始状态、Zod 脚本、业务规则与同一字段契约一致 |
+| MVU 提示词归属 | 人工按[世界书路由](card-authoring.md#mvu-lore-routing)核对两个请求视图；构建只保留标记，不判断自然语言归属 |
+| 基础接入 | 生成的固定版本加载器、Zod 注册脚本与 MVU 格式条目完整；在目标 Nora 版本分别验收注册、更新和保存 |
+| 显示绑定 | HTML 中字面声明路径可由类型树解析；自定义代码保留但不冒充静态已检绑定 |
+| 卡结构 | 必填内容、世界书、正则和打包检查通过 |
+| 成品 | 回读 JSON/PNG，名称与元数据吻合，记录哈希 |
 
-Repair the owning source:
+错误回到唯一源文件修正：内容在 card.md，字段在 features/mvu.json，
+显示在 features/statusbar.html。一次修完已明确问题再构建；
+玩法或需求缺口先报告，不反复猜测填补。
 
-- Prose and declared lore: `card.md`.
-- MVU declarations: `features/mvu.json`.
-- Status template: `features/statusbar.html`.
-- Imported unknown extensions: preserve `source/passthrough.json` unless the user
-  specifically requested a technical migration.
+生成器使用固定结构校验初值；自动化回归另用实际 Zod 验证生成代码，并对照
+真实 Nora helper 验证注册和更新。生产构建不执行外部卡脚本或调用模型。
+报告中的通过项只说明该检查的范围，不等于已完成目标环境运行验收。
+状态模板报告的 verification 标明 literal-bindings、scriptsExecuted=false 和
+runtime=not-verified；这些是工具能力边界，不是一次实测结果。自定义脚本的动态路径、
+地图与按钮交互按 [交互制作流程](advanced-cards.md#交互制作流程) 审查和实测，
+不要为让报告看起来全绿而删交互或手工把未验证改成通过。
 
-## Writing Score
+## 成品时效
 
-The bundled deterministic scorer reports eight dimensions: completeness,
-opening structure, lived-in behavior, audience tags, presentation and commands,
-lorebook, image prompt, and anti-AI-flavor signals.
+build-manifest 记录源文件哈希和成品哈希。源文件改动后 prepare-import 拒绝旧构建；
+新一次构建开始就撤销旧 manifest 的通过资格，失败不允许拿上次成品冒充本次成功。
+旧成品文件保留，但必须重新成功构建后才能暂存导入。
+reports/build-manifest.json 与 reports/quality.json 是证据，不是手工修改的配置。
 
-`release` records the score and issues but blocks only structural and safety
-errors. `release-strict` also requires a score of at least 75. A low score can be
-valid for a deliberately minimal card; explain the tradeoff instead of padding
-text solely to increase a number.
+## 内容评分与旧卡
 
-## Evidence Files
+内容仍由诺拉审阅；默认 `release` 不运行写作评分。用户要求评分时加 `--score-writing`，只作参考，不因低写作分阻断，
+`release-strict` 才要求至少 75 分。不能为凑分增添无关文字。
 
-- `reports/quality.json`: complete gate decisions and diagnostics.
-- `reports/build-manifest.json`: artifact paths, card summary, selected profile,
-  writing score, and SHA-256 hashes.
+已有卡使用只读诊断，结果不是新卡构建准入：没有 Zod、Nora 标记或某个传统
+人物字段，不自动证明运行失败，也不授权改卡。运行未知项单独报告。
 
-Run a new build after every repair. Completion requires the latest report to
-describe the latest source files.
+获准文案润色按 [润色复核](prose-polishing.md#复核与交付) 核对具体差异、语义与依赖；
+不套用新卡构建门禁，不以补 Zod 或补字段来消除旧卡警告。

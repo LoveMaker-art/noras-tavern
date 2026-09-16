@@ -38,6 +38,7 @@ git -C "$WORK_DIR/source/slash-runner" apply --recount "$SCRIPT_DIR/upstream/sla
 (
     cd "$WORK_DIR/source"
     npx --yes corepack@0.32.0 yarn install --immutable
+    NORA_MVU_SOURCE_DIR="$WORK_DIR/source" node --test "$SCRIPT_DIR/../../engine/sillytavern/tests/nora-mvu-source-result.test.mjs"
     NORA_BUNDLE_DEPENDENCIES=1 npx --yes corepack@0.32.0 yarn build
 )
 

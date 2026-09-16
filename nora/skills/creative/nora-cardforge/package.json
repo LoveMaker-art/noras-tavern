@@ -1,7 +1,7 @@
 {
   "name": "nora-cardforge",
   "version": "0.3.0",
-  "noraAdapterRevision": "hermes-mcp-20260831",
+  "noraAdapterRevision": "mvu-lore-routing-20260915",
   "description": "Hermes-native no-UI character card forge for Nora.",
   "license": "GPL-3.0-or-later",
   "type": "commonjs",
@@ -9,7 +9,14 @@
     "nora-cardforge": "scripts/nora-cardforge.js"
   },
   "scripts": {
-    "test": "node tests/smoke.js && node --test tests/prepare-import.test.js"
+    "test": "node tests/smoke.js && node --test tests/prepare-import.test.js tests/field-contract.test.js tests/prose-edit.test.js tests/world-authoring.test.js",
+    "test:runtime": "node --test tests/mvu-runtime.integration.js",
+    "test:portable": "node --test tests/portable-card.integration.js"
+  },
+  "devDependencies": {
+    "zod": "4.1.11",
+    "yaml": "2.8.1",
+    "lodash": "4.17.21"
   },
   "engines": {
     "node": ">=18"

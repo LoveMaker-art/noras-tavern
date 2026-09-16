@@ -1,4 +1,5 @@
 import express from 'express';
+import { traceConfig, appendTrace } from '../nora-mvu-trace.js';
 
 import {
     mvuDiagnosticStore,
@@ -6,6 +7,20 @@ import {
 } from '../nora-mvu-diagnostics.js';
 
 export const router = express.Router();
+
+router.get('/trace-config', async (request, response) => {
+    response.set('Cache-Control', 'no-store').json(await traceConfig(request.user?.directories));
+});
+
+router.post('/trace', async (request, response) => {
+    const config = await traceConfig(request.user?.directories);
+    if (!config.enabled) return response.sendStatus(204);
+    if (!request.body || typeof request.body !== 'object' || Array.isArray(request.body)) return response.sendStatus(400);
+    try {
+        await appendTrace(request.user.directories, request.body, request.user.profile?.handle, config);
+        return response.sendStatus(204);
+    } catch { return response.sendStatus(500); }
+});
 
 router.post('/report', async (request, response) => {
     const event = normalizeMvuDiagnostic(request.body, {

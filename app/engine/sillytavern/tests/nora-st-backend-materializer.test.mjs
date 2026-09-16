@@ -4,6 +4,8 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { createRequire } from 'node:module';
+const { compileWorld } = createRequire(import.meta.url)('../../../../nora/skills/creative/nora-cardforge/src/project/world-authoring.js');
 
 import {
     convertEmbeddedBook,
@@ -37,6 +39,67 @@ test('invalid World Card character arrays refuse import before creating runtime 
     await assert.rejects(() => current.materializer.materialize(current.command, identities()));
     assert.deepEqual(await fs.readdir(current.directories.characters), []);
     assert.deepEqual(await fs.readdir(current.directories.worlds), []);
+});
+
+test('CardForge generated cast imports through World Core with persona and without duplicate fallback lore', async t => {
+    const source = complexCard();
+    source.data.description = '给用户看的玩法概要';
+    source.data.personality = '';
+    source.data.scenario = '';
+    source.data.character_book.entries = [{ id: 0, comment: '车站', content: '车站每天营业。', keys: ['车站'], enabled: true }];
+    const card = compileWorld(source, { persona: { name: '旅人', description: '送信人' }, characters: [
+        { id: 'guide', name: '向导', description: '常驻引路人', activation: { mode: 'constant' } },
+        { id: 'merchant', name: '商人', description: '出售地图', activation: { mode: 'triggered', keys: ['商店'] } },
+    ] });
+    const original = structuredClone(card);
+    const current = await harness(t, { card });
+    current.command.persona = { name: '', description: '' };
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const result = await core.createWorld(current.command, { idempotencyKey: 'authored-world' });
+    const readback = await core.inspectWorld(result.world.world_id);
+    assert.deepEqual(readback.world.persona, { name: '旅人', description: '送信人' });
+    assert.deepEqual(readback.world.story_context.characters, card.data.extensions.nora_world.story_context.characters);
+    assert.deepEqual(readback.world.story_context.player.profile.identity, readback.world.persona);
+    assert.equal(readback.world.story_context.card_format, 'nora-world-card/2');
+    const runtime = JSON.parse(await fs.readFile(path.join(current.directories.characters, result.world.runtime_card.binding.avatar), 'utf8'));
+    assert.deepEqual(runtime.data.character_book.entries.map(e => e.comment), ['车站']);
+    assert.deepEqual(card, original);
+    assert.equal(runtime.data.description, '给用户看的玩法概要');
+    const chatPath = path.join(current.directories.chats, path.basename(result.world.runtime_card.binding.avatar, '.png'), `${result.world.sessions.items[0].binding.chat_id}.jsonl`);
+    const metadata = JSON.parse((await fs.readFile(chatPath, 'utf8')).split('\n')[0]);
+    assert.equal(metadata.user_name, '旅人');
+    const knowledge = JSON.parse(await fs.readFile(path.join(current.directories.worlds, `${result.world.knowledge[0].binding.name}.json`), 'utf8'));
+    assert.deepEqual(Object.values(knowledge.entries).map(e => e.content), ['车站每天营业。']);
+    // Successful operations consume their upload; a separate import stages again.
+    await fs.writeFile(current.stagedPath, current.sourceBuffer);
+    const override = await core.createWorld({ ...current.command, persona: { name: '自选玩家', description: '用户自定义' } }, { idempotencyKey: 'authored-override' });
+    assert.equal(override.world.persona.name, '自选玩家');
+    assert.equal(override.world.story_context.player.profile.identity.description, '用户自定义');
+});
+test('existing v1 World cards retain their legacy profile and runtime fallback projection', async t => {
+    const card = complexCard();
+    const story = editStoryCharacter(createStoryContext(), { operation: 'create', id: 'guide', patch: {
+        name: '向导', description: '旧版引路人',
+    } });
+    story.player.profile.identity = { name: '旅人', description: '旧版玩家' };
+    card.data.extensions.nora_world = { format: 'nora-world-card/1', story_context: story };
+    card.data.character_book.entries = [
+        { id: 0, comment: '世界设定', content: '旧世界', keys: [], enabled: true },
+        { id: 1, comment: '旧版人物副本', content: '旧版引路人', keys: [], enabled: true,
+            extensions: { nora_world_fallback: 'guide' } },
+    ];
+    const original = structuredClone(card);
+    const current = await harness(t, { card });
+    current.command.persona = { name: '', description: '' };
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const result = await core.createWorld(current.command, { idempotencyKey: 'existing-v1' });
+    assert.equal(result.world.story_context.card_format, undefined, 'old cards do not acquire summary-only semantics');
+    assert.deepEqual(result.world.story_context.characters, story.characters);
+    assert.equal(result.world.persona.name, '旅人');
+    const runtime = JSON.parse(await fs.readFile(path.join(current.directories.characters, result.world.runtime_card.binding.avatar), 'utf8'));
+    assert.equal(runtime.data.description, card.data.description);
+    assert.deepEqual(runtime.data.character_book.entries.map(e => e.comment), ['世界设定']);
+    assert.deepEqual(card, original, 'source card retains its existing data');
 });
 import { adaptCardForMvuRuntime } from '../public/scripts/nora-compat/mvu-compatibility.js';
 
@@ -160,7 +223,7 @@ test('normalizes legacy TavernHelper script wrappers before capability inspectio
 
     assert.equal(report.capabilities.tavern_helper.script_count, 1);
     assert.equal(report.capabilities.mvu.runtime_source, 'managed');
-    assert.equal(report.capabilities.mvu.update_protocol, 'native-split');
+    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
 });
 
 test('normalizes TavernHelper maps serialized as entry tuples', () => {
@@ -243,14 +306,14 @@ test('uses canonical TavernHelper data when canonical and legacy fields coexist'
     assert.notEqual(adapted.card.data.extensions.tavern_helper.scripts[0].id, 'stale-legacy');
 });
 
-test('classifies legacy inline MVU books without claiming split-model support', () => {
+test('classifies legacy MVU content without rewriting it into a split declaration', () => {
     const card = complexCard({ content: '<status_current_variables>\nReturn <UpdateVariable> commands.' });
     card.data.character_book.entries[0].comment = '[InitVar]';
 
     const report = inspectStCard(card);
 
     assert.equal(report.capabilities.mvu.declared, true);
-    assert.equal(report.capabilities.mvu.update_protocol, 'native-split');
+    assert.equal(report.capabilities.mvu.update_protocol, 'legacy-adaptable');
     assert.deepEqual(report.capabilities.mvu.update_entry_ids, [0]);
 });
 
@@ -282,7 +345,7 @@ test('projects legacy MVU metadata only into the Runtime Card and leaves the sou
     const adapted = adaptCardForMvuRuntime(card);
 
     assert.equal(adapted.changed, true);
-    assert.equal(adapted.plan.updateProtocol, 'native-split');
+    assert.equal(adapted.plan.updateProtocol, 'legacy-adaptable');
     assert.equal(adapted.plan.runtimeSource, 'managed');
     assert.deepEqual(card, source, 'the imported source card must remain byte-semantically unchanged');
     assert.equal(adapted.card.data.extensions.tavern_helper.scripts[0].enabled, false);
@@ -291,11 +354,8 @@ test('projects legacy MVU metadata only into the Runtime Card and leaves the sou
         managed_runtime: true,
         embedded_runtime_suppressed: true,
     });
-    assert.match(adapted.card.data.character_book.entries[0].comment, /^\[mvu_update\]/i);
-    assert.deepEqual(adapted.card.data.character_book.entries[0].extensions.nora_mvu_compatibility, {
-        schema: 1,
-        source: 'legacy-update-content',
-    });
+    assert.deepEqual(adapted.card.data.character_book, source.data.character_book);
+    assert.equal(adapted.plan.splitModelSupported, true);
 });
 
 test('keeps card-authored MVU schema code enabled while localizing its runtime dependency', () => {

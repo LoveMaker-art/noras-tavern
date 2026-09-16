@@ -87,14 +87,15 @@ test('save recovery does not mark a session restored when navigation changes dur
     assert.equal(reloads, 2);
 });
 
-test('the canonical ST save path invokes ledger recovery after releasing the save lock', () => {
+test('the canonical ST save path keeps legacy recovery but preserves unsaved Nora conflict data', () => {
     const source = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
-    const start = source.indexOf('export async function saveChatConditional()');
+    const start = source.indexOf('export async function saveChatConditional(');
     const end = source.indexOf('/**\n * Saves the chat to the server.', start);
     const implementation = source.slice(start, end);
 
     assert.match(implementation, /createChatSaveTarget|chatSaveTarget/);
-    assert.ok(implementation.indexOf('isChatSaving = false') < implementation.indexOf('recoverLedgerSaveFailure'));
+    assert.match(implementation, /!isNoraProductMode\(\) && failure/);
+    assert.doesNotMatch(implementation, /isChatSaving = false|waitUntilCondition/);
     assert.match(implementation, /noraLedgerRecoveryTarget = chatSaveTarget/);
     assert.match(source, /doNewChat[\s\S]*?waitUntilCondition\(\(\) => !isChatPersistenceBusy\(\)/);
     assert.match(source, /closeCurrentChat[\s\S]*?waitUntilCondition\(\(\) => !isChatPersistenceBusy\(\)/);

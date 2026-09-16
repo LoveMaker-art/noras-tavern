@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><style>
+body { font: 15px sans-serif; color: #e8eedf; background: #24372d; padding: 12px; }
+button { padding: 8px 12px; } .row { margin: 8px 0; }
+</style></head><body>
+<div class="row">玩家：<span data-mvu-path='["玩家","姓名"]'>尚未初始化</span></div>
+<div class="row">能量：<span data-mvu-path='["玩家","能量"]'>尚未初始化</span></div>
+<div class="row">位置：<span data-mvu-path='["玩家","位置"]'>尚未初始化</span></div>
+<div class="row">背包：<span data-mvu-path='["玩家","背包"]'>尚未初始化</span></div>
+<div class="row">档案：<span data-mvu-path='["世界","人物档案"]'>尚未初始化</span></div>
+<button id="travel" type="button">前往车站</button><span id="travel-result" role="status"></span>
+<script>
+$(() => {
+  const button = document.getElementById('travel');
+  const result = document.getElementById('travel-result');
+  let busy = false;
+  button.addEventListener('click', async () => {
+    if (busy) return;
+    if (getCurrentMessageId() !== getLastMessageId()) {
+      result.textContent = '请在最新消息中操作';
+      return;
+    }
+    busy = true;
+    button.disabled = true;
+    result.textContent = '正在发送行动';
+    try {
+      await triggerSlash('/send 我沿着林间小路前往车站。 | /trigger');
+      result.textContent = '行动已发送，位置以变量面板为准';
+    } catch {
+      result.textContent = '行动未完成，请检查聊天后再操作';
+    } finally {
+      busy = false;
+      button.disabled = false;
+    }
+  });
+});
+</script></body></html>

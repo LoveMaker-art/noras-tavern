@@ -1,14 +1,16 @@
+import { resolveMvuProtocol } from './mvu-protocol.js';
 const INIT_COMMENT_MARKER = /\[initvar\]/i;
 const UPDATE_COMMENT_MARKER = /\[mvu_update\]/i;
 const PLOT_COMMENT_MARKER = /\[mvu_plot\]/i;
 const VARIABLE_CONTENT_MARKER = /(?:<status_current_variables>|{{(?:format|get)_message_variable::stat_data(?:[.}]|}}))/i;
-const UPDATE_CONTENT_MARKER = /(?:<\/?\s*(?:UpdateVariable|JSONPatch)\b|\b_\.set\s*\()/i;
+const UPDATE_CONTENT_MARKER = /(?:<\/?\s*(?:UpdateVariable|JSONPatch)\b|\b_\.(?:set|add|insert|assign|remove|unset|delete)\s*\()/i;
 const MVU_RUNTIME_SCRIPT = /MagicalAstrogy\/MagVarUpdate(?:@[^/'"\s]+)?\/artifact\/bundle\.js/i;
-const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource\/dist\/util\/mvu_zod\.js/i;
+const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\/mvu_zod\.js/i;
 const MVU_SCHEMA_URL = /https?:\/\/[^'"\s]*StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\/mvu_zod\.js(?:\?[^'"\s]*)?/gi;
 // This URL is persisted into adapted cards and may be cached by Liveware for a
 // long time. Keep its revision independent from the main MVU bundle revision.
-const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1';
+const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora4';
+const LOCAL_MVU_SCHEMA_IMPORT = /\/scripts\/extensions\/third-party\/nora-mvu\/mvu-zod\.js(?:\?[^'"\s]*)?/g;
 const ADAPTATION_SCHEMA = 1;
 
 function record(value) {
@@ -100,9 +102,12 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     const data = cardData(card);
     const scripts = helperScripts ?? normalizeTavernHelperScripts(card);
     const entries = books.flatMap(worldbookEntries);
+    let protocol = 'legacy', protocolError = null;
+    try { protocol = resolveMvuProtocol(entries); } catch (error) { protocolError = error.code; }
     const hasInit = entries.some(entry => INIT_COMMENT_MARKER.test(String(entry?.comment || '')));
-    const hasSplitUpdate = entries.some(entry => UPDATE_COMMENT_MARKER.test(String(entry?.comment || '')));
-    const hasSplitPlot = entries.some(entry => PLOT_COMMENT_MARKER.test(String(entry?.comment || '')));
+    const active = entries.filter(entry => entry?.disable !== true && entry?.enabled !== false);
+    const hasSplitUpdate = active.some(isMvuUpdateInstructionEntry);
+    const hasSplitPlot = active.some(entry => PLOT_COMMENT_MARKER.test(String(entry?.comment || '')));
     const updateEntryIds = entries
         .map((entry, index) => ({ entry, id: entryId(entry, index) }))
         .filter(({ entry }) => isActiveUpdateEntry(entry))
@@ -111,7 +116,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
     const embeddedRuntime = scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
     const schemaRuntime = scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
     const managedRuntime = record(data.extensions?.nora_mvu_compatibility).managed_runtime === true;
-    const declared = hasInit || hasSplitUpdate || hasSplitPlot
+    const declared = protocol !== 'legacy' || Boolean(protocolError) || hasInit || hasSplitUpdate || hasSplitPlot
         || (hasVariableReference && updateEntryIds.length > 0)
         || embeddedRuntime || schemaRuntime || managedRuntime;
 
@@ -134,9 +139,11 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
 
     return Object.freeze({
         declared,
+        protocol,
+        protocolError,
         runtimeSource: !declared ? 'none' : (embeddedRuntime ? 'embedded' : 'managed'),
         updateProtocol,
-        splitModelSupported: hasSplitUpdate || hasSplitPlot,
+        splitModelSupported: protocol !== 'legacy' || hasSplitUpdate || hasSplitPlot || (declared && updateEntryIds.length > 0),
         updateEntryIds: Object.freeze(updateEntryIds),
         helperScripts: Object.freeze([...scripts]),
         reasons: Object.freeze(reasons),
@@ -153,7 +160,7 @@ function projectManagedMvuScripts(trees) {
             runtimeSuppressed = true;
             return { ...script, enabled: false };
         }
-        const localized = content.replace(MVU_SCHEMA_URL, LOCAL_MVU_SCHEMA_URL);
+        const localized = content.replace(MVU_SCHEMA_URL, LOCAL_MVU_SCHEMA_URL).replace(LOCAL_MVU_SCHEMA_IMPORT, LOCAL_MVU_SCHEMA_URL);
         if (localized !== content) {
             schemaLocalized = true;
             return { ...script, content: localized };
@@ -167,25 +174,6 @@ function projectManagedMvuScripts(trees) {
         runtimeSuppressed,
         schemaLocalized,
     });
-}
-
-function adaptBook(book, updateEntryIds) {
-    const ids = new Set(updateEntryIds.map(String));
-    const projected = structuredClone(book);
-    const entries = projected?.entries;
-    const values = Array.isArray(entries) ? entries : Object.values(entries || {});
-    values.forEach((entry, index) => {
-        if (!ids.has(String(entryId(entry, index))) || UPDATE_COMMENT_MARKER.test(String(entry?.comment || ''))) return;
-        entry.comment = `[mvu_update] ${String(entry?.comment || '').trim()}`.trim();
-        entry.extensions = {
-            ...record(entry.extensions),
-            nora_mvu_compatibility: {
-                schema: ADAPTATION_SCHEMA,
-                source: 'legacy-update-content',
-            },
-        };
-    });
-    return projected;
 }
 
 export function adaptCardForMvuRuntime(card) {
@@ -211,8 +199,7 @@ export function adaptCardForMvuRuntime(card) {
         || hasSerializedHelperMap
         || runtimeScripts.changed
         || (sourceTrees.length > 0 && JSON.stringify(helperExtension.scripts || []) !== JSON.stringify(sourceTrees));
-    const bookChanged = sourcePlan.updateProtocol === 'legacy-adaptable' && sourcePlan.updateEntryIds.length > 0;
-    if (!scriptsChanged && !bookChanged) return Object.freeze({ card, changed: false, plan: sourcePlan });
+    if (!scriptsChanged) return Object.freeze({ card, changed: false, plan: sourcePlan });
 
     const projected = structuredClone(card);
     const projectedData = cardData(projected);
@@ -235,7 +222,6 @@ export function adaptCardForMvuRuntime(card) {
             ...(runtimeScripts.schemaLocalized ? { schema_runtime_localized: true } : {}),
         };
     }
-    if (bookChanged) projectedData.character_book = adaptBook(projectedData.character_book, sourcePlan.updateEntryIds);
     const projectedBook = projectedData.character_book && projectedData.character_book.entries
         ? projectedData.character_book
         : null;
@@ -248,6 +234,8 @@ export function adaptCardForMvuRuntime(card) {
 }
 
 export function isMvuUpdateInstructionEntry(entry = {}) {
-    return UPDATE_COMMENT_MARKER.test(String(entry?.comment || ''))
-        || UPDATE_CONTENT_MARKER.test(String(entry?.content || ''));
+    // Earlier imports tagged whole mixed entries by text. Keep that content reachable,
+    // without migrating persisted books or treating sample commands as author intent.
+    return entry?.extensions?.nora_mvu_compatibility?.source !== 'legacy-update-content'
+        && UPDATE_COMMENT_MARKER.test(String(entry?.comment || ''));
 }

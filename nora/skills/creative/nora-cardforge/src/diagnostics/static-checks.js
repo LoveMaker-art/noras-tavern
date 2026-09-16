@@ -1,6 +1,6 @@
 const { normalizeCard } = require('../core/card-model');
 const { getMvuVariablePaths } = require('../mvu/var-paths');
-const { extractStatusbarPaths } = require('../statusbar/statusbar');
+const { extractStatusbarPaths, validateStatusbarHtml } = require('../statusbar/statusbar');
 
 function runDiagnostics(card, options = {}) {
   const normalized = normalizeCard(card);
@@ -38,6 +38,8 @@ function checkBasicInfo(card) {
     ['first_mes', '开场白', 30]
   ];
   for (const [key, label, min] of required) {
+    // New World cards own actor profiles in the array, not these legacy slots.
+    if (['nora-world-card/1', 'nora-world-card/2'].includes(d.extensions?.nora_world?.format) && ['description', 'personality'].includes(key)) continue;
     const value = String(d[key] || '').trim();
     if (!value) issues.push(issue('error', `${label}为空`, key, `${key} is required`));
     else if (value.length < min) issues.push(issue('warning', `${label}偏短`, key, `${value.length}/${min}`));
@@ -138,6 +140,11 @@ function checkMvuStatusbarPaths(card) {
   const variablePaths = getMvuVariablePaths(card);
   const statusScripts = card.data.extensions.regex_scripts.filter(s => ['状态栏美化', '状态栏'].includes(s.scriptName));
   for (const script of statusScripts) {
+    if (card.data.extensions.cfMvuFieldContract) {
+      const report = validateStatusbarHtml(card, script.replaceString || '');
+      issues.push(...report.issues.map(item => issue(item.severity, item.title, script.scriptName)));
+      continue;
+    }
     const paths = extractStatusbarPaths(script.replaceString || '');
     for (const p of paths) {
       if (!variablePaths.has(p)) issues.push(issue('error', `状态栏引用不存在的变量：${p}`, script.scriptName));

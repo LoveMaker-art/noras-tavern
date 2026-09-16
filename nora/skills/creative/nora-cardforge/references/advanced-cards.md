@@ -1,74 +1,97 @@
-# Advanced Cards
+# 高级制卡：变量与显示的衔接
 
-Read this reference only for MVU, Regex, TavernHelper, or status-bar work.
-For user questions, read [feature-explanations.md](feature-explanations.md).
-Before authoring variable types or constraints, read
-[variable-reference.md](variable-reference.md) for their implemented limits.
+新建 MVU 卡先读 [统一字段标准](variable-reference.md)。普通无 MVU 卡跳过变量定义、
+注册和状态绑定，不为满足模板而创建一套无用变量。
 
-## MVU Variables
+## 生成职责
 
-Declare intent as data in `features/mvu.json`; the compiler generates the Zod
-schema, initialization entry, update rules, output contract, helper scripts,
-Regex transforms, and placeholder.
+- `features/mvu.json`：字段、真实初值、类型约束与玩法说明的唯一来源。
+- 生成器：产生 Zod 注册脚本、初始化条目、当前状态宏、逐字段规则和显示过滤规则。
+- 启用的主世界书规则声明 `[mvu_update][nora_mvu/1]`。
+- 生成器附带固定版本的原 MVU 加载器、Zod helper 和独立的基础格式条目。
+  `[nora_mvu_fallback/1]` 只标记这条格式说明，不标记玩法或人物设定。
+- 在 Nora 中，现有适配器停用卡内远程 MVU、使用本地 helper；请求组装移除明确标记
+  的基础格式，再提供增强格式。源 PNG 不变，不同时启动两套 MVU 或发送两套格式要求。
+  内联/额外模型由用户设置决定；这些底层 MVU 接入不改变世界卡的字段分工。
+- MVU 解析更新，Zod 校验状态，保存确认后才判定持久化成功。
 
-```json
-{
-  "variables": [
-    {
-      "group": "角色状态",
-      "field": "信任",
-      "type": "number",
-      "default": 0,
-      "min": 0,
-      "max": 100,
-      "clamp": true,
-      "description": "Only change after observable trust-building or betrayal."
-    },
-    {
-      "group": "场景",
-      "field": "地点",
-      "type": "string",
-      "default": "未知"
-    }
-  ]
-}
+wire 操作为 set、increment、append、insert、delete、move；路径为相对 stat_data
+的数组。move 当前只支持对象属性；卡中的必填字段不能被随意移除。
+这些由运行程序统一说明，制卡时不复制另一份格式提示。
+
+## 状态模板：声明式显示与自定义交互
+
+`features/statusbar.html` 可以编写 HTML/CSS、内嵌脚本、地图与按钮。
+普通文本显示可使用带引号的 `data-mvu-path` JSON 数组，复杂布局可自写渲染代码；
+两者都引用统一字段，不再单独定义一份状态。字面绑定路径逐段对应字段，数组下标必须是整数。
+
+```html
+<!doctype html>
+<html lang="zh-CN">
+<head><style>.panel { padding: 8px; }</style></head>
+<body>
+  <div class="panel">
+    能量：<span data-mvu-path='["玩家","能量"]'>尚未初始化</span>
+    背包：<span data-mvu-path='["玩家","背包"]'>尚未初始化</span>
+  </div>
+</body>
+</html>
 ```
 
-Supported types are `string`, `number`, `boolean`, `array`, `record`, and `enum`.
-Nested fields use dots, for example `关系.阶段`. A leading `_` is an instruction
-convention: the generator omits its update-rule prose and asks the model not to
-write it. It does not generate a read-only permission check or a derived formula.
+存在字面绑定时，生成器校验这些路径并附加通用读取脚本：在对应消息的 iframe 中读取
+`Mvu.getMvuData({type:"message",message_id:getCurrentMessageId()})` 的 stat_data。
+初始化后读取同一消息快照。Nora 使用 TRANSACTION_COMMITTED；原 MVU 使用消息
+重新渲染后的 CHARACTER_MESSAGE_RENDERED，并核对消息编号。原 MVU 的 UPDATE_ENDED
+早于持久化，不能用它证明保存完成；原路径没有 Nora 的后台确认保证。
+文字用 textContent 完整显示，数组/对象用 JSON 文本；缺值明确显示“尚未初始化”。
 
-## Status Bar
+绑定放在专用的文本节点上，不要绑定整个地图、按钮容器或自定义列表，避免 textContent
+覆盖其子元素。不使用字面绑定的模板不会被追加通用读取脚本，由自定义代码管理显示。
+脚本中动态生成的绑定或拼接路径不属于静态已检项；生成器既不执行也不认证自定义代码。
+构建报告明确区分字面绑定检查与尚未完成的运行验收。既有外部访问、持久化等限制保留；
+静态扫描不是完整安全沙箱。普通本地交互脚本不会因为含 script 或事件处理器被一律拒绝。
+模板仍由现有正则替换消息中的状态占位符，实际出现位置和页面效果需要运行验收。
 
-Write a complete fixed template in `features/statusbar.html`. It may reference
-MVU fields as `stat_data.角色状态.信任`. Every referenced path must exist.
+## 交互制作流程
 
-The validator statically rejects recognized patterns for network access,
-external scripts, persistence, cookies, and unresolved tab targets. This is not
-a JavaScript sandbox or a full security audit. Prefer fixed HTML/CSS and local
-variable rendering. The template is never executed by the build process.
-Generated MVU helper scripts separately contain remote module imports; a local
-build does not prove those modules are available in the target runtime.
+在同一项目的需求说明中记录每项控件的“触发、动作/接口、读写字段、反馈与验收”，
+不额外创建一套状态协议或改卡报告体系。
 
-## Imported Complex Cards
+1. 区分操作性质：展开面板仅改变界面；地图导航可以发送玩家行动；使用物品可能
+   触发剧情和 MVU 更新。以用户确认的玩法为准，不把所有按钮都实现为直接改变量。
+2. 接口以目标版本的源码/维护文档为准。发送行动、处理生成中状态、写入授权和错误
+   返回要核对真实接口；本技能不凭记忆拼一个函数名。无法核实时明确待验证。
+3. 展示读取对应消息的已提交 stat_data；初始化和提交后更新。保存失败或请求未完成时
+   不提前显示成功，不用最新消息的状态冒充旧消息。按钮若要操作当前会话，需单独核对
+   当前目标，不能沿用历史面板的消息编号发起写入。
+4. 自定义处理器在正确的 iframe/脚本环境中初始化，避免重复绑定点击和重复发送。
+   卸载时使用目标环境实际提供的清理机制；不通过无限轮询或常驻全文日志维持更新。
+5. 用受控数据核对完整字符串、对象和数组，再在获准的目标实例中测试每个控件的成功、
+   失败和重复点击。数据型写入必须走目标支持的校验与保存路径，不能用本地显示变了
+   代替持久化成功。正常剧情的变量更新仍由 MVU 承担。
 
-`ingest` preserves original Regex and TavernHelper structures in
-`source/passthrough.json`. It may also extract readable MVU and status summaries.
-Keep those source files unchanged unless the user explicitly asks to replace the
-technical implementation.
+示例：点击“去车站” → 通过已核实的接口发送行动 → 正文产生剧情 → MVU 提交位置变化
+→ 地图读取已提交位置高亮车站。仅把按钮文字改为“车站”不等于完成这条链路。
 
-Rebuilding an imported card without enabled authored feature files preserves its
-omitted technical blocks. A null feature setting still auto-discovers the default
-file; use false to disable feature compilation, as defined in the project reference.
-Adding `features/mvu.json` or `features/statusbar.html` deliberately upserts the
-Nora-managed implementation and should be described as a migration.
+## 旧卡边界
 
-## Runtime Evidence
+检查旧卡实际变量、原正则与脚本；仅导入时保留原始字节，文案润色按
+[专用流程](prose-polishing.md) 生成副本并保留开关及玩法。
+不补 Zod、不注入 Nora 标记、不套新模板。由 Tavern 导入选定文件，
+运行程序兼容旧协议。导入后出现的问题区分程序、卡片、模型与显示层，不自动改卡。
 
-The build checks supported structure, recognized variable paths, and packaging.
-It does not execute arbitrary script syntax, prove native storage, or verify
-browser lifecycle behavior. Storage requires a separate authorized installation
-and read-back through Nora MCP. When runtime verification is requested, use the
-`tavern` skill's current MCP plugin/MVU controls and World snapshot for the exact
-World/Session. Report stored structure and observed activation separately.
+## 运行验收
+
+针对确切目标 World/Session，分别检查注册、初始化、合法变化、无变化、
+错误输出拒绝、保存重载、文字完整性及需求中的每项交互。测试授权单独确认，使用非性剧情。
+本地构建与受控命令测试不能代替真实模型、手机浏览器或原卡交互验收。
+
+## 目标运行环境
+
+新世界卡的交付目标是支持 `nora-world-card/2` 的 Nora：概要只供用户阅读，
+模型设定来自玩家、角色数组和世界设定。验收包括概要不注入、人物不重复、
+常驻/触发设定可达，以及上述 MVU 和界面流程。不要用只能读取传统角色字段的
+运行时验收新世界卡，也不承诺新世界卡在原 ST 中完整可玩。
+
+底层 MVU 的原生/增强受控回归保留，用来检测更新协议退化，不代表整卡跨环境兼容。
+固定入口版本不锁定外部依赖的全部间接 CDN；运行条件仍需在实际目标中核实。

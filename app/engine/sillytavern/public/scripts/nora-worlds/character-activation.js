@@ -1,4 +1,4 @@
-import { normalizeStoryContext, renderStoryContext } from './story-context.js';
+import { normalizeStoryContext, renderStoryContext, hasWorldCardSummary } from './story-context.js';
 import { resolveCharacterReference, resolveCharacterReferences } from './character-references.js';
 
 // Live projection only. The World manifest owns the data; no separate lorebook is saved.
@@ -15,6 +15,7 @@ export function resolveWorldCharacterReference(id) {
 }
 
 export function isWorldCardProfileEnabled(worldId, field) {
+    if (worldId && worldId === state.worldId && field === 'description' && hasWorldCardSummary(state.active)) return false;
     return !worldId || worldId !== state.worldId || (state.active?.card_profile_enabled !== false
         && !state.active?.removed_card_fields?.includes(field));
 }

@@ -2,14 +2,17 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 const { runDiagnostics } = require('../diagnostics/static-checks');
 const { validateStatusbarHtml } = require('../statusbar/statusbar');
+const { validateCompiledMvu } = require('../mvu/mvu-compiler');
 
-function runQualityGate({ card, cardMdPath, statusbarHtml = '', profile = 'release' }) {
+function runQualityGate({ card, cardMdPath, statusbarHtml = '', profile = 'release', scoreWriting = false }) {
   const structure = runDiagnostics(card, { profile });
+  const mvu = validateCompiledMvu(card);
   const statusbar = statusbarHtml ? validateStatusbarHtml(card, statusbarHtml) : null;
-  const writing = cardMdPath ? runWritingScore(cardMdPath) : null;
   const strictWriting = profile === 'release-strict';
+  const writing = cardMdPath && (scoreWriting || strictWriting) ? runWritingScore(cardMdPath) : null;
   const hardFailures = [];
   if (!structure.passed) hardFailures.push('structure');
+  if (!mvu.passed) hardFailures.push('mvu-contract');
   if (statusbar && !statusbar.passed) hardFailures.push('statusbar');
   if (strictWriting && (!writing?.available || writing.score < 75)) hardFailures.push('writing');
   return {
@@ -17,6 +20,7 @@ function runQualityGate({ card, cardMdPath, statusbarHtml = '', profile = 'relea
     passed: hardFailures.length === 0,
     hardFailures,
     structure,
+    mvu,
     statusbar,
     writing,
     policy: {

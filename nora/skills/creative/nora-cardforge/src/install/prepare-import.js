@@ -3,9 +3,15 @@ const path = require('path');
 const crypto = require('crypto');
 const { readCard } = require('../core/card-io');
 const { summarizeCard } = require('../core/card-model');
+const { sourceHashes } = require('../project/project-engine');
 
 const MAX_BYTES = 64 * 1024 * 1024;
 const sha256 = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+function dataHash(value) {
+  const sorted = item => Array.isArray(item) ? item.map(sorted)
+    : item && typeof item === 'object' ? Object.fromEntries(Object.keys(item).sort().map(key => [key, sorted(item[key])])) : item;
+  return sha256(JSON.stringify(sorted(value ?? null)));
+}
 
 function fail(code, message) {
   const error = new Error(message);
@@ -39,6 +45,7 @@ function prepareImport(projectDir, { uploadRoot, idempotencyKey, dryRun = false 
   if (!fs.statSync(uploads).isDirectory() || uploads === path.parse(uploads).root) fail('IMPORT_ROOT_INVALID', 'Expected a dedicated existing upload directory');
   const manifest = JSON.parse(fs.readFileSync(projectFile(root, 'reports/build-manifest.json'), 'utf8'));
   if (manifest.format !== 'nora-card-build/v1' || manifest.quality?.passed !== true) fail('IMPORT_BUILD_INVALID', 'Build the project successfully before preparing import');
+  if (!manifest.sources || JSON.stringify(manifest.sources) !== JSON.stringify(sourceHashes(root))) fail('IMPORT_SOURCES_CHANGED', 'Project sources differ from the reviewed build; rebuild before importing');
   const kind = manifest.artifacts?.v3Png ? 'v3Png' : 'v2Json';
   const artifact = projectFile(root, manifest.artifacts?.[kind]);
   const extension = kind === 'v3Png' ? '.png' : '.json';
@@ -47,6 +54,9 @@ function prepareImport(projectDir, { uploadRoot, idempotencyKey, dryRun = false 
   const hash = sha256(bytes);
   if (hash !== manifest.sha256?.[kind]) fail('IMPORT_ARTIFACT_CHANGED', 'Artifact no longer matches its build hash; rebuild before importing');
   const loaded = readCard(artifact);
+  const authoredWorld = loaded.card.data.extensions?.nora_world;
+  const story = ['nora-world-card/1', 'nora-world-card/2'].includes(authoredWorld?.format) ? authoredWorld.story_context : null;
+  const persona = story?.player?.profile?.identity;
   if (loaded.card.data.name !== manifest.card?.name) fail('IMPORT_CARD_MISMATCH', 'Artifact name does not match its build manifest');
   if (kind === 'v3Png' && (loaded.source.chunkKeyword !== 'ccv3' || !['chara', 'ccv3'].every(key => loaded.source.availableKeywords.includes(key)))) {
     fail('IMPORT_FILE_INVALID', 'Expected a dual-metadata V2/V3 PNG');
@@ -83,12 +93,35 @@ function prepareImport(projectDir, { uploadRoot, idempotencyKey, dryRun = false 
     effect: 'The MCP call creates a NEW World; it is not library-only storage or an existing-World replacement.',
     mcpCall: {
       tool: 'nora.world.import',
-      arguments: { filePath: destination, idempotencyKey },
+      arguments: { filePath: destination, idempotencyKey, ...(persona ? { personaName: persona.name, personaDescription: persona.description } : {}) },
       requiresConfirmation: true,
       ready: !dryRun,
     },
     recovery: { tool: 'nora.operation.get', operationId: `operation:${sha256(idempotencyKey).slice(0, 32)}` },
+    expected: { sourceSha256: hash, name: loaded.card.data.name,
+      ...(authoredWorld?.format === 'nora-world-card/2' ? { cardFormat: authoredWorld.format } : {}),
+      ...(story ? { personaSha256: dataHash(persona), charactersSha256: dataHash(story.characters),
+        characterIds: story.characters.map(actor => actor.id) } : {}) },
   };
 }
 
-module.exports = { prepareImport };
+function verifyImport(prepared, inspection) {
+  const world = inspection?.world;
+  if (prepared?.stage !== 'prepared' || !prepared.expected || !world?.world_id) fail('IMPORT_VERIFICATION_INVALID', 'Expected the staged handoff and fresh nora.world.inspect result');
+  const expected = prepared.expected;
+  const checks = {
+    operation: world.source?.import_operation_id === prepared.recovery?.operationId,
+    source: world.source?.sha256 === prepared.artifactSha256 && expected.sourceSha256 === prepared.artifactSha256,
+    name: world.name === expected.name,
+    ready: world.lifecycle?.status === 'READY',
+    ...(expected.cardFormat ? { cardFormat: world.story_context?.card_format === expected.cardFormat } : {}),
+    ...(expected.personaSha256 ? { persona: dataHash(world.persona) === expected.personaSha256,
+      player: dataHash(world.story_context?.player?.profile?.identity) === expected.personaSha256,
+      characters: dataHash(world.story_context?.characters) === expected.charactersSha256 } : {}),
+  };
+  return { ok: Object.values(checks).every(Boolean), worldId: world.world_id, checks,
+    mismatches: Object.entries(checks).filter(([, passed]) => !passed).map(([name]) => name),
+    evidence: 'stored-world-readback', runtimeVerified: false };
+}
+
+module.exports = { prepareImport, verifyImport };

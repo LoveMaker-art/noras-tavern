@@ -10,7 +10,7 @@ function plan() {
         world_revision: 4,
         runtime_card: { binding: { avatar: 'one.png' } },
         session: { binding: { avatar: 'one.png', chat_id: 'chat-one' } },
-        knowledge: [{ binding: { name: 'One Book' } }, { binding: { name: 'Shared Book' } }],
+        knowledge: [{ source_key: 'card:one', binding: { name: 'One Book' } }, { source_key: 'library:shared', binding: { name: 'Shared Book' } }],
     };
 }
 
@@ -77,7 +77,7 @@ test('reads character, bounded chat and all Worldbooks concurrently behind one s
     assert.equal(extensions.tavern_helper.scripts[1].enabled, true);
     assert.equal(
         extensions.tavern_helper.scripts[1].content,
-        "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1'",
+        "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora4'",
     );
     assert.equal(extensions.nora_mvu_compatibility.managed_runtime, true);
     assert.equal(extensions.nora_mvu_compatibility.schema_runtime_localized, true);

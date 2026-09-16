@@ -52,13 +52,13 @@ export function createMessageController({
             return { status: 'blocked', reason: 'stale-retry' };
         }
         const input = select('#nora-input');
-        if (failure.retryable && !failure.persisted) {
+        if (failure.retryable && !failure.persisted && !failure.saveFailed) {
             input.value = '';
             updateComposer();
         }
         dialogs.notice({
-            title: tr("正在重试"),
-            message: tr("正在重新连接并发送…"),
+            title: failure.saveFailed ? tr("正在重试保存") : tr("正在重试"),
+            message: failure.saveFailed ? tr("只重试聊天保存，不会重新生成正文。") : tr("正在重新连接并发送…"),
             transient: true,
         });
         const result = await storyActions.execute({ type: 'story.retry' });
@@ -68,6 +68,19 @@ export function createMessageController({
     }
 
     function showSendError(error, persisted = Boolean(error?.noraMessagePersisted)) {
+        if (error?.phase === 'save') {
+            const conflict = error?.status === 409 || error?.code === 'integrity';
+            dialogs.notice({
+                title: conflict ? tr("聊天保存冲突") : tr("聊天保存未完成"),
+                message: conflict
+                    ? tr("服务器拒绝了本次覆盖保存。页面内容未主动清除；请先备份未保存内容，再重新加载核对。")
+                    : normalizeError(error),
+                actions: typeof error.retrySave === 'function'
+                    ? [{ label: tr("重试保存"), run: retryGeneration }]
+                    : [],
+            });
+            return;
+        }
         if (isModelConfigurationError(error)) {
             dialogs.notice({
                 title: tr("尚未配置文本模型"),
@@ -234,7 +247,11 @@ export function createMessageController({
             messageView.showMvuTransaction?.('syncing');
         } else if (mvuSyncing && mvuSession === getSessionKey()) {
             mvuSyncing = false;
-            messageView.showMvuTransaction?.(transaction.status);
+            if (['cancelled', 'stale', 'skipped'].includes(transaction.status)) {
+                messageView.clearMvuTransaction?.();
+            } else {
+                messageView.showMvuTransaction?.(transaction.status);
+            }
         }
         updateComposer();
     }

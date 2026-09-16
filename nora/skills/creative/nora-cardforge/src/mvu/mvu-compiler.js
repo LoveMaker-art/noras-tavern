@@ -1,12 +1,22 @@
-const { normalizeVarSpec } = require('./var-paths');
+const { normalizeVarSpec, buildFieldContract, toZod } = require('./var-paths');
 
-const MVU_IMPORT = "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate/artifact/bundle.js';";
+// The card has an upstream baseline; Nora projects these imports onto its
+// managed runtime without modifying the delivered PNG.
+const MVU_IMPORT = "import 'https://testingcf.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@7fe9ae7cfe01f13d606f7a2e533a458431fe318c/artifact/bundle.js';";
+const ZOD_HELPER = 'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource@b0ee9f4a371e0ec61dbd361443de5539d557a871/dist/util/mvu_zod.js';
+const FALLBACK_COMMENT = '[mvu_update][nora_mvu_fallback/1]原MVU输出格式';
 
 function createMvuPatch(card, varSpecInput, options = {}) {
+  for (const key of Object.keys(options)) if (!['protocol', 'keepFloors'].includes(key)) throw new Error(`Unsupported MVU build option: ${key}`);
+  const protocol = options.protocol || 'legacy';
+  if (!['legacy', 'nora-mvu/1'].includes(protocol)) throw new Error(`Unsupported MVU protocol: ${protocol}`);
   const groups = normalizeVarSpec(varSpecInput);
   if (groups.length === 0) throw new Error('MVU variable spec is empty');
-  const keepFloors = Number.isFinite(options.keepFloors) ? options.keepFloors : 3;
+  const keepFloors = options.keepFloors ?? 3;
+  if (!Number.isSafeInteger(keepFloors) || keepFloors < 0 || keepFloors > 1000) throw new Error('keepFloors must be an integer from 0 to 1000');
+  const contract = buildFieldContract(groups);
   const operations = [
+    { type: 'setExtension', key: 'cfMvuFieldContract', value: contract },
     { type: 'setExtension', key: 'cfMvuVarGroups', value: groups },
     {
       type: 'upsertTavernScript',
@@ -31,13 +41,13 @@ function createMvuPatch(card, varSpecInput, options = {}) {
     {
       type: 'upsertTavernScript',
       name: 'Zod Schema',
-      script: { type: 'script', enabled: true, content: buildZodFromGroups(groups) }
+      script: { type: 'script', enabled: true, content: buildZodFromContract(contract) }
     },
     {
       type: 'upsertWorldEntry',
       comment: '[initvar]变量初始化勿开',
       entry: configuredEntry({
-        content: buildInitVarFromGroups(groups),
+        content: JSON.stringify(contract.initial, null, 2),
         constant: false,
         enabled: false
       })
@@ -51,18 +61,13 @@ function createMvuPatch(card, varSpecInput, options = {}) {
     },
     {
       type: 'upsertWorldEntry',
-      comment: '[mvu_update]变量更新规则',
+      comment: protocol === 'legacy' ? '[mvu_update]变量更新规则' : '[mvu_update][nora_mvu/1]变量更新规则',
       entry: configuredEntry({ content: buildRulesFromGroups(groups) })
     },
     {
       type: 'upsertWorldEntry',
-      comment: '[mvu_update]变量输出格式',
+      comment: protocol === 'legacy' ? '[mvu_update]变量输出格式' : FALLBACK_COMMENT,
       entry: configuredEntry({ content: OUTPUT_FORMAT })
-    },
-    {
-      type: 'upsertWorldEntry',
-      comment: '[mvu_update]变量输出格式强调',
-      entry: configuredEntry({ content: OUTPUT_EMPHASIS })
     },
     {
       type: 'upsertRegexScript',
@@ -107,10 +112,17 @@ function createMvuPatch(card, varSpecInput, options = {}) {
     },
     { type: 'appendPlaceholder', placeholder: '<StatusPlaceHolderImpl/>' }
   ];
+  if (protocol === 'nora-mvu/1') {
+    // Model output is data, never executable HTML. Status UI is a separate
+    // fixed template reading the committed snapshot.
+    operations.filter(operation => operation.scriptName?.startsWith('[美化]')).forEach(operation => {
+      operation.script.replaceString = '';
+    });
+  }
   return {
     format: 'nora-cardforge-patch/v1',
     intent: 'mvu_apply',
-    stats: { groups: groups.length, variables: groups.reduce((sum, g) => sum + g.fields.length, 0) },
+    stats: { protocol, groups: groups.length, variables: groups.reduce((sum, g) => sum + g.fields.length, 0) },
     operations
   };
 }
@@ -138,157 +150,47 @@ function configuredEntry(overrides) {
   };
 }
 
-function buildZodFromGroups(groups) {
-  let code = "import { registerMvuSchema } from\n  'https://testingcf.jsdelivr.net/gh/StageDog/tavern_resource/dist/util/mvu_zod.js';\n\nexport const Schema = z.object({\n";
-  for (const group of groups) {
-    if (!group.name) continue;
-    code += `  ${safeKey(group.name)}: z.object({\n`;
-    code += zodTreeToCode(buildFieldTree(group.fields), 2);
-    code += '  }).prefault({}),\n';
-  }
-  code += '});\n\n$(() => {\n  registerMvuSchema(Schema);\n});\n';
-  return code;
-}
-
-function zodTreeToCode(tree, indent) {
-  let code = '';
-  const pad = '  '.repeat(indent);
-  for (const [key, value] of Object.entries(tree)) {
-    if (value.__field) code += `${pad}${safeKey(key)}: ${buildZodType(value.__field)},\n`;
-    else code += `${pad}${safeKey(key)}: z.object({\n${zodTreeToCode(value, indent + 1)}${pad}}).prefault({}),\n`;
-  }
-  return code;
-}
-
-function buildZodType(field) {
-  if (field.type === 'number') {
-    let code = 'z.coerce.number()';
-    if (field.clamp && (field.min !== null || field.max !== null)) {
-      code += `.transform(v => _.clamp(v, ${field.min ?? -999999}, ${field.max ?? 999999}))`;
-    }
-    return code + `.prefault(${Number(field.defaultValue) || 0})`;
-  }
-  if (field.type === 'boolean') return `z.boolean().prefault(${field.defaultValue === 'true' || field.defaultValue === true})`;
-  if (field.type === 'array') return 'z.array(z.string()).prefault([])';
-  if (field.type === 'record') return "z.record(z.string(), z.string().prefault('')).prefault({})";
-  if (field.type === 'enum' && field.enumValues) {
-    const values = field.enumValues.split(',').map(v => v.trim()).filter(Boolean);
-    return `z.enum([${values.map(v => quote(v)).join(', ')}]).prefault(${quote(field.defaultValue || values[0] || '')})`;
-  }
-  return `z.string().prefault(${quote(field.defaultValue || '')})`;
-}
-
-function buildInitVarFromGroups(groups) {
-  let yaml = '';
-  for (const group of groups) {
-    yaml += `${group.name}:\n`;
-    yaml += treeToYaml(buildFieldTree(group.fields), 1);
-  }
-  return yaml;
-}
-
-function treeToYaml(tree, indent) {
-  let yaml = '';
-  const pad = '  '.repeat(indent);
-  for (const [key, value] of Object.entries(tree)) {
-    if (value.__field) yaml += `${pad}${key}: ${yamlValue(value.__field)}\n`;
-    else yaml += `${pad}${key}:\n${treeToYaml(value, indent + 1)}`;
-  }
-  return yaml;
+function buildZodFromContract(contract) {
+  return `import { registerMvuSchema } from '${ZOD_HELPER}';\n\nexport const Schema = ${toZod(contract.schema)};\n\n$(() => {\n  registerMvuSchema(Schema);\n});\n`;
 }
 
 function buildRulesFromGroups(groups) {
-  let text = '---\n变量更新规则:\n';
-  for (const group of groups) {
-    text += `  ${group.name}:\n`;
-    text += ruleTreeToText(buildFieldTree(group.fields.filter(f => !f.name.startsWith('_'))), 2);
-  }
-  return text;
+  return groups.flatMap(group => group.fields.map(field =>
+    JSON.stringify({ path: [group.name, ...field.name.split('.')], type: field.type, rule: field.description })
+  )).join('\n');
 }
 
-function ruleTreeToText(tree, indent) {
-  let text = '';
-  const pad = '  '.repeat(indent);
-  for (const [key, value] of Object.entries(tree)) {
-    if (value.__field) {
-      const field = value.__field;
-      text += `${pad}${key}:\n`;
-      if (field.type !== 'string') text += `${pad}  type: ${field.type}\n`;
-      if (field.type === 'number' && (field.min !== null || field.max !== null)) {
-        text += `${pad}  range: ${field.min ?? 0}~${field.max ?? '...'}\n`;
-      }
-      text += `${pad}  check:\n`;
-      const checks = String(field.description || defaultCheck(field)).split('\n').map(s => s.trim()).filter(Boolean);
-      for (const check of checks) text += `${pad}    - ${check}\n`;
-    } else {
-      text += `${pad}${key}:\n${ruleTreeToText(value, indent + 1)}`;
-    }
-  }
-  return text;
+function validateCompiledMvu(card) {
+  const ext = card.data?.extensions;
+  if (!ext?.cfMvuFieldContract) return { applicable: false, passed: true };
+  try {
+    const groups = normalizeVarSpec({ format: 'nora-mvu-fields/v1', variables: ext.cfMvuVarGroups.flatMap(group => group.fields.map(field => ({
+      group: group.name, field: field.name, ...field.schema, default: field.defaultValue, description: field.description,
+    }))) });
+    const contract = buildFieldContract(groups);
+    if (JSON.stringify(contract) !== JSON.stringify(ext.cfMvuFieldContract)) throw new Error('Field metadata and compiled contract differ');
+    const entries = card.data.character_book.entries;
+    const init = entries.filter(e => e.comment === '[initvar]变量初始化勿开');
+    if (init.length !== 1 || JSON.stringify(JSON.parse(init[0].content)) !== JSON.stringify(contract.initial)) throw new Error('Initial state differs from field contract');
+    const nora = entries.some(e => e.enabled && e.comment?.includes('[nora_mvu/1]'));
+    const scripts = ext.tavern_helper.scripts.filter(s => s.name === 'Zod Schema' && s.enabled);
+    if (scripts.length !== 1 || scripts[0].content !== buildZodFromContract(contract)) throw new Error('Generated Zod does not match field contract');
+    const rules = entries.filter(e => e.enabled && e.comment === (nora ? '[mvu_update][nora_mvu/1]变量更新规则' : '[mvu_update]变量更新规则'));
+    if (rules.length !== 1 || rules[0].content !== buildRulesFromGroups(groups)) throw new Error('Update rules do not match field contract');
+    const formats = entries.filter(e => e.enabled && e.comment === (nora ? FALLBACK_COMMENT : '[mvu_update]变量输出格式'));
+    if (formats.length !== 1 || !formats[0].constant || formats[0].content !== OUTPUT_FORMAT) throw new Error('Upstream fallback format is missing or changed');
+    const loaders = ext.tavern_helper.scripts.filter(s => s.name === 'MVU 变量系统' && s.enabled);
+    if (loaders.length !== 1 || loaders[0].content !== MVU_IMPORT) throw new Error('Upstream MVU loader is missing or changed');
+    return { applicable: true, passed: true, fields: groups.reduce((sum, g) => sum + g.fields.length, 0) };
+  } catch (error) { return { applicable: true, passed: false, error: error.message }; }
 }
 
-function buildFieldTree(fields) {
-  const tree = {};
-  for (const field of fields) {
-    if (!field.name) continue;
-    const parts = field.name.split('.');
-    let node = tree;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!node[parts[i]] || node[parts[i]].__field) node[parts[i]] = {};
-      node = node[parts[i]];
-    }
-    node[parts[parts.length - 1]] = { __field: field };
-  }
-  return tree;
-}
+const OUTPUT_FORMAT = `变量更新：仅依据本轮已经发生的剧情和字段规则，不推测未发生的变化。
+使用原 MVU 的 JSONPatch：replace 设置值，delta 增减数字，insert 新增对象成员或数组元素，remove 删除可选成员或数组元素。
+路径为相对 stat_data 的 JSON Pointer，例如 /玩家/能量、/玩家/背包/0；数组末尾新增使用 /玩家/背包/-。
+新增档案用 insert，路径指向已有档案集合下的新成员，value 提供该成员的完整对象；字段名称和成员结构以本卡实际定义为准。
+值保持字段类型：数字不加引号，字符串用 JSON 字符串，对象提供完整必填字段。不要修改以下划线开头的字段。无需更新时用空数组 []。
+普通聊天回复在剧情末尾附加一个 <UpdateVariable><JSONPatch>[操作列表]</JSONPatch></UpdateVariable>，不输出 HTML 状态栏。
+若运行时明确指定工具调用或 JSON Schema，按其要求包装同一组 JSONPatch 操作，不再添加聊天标签。`;
 
-function yamlValue(field) {
-  if (field.type === 'number') return String(Number(field.defaultValue) || 0);
-  if (field.type === 'boolean') return field.defaultValue === 'true' || field.defaultValue === true ? 'true' : 'false';
-  if (field.type === 'array') return '[]';
-  if (field.type === 'record') return '{}';
-  return quote(field.defaultValue || '');
-}
-
-function defaultCheck(field) {
-  if (field.type === 'number') return 'update when relevant events cause this value to change, use reasonable delta';
-  if (field.type === 'enum') return 'update only when conditions trigger a stage transition';
-  if (field.type === 'record') return 'insert when new entries appear, remove when they leave or are consumed';
-  if (field.type === 'boolean') return 'toggle when the condition changes';
-  return 'update when this information changes in the narrative';
-}
-
-function quote(value) {
-  return JSON.stringify(String(value));
-}
-
-function safeKey(key) {
-  return /^[A-Za-z_$][\w$]*$/.test(key) ? key : quote(key);
-}
-
-const OUTPUT_FORMAT = `---
-变量输出格式:
-  rule:
-    - you must output the update analysis and the actual update commands at once in the end of the next reply
-    - the update commands works like the JSON Patch standard, but supports replace, delta, insert, remove, move
-    - don't update field names starts with \`_\` as they are readonly
-  format: |-
-    <UpdateVariable>
-    <Analysis>$(IN CHINESE, no more than 400 words)</Analysis>
-    <JSONPatch>
-    [
-      { "op": "replace", "path": "$\{/path/to/variable}", "value": "$\{new_value}" },
-      { "op": "delta", "path": "$\{/path/to/number/variable}", "value": "$\{positive_or_negative_delta}" }
-    ]
-    </JSONPatch>
-    </UpdateVariable>`;
-
-const OUTPUT_EMPHASIS = `---
-变量输出格式强调:
-  rule: The following must be inserted to the end of reply, and cannot be omitted
-  format: |-
-    <UpdateVariable>
-    ...
-    </UpdateVariable>`;
-
-module.exports = { createMvuPatch };
+module.exports = { createMvuPatch, validateCompiledMvu };

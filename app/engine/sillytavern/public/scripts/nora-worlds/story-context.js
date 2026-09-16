@@ -33,10 +33,15 @@ export function createStoryContext(persona = {}) {
         player: { profile: { identity: { ...persona } }, persistent_status: {} }, author_note: '', language: 'zh' };
 }
 
+export function hasWorldCardSummary(context) {
+    return context?.card_format === 'nora-world-card/2';
+}
+
 export function normalizeStoryContext(value) {
     if (!object(value) || value.schema_version !== 1 || !Array.isArray(value.characters)
         || !Array.isArray(value.relationships) || !object(value.player)) invalid();
     const result = clone(value);
+    if ('card_format' in result && !['nora-world-card/1', 'nora-world-card/2'].includes(result.card_format)) invalid();
     if ('card_profile_enabled' in result && typeof result.card_profile_enabled !== 'boolean') invalid();
     if ('removed_card_fields' in result && (!Array.isArray(result.removed_card_fields)
         || result.removed_card_fields.some(field => !['description', 'personality', 'scenario'].includes(field)))) invalid();

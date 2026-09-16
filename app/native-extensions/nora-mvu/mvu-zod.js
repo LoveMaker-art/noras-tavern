@@ -1,5 +1,10 @@
 const READ_ONLY_PREFIX = '_';
 
+function traceSchema(stage, detail = {}) {
+    try { globalThis.parent?.NoraMvu?.trace?.record(stage, { scriptId: globalThis.getScriptId?.(), ...detail }); } catch { /* Diagnostics only. */ }
+}
+traceSchema('schema-module-loaded');
+
 function runtime(name) {
     const value = globalThis[name];
     if (value === undefined || value === null) {
@@ -141,6 +146,7 @@ function looseSchema(zod, schema) {
 }
 
 export function registerMvuSchema(input) {
+    traceSchema('schema-register-start', { globals: ['z', '_', 'eventOn', 'registerVariableSchema'].map(name => ({ name, present: globalThis[name] != null })) });
     const zod = runtime('z');
     const lodash = runtime('_');
     const eventOn = runtime('eventOn');
@@ -156,6 +162,21 @@ export function registerMvuSchema(input) {
 
     unwrapSchema();
 
+    // Pull-based evidence follows the script listener lifecycle; no persistent registry.
+    eventOn('nora_mvu_schema_query', (query) => {
+        traceSchema('schema-query-received');
+        const schema = unwrapSchema();
+        let fields = null;
+        try {
+            if (typeof zod.toJSONSchema === 'function') {
+                fields = zod.toJSONSchema(schema, { io: 'input', unrepresentable: 'any' });
+                if (JSON.stringify(fields).length > 12000) fields = null;
+            }
+        } catch { /* Arbitrary transforms remain runtime-only checks. */ }
+        query.schemas.push({ fields });
+        traceSchema('schema-query-answered', { count: query.schemas.length, fieldsAvailable: fields !== null });
+    });
+
     eventOn('mag_variable_initialized', (variables, swipeId) => {
         try {
             const parsed = unwrapSchema().safeParse(lodash.get(variables, 'stat_data', {}), { reportInput: true });
@@ -169,15 +190,18 @@ export function registerMvuSchema(input) {
         }
     });
 
-    eventOn('mag_command_parsed_for_zod', (variables, commands) => {
+    eventOn('mag_command_parsed_for_zod', (variables, commands, _content, diagnostics) => {
         const schema = unwrapSchema();
         const notify = notificationEnabled();
+        let rejectionReason = '';
         const validate = (data, command, shouldNotify) => {
             try {
                 const parsed = schema.safeParse(data, { reportInput: true });
                 if (parsed.success) return parsed.data;
+                rejectionReason = schemaError(zod, parsed.error);
                 if (notify && shouldNotify) report('warn', schemaError(zod, parsed.error), `变量更新失败: ${command.full_match || ''}`);
             } catch (error) {
+                rejectionReason = String(error?.message || error);
                 if (notify && shouldNotify) report('warn', error?.stack || error?.message || error, `变量更新失败: ${command.full_match || ''}`);
             }
             return null;
@@ -185,12 +209,24 @@ export function registerMvuSchema(input) {
         const consumed = [];
 
         commands.forEach((command, index) => {
+            rejectionReason = '';
+            const reject = () => diagnostics?.errors?.push({
+                command: command.type,
+                content: (rejectionReason || 'Command rejected: unsupported operation, invalid path or incompatible value.').slice(0, 800),
+            });
             let next = clone(variables.stat_data);
+            if (command.nora) {
+                try { globalThis.parent.NoraMvu.protocol.validateNoraOperation(command.nora, next); }
+                catch (error) { rejectionReason = String(error); reject(); return; }
+            }
             const removed = [];
             if (command.type === 'move') {
                 const from = parsePath(command.args?.[0]);
                 const to = parsePath(command.args?.[1]);
-                if (!lodash.has(next, from) || !writablePath(lodash, from) || !writablePath(lodash, to)) return;
+                if (!lodash.has(next, from) || !writablePath(lodash, from) || !writablePath(lodash, to)) {
+                    reject();
+                    return;
+                }
                 const value = clone(lodash.get(next, from));
                 next = applyCommand(next, { ...command, type: 'delete', args: [from] }, validate, lodash, notify);
                 if (next !== null) next = applyCommand(next, { ...command, type: 'set', args: [to, value] }, validate, lodash, notify);
@@ -199,12 +235,16 @@ export function registerMvuSchema(input) {
                 next = applyCommand(next, command, validate, lodash, notify);
                 if (command.type === 'delete') removed.push(lodash.toPath(command.args.map(parsePath).join('.')));
             }
-            if (next === null) return;
+            if (next === null) {
+                reject();
+                return;
+            }
             removed.forEach(path => {
                 if (!lodash.has(next, path)) lodash.unset(variables.stat_data, path);
             });
             variables.stat_data = { ...variables.stat_data, ...next };
             consumed.push(index);
+            if (diagnostics) diagnostics.accepted_count = (diagnostics.accepted_count || 0) + 1;
         });
 
         lodash.pullAt(commands, consumed);
@@ -221,4 +261,8 @@ export function registerMvuSchema(input) {
     });
 
     console.info('[Nora MVU] Variable schema registered locally.');
+    traceSchema('schema-register-complete');
+    // Announce only after all validation handlers are installed. Consumers still
+    // query the live listener, so an unloaded card never leaves a cached schema.
+    void globalThis.eventEmit?.('nora_mvu_schema_ready');
 }

@@ -32,6 +32,7 @@ export function createStoryActionDispatcher({
             active: Boolean(task),
             type: task?.type || null,
             retryable: String(scope) === STORY_SCOPE && Boolean(lastFailure),
+            saveFailed: String(scope) === STORY_SCOPE && lastFailure?.error?.phase === 'save',
             persisted: String(scope) === STORY_SCOPE && lastFailure ? lastFailure.persisted : null,
         });
     }
@@ -54,6 +55,7 @@ export function createStoryActionDispatcher({
         if (task.controller.signal.aborted) throw Object.assign(new Error(tr("操作已取消。")), { name: 'AbortError' });
         if (task.sessionKey !== getSessionKey()) throw Object.assign(new Error(tr("世界已切换，请重新操作。")), { code: 'NORA_STALE_SESSION' });
         switch (command.type) {
+            case 'story.save': return command.run();
             case 'story.slash': return messages.runSlash(String(command.text || ''), { signal: task.controller.signal });
             case 'story.send': return messages.sendText(String(command.text || '').trim(), { signal: task.controller.signal });
             case 'story.regenerate': return messages.regenerate({ signal: task.controller.signal });
@@ -80,7 +82,12 @@ export function createStoryActionDispatcher({
             if (!lastFailure) {
                 return Promise.resolve(Object.freeze({ status: 'ignored', type: command.type, scope: STORY_SCOPE }));
             }
-            command = lastFailure.persisted
+            if (lastFailure.error?.phase === 'save' && typeof lastFailure.error.retrySave !== 'function') {
+                return Promise.resolve(Object.freeze({ status: 'blocked', reason: 'save-not-retryable' }));
+            }
+            command = lastFailure.error?.phase === 'save'
+                ? { type: 'story.save', run: lastFailure.error.retrySave }
+                : lastFailure.persisted
                 ? { type: 'story.regenerate' }
                 : { ...lastFailure.command };
         }
@@ -140,8 +147,8 @@ export function createStoryActionDispatcher({
                     || command.type === 'story.edit-and-regenerate'
                     || Boolean(error?.noraMessagePersisted);
                 if (task.sessionKey === getSessionKey() && scope === STORY_SCOPE && !['story.edit', 'story.swipe', 'story.slash'].includes(command.type)) {
-                    lastFailure = Object.freeze({ command: Object.freeze({ ...command }), persisted, sessionKey: task.sessionKey });
-                    if (command.type === 'story.send' && !persisted) restoreDraft(String(command.text || ''));
+                    lastFailure = Object.freeze({ command: Object.freeze({ ...command }), persisted, error, sessionKey: task.sessionKey });
+                    if (command.type === 'story.send' && !persisted && error?.phase !== 'save') restoreDraft(String(command.text || ''));
                 }
                 const result = Object.freeze({ status: 'failed', type: command.type, scope, actionId, error, persisted });
                 try { onGenerationError(error, { persisted, type: command.type, scope, actionId }); } catch { /* UI errors never change task results. */ }

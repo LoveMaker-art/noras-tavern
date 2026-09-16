@@ -18,6 +18,32 @@ function validationErrors(value) {
     }));
 }
 
+/** One terminal-event projection for both UI feedback and bounded diagnostics. */
+export function projectMvuTransaction(detail = {}, terminal = 'committed', fallbackCommandCount) {
+    const count = detail.diagnostics?.command_count ?? fallbackCommandCount;
+    // Legacy events may lack `modified`; only the observer has a captured command count.
+    const changed = detail.diagnostics?.modified ?? (fallbackCommandCount === undefined || count > 0);
+    const committed = terminal === 'committed';
+    const skipped = committed && detail.outcome === 'skipped';
+    const interrupted = !committed && ['cancelled', 'stale'].includes(detail.outcome);
+    return {
+        status: committed ? (skipped ? 'skipped' : changed ? 'committed' : 'no-change') : interrupted ? detail.outcome : 'failed',
+        updateOperational: skipped || interrupted ? null : committed,
+        updatePhase: committed ? (skipped ? 'no-command' : changed ? 'completed' : 'no-change') : interrupted || detail.outcome === 'partial' ? detail.outcome : 'failed',
+        lastUpdateCode: committed ? (skipped ? 'MVU_NO_UPDATE_COMMAND' : changed ? null : 'MVU_NO_STATE_CHANGE') : bounded(detail.error_code || 'MVU_UPDATE_FAILED', 100),
+        lastUpdateStage: committed ? (changed ? null : 'update') : bounded(detail.stage || 'update', 80),
+        lastUpdateError: committed ? null : bounded(detail.error || 'MVU update failed.', 800),
+        lastUpdateCommandCount: count,
+        ...(!committed ? { lastUpdateValidationErrors: validationErrors(detail.diagnostics?.errors) } : {}),
+        stateChanged: committed ? changed : detail.outcome === 'persistence-unknown' ? null : detail.persisted ? Boolean(detail.diagnostics?.modified) : false,
+        transactionDurationMs: detail.duration_ms ?? null,
+        transactionAttempt: detail.attempt ?? null,
+        ...(detail.protocol ? { updateProtocol: bounded(detail.protocol, 40) } : {}),
+        ...(detail.mode ? { updateMode: bounded(detail.mode, 40) } : {}),
+        ...(detail.fallback_reason ? { fallbackReason: bounded(detail.fallback_reason, 200) } : {}),
+    };
+}
+
 function emptyStatus() {
     return {
         updateOperational: null,
@@ -63,6 +89,9 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
             validationErrors: current.lastUpdateValidationErrors,
             attempt: current.transactionAttempt,
             durationMs: current.transactionDurationMs,
+            protocol: current.updateProtocol,
+            mode: current.updateMode,
+            fallbackReason: current.fallbackReason,
         });
         try {
             void Promise.resolve(report(diagnostic)).catch(error => {
@@ -89,49 +118,21 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
                 hasPreviousSnapshot: Boolean(detail.had_snapshot),
             };
         });
-        on(transactionCommittedEvent, (detail = {}) => {
-            transactionActive = false;
-            const committedCommandCount = detail.diagnostics?.command_count ?? commandCount;
-            const stateChanged = detail.diagnostics?.modified ?? committedCommandCount > 0;
-            current = {
-                ...current,
-                updateOperational: true,
-                updatePhase: stateChanged ? 'completed' : 'no-change',
-                lastUpdateAt: now(),
-                lastUpdateCode: stateChanged ? null : 'MVU_NO_STATE_CHANGE',
-                lastUpdateStage: stateChanged ? null : 'update',
-                lastUpdateError: null,
-                lastUpdateCommandCount: committedCommandCount,
-                stateChanged,
-                transactionDurationMs: detail.duration_ms ?? null,
-                transactionAttempt: detail.attempt ?? null,
-            };
-        });
-        on(transactionFailedEvent, (detail = {}) => {
-            transactionActive = false;
-            const errors = validationErrors(detail.diagnostics?.errors);
-            current = {
-                ...current,
-                updateOperational: false,
-                updatePhase: 'failed',
-                lastUpdateAt: now(),
-                lastUpdateCode: bounded(detail.error_code || 'MVU_UPDATE_FAILED', 100),
-                lastUpdateStage: bounded(detail.stage || 'update', 80),
-                lastUpdateError: bounded(detail.error || 'MVU update failed.', 800),
-                lastUpdateCommandCount: detail.diagnostics?.command_count ?? commandCount,
-                lastUpdateValidationErrors: errors,
-                stateChanged: false,
-                transactionDurationMs: detail.duration_ms ?? null,
-                transactionAttempt: detail.attempt ?? null,
-            };
-            publishFailure();
-        });
+        for (const [event, terminal] of [[transactionCommittedEvent, 'committed'], [transactionFailedEvent, 'failed']]) {
+            on(event, (detail = {}) => {
+                transactionActive = false;
+                if (observedIdentity !== String(identity() || '')) return;
+                const { status, ...observation } = projectMvuTransaction(detail, terminal, commandCount);
+                current = { ...current, ...observation, lastUpdateAt: now() };
+                if (status === 'failed') publishFailure();
+            });
+        }
     }
 
     on(startedEvent, () => {
+        if (transactionActive) return;
         observedIdentity = String(identity() || '');
         commandCount = 0;
-        if (transactionActive) return;
         current = {
             ...emptyStatus(),
             updatePhase: 'updating',
@@ -144,20 +145,20 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
     on(endedEvent, (variables, before) => {
         const hasCommands = commandCount > 0;
         const stateChanged = digest(variables?.stat_data) !== digest(before?.stat_data);
-        const updateOperational = hasCommands && stateChanged;
         if (transactionActive) return;
         current = {
             ...emptyStatus(),
-            updateOperational,
-            updatePhase: updateOperational ? 'completed' : hasCommands ? 'no-change' : 'no-command',
+            // Upstream ENDED precedes final hooks and persistence. It is an
+            // observation only, never proof of success or failure.
+            updateOperational: null,
+            updatePhase: hasCommands ? 'unverified' : 'no-command',
             lastUpdateAt: now(),
-            lastUpdateCode: updateOperational ? null : hasCommands ? 'MVU_NO_STATE_CHANGE' : 'MVU_NO_UPDATE_COMMAND',
-            lastUpdateStage: updateOperational ? null : hasCommands ? 'validation' : 'parsing',
-            lastUpdateError: updateOperational ? null : hasCommands ? 'NO_STATE_CHANGE' : 'NO_UPDATE_COMMAND',
+            lastUpdateCode: hasCommands ? 'MVU_EXECUTION_UNVERIFIED' : 'MVU_NO_UPDATE_COMMAND',
+            lastUpdateStage: hasCommands ? 'update' : 'parsing',
+            lastUpdateError: null,
             lastUpdateCommandCount: commandCount,
             stateChanged,
         };
-        if (!updateOperational) publishFailure();
     });
 
     return Object.freeze({

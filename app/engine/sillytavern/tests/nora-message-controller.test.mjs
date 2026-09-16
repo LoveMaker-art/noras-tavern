@@ -37,7 +37,7 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
         isBusy: () => false,
     };
     const storyActions = {
-        status: () => ({ active: storyActive, retryable: Boolean(failure), persisted: failure?.persisted ?? null }),
+        status: () => ({ active: storyActive, retryable: Boolean(failure), persisted: failure?.persisted ?? null, saveFailed: failure?.saveFailed }),
         execute: async (command) => {
             if (command.type === 'story.retry') return retryResult;
             if (command.type === 'story.send') submissions += 1;
@@ -73,6 +73,21 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     };
 }
 
+test('skipped and interrupted MVU transactions clear syncing without a red failure', () => {
+    for (const status of ['skipped', 'cancelled', 'stale']) {
+        const shown = [];
+        let clears = 0;
+        const { controller } = createHarness({ messageView: {
+            showMvuTransaction: value => shown.push(value),
+            clearMvuTransaction: () => { clears++; },
+        } });
+        controller.setMvuTransaction({ status: 'syncing' });
+        controller.setMvuTransaction({ status });
+        assert.deepEqual(shown, ['syncing']);
+        assert.equal(clears, 1);
+    }
+});
+
 test('missing model configuration preserves the draft and offers configuration without retry', async (context) => {
     globalThis.window = { __NORA_BOOT_METRICS__: { startedAt: performance.now() } };
     context.after(() => { delete globalThis.window; });
@@ -105,6 +120,24 @@ test('transient generation errors keep retry and expose an immediate retrying st
     assert.equal(harness.notices[1].message, '正在重新连接并发送…');
     assert.equal(harness.notices[1].transient, true);
     assert.equal(harness.counts().cleared, 1);
+});
+
+test('save failures show save-only retry and leave the input draft unchanged', async () => {
+    const h = createHarness({ failure: { saveFailed: true } });
+    h.controller.showSendError(Object.assign(new Error('save timed out'), { phase: 'save', retrySave() {} }));
+    assert.equal(h.notices[0].title, '聊天保存未完成');
+    assert.deepEqual(h.notices[0].actions.map(a => a.label), ['重试保存']);
+    await h.notices[0].actions[0].run();
+    assert.equal(h.notices[1].title, '正在重试保存');
+    assert.equal(h.input.value, '保留这条草稿');
+    assert.equal(h.counts().modelSheets, 0);
+});
+
+test('version conflicts are not presented as model failures or force-overwrite actions', () => {
+    const h = createHarness();
+    h.controller.showSendError(Object.assign(new Error('NORA_PARTIAL_CHAT_SAVE'), { phase: 'save', status: 409 }));
+    assert.equal(h.notices[0].title, '聊天保存冲突');
+    assert.deepEqual(h.notices[0].actions, []);
 });
 
 test('a TavernHelper sidecar generation does not turn the story composer into a stop button', async (context) => {

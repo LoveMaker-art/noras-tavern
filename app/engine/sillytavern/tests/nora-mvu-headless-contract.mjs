@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { projectMvuTransaction } from '../public/scripts/nora-compat/mvu-update-observer.js';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const extensionRoot = path.join(root, 'native-extensions/nora-mvu');
@@ -34,7 +35,7 @@ const uiEntry = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/index
 const mvuModelEndpoint = fs.readFileSync(path.join(root, 'engine/sillytavern/src/endpoints/nora-mvu-model.js'), 'utf8');
 const mvuModelConfig = fs.readFileSync(path.join(root, 'engine/sillytavern/src/nora-mvu-model-config.js'), 'utf8');
 const mvuDiagnosticsEndpoint = fs.readFileSync(path.join(root, 'engine/sillytavern/src/endpoints/nora-mvu-diagnostics.js'), 'utf8');
-const mvuUpdateObserver = fs.readFileSync(path.join(root, 'native-extensions/nora-mvu/update-observer.js'), 'utf8');
+const mvuUpdateObserver = fs.readFileSync(path.join(root, 'engine/sillytavern/public/scripts/nora-compat/mvu-update-observer.js'), 'utf8');
 
 assert.deepEqual(manifest.dependencies, ['third-party/JS-Slash-Runner']);
 assert.equal(
@@ -71,13 +72,15 @@ assert.match(bundle, /MVU_EXTRA_MODEL_TIMEOUT/, 'vendored runtime must classify 
 assert.match(noraPatch, /const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;/, 'each MVU model attempt must receive the full observed provider budget');
 assert.doesNotMatch(noraPatch, /PRIMARY_ATTEMPT_BUDGET_MS|TRANSACTION_BUDGET_MS/, 'MVU must not split one request budget into guaranteed-short retries');
 assert.match(noraPatch, /if \(!\['parsing', 'validation'\]\.includes\(failure\.stage\)\) break;/, 'MVU transport failures must not trigger an overlapping paid retry');
-assert.match(noraPatch, /let task = decoded_extra_model_task;/, 'extra-model MVU must preserve the card/upstream variable update dialect');
+assert.match(noraPatch, /let task = enhanced[\s\S]{0,130}: decoded_extra_model_task;/, 'only explicitly declared Nora requests may replace the legacy task');
 assert.doesNotMatch(
     noraPatch,
     /You are a deterministic state-transition processor|Return exactly one block in this structure|Never omit the <JSONPatch> wrapper/,
     'Nora must not force a JSONPatch-only contract onto every extra-model request',
 );
-assert.match(noraPatch, /const explicit_noop = \/<JSONPatch>/, 'an empty JSONPatch can still be accepted when a card emits JSONPatch');
+assert.match(noraPatch, /diagnostics\.explicit_noop/, 'explicit empty patch is part of the execution result, not a state-diff exception');
+assert.match(noraPatch, /const result = executionResult\(diagnostics, true\);[\s\S]{0,140}executionAccepted\(result\)/, 'commit uses executor evidence');
+assert.match(noraPatch, /requireConfirmation: true/, 'MVU awaits server persistence acknowledgement');
 assert.match(noraPatch, /replaceUnresolvedStateBlocks/, 'the source patch must replace unresolved card state templates at the MVU prompt boundary');
 assert.match(noraPatch, /<status_current_variables>/, 'the MVU request must carry an authoritative current-state block');
 assert.match(noraPatch, /getLastValidVariable/, 'the authoritative prompt state must come from the same snapshot store used for commit');
@@ -87,7 +90,7 @@ assert.match(noraPatch, /config\.custom_api = \{[\s\S]{0,120}\+\s*max_context:/,
 assert.match(slashRunnerPatch, /config\.custom_api\?\.max_context[\s\S]{0,160}config\.custom_api\?\.max_tokens/, 'independent MVU models must retain their own context and output limits');
 assert.match(slashRunnerPatch, /chatCompletion\.setTokenBudget\(maxContext, maxOutput\)/, 'the pinned Slash Runner must apply independent MVU token limits');
 assert.match(slashRunnerPatch, /authorNoteOverride[\s\S]{0,160}\?\? ''/, 'the pinned Slash Runner must normalize a missing headless author note to an empty string');
-assert.match(noraPatch, /'persona_description'[\s\S]*'char_description'[\s\S]*'world_info_before'[\s\S]*'world_info_after'[\s\S]*'chat_history'/, 'Nora MVU must preserve the original ST character, worldbook, and chat-history prompt chain');
+assert.match(bundle, /["']persona_description["'][\s\S]*["']char_description["'][\s\S]*["']world_info_before["'][\s\S]*["']world_info_after["'][\s\S]*["']chat_history["']/, 'the built request retains ST context sources; actual order is exercised by source request tests');
 assert.doesNotMatch(helperBundle, /p=wt\.new_chat_prompt,m=await yt\.createAsync\(`system`,Re\(p\),`newMainChat`\);n\.reserveBudget\(m\),f\.add\(m\)/, 'the shipped Helper runtime must not inject a missing new-chat prompt');
 assert.match(helperBundle, /typeof wt\.new_chat_prompt==`string`[\s\S]{0,180}newMainChat[\s\S]{0,100}m&&\(n\.reserveBudget\(m\),f\.add\(m\)\)/, 'the shipped Helper runtime must guard its optional new-chat prompt');
 assert.doesNotMatch(helperBundle, /e\?\.overrides\?\.author_note\?\?\$\(`#extension_floating_prompt`\)\.val\(\);/, 'the shipped Helper runtime must not pass an absent author note into ST prompt aggregation');
@@ -178,8 +181,15 @@ assert.match(mvuModelEndpoint, /SECRET_KEYS\.NORA_MVU/);
 assert.doesNotMatch(mvuModelConfig, /api_key\s*:/, 'the non-secret MVU config file must never own an API key');
 assert.match(mvuDiagnosticsEndpoint, /mvuDiagnosticStore\.append/);
 assert.match(mvuUpdateObserver, /reportMvuDiagnostic|report\(diagnostic\)/);
-assert.match(mvuUpdateObserver, /const stateChanged = detail\.diagnostics\?\.modified \?\? committedCommandCount > 0/, 'committed updates must derive their state-change result from MVU diagnostics');
-assert.match(mvuUpdateObserver, /updatePhase: stateChanged \? 'completed' : 'no-change'/, 'committed no-op updates must not be reported as completed state changes');
-assert.match(mvuUpdateObserver, /lastUpdateCode: stateChanged \? null : 'MVU_NO_STATE_CHANGE'/, 'committed no-op updates must expose a stable diagnostic code');
+for (const [outcome, modified, phase, code] of [
+    ['updated', true, 'completed', null],
+    ['unchanged', false, 'no-change', 'MVU_NO_STATE_CHANGE'],
+    ['skipped', false, 'no-command', 'MVU_NO_UPDATE_COMMAND'],
+]) {
+    const result = projectMvuTransaction({ outcome, diagnostics: { modified, command_count: 1 } }, 'committed', 1);
+    assert.equal(result.stateChanged, modified);
+    assert.equal(result.updatePhase, phase);
+    assert.equal(result.lastUpdateCode, code);
+}
 
 console.log('nora-mvu-headless-contract=PASS');

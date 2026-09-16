@@ -208,5 +208,8 @@ module.exports = {
   readPngCardData,
   writePngCardData,
   extractChunks,
-  encodeChunks
+  encodeChunks,
+  decodeCardTextChunk,
+  decodeCardPayload,
+  encodeTextChunk
 };

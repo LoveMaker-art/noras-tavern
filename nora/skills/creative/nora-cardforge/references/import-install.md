@@ -1,4 +1,11 @@
-# Import a built card through Nora MCP
+# Import a newly built card through Nora MCP
+
+This reference is for CardForge's new-card build artifacts. For an existing card,
+assess it and follow the `tavern` skill's original-file import route. Authorized
+prose polishing uses its reviewed candidate through that same existing-file route;
+see [prose-polishing.md](prose-polishing.md).
+Do not create a build project simply to stage an existing card: serialization can
+change third-party metadata, and new-card quality gates are not import gates.
 
 ## Ownership and intent
 
@@ -14,7 +21,7 @@ intent through the `tavern` skill; do not substitute new-World creation.
 ## Prepare locally
 
 1. Build the latest authored sources, inspect the artifact, and review the returned
-   quality report. `release` gates structure; its writing score is advisory.
+   quality report. `release` gates structure; writing scoring is opt-in and advisory.
 2. Discover the installed `nora.world.import` and `nora.operation.get` schemas.
    Hermes normally registers these as `mcp__nora__nora_world_import` and
    `mcp__nora__nora_operation_get`. If deferred, use `tool_search`, `tool_describe`
@@ -55,8 +62,18 @@ a conflicting destination is preserved and reported, never overwritten.
    For a confirmed retryable `FAILED` operation use the existing `nora.operation.retry`
    workflow. Otherwise report its code/stage and stop rather than manipulating files.
 7. Require `operation.status=COMPLETED`; inspect its `world_id` with
-   `nora.world.inspect`. Compare the returned World/name and runtime-card binding
-   with the intended card. If full card inspection is required use the returned
+   `nora.world.inspect`. Save the actual structured result (not the text-wrapper MCP
+   envelope) and the prepared handoff in the project's reports directory, then run:
+
+   ```text
+   node scripts/nora-cardforge.js verify-import --prepared <handoff.json> --inspection <world-inspect.json>
+   ```
+
+   It compares operation/source identity, World name/readiness, the World-card format
+   marker, persona and full cast including activation settings. A missing marker or
+   panel's data is a failed handoff, not a
+   successful import with an optional future configuration task. Do not edit reports
+   to pass. If full card inspection is required use the returned
    avatar with `st.character.inspect`, not a guessed name/path.
 8. Report “created World” separately from browser activation. `nora.world.snapshot`
    reports actual capability evidence. `nora.world.open_plan` does not open a page.
@@ -64,6 +81,18 @@ a conflicting destination is preserved and reported, never overwritten.
    to `tavern`; generated imports and third-party scripts need their normal runtime
    and any required execution authorization. Never manufacture READY receipts.
 
-The user's editable project remains available for revisions. Keep staged artifacts
+The user's new-card project remains available for draft refinement. Keep staged artifacts
 until their operation is settled; uncertain imports must not lose their retry input.
 Existing worlds and source cards are not deleted by this workflow.
+
+## Persona and cast transport
+
+The existing `nora.world.import` accepts `personaName` and `personaDescription`.
+`prepare-import` fills them from the authored card; pass the returned arguments
+unchanged. The cast is embedded in `extensions.nora_world.story_context` and
+materialized by World Core. New-format cards also carry the persona there for
+direct file import; a nonempty caller-supplied persona overrides it.
+No follow-up `world.update` is normally needed to populate these fields.
+If an installed tool lacks the documented parameters, report the version/interface
+gap instead of silently dropping fields or rewriting the card. Runtime readback
+is still required: CLI staging cannot prove the target server supports this format.

@@ -4,6 +4,7 @@ import { load } from 'cheerio';
 import { createPanelController } from '../../../native-extensions/nora-ui/panel-controller.js';
 import { createCharacterController } from '../../../native-extensions/nora-ui/character-controller.js';
 import { createWorldbookController } from '../../../native-extensions/nora-ui/worldbook-controller.js';
+import { translate as tr } from '../public/scripts/nora-i18n/core.js';
 
 function fixture() {
     let $;
@@ -62,6 +63,24 @@ test('persona library actions share the name label row and preserve the current-
     assert.equal(f.query('#nora-persona-form > button[type="submit"]').length, 1);
     f.select('[data-pick-persona]').handlers.click();
     assert.deepEqual(f.picked, [['persona', f.world]]);
+});
+
+test('World card library shows the summary without offering to copy the entire World as one actor', () => {
+    for (const native of [true, false]) {
+        const f = fixture();
+        const card = { name: '世界名', avatar: 'world.png', data: { description: '用户概要',
+            extensions: native ? { nora_world: { format: 'nora-world-card/2' } } : {} } };
+        const controller = createCharacterController({ ...f.common,
+            cards: {},
+            readState: () => ({ activeCharacterId: 0, characters: [card] }), settings: () => ({}),
+            characterCapabilities: () => ({ regexScripts: [], helperScripts: [] }), worldbookEntries: () => [],
+        });
+        controller.openSheet(0, true);
+        assert.equal(f.query('[data-card-create-world]').length, 1);
+        assert.equal(f.query('[data-card-add-role]').length, native ? 0 : 1);
+        assert.equal(f.query('[data-save-card-profile]').length, native ? 0 : 1);
+        assert.ok(f.query('.nora-character-detail').text().includes(tr(native ? '世界概要' : '角色介绍')));
+    }
 });
 
 test('new role library actions share the name label row without moving the editor footer', () => {

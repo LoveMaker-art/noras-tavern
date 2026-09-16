@@ -8,19 +8,20 @@ const { createMvuPatch } = require('../mvu/mvu-compiler');
 const { createStatusbarPatch } = require('../statusbar/statusbar');
 const { applyPatchSet } = require('../core/patch-engine');
 const { runQualityGate } = require('../quality/quality-gate');
+const { compileWorld } = require('./world-authoring');
 
 const PROJECT_FORMAT = 'nora-card-project/v1';
 
 function initProject(projectDir, options = {}) {
   const root = prepareEmptyProjectDir(projectDir);
-  const name = String(options.name || '未命名角色').trim();
+  const name = String(options.name || '未命名世界').trim();
   const slug = slugify(options.slug || name);
   ensureProjectDirs(root);
   const card = normalizeCard({ name, description: '', personality: '', scenario: '', first_mes: '', mes_example: '' });
   card.data.creator = options.creator || 'Nora';
   const config = createProjectConfig({ slug, sourceType: 'new' });
   writeJson(path.join(root, 'card.project.json'), config);
-  fs.writeFileSync(path.join(root, 'card.md'), cardToMarkdown(card), 'utf8');
+  fs.writeFileSync(path.join(root, 'card.md'), cardToMarkdown(card, { worldCard: true }), 'utf8');
   return { ok: true, project: root, config, files: listProjectFiles(root) };
 }
 
@@ -59,28 +60,37 @@ function ingestProject(inputPath, projectDir, options = {}) {
 
 function buildProject(projectDir, options = {}) {
   const root = path.resolve(projectDir);
+  // Keep previous artifacts, but never authorize their import after a failed build.
+  writeJson(path.join(root, 'reports/build-manifest.json'), { format: 'nora-card-build/v1', quality: { passed: false }, reason: 'Build not yet validated' });
   const config = readProjectConfig(root);
+  const sources = sourceHashes(root);
+  if (config.source?.type === 'new' && !config.world) throw new Error('New World cards require world.persona and world.characters');
   const cardMdPath = path.join(root, 'card.md');
   const baseCard = config.source?.passthrough
     ? JSON.parse(fs.readFileSync(resolveWithin(root, config.source.passthrough), 'utf8'))
     : null;
   let { card } = parseCardMarkdown(fs.readFileSync(cardMdPath, 'utf8'), { baseCard });
+  card = compileWorld(card, config.world);
 
   const mvuPath = featurePath(root, config.features?.mvu, 'features/mvu.json');
   if (mvuPath && fs.existsSync(mvuPath)) {
-    const patch = createMvuPatch(card, JSON.parse(fs.readFileSync(mvuPath, 'utf8')), config.mvu || {});
+    if (config.source?.type === 'new' && config.mvu?.protocol && config.mvu.protocol !== 'nora-mvu/1') throw new Error('New authored MVU cards require nora-mvu/1');
+    const patch = createMvuPatch(card, JSON.parse(fs.readFileSync(mvuPath, 'utf8')), {
+      protocol: config.source?.type === 'new' ? 'nora-mvu/1' : 'legacy',
+      ...config.mvu
+    });
     card = applyPatchSet(card, patch).card;
   }
   const statusbarPath = featurePath(root, config.features?.statusbar, 'features/statusbar.html');
   let statusbarHtml = '';
   if (statusbarPath && fs.existsSync(statusbarPath)) {
     statusbarHtml = fs.readFileSync(statusbarPath, 'utf8');
-    const patch = createStatusbarPatch(statusbarHtml, { mode: config.statusbar?.mode || 'mvu' });
+    const patch = createStatusbarPatch(statusbarHtml, { mode: config.statusbar?.mode || 'mvu', contract: card.data.extensions?.cfMvuFieldContract });
     card = applyPatchSet(card, patch).card;
   }
 
   const profile = options.profile || config.build?.profile || 'release';
-  const quality = runQualityGate({ card, cardMdPath, statusbarHtml, profile });
+  const quality = runQualityGate({ card, cardMdPath, statusbarHtml, profile, scoreWriting: options.scoreWriting === true });
   ensureDir(path.join(root, 'reports'));
   writeJson(path.join(root, 'reports/quality.json'), quality);
   if (!quality.passed) {
@@ -114,6 +124,7 @@ function buildProject(projectDir, options = {}) {
   const manifest = {
     format: 'nora-card-build/v1',
     projectFormat: PROJECT_FORMAT,
+    sources,
     slug,
     card: summarizeCard(card),
     quality: { passed: quality.passed, profile, writingScore: quality.writing?.score ?? null },
@@ -121,6 +132,7 @@ function buildProject(projectDir, options = {}) {
     sha256: Object.fromEntries(Object.entries(artifacts).filter(([, value]) => value)
       .map(([key, value]) => [key, sha256(fs.readFileSync(path.join(root, value)))]))
   };
+  if (JSON.stringify(sources) !== JSON.stringify(sourceHashes(root))) throw new Error('Project sources changed during build; rebuild before delivery');
   writeJson(path.join(root, 'reports/build-manifest.json'), manifest);
   return { ok: true, project: root, manifest, quality };
 }
@@ -132,7 +144,8 @@ function inspectProject(projectDir) {
     ? JSON.parse(fs.readFileSync(resolveWithin(root, config.source.passthrough), 'utf8'))
     : null;
   const parsed = parseCardMarkdown(fs.readFileSync(path.join(root, 'card.md'), 'utf8'), { baseCard });
-  return { ok: true, project: root, config, card: summarizeCard(parsed.card), files: listProjectFiles(root) };
+  const card = compileWorld(parsed.card, config.world);
+  return { ok: true, project: root, config, card: summarizeCard(card), files: listProjectFiles(root) };
 }
 
 function createProjectConfig({ slug, sourceType, original = null, passthrough = null }) {
@@ -142,7 +155,8 @@ function createProjectConfig({ slug, sourceType, original = null, passthrough = 
     source: { type: sourceType, original, passthrough },
     build: { profile: 'release', target: 'v2-json+v3-png', cover: 'assets/cover.png' },
     features: { mvu: null, statusbar: null },
-    mvu: { keepFloors: 3, injectMode: 'single' },
+    ...(sourceType === 'new' ? { world: { persona: { name: '', description: '' }, characters: [] } } : {}),
+    mvu: { keepFloors: 3 },
     statusbar: { mode: 'mvu' }
   };
 }
@@ -182,11 +196,32 @@ function extractHtmlFence(value) {
 
 function featurePath(root, configured, fallback) {
   if (configured === false) return null;
-  if (typeof configured === 'string') return resolveWithin(root, configured);
+  if (typeof configured === 'string') return requiredFeature(root, configured);
   if (configured && typeof configured === 'object' && configured.enabled === false) return null;
-  if (configured && typeof configured === 'object' && configured.path) return resolveWithin(root, configured.path);
+  if (configured && typeof configured === 'object' && configured.path) return requiredFeature(root, configured.path);
   const candidate = resolveWithin(root, fallback);
   return fs.existsSync(candidate) ? candidate : null;
+}
+
+function requiredFeature(root, relative) {
+  const file = resolveWithin(root, relative);
+  if (!fs.existsSync(file)) throw Object.assign(new Error(`Declared feature file is missing: ${relative}`), { code: 'FEATURE_FILE_MISSING' });
+  return file;
+}
+
+function sourceHashes(root) {
+  const hashes = {};
+  const walk = (dir, prefix = '') => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+      if (!prefix && ['build', 'reports'].includes(entry.name)) continue;
+      const rel = prefix + entry.name;
+      if (entry.isSymbolicLink()) throw new Error(`Project source symlink is not supported: ${rel}`);
+      if (entry.isDirectory()) walk(path.join(dir, entry.name), rel + '/');
+      else if (entry.isFile()) hashes[rel] = sha256(fs.readFileSync(path.join(dir, entry.name)));
+    }
+  };
+  walk(root);
+  return hashes;
 }
 
 function selectCover(root, config) {
@@ -250,5 +285,6 @@ module.exports = {
   inspectProject,
   readProjectConfig,
   extractAdvancedFeatures,
+  sourceHashes,
   slugify
 };

@@ -16,7 +16,7 @@ import {
     normalizeTavernHelperScripts,
 } from '../../public/scripts/nora-compat/mvu-compatibility.js';
 import { inspectPromptTemplateCompatibility } from '../../public/scripts/nora-compat/prompt-template-compatibility.js';
-import { cloneJson, sha256, stableStringify } from './domain.js';
+import { cloneJson, sha256, stableStringify, importedPersona } from './domain.js';
 import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 import { createStCardCodec } from './st-card-codec.js';
@@ -778,9 +778,29 @@ export function createStBackendMaterializer({
             if (!Buffer.isBuffer(decoded?.runtimeCardBuffer)) {
                 throw new NoraWorldCoreError('NORA_CARD_INVALID', 'The ST card codec did not produce a Runtime Card artifact.');
             }
-            const prepared = prepareStRuntimeCard(decoded.card);
+            let prepared = prepareStRuntimeCard(decoded.card);
             const rawStoryContext = cardData(prepared.card).extensions?.nora_world?.story_context;
-            const storyContext = rawStoryContext === undefined ? undefined : normalizeStoryContext(rawStoryContext);
+            const cardFormat = cardData(prepared.card).extensions?.nora_world?.format;
+            const storyContext = rawStoryContext === undefined ? undefined : normalizeStoryContext({ ...rawStoryContext,
+                ...(cardFormat === 'nora-world-card/2' ? { card_format: cardFormat } : {}),
+            });
+            const authored = ['nora-world-card/1', 'nora-world-card/2'].includes(cardFormat);
+            if (authored && !storyContext) throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Authored World card is missing its story context.');
+            const authoredPersona = authored ? storyContext.player.profile.identity : undefined;
+            if (authored) {
+                if (typeof authoredPersona?.name !== 'string' || typeof authoredPersona?.description !== 'string') {
+                    throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Authored World card requires a string persona name and description.');
+                }
+            }
+            if (cardFormat === 'nora-world-card/1') {
+                const projected = cloneJson(prepared.card);
+                const book = cardData(projected).character_book;
+                const ids = new Set(['__user__', ...storyContext.characters.map(actor => actor.id)]);
+                if (book) book.entries = book.entries.filter(entry => !ids.has(entry.extensions?.nora_world_fallback));
+                // Only the runtime-owned copy is projected; source/library PNG keeps
+                // portable lore. World Core now owns these actors and the persona.
+                prepared = { ...prepared, card: projected, changed: true };
+            }
             const report = inspectPreparedStCard(prepared.card);
             if (command?.payload?.runtime_card_kind !== 'nora-internal-blank') {
                 await cardLibrary.save({ buffer: sourceBuffer, format }, identities.worlds || []);
@@ -833,7 +853,7 @@ export function createStBackendMaterializer({
                 const chatId = `nora-${sha256(sessionId).slice(0, 16)}`;
                 const chatPath = path.join(roots.chats, runtimeBase, `${chatId}.jsonl`);
                 const chatText = initialChat({
-                    command,
+                    command: { ...command, persona: importedPersona(command.persona, authoredPersona) },
                     identities: { operationId, worldId, sessionId },
                     report,
                     avatar,
@@ -847,6 +867,7 @@ export function createStBackendMaterializer({
                 return {
                     worldName: command?.payload?.world_name_source === 'card' ? report.character_name : command.name,
                     ...(storyContext === undefined ? {} : { storyContext }),
+                    ...(authoredPersona === undefined ? {} : { authoredPersona }),
                     runtimeCard: {
                         engine: 'sillytavern',
                         binding: { avatar },

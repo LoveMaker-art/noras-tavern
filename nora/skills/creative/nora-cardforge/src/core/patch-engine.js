@@ -1,13 +1,5 @@
-const fs = require('fs');
 const crypto = require('crypto');
 const { normalizeCard, normalizeWorldEntry, normalizeRegexScript, normalizeTavernScript, clone } = require('./card-model');
-
-function loadPatch(filePath) {
-  const patch = JSON.parse(fs.readFileSync(filePath, 'utf8'));
-  const normalized = patch && patch.patch && Array.isArray(patch.patch.operations) ? patch.patch : patch;
-  if (!normalized || !Array.isArray(normalized.operations)) throw new Error('Patch must contain operations[]');
-  return normalized;
-}
 
 function applyPatchSet(card, patchSet) {
   const next = normalizeCard(clone(card));
@@ -142,4 +134,4 @@ function requireString(value, name) {
   if (typeof value !== 'string' || !value) throw new Error(`Operation requires ${name}`);
 }
 
-module.exports = { loadPatch, applyPatchSet };
+module.exports = { applyPatchSet };

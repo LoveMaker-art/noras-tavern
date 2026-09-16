@@ -20,7 +20,7 @@ import {
     waitForMvuRuntime,
 } from '../../../native-extensions/nora-mvu/runtime.js';
 import { createManagedMvuRuntimeLoader } from '../../../native-extensions/nora-mvu/runtime.js';
-import { createMvuUpdateObserver } from '../../../native-extensions/nora-mvu/update-observer.js';
+import { createMvuUpdateObserver } from '../public/scripts/nora-compat/mvu-update-observer.js';
 import { registerMvuSchema } from '../../../native-extensions/nora-mvu/mvu-zod.js';
 
 test('managed MVU script is installed in persisted Helper settings', () => {
@@ -61,6 +61,7 @@ test('local MVU schema runtime initializes and validates card variables without 
         'mag_command_parsed_for_zod',
         'mag_variable_initialized',
         'mag_variable_update_ended_for_zod',
+        'nora_mvu_schema_query',
     ]);
 
     const variables = { stat_data: { score: 1, cardOwnedField: true } };
@@ -112,7 +113,7 @@ test('MVU settings status reports populated legacy snapshots as initialized', ()
     assert.equal(adapter.status().initialized, true);
 });
 
-test('MVU update observation distinguishes initialization, no-command runs and parsed updates', () => {
+test('legacy MVU events remain observations until execution and persistence are confirmed', () => {
     const listeners = new Map();
     const eventSource = {
         on: (event, handler) => listeners.set(event, handler),
@@ -133,12 +134,12 @@ test('MVU update observation distinguishes initialization, no-command runs and p
     listeners.get('commands')({}, []);
     listeners.get('ended')({ stat_data: { score: 0 } }, { stat_data: { score: 0 } });
     assert.deepEqual(observer.status(), {
-        updateOperational: false,
+        updateOperational: null,
         updatePhase: 'no-command',
         lastUpdateAt: 12,
         lastUpdateCode: 'MVU_NO_UPDATE_COMMAND',
         lastUpdateStage: 'parsing',
-        lastUpdateError: 'NO_UPDATE_COMMAND',
+        lastUpdateError: null,
         lastUpdateCommandCount: 0,
         lastUpdateValidationErrors: [],
         stateChanged: false,
@@ -150,7 +151,7 @@ test('MVU update observation distinguishes initialization, no-command runs and p
     listeners.get('started')({ stat_data: { score: 0 } });
     listeners.get('commands')({}, [{ type: 'set' }]);
     listeners.get('ended')({ stat_data: { score: 1 } }, { stat_data: { score: 0 } });
-    assert.equal(observer.status().updateOperational, true);
+    assert.equal(observer.status().updateOperational, null);
     assert.equal(observer.status().stateChanged, true);
     assert.equal(observer.status().lastUpdateCommandCount, 1);
 
@@ -158,12 +159,12 @@ test('MVU update observation distinguishes initialization, no-command runs and p
     listeners.get('commands')({}, [{ type: 'set' }]);
     listeners.get('ended')({ stat_data: { score: 1 } }, { stat_data: { score: 1 } });
     assert.deepEqual(observer.status(), {
-        updateOperational: false,
-        updatePhase: 'no-change',
+        updateOperational: null,
+        updatePhase: 'unverified',
         lastUpdateAt: 16,
-        lastUpdateCode: 'MVU_NO_STATE_CHANGE',
-        lastUpdateStage: 'validation',
-        lastUpdateError: 'NO_STATE_CHANGE',
+        lastUpdateCode: 'MVU_EXECUTION_UNVERIFIED',
+        lastUpdateStage: 'update',
+        lastUpdateError: null,
         lastUpdateCommandCount: 1,
         lastUpdateValidationErrors: [],
         stateChanged: false,
@@ -174,7 +175,7 @@ test('MVU update observation distinguishes initialization, no-command runs and p
 
     chatId = 'world-b';
     assert.equal(observer.status().updateOperational, null, 'telemetry from another World must not leak');
-    assert.deepEqual(reports.map(item => item.code), ['MVU_NO_UPDATE_COMMAND', 'MVU_NO_STATE_CHANGE']);
+    assert.deepEqual(reports, []);
     observer.dispose();
     assert.equal(listeners.size, 0);
 });
@@ -496,6 +497,9 @@ test('MVU variable model suppresses update instructions only from the story mode
 
     assert.equal(isNoraMvuUpdateInstructionEntry(updateRule), true);
     assert.equal(isNoraMvuUpdateInstructionEntry(variableReference), false);
+    const mixed = { comment: 'Guide', content: "A guide repairs machines. _.set('score', 5);" };
+    assert.equal(isNoraMvuUpdateInstructionEntry(mixed), false);
+    assert.equal(isNoraMvuUpdateInstructionEntry({ ...mixed, comment: '[mvu_update] Guide', extensions: { nora_mvu_compatibility: { source: 'legacy-update-content' } } }), false);
     assert.equal(shouldSuppressNoraMvuUpdateEntryForMainPrompt(updateRule, {
         extensionSettings,
         lorebookEntries: [updateRule],

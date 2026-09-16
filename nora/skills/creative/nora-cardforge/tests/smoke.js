@@ -23,10 +23,7 @@ function run(args) {
 const input = path.join(root, 'fixtures/empty-v2.json');
 const vars = path.join(root, 'fixtures/mvu-vars.json');
 const html = path.join(root, 'fixtures/statusbar.html');
-const mvuPatch = path.join(tmp, 'mvu.patch.json');
-const statusPlan = path.join(tmp, 'statusbar.plan.json');
-const mvuCard = path.join(tmp, 'card.mvu.json');
-const finalCard = path.join(tmp, 'card.final.json');
+const originalBytes = fs.readFileSync(input);
 
 const inspected = run(['inspect', '--input', input]);
 assert.equal(inspected.ok, true);
@@ -36,31 +33,22 @@ const diagnosed = run(['diagnose', '--input', input]);
 assert.equal(diagnosed.ok, true);
 assert.equal(diagnosed.report.summary.errors, 0);
 
-run(['mvu-plan', '--input', input, '--vars', vars, '--output', mvuPatch]);
-assert.ok(fs.existsSync(mvuPatch));
-
-run(['apply', '--input', input, '--patch', mvuPatch, '--output', mvuCard]);
-assert.ok(fs.existsSync(mvuCard));
-
-const mvuInspect = run(['inspect', '--input', mvuCard]);
-assert.equal(mvuInspect.card.mvu.hasVarGroups, true);
-
-run(['statusbar-plan', '--input', mvuCard, '--html', html, '--output', statusPlan]);
-const statusPlanJson = JSON.parse(fs.readFileSync(statusPlan, 'utf8'));
-assert.equal(statusPlanJson.validation.passed, true);
-
-run(['apply', '--input', mvuCard, '--patch', statusPlan, '--output', finalCard]);
-const finalValidation = run(['statusbar-validate', '--input', finalCard, '--html', html]);
-assert.equal(finalValidation.ok, true);
-
-const finalInspect = run(['inspect', '--input', finalCard]);
-assert.equal(finalInspect.card.statusbar.present, true);
+assert.deepEqual(fs.readFileSync(input), originalBytes);
+// Removed commands must fail without creating an output or touching the input.
+for (const command of ['apply', 'mvu-plan', 'statusbar-plan']) {
+  const output = path.join(tmp, `${command}.json`);
+  const rejected = spawnSync(process.execPath, [cli, command, '--input', input,
+    '--vars', vars, '--html', html, '--patch', vars, '--output', output], { encoding: 'utf8' });
+  assert.equal(rejected.status, 2);
+  assert.equal(JSON.parse(rejected.stderr).error, `Unknown command: ${command}`);
+  assert.equal(fs.existsSync(output), false);
+  assert.deepEqual(fs.readFileSync(input), originalBytes);
+}
 
 const project = path.join(tmp, 'project');
 run(['init', '--project', project, '--name', '诺拉测试', '--slug', 'nora-test']);
 const cardMd = `---
 name: "诺拉测试"
-scenario: "雨夜的旧书店里，{{user}}带着一封没有署名的信来找她。"
 system_prompt: "始终以诺拉测试的身份回应；尊重{{user}}的行动权，不替{{user}}决定或行动。"
 tags: ["女性向", "都市", "悬疑"]
 creator: "Nora"
@@ -68,12 +56,6 @@ character_version: "1.0"
 ---
 ## Description
 诺拉测试是旧书修复师，二十九岁，熟悉纸张、墨水和城市旧档案。她说话直接，观察细致，但不会把猜测伪装成事实。
-
-## Personality
-克制、好奇、有边界感。遇到矛盾时会先确认细节，再表达自己的判断；紧张时会反复整理袖口。
-
-## Scenario
-雨夜的旧书店里，{{user}}带着一封没有署名的信来找她。
 
 ## First Message
 门铃在雨声里轻响了一下。诺拉从修复台后抬起头，把压在信纸上的玻璃镇纸挪到一旁。\n\n“先别告诉我是谁让你来的。”她看向你手里的信封，“让我看看纸和墨。它们通常比人诚实。”
@@ -85,6 +67,9 @@ character_version: "1.0"
 <START>\n{{user}}: 你已经知道寄信人是谁了吗？\n{{char}}: “有一个猜测。”她没有立刻看你，“但证据还不够，我不会拿猜测吓你。”\n{{user}}: 那先告诉我你确认的部分。\n{{char}}: “纸是十年前停产的批次，墨水却很新。有人在故意制造时间错觉。”
 
 ## Lorebook
+### 开局情境 | constant | order: 110
+雨夜的旧书店里，{{user}}带着一封没有署名的信来找她。
+
 ### 旧书店 | keys: 旧书店, 修复台 | order: 120
 城南旧书店兼做纸本文献修复，前店接待客人，后室保存委托档案。
 
@@ -95,13 +80,26 @@ character_version: "1.0"
 一张用于验证 Nora CardForge 制卡、世界书、备用开场和双格式导出的原创测试卡。
 `;
 fs.writeFileSync(path.join(project, 'card.md'), cardMd, 'utf8');
+const worldConfigPath = path.join(project, 'card.project.json');
+const worldConfig = JSON.parse(fs.readFileSync(worldConfigPath));
+worldConfig.world.characters = [{ id: 'restorer', name: '诺拉测试', description: '二十九岁的旧书修复师，熟悉纸张和城市档案。', personality: '克制好奇；先确认事实，再表达判断。', activation: { mode: 'constant' } }];
+fs.writeFileSync(worldConfigPath, JSON.stringify(worldConfig));
 const onePixelPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 fs.writeFileSync(path.join(project, 'assets/cover.png'), onePixelPng);
+fs.copyFileSync(vars, path.join(project, 'features/mvu.json'));
+fs.copyFileSync(html, path.join(project, 'features/statusbar.html'));
 const built = run(['build', '--project', project]);
 assert.equal(built.ok, true);
 assert.equal(built.manifest.quality.passed, true);
 assert.ok(built.manifest.artifacts.v2Json);
 assert.ok(built.manifest.artifacts.v3Png);
+const authoredCard = JSON.parse(fs.readFileSync(path.join(project, built.manifest.artifacts.v2Json), 'utf8'));
+assert.ok(authoredCard.data.character_book.entries.some(entry => entry.enabled && entry.comment.includes('[nora_mvu/1]')));
+assert.ok(!authoredCard.data.character_book.entries.some(entry => entry.comment.includes('输出格式强调')));
+const authoredPath = path.join(project, built.manifest.artifacts.v2Json);
+assert.equal(run(['inspect', '--input', authoredPath]).card.mvu.hasVarGroups, true);
+assert.equal(run(['inspect', '--input', authoredPath]).card.statusbar.present, true);
+assert.equal(run(['statusbar-validate', '--input', authoredPath, '--html', html]).ok, true);
 
 const builtPng = path.join(project, built.manifest.artifacts.v3Png);
 const pngInspect = run(['inspect', '--input', builtPng]);

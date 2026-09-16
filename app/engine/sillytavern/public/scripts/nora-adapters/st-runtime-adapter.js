@@ -5,6 +5,7 @@ import { createStMvuSettingsAdapter } from './st-mvu-settings-adapter.js';
 import { createStSettingsAdapter } from './st-settings-adapter.js';
 import { createStWorldbookAdapter } from './st-worldbook-adapter.js';
 import { createStPresetAdapter } from './st-preset-adapter.js';
+import { projectMvuTransaction } from '../nora-compat/mvu-update-observer.js';
 
 function requireRuntime(getContext) {
     const runtime = getContext();
@@ -102,12 +103,14 @@ export function createStRuntimeAdapter(getContext, { whenAppReady = null } = {})
         on(events.GENERATION_STARTED, () => handlers.generationChanged?.(true));
         on(events.GENERATION_ENDED, () => handlers.generationChanged?.(false));
         on(events.GENERATION_STOPPED, () => handlers.generationChanged?.(false));
-        on(MVU_TRANSACTION_EVENTS.started, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
-        on(MVU_TRANSACTION_EVENTS.committed, detail => handlers.mvuTransactionChanged?.({
-            ...detail,
-            status: detail?.diagnostics?.modified === false ? 'no-change' : 'committed',
-        }));
-        on(MVU_TRANSACTION_EVENTS.failed, detail => handlers.mvuTransactionChanged?.({ ...detail, status: 'failed' }));
+        const isCurrentTransaction = detail => !detail?.chat_id ||
+            String(detail.chat_id).replace(/\.jsonl$/i, '') === snapshot().activeChatId;
+        on(MVU_TRANSACTION_EVENTS.started, detail => isCurrentTransaction(detail) && handlers.mvuTransactionChanged?.({ ...detail, status: 'syncing' }));
+        for (const terminal of ['committed', 'failed']) {
+            on(MVU_TRANSACTION_EVENTS[terminal], detail => isCurrentTransaction(detail) && handlers.mvuTransactionChanged?.({
+                ...detail, status: projectMvuTransaction(detail, terminal).status,
+            }));
+        }
         return () => bindings.forEach(([event, handler]) => source.off?.(event, handler));
     }
 

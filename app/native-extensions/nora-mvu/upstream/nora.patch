@@ -1,5 +1,5 @@
 diff --git a/src/function/global/index.ts b/src/function/global/index.ts
-index caf3097..bd027b9 100644
+index caf3097..8a87ea4 100644
 --- a/src/function/global/index.ts
 +++ b/src/function/global/index.ts
 @@ -1,6 +1,7 @@
@@ -11,11 +11,11 @@ index caf3097..bd027b9 100644
 +import { isMvuData, isValueWithDescription, MvuData, variable_events } from '@/variable_def';
  import { watch } from 'vue';
  import { useDataStore } from '../../store';
-
+ 
 @@ -29,6 +30,17 @@ function createMvu() {
              return getVariables(options) as MvuData;
          },
-
+ 
 +        /**
 +         * Ensure that the active chat owns a durable MVU snapshot before Nora
 +         * declares the card capability ready. This is idempotent and remains
@@ -30,7 +30,7 @@ index caf3097..bd027b9 100644
          /**
           * 完全替换变量表为包含 mvu 数据的 `mvu_data` (但如果没用 parseMessages 自行处理变量, 则更建议监听 mvu 事件来修改 mvu 数据!)
           *
-@@ -158,6 +170,25 @@ function createMvu() {
+@@ -158,6 +170,18 @@ function createMvu() {
           * @brief 返回当前轮次是否属于额外模型解析轮次。
           */
          isDuringExtraAnalysis: () => useDataStore().runtimes.is_during_extra_analysis,
@@ -44,20 +44,13 @@ index caf3097..bd027b9 100644
 +            const message_id = getLastMessageId();
 +            const current = getChatMessages(message_id).at(-1);
 +            if (!current) throw new Error('No message is available for MVU retry.');
-+            const message = current.message.replace(
-+                /\s*<UpdateVariable>[\s\S]*?<\/UpdateVariable>\s*$/i,
-+                ''
-+            );
-+            if (message !== current.message) {
-+                await setChatMessages([{ message_id, message }], { refresh: 'none' });
-+            }
 +            await onMessageReceived(message_id, { force: true });
 +        },
      };
      return mvu;
  }
 diff --git a/src/function/initvar/variable_init.ts b/src/function/initvar/variable_init.ts
-index c3ddcb5..89d0781 100644
+index c3ddcb5..a0d8dea 100644
 --- a/src/function/initvar/variable_init.ts
 +++ b/src/function/initvar/variable_init.ts
 @@ -4,6 +4,7 @@ import { tr } from '@/i18n';
@@ -68,18 +61,17 @@ index c3ddcb5..89d0781 100644
      isObjectSchema,
      MvuData,
      RootAdditionalProps,
-@@ -21,7 +22,7 @@ type LorebookEntry = {
-
+@@ -21,25 +22,20 @@ type LorebookEntry = {
+ 
  export async function initCheck() {
      if ($('#chat > .welcomePanel').length > 0) {
 -        return;
 +        return false;
      }
-
+ 
      let variables: MvuData & Record<string, any>;
-@@ -28,18 +29,13 @@ export async function initCheck() {
      //这个函数需要处理 dryRun,因为0层。
-
+ 
      try {
 -        if (SillyTavern.chat.length === 0) {
 -            console.error(tr('runtime.initvar.noMessagesLog'));
@@ -97,30 +89,279 @@ index c3ddcb5..89d0781 100644
 -        return;
 +        return false;
      }
-
+ 
      // 确保变量结构完整
 @@ -124,7 +120,7 @@ export async function initCheck() {
      }
-
+ 
      if (!is_updated) {
 -        return;
 +        return isMvuData(variables) && !_.isEmpty(variables.stat_data);
      }
-
+ 
      if (useDataStore().effective_settings.兼容性.更新到聊天变量) {
 @@ -222,6 +218,7 @@ export async function initCheck() {
-
+ 
      // 更新 lorebook 设置
      await updateLorebookSettings();
 +    return isMvuData(variables) && !_.isEmpty(variables.stat_data);
  }
-
+ 
  /**
+diff --git a/src/function/is_extra_model_supported.ts b/src/function/is_extra_model_supported.ts
+index 9d6bbaa..a7e66e9 100644
+--- a/src/function/is_extra_model_supported.ts
++++ b/src/function/is_extra_model_supported.ts
+@@ -7,10 +7,12 @@ export async function isExtraModelSupported(): Promise<boolean> {
+         if (!lorebook_name) {
+             return false;
+         }
+-        return await getLorebookEntries(lorebook_name).then(entries =>
+-            entries.some(
+-                entry => UPDATE_REGEX.test(entry.comment) || PLOT_REGEX.test(entry.comment)
+-            )
++        return await getLorebookEntries(lorebook_name).then(
++            entries =>
++                (window.parent as any).NoraMvu?.inspectEntries?.(entries)?.splitModelSupported ??
++                entries.some(
++                    entry => UPDATE_REGEX.test(entry.comment) || PLOT_REGEX.test(entry.comment)
++                )
+         );
+     } catch {
+         console.warn(tr('runtime.extraModel.characterLorebookUnavailableLog'));
+diff --git a/src/function/request/filter_entries.ts b/src/function/request/filter_entries.ts
+index f1e2387..7406b77 100644
+--- a/src/function/request/filter_entries.ts
++++ b/src/function/request/filter_entries.ts
+@@ -39,6 +39,22 @@ export async function filterEntries(lores: {
+         store.runtimes.上次世界书条目过滤结果 = [];
+     }
+ 
++    // A portable card carries upstream instructions. Remove only its explicitly
++    // marked fallback, before keyword/budget processing, when this primary card
++    // selects Nora. The persisted book and every legacy card remain unchanged.
++    const contract = (window.parent as any).NoraMvu?.protocol;
++    if (contract && Object.values(lores).some(entries =>
++        entries.some(contract.isMvuLegacyFallbackEntry)
++    )) {
++        const book = getCurrentCharPrimaryLorebook();
++        const entries = book ? await getLorebookEntries(book) : [];
++        if (contract.resolveMvuProtocol(entries) === 'nora-mvu/1') {
++            for (const list of Object.values(lores)) {
++                _.remove(list, contract.isMvuLegacyFallbackEntry);
++            }
++        }
++    }
++
+     //在这个回调中，会将所有lore的条目传入，此处可以去除所有 [mvu_update] 相关的条目，避免在非更新的轮次中输出相关内容。
+     if (store.effective_settings.更新方式 === '随AI输出') {
+         return;
+@@ -54,15 +70,13 @@ export async function filterEntries(lores: {
+         return;
+     }
+ 
+-    const supported_worlds = new Set<string>();
+     const remove_and_check = (lore: Record<string, any>[]) => {
+         // 规则应当为：存在任意一个 [mvu_plot]/[mvu_update] 即算是支持，而不是必须存在 [mvu_plot]
+         _.remove(lore, entry => {
+-            const is_update_regex = UPDATE_REGEX.test(entry.comment);
++            const is_update_regex =
++                (window.parent as any).NoraMvu?.isUpdateEntry?.(entry) ??
++                UPDATE_REGEX.test(entry.comment);
+             const is_plot_regex = PLOT_REGEX.test(entry.comment);
+-            if (is_update_regex || is_plot_regex) {
+-                supported_worlds.add(entry.world);
+-            }
+             return store.runtimes.is_during_extra_analysis
+                 ? is_plot_regex && !is_update_regex
+                 : !is_plot_regex && is_update_regex;
+@@ -80,28 +94,8 @@ export async function filterEntries(lores: {
+     remove_and_check(lores.chatLore);
+     remove_and_check(lores.personaLore);
+ 
+-    const process_unsupported_worlds = (lore: Record<string, any>[]) => {
+-        let removed_entries: Record<string, any>[] = [];
+-        if (store.runtimes.is_during_extra_analysis) {
+-            removed_entries = _.remove(lore, entry => !supported_worlds.has(entry.world));
+-        } else {
+-            //如果不在额外分析，则只进行整理
+-            removed_entries = _.filter(lore, entry => !supported_worlds.has(entry.world));
+-        }
+-        return removed_entries.map(entry => entry.world);
+-    };
+-    const removed_worlds = _(
+-        _.concat(
+-            process_unsupported_worlds(lores.globalLore),
+-            process_unsupported_worlds(lores.chatLore),
+-            process_unsupported_worlds(lores.personaLore)
+-        )
+-    )
+-        .sort()
+-        .sortedUniq()
+-        .value();
+-
+-    store.runtimes.unsupported_warnings = Array.from(removed_worlds).join(', ');
++    // Unmarked books retain normal keyword/budget filtering. A missing split
++    // marker is not evidence that their setting is irrelevant to variables.
+ 
+     if (!store.runtimes.is_during_extra_analysis) {
+         return;
+diff --git a/src/function/request/filter_prompts.ts b/src/function/request/filter_prompts.ts
+index 89e8c98..73005bd 100644
+--- a/src/function/request/filter_prompts.ts
++++ b/src/function/request/filter_prompts.ts
+@@ -13,7 +13,13 @@ export function filterPrompts({ messages }: { messages: SillyTavern.SendingMessa
+         !store.runtimes.is_during_extra_analysis
+     ) {
+         text_messages
+-            .filter(message => message.content.includes('<UpdateVariable>'))
++            // Strip old response payloads, never a card's system instructions
++            // or format examples (including native inline fallback rules).
++            .filter(
++                message =>
++                    ['assistant', 'user'].includes(message.role) &&
++                    message.content.includes('<UpdateVariable>')
++            )
+             .forEach(
+                 message =>
+                     (message.content = message.content.replaceAll(
+diff --git a/src/function/request/index.ts b/src/function/request/index.ts
+index f2c09e3..c037fed 100644
+--- a/src/function/request/index.ts
++++ b/src/function/request/index.ts
+@@ -3,6 +3,7 @@ import { overrideToolRequest, registerFunction } from '@/function/function_call'
+ import { filterEntries } from '@/function/request/filter_entries';
+ import { filterPrompts } from '@/function/request/filter_prompts';
+ import { controlledStoppableEventOn } from '@/util';
++import { prepareMvuPrompt } from '@/function/update/access';
+ 
+ export function initRequest() {
+     const stop_list: Array<() => void> = [];
+@@ -24,6 +25,9 @@ export function initRequest() {
+     stop_list.push(
+         controlledStoppableEventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY, filterPrompts)
+     );
++    stop_list.push(
++        controlledStoppableEventOn(tavern_events.CHAT_COMPLETION_SETTINGS_READY, prepareMvuPrompt)
++    );
+ 
+     return () => {
+         stop_list.forEach(stop => stop());
+diff --git a/src/function/update/access.ts b/src/function/update/access.ts
+new file mode 100644
+index 0000000..7baa89d
+--- /dev/null
++++ b/src/function/update/access.ts
+@@ -0,0 +1,90 @@
++import { useDataStore } from '@/store';
++import { MvuCommitError } from './result';
++
++export function noraBridge(): any {
++    return (window.parent as any).NoraMvu;
++}
++
++async function readAccess() {
++    const book = getCurrentCharPrimaryLorebook();
++    const entries = book ? await getLorebookEntries(book) : [];
++    const settings = useDataStore().effective_settings;
++    const protocol = noraBridge().protocol.resolveMvuProtocol(entries);
++    return {
++        protocol,
++        mode: settings.更新方式 === '随AI输出' ? 'inline' : 'extra-model',
++        // Ephemeral identity only, never logged or sent to a model.
++        identity: JSON.stringify([
++            SillyTavern.getCurrentChatId(),
++            (SillyTavern as any).characterId,
++            book,
++            entries,
++            settings,
++        ]),
++    };
++}
++
++export async function captureMvuAccess() {
++    const captured = await readAccess();
++    const assertCurrent = async () => {
++        let current;
++        try { current = await readAccess(); } catch { /* Changed invalid declarations are stale too. */ }
++        if (current?.identity !== captured.identity) {
++            throw new MvuCommitError('MVU_STALE_CHAT', 'The active card, protocol or settings changed.');
++        }
++    };
++    const query: { schemas: Array<{ fields: unknown }> } = { schemas: [] };
++    // Subscribe before querying: the card helper may still be starting. Keep no
++    // persistent registry and never poll the card or send a model request to test readiness.
++    let wake!: () => void;
++    const ready = new Promise<void>(resolve => { wake = resolve; });
++    const onReady = () => wake();
++    eventOn('nora_mvu_schema_ready', onReady);
++    let timer: ReturnType<typeof setTimeout> | undefined;
++    try {
++        await eventEmit('nora_mvu_schema_query', query);
++        if (noraBridge().schemaExpected?.() && query.schemas.length === 0) {
++            await Promise.race([ready, new Promise<void>(resolve => { timer = setTimeout(resolve, 15000); })]);
++            await assertCurrent();
++            query.schemas.length = 0;
++            await eventEmit('nora_mvu_schema_query', query);
++        }
++    } finally {
++        clearTimeout(timer);
++        eventRemoveListener('nora_mvu_schema_ready', onReady);
++    }
++    await assertCurrent();
++    if (noraBridge().schemaExpected?.() && query.schemas.length === 0) {
++        throw Object.assign(
++            new Error('This card declares Zod, but no schema registered for the active card.'),
++            { code: 'MVU_SCHEMA_UNAVAILABLE', stage: 'prepare' }
++        );
++    }
++    return {
++        ...captured,
++        fields: query.schemas.length === 1 ? query.schemas[0].fields : null,
++        assertCurrent,
++    };
++}
++
++export type MvuAccess = Awaited<ReturnType<typeof captureMvuAccess>>;
++let prepared: { chat: string; access: MvuAccess } | undefined;
++
++export async function accessForMessage(force = false) {
++    if (!force && prepared?.chat === SillyTavern.getCurrentChatId()) {
++        await prepared.access.assertCurrent();
++        return prepared.access;
++    }
++    return captureMvuAccess();
++}
++
++export async function prepareMvuPrompt({ messages }: { messages: any[] }) {
++    if (useDataStore().runtimes.is_during_extra_analysis) return;
++    const access = await captureMvuAccess();
++    prepared = { chat: SillyTavern.getCurrentChatId(), access };
++    if (access.protocol === 'legacy') return;
++    const contract = noraBridge().protocol;
++    const inline = access.mode === 'inline';
++    // Only model-bound copies are filtered; stored narrative and Regex are unchanged.
++    for (const message of messages) {
++        if (typeof message.content === 'string' && ['assistant', 'user'].includes(message.role)) {
++            message.content = message.content.replace(
++                /<UpdateVariable>\s*<NoraMvu>[\s\S]*?<\/NoraMvu>\s*<\/UpdateVariable>/g,
++                ''
++            );
++        }
++    }
++    messages.push({
++        role: 'system',
++        content: inline
++            ? contract.noraMvuInstruction({ inline: true, fields: access.fields })
++            : 'Write story only. Nora MVU updates state in a separate request; do not output variable update blocks.',
++    });
++}
 diff --git a/src/function/update/invoke_extra_model.ts b/src/function/update/invoke_extra_model.ts
-index edc468c..68baf40 100644
+index edc468c..d6fe488 100644
 --- a/src/function/update/invoke_extra_model.ts
 +++ b/src/function/update/invoke_extra_model.ts
-@@ -17,7 +17,7 @@ import {
+@@ -20,10 +20,11 @@ import {
+ } from '@/function/request/extra_model_request_override';
  import { tr } from '@/i18n';
  import { useDataStore } from '@/store';
 -import { normalizeBaseURL } from '@/util';
@@ -128,8 +369,12 @@ index edc468c..68baf40 100644
  import { literalYamlify, uuidv4 } from '@util/common';
  import { compare } from 'compare-versions';
  import YAML from 'yaml';
-
-@@ -91,7 +91,9 @@ function buildJsonObjectCustomIncludeBody(original_body: unknown): Record<strin
++import { captureMvuAccess, MvuAccess, noraBridge } from './access';
+ 
+ //测试用，为了使首次请求必失败
+ let debug_extra_request_counter = 0;
+@@ -93,7 +94,8 @@ function buildJsonObjectCustomIncludeBody(original_body: unknown): Record<string
+     return {
          ...parseCustomIncludeBody(original_body),
          ...JSON_OBJECT_CUSTOM_INCLUDE_BODY,
 -        ...(store.settings.额外模型解析配置.关闭thinking
@@ -138,7 +383,7 @@ index edc468c..68baf40 100644
              ? DISABLED_THINKING_CUSTOM_INCLUDE_BODY
              : {}),
      };
-@@ -164,6 +164,58 @@ async function restoreTemporaryJsonObjectResponseFormat() {
+@@ -170,6 +172,55 @@ async function restoreTemporaryJsonObjectResponseFormat() {
      await saveSillyTavernSettings();
  }
  
@@ -171,14 +416,12 @@ index edc468c..68baf40 100644
 +    if (found_state_block) return;
 +    const insert_at = event_data.prompt.findIndex(
 +        (message: any) =>
-+            typeof message?.content === 'string' &&
-+            message.content.includes('<past_observe>')
++            typeof message?.content === 'string' && message.content.includes('<past_observe>')
 +    );
-+    event_data.prompt.splice(
-+        insert_at < 0 ? 0 : insert_at,
-+        0,
-+        { role: 'system', content: state_block }
-+    );
++    event_data.prompt.splice(insert_at < 0 ? 0 : insert_at, 0, {
++        role: 'system',
++        content: state_block,
++    });
 +}
 +
 +function installCurrentStatePrompt() {
@@ -196,7 +439,7 @@ index edc468c..68baf40 100644
  async function setExtraAnalysisStates() {
      const store = useDataStore();
  
-@@ -177,6 +229,7 @@ async function setExtraAnalysisStates() {
+@@ -183,8 +234,10 @@ async function setExtraAnalysisStates() {
  
      store.runtimes.is_during_extra_analysis = true;
      try {
@@ -206,7 +449,8 @@ index edc468c..68baf40 100644
 +        uninstallCurrentStatePrompt();
          store.runtimes.is_during_extra_analysis = false;
          throw error;
-@@ -187,6 +240,7 @@ async function unsetExtraAnalysisStates() {
+     }
+@@ -194,6 +247,7 @@ async function unsetExtraAnalysisStates() {
      const store = useDataStore();
  
      SillyTavern.unregisterMacro('lastUserMessage');
@@ -214,10 +458,10 @@ index edc468c..68baf40 100644
      clearExtraModelRequestOverrides();
      store.runtimes.is_function_call_enabled = false;
      try {
-@@ -347,11 +347,51 @@ export async function generateExtraModel(): Promise<string | null> {
+@@ -347,11 +401,56 @@ export async function generateExtraModel(): Promise<string | null> {
      }
  }
-
+ 
 +export class ExtraModelAttemptTimeoutError extends Error {
 +    constructor(readonly timeout_ms: number) {
 +        super(`MVU extra-model request exceeded ${timeout_ms}ms.`);
@@ -228,9 +472,11 @@ index edc468c..68baf40 100644
 +export async function invokeExtraModelAttempt({
 +    timeout_ms,
 +    repair_feedback = '',
++    access,
 +}: {
 +    timeout_ms: number;
 +    repair_feedback?: string;
++    access?: MvuAccess;
 +}): Promise<string> {
 +    const generation_id = uuidv4();
 +    let timer: ReturnType<typeof setTimeout> | undefined;
@@ -245,7 +491,7 @@ index edc468c..68baf40 100644
 +            }, timeout_ms);
 +        });
 +        return await Promise.race([
-+            invokeExtraModel(generation_id, undefined, repair_feedback),
++            invokeExtraModel(generation_id, undefined, repair_feedback, access),
 +            timeout,
 +        ]);
 +    } finally {
@@ -260,28 +506,58 @@ index edc468c..68baf40 100644
 +async function invokeExtraModel(
 +    generation_id?: string,
 +    batch_id?: string,
-+    repair_feedback = ''
++    repair_feedback = '',
++    access?: MvuAccess
 +): Promise<string> {
      try {
 -        const result = await requestReply(generation_id, batch_id);
-+        const result = await requestReply(generation_id, batch_id, repair_feedback);
-
++        access ??= await captureMvuAccess();
++        const result = await requestReply(generation_id, batch_id, repair_feedback, access);
++        if (access.protocol !== 'legacy') return result;
+ 
          const tag = _([...result.matchAll(/<(update(?:variable)?|variableupdate)>/gi)]).last()?.[1];
          if (!tag) {
-@@ -431,7 +471,11 @@ function normalizeGenerateResultByResponseFormat(
+@@ -420,8 +519,11 @@ function normalizeGenerateResult(result: string | GenerateToolCallResult): strin
+ 
+ function normalizeGenerateResultByResponseFormat(
+     result: string | GenerateToolCallResult,
+-    response_format: string
++    response_format: string,
++    access: MvuAccess
+ ): string {
++    if (access.protocol !== 'legacy')
++        return noraBridge().protocol.readNoraResponse(result, response_format);
+     if (response_format === '格式化输出' || response_format === V4_COMPATIBLE_FORMATTED_OUTPUT) {
+         const formatted = extractFromFormattedOutput(result);
+         if (formatted) {
+@@ -431,7 +533,16 @@ function normalizeGenerateResultByResponseFormat(
      return normalizeGenerateResult(result);
  }
-
+ 
 -async function requestReply(generation_id?: string, batch_id?: string): Promise<string> {
 +async function requestReply(
 +    generation_id?: string,
 +    batch_id?: string,
-+    repair_feedback = ''
++    repair_feedback = '',
++    access?: MvuAccess
 +): Promise<string> {
++    access ??= await captureMvuAccess();
++    const enhanced = access.protocol !== 'legacy';
++    const contract = noraBridge().protocol;
++    const tool = enhanced ? contract.NORA_MVU_TOOL : MVU_TOOL_DEFINITION;
      const store = useDataStore();
      const response_format = store.settings.额外模型解析配置.应答格式;
      const is_v4_compatible_formatted_output = response_format === V4_COMPATIBLE_FORMATTED_OUTPUT;
-@@ -454,6 +498,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -446,7 +557,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         generation_id,
+     };
+     if (supports_request_scoped_tools) {
+-        config.tools = response_format === '工具调用' ? [MVU_TOOL_DEFINITION] : [];
++        config.tools = response_format === '工具调用' ? [tool] : [];
+     }
+     if (store.settings.额外模型解析配置.模型来源 === '自定义') {
+         const unset_if_equal = (value: number, expected: number) =>
+@@ -454,6 +565,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
                  ? 'unset'
                  : value;
          config.custom_api = {
@@ -289,60 +565,113 @@ index edc468c..68baf40 100644
              apiurl: normalizeBaseURL(store.settings.额外模型解析配置.api地址),
              key: store.settings.额外模型解析配置.密钥,
              model: store.settings.额外模型解析配置.模型名称,
-@@ -479,6 +524,36 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -478,22 +590,43 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         }
      }
-
+ 
 -    let task = decoded_extra_model_task;
 +    const model_name =
 +        store.settings.额外模型解析配置.模型来源 === '与插头相同'
 +            ? SillyTavern.getChatCompletionModel()
 +            : store.settings.额外模型解析配置.模型名称;
 +    const is_gemini = model_name.toLowerCase().includes('gemini');
-+    let task = decoded_extra_model_task;
++    let task = enhanced
++        ? contract.noraMvuInstruction({ fields: access.fields })
++        : decoded_extra_model_task;
 +    if (repair_feedback.trim()) {
 +        task += `\n\n<previous_attempt_error>\nThe previous variable update was rejected. Correct only the variable update commands and obey the existing schema exactly.\n${repair_feedback.slice(0, 2000)}\n</previous_attempt_error>`;
 +    }
      if (response_format === '工具调用') {
-         task += `\n use \`${MVU_TOOL_DEFINITION.function.name}\` tool to update variables.`;
+-        task += `\n use \`${MVU_TOOL_DEFINITION.function.name}\` tool to update variables.`;
++        task += `\n use \`${tool.function.name}\` tool to update variables.`;
          store.runtimes.is_function_call_enabled = true;
-@@ -563,32 +635,33 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+         if (!supports_request_scoped_tools) {
+-            config.tools = [MVU_TOOL_DEFINITION];
++            config.tools = [tool];
+         }
+         config.tool_choice = 'required';
+     } else if (response_format === '格式化输出') {
+-        task +=
+-            '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object matching the provided json_schema: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`.';
+-        config.json_schema = MVU_JSON_PATCH_RESPONSE_SCHEMA;
++        if (enhanced) {
++            task +=
++                '\nReturn only the JSON envelope matching the supplied schema, without wrapper tags.';
++            config.json_schema = contract.NORA_MVU_SCHEMA;
++        } else {
++            task +=
++                '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object matching the provided json_schema: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`.';
++            config.json_schema = MVU_JSON_PATCH_RESPONSE_SCHEMA;
++        }
+     } else if (is_v4_compatible_formatted_output) {
+-        task +=
+-            '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`. Return exactly one JSON object that conforms to this schema:' +
+-            JSON.stringify(MVU_JSON_PATCH_RESPONSE_SCHEMA.value);
++        if (enhanced)
++            task +=
++                '\nReturn only the JSON envelope, without wrapper tags. Schema: ' +
++                JSON.stringify(contract.NORA_MVU_SCHEMA.value);
++        else
++            task +=
++                '\n You are in formatted-output mode. Do not output <UpdateVariable> tags, markdown, or prose. Return only a JSON object: {"analysis":"...","json_patch":[...]}. Put MVU JsonPatch dialect operations in `json_patch`. Return exactly one JSON object that conforms to this schema:' +
++                JSON.stringify(MVU_JSON_PATCH_RESPONSE_SCHEMA.value);
+     }
+ 
+     //因为部分预设会用到 {{lastUserMessage}}，因此进行修正。
+@@ -534,7 +667,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+                 },
+             ],
+         });
+-        return normalizeGenerateResultByResponseFormat(result, response_format);
++        return normalizeGenerateResultByResponseFormat(result, response_format, access);
+     }
+ 
+     if (store.settings.额外模型解析配置.破限方案 === '使用其他预设') {
+@@ -556,16 +689,12 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+                 injects,
+                 ordered_prompts,
+             }),
+-            response_format
++            response_format,
++            access
+         );
+     }
+ 
      clearExtraModelRequestOverrides();
 -    const model_name =
 -        store.settings.额外模型解析配置.模型来源 === '与插头相同'
 -            ? SillyTavern.getChatCompletionModel()
 -            : store.settings.额外模型解析配置.模型名称;
 -    const is_gemini = model_name.toLowerCase().includes('gemini');
++    // Nora supplies its own variable-analysis task. Keep upstream creative
++    // framing only for legacy cards; selected presets above remain user-owned.
      const rnd_header_prompts =
-         store.settings.额外模型解析配置.随机头部 && is_gemini
+-        store.settings.额外模型解析配置.随机头部 && is_gemini
++        !enhanced && store.settings.额外模型解析配置.随机头部 && is_gemini
              ? [{ role: 'system' as const, content: batch_id ?? generateRandomHeader() }]
-             : [];
-
-     const result = await generateRaw({
-         ...config,
+@@ -576,4 +705,6 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<string> {
          ordered_prompts: [
              ...rnd_header_prompts,
-             { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
+-            { role: 'system', content: is_gemini ? decoded_gemini_head : decoded_claude_head },
++            ...(!enhanced
++                ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_head : decoded_claude_head }]
++                : []),
              { role: 'system', content: '<additional_information>' },
-             'persona_description',
-             'char_description',
-             'world_info_before',
-             'world_info_after',
-             { role: 'system', content: '</additional_information>' },
-             { role: 'system', content: '<past_observe>' },
-             'chat_history',
-             { role: 'system', content: '</past_observe>' },
-             { role: 'system', content: task },
-             'user_input',
-             { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
+@@ -590,5 +719,5 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+-            { role: 'system', content: is_gemini ? decoded_gemini_tail : decoded_claude_tail },
++            ...(!enhanced
++                ? [{ role: 'system' as const, content: is_gemini ? decoded_gemini_tail : decoded_claude_tail }]
++                : []),
          ],
      });
-     return normalizeGenerateResultByResponseFormat(result, response_format);
+-    return normalizeGenerateResultByResponseFormat(result, response_format);
++    return normalizeGenerateResultByResponseFormat(result, response_format, access);
  }
 diff --git a/src/function/update/on_message_received.ts b/src/function/update/on_message_received.ts
-index 2f7a0bf..3d76a01 100644
+index 2f7a0bf..6adc9d5 100644
 --- a/src/function/update/on_message_received.ts
 +++ b/src/function/update/on_message_received.ts
-@@ -1,9 +1,96 @@
+@@ -1,14 +1,136 @@
  import { isExtraModelSupported } from '@/function/is_extra_model_supported';
  import { isFunctionCallingSupported } from '@/function/is_function_calling_supported';
 -import { invokeExtraModelWithStrategy } from '@/function/update/invoke_extra_model';
@@ -361,7 +690,16 @@ index 2f7a0bf..3d76a01 100644
  import { useDataStore } from '@/store';
 +import { getLastValidVariable } from '@/util';
 +import { variable_events } from '@/variable_def';
-+
++import { accessForMessage, MvuAccess } from './access';
++import {
++    emptyDiagnostics,
++    executionAccepted,
++    executionResult,
++    MvuCommitError,
++    publishUpdateResult,
++} from '@/function/update/result';
+ 
+-export async function onMessageReceived(
 +const EXTRA_MODEL_ATTEMPT_TIMEOUT_MS = 120_000;
 +
 +function failureFeedback(error: unknown): string {
@@ -372,26 +710,20 @@ index 2f7a0bf..3d76a01 100644
 +
 +function diagnosticFeedback(): string {
 +    const diagnostics = getLastVariableUpdateDiagnostics();
-+    const errors = diagnostics.errors
-+        .map(item => `${item.command}: ${item.content}`)
-+        .join('\n');
++    const errors = diagnostics.errors.map(item => `${item.command}: ${item.content}`).join('\n');
 +    if (errors) return errors;
-+    if (diagnostics.command_count === 0) return 'No valid MVU update command remained after parsing and schema validation.';
-+    return 'The update commands produced no valid state change.';
-+}
-+
-+function diagnosticFailure(): { code: string; stage: string } {
-+    const diagnostics = getLastVariableUpdateDiagnostics();
-+    if (diagnostics.errors.length > 0) {
-+        return { code: 'MVU_COMMAND_VALIDATION_FAILED', stage: 'validation' };
-+    }
-+    if (diagnostics.command_count === 0) {
-+        return { code: 'MVU_NO_UPDATE_COMMAND', stage: 'parsing' };
-+    }
-+    return { code: 'MVU_NO_STATE_CHANGE', stage: 'validation' };
++    if (diagnostics.command_count === 0)
++        return 'No valid MVU update command remained after parsing and schema validation.';
++    return 'The command executor did not confirm acceptance of every update command.';
 +}
 +
 +function exceptionFailure(error: unknown): { code: string; stage: string } {
++    if (error instanceof MvuCommitError) return { code: error.code, stage: 'commit' };
++    if ((error as any)?.code?.startsWith('MVU_'))
++        return { code: (error as any).code, stage: (error as any).stage || 'prepare' };
++    if (error === 'Clicked stop button') return { code: 'MVU_CANCELLED', stage: 'request' };
++    if (error instanceof Error && error.name === 'AbortError')
++        return { code: 'MVU_CANCELLED', stage: 'request' };
 +    if (error instanceof ExtraModelAttemptTimeoutError) {
 +        return { code: 'MVU_EXTRA_MODEL_TIMEOUT', stage: 'request' };
 +    }
@@ -412,60 +744,165 @@ index 2f7a0bf..3d76a01 100644
 +}
 +
 +async function evaluateAndCommit(
-+    message_id: number,
+     message_id: number,
+-    { force = false }: { force?: boolean } = {}
+-) {
 +    original_message: string,
 +    original_chat_id: string,
-+    update_block: string
++    update_block: string,
++    access: MvuAccess,
++    force: boolean
 +): Promise<boolean> {
 +    const request_message_id = message_id === 0 ? 1 : message_id;
 +    const variables = getLastValidVariable(request_message_id);
 +    if (!variables?.stat_data) throw new Error('No valid MVU snapshot exists before this message.');
 +
-+    const candidate_message = `${original_message.trimEnd()}\n\n${update_block}`;
-+    const modified = await updateVariables(candidate_message, variables);
++    const base_message = force
++        ? original_message.replace(
++              /\s*<UpdateVariable>[\s\S]*?<\/UpdateVariable>(?=\s*(?:<StatusPlaceHolderImpl\/>\s*)?$)/i,
++              ''
++          )
++        : original_message;
++    const candidate_message = `${base_message.trimEnd()}\n\n${update_block}`;
++    await updateVariables(candidate_message, variables, {
++        nora: access.protocol !== 'legacy',
++        commandContent: update_block,
++    });
 +    const diagnostics = getLastVariableUpdateDiagnostics();
-+    const explicit_noop = /<JSONPatch>\s*\[\s*\]\s*<\/JSONPatch>/i.test(update_block);
-+    if (diagnostics.errors.length > 0 || (!modified && !explicit_noop)) return false;
++    const result = executionResult(diagnostics, true);
++    if (
++        !executionAccepted(result) ||
++        (access.protocol !== 'legacy' && result.outcome === 'partial')
++    )
++        return false;
++    await access.assertCurrent();
 +
 +    const current = getChatMessages(message_id).at(-1);
 +    if (
 +        SillyTavern.getCurrentChatId() !== original_chat_id ||
 +        current?.message !== original_message
 +    ) {
-+        throw new Error('The active chat or message changed while MVU was updating.');
++        throw new MvuCommitError(
++            'MVU_STALE_CHAT',
++            'The active chat or message changed while MVU was updating.'
++        );
 +    }
 +
-+    if (!explicit_noop) {
-+        await setChatMessages([{ message_id, message: candidate_message }], { refresh: 'none' });
++    try {
++        if (!diagnostics.explicit_noop) {
++            await setChatMessages([{ message_id, message: candidate_message }], {
++                refresh: 'none',
++            });
++        }
++        await persistVariablesForMessage(
++            message_id,
++            variables,
++            original_chat_id,
++            access.assertCurrent
++        );
++    } catch (error) {
++        if (error instanceof MvuCommitError) throw error;
++        // Text and snapshot are separate writes. Never retry delta commands
++        // when either write may already have reached storage.
++        throw new MvuCommitError('MVU_PERSISTENCE_UNKNOWN', failureFeedback(error));
 +    }
-+    await persistVariablesForMessage(message_id, variables);
 +    return true;
 +}
-
- export async function onMessageReceived(
-     message_id: number,
-@@ -49,26 +136,75 @@ export async function onMessageReceived(
++
++async function processMessage(message_id: number, { force = false }: { force?: boolean } = {}) {
+     const current_chatmsg = getChatMessages(message_id).at(-1);
+     if (!current_chatmsg) {
+         return;
+@@ -29,13 +151,59 @@ export async function onMessageReceived(
+     }
+     store.runtimes.is_during_extra_analysis = false;
+ 
++    let access: MvuAccess;
++    try {
++        access = await accessForMessage(force);
++    } catch (error) {
++        await eventEmit(variable_events.TRANSACTION_STARTED, {
++            message_id,
++            chat_id: SillyTavern.getCurrentChatId(),
++        });
++        await publishUpdateResult(
++            {
++                message_id,
++                chat_id: SillyTavern.getCurrentChatId(),
++                mode: 'prepare',
++                started_at: Date.now(),
++            },
++            {
++                result: exceptionFailure(error),
++                diagnostics: emptyDiagnostics(),
++                persisted: false,
++                error: failureFeedback(error),
++            }
++        );
++        return;
++    }
++
+     if (
+-        store.effective_settings.更新方式 === '随AI输出' ||
++        access.mode === 'inline' ||
+         (store.settings.额外模型解析配置.应答格式 === '工具调用' &&
+             !isFunctionCallingSupported()) ||
+         !(await isExtraModelSupported())
+     ) {
+-        await handleVariablesInMessage(message_id);
++        if (access.protocol !== 'legacy' && access.mode !== 'inline') {
++            await eventEmit(variable_events.TRANSACTION_STARTED, {
++                message_id,
++                chat_id: SillyTavern.getCurrentChatId(),
++            });
++            await publishUpdateResult(
++                {
++                    message_id,
++                    chat_id: SillyTavern.getCurrentChatId(),
++                    mode: 'extra-model',
++                    started_at: Date.now(),
++                },
++                {
++                    result: { code: 'MVU_TOOL_UNSUPPORTED', stage: 'prepare' },
++                    diagnostics: emptyDiagnostics(),
++                    persisted: false,
++                    error: 'The selected model/Helper cannot execute the requested structured tool call.',
++                }
++            );
++            return;
++        }
++        await handleVariablesInMessage(message_id, access);
          return;
      }
-
+ 
+@@ -49,26 +217,138 @@ export async function onMessageReceived(
+         return;
+     }
+ 
 -    const result = await invokeExtraModelWithStrategy();
 -    if (result !== null) {
 -        const chat_message = getChatMessages(message_id);
 +    const original_message = current_chatmsg.message;
 +    const original_chat_id = SillyTavern.getCurrentChatId();
 +    const started_at = Date.now();
++    const transaction = {
++        message_id,
++        chat_id: original_chat_id,
++        mode: 'extra-model',
++        protocol: access.protocol,
++        started_at,
++    };
 +    let repair_feedback = '';
 +    let failure = { code: 'MVU_UPDATE_FAILED', stage: 'update' };
 +    let last_attempt = 0;
-+    let failure_diagnostics = { command_count: 0, modified: false, errors: [] };
++    let failure_diagnostics = emptyDiagnostics();
 +    const request_message_id = message_id === 0 ? 1 : message_id;
 +    const previous_snapshot = getLastValidVariable(request_message_id);
 +    await eventEmit(variable_events.TRANSACTION_STARTED, {
-+        message_id,
-+        started_at,
++        ...transaction,
 +        had_snapshot: Boolean(previous_snapshot?.stat_data && previous_snapshot?.schema),
 +    });
-
+ 
 -        await setChatMessages(
 -            [
 -                {
@@ -475,18 +912,29 @@ index 2f7a0bf..3d76a01 100644
 +            const result = await invokeExtraModelAttempt({
 +                timeout_ms: EXTRA_MODEL_ATTEMPT_TIMEOUT_MS,
 +                repair_feedback,
++                access,
 +            });
-+            if (await evaluateAndCommit(message_id, original_message, original_chat_id, result)) {
-+                await eventEmit(variable_events.TRANSACTION_COMMITTED, {
++            if (
++                await evaluateAndCommit(
                      message_id,
 -                    message: chat_message[0].message.trimEnd() + '\n\n' + result,
 -                },
 -            ],
 -            {
 -                refresh: 'none',
++                    original_message,
++                    original_chat_id,
++                    result,
++                    access,
++                    force
++                )
++            ) {
++                const diagnostics = getLastVariableUpdateDiagnostics();
++                await publishUpdateResult(transaction, {
++                    diagnostics,
++                    result: executionResult(diagnostics, true),
++                    persisted: true,
 +                    attempt,
-+                    duration_ms: Date.now() - started_at,
-+                    diagnostics: getLastVariableUpdateDiagnostics(),
 +                });
 +                return;
              }
@@ -497,14 +945,16 @@ index 2f7a0bf..3d76a01 100644
 -            tr('runtime.extraModel.updateFailedTitle')
 -        );
 +            repair_feedback = diagnosticFeedback();
-+            failure = diagnosticFailure();
 +            failure_diagnostics = getLastVariableUpdateDiagnostics();
++            failure = executionResult(failure_diagnostics, true);
++            if (failure.code === 'MVU_EXECUTION_UNVERIFIED') break;
 +        } catch (error) {
 +            repair_feedback = failureFeedback(error);
 +            failure = exceptionFailure(error);
-+            failure_diagnostics = failure.stage === 'commit'
-+                ? getLastVariableUpdateDiagnostics()
-+                : { command_count: 0, modified: false, errors: [] };
++            failure_diagnostics =
++                failure.stage === 'commit'
++                    ? getLastVariableUpdateDiagnostics()
++                    : emptyDiagnostics();
 +            console.warn(`[MVU transaction] attempt ${attempt} failed`, error);
 +            // A repair prompt can correct commands that were returned but failed
 +            // parsing or validation. It cannot repair transport errors or timeouts.
@@ -516,95 +966,461 @@ index 2f7a0bf..3d76a01 100644
 +
 +    // Keep the last valid snapshot available even when the update model fails.
 +    if (
++        !['MVU_CANCELLED', 'MVU_STALE_CHAT', 'MVU_PERSISTENCE_UNKNOWN'].includes(failure.code) &&
 +        SillyTavern.getCurrentChatId() === original_chat_id &&
 +        getChatMessages(message_id).at(-1)?.message === original_message
 +    ) {
 +        if (previous_snapshot?.stat_data) {
-+            await persistVariablesForMessage(message_id, previous_snapshot);
++            try {
++                await persistVariablesForMessage(
++                    message_id,
++                    previous_snapshot,
++                    original_chat_id,
++                    access.assertCurrent
++                );
++            } catch (error) {
++                failure =
++                    error instanceof MvuCommitError
++                        ? exceptionFailure(error)
++                        : { code: 'MVU_PERSISTENCE_UNKNOWN', stage: 'commit' };
++                repair_feedback = failureFeedback(error);
++            }
 +        }
-     }
--    await handleVariablesInMessage(message_id);
-+    await eventEmit(variable_events.TRANSACTION_FAILED, {
-+        message_id,
-+        duration_ms: Date.now() - started_at,
++    }
++    const outcome = await publishUpdateResult(transaction, {
++        result:
++            access.protocol !== 'legacy' && failure.code === 'MVU_COMMAND_VALIDATION_FAILED'
++                ? { ...failure, outcome: 'rejected' }
++                : failure,
++        persisted: false,
 +        attempt: last_attempt,
-+        error_code: failure.code,
-+        stage: failure.stage,
 +        diagnostics: failure_diagnostics,
 +        error: repair_feedback || 'MVU update failed.',
 +    });
++    if (['stale', 'cancelled'].includes(outcome)) return;
 +    toastr.error(
 +        `${tr('runtime.extraModel.updateFailed')} [${failure.code}]: ${(repair_feedback || 'MVU update failed.').slice(0, 300)}`,
 +        tr('runtime.extraModel.updateFailedTitle')
 +    );
++}
++
++let pending: { key: string; promise: Promise<void> } | null = null;
++let lastHandled = '';
++export async function onMessageReceived(message_id: number, options: { force?: boolean } = {}) {
++    const key = () =>
++        JSON.stringify([
++            SillyTavern.getCurrentChatId(),
++            message_id,
++            getChatMessages(message_id).at(-1)?.message,
++        ]);
++    const before = key();
++    const originalChat = SillyTavern.getCurrentChatId();
++    if (pending) {
++        if (pending.key === before) return pending.promise;
++        throw Object.assign(new Error('Another MVU update is still running.'), {
++            code: 'MVU_BUSY',
++        });
++    }
++    if (!options.force && lastHandled === before) return;
++    const promise = processMessage(message_id, options);
++    pending = { key: before, promise };
++    try {
++        await promise;
++        if (SillyTavern.getCurrentChatId() === originalChat) lastHandled = key();
++    } finally {
++        pending = null;
+     }
+-    await handleVariablesInMessage(message_id);
  }
-diff --git a/src/function/update_variables.ts b/src/function/update_variables.ts
-index e803b3d..06d842b 100644
---- a/src/function/update_variables.ts
-+++ b/src/function/update_variables.ts
-@@ -21,6 +21,22 @@ import { parseString } from '@util/common';
- import { klona } from 'klona';
- import * as math from 'mathjs';
-
+diff --git a/src/function/update/result.ts b/src/function/update/result.ts
+new file mode 100644
+index 0000000..debb995
+--- /dev/null
++++ b/src/function/update/result.ts
+@@ -0,0 +1,115 @@
++import { variable_events } from '@/variable_def';
++
++/** Execution evidence, before persistence. The boolean updateVariables API remains upstream-compatible. */
 +export type VariableUpdateDiagnostics = {
 +    command_count: number;
++    accepted_count: number;
 +    modified: boolean;
++    explicit_noop: boolean;
++    payload_present: boolean;
 +    errors: Array<{ command: string; content: string }>;
 +};
 +
-+let last_update_diagnostics: VariableUpdateDiagnostics = {
-+    command_count: 0,
-+    modified: false,
-+    errors: [],
-+};
++export function emptyDiagnostics(): VariableUpdateDiagnostics {
++    return {
++        command_count: 0,
++        accepted_count: 0,
++        modified: false,
++        explicit_noop: false,
++        payload_present: false,
++        errors: [],
++    };
++}
++
++export function executionResult(diagnostics: VariableUpdateDiagnostics, requireCommands: boolean) {
++    if (diagnostics.errors.length) {
++        return {
++            outcome: diagnostics.accepted_count > 0 ? 'partial' : 'rejected',
++            code: 'MVU_COMMAND_VALIDATION_FAILED',
++            stage: 'validation',
++        };
++    }
++    if (diagnostics.command_count === 0 && !diagnostics.explicit_noop) {
++        return requireCommands || diagnostics.payload_present
++            ? { outcome: 'rejected', code: 'MVU_NO_UPDATE_COMMAND', stage: 'parsing' }
++            : { outcome: 'skipped', code: 'MVU_NO_UPDATE_COMMAND', stage: 'parsing' };
++    }
++    if (diagnostics.accepted_count !== diagnostics.command_count) {
++        // A third-party listener may consume commands without reporting their result.
++        // Neither a state diff nor an empty error array proves those commands succeeded.
++        return { outcome: 'unverified', code: 'MVU_EXECUTION_UNVERIFIED', stage: 'validation' };
++    }
++    return { outcome: diagnostics.modified ? 'updated' : 'unchanged', code: '', stage: 'update' };
++}
++
++export function executionAccepted(result: ReturnType<typeof executionResult>) {
++    return ['updated', 'unchanged', 'partial'].includes(result.outcome);
++}
++
++/** Both update modes publish the same terminal envelope; persistence policy stays with the caller. */
++export async function publishUpdateResult(
++    context: {
++        message_id: number;
++        chat_id: string;
++        mode: string;
++        protocol?: string;
++        fallback_reason?: string;
++        started_at: number;
++    },
++    {
++        diagnostics,
++        result,
++        persisted,
++        error,
++        attempt,
++    }: {
++        diagnostics: VariableUpdateDiagnostics;
++        result: { outcome?: string; code: string; stage: string };
++        persisted: boolean;
++        error?: string;
++        attempt?: number;
++    }
++) {
++    const outcomes: Record<string, string> = {
++        MVU_STALE_CHAT: 'stale',
++        MVU_CANCELLED: 'cancelled',
++        MVU_PERSISTENCE_UNKNOWN: 'persistence-unknown',
++        MVU_EXECUTION_UNVERIFIED: 'unverified',
++    };
++    const outcome = result.outcome ?? outcomes[result.code] ?? 'rejected';
++    const { started_at, ...identity } = context;
++    const detail = {
++        ...identity,
++        ...result,
++        outcome,
++        persisted,
++        diagnostics,
++        duration_ms: Date.now() - started_at,
++        ...(attempt === undefined ? {} : { attempt }),
++        error_code: result.code,
++        error:
++            error ??
++            (diagnostics.errors
++                .map(item => item.content)
++                .join('\n')
++                .slice(0, 800) ||
++                result.code),
++    };
++    await eventEmit(
++        ['updated', 'unchanged', 'skipped'].includes(outcome)
++            ? variable_events.TRANSACTION_COMMITTED
++            : variable_events.TRANSACTION_FAILED,
++        detail
++    );
++    return outcome;
++}
++
++export class MvuCommitError extends Error {
++    constructor(
++        public code: 'MVU_STALE_CHAT' | 'MVU_PERSISTENCE_UNKNOWN',
++        message: string
++    ) {
++        super(message);
++        this.name = 'MvuCommitError';
++    }
++}
+diff --git a/src/function/update_variables.ts b/src/function/update_variables.ts
+index e803b3d..19550e9 100644
+--- a/src/function/update_variables.ts
++++ b/src/function/update_variables.ts
+@@ -20,6 +20,20 @@ import {
+ import { parseString } from '@util/common';
+ import { klona } from 'klona';
+ import * as math from 'mathjs';
++import {
++    emptyDiagnostics,
++    executionResult,
++    MvuCommitError,
++    publishUpdateResult,
++    VariableUpdateDiagnostics,
++} from '@/function/update/result';
++import { captureMvuAccess, MvuAccess, noraBridge } from '@/function/update/access';
++
++let last_update_diagnostics: VariableUpdateDiagnostics = emptyDiagnostics();
 +
 +export function getLastVariableUpdateDiagnostics(): VariableUpdateDiagnostics {
 +    return klona(last_update_diagnostics);
 +}
-+
+ 
  export function trimQuotesAndBackslashes(str: string): string {
      if (!_.isString(str)) return str;
-     // Regular expression to match backslashes and quotes (including backticks) at the beginning and end
-@@ -678,6 +694,7 @@ export async function updateVariables(
+@@ -199,6 +213,7 @@ interface Command {
+     full_match: string;
+     args: string[];
+     reason: string;
++    nora?: any;
+ }
+ 
+ function pathSegmentsToLodashPath(pathSegments: string[]): string {
+@@ -676,8 +691,14 @@ function isNullOrWhiteSpace(str: string): boolean {
+ 
+ export async function updateVariables(
      current_message_content: string,
-     variables: MvuData
+-    variables: MvuData
++    variables: MvuData,
++    {
++        nora = false,
++        commandContent = current_message_content,
++    }: { nora?: boolean; commandContent?: string } = {}
  ): Promise<boolean> {
-+    last_update_diagnostics = { command_count: 0, modified: false, errors: [] };
++    const diagnostics = emptyDiagnostics();
++    last_update_diagnostics = diagnostics;
      // 拷贝一份变量，用于提供给 variable_ended
      const variables_before_update: MvuData = klona(variables);
      // 深拷贝变量对象，生成状态快照，用于记录显示数据
-@@ -708,6 +725,7 @@ export async function updateVariables(
+@@ -686,10 +707,30 @@ export async function updateVariables(
+     const delta_status: Partial<MvuData> = { stat_data: {} };
+ 
+     // 重构新增：统一处理宏替换，确保命令中的宏（如 ${variable}）被替换，提升一致性
+-    const processed_message_content = substitudeMacros(current_message_content);
++    const processed_message_content = nora ? commandContent : substitudeMacros(commandContent);
+ 
+     // 使用重构后的 extractCommands 提取所有命令
+-    const commands = extractCommands(processed_message_content);
++    const envelope = nora ? noraBridge().protocol.readNoraMessage(processed_message_content) : null;
++    const commands = nora
++        ? extractJsonPatch(noraBridge().protocol.noraToPatch(envelope)).map((command, index) => ({
++              ...command,
++              nora: envelope.operations[index],
++          }))
++        : extractCommands(processed_message_content);
++    diagnostics.payload_present =
++        /<(?:json_?patch|updatevariable|variableupdate)\b|_\.(?:set|insert|assign|remove|unset|delete|add)\s*\(/i.test(
++            processed_message_content
++        );
++    // Only a sole empty patch is an explicit no-op. Do not let one empty block
++    // excuse another malformed block in the same response.
++    const patches = [...processed_message_content.matchAll(/<(json_?patch)>\s*\[\s*\]\s*<\/\1>/gi)];
++    diagnostics.explicit_noop = nora
++        ? commands.length === 0
++        : commands.length === 0 &&
++          patches.length === 1 &&
++          !/<json_?patch\b|_\.(?:set|insert|assign|remove|unset|delete|add)\s*\(/i.test(
++              processed_message_content.replace(patches[0][0], '')
++          );
+ 
+     // 触发变量更新开始事件，通知外部系统
+     _.set(variables.stat_data, '$internal', {
+@@ -708,12 +749,13 @@ export async function updateVariables(
              command,
              content,
          };
-+        last_update_diagnostics.errors.push({ command, content });
++        diagnostics.errors.push({ command, content });
      };
-
+ 
      const schema = variables.schema; // 获取 schema，可能为 undefined
-@@ -742,6 +760,7 @@ export async function updateVariables(
+     const strict_template = schema?.strictTemplate ?? false;
+     const concat_template_array = schema?.concatTemplateArray ?? true;
+-    const strict_set = schema?.strictSet ?? false;
++    const strict_set = nora || (schema?.strictSet ?? false);
+ 
+     //处理别名
+     for (const cmd of commands) {
+@@ -728,12 +770,14 @@ export async function updateVariables(
+ 
+     //@ts-expect-error old fn
+     await eventEmit(variable_events.COMMAND_PARSED, variables, commands, current_message_content);
++    diagnostics.command_count = commands.length;
+     //保证 MVU zod 在所有 COMMAND_PARSED 监听之后
+     await eventEmit(
+         variable_events.COMMAND_PARSED + '_for_zod',
+         variables,
          commands,
-         current_message_content
+-        current_message_content
++        current_message_content,
++        diagnostics
      );
-+    last_update_diagnostics.command_count = commands.length;
-
-     pathFixPass(variables, commands, current_message_content);
-
-@@ -1474,6 +1493,7 @@ export async function updateVariables(
-     _.unset(variables.stat_data, '$internal');
-     // 在所有命令执行完毕后，如果数据有任何变动，则执行一次 Schema 调和
-     const is_modified = !_.isEqual(variables.stat_data, variables_before_update.stat_data);
-+    last_update_diagnostics.modified = is_modified;
-     if (is_modified) {
-         reconcileAndApplySchema(variables);
+     //允许 MVU zod 在处理完所有 COMMAND_PARSED 后清理 commands
+     await eventEmit(
+@@ -753,15 +797,36 @@ export async function updateVariables(
+         const reason_str = command.reason ? `(${command.reason})` : '';
+         let display_str = ''; // 初始化显示字符串，记录操作详情
+         current_command = command;
+-
++        const errorsBefore = diagnostics.errors.length;
++        if (command.nora) {
++            try {
++                noraBridge().protocol.validateNoraOperation(command.nora, variables.stat_data);
++            } catch (error) {
++                outError(String(error));
++                continue;
++            }
++        }
+         switch (
+             command.type // 根据命令类型执行不同操作
+         ) {
+             case 'set': {
++                if (nora && !_.has(variables.stat_data, path)) {
++                    const parentSchema = getSchemaForPath(
++                        schema,
++                        pathSegmentsToLodashPath(_.toPath(path).slice(0, -1))
++                    );
++                    if (parentSchema?.type === 'object' && parentSchema.extensible === false) {
++                        outError('Cannot add a property to a closed native schema container.');
++                        continue;
++                    }
++                }
+                 // _.has 检查，确保路径存在
+-                if (path !== '' && !_.has(variables.stat_data, path)) {
++                if (!nora && path !== '' && !_.has(variables.stat_data, path)) {
+                     outError(
+-                        tr('runtime.variableUpdate.setPathMissing', { path, reason: reason_str })
++                        tr('runtime.variableUpdate.setPathMissing', {
++                            path,
++                            reason: reason_str,
++                        })
+                     );
+                     continue;
+                 }
+@@ -798,6 +863,7 @@ export async function updateVariables(
+                     oldValue = oldValueCopy;
+                     isPathVWD = true;
+                 } else if (
++                    !nora &&
+                     typeof oldValue === 'number' &&
+                     newValue !== null &&
+                     typeof newValue === 'string'
+@@ -848,6 +914,51 @@ export async function updateVariables(
+                 break;
+             }
+ 
++            case 'move': {
++                // The Nora contract restricts move to object properties. Keep
++                // native schema restrictions; do not bypass closed containers.
++                if (!command.nora) {
++                    outError('Native move requires a registered command consumer.');
++                    continue;
++                }
++                const to = command.args[1];
++                const fromParts = _.toPath(path);
++                const toParts = _.toPath(to);
++                const fromSchema = getSchemaForPath(
++                    schema,
++                    pathSegmentsToLodashPath(fromParts.slice(0, -1))
++                );
++                const toSchema = getSchemaForPath(
++                    schema,
++                    pathSegmentsToLodashPath(toParts.slice(0, -1))
++                );
++                if (
++                    (fromSchema?.type === 'object' && fromSchema.extensible === false) ||
++                    (toSchema?.type === 'object' && toSchema.extensible === false)
++                ) {
++                    outError('Cannot move properties in a closed native schema container.');
++                    continue;
++                }
++                const value = klona(_.get(variables.stat_data, path));
++                const previous = klona(_.get(variables.stat_data, to));
++                _.unset(variables.stat_data, path);
++                _.set(variables.stat_data, to, value);
++                await eventEmit(
++                    variable_events.SINGLE_VARIABLE_UPDATED,
++                    variables.stat_data,
++                    path,
++                    value,
++                    undefined
++                );
++                await eventEmit(
++                    variable_events.SINGLE_VARIABLE_UPDATED,
++                    variables.stat_data,
++                    to,
++                    previous,
++                    value
++                );
++                break;
++            }
+             case 'insert':
+             case 'assign': {
+                 // 检查目标路径是否指向一个集合（数组或对象）
+@@ -917,6 +1028,7 @@ export async function updateVariables(
+                     }
+                 } else if (
+                     // 增加 targetPath !== '' 条件，防止对根路径进行父路径检查
++                    existingValue === undefined &&
+                     targetPath !== '' &&
+                     !_.get(
+                         variables.stat_data,
+@@ -1142,6 +1254,7 @@ export async function updateVariables(
+                             originalArray,
+                             container
+                         );
++                        diagnostics.accepted_count++;
+                         continue; // Skip to next command
+                     }
+                 }
+@@ -1457,6 +1570,13 @@ export async function updateVariables(
+                 }
+                 break;
+             }
++            default:
++                outError(`Unsupported command: ${command.type}`);
++        }
++        // Rejected commands exit earlier; count a completed command even if
++        // its assigned value is identical to the previous value.
++        if (diagnostics.errors.length === errorsBefore) {
++            diagnostics.accepted_count++;
+         }
+ 
+         if (display_str) {
+@@ -1482,6 +1602,7 @@ export async function updateVariables(
+         variables,
+         variables_before_update
+     );
++    diagnostics.modified = !_.isEqual(variables.stat_data, variables_before_update.stat_data);
+     if (error_info && useDataStore().settings.通知.变量更新出错) {
+         toastr.warning(
+             tr('runtime.variableUpdate.errorDetail', {
+@@ -1494,29 +1615,38 @@ export async function updateVariables(
+         );
      }
-@@ -1497,26 +1517,10 @@ export async function updateVariables(
-     return is_modified;
+ 
+-    return is_modified;
++    return diagnostics.modified;
  }
-
+ 
 -export async function handleVariablesInMessage(message_id: number) {
-+export async function persistVariablesForMessage(message_id: number, variables: MvuData) {
++export async function persistVariablesForMessage(
++    message_id: number,
++    variables: MvuData,
++    expected_chat_id = SillyTavern.getCurrentChatId(),
++    assertAccess: () => Promise<void> = async () => {}
++) {
      const chat_message = getChatMessages(message_id).at(-1);
--    if (!chat_message) {
+     if (!chat_message) {
 -        return;
 -    }
 -
@@ -612,11 +1428,29 @@ index e803b3d..06d842b 100644
 -
 -    if (chat_message.role === 'assistant' && message_content.length < 5) {
 -        return;
--    }
++        throw new MvuCommitError(
++            'MVU_STALE_CHAT',
++            'The active chat or message changed while MVU was updating.'
++        );
+     }
 -    //在重构后 getLastValidVariable 的语义改编为了 [0, message_id) 区间
 -    const request_message_id = message_id === 0 ? 1 : message_id;
 -    const variables = getLastValidVariable(request_message_id);
-+    if (!chat_message) return;
++    let expected_message = chat_message?.message;
++    const assertCurrent = () => {
++        if (
++            !chat_message ||
++            SillyTavern.getCurrentChatId() !== expected_chat_id ||
++            getChatMessages(message_id).at(-1)?.message !== expected_message
++        ) {
++            throw new MvuCommitError(
++                'MVU_STALE_CHAT',
++                'The active chat or message changed while MVU was updating.'
++            );
++        }
++    };
++    await assertAccess();
++    assertCurrent();
      const settings = useDataStore().effective_settings;
 -    if (!_.has(variables, 'stat_data')) {
 -        return;
@@ -626,12 +1460,58 @@ index e803b3d..06d842b 100644
      const latest_chat_message = getChatMessages(message_id).at(-1) ?? chat_message;
      if (latest_chat_message.role !== 'user') {
          // updateVariables() emits events and awaits their listeners. Re-read immediately before
-@@ -1577,3 +1581,18 @@ export async function handleVariablesInMessage(message_id: number) {
+@@ -1526,6 +1656,8 @@ export async function handleVariablesInMessage(message_id: number) {
+             message_content: latest_chat_message.message,
+         };
+         await eventEmit(variable_events.BEFORE_MESSAGE_UPDATE, context);
++        await assertAccess();
++        assertCurrent();
+ 
+         let new_message_content = context.message_content;
+         if (!new_message_content.includes('<StatusPlaceHolderImpl/>')) {
+@@ -1544,6 +1676,8 @@ export async function handleVariablesInMessage(message_id: number) {
+             await setChatMessages([{ message_id: message_id, message: new_message_content }], {
+                 refresh: 'none',
+             });
++            expected_message = new_message_content;
++            assertCurrent();
+         }
+     }
+     const updater = (data: Record<string, any>) => {
+@@ -1567,13 +1701,114 @@ export async function handleVariablesInMessage(message_id: number) {
+         return data;
+     };
+     if (settings.兼容性.更新到聊天变量) {
++        assertCurrent();
+         await updateVariablesWith(updater, { type: 'chat' });
+     }
++    assertCurrent();
+     await updateVariablesWith(updater, { type: 'message', message_id: message_id });
++    assertCurrent();
+ 
+     if (latest_chat_message.role !== 'user') {
+         await setChatMessages([{ message_id: message_id }], {
+             refresh: 'affected',
          });
      }
- }
++    assertCurrent();
++    // Tavern Helper writes enqueue a debounced save. Only Nora's opt-in
++    // acknowledgement establishes a completed server write.
++    const confirmation = await (
++        SillyTavern.saveChat as unknown as (options: {
++            requireConfirmation: boolean;
++        }) => Promise<{ confirmed?: boolean } | undefined>
++    )({ requireConfirmation: true });
++    if (confirmation?.confirmed !== true) {
++        throw new MvuCommitError(
++            'MVU_PERSISTENCE_UNKNOWN',
++            'The chat save did not confirm persistence.'
++        );
++    }
++    assertCurrent();
++}
 +
-+export async function handleVariablesInMessage(message_id: number) {
++export async function handleVariablesInMessage(message_id: number, access?: MvuAccess) {
 +    const chat_message = getChatMessages(message_id).at(-1);
 +    if (!chat_message) return;
 +    if (chat_message.role === 'assistant' && chat_message.message.length < 5) return;
@@ -641,10 +1521,104 @@ index e803b3d..06d842b 100644
 +    const variables = getLastValidVariable(request_message_id);
 +    if (!_.has(variables, 'stat_data')) return;
 +
-+    const is_modified = await updateVariables(chat_message.message, variables);
-+    await persistVariablesForMessage(message_id, variables);
-+    return is_modified;
-+}
++    const chat_id = SillyTavern.getCurrentChatId();
++    const started_at = Date.now();
++    const transaction = {
++        message_id,
++        chat_id,
++        mode: 'inline',
++        protocol: access?.protocol,
++        ...(access?.mode === 'extra-model'
++            ? { fallback_reason: 'Extra-model support unavailable; parsed original message.' }
++            : {}),
++        started_at,
++    };
++    let stage = 'update';
++    await eventEmit(variable_events.TRANSACTION_STARTED, {
++        ...transaction,
++        had_snapshot: true,
++    });
++    try {
++        access ??= await captureMvuAccess();
++        const isNora = access.protocol !== 'legacy' && chat_message.role === 'assistant';
++        const is_modified = await updateVariables(
++            access.protocol !== 'legacy' && !isNora ? '' : chat_message.message,
++            variables,
++            {
++                nora: isNora,
++            }
++        );
++        const diagnostics = getLastVariableUpdateDiagnostics();
++        const result = executionResult(diagnostics, false);
++        if (isNora && ['partial', 'rejected', 'unverified'].includes(result.outcome)) {
++            await publishUpdateResult(transaction, {
++                result: { ...result, outcome: 'rejected' },
++                diagnostics,
++                persisted: false,
++            });
++            return false;
++        }
++        await access.assertCurrent();
++        if (
++            SillyTavern.getCurrentChatId() !== chat_id ||
++            getChatMessages(message_id).at(-1)?.message !== chat_message.message
++        ) {
++            throw new MvuCommitError(
++                'MVU_STALE_CHAT',
++                'The active chat or message changed while MVU was updating.'
++            );
++        }
++        stage = 'commit';
++        // Preserve upstream inline partial-update/snapshot behavior. Reporting
++        // a rejected command must not silently introduce all-or-nothing writes.
++        await persistVariablesForMessage(message_id, variables, chat_id, access.assertCurrent);
++        await publishUpdateResult(transaction, {
++            result,
++            persisted: true,
++            diagnostics,
++        });
++        return is_modified;
++    } catch (error) {
++        const code = (error as any)?.code?.startsWith('MVU_')
++            ? (error as any).code
++            : stage === 'commit'
++              ? 'MVU_PERSISTENCE_UNKNOWN'
++              : 'MVU_EXECUTION_FAILED';
++        await publishUpdateResult(transaction, {
++            result: { code, stage },
++            persisted: false,
++            error: String(error).slice(0, 800),
++            diagnostics: getLastVariableUpdateDiagnostics(),
++        });
++        return false;
++    }
+ }
+diff --git a/src/main.ts b/src/main.ts
+index 364eb10..2b10780 100644
+--- a/src/main.ts
++++ b/src/main.ts
+@@ -1,4 +1,3 @@
+-import { initButtons } from '@/button';
+ import { watchPreferredChatSync } from '@/function/chat_lifecycle';
+ import { initCleanup } from '@/function/cleanup';
+ import { initCharacterSettingsOverride } from '@/function/character_override';
+@@ -9,7 +8,6 @@ import { initNotification } from '@/function/notification';
+ import { initRequest } from '@/function/request';
+ import { initResponse } from '@/function/update';
+ import { tr } from '@/i18n';
+-import { initPanel } from '@/panel';
+ import { useDataStore } from '@/store';
+ import { controlledStoppableEventOn } from '@/util';
+ import { checkMinimumVersion } from '@util/common';
+@@ -34,8 +32,6 @@ $(async () => {
+ 
+     const stop_list: Stop[] = [];
+ 
+-    stop_list.push(initPanel());
+-    stop_list.push(initButtons());
+     stop_list.push(initGlobals());
+ 
+     let chat_level_stop_list: Stop[] = [];
 diff --git a/src/variable_def.ts b/src/variable_def.ts
 index a94688c..2bcf166 100644
 --- a/src/variable_def.ts
@@ -652,7 +1626,7 @@ index a94688c..2bcf166 100644
 @@ -179,6 +179,15 @@ export const variable_events = {
      /** 某轮变量更新开始时触发的事件 */
      VARIABLE_UPDATE_STARTED: 'mag_variable_update_started',
-
+ 
 +    /** Nora: a bounded extra-model update transaction started. */
 +    TRANSACTION_STARTED: 'nora_mvu_transaction_started',
 +
@@ -675,31 +1649,6 @@ index a94688c..2bcf166 100644
      [variable_events.COMMAND_PARSED]: (
          variables: MvuData,
          commands: CommandInfo[],
-diff --git a/src/main.ts b/src/main.ts
---- a/src/main.ts
-+++ b/src/main.ts
-@@ -1,4 +1,3 @@
--import { initButtons } from '@/button';
- import { watchPreferredChatSync } from '@/function/chat_lifecycle';
- import { initCleanup } from '@/function/cleanup';
- import { initCharacterSettingsOverride } from '@/function/character_override';
-@@ -8,7 +7,6 @@ import { initNotification } from '@/function/notification';
- import { initRequest } from '@/function/request';
- import { initResponse } from '@/function/update';
- import { tr } from '@/i18n';
--import { initPanel } from '@/panel';
- import { useDataStore } from '@/store';
- import { controlledStoppableEventOn } from '@/util';
- import { checkMinimumVersion } from '@util/common';
-@@ -33,8 +31,6 @@ $(async () => {
-
-     const stop_list: Stop[] = [];
-
--    stop_list.push(initPanel());
--    stop_list.push(initButtons());
-     stop_list.push(initGlobals());
-
-     let chat_level_stop_list: Stop[] = [];
 diff --git a/webpack.config.ts b/webpack.config.ts
 index 76b0425..e3f598e 100644
 --- a/webpack.config.ts

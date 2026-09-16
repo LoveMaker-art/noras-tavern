@@ -37,7 +37,35 @@ test('story send crosses one dispatcher seam and reports the observable result',
         actionId: 'action-send',
         value: 'reply',
     });
-    assert.deepEqual(dispatcher.status('story'), { active: false, type: null, retryable: false, persisted: null });
+    assert.deepEqual(dispatcher.status('story'), { active: false, type: null, retryable: false, persisted: null, saveFailed: false });
+});
+
+test('save retry cannot rerun generation, including failures during edit-and-regenerate', async () => {
+    let generated = 0, saved = 0, session = 'a';
+    const error = Object.assign(new Error('save failed'), { phase: 'save', retrySave: async () => { saved++; return { confirmed: true }; } });
+    const dispatcher = createStoryActionDispatcher({ getSessionKey: () => session, messages: {
+        editAndRegenerate: async () => { generated++; throw error; },
+        regenerate: async () => { assert.fail('must not call a model on save retry'); },
+    } });
+    assert.equal((await dispatcher.execute({ type: 'story.edit-and-regenerate', id: 0, text: 'test' })).status, 'failed');
+    assert.equal(dispatcher.status('story').saveFailed, true);
+    assert.equal((await dispatcher.execute({ type: 'story.retry' })).status, 'completed');
+    assert.equal(saved, 1);
+    assert.equal(generated, 1);
+    assert.equal(dispatcher.status('story').retryable, false);
+    await dispatcher.execute({ type: 'story.edit-and-regenerate', id: 0, text: 'test' });
+    session = 'b';
+    assert.equal((await dispatcher.execute({ type: 'story.retry' })).status, 'ignored');
+    assert.equal(saved, 1);
+});
+
+test('save failure without a safe retry cannot fall back to regeneration', async () => {
+    const dispatcher = createStoryActionDispatcher({ messages: {
+        sendText: async () => { throw Object.assign(new Error('save stale'), { phase: 'save' }); },
+        regenerate: () => assert.fail('must not regenerate'),
+    } });
+    await dispatcher.execute({ type: 'story.send', text: 'test' });
+    assert.equal((await dispatcher.execute({ type: 'story.retry' })).reason, 'save-not-retryable');
 });
 
 test('duplicate story actions join one task and cancel uses the same lifecycle', async () => {
@@ -60,7 +88,7 @@ test('duplicate story actions join one task and cancel uses the same lifecycle',
     const first = dispatcher.execute({ type: 'story.send', text: '第一条', actionId: 'same-action' });
     const duplicate = dispatcher.execute({ type: 'story.send', text: '第一条', actionId: 'same-action' });
     assert.equal(first, duplicate);
-    assert.deepEqual(dispatcher.status('story'), { active: true, type: 'story.send', retryable: false, persisted: null });
+    assert.deepEqual(dispatcher.status('story'), { active: true, type: 'story.send', retryable: false, persisted: null, saveFailed: false });
     pending.resolve('reply');
     await first;
     assert.deepEqual(sent, ['第一条']);
@@ -214,6 +242,7 @@ test('sidecar tasks are independently tracked and cancelled by their own scope',
         active: true,
         type: 'sidecar.run',
         retryable: false,
+        saveFailed: false,
         persisted: null,
     });
     const cancelling = await dispatcher.cancel('sidecar:helper-generation-1');

@@ -82,5 +82,10 @@ test('managed MVU entry shares the Nora compatibility module singleton', () => {
     const imports = staticImports('nora-mvu/index.js');
     assert.ok(imports.includes('nora-module/scripts/nora-compat/mvu-compatibility.js'));
     assert.ok(imports.includes('./runtime.js'));
-    assert.ok(imports.includes('./update-observer.js'));
+    assert.ok(imports.includes('nora-module/scripts/nora-compat/mvu-update-observer.js'));
+    for (const specifier of imports.filter(value => value.startsWith('nora-module/'))) {
+        const modulePath = specifier.slice('nora-module/'.length);
+        assert.ok(inlineManifest.modules[modulePath] || inlineManifest.compiled?.[modulePath],
+            `managed MVU core dependency is absent from the inline manifest: ${modulePath}`);
+    }
 });

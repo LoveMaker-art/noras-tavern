@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import urlJoin from 'url-join';
 import { resolveStoryLedger } from '../../nora-story-ledger/runtime.js';
 import { LedgerConflict } from '../../nora-story-ledger/core.js';
+import { traceGeneration } from '../../nora-mvu-trace.js';
 
 import {
     AIMLAPI_HEADERS,
@@ -2172,7 +2173,7 @@ router.post('/bias', async function (request, response) {
     }
 });
 
-router.post('/generate', async function (request, response) {
+router.post('/generate', traceGeneration, async function (request, response) {
     let ledgerDispatch = null;
     try {
         if (!request.body) return response.status(400).send({ error: true });

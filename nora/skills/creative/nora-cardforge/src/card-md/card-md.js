@@ -72,7 +72,7 @@ function cardToMarkdown(card, metadata = {}) {
   const front = [
     '---',
     `name: ${yamlString(data.name)}`,
-    `scenario: ${yamlString(data.scenario)}`,
+    ...(metadata.worldCard ? [] : [`scenario: ${yamlString(data.scenario)}`]),
     `system_prompt: ${yamlString(data.system_prompt)}`,
     `post_history_instructions: ${yamlString(data.post_history_instructions)}`,
     `tags: ${JSON.stringify(data.tags || [])}`,
@@ -85,8 +85,7 @@ function cardToMarkdown(card, metadata = {}) {
 
   const blocks = [
     section('Description', data.description),
-    section('Personality', data.personality),
-    section('Scenario', data.scenario),
+    ...(metadata.worldCard ? [] : [section('Personality', data.personality), section('Scenario', data.scenario)]),
     section('First Message', data.first_mes)
   ];
   (data.alternate_greetings || []).forEach((value, index) => {

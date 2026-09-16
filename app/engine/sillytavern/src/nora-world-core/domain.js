@@ -203,6 +203,7 @@ export function commandDigest(command) {
 
 export function normalizeMaterialization(value) {
     const result = requireRecord(value, 'materialization');
+    const authoredPersona = result.authoredPersona === undefined ? undefined : requireRecord(result.authoredPersona, 'materialization.authoredPersona');
     const runtimeCard = requireRecord(result.runtimeCard, 'materialization.runtimeCard');
     const defaultSession = requireRecord(result.defaultSession, 'materialization.defaultSession');
     const knowledge = Array.isArray(result.knowledge) ? result.knowledge : [];
@@ -222,6 +223,10 @@ export function normalizeMaterialization(value) {
     return {
         worldName: requireString(result.worldName, 'materialization.worldName', { allowEmpty: true }),
         ...(result.storyContext === undefined ? {} : { storyContext: normalizeStoryContext(result.storyContext) }),
+        ...(authoredPersona === undefined ? {} : { authoredPersona: {
+            name: requireString(authoredPersona.name, 'authoredPersona.name', { allowEmpty: true }),
+            description: requireString(authoredPersona.description, 'authoredPersona.description', { allowEmpty: true }),
+        } }),
         runtimeCard: {
             engine: requireString(runtimeCard.engine, 'materialization.runtimeCard.engine'),
             binding: normalizeBinding(runtimeCard.binding, 'materialization.runtimeCard.binding'),
@@ -238,9 +243,16 @@ export function normalizeMaterialization(value) {
     };
 }
 
+export function importedPersona(requested, authored) {
+    // An explicitly supplied persona takes precedence as a unit. Empty import
+    // defaults may inherit new-card authorship; ordinary cards retain old behavior.
+    return requested?.name || requested?.description ? requested : (authored || requested);
+}
+
 export function createWorldManifest({ operation, command, materialization, now }) {
     const createdAt = String(operation.created_at || now());
     const declared = [...materialization.declaredCapabilities].sort();
+    const persona = importedPersona(command.persona, materialization.authoredPersona);
     const capabilityItems = Object.fromEntries(declared.map(capability => [capability, {
         status: 'PENDING',
         attempts: 0,
@@ -256,11 +268,11 @@ export function createWorldManifest({ operation, command, materialization, now }
         world_id: operation.world_id,
         revision: 0,
         name: materialization.worldName || command.name,
-        persona: command.persona,
+        persona,
         ...(materialization.storyContext === undefined ? {} : { story_context: normalizeStoryContext({
             ...materialization.storyContext,
             player: { ...materialization.storyContext.player, profile: { ...materialization.storyContext.player.profile,
-                identity: { ...materialization.storyContext.player.profile.identity, ...command.persona } } },
+                identity: { ...materialization.storyContext.player.profile.identity, ...persona } } },
         }) }),
         lifecycle: { status: 'READY', error: null },
         source: {

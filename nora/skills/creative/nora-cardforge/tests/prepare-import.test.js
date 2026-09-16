@@ -33,6 +33,50 @@ function fixture(t) {
   return { root, project, uploads, built, options: { uploadRoot: uploads, idempotencyKey: 'test:world:one' } };
 }
 
+test('source edits invalidate a previously successful build and staging', t => {
+  const f = fixture(t);
+  fs.appendFileSync(path.join(f.project, 'card.md'), '\nChanged draft.\n');
+  assert.throws(() => prepareImport(f.project, f.options), { code: 'IMPORT_SOURCES_CHANGED' });
+  assert.deepEqual(fs.readdirSync(f.uploads), []);
+  buildProject(f.project);
+  assert.equal(prepareImport(f.project, f.options).stage, 'prepared');
+});
+
+test('interactive MVU template survives full build and staging without claiming runtime success', t => {
+  const f = fixture(t);
+  const configPath = path.join(f.project, 'card.project.json');
+  const config = JSON.parse(fs.readFileSync(configPath));
+  config.mvu = { protocol: 'nora-mvu/1' };
+  config.features.mvu = 'features/mvu.json';
+  config.features.statusbar = 'features/statusbar.html';
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  fs.mkdirSync(path.join(f.project, 'features'), { recursive: true });
+  fs.writeFileSync(path.join(f.project, 'features/mvu.json'), JSON.stringify({ format: 'nora-mvu-fields/v1', variables: [
+    { group: '玩家', field: '背包', type: 'array', items: { type: 'string' }, default: ['地图'], description: '获取物品时新增，消耗时移除。' },
+  ] }));
+  const html = '<html><body><button id="bag">查看背包</button><script>document.getElementById("bag").addEventListener("click", () => { const stat_data = Mvu.getMvuData({type:"message",message_id:getCurrentMessageId()}).stat_data; document.getElementById("bag").textContent = stat_data.玩家.背包.map(item => item).join(","); });</script></body></html>';
+  fs.writeFileSync(path.join(f.project, 'features/statusbar.html'), html);
+  const built = buildProject(f.project);
+  assert.equal(built.quality.passed, true);
+  assert.equal(built.quality.statusbar.verification.runtime, 'not-verified');
+  const handoff = prepareImport(f.project, f.options);
+  const card = JSON.parse(fs.readFileSync(handoff.stagedPath));
+  assert.ok(card.data.extensions.regex_scripts.find(s => s.scriptName === '状态栏美化').replaceString.includes(html));
+  assert.equal(handoff.runtimeVerified, false);
+});
+
+test('a failed build cannot leave the previous artifact approved for import', t => {
+  const f = fixture(t);
+  const configPath = path.join(f.project, 'card.project.json');
+  const config = JSON.parse(fs.readFileSync(configPath));
+  config.features.mvu = 'features/missing.json';
+  fs.writeFileSync(configPath, JSON.stringify(config));
+  assert.throws(() => buildProject(f.project), { code: 'FEATURE_FILE_MISSING' });
+  assert.throws(() => prepareImport(f.project, f.options), { code: 'IMPORT_BUILD_INVALID' });
+  assert.ok(fs.existsSync(path.join(f.project, f.built.manifest.artifacts.v2Json)));
+  assert.deepEqual(fs.readdirSync(f.uploads), []);
+});
+
 test('JSON handoff preserves exact bytes, reuses asset but not intentional operation identity', t => {
   const f = fixture(t);
   const preview = prepareImport(f.project, { ...f.options, dryRun: true });

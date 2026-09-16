@@ -1,97 +1,74 @@
 # Nora Tavern Card Forge
 
-No-UI SillyTavern card forge for 若棠/Hermes and Codex. This is the 0.3.0 authoring
-engine with adapter revision `hermes-mcp-20260831`. The same folder is a skill and
-a Node.js CLI package with no npm dependencies (the writing scorer uses Python).
+No-UI World-card creation, assessment, prose polishing and authorized import for Hermes
+and Codex. The folder is both a skill and a Node.js CLI package; its writing
+scorer uses Python. Workflow instructions live in [SKILL.md](SKILL.md).
 
-Nora writes content and decides intent. This CLI performs deterministic card operations:
+## Scope
 
-- read `.json` and `.png` SillyTavern character cards
-- create and decompile human-readable `card.md` projects
-- preserve imported unknown extensions during round trips
-- generate and apply machine-readable patches
-- run static diagnostics
-- compile MVU variable packs from Nora-provided variable specs
-- validate and apply Nora-provided status bar HTML
-- export V2 JSON and dual-metadata V2/V3 PNG artifacts
-- prepare hash-verified artifacts for the configured Nora MCP's World import
+- New cards: author a project, compile optional MVU, status UI and interactions, validate,
+  export V2 JSON / dual-metadata PNG, then stage and import when requested.
+- `card.project.json → world` owns the player and cast array. The compiler emits
+  World Core data without fallback biographies. Whole-card Description is a reader
+  summary, not a prompt. Import readback checks the actual persona
+  and actors. Default builds do not run the optional `--score-writing` scorer.
+- Existing cards: inspect and explain the original data, then hand the unchanged
+  file to Tavern when import is requested. Authorized prose polishing writes a new
+  copy with exact, hash-bound text edits, preserving technical data. There is no
+  protocol-conversion workflow. See [prose-polishing.md](references/prose-polishing.md).
+- New authored MVU carries an upstream baseline and opts into Nora enhancements
+  with `[nora_mvu/1]`. The managed runtime replaces only the marked baseline format
+  in requests. Existing cards keep their own protocol and need not have Zod.
+- New MVU fields use one typed `nora-mvu-fields/v1` source for initial values,
+  generated Zod and update rules. Literal UI bindings are checked against the same
+  paths; custom scripts and interactive UI are preserved and require runtime
+  acceptance. See [field standard](references/variable-reference.md).
 
-The CLI does not save API keys, call models by itself, or overwrite the input file.
+The CLI does not configure keys or call models. Its former `apply`, `mvu-plan`
+and `statusbar-plan` commands have been removed. The internal compiler still
+shares an operation engine for assembling new cards. Project ingestion and
+round-trip support remain for existing project tooling and regression checks;
+they are not prerequisites for original-file imports.
 
-## Commands
+## Local use
 
 ```bash
-node scripts/nora-cardforge.js init --project /tmp/my-card --name "角色名" --slug my-card
+node scripts/nora-cardforge.js --help
+node scripts/nora-cardforge.js init --project /tmp/my-card --name "世界名" --slug my-card
+# Author card.md and optional feature files, then:
 node scripts/nora-cardforge.js build --project /tmp/my-card
-node scripts/nora-cardforge.js ingest --input character.png --project /tmp/imported-card
-node scripts/nora-cardforge.js prepare-import --project /tmp/my-card --upload-root /actual/mcp/uploads --idempotency-key my-request --dry-run
-node scripts/nora-cardforge.js prepare-import --project /tmp/my-card --upload-root /actual/mcp/uploads --idempotency-key my-request
-
 node scripts/nora-cardforge.js inspect --input fixtures/empty-v2.json
-node scripts/nora-cardforge.js diagnose --input fixtures/empty-v2.json --profile nora
-node scripts/nora-cardforge.js mvu-plan --input fixtures/empty-v2.json --vars fixtures/mvu-vars.json --output /tmp/mvu.patch.json
-node scripts/nora-cardforge.js apply --input fixtures/empty-v2.json --patch /tmp/mvu.patch.json --output /tmp/card.mvu.json
-node scripts/nora-cardforge.js statusbar-plan --input /tmp/card.mvu.json --html fixtures/statusbar.html --output /tmp/statusbar.plan.json
-node scripts/nora-cardforge.js apply --input /tmp/card.mvu.json --patch /tmp/statusbar.plan.json --output /tmp/card.final.json
+node scripts/nora-cardforge.js diagnose --input fixtures/empty-v2.json
 ```
 
-Hermes and Codex load [SKILL.md](SKILL.md). Branch-specific instructions live under
-`references/`; the deterministic writing scorer is vendored under `scripts/`.
+For new-card staging and MCP handoff, use
+[import-install.md](references/import-install.md). Preparing an artifact does not
+import it; a completed import does not prove browser scripts or MVU activated.
 
-Preparation does not import anything. After explicit authorization the agent calls
-the existing `nora.world.import` MCP tool and verifies its operation/read-back.
-That action creates a new World, not library-only storage. No additional MCP tools,
-model credentials or Tavern backend changes are required. The old Python-backed
-`install` command has been removed; see `references/import-install.md`.
-
-## Nora Split
-
-Nora should provide creative content:
-
-- role/world text
-- worldbook entries
-- MVU variable intent
-- status bar HTML
-- repaired field text
-
-The CLI should handle structure:
-
-- card field placement
-- worldbook/regex/tavern helper updates
-- MVU schema and rule compilation
-- status bar path validation
-- PNG/JSON export
-
-## Patch Format
-
-Every mutation is represented as a patch before application:
-
-```json
-{
-  "format": "nora-cardforge-patch/v1",
-  "operations": [
-    {
-      "type": "upsertWorldEntry",
-      "comment": "变量列表",
-      "entry": {
-        "content": "---\n<status_current_variables>\n{{format_message_variable::stat_data}}\n</status_current_variables>"
-      }
-    }
-  ]
-}
-```
-
-`apply` also accepts wrapped plan output:
-
-```json
-{
-  "patch": { "operations": [] },
-  "validation": { "passed": true }
-}
-```
-
-## Test
+## Tests
 
 ```bash
+npm install
 npm test
+# In a repository checkout containing the matching Nora runtime:
+npm run test:runtime
+# With a pinned patched upstream checkout and a downloaded, hash-checked helper:
+NORA_MVU_SOURCE_DIR=/path/to/source NORA_UPSTREAM_ZOD_PATH=/path/to/mvu_zod.js npm run test:portable
 ```
+
+Zod, YAML and lodash are development-only test dependencies; the CLI adds no
+production package dependency. Runtime integration can target another matching
+checkout with `NORA_TAVERN_ROOT` pointing to its repository root.
+
+Tests cover typed defaults, generated Zod, rejected paths/types, display bindings,
+read-only inspection, metadata round trips and source/artifact-bound staging.
+The optional integration test executes generated registration against the actual
+Nora MVU helper with controlled host services. Neither test group calls a model,
+operates a browser or establishes full runtime playability.
+
+The portable integration builds one PNG from `fixtures/portable-world`, reads
+untouched upstream modules via `git show 7fe9ae7:...`, and compares accepted
+updates with Nora's actual executor/helper. Host storage/events and model output
+remain controlled substitutes. The helper download SHA is checked by the test;
+its pinned URL is in the MVU compiler. Set `NORA_PORTABLE_ARTIFACT_DIR` to a new
+directory to retain the test project and PNG for authorized browser acceptance.

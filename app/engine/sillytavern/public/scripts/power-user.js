@@ -2130,17 +2130,19 @@ export function fuzzySearchTags(searchValue, fuzzySearchCaches = null) {
  * @param {string} [options.customStoryString] Custom story string template.
  * @param {InstructSettings} [options.customInstructSettings] Custom instruct settings.
  * @param {ContextSettings} [options.customContextSettings] Custom context settings.
+ * @param {boolean} [options.validateTemplate=true] Check missing fields when the caller uses this template for its prompt.
  * @returns {string} The rendered story string.
  */
-export function renderStoryString(params, { customStoryString = null, customInstructSettings = null, customContextSettings = null } = {}) {
+export function renderStoryString(params, { customStoryString = null, customInstructSettings = null, customContextSettings = null, validateTemplate = true } = {}) {
     try {
         const instructSettings = structuredClone(customInstructSettings ?? power_user.instruct);
         const contextSettings = structuredClone(customContextSettings ?? power_user.context);
         const storyString = customStoryString ?? contextSettings.story_string;
         const storyStringPosition = contextSettings.story_string_position ?? extension_prompt_types.IN_PROMPT;
 
-        // Validate and log possible warnings/errors
-        validateStoryString(storyString, params);
+        if (validateTemplate) {
+            validateStoryString(storyString, params);
+        }
 
         // compile the story string template into a function, with no HTML escaping
         const compiledTemplate = Handlebars.compile(storyString, { noEscape: true });

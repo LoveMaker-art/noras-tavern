@@ -2,14 +2,14 @@
 
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { readCard, writeCardArtifact } = require('../core/card-io');
 const { summarizeCard } = require('../core/card-model');
-const { loadPatch, applyPatchSet } = require('../core/patch-engine');
 const { runDiagnostics } = require('../diagnostics/static-checks');
-const { createMvuPatch } = require('../mvu/mvu-compiler');
-const { createStatusbarPatch, validateStatusbarHtml } = require('../statusbar/statusbar');
+const { validateStatusbarHtml } = require('../statusbar/statusbar');
 const { initProject, ingestProject, buildProject, inspectProject } = require('../project/project-engine');
-const { prepareImport } = require('../install/prepare-import');
+const { prepareImport, verifyImport } = require('../install/prepare-import');
+const { editProse } = require('../core/prose-edit');
 
 function parseArgs(argv) {
   const args = { _: [] };
@@ -29,10 +29,6 @@ function parseArgs(argv) {
     }
   }
   return args;
-}
-
-function readJsonFile(filePath) {
-  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
 function readTextFile(filePath) {
@@ -60,6 +56,7 @@ async function commandInspect(args) {
     ok: true,
     source: {
       path: loaded.source.path,
+      sha256: crypto.createHash('sha256').update(fs.readFileSync(loaded.source.path)).digest('hex'),
       type: loaded.source.type,
       chunkKeyword: loaded.source.chunkKeyword,
       availableKeywords: loaded.source.availableKeywords
@@ -87,7 +84,7 @@ async function commandProjectInspect(args) {
 }
 
 async function commandProjectBuild(args) {
-  const result = buildProject(requireArg(args, 'project'), { profile: args.profile });
+  const result = buildProject(requireArg(args, 'project'), { profile: args.profile, scoreWriting: args['score-writing'] === true });
   writeJsonOutput(result, args.output);
 }
 
@@ -109,48 +106,11 @@ async function commandDiagnose(args) {
   writeJsonOutput({ ok: true, report }, args.output);
 }
 
-async function commandApply(args) {
-  const loaded = readCard(requireArg(args, 'input'));
-  const patch = loadPatch(requireArg(args, 'patch'));
-  const result = applyPatchSet(loaded.card, patch);
-  const outputPath = requireArg(args, 'output');
-  writeCardArtifact({
-    card: result.card,
-    source: loaded.source,
-    outputPath,
-    coverPath: args.cover
-  });
-  writeJsonOutput({
-    ok: true,
-    output: outputPath,
-    applied: result.applied,
-    warnings: result.warnings
-  }, args.report);
-}
-
-async function commandMvuPlan(args) {
-  const loaded = readCard(requireArg(args, 'input'));
-  const vars = readJsonFile(requireArg(args, 'vars'));
-  const patch = createMvuPatch(loaded.card, vars, {
-    keepFloors: args.keepFloors ? Number(args.keepFloors) : 3,
-    injectMode: args.injectMode || 'single'
-  });
-  writeJsonOutput(patch, requireArg(args, 'output'));
-}
-
 async function commandStatusbarValidate(args) {
   const loaded = readCard(requireArg(args, 'input'));
   const html = readTextFile(requireArg(args, 'html'));
   const report = validateStatusbarHtml(loaded.card, html);
   writeJsonOutput({ ok: report.passed, report }, args.output);
-}
-
-async function commandStatusbarPlan(args) {
-  const loaded = readCard(requireArg(args, 'input'));
-  const html = readTextFile(requireArg(args, 'html'));
-  const validation = validateStatusbarHtml(loaded.card, html);
-  const patch = createStatusbarPatch(html, { mode: args.mode || 'mvu' });
-  writeJsonOutput({ patch, validation }, requireArg(args, 'output'));
 }
 
 async function commandExport(args) {
@@ -165,6 +125,12 @@ async function commandExport(args) {
   writeJsonOutput({ ok: true, output: outputPath }, args.report);
 }
 
+async function commandProseEdit(args) {
+  const plan = JSON.parse(readTextFile(requireArg(args, 'edits')));
+  const result = editProse(requireArg(args, 'input'), plan, requireArg(args, 'output'), { dryRun: !!args['dry-run'] });
+  writeJsonOutput(result);
+}
+
 function printHelp() {
   process.stdout.write(`nora-cardforge <command> [options]
 
@@ -172,14 +138,13 @@ Commands:
   init --project DIR --name NAME [--slug SLUG] [--creator CREATOR]
   ingest --input card.png|card.json --project DIR [--slug SLUG]
   project-inspect --project DIR [--output report.json]
-  build --project DIR [--profile release|release-strict] [--output report.json]
+  build --project DIR [--profile release|release-strict] [--score-writing] [--output report.json]
   prepare-import --project DIR --upload-root DIR --idempotency-key KEY [--dry-run] [--output report.json]
+  verify-import --prepared handoff.json --inspection world-inspect.json [--output report.json]
   inspect --input card.png|card.json [--output report.json]
   diagnose --input card.png|card.json [--profile nora] [--output report.json]
-  apply --input card.png|card.json --patch patch.json --output card.out.png|json [--report report.json]
-  mvu-plan --input card.png|card.json --vars vars.json --output patch.json
+  prose-edit --input card.png|card.json --edits prose.json --output NEW.png|json [--dry-run]
   statusbar-validate --input card.png|card.json --html statusbar.html [--output report.json]
-  statusbar-plan --input card.png|card.json --html statusbar.html --output patch.json
   export --input card.png|card.json --output card.out.png|json [--cover cover.png]
 `);
 }
@@ -202,12 +167,15 @@ async function main() {
     'project-inspect': commandProjectInspect,
     build: commandProjectBuild,
     'prepare-import': commandPrepareImport,
+    'verify-import': async args => {
+      const report = verifyImport(JSON.parse(readTextFile(requireArg(args, 'prepared'))), JSON.parse(readTextFile(requireArg(args, 'inspection'))));
+      writeJsonOutput(report, args.output);
+      if (!report.ok) process.exitCode = 1;
+    },
     inspect: commandInspect,
     diagnose: commandDiagnose,
-    apply: commandApply,
-    'mvu-plan': commandMvuPlan,
+    'prose-edit': commandProseEdit,
     'statusbar-validate': commandStatusbarValidate,
-    'statusbar-plan': commandStatusbarPlan,
     export: commandExport
   };
   if (!commands[command]) throw new Error(`Unknown command: ${command}`);
