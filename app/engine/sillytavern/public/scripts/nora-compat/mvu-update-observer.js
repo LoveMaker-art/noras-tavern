@@ -23,17 +23,20 @@ export function projectMvuTransaction(detail = {}, terminal = 'committed', fallb
     const count = detail.diagnostics?.command_count ?? fallbackCommandCount;
     // Legacy events may lack `modified`; only the observer has a captured command count.
     const changed = detail.diagnostics?.modified ?? (fallbackCommandCount === undefined || count > 0);
-    const committed = terminal === 'committed';
+    const partial = detail.outcome === 'partial' && detail.persisted === true;
+    const committed = terminal === 'committed' && detail.outcome !== 'partial';
     const skipped = committed && detail.outcome === 'skipped';
     const interrupted = !committed && ['cancelled', 'stale'].includes(detail.outcome);
     return {
-        status: committed ? (skipped ? 'skipped' : changed ? 'committed' : 'no-change') : interrupted ? detail.outcome : 'failed',
+        status: partial ? 'partial' : committed ? (skipped ? 'skipped' : changed ? 'committed' : 'no-change') : interrupted ? detail.outcome : 'failed',
         updateOperational: skipped || interrupted ? null : committed,
-        updatePhase: committed ? (skipped ? 'no-command' : changed ? 'completed' : 'no-change') : interrupted || detail.outcome === 'partial' ? detail.outcome : 'failed',
+        updatePhase: committed ? (skipped ? 'no-command' : changed ? 'completed' : 'no-change') : interrupted || partial ? detail.outcome : 'failed',
         lastUpdateCode: committed ? (skipped ? 'MVU_NO_UPDATE_COMMAND' : changed ? null : 'MVU_NO_STATE_CHANGE') : bounded(detail.error_code || 'MVU_UPDATE_FAILED', 100),
         lastUpdateStage: committed ? (changed ? null : 'update') : bounded(detail.stage || 'update', 80),
         lastUpdateError: committed ? null : bounded(detail.error || 'MVU update failed.', 800),
         lastUpdateCommandCount: count,
+        lastUpdateAcceptedCount: detail.diagnostics?.accepted_count ?? null,
+        lastUpdatePersisted: typeof detail.persisted === 'boolean' ? detail.persisted : null,
         ...(!committed ? { lastUpdateValidationErrors: validationErrors(detail.diagnostics?.errors) } : {}),
         stateChanged: committed ? changed : detail.outcome === 'persistence-unknown' ? null : detail.persisted ? Boolean(detail.diagnostics?.modified) : false,
         transactionDurationMs: detail.duration_ms ?? null,
@@ -53,6 +56,8 @@ export function createEmptyMvuUpdateStatus() {
         lastUpdateStage: null,
         lastUpdateError: null,
         lastUpdateCommandCount: null,
+        lastUpdateAcceptedCount: null,
+        lastUpdatePersisted: null,
         lastUpdateValidationErrors: [],
         stateChanged: null,
         transactionDurationMs: null,
@@ -77,15 +82,17 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         eventSource.on(event, handler);
         bindings.push([event, handler]);
     };
-    const publishFailure = () => {
+    const publishDiagnostic = () => {
         const diagnostic = Object.freeze({
-            kind: 'mvu-update-failed',
+            kind: current.updatePhase === 'partial' && current.lastUpdatePersisted ? 'mvu-update-partial' : 'mvu-update-failed',
             identity: observedIdentity,
             occurredAt: current.lastUpdateAt,
             code: current.lastUpdateCode,
             stage: current.lastUpdateStage,
             summary: current.lastUpdateError,
             commandCount: current.lastUpdateCommandCount,
+            acceptedCount: current.lastUpdateAcceptedCount,
+            persisted: current.lastUpdatePersisted,
             validationErrors: current.lastUpdateValidationErrors,
             attempt: current.transactionAttempt,
             durationMs: current.transactionDurationMs,
@@ -124,7 +131,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
                 if (observedIdentity !== String(identity() || '')) return;
                 const { status, ...observation } = projectMvuTransaction(detail, terminal, commandCount);
                 current = { ...current, ...observation, lastUpdateAt: now() };
-                if (status === 'failed') publishFailure();
+                if (status === 'failed' || status === 'partial') publishDiagnostic();
             });
         }
     }

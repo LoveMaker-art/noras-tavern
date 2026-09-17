@@ -21,7 +21,14 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const lodash = require('lodash');
     const z = require('zod').z;
     const events = new Map();
-    const emitted = [], reports = [], requests = [], writes = [], warnings = [];
+    const emitted = [], reports = [], requests = [], writes = [], warnings = [], transportPrompts = [];
+    const generate = async config => {
+        requests.push(config);
+        const data = { prompt: [{ role: 'user', content: 'Analyze this turn.' }] };
+        for (const listener of events.get('generate_after') || []) await listener(data, false);
+        transportPrompts.push(data.prompt);
+        return typeof response === 'function' ? response(requests.length) : response;
+    };
     let chatId = 'world-a';
     const snapshot = { stat_data: structuredClone(initial), initialized_lorebooks: {} };
     const chat = [snapshot, {}, { message, name: 'guide', role: 'assistant' }];
@@ -38,8 +45,7 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
         atob, btoa, getScriptId: () => 'test', getLastMessageId: () => 2,
         tavern_events: { GENERATE_AFTER_DATA: 'generate_after' },
         eventRemoveListener: (name, fn) => events.set(name, (events.get(name) || []).filter(item => item !== fn)),
-        generate: async config => { requests.push(config); return typeof response === 'function' ? response(requests.length) : response; },
-        generateRaw: async config => { requests.push(config); return typeof response === 'function' ? response(requests.length) : response; },
+        generate, generateRaw: generate,
         parent: { NoraMvu: bridge }, window: { parent: { NoraMvu: bridge } },
         getCurrentCharPrimaryLorebook: () => 'primary', getLorebookEntries: async () => entries,
         SillyTavern: { chat, name2: 'guide', registerMacro() {}, unregisterMacro() {}, getChatCompletionModel: () => 'test-model', getCurrentChatId: () => chatId, async saveChat(options) {
@@ -118,7 +124,7 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const updater = load(path.join(source, 'src/function/update_variables.ts'));
     const runtime = load(path.join(source, 'src/function/update/on_message_received.ts'));
     if (zod) load(helper).registerMvuSchema(typeof zod === 'function' ? zod(z) : z.object({ score: z.number() }));
-    return { updater, observer, requests, writes, reports, emitted, chat, warnings, settings, entries,
+    return { updater, observer, requests, writes, reports, emitted, chat, warnings, settings, entries, transportPrompts,
         registerSchema: () => load(helper).registerMvuSchema(z.object({ score: z.number() })),
         readinessListeners: () => (events.get('nora_mvu_schema_ready') || []).length,
         run: options => runtime.onMessageReceived(2, options),
@@ -134,6 +140,36 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
 }
 
 test('pinned MVU execution / persistence / observation result contract', { skip: !source && 'Set NORA_MVU_SOURCE_DIR to a pinned patched checkout' }, async t => {
+    for (const nora of [false, true]) {
+        for (const extra of [false, true]) {
+            await t.test(`external unmarked lore follows protocol policy: nora=${nora} extra=${extra}`, async () => {
+                const f = fixture({ nora });
+                const lores = {
+                    characterLore: [{ world: 'primary', comment: '[mvu_update]rules' }],
+                    globalLore: [{ world: 'unmarked', comment: 'global setting' }],
+                    chatLore: [{ world: 'marked', comment: '[mvu_plot]narration' }, { world: 'marked', comment: 'shared fact' }],
+                    personaLore: [{ world: 'other', comment: 'persona setting' }],
+                };
+                await f.filter(lores, extra);
+                assert.equal(lores.globalLore.length, nora || !extra ? 1 : 0);
+                assert.equal(lores.personaLore.length, nora || !extra ? 1 : 0);
+                assert.equal(lores.chatLore.some(entry => entry.comment === 'shared fact'), true);
+            });
+        }
+        await t.test(`state fallback injection is Nora-only: nora=${nora}`, async () => {
+            const response = nora
+                ? '<UpdateVariable><NoraMvu>{"protocol":"nora-mvu/1","operations":[{"op":"set","path":["score"],"value":51}]}</NoraMvu></UpdateVariable>'
+                : '<UpdateVariable>_.set("score",51);</UpdateVariable>';
+            const f = fixture({ nora, realRequest: true, response });
+            f.settings.额外模型解析配置.应答格式 = '聊天消息';
+            f.settings.额外模型解析配置.破限方案 = '使用内置破限';
+            await f.run();
+            assert.ok(f.transportPrompts.length > 0);
+            for (const prompts of f.transportPrompts) {
+                assert.equal(prompts.some(item => item.content.includes('<status_current_variables>')), nora);
+            }
+        });
+    }
     for (const nora of [false, true]) {
         for (const inline of [false, true]) {
             for (const extra of inline ? [false] : [false, true]) {
@@ -281,6 +317,11 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(f.terminal().persisted, true);
             assert.equal(f.chat[2].stat_data.score, 55);
             assert.equal(f.requests.length, inline ? 0 : 1);
+            assert.equal(f.observer.status().updatePhase, 'partial');
+            assert.equal(f.reports.at(-1).kind, 'mvu-update-partial');
+            assert.equal(f.reports.at(-1).acceptedCount, 1);
+            assert.equal(f.reports.at(-1).persisted, true);
+            assert.equal(f.emitted.filter(([name]) => name === f.events.TRANSACTION_FAILED).length, 0);
         });
         await t.test(`message edited during execution is not overwritten: inline=${inline}`, async () => {
             const command = "_.set('score', 55);";
@@ -310,8 +351,8 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         await f.run(); assert.equal(f.terminal().outcome, 'updated');
         assert.deepEqual(f.chat[2].stat_data.items, ['first', 'second']);
     });
-    await t.test('real lore filter preserves mixed settings and unmarked secondary books', async () => {
-        const f = fixture();
+    await t.test('Nora lore filter preserves mixed settings and unmarked secondary books', async () => {
+        const f = fixture({ nora: true });
         for (const extra of [false, true]) {
             const mixed = { comment: 'Character setting', content: "Kind guide; _.set('score', 1);", world: 'primary' };
             const lores = { characterLore: [mixed, { comment: '[mvu_update]', content: 'rules' }], globalLore: [{ comment: 'Global', content: 'town' }], personaLore: [], chatLore: [] };
@@ -321,6 +362,19 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(lores.characterLore.length, extra ? 2 : 1);
         }
     });
+    for (const inline of [false, true]) {
+        await t.test(`legacy missing record and array insertion survives full update path: inline=${inline}`, async () => {
+            const command = '<UpdateVariable>_.insert("records", {"new":{"score":1}}); _.insert("items",0,"entry");</UpdateVariable>';
+            const f = fixture({ inline, initial: {}, response: command, ...(inline ? { message: command } : {}),
+                zod: z => z.object({ records: z.record(z.string(), z.object({ score: z.number() })).optional(), items: z.array(z.string()).optional() }),
+            });
+            await f.run();
+            assert.equal(f.terminal().outcome, 'updated');
+            assert.equal(f.terminal().diagnostics.accepted_count, 2);
+            assert.deepEqual(f.chat[2].stat_data, { records: { new: { score: 1 } }, items: ['entry'] });
+            assert.equal(f.requests.length, inline ? 0 : 1);
+        });
+    }
     await t.test('history cleanup never strips the card system format instructions', () => {
         const f = fixture();
         const content = 'Keep this format:\n<UpdateVariable>_.set(\'score\',51);</UpdateVariable>';

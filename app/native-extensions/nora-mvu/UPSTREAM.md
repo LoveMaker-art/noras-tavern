@@ -14,8 +14,9 @@ attempt, validation on a cloned snapshot and stale-chat guards. Text and variabl
 **not** one atomic database operation. Nora awaits an explicit server-save acknowledgement before
 reporting success; an uncertain save is reported without automatically replaying commands. Invalid
 Nora-protocol batches are rejected; legacy updates in both modes retain accepted partial changes,
-report partial failure and never automatically replay the accepted deltas.
-Cards without an explicit protocol declaration preserve the upstream/card dialect and prompt chain.
+report partial completion and never automatically replay the accepted deltas.
+Cards without an explicit protocol declaration retain the upstream/card dialect and built-in task.
+This is not a promise of byte-identical provider requests or full third-party callback compatibility.
 Their formatted-output mode keeps the upstream JSON Schema response and
 conversion path. An explicit empty `JSONPatch` commits as
 a successful no-op without rewriting the story message. Independent-model context and output
@@ -64,8 +65,9 @@ declared-but-unregistered Zod is a preparation error. Only representable field c
 are projected, capped at 12,000 characters, without claiming to translate arbitrary transforms.
 Old local helper imports are refreshed during runtime adaptation. Request-time card/protocol/settings
 identity rejects stale writes; duplicate message events share one in-flight update.
-Mixed lore is no longer auto-tagged based on command substrings. Unmarked books retain normal
-keyword/budget behavior instead of disappearing wholesale during variable requests.
+Mixed lore is no longer auto-tagged based on command substrings. For declared Nora cards,
+unmarked books retain normal keyword/budget behavior instead of disappearing wholesale
+during variable requests (scoped explicitly in revision 17).
 
 Revision 14 waits for a declared card schema to register during first preparation
 instead of failing at the first empty query. It subscribes before querying and
@@ -105,6 +107,21 @@ successful retries continue evaluating from the previous turn, not the current r
 Legacy/Nora and with/without Zod share this rule. Source tests cover failed replacement,
 successful non-accumulating replacement and initial-failure inheritance. Protocol, prompts,
 attempt limits and uncertain-save handling are unchanged.
+
+Revision 17 keeps one executor, while separating legacy and Nora request policy.
+Legacy external global/chat/persona books again follow upstream's split-marker eligibility;
+the extra-model state-block fallback is installed only for declared Nora cards.
+The local Zod helper probes an object then an array when an insert container is missing,
+matching the reference helper's behavior instead of inferring type from argument count.
+Existing containers keep their type. Failed probes cannot leak into the live state.
+Persisted legacy partial results now emit a committed event with `outcome: partial`, never
+`outcome: updated`; UI and diagnostics preserve rejected operations and accepted counts.
+Partial completion does not automatically retry already accepted deltas. Nora batches still
+reject partial candidates. Save acknowledgements, stale guards and command validation remain.
+The model settings and conversation status distinguish partial completion from full failure.
+Reference replay and source tests establish the exercised semantics only, not universal card,
+provider, or browser compatibility. Unknown command-consuming callbacks still require result
+evidence; this revision does not bypass missing schema registration or run JS-valued commands.
 
 Runtime dependencies are bundled locally in `vendor/bundle.js`; the MVU execution path does
 not fetch JavaScript modules from a CDN. The source build uses

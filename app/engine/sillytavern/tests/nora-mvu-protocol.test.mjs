@@ -75,7 +75,7 @@ test('compiler and runtime share the declaration; old cards keep their format', 
     assert.ok(card.data.extensions.tavern_helper.scripts.some(script => /tavern_resource@b0ee9f4/.test(script.content)));
     const adapted = adaptCardForMvuRuntime(card);
     assert.equal(wire.resolveMvuProtocol(adapted.card.data.character_book.entries), 'nora-mvu/1');
-    assert.ok(adapted.card.data.extensions.tavern_helper.scripts.some(script => /mvu-zod\.js\?v=4.1.11-nora4/.test(script.content)));
+    assert.ok(adapted.card.data.extensions.tavern_helper.scripts.some(script => /mvu-zod\.js\?v=4.1.11-nora5/.test(script.content)));
     assert.equal(adapted.card.data.extensions.tavern_helper.scripts.find(script => /MagVarUpdate@/.test(script.content)).enabled, false);
     assert.deepEqual(adapted.card.data.character_book, card.data.character_book, 'runtime import projection preserves baseline lore');
     assert.equal(original.data.character_book.entries.length, 0);
@@ -86,6 +86,6 @@ test('old local schema import is refreshed without changing lore or other script
     card.data.extensions.tavern_helper.scripts = [{ type: 'script', enabled: true, content: "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora1';" }];
     const result = adaptCardForMvuRuntime(card);
     assert.equal(result.changed, true);
-    assert.match(result.card.data.extensions.tavern_helper.scripts[0].content, /nora4/);
+    assert.match(result.card.data.extensions.tavern_helper.scripts[0].content, /nora5/);
     assert.deepEqual(result.card.data.character_book, card.data.character_book);
 });

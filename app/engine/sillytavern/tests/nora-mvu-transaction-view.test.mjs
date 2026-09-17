@@ -58,4 +58,9 @@ test('MVU transaction view presents live state and schedules terminal states for
     view.show('failed');
     assert.equal(host.children[0].children[1].textContent, 'MVU变量更新失败');
     assert.equal(timers[2].duration, 3000);
+
+    view.show('partial');
+    assert.equal(host.children[0].attributes['data-status'], 'partial');
+    assert.equal(host.children[0].children[1].textContent, '部分MVU变量已更新，其余操作未通过校验');
+    assert.equal(timers[3].duration, 3000);
 });

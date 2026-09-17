@@ -1,7 +1,7 @@
 export const MVU_SCRIPT_ID = 'nora-mvu-headless-runtime';
 export const MVU_UPSTREAM_COMMIT = '7fe9ae7cfe01f13d606f7a2e533a458431fe318c';
 export const NORA_MVU_SETTINGS_VERSION = 5;
-export const NORA_MVU_BUNDLE_REVISION = 16;
+export const NORA_MVU_BUNDLE_REVISION = 17;
 
 export const MVU_BUNDLE_URL = `/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=${MVU_UPSTREAM_COMMIT.slice(0, 12)}-nora${NORA_MVU_BUNDLE_REVISION}`;
 export const MVU_ZOD_PATH = './vendor/zod.iife.js?v=4.1.11';

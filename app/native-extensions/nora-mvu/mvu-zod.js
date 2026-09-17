@@ -107,22 +107,26 @@ function applyCommand(data, command, validate, lodash, notify) {
             if (!writablePath(lodash, path)) return null;
             const key = normalizedValue(args[1]);
             const value = normalizedValue(args.at(-1));
-            let collection = path ? lodash.get(data, path) : data;
-            if (collection === undefined || collection === null) {
-                collection = args.length === 2 ? [] : {};
-                if (path) lodash.set(data, path, collection);
-                else data = collection;
-            }
-            if (Array.isArray(collection)) {
-                if (args.length === 2) collection.push(value);
-                else collection.splice(key === '-' ? collection.length : Number(key), 0, value);
-            } else if (lodash.isPlainObject(collection)) {
-                if (args.length === 2 && lodash.isPlainObject(value)) Object.assign(collection, value);
-                else collection[String(key)] = value;
-            } else {
-                return null;
-            }
-            return validate(data, command, true);
+            const insert = (candidate, shouldNotify) => {
+                const collection = path ? lodash.get(candidate, path) : candidate;
+                if (Array.isArray(collection)) {
+                    if (args.length === 2) collection.push(value);
+                    else collection.splice(key === '-' ? collection.length : Number(key), 0, value);
+                } else if (lodash.isPlainObject(collection)) {
+                    if (args.length === 2) Object.assign(collection, value);
+                    else collection[String(key)] = value;
+                } else return null;
+                return validate(candidate, command, shouldNotify);
+            };
+            const collection = path ? lodash.get(data, path) : data;
+            if (collection !== undefined && collection !== null) return insert(data, true);
+            // Upstream probes an object first, then an array. Arity alone cannot
+            // distinguish record merge from array append. Keep probes isolated.
+            const probe = (container, shouldNotify) => {
+                const candidate = path ? lodash.set(clone(data), path, container) : container;
+                return insert(candidate, shouldNotify);
+            };
+            return probe({}, false) ?? probe([], true);
         }
         case 'delete': {
             const path = args.map(parsePath).join('.');

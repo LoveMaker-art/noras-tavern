@@ -9,7 +9,7 @@ const MVU_SCHEMA_SCRIPT = /StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\
 const MVU_SCHEMA_URL = /https?:\/\/[^'"\s]*StageDog\/tavern_resource(?:@[^/'"\s]+)?\/dist\/util\/mvu_zod\.js(?:\?[^'"\s]*)?/gi;
 // This URL is persisted into adapted cards and may be cached by Liveware for a
 // long time. Keep its revision independent from the main MVU bundle revision.
-const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora4';
+const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora5';
 const LOCAL_MVU_SCHEMA_IMPORT = /\/scripts\/extensions\/third-party\/nora-mvu\/mvu-zod\.js(?:\?[^'"\s]*)?/g;
 const ADAPTATION_SCHEMA = 1;
 
