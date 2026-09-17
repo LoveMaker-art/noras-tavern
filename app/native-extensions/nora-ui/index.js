@@ -358,6 +358,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     isCharacterInWorld: character => worlds.usesRuntimeCard?.(character) || false,
                     createWorldFromCard: async (character, control) => (await ensureWorldCreationController()).createFromLibrary(character, control),
                     openWorldbookLibrary: async () => (await ensureLibraryController()).openWorldbooks(),
+                    openCardWorldbook: async (source, onBack) => (await ensureLibraryController()).openBook(source, null, onBack),
                     openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
                     saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
                     addRoleFromCard: async character => (await ensureLibraryController()).openRoleImport(character),

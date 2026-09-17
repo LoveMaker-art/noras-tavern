@@ -123,6 +123,10 @@ export function createNoraWorldsV2Router({
             return response.json(await resolveCore(request).listLibraryWorldbooks());
         } catch (error) { return sendError(response, error); }
     });
+    router.post('/library/worldbooks/delete', async (request, response) => {
+        try { return response.json(await resolveCore(request).deleteLibraryWorldbook(request.body?.source, request.body?.revision)); }
+        catch (error) { return sendError(response, error); }
+    });
     router.post('/library/worldbooks/read', async (request, response) => {
         try { return response.json(await resolveCore(request).readLibraryWorldbook(request.body?.source)); }
         catch (error) { return sendError(response, error); }

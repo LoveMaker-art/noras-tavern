@@ -23,6 +23,7 @@ export function createCharacterController({
     isCharacterInWorld = () => false,
     createWorldFromCard,
     openWorldbookLibrary = () => {},
+    openCardWorldbook = () => {},
     openProfileLibrary = () => {},
     saveProfile = () => {},
     addRoleFromCard = () => {},
@@ -258,7 +259,8 @@ export function createCharacterController({
         const empty = fields.length ? '' : `<p class="nora-sheet-empty">${tr("该卡主要由内置世界书和扩展脚本构成。")}</p>`;
         const group = backToLibrary ? groups().find(item => item.members.some(member => member.character.avatar === character.avatar)) : null;
         const deleteTitle = group?.deletable.length ? (group.retained.length ? tr('清理重复副本') : tr('删除角色卡')) : tr('正在被世界使用');
-        const management = backToLibrary ? `<details class="nora-library-management"><summary>${tr('管理')}</summary><button class="nora-delete-button" data-library-delete type="button" ${group?.deletable.length ? '' : 'disabled'}>${icons.trash} ${deleteTitle}</button></details>` : '';
+        const management = backToLibrary ? `<details class="nora-library-management"><summary>${tr('管理')}</summary><div class="nora-library-actions"><button class="nora-library-action nora-library-action-danger" data-library-delete type="button" ${group?.deletable.length ? '' : 'disabled'}>${icons.trash}<span>${deleteTitle}</span></button></div></details>` : '';
+        const bookAction = backToLibrary && character?.data?.character_book?.entries ? `<button class="nora-library-action" data-card-worldbook type="button"><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('查看内置世界书')} · ${worldbookCount}</span></button>` : '';
         const createAction = backToLibrary ? `<footer class="nora-library-footer"><span class="nora-library-target">${activeWorldModel() ? `${tr('目标世界')}：${escapeHtml(activeWorldModel().name)}` : tr('尚未进入世界')}</span><div class="nora-sheet-actions">${worldCard ? '' : `<button data-card-add-role type="button" ${activeWorldModel() ? '' : 'disabled'}>${tr('添加角色设定')}</button>`}<button class="nora-primary" data-card-create-world type="button">${tr('创建新世界')}</button></div></footer>` : '';
         const fieldMarkup = fields.map(([label, value]) => backToLibrary ? `<details class="nora-library-book-entry"><summary>${label}</summary><p>${escapeHtml(value)}</p></details>` : `<section><h3>${label}</h3><p>${escapeHtml(value)}</p></section>`).join('');
         const activation = member ? normalizeCharacterActivation(member.activation) : null;
@@ -266,13 +268,14 @@ export function createCharacterController({
             ? t`触发词：${activation.keys.join('、')}`
             : tr('常驻：无需关键词触发');
         const activationDetail = activation ? `<section><h3>${tr('进入方式')}</h3><p>${escapeHtml(entryMode)}</p>${activation.enabled === false ? `<p class="pmuted">${tr('已关闭')}</p>` : ''}</section>` : '';
-        const detail = `${back}<div class="nora-character-detail">${overview}${rules}${activationDetail}${fieldMarkup}${empty}${management}</div>`;
+        const detail = `${back}<div class="nora-character-detail">${overview}${rules}${bookAction}${activationDetail}${fieldMarkup}${empty}${management}</div>`;
         const modal = dialogs.open(character.name, `${backToLibrary ? `<div class="nora-library-detail-scroll">${detail}</div>` : detail}${createAction}`, backToLibrary ? 'nora-detail-modal nora-world-library-modal nora-library-detail-modal nora-plain-sheet' : 'nora-detail-modal');
         select('[data-library-delete]', modal)?.addEventListener('click', () => deleteGroup(groups().find(item => item.members.some(member => member.character.avatar === character.avatar))));
         select('[data-card-create-world]', modal)?.addEventListener('click', event => createWorldFromCard(character, event.currentTarget));
         select('[data-card-add-role]', modal)?.addEventListener('click', () => addRoleFromCard(character));
+        select('[data-card-worldbook]', modal)?.addEventListener('click', () => openCardWorldbook({ kind: 'card', name: character.avatar }, () => openSheet(characterId, true)));
         if (backToLibrary && !worldCard) {
-            select('.nora-library-management', modal)?.insertAdjacentHTML?.('beforeend', `<button type="button" data-save-card-profile>${tr('另存角色资料')}</button>`);
+            select('.nora-library-actions', modal)?.insertAdjacentHTML?.('afterbegin', `<button type="button" class="nora-library-action" data-save-card-profile><i class="fa-solid fa-copy" aria-hidden="true"></i><span>${tr('另存角色资料')}</span></button>`);
             select('[data-save-card-profile]', modal)?.addEventListener('click', () => saveProfile('character', {
                 name: character.name || '', description: characterField(character, 'description') || '', personality: characterField(character, 'personality') || '',
             }));

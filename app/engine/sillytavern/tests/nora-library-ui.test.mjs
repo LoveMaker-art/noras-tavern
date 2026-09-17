@@ -12,19 +12,74 @@ function fixture() {
     };
     let world = { id: 'world:a', revision: 9, name: 'A' };
     let generating = false;
+    let accepted = true;
+    let deleteError = null;
+    const deleted = [];
     const calls = []; const toasts = []; let content = '';
     const book = { source: { kind: 'card', name: 'card.png' }, source_key: 'library:source', source_name: 'Alice', name: 'Lore', count: 1, revision: 'book-rev', book: { entries: { 0: { content: 'Rule' } } } };
+    const standalone = { ...book, source: { kind: 'book', name: 'library-lore' }, source_name: 'Lore' };
     const controller = createLibraryController({
-        worlds: { readLibraryWorldbook: async () => book,
-            importLibraryItem: async (...args) => calls.push(args), listLibraryWorldbooks: async () => ({ items: [book], warnings: [] }) },
-        presets: {}, dialogs: { open: (_title, html) => { content = html; return {}; }, close() {}, toast: message => toasts.push(message), normalizeError: error => error.message },
+        worlds: { readLibraryWorldbook: async source => source.kind === 'book' ? standalone : book,
+            deleteLibraryWorldbook: async (...args) => { if (deleteError) throw deleteError; deleted.push(args); },
+            importLibraryItem: async (...args) => calls.push(args), listLibraryWorldbooks: async () => ({ items: [standalone], warnings: [] }) },
+        presets: {}, dialogs: { open: (_title, html) => { content = html; return {}; }, confirm: async () => accepted, close() {}, toast: message => toasts.push(message), normalizeError: error => error.message },
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },
         activeWorldModel: () => world, isGenerating: () => generating,
         characterField: (card, field) => card.data[field], openCards() {}, refresh() {},
         select: node, selectAll: selector => selector === '[data-book]' ? [Object.assign(node('[data-book]'), { dataset: { book: '0' } })] : [], escapeHtml: value => String(value).replaceAll('<', '&lt;'),
     });
-    return { controller, node, calls, toasts, html: () => content, setWorld: value => { world = value; }, setGenerating: value => { generating = value; } };
+    return { controller, node, calls, deleted, toasts, html: () => content, setWorld: value => { world = value; }, setGenerating: value => { generating = value; },
+        setAccepted: value => { accepted = value; }, setDeleteError: value => { deleteError = value; } };
 }
+
+test('embedded book preview returns to its card and allows saving, never deleting the card', async () => {
+    const f = fixture();
+    let returned = false;
+    await f.controller.openBook({ kind: 'card', name: 'card.png' }, null, () => { returned = true; });
+    assert.match(f.html(), /返回完整卡/);
+    assert.match(f.html(), /Rule/);
+    assert.match(f.html(), /data-save-book-copy/);
+    assert.doesNotMatch(f.html(), /data-delete-book/);
+    f.node('[data-back]').handlers.click();
+    assert.equal(returned, true);
+    f.node('[data-save-book-copy]').handlers.click();
+    assert.match(f.html(), /data-save-book/);
+});
+
+test('standalone book has themed management; picker has no destructive management', async () => {
+    const f = fixture();
+    await f.controller.openBook({ kind: 'book', name: 'library-lore' });
+    assert.match(f.html(), /<summary>管理<\/summary>/);
+    assert.match(f.html(), /nora-library-action nora-library-action-danger" data-delete-book/);
+    assert.doesNotMatch(f.html(), /nora-delete-button|nora-setting-delete/);
+    await f.controller.openBook({ kind: 'book', name: 'library-lore' }, { id: 'world:a' });
+    assert.doesNotMatch(f.html(), /data-delete-book|data-save-book-copy|nora-library-management/);
+});
+
+test('worldbook delete confirms, carries revision, handles rejection and blocks generation', async () => {
+    const f = fixture();
+    await f.controller.openBook({ kind: 'book', name: 'library-lore' });
+    const button = f.node('[data-delete-book]');
+    const click = () => button.handlers.click({ currentTarget: button });
+    f.setAccepted(false);
+    await click();
+    assert.equal(f.deleted.length, 0);
+    assert.equal(button.disabled, false);
+    f.setAccepted(true);
+    f.setGenerating(true);
+    await click();
+    assert.equal(f.deleted.length, 0);
+    f.setGenerating(false);
+    f.setDeleteError(new Error('Worldbook is referenced'));
+    await click();
+    assert.equal(f.toasts.at(-1), 'Worldbook is referenced');
+    assert.equal(button.disabled, false);
+    assert.match(f.html(), /data-delete-book/);
+    f.setDeleteError(null);
+    await click();
+    assert.deepEqual(f.deleted, [[{ kind: 'book', name: 'library-lore' }, 'book-rev']]);
+    assert.equal(f.toasts.at(-1), '库中世界书已删除。');
+});
 
 for (const includeBook of [false, true]) {
     test(`role import preview submits only selected fields, withBook=${includeBook}`, async () => {
@@ -66,7 +121,8 @@ test('worldbook library has card navigation and JSON import, even with zero card
     assert.match(f.html(), /data-library-tab="cards"/);
     assert.match(f.html(), /导入世界书/);
     assert.match(f.html(), /Lore/);
-    assert.match(f.html(), /来自角色卡 Alice/);
+    assert.match(f.html(), /独立世界书/);
+    assert.doesNotMatch(f.html(), /来自角色卡|来源角色/);
     assert.doesNotMatch(f.html(), /card\.png/);
 });
 
@@ -77,7 +133,7 @@ test('attached status uses source identity; book details retain original file an
     assert.match(f.html(), /已添加/);
     await f.node('[data-book]').handlers.click();
     assert.match(f.html(), /data-attach disabled/);
-    assert.match(f.html(), /card\.png/);
+    assert.match(f.html(), /library-lore/);
     assert.match(f.html(), /目标世界：A/);
     await f.node('[data-attach]').handlers.click({ currentTarget: f.node('[data-attach]') });
     assert.equal(f.calls.length, 0);

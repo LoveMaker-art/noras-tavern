@@ -411,6 +411,7 @@ export function createWorldCoreRuntime(runtime, {
         retryPendingCreation,
         usesRuntimeCard,
         listLibraryWorldbooks: (...args) => client.listLibraryWorldbooks(...args),
+        deleteLibraryWorldbook: (...args) => client.deleteLibraryWorldbook(...args),
         listLibraryCards: (...args) => client.listLibraryCards(...args),
         listLibraryProfiles: (...args) => client.listLibraryProfiles(...args),
         readLibraryProfile: (...args) => client.readLibraryProfile(...args),

@@ -20,8 +20,9 @@ function fixture() {
             addEventListener(type, fn) { this.handlers[type] = fn; },
             querySelector(selector) { return select(selector, node); },
             insertAdjacentHTML(position, markup) {
-                assert.equal(position, 'beforeend', 'Library actions must append beside the existing label');
-                $(el).append(markup);
+                assert.ok(['beforeend', 'afterbegin'].includes(position));
+                if (position === 'afterbegin') $(el).prepend(markup);
+                else $(el).append(markup);
             },
         };
         nodes.set(el, node); return node;
@@ -69,9 +70,12 @@ test('World card library shows the summary without offering to copy the entire W
     for (const native of [true, false]) {
         const f = fixture();
         const card = { name: '世界名', avatar: 'world.png', data: { description: '用户概要',
+            character_book: { entries: [] },
             extensions: native ? { nora_world: { format: 'nora-world-card/2' } } : {} } };
+        const openedBooks = [];
         const controller = createCharacterController({ ...f.common,
             cards: {},
+            openCardWorldbook: source => openedBooks.push(source),
             readState: () => ({ activeCharacterId: 0, characters: [card] }), settings: () => ({}),
             characterCapabilities: () => ({ regexScripts: [], helperScripts: [] }), worldbookEntries: () => [],
         });
@@ -79,6 +83,10 @@ test('World card library shows the summary without offering to copy the entire W
         assert.equal(f.query('[data-card-create-world]').length, 1);
         assert.equal(f.query('[data-card-add-role]').length, native ? 0 : 1);
         assert.equal(f.query('[data-save-card-profile]').length, native ? 0 : 1);
+        if (!native) assert.equal(f.query('.nora-library-actions').children().first().is('[data-save-card-profile]'), true);
+        assert.equal(f.query('[data-card-worldbook]').length, 1);
+        f.select('[data-card-worldbook]').handlers.click();
+        assert.deepEqual(openedBooks, [{ kind: 'card', name: 'world.png' }]);
         assert.ok(f.query('.nora-character-detail').text().includes(tr(native ? '世界概要' : '角色介绍')));
     }
 });

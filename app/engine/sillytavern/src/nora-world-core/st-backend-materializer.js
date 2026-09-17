@@ -654,6 +654,7 @@ export function createStBackendMaterializer({
         listLibraryWorldbooks: library.list,
         readLibraryWorldbook: library.read,
         saveLibraryWorldbook: library.save,
+        deleteLibraryWorldbook: library.remove,
         async prepareLibraryWorldbook(world, input) {
             const prepared = await library.prepare(world, input);
             try { return { ...prepared, declared: prepared.book ? capabilityInspection({ data: {} }, [prepared.book]).declared : [] }; }
