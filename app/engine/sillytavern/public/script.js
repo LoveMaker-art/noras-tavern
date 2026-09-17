@@ -270,6 +270,7 @@ import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
 import { createChatWriteQueue, requestChatWrite } from './scripts/nora-story-ledger/chat-persistence.js';
+import { normalizeWorldPersona } from './scripts/nora-worlds/story-context.js';
 import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
 
 export {
@@ -8274,6 +8275,11 @@ export async function activateNoraWorldSnapshot(characterId, snapshot) {
         characters[characterId] = character;
         setCharacterId(characterId);
         chat_metadata = {};
+        // Install World-owned identity before getChat renders macros or emits
+        // first-message events. Do not edit the global persona library here.
+        const persona = normalizeWorldPersona(plan.persona);
+        name1 = persona.name;
+        power_user.persona_description = persona.description;
     });
     await getChat({ preloadedData: snapshot.chat, strict: true });
 }

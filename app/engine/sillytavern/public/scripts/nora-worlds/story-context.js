@@ -6,6 +6,10 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value);
 const invalid = () => { throw new TypeError('Invalid World story context or entity reference.'); };
 
+export function normalizeWorldPersona(value) {
+    return { name: String(value?.name || '').trim() || '玩家', description: String(value?.description || '').trim() };
+}
+
 export function normalizeCharacterActivation(value = { mode: 'constant' }) {
     if (!object(value) || !['constant', 'triggered'].includes(value.mode)) invalid();
     const allowed = ['enabled', 'mode', 'keys', 'secondaryKeys', 'selectiveLogic', 'scanDepth', 'sticky', 'cooldown', 'delay', 'caseSensitive', 'matchWholeWords'];

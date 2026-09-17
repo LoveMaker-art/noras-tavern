@@ -1,6 +1,6 @@
 // Short-lived troubleshooting for one chat. Never awaited by MVU.
 export function createMvuTraceClient({ getContext, fetcher = globalThis.fetch, now = Date.now, uuid = () => globalThis.crypto?.randomUUID?.() ?? `trace-${Date.now()}-${Math.random().toString(36).slice(2)}` }) {
-    let config = { enabled: false }, count = 0, sequence = 0, started = false;
+    let config = { enabled: false }, count = 0, sequence = 0, started = false, activeRequest = null;
     const pageId = uuid();
     const enabled = () => {
         const c = getContext();
@@ -12,7 +12,8 @@ export function createMvuTraceClient({ getContext, fetcher = globalThis.fetch, n
             if (!enabled() || count >= 120) return;
             count++;
             const c = getContext();
-            const body = JSON.stringify({ stage, detail: { pageId, sequence: ++sequence, ...detail }, requestId,
+            if (activeRequest && activeRequest.chatId !== String(c.chatId || c.getCurrentChatId?.() || '')) return;
+            const body = JSON.stringify({ stage, detail: { pageId, sequence: ++sequence, ...detail }, requestId: requestId || activeRequest?.requestId || '',
                 chatId: String(c.chatId || c.getCurrentChatId?.() || ''), occurredAt: now() }, (key, value) => {
                 if (/authorization|api.?key|secret|password|token|cookie|reasoning|thinking/i.test(key)) return undefined;
                 if (typeof value !== 'string') return value;
@@ -28,13 +29,25 @@ export function createMvuTraceClient({ getContext, fetcher = globalThis.fetch, n
     };
     const beforeRequest = data => {
         try {
-            if (!enabled()) return;
+            if (!enabled() || !activeRequest) return;
             const c = getContext();
-            data.nora_mvu_trace = { chatId: String(c.chatId || c.getCurrentChatId?.() || ''), requestId: uuid() };
+            const chatId = String(c.chatId || c.getCurrentChatId?.() || '');
+            if (chatId !== activeRequest.chatId) return;
+            data.nora_mvu_trace = { ...activeRequest };
         } catch { /* Backend removes this private marker before forwarding. */ }
     };
     return {
         enabled, record,
+        beginRequest(protocol, requestId) {
+            try {
+                if (!enabled() || !['legacy', 'nora-mvu/1'].includes(protocol)) return () => {};
+                const c = getContext();
+                const request = { kind: 'mvu-variable', protocol, requestId: requestId || uuid(), chatId: String(c.chatId || c.getCurrentChatId?.() || '') };
+                activeRequest = request;
+                return () => { if (activeRequest === request) activeRequest = null; };
+            } catch { return () => {}; }
+        },
+        endRequest(requestId) { if (activeRequest?.requestId === requestId) activeRequest = null; },
         recordScript(stage, frameName, detail = {}) {
             try {
                 if (!enabled() || !String(frameName).startsWith('TH-script--')) return;

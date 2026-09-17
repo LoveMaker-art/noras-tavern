@@ -1,5 +1,51 @@
 # MagVarUpdate Runtime
 
+## Maintenance cleanup (revision 20)
+
+Removed the unused `invokeExtraModelWithStrategy` implementation, its six
+request-progress translations and its upstream concurrent-strategy test case.
+The active bounded request flow, public `Mvu` methods, protocol routing and
+settings compatibility remain unchanged. `build-vendor.sh` now runs both the
+source transaction tests and notice tests against the newly built artifact
+before copying it into `vendor/`; the notice suite no longer gets skipped for
+lack of a source path during vendor builds.
+
+## Diagnostic copy changes (revision 19)
+
+Runtime errors and startup notices no longer direct Nora users to the upstream
+Magic Wand, Regex settings panel, or concurrent-request menu. Command errors do
+not recommend rerolling the story, and a failed primary-lorebook read no longer
+asserts that the user is in an unsupported group chat. Failure notices retain
+the error code and bounded details without claiming diagnostic delivery or
+persistence succeeded. Toast details are HTML-escaped so protocol tags remain
+visible; structured background diagnostics retain their original evidence.
+These changes do not alter prompts, validation, retries, cleanup settings, or
+variable persistence. The source notice and transaction tests cover both the
+copy and the display/background boundary; the shipped bundle is checked too.
+
+## Current compatibility changes (revision 18)
+
+Legacy cards no longer depend on Nora schema-query registration. Their original
+Zod/event consumers remain responsible for validation; a consumer without Nora
+acceptance counters may persist its result once, while diagnostics explicitly
+retain `unverified` rather than claiming full acceptance. Nora-declared cards
+still require schema readiness and execution evidence. Save acknowledgements,
+stale-World guards and duplicate suppression remain shared.
+
+Legacy system-message UpdateVariable cleanup now follows the pinned upstream;
+preservation of system format examples is scoped to Nora declarations only.
+The built-in model task, upstream template files and attempt limits are unchanged.
+
+Opt-in tracing now scopes a request ID to each extra-model attempt, including
+legacy. It correlates the helper result, parser input, host request, and (for the
+custom/OpenAI dispatch path) final provider payload. Response evidence includes
+content type/length, finish reason, numeric usage and a reasoning-presence boolean,
+never hidden reasoning text or credentials. It stays disabled until explicitly
+enabled for a short-lived chat; expiry, timeout and World changes stop capture.
+
+The sections below record earlier stages; this revision supersedes their legacy
+schema-registration and unverified-result gating descriptions.
+
 The runtime bundle is built from [MagVarUpdate](https://github.com/MagicalAstrogy/MagVarUpdate)
 at commit `7fe9ae7cfe01f13d606f7a2e533a458431fe318c` with Slash Runner commit
 `c1d0953bf1a5ca4ff28eea513fc1362eef81b80c`, and remains under the MIT license.

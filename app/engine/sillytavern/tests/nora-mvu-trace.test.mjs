@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
-import { traceConfig, normalizeTrace, traceGeneration } from '../src/nora-mvu-trace.js';
+import { traceConfig, normalizeTrace, traceGeneration, traceProviderRequest } from '../src/nora-mvu-trace.js';
 import { createMvuTraceClient } from '../../../native-extensions/nora-mvu/trace-client.js';
 import express from 'express';
 import vm from 'node:vm';
@@ -69,17 +69,55 @@ test('client captures parser input and failure without changing errors; respects
         },
     });
     await trace.start();
+    const unrelated = {}; listener(unrelated); assert.deepEqual(unrelated, {});
+    const close = trace.beginRequest('legacy');
     const data = {}; listener(data); assert.equal(data.nora_mvu_trace.chatId, 'target');
+    assert.equal(data.nora_mvu_trace.protocol, 'legacy');
     const error = new Error('missing update block');
     const protocol = trace.wrapProtocol({ readNoraResponse: () => { throw error; } });
     assert.throws(() => protocol.readNoraResponse({ content: 'wrong', reasoning_content: 'hidden' }, '聊天消息'), e => e === error);
     assert.ok(posts.some(p => p.stage === 'parser-input'));
     assert.ok(posts.some(p => p.stage === 'parser-rejected'));
     assert.doesNotMatch(JSON.stringify(posts), /hidden/);
+    close();
+    const after = {}; listener(after); assert.deepEqual(after, {});
+    trace.beginRequest('legacy', 'timed-out');
+    trace.endRequest('timed-out');
+    const timedOut = {}; listener(timedOut); assert.deepEqual(timedOut, {});
     const count = posts.length;
     chat = 'other'; trace.record('test'); assert.equal(posts.length, count);
     chat = 'target'; clock = 3000; trace.record('test'); assert.equal(posts.length, count);
     const expired = {}; listener(expired); assert.deepEqual(expired, {});
+});
+
+test('legacy wire trace retains empty-output evidence and numeric budgets without exposing reasoning', async () => {
+    const saved = [], bytes = [];
+    const res = new EventEmitter(); res.statusCode = 200;
+    res.write = chunk => { bytes.push(chunk); return true; };
+    res.end = chunk => { bytes.push(chunk); res.emit('finish'); };
+    const req = { body: {
+        nora_mvu_trace: { chatId: 'chat', requestId: 'legacy-1', kind: 'mvu-variable', protocol: 'legacy' },
+        messages: [{ role: 'system', content: 'Update variables only.' }], max_tokens: 4000,
+    } };
+    await traceGeneration(req, res, () => {}, { config: async () => ({ enabled: true }), append: async (_, e) => saved.push(e) });
+    const outgoing = { messages: [{ role: 'system', content: 'Final payload after transforms.' }], max_tokens: 3000 };
+    const frozen = structuredClone(outgoing);
+    traceProviderRequest(req, outgoing);
+    const raw = JSON.stringify({ choices: [{ message: { content: '', reasoning_content: 'private-details' }, finish_reason: 'length' }], usage: { prompt_tokens: 20, completion_tokens: 4000 } });
+    res.end(raw); await new Promise(resolve => setImmediate(resolve));
+    assert.equal(bytes[0], raw);
+    assert.equal(saved.length, 3);
+    const request = JSON.parse(normalizeTrace(saved[0]).detail);
+    assert.equal(saved[1].stage, 'provider-request');
+    assert.deepEqual(saved[1].detail, frozen);
+    assert.deepEqual(outgoing, frozen);
+    const response = JSON.parse(normalizeTrace(saved[2]).detail);
+    assert.equal(request.max_tokens, 4000);
+    assert.equal(response.choices[0].contentLength, 0);
+    assert.equal(response.choices[0].hasReasoning, true);
+    assert.equal(response.choices[0].finish_reason, 'length');
+    assert.equal(response.usage.completion_tokens, 4000);
+    assert.doesNotMatch(JSON.stringify(saved), /private-details/);
 });
 
 test('streaming diagnostics retain closing tags after hundreds of small chunks', async () => {

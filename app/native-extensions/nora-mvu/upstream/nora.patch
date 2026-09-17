@@ -210,19 +210,31 @@ index f1e2387..de4e9f2 100644
      if (!store.runtimes.is_during_extra_analysis) {
          return;
 diff --git a/src/function/request/filter_prompts.ts b/src/function/request/filter_prompts.ts
-index 89e8c98..73005bd 100644
+index 89e8c98..df283d8 100644
 --- a/src/function/request/filter_prompts.ts
 +++ b/src/function/request/filter_prompts.ts
-@@ -13,7 +13,13 @@ export function filterPrompts({ messages }: { messages: SillyTavern.SendingMessa
+@@ -1,7 +1,10 @@
+ import { useDataStore } from '@/store';
+ 
+-export function filterPrompts({ messages }: { messages: SillyTavern.SendingMessage[] }) {
++export async function filterPrompts({ messages }: { messages: SillyTavern.SendingMessage[] }) {
+     const store = useDataStore();
++    const book = getCurrentCharPrimaryLorebook();
++    const entries = book ? await getLorebookEntries(book) : [];
++    const nora = (window.parent as any).NoraMvu?.protocol.resolveMvuProtocol(entries) === 'nora-mvu/1';
+ 
+     const text_messages = messages.filter(message => typeof message.content === 'string') as {
+         role: string;
+@@ -13,7 +16,13 @@ export function filterPrompts({ messages }: { messages: SillyTavern.SendingMessa
          !store.runtimes.is_during_extra_analysis
      ) {
          text_messages
 -            .filter(message => message.content.includes('<UpdateVariable>'))
-+            // Strip old response payloads, never a card's system instructions
-+            // or format examples (including native inline fallback rules).
++            // Preserve upstream cleanup for legacy. Only Nora cards retain
++            // system format examples while stripping historical payloads.
 +            .filter(
 +                message =>
-+                    ['assistant', 'user'].includes(message.role) &&
++                    (!nora || ['assistant', 'user'].includes(message.role)) &&
 +                    message.content.includes('<UpdateVariable>')
 +            )
              .forEach(
@@ -252,10 +264,10 @@ index f2c09e3..c037fed 100644
          stop_list.forEach(stop => stop());
 diff --git a/src/function/update/access.ts b/src/function/update/access.ts
 new file mode 100644
-index 0000000..6687819
+index 0000000..4001339
 --- /dev/null
 +++ b/src/function/update/access.ts
-@@ -0,0 +1,103 @@
+@@ -0,0 +1,106 @@
 +import { useDataStore } from '@/store';
 +import { MvuCommitError } from './result';
 +
@@ -291,6 +303,9 @@ index 0000000..6687819
 +            throw new MvuCommitError('MVU_STALE_CHAT', 'The active card, protocol or settings changed.');
 +        }
 +    };
++    // Legacy scripts own their schema lifecycle. Nora's registry is an
++    // enhancement contract, not a prerequisite for native MVU execution.
++    if (captured.protocol === 'legacy') return { ...captured, fields: null, assertCurrent };
 +    const query: { schemas: Array<{ fields: unknown }> } = { schemas: [] };
 +    // Subscribe before querying: the card helper may still be starting. Keep no
 +    // persistent registry and never poll the card or send a model request to test readiness.
@@ -360,7 +375,7 @@ index 0000000..6687819
 +    });
 +}
 diff --git a/src/function/update/invoke_extra_model.ts b/src/function/update/invoke_extra_model.ts
-index edc468c..8a354c2 100644
+index edc468c..e2b82a6 100644
 --- a/src/function/update/invoke_extra_model.ts
 +++ b/src/function/update/invoke_extra_model.ts
 @@ -20,10 +20,11 @@ import {
@@ -466,7 +481,141 @@ index edc468c..8a354c2 100644
      clearExtraModelRequestOverrides();
      store.runtimes.is_function_call_enabled = false;
      try {
-@@ -347,11 +404,56 @@ export async function generateExtraModel(): Promise<string | null> {
+@@ -203,133 +260,6 @@ async function unsetExtraAnalysisStates() {
+     }
+ }
+ 
+-let is_analysis_in_progress = false;
+-
+-export async function invokeExtraModelWithStrategy(): Promise<string | null> {
+-    const batch_id = generateRandomHeader();
+-    if (is_analysis_in_progress) {
+-        return null;
+-    }
+-    try {
+-        is_analysis_in_progress = true;
+-        const store = useDataStore();
+-
+-        debug_extra_request_counter = 0;
+-
+-        const recordedInvoke = async (generation_id?: string) => {
+-            try {
+-                return await invokeExtraModel(generation_id, batch_id);
+-            } catch (e) {
+-                console.error(e);
+-                throw e;
+-            }
+-        };
+-        const safeInvoke = async (): Promise<{
+-            result: string | null;
+-            is_manual_canceled: boolean;
+-        }> => {
+-            let is_manual_canceled = false;
+-            let did_set_extra_analysis_states = false;
+-            try {
+-                await setExtraAnalysisStates();
+-                did_set_extra_analysis_states = true;
+-                return { result: await recordedInvoke(), is_manual_canceled: false };
+-            } catch (e) {
+-                /** 已经记录, 忽略 */
+-                if (e === 'Clicked stop button') is_manual_canceled = true;
+-            } finally {
+-                if (did_set_extra_analysis_states) {
+-                    await unsetExtraAnalysisStates();
+-                }
+-            }
+-            return { result: null, is_manual_canceled: is_manual_canceled };
+-        };
+-        const concurrentInvoke = async (times: number) => {
+-            const uuids = _.times(times, uuidv4);
+-            let did_set_extra_analysis_states = false;
+-            try {
+-                await setExtraAnalysisStates();
+-                did_set_extra_analysis_states = true;
+-                //在函数调用的模式下，允许接受 **任意** 有效的函数结果，因此被允许被覆盖。
+-                return await Promise.any(uuids.map(recordedInvoke));
+-            } catch (e) {
+-                /** 已经记录, 忽略 */
+-            } finally {
+-                uuids.forEach(stopGenerationById);
+-                if (did_set_extra_analysis_states) {
+-                    await unsetExtraAnalysisStates();
+-                }
+-            }
+-            return null;
+-        };
+-
+-        switch (store.settings.额外模型解析配置.请求方式) {
+-            case '依次请求，失败后重试':
+-                for (let i = 0; i < store.settings.额外模型解析配置.请求次数; i++) {
+-                    if (store.settings.通知.额外模型解析中) {
+-                        toastr.info(
+-                            i === 0
+-                                ? tr('runtime.extraModel.requesting')
+-                                : tr('runtime.extraModel.retrying', {
+-                                      attempt: i,
+-                                      total: store.settings.额外模型解析配置.请求次数 - 1,
+-                                  }),
+-                            tr('runtime.extraModel.updateInProgressTitle')
+-                        );
+-                    }
+-                    const { result, is_manual_canceled } = await safeInvoke();
+-                    if (result !== null) {
+-                        return result;
+-                    }
+-                    if (is_manual_canceled) {
+-                        //因为手动取消了，不再进行重试。
+-                        return null;
+-                    }
+-                }
+-                return null;
+-            case '同时请求多次':
+-                if (store.settings.通知.额外模型解析中) {
+-                    toastr.info(
+-                        tr('runtime.extraModel.concurrentRequests', {
+-                            count: store.settings.额外模型解析配置.请求次数,
+-                        }),
+-                        tr('runtime.extraModel.updateInProgressTitle')
+-                    );
+-                }
+-                return concurrentInvoke(store.settings.额外模型解析配置.请求次数);
+-            case '先请求一次, 失败后再同时请求多次':
+-                if (store.settings.通知.额外模型解析中) {
+-                    toastr.info(
+-                        tr('runtime.extraModel.firstRequest'),
+-                        tr('runtime.extraModel.updateInProgressTitle')
+-                    );
+-                }
+-                {
+-                    const { result, is_manual_canceled } = await safeInvoke();
+-                    if (result !== null) {
+-                        return result;
+-                    }
+-                    if (is_manual_canceled) {
+-                        //因为手动取消了，不再进行重试。
+-                        return null;
+-                    }
+-                }
+-                if (store.settings.通知.额外模型解析中) {
+-                    toastr.info(
+-                        tr('runtime.extraModel.firstRequestFailed', {
+-                            count: store.settings.额外模型解析配置.请求次数 - 1,
+-                        }),
+-                        tr('runtime.extraModel.updateInProgressTitle')
+-                    );
+-                }
+-                return concurrentInvoke(store.settings.额外模型解析配置.请求次数 - 1);
+-            default:
+-                return null;
+-        }
+-    } finally {
+-        is_analysis_in_progress = false;
+-    }
+-}
+ 
+ /**
+  * @brief 调用额外模型解析，可能会抛出异常。
+@@ -347,11 +277,63 @@ export async function generateExtraModel(): Promise<string | null> {
      }
  }
  
@@ -504,6 +653,7 @@ index edc468c..8a354c2 100644
 +        ]);
 +    } finally {
 +        if (timer) clearTimeout(timer);
++        noraBridge().trace?.endRequest(generation_id);
 +        if (did_set_extra_analysis_states) await unsetExtraAnalysisStates();
 +    }
 +}
@@ -517,15 +667,30 @@ index edc468c..8a354c2 100644
 +    repair_feedback = '',
 +    access?: MvuAccess
 +): Promise<string> {
++    let closeTrace: (() => void) | undefined;
      try {
 -        const result = await requestReply(generation_id, batch_id);
 +        access ??= await captureMvuAccess();
++        closeTrace = noraBridge().trace?.beginRequest(access.protocol, generation_id);
 +        const result = await requestReply(generation_id, batch_id, repair_feedback, access);
++        noraBridge().trace?.record('parser-input', {
++            protocol: access.protocol, contentLength: typeof result === 'string' ? result.length : null,
++            result,
++        });
 +        if (access.protocol !== 'legacy') return result;
  
          const tag = _([...result.matchAll(/<(update(?:variable)?|variableupdate)>/gi)]).last()?.[1];
          if (!tag) {
-@@ -420,8 +522,11 @@ function normalizeGenerateResult(result: string | GenerateToolCallResult): strin
+@@ -384,7 +366,7 @@ async function invokeExtraModel(generation_id?: string, batch_id?: string): Prom
+             })
+         );
+     } finally {
+-        /* empty */
++        closeTrace?.();
+     }
+ }
+ 
+@@ -420,8 +402,15 @@ function normalizeGenerateResult(result: string | GenerateToolCallResult): strin
  
  function normalizeGenerateResultByResponseFormat(
      result: string | GenerateToolCallResult,
@@ -533,12 +698,16 @@ index edc468c..8a354c2 100644
 +    response_format: string,
 +    access: MvuAccess
  ): string {
++    noraBridge().trace?.record('helper-result', {
++        protocol: access.protocol, format: response_format, result,
++        contentLength: typeof result === 'string' ? result.length : result?.content?.length ?? null,
++    });
 +    if (access.protocol !== 'legacy')
 +        return noraBridge().protocol.readNoraResponse(result, response_format);
      if (response_format === '格式化输出' || response_format === V4_COMPATIBLE_FORMATTED_OUTPUT) {
          const formatted = extractFromFormattedOutput(result);
          if (formatted) {
-@@ -431,7 +536,16 @@ function normalizeGenerateResultByResponseFormat(
+@@ -431,7 +420,16 @@ function normalizeGenerateResultByResponseFormat(
      return normalizeGenerateResult(result);
  }
  
@@ -556,7 +725,7 @@ index edc468c..8a354c2 100644
      const store = useDataStore();
      const response_format = store.settings.额外模型解析配置.应答格式;
      const is_v4_compatible_formatted_output = response_format === V4_COMPATIBLE_FORMATTED_OUTPUT;
-@@ -446,7 +560,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -446,7 +444,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
          generation_id,
      };
      if (supports_request_scoped_tools) {
@@ -565,7 +734,7 @@ index edc468c..8a354c2 100644
      }
      if (store.settings.额外模型解析配置.模型来源 === '自定义') {
          const unset_if_equal = (value: number, expected: number) =>
-@@ -454,6 +568,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -454,6 +452,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
                  ? 'unset'
                  : value;
          config.custom_api = {
@@ -573,7 +742,7 @@ index edc468c..8a354c2 100644
              apiurl: normalizeBaseURL(store.settings.额外模型解析配置.api地址),
              key: store.settings.额外模型解析配置.密钥,
              model: store.settings.额外模型解析配置.模型名称,
-@@ -478,22 +593,43 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -478,22 +477,43 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
          }
      }
  
@@ -626,7 +795,7 @@ index edc468c..8a354c2 100644
      }
  
      //因为部分预设会用到 {{lastUserMessage}}，因此进行修正。
-@@ -534,7 +670,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -534,7 +554,7 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
                  },
              ],
          });
@@ -635,7 +804,7 @@ index edc468c..8a354c2 100644
      }
  
      if (store.settings.额外模型解析配置.破限方案 === '使用其他预设') {
-@@ -556,18 +692,16 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -556,18 +576,16 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
                  injects,
                  ordered_prompts,
              }),
@@ -659,7 +828,7 @@ index edc468c..8a354c2 100644
              ? [{ role: 'system' as const, content: batch_id ?? generateRandomHeader() }]
              : [];
  
-@@ -575,7 +709,9 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -575,7 +593,9 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
          ...config,
          ordered_prompts: [
              ...rnd_header_prompts,
@@ -670,7 +839,7 @@ index edc468c..8a354c2 100644
              { role: 'system', content: '<additional_information>' },
              'persona_description',
              'char_description',
-@@ -587,8 +723,10 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
+@@ -587,8 +607,10 @@ async function requestReply(generation_id?: string, batch_id?: string): Promise<
              { role: 'system', content: '</past_observe>' },
              { role: 'system', content: task },
              'user_input',
@@ -684,7 +853,7 @@ index edc468c..8a354c2 100644
 +    return normalizeGenerateResultByResponseFormat(result, response_format, access);
  }
 diff --git a/src/function/update/on_message_received.ts b/src/function/update/on_message_received.ts
-index 2f7a0bf..987876f 100644
+index 2f7a0bf..14a78e7 100644
 --- a/src/function/update/on_message_received.ts
 +++ b/src/function/update/on_message_received.ts
 @@ -1,14 +1,136 @@
@@ -787,7 +956,7 @@ index 2f7a0bf..987876f 100644
 +    const diagnostics = getLastVariableUpdateDiagnostics();
 +    const result = executionResult(diagnostics, true);
 +    if (
-+        !executionAccepted(result) ||
++        !executionAccepted(result, access.protocol) ||
 +        (access.protocol !== 'legacy' && result.outcome === 'partial')
 +    )
 +        return false;
@@ -1017,7 +1186,7 @@ index 2f7a0bf..987876f 100644
 +    });
 +    if (['stale', 'cancelled'].includes(outcome)) return;
 +    toastr.error(
-+        `${tr('runtime.extraModel.updateFailed')} [${failure.code}]: ${(repair_feedback || 'MVU update failed.').slice(0, 300)}`,
++        _.escape(`${tr('runtime.extraModel.updateFailed')} [${failure.code}]: ${(repair_feedback || 'MVU update failed.').slice(0, 300)}`),
 +        tr('runtime.extraModel.updateFailedTitle')
 +    );
 +}
@@ -1052,10 +1221,10 @@ index 2f7a0bf..987876f 100644
  }
 diff --git a/src/function/update/result.ts b/src/function/update/result.ts
 new file mode 100644
-index 0000000..0237f7b
+index 0000000..5e10ee1
 --- /dev/null
 +++ b/src/function/update/result.ts
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,117 @@
 +import { variable_events } from '@/variable_def';
 +
 +/** Execution evidence, before persistence. The boolean updateVariables API remains upstream-compatible. */
@@ -1100,8 +1269,9 @@ index 0000000..0237f7b
 +    return { outcome: diagnostics.modified ? 'updated' : 'unchanged', code: '', stage: 'update' };
 +}
 +
-+export function executionAccepted(result: ReturnType<typeof executionResult>) {
-+    return ['updated', 'unchanged', 'partial'].includes(result.outcome);
++export function executionAccepted(result: ReturnType<typeof executionResult>, protocol?: string) {
++    return ['updated', 'unchanged', 'partial'].includes(result.outcome) ||
++        (protocol === 'legacy' && result.outcome === 'unverified');
 +}
 +
 +/** Both update modes publish the same terminal envelope; persistence policy stays with the caller. */
@@ -1154,7 +1324,8 @@ index 0000000..0237f7b
 +                result.code),
 +    };
 +    await eventEmit(
-+        (['updated', 'unchanged', 'skipped'].includes(outcome) || (outcome === 'partial' && persisted))
++        (['updated', 'unchanged', 'skipped'].includes(outcome) ||
++            (persisted && (outcome === 'partial' || (context.protocol === 'legacy' && outcome === 'unverified'))))
 +            ? variable_events.TRANSACTION_COMMITTED
 +            : variable_events.TRANSACTION_FAILED,
 +        detail
@@ -1172,7 +1343,7 @@ index 0000000..0237f7b
 +    }
 +}
 diff --git a/src/function/update_variables.ts b/src/function/update_variables.ts
-index e803b3d..19550e9 100644
+index e803b3d..6f3ae27 100644
 --- a/src/function/update_variables.ts
 +++ b/src/function/update_variables.ts
 @@ -20,6 +20,20 @@ import {
@@ -1496,7 +1667,7 @@ index e803b3d..19550e9 100644
          }
      }
      const updater = (data: Record<string, any>) => {
-@@ -1567,13 +1701,114 @@ export async function handleVariablesInMessage(message_id: number) {
+@@ -1567,13 +1701,115 @@ export async function handleVariablesInMessage(message_id: number) {
          return data;
      };
      if (settings.兼容性.更新到聊天变量) {
@@ -1558,6 +1729,7 @@ index e803b3d..19550e9 100644
 +    });
 +    try {
 +        access ??= await captureMvuAccess();
++        transaction.protocol = access.protocol;
 +        const isNora = access.protocol !== 'legacy' && chat_message.role === 'assistant';
 +        const is_modified = await updateVariables(
 +            access.protocol !== 'legacy' && !isNora ? '' : chat_message.message,
@@ -1611,6 +1783,126 @@ index e803b3d..19550e9 100644
 +        return false;
 +    }
  }
+diff --git a/src/i18n/messages/runtime.ts b/src/i18n/messages/runtime.ts
+index 0397eba..ae1749a 100644
+--- a/src/i18n/messages/runtime.ts
++++ b/src/i18n/messages/runtime.ts
+@@ -363,12 +363,12 @@ export const runtimeMessages = defineMessages({
+     },
+ 
+     'runtime.notification.settingsUiUpdatedTitle': {
+-        'zh-CN': '[MVU]已更新独立配置界面',
+-        en: '[MVU] Dedicated settings panel updated',
++        'zh-CN': '[MVU]配置接入已更新',
++        en: '[MVU] Settings integration updated',
+     },
+     'runtime.notification.settingsUiUpdatedBody': {
+-        'zh-CN': '配置界面位于酒馆扩展界面中的“正则”下方，请点开了解新功能或自定义配置',
+-        en: 'The settings panel is located below “Regex” in SillyTavern Extensions. Open it to review new features or customize MVU.',
++        'zh-CN': '变量模型配置由 Nora 界面管理，不使用原酒馆扩展配置面板。',
++        en: 'Variable-model settings are managed by Nora, not by the original SillyTavern extension settings panel.',
+     },
+     'runtime.notification.autoCleanupFeatureTitle': {
+         'zh-CN': '[MVU]已更新自动清理旧变量功能',
+@@ -376,8 +376,8 @@ export const runtimeMessages = defineMessages({
+     },
+     'runtime.notification.autoCleanupFeatureBody': {
+         'zh-CN':
+-            'MVU 现在可以自动清理旧变量来减少聊天文件大小；这不会影响你回退游玩以前的楼层。可在设置中开启“变量自动清理”。',
+-        en: 'MVU can now automatically remove old variable data to reduce chat file size without preventing you from returning to earlier floors. Enable Automatic Variable Cleanup in settings.',
++            '较早消息的变量快照可按清理策略移除，以减少聊天文件大小；是否启用以当前配置为准。',
++        en: 'Older variable snapshots may be removed according to the cleanup policy to reduce chat file size. The current configuration determines whether cleanup is enabled.',
+     },
+     'runtime.notification.customApiOptionsTitle': {
+         'zh-CN': '[MVU]已更新更多自定义 API 配置',
+@@ -402,17 +402,17 @@ export const runtimeMessages = defineMessages({
+     },
+     'runtime.notification.builtinJailbreakBody': {
+         'zh-CN':
+-            '现在，额外模型解析如果取消“发送预设”，则会使用内置的破限提示词——既避免写作任务又避免道歉。',
+-        en: 'When Send Preset is disabled, extra-model parsing now uses a built-in jailbreak prompt designed to avoid both writing tasks and refusals.',
++            '额外模型请求使用当前配置所选的提示词方案；是否返回有效变量更新仍需检查实际输出。',
++        en: 'Extra-model requests use the prompt strategy selected by the current configuration. The actual response must still be checked for a valid variable update.',
+     },
+     'runtime.notification.concurrentRequestsTitle': {
+-        'zh-CN': '[MVU]已支持同时多次请求变量更新',
+-        en: '[MVU] Concurrent variable-update requests added',
++        'zh-CN': '[MVU]变量请求流程已更新',
++        en: '[MVU] Variable request flow updated',
+     },
+     'runtime.notification.concurrentRequestsBody': {
+         'zh-CN':
+-            '现在，你可以在“变量更新方式 → 请求策略 → 请求方式”中选择并发请求，提高额外模型解析成功率并节省时间。',
+-        en: 'You can now choose concurrent requests under Variable Update Method → Request Strategy → Request Method to improve extra-model parsing success rates and save time.',
++            '本运行时按单次请求和有上限的纠错流程处理变量更新；失败原因以具体错误为准。',
++        en: 'This runtime handles variable updates with a single request and bounded repair attempts. Consult the specific error if an update fails.',
+     },
+     'runtime.notification.buildInfo': {
+         'zh-CN': '构建信息：{date}（{commit}）',
+@@ -469,8 +469,8 @@ export const runtimeMessages = defineMessages({
+         en: 'The current TavernHelper version is {current}. Tool calling requires TavernHelper {required} or later.',
+     },
+     'runtime.extraModel.characterLorebookUnavailableLog': {
+-        'zh-CN': '无法找到角色世界书，在多人聊天下不支持额外模型解析。',
+-        en: 'The character lorebook could not be found. Extra-model parsing is unavailable in group chats.',
++        'zh-CN': '[MVU]无法读取当前卡的主世界书，未能确认额外模型解析是否可用。',
++        en: '[MVU] Could not read the current card’s primary lorebook; extra-model availability could not be determined.',
+     },
+     'runtime.extraModel.v4RequiresCustomSource': {
+         'zh-CN': '[MVU额外模型解析]格式化输出(v4兼容)需要额外模型来源为自定义，不能与插头相同。',
+@@ -492,30 +492,6 @@ export const runtimeMessages = defineMessages({
+         'zh-CN': '[MVU额外模型解析]无法获取 SillyTavern OpenAI 设置，不能恢复配置。',
+         en: '[MVU extra-model parsing] SillyTavern OpenAI settings are unavailable; the configuration cannot be restored.',
+     },
+-    'runtime.extraModel.requesting': {
+-        'zh-CN': '正在请求 AI 回复…',
+-        en: 'Requesting an AI response…',
+-    },
+-    'runtime.extraModel.retrying': {
+-        'zh-CN': '正在重试（{attempt} / {total}）…',
+-        en: 'Retrying ({attempt} / {total})…',
+-    },
+-    'runtime.extraModel.updateInProgressTitle': {
+-        'zh-CN': '[MVU额外模型解析]变量更新中',
+-        en: '[MVU extra-model parsing] Updating variables',
+-    },
+-    'runtime.extraModel.concurrentRequests': {
+-        'zh-CN': '将同时请求 {count} 次 AI 回复以提高成功率…',
+-        en: 'Requesting {count} AI responses concurrently to improve the success rate…',
+-    },
+-    'runtime.extraModel.firstRequest': {
+-        'zh-CN': '将先请求一次，尝试是否能成功…',
+-        en: 'Trying one request first…',
+-    },
+-    'runtime.extraModel.firstRequestFailed': {
+-        'zh-CN': '首次请求失败，将同时请求 {count} 次 AI 回复以提高成功率…',
+-        en: 'The first request failed. Requesting {count} AI responses concurrently to improve the success rate…',
+-    },
+     'runtime.extraModel.updateTagMissing': {
+         'zh-CN': '[MVU额外模型解析]没有能从回复中找到<UpdateVariable>标签',
+         en: '[MVU extra-model parsing] No <UpdateVariable> tag was found in the response',
+@@ -533,8 +509,8 @@ export const runtimeMessages = defineMessages({
+         en: '[MVU] Automatic extra-model parsing is disabled',
+     },
+     'runtime.extraModel.updateFailed': {
+-        'zh-CN': '建议调整变量更新方式；可在“输入框左下角魔棒 → 日志查看器”查看具体情况',
+-        en: 'Try adjusting the variable update method. Open Magic Wand → Log Viewer at the lower-left of the input box for details.',
++        'zh-CN': '本次变量更新未能确认完成。错误代码与详情如下',
++        en: 'Completion of this variable update could not be confirmed. Error code and details follow',
+     },
+     'runtime.extraModel.updateFailedTitle': {
+         'zh-CN': '[MVU额外模型解析]变量更新失败',
+@@ -546,8 +522,8 @@ export const runtimeMessages = defineMessages({
+         en: 'unknown command',
+     },
+     'runtime.variableUpdate.errorTitle': {
+-        'zh-CN': '[MVU]发生变量更新错误，可能需要重 Roll：{command}',
+-        en: '[MVU] Variable update error; rerolling may help: {command}',
++        'zh-CN': '[MVU]变量命令处理出错：{command}',
++        en: '[MVU] Variable command processing error: {command}',
+     },
+     'runtime.variableUpdate.errorDetail': {
+         'zh-CN': '错误详情：{detail}',
 diff --git a/src/main.ts b/src/main.ts
 index 364eb10..2b10780 100644
 --- a/src/main.ts
@@ -1667,6 +1959,63 @@ index a94688c..2bcf166 100644
      [variable_events.COMMAND_PARSED]: (
          variables: MvuData,
          commands: CommandInfo[],
+diff --git a/tests/extra_model_max_chat_history.test.ts b/tests/extra_model_max_chat_history.test.ts
+index 07af81e..1fc2783 100644
+--- a/tests/extra_model_max_chat_history.test.ts
++++ b/tests/extra_model_max_chat_history.test.ts
+@@ -1,7 +1,4 @@
+-import {
+-    generateExtraModel,
+-    invokeExtraModelWithStrategy,
+-} from '@/function/update/invoke_extra_model';
++import { generateExtraModel } from '@/function/update/invoke_extra_model';
+ import { MVU_TOOL_DEFINITION } from '@/function/function_call';
+ import { MIN_FUNCTION_CALLING_TAVERN_HELPER_VERSION } from '@/function/is_function_calling_supported';
+ import { useDataStore } from '@/store';
+@@ -240,43 +237,6 @@ describe('extra model max chat history', () => {
+         expect((globalThis as any).builtin.saveSettings).toHaveBeenCalledTimes(2);
+     });
+ 
+-    test('keeps temporary custom json_object response format for concurrent strategy requests', async () => {
+-        const store = useDataStore();
+-        store.versions.tavernhelper = '4.3.9';
+-        store.settings.额外模型解析配置.应答格式 = '格式化输出(v4兼容)';
+-        store.settings.额外模型解析配置.模型来源 = '自定义';
+-        store.settings.额外模型解析配置.请求方式 = '同时请求多次';
+-        store.settings.额外模型解析配置.请求次数 = 2;
+-        store.settings.通知.额外模型解析中 = false;
+-        (globalThis as any).SillyTavern.chatCompletionSettings.custom_include_body =
+-            'existing_flag: true';
+-
+-        (globalThis as any).generateRaw = jest.fn().mockImplementation(async config => {
+-            expect((globalThis as any).builtin.saveSettings).toHaveBeenCalledTimes(1);
+-            expect(
+-                (globalThis as any).SillyTavern.chatCompletionSettings.custom_include_body
+-            ).toContain(`response_format:\n  type: json_object`);
+-            expect(config.custom_api).toEqual(
+-                expect.objectContaining({
+-                    source: 'custom',
+-                })
+-            );
+-            return JSON.stringify({
+-                analysis: 'ok',
+-                json_patch: [{ op: 'replace', path: '/x', value: 1 }],
+-            });
+-        });
+-
+-        const result = await invokeExtraModelWithStrategy();
+-
+-        expect(result).toContain('<JSONPatch>');
+-        expect((globalThis as any).generateRaw).toHaveBeenCalledTimes(2);
+-        expect((globalThis as any).SillyTavern.chatCompletionSettings.custom_include_body).toBe(
+-            'existing_flag: true'
+-        );
+-        expect((globalThis as any).builtin.saveSettings).toHaveBeenCalledTimes(2);
+-    });
+-
+     test('blocks reentry while temporary settings save is pending', async () => {
+         const store = useDataStore();
+         store.versions.tavernhelper = '4.3.9';
 diff --git a/webpack.config.ts b/webpack.config.ts
 index 76b0425..e3f598e 100644
 --- a/webpack.config.ts

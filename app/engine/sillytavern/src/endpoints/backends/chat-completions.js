@@ -6,7 +6,7 @@ import fetch from 'node-fetch';
 import urlJoin from 'url-join';
 import { resolveStoryLedger } from '../../nora-story-ledger/runtime.js';
 import { LedgerConflict } from '../../nora-story-ledger/core.js';
-import { traceGeneration } from '../../nora-mvu-trace.js';
+import { traceGeneration, traceProviderRequest } from '../../nora-mvu-trace.js';
 
 import {
     AIMLAPI_HEADERS,
@@ -2621,6 +2621,7 @@ router.post('/generate', traceGeneration, async function (request, response) {
             ledgerDispatch = await ledgerRuntime.plugin.reserve(ledgerProof, ledgerProof.recordId, requestBody.messages);
         }
 
+        traceProviderRequest(request, requestBody);
         const fetchResponse = await fetch(endpointUrl, config);
 
         if (request.body.stream) {

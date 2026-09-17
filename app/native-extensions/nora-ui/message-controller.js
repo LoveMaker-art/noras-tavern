@@ -265,7 +265,7 @@ export function createMessageController({
             messageView.showMvuTransaction?.('syncing');
         } else if (mvuSyncing && mvuSession === getSessionKey()) {
             mvuSyncing = false;
-            if (['cancelled', 'stale', 'skipped', 'partial'].includes(transaction.status)) {
+            if (['cancelled', 'stale', 'skipped', 'partial', 'unverified'].includes(transaction.status)) {
                 messageView.clearMvuTransaction?.();
             } else {
                 messageView.showMvuTransaction?.(transaction.status);

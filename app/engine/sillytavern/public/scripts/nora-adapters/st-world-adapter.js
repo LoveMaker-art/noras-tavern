@@ -1,5 +1,5 @@
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
-import { renderStoryContext } from '../nora-worlds/story-context.js';
+import { renderStoryContext, normalizeWorldPersona } from '../nora-worlds/story-context.js';
 import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
 import { createWorldPreset, normalizeWorldPreset, validateWorldPresetParameters, validateWorldPresetModelLimits, WORLD_PRESET_FIELDS } from '../nora-worlds/world-preset.js';
 import { worldPresetProjection } from '../nora-worlds/world-preset-projection.js';
@@ -208,8 +208,9 @@ export function createStWorldAdapter(getContext) {
         if (typeof current.setUserName !== 'function' || typeof current.updatePersonaDescription !== 'function') {
             throw new Error('故事运行核心缺少世界身份能力。');
         }
-        current.setUserName(String(value.name || '').trim(), { toastPersonaNameChange: false });
-        await current.updatePersonaDescription(String(value.description || '').trim(), { syncUi: false });
+        const identity = normalizeWorldPersona(value);
+        current.setUserName(identity.name, { toastPersonaNameChange: false });
+        await current.updatePersonaDescription(identity.description, { syncUi: false });
         return read();
     }
 

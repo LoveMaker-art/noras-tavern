@@ -83,7 +83,7 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const modules = new Map();
     const mocks = {
         '@/store': { useDataStore: () => store },
-        '@/i18n': { tr: key => key },
+        '@/i18n': { tr: key => key === 'runtime.extraModel.updateTagMissing' ? '没有能从回复中找到<UpdateVariable>标签' : key },
         '@/function/is_extra_model_supported': { isExtraModelSupported: async () => true },
         '@/function/is_function_calling_supported': { isFunctionCallingSupported: () => toolSupport, MIN_FUNCTION_CALLING_TAVERN_HELPER_VERSION: '4.8.4' },
         '@/function/update/invoke_extra_model': {
@@ -124,10 +124,11 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
     const updater = load(path.join(source, 'src/function/update_variables.ts'));
     const runtime = load(path.join(source, 'src/function/update/on_message_received.ts'));
     if (zod) load(helper).registerMvuSchema(typeof zod === 'function' ? zod(z) : z.object({ score: z.number() }));
-    return { updater, observer, requests, writes, reports, emitted, chat, warnings, settings, entries, transportPrompts,
+    return { updater, observer, requests, writes, reports, emitted, chat, warnings, settings, entries, transportPrompts, bridge,
         registerSchema: () => load(helper).registerMvuSchema(z.object({ score: z.number() })),
         readinessListeners: () => (events.get('nora_mvu_schema_ready') || []).length,
         run: options => runtime.onMessageReceived(2, options),
+        runInlineDirect: () => updater.handleVariablesInMessage(2),
         prepare: messages => load(path.join(source, 'src/function/update/access.ts')).prepareMvuPrompt({ messages }),
         filter: (lores, extra) => { store.runtimes.is_during_extra_analysis = extra; return load(path.join(source, 'src/function/request/filter_entries.ts')).filterEntries(lores); },
         filterPrompts: messages => load(path.join(source, 'src/function/request/filter_prompts.ts')).filterPrompts({ messages }),
@@ -293,11 +294,37 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(f.observer.status().updateOperational, false);
         });
     }
-    await t.test('legacy external command consumer without diagnostics remains unverified', async () => {
-        const f = fixture({ response: "_.set('score', 50);" });
-        f.on(f.events.COMMAND_PARSED + '_for_zod', (_variables, commands) => { commands.length = 0; });
+    for (const inline of [false, true]) await t.test(`legacy external consumer persists without inventing acceptance: inline=${inline}`, async () => {
+        const command = "_.set('score', 51);";
+        const f = fixture({ inline, response: command, ...(inline ? { message: command } : {}) });
+        f.on(f.events.COMMAND_PARSED + '_for_zod', (variables, commands) => { variables.stat_data.score = 51; commands.length = 0; });
         await f.run();
         assert.equal(f.terminal().outcome, 'unverified');
+        assert.equal(f.terminal().persisted, true);
+        assert.equal(f.chat[2].stat_data.score, 51);
+        assert.equal(f.terminal().diagnostics.accepted_count, 0);
+        assert.equal(f.observer.status().updateOperational, null);
+        assert.equal(f.observer.status().updatePhase, 'unverified');
+        assert.equal(f.requests.length, inline ? 0 : 1);
+        assert.equal(f.reports.at(-1).kind, 'mvu-update-unverified');
+    });
+    await t.test('direct inline entry also reports its resolved legacy protocol', async () => {
+        const f = fixture({ inline: true, message: "_.set('score',51);" });
+        f.on(f.events.COMMAND_PARSED + '_for_zod', (variables, commands) => { variables.stat_data.score = 51; commands.length = 0; });
+        await f.runInlineDirect();
+        assert.equal(f.terminal().protocol, 'legacy');
+        assert.equal(f.terminal().persisted, true);
+        assert.equal(f.observer.status().updateOperational, null);
+        assert.equal(f.chat[2].stat_data.score, 51);
+    });
+    await t.test('Nora external consumer still requires acceptance evidence', async () => {
+        const response = '<UpdateVariable><NoraMvu>{"protocol":"nora-mvu/1","operations":[{"op":"set","path":["score"],"value":51}]}</NoraMvu></UpdateVariable>';
+        const f = fixture({ nora: true, response });
+        f.on(f.events.COMMAND_PARSED + '_for_zod', (variables, commands) => { variables.stat_data.score = 51; commands.length = 0; });
+        await f.run();
+        assert.equal(f.terminal().outcome, 'unverified');
+        assert.equal(f.terminal().persisted, false);
+        assert.notEqual(f.chat[2].stat_data?.score, 51);
         assert.equal(f.requests.length, 1);
     });
     await t.test('state equality is measured after final card hooks', async () => {
@@ -375,12 +402,12 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
             assert.equal(f.requests.length, inline ? 0 : 1);
         });
     }
-    await t.test('history cleanup never strips the card system format instructions', () => {
-        const f = fixture();
+    for (const nora of [false, true]) await t.test(`history cleanup follows protocol: nora=${nora}`, async () => {
+        const f = fixture({ nora });
         const content = 'Keep this format:\n<UpdateVariable>_.set(\'score\',51);</UpdateVariable>';
         const messages = [{ role: 'system', content }, { role: 'assistant', content }];
-        f.filterPrompts(messages);
-        assert.equal(messages[0].content, content);
+        await f.filterPrompts(messages);
+        assert.equal(messages[0].content.includes('<UpdateVariable>'), nora);
         assert.doesNotMatch(messages[1].content, /<UpdateVariable>/);
     });
     await t.test('extra-model parses only its own payload while hooks retain full narrative', async () => {
@@ -393,6 +420,35 @@ test('pinned MVU execution / persistence / observation result contract', { skip:
         assert.equal(f.terminal().diagnostics.command_count, 1);
         assert.ok(hookText.startsWith(story));
     });
+});
+
+test('failure toasts escape diagnostic markup while background reports retain evidence', { skip: !source }, async () => {
+    const f = fixture();
+    f.transportError(new Error('Missing <UpdateVariable>; unexpected <b>text</b>'));
+    await f.run();
+    const toast = f.warnings.find(args => String(args[0]).includes('runtime.extraModel.updateFailed'));
+    assert.ok(toast, 'The terminal failure should produce a notice');
+    assert.doesNotMatch(toast[0], /<UpdateVariable>|<b>/);
+    assert.match(toast[0], /&lt;UpdateVariable&gt;/);
+    assert.match(toast[0], /MVU_/);
+    assert.match(f.reports.at(-1).summary, /<UpdateVariable>/);
+});
+
+test('legacy empty responses retain trace stages and close each request scope', { skip: !source }, async () => {
+    const f = fixture({ realRequest: true, response: '' });
+    f.settings.额外模型解析配置.应答格式 = '聊天消息';
+    const scopes = [], stages = [];
+    f.bridge.trace = {
+        beginRequest(protocol, id) { const scope = { protocol, id, closed: false }; scopes.push(scope); return () => { scope.closed = true; }; },
+        endRequest() {}, record(stage, detail) { stages.push({ stage, detail }); },
+    };
+    await f.run();
+    assert.equal(f.terminal().code, 'MVU_RESPONSE_PARSE_FAILED');
+    assert.equal(scopes.length, 2);
+    assert.ok(scopes.every(s => s.protocol === 'legacy' && s.id && s.closed));
+    assert.notEqual(scopes[0].id, scopes[1].id);
+    assert.equal(stages.filter(s => s.stage === 'helper-result' && s.detail.contentLength === 0).length, 2);
+    assert.equal(stages.filter(s => s.stage === 'parser-input' && s.detail.contentLength === 0).length, 2);
 });
 
 test('a declared schema registering during first preparation is awaited before sending the prompt', { skip: !source }, async () => {
@@ -571,10 +627,18 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
             assert.ok(!f.chat[2].stat_data || f.chat[2].stat_data.score === 50);
         });
         await t.test(`declared but unavailable Zod is explicit: inline=${inline}`, async () => {
-            const f = fixture({ inline, schemaExpected: true }); await f.run();
+            const f = fixture({ nora: true, inline, schemaExpected: true }); await f.run();
             assert.equal(f.requests.length, 0); assert.equal(f.writes.length, 0);
             assert.equal(f.terminal().code, 'MVU_SCHEMA_UNAVAILABLE');
             assert.equal(f.observer.status().updatePhase, 'failed');
+        });
+        await t.test(`legacy does not require Nora schema registration: inline=${inline}`, async () => {
+            const command = "_.set('score', 51);";
+            const f = fixture({ inline, schemaExpected: true, response: command, ...(inline ? { message: command } : {}) });
+            await f.run();
+            assert.equal(f.terminal().persisted, true);
+            assert.equal(f.chat[2].stat_data.score, 51);
+            assert.equal(f.readinessListeners(), 0);
         });
     }
     await t.test('structured repair replaces the candidate, not already applied deltas', async () => {

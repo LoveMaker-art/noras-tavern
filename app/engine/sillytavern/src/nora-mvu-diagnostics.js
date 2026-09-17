@@ -42,7 +42,8 @@ export function normalizeMvuDiagnostic(payload, {
     const stage = String(payload.stage || 'update');
     return {
         schemaVersion: SCHEMA_VERSION,
-        kind: payload.kind === 'mvu-update-partial' && payload.persisted === true ? 'mvu-update-partial' : 'mvu-update-failed',
+        kind: payload.persisted === true && (payload.kind === 'mvu-update-partial' ||
+            (payload.kind === 'mvu-update-unverified' && payload.protocol === 'legacy')) ? payload.kind : 'mvu-update-failed',
         receivedAt,
         occurredAt: finiteNumber(payload.occurredAt),
         user: redact(user, 80) || 'unknown',

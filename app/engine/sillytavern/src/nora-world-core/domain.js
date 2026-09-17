@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import { normalizeWorldPreset } from '../../public/scripts/nora-worlds/world-preset.js';
-import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
+import { normalizeStoryContext, normalizeWorldPersona } from '../../public/scripts/nora-worlds/story-context.js';
 import { normalizeWorldTheme } from '../../public/scripts/nora-worlds/world-theme.js';
 
 import { NoraWorldCoreError } from './errors.js';
@@ -246,8 +246,9 @@ export function normalizeMaterialization(value) {
 
 export function importedPersona(requested, authored) {
     // An explicitly supplied persona takes precedence as a unit. Empty import
-    // defaults may inherit new-card authorship; ordinary cards retain old behavior.
-    return requested?.name || requested?.description ? requested : (authored || requested);
+    // defaults may inherit card authorship, never another World's runtime identity.
+    const explicit = String(requested?.name || '').trim() || String(requested?.description || '').trim();
+    return normalizeWorldPersona(explicit ? requested : authored);
 }
 
 export function createWorldManifest({ operation, command, materialization, now }) {

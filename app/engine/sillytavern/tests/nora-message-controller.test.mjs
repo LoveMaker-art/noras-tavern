@@ -179,7 +179,7 @@ test('MVU handoff ends pending story feedback without disabling cancellation', (
 });
 
 test('partial, skipped and interrupted MVU transactions silently clear syncing', () => {
-    for (const status of ['partial', 'skipped', 'cancelled', 'stale']) {
+    for (const status of ['partial', 'unverified', 'skipped', 'cancelled', 'stale']) {
         const shown = [];
         let clears = 0;
         const { controller, send, toasts, notices } = createHarness({ messageView: {

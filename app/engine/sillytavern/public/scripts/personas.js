@@ -702,6 +702,9 @@ export async function autoSelectPersona(name, { personaKey = null } = {}) {
  * @returns {Promise<void>}
  */
 async function selectCurrentPersona({ toastPersonaNameChange = true } = {}) {
+    // Avatar selection must not apply a global identity to a World-owned player.
+    if (chat_metadata.nora_world?.version === 2) return;
+
     const personaName = power_user.personas[user_avatar];
     if (personaName) {
         const shouldAutoLock = power_user.persona_auto_lock && user_avatar !== chat_metadata.persona;
@@ -1009,21 +1012,22 @@ async function deletePersona(avatarId, { silent = false } = {}) {
  */
 export async function updatePersonaDescription(value, { syncUi = true } = {}) {
     power_user.persona_description = String(value ?? '');
+    const worldOwned = chat_metadata.nora_world?.version === 2;
     if (syncUi) countPersonaDescriptionTokens(power_user.persona_description);
 
-    if (power_user.personas[user_avatar]) {
+    if (!worldOwned && power_user.personas[user_avatar]) {
         const object = getOrCreatePersonaDescriptor();
         object.description = power_user.persona_description;
     }
 
-    if (syncUi) {
+    if (syncUi && !worldOwned) {
         $(`.avatar-container[data-avatar-id="${user_avatar}"] .ch_description`)
             .text(power_user.persona_description || $('#user_avatar_block').attr('no_desc_text'))
             .toggleClass('text_muted', !power_user.persona_description);
     }
     saveSettingsDebounced();
 
-    if (power_user.personas[user_avatar]) {
+    if (!worldOwned && power_user.personas[user_avatar]) {
         await eventSource.emit(event_types.PERSONA_UPDATED, user_avatar);
     }
 }
@@ -1305,6 +1309,8 @@ function getPersonaTemporaryLockInfo() {
  * @returns {Promise<boolean>} - A promise that resolves to a boolean indicating whether a persona was selected
  */
 async function loadPersonaForCurrentChat({ doRender = false } = {}) {
+    // World Core owns this identity; ST avatar/default bindings must not replace it.
+    if (chat_metadata.nora_world?.version === 2) return;
     const currentChatId = getCurrentChatId();
     if (currentChatId === personaLastLoadedChatId) return;
     personaLastLoadedChatId = currentChatId;

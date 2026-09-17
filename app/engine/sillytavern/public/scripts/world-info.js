@@ -890,7 +890,7 @@ export const wi_anchor_position = {
 export const worldInfoCache = new StructuredCloneMap({ cloneOnGet: true, cloneOnSet: false });
 
 /**
- * Primes one server-authoritative Worldbook into the same cache used by loadWorldInfo.
+ * Registers one server-authoritative Worldbook in the name index and loadWorldInfo cache.
  * Snapshot activation uses this before rendering so extensions observe one coherent World state.
  * @param {string} name Worldbook name.
  * @param {object} data Parsed Worldbook data.
@@ -899,6 +899,10 @@ export function primeWorldInfoSnapshot(name, data) {
     const normalized = String(name || '').trim();
     if (!normalized || !data || typeof data !== 'object') return;
     worldInfoCache.set(normalized, data);
+    // Helpers check the name index before reading the cache. Snapshot imports
+    // must publish both together, without reloading settings or enabling global lore.
+    world_names ??= [];
+    if (!world_names.includes(normalized)) world_names.push(normalized);
 }
 
 /**

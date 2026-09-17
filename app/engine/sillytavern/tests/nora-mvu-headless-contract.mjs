@@ -79,7 +79,8 @@ assert.doesNotMatch(
     'Nora must not force a JSONPatch-only contract onto every extra-model request',
 );
 assert.match(noraPatch, /diagnostics\.explicit_noop/, 'explicit empty patch is part of the execution result, not a state-diff exception');
-assert.match(noraPatch, /const result = executionResult\(diagnostics, true\);[\s\S]{0,140}executionAccepted\(result\)/, 'commit uses executor evidence');
+assert.match(noraPatch, /const result = executionResult\(diagnostics, true\);[\s\S]{0,140}executionAccepted\(result, access\.protocol\)/, 'commit uses protocol-scoped executor evidence');
+assert.match(noraPatch, /protocol === 'legacy' && result\.outcome === 'unverified'/, 'only legacy callback-owned results may persist without Nora counters');
 assert.match(noraPatch, /requireConfirmation: true/, 'MVU awaits server persistence acknowledgement');
 assert.match(noraPatch, /replaceUnresolvedStateBlocks/, 'the source patch must replace unresolved card state templates at the MVU prompt boundary');
 assert.match(noraPatch, /<status_current_variables>/, 'the MVU request must carry an authoritative current-state block');

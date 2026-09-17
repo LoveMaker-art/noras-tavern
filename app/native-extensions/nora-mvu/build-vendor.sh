@@ -38,8 +38,13 @@ git -C "$WORK_DIR/source/slash-runner" apply --recount "$SCRIPT_DIR/upstream/sla
 (
     cd "$WORK_DIR/source"
     npx --yes corepack@0.32.0 yarn install --immutable
-    NORA_MVU_SOURCE_DIR="$WORK_DIR/source" node --test "$SCRIPT_DIR/../../engine/sillytavern/tests/nora-mvu-source-result.test.mjs"
     NORA_BUNDLE_DEPENDENCIES=1 npx --yes corepack@0.32.0 yarn build
+    # Test both the patched source and the newly built artifact before publishing it.
+    NORA_MVU_SOURCE_DIR="$WORK_DIR/source" \
+        NORA_MVU_BUNDLE_PATH="$WORK_DIR/source/artifact/bundle.js" \
+        node --test \
+        "$SCRIPT_DIR/../../engine/sillytavern/tests/nora-mvu-source-result.test.mjs" \
+        "$SCRIPT_DIR/../../engine/sillytavern/tests/nora-mvu-notice-copy.test.mjs"
 )
 
 cp "$WORK_DIR/source/artifact/bundle.js" "$SCRIPT_DIR/vendor/bundle.js"

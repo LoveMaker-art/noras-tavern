@@ -72,6 +72,15 @@ test('diagnostics distinguish persisted partial changes from rejected updates', 
     assert.equal(normalizeMvuDiagnostic({ ...payload, persisted: false }).kind, 'mvu-update-failed');
 });
 
+test('legacy script-owned updates preserve unknown acceptance separately from failure', () => {
+    const payload = { kind: 'mvu-update-unverified', persisted: true, protocol: 'legacy', code: 'MVU_EXECUTION_UNVERIFIED', commandCount: 1, acceptedCount: 0 };
+    const event = normalizeMvuDiagnostic(payload);
+    assert.equal(event.kind, 'mvu-update-unverified');
+    assert.equal(event.acceptedCount, 0);
+    assert.equal(normalizeMvuDiagnostic({ ...payload, protocol: 'nora-mvu/1' }).kind, 'mvu-update-failed');
+    assert.equal(normalizeMvuDiagnostic({ ...payload, persisted: false }).kind, 'mvu-update-failed');
+});
+
 test('browser reporter posts the current chat identity without exposing unrelated settings', async () => {
     const requests = [];
     const result = await reportMvuDiagnostic({ code: 'MVU_REQUEST_FAILED', summary: 'upstream unavailable' }, {

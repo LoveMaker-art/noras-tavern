@@ -103,6 +103,25 @@ test('existing v1 World cards retain their legacy profile and runtime fallback p
 });
 import { adaptCardForMvuRuntime } from '../public/scripts/nora-compat/mvu-compatibility.js';
 
+test('ordinary imported Worlds persist an independent default player until explicitly edited', async t => {
+    const current = await harness(t);
+    current.command.persona = { name: '', description: '' };
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const first = await core.createWorld(current.command, { idempotencyKey: 'default-player-one' });
+    assert.deepEqual(first.world.persona, { name: '玩家', description: '' });
+    await fs.writeFile(current.stagedPath, current.sourceBuffer);
+    const second = await core.createWorld(current.command, { idempotencyKey: 'default-player-two' });
+    assert.deepEqual(second.world.persona, { name: '玩家', description: '' });
+    const chatPath = path.join(current.directories.chats, path.parse(first.world.runtime_card.binding.avatar).name,
+        first.world.sessions.items[0].binding.chat_id + '.jsonl');
+    const header = JSON.parse((await fs.readFile(chatPath, 'utf8')).split('\n')[0]);
+    assert.deepEqual(header.chat_metadata.nora_world.persona, { name: '玩家', description: '' });
+    await core.updateWorld(first.world.world_id, { persona: { name: '墨量', description: '自定义身份' } },
+        { expectedRevision: first.world.revision });
+    assert.deepEqual((await core.getWorld(first.world.world_id)).persona, { name: '墨量', description: '自定义身份' });
+    assert.deepEqual((await core.getWorld(second.world.world_id)).persona, { name: '玩家', description: '' });
+});
+
 async function harness(t, options = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-st-materializer-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
