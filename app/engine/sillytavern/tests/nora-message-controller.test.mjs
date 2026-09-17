@@ -3,10 +3,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createMessageController } from '../../../native-extensions/nora-ui/message-controller.js';
+import { createStoryActionDispatcher } from '../../../native-extensions/nora-ui/story-action-dispatcher.js';
 
-function createHarness({ messages = {}, model = {}, retryResult = { status: 'completed' }, failure = null, storyActive = false, messageView = {} } = {}) {
+function createHarness({ messages = {}, model = {}, retryResult = { status: 'completed' }, failure = null, storyActive = false, messageView = {}, dispatcher } = {}) {
     const notices = [];
     const toasts = [];
+    const toastOptions = [];
     let cleared = 0;
     let submissions = 0;
     let cancellations = 0;
@@ -28,7 +30,7 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     })[selector] || null;
     const dialogs = {
         normalizeError: error => String(error?.message || error || ''),
-        toast: message => toasts.push(message),
+        toast: (message, options) => { toasts.push(message); toastOptions.push(options); },
         notice: value => notices.push(value),
         clearNotice: () => { cleared += 1; },
     };
@@ -36,7 +38,7 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
         run: async (_scope, operation) => operation(),
         isBusy: () => false,
     };
-    const storyActions = {
+    const storyActions = dispatcher ?? {
         status: () => ({ active: storyActive, retryable: Boolean(failure), persisted: failure?.persisted ?? null, saveFailed: failure?.saveFailed }),
         execute: async (command) => {
             if (command.type === 'story.retry') return retryResult;
@@ -69,9 +71,86 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
         send,
         notices,
         toasts,
+        toastOptions,
         counts: () => ({ cancellations, cleared, submissions, modelSheets }),
     };
 }
+
+test('generation errors preserve story notices, card-action precedence and sidecar-only toasts', t => {
+    t.mock.method(console, 'error', () => {});
+    for (const type of ['story.slash', 'sidecar.run']) {
+        const h = createHarness();
+        h.controller.handleGenerationError(new Error('测试失败'), { type, scope: 'story', persisted: true });
+        assert.deepEqual(h.toasts, ['角色卡操作失败：测试失败']);
+        assert.deepEqual(h.toastOptions, [{ tone: 'error', duration: 4200 }]);
+        assert.deepEqual(h.notices, []);
+    }
+    const sidecar = createHarness();
+    sidecar.controller.handleGenerationError(new Error('测试失败'), { scope: 'sidecar:suggest-replies' });
+    assert.deepEqual(sidecar.toasts, ['智能回复失败：测试失败']);
+    assert.deepEqual(sidecar.toastOptions, [{ tone: 'error', duration: 4200 }]);
+    assert.deepEqual(sidecar.notices, []);
+    for (const persisted of [true, false, undefined]) {
+        const h = createHarness();
+        const error = Object.assign(new Error('测试失败'), { noraMessagePersisted: true });
+        h.controller.handleGenerationError(error, { scope: 'story', persisted });
+        assert.equal(h.notices[0].title, persisted === false ? '消息未发送' : '回复生成失败');
+        assert.equal(h.notices[0].message, '测试失败');
+        assert.deepEqual(h.notices[0].actions.map(action => action.label), ['重试', '模型设置']);
+        assert.deepEqual(h.toasts, []);
+        assert.equal(h.input.value, '保留这条草稿');
+    }
+    const unknown = createHarness();
+    unknown.controller.handleGenerationError(new Error('未分类'));
+    assert.deepEqual(unknown.toasts, []);
+    assert.deepEqual(unknown.notices, []);
+});
+
+test('failed-send draft restoration fills an empty composer but preserves a newer draft', () => {
+    const h = createHarness();
+    h.controller.restoreDraft('原发送内容');
+    assert.equal(h.input.value, '保留这条草稿');
+    assert.equal(h.input.style.height, '39px');
+    h.input.value = '';
+    h.controller.restoreDraft('原发送内容');
+    assert.equal(h.input.value, '原发送内容');
+    assert.equal(h.send.disabled, false);
+    h.input.value = ' ';
+    h.controller.restoreDraft('原发送内容');
+    assert.equal(h.input.value, ' ', 'Even whitespace is an existing draft; preserve the original rule');
+    assert.equal(h.send.disabled, true);
+});
+
+test('dispatcher failures still reach the message UI and retry only the failed operation', async t => {
+    t.mock.method(console, 'error', () => {});
+    for (const mode of ['unsent', 'persisted', 'save']) {
+        let h;
+        let requests = 0;
+        let saves = 0;
+        const error = Object.assign(new Error('测试失败'), { noraMessagePersisted: mode !== 'unsent',
+            ...(mode === 'save' ? { phase: 'save', retrySave: async () => { saves++; } } : {}),
+        });
+        const dispatcher = createStoryActionDispatcher({
+            messages: {
+                sendText: async () => { if (++requests === 1) throw error; },
+                regenerate: async () => { requests++; },
+            },
+            onGenerationError: (error, context) => h.controller.handleGenerationError(error, context),
+            restoreDraft: text => h.controller.restoreDraft(text),
+        });
+        h = createHarness({ dispatcher });
+        h.input.value = '';
+        const result = await dispatcher.execute({ type: 'story.send', text: '测试原文' });
+        assert.equal(result.status, 'failed');
+        assert.equal(h.notices[0].title, mode === 'save' ? '聊天保存未完成' : mode === 'persisted' ? '回复生成失败' : '消息未发送');
+        assert.equal(h.input.value, mode === 'unsent' ? '测试原文' : '');
+        assert.equal((await h.notices[0].actions[0].run()).status, 'completed');
+        assert.equal(requests, mode === 'save' ? 1 : 2, 'Save retries must not regenerate story text');
+        assert.equal(saves, mode === 'save' ? 1 : 0);
+        assert.equal(h.counts().cleared, 1);
+        assert.equal(dispatcher.status().retryable, false);
+    }
+});
 
 test('MVU handoff ends pending story feedback without disabling cancellation', () => {
     const previousDocument = globalThis.document;

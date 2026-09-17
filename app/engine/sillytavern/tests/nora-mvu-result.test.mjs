@@ -3,7 +3,23 @@ import test from 'node:test';
 import lodash from 'lodash';
 import { z } from 'zod';
 import { registerMvuSchema } from '../../../native-extensions/nora-mvu/mvu-zod.js';
-import { createMvuUpdateObserver, projectMvuTransaction } from '../public/scripts/nora-compat/mvu-update-observer.js';
+import { createEmptyMvuUpdateStatus, createMvuUpdateObserver, projectMvuTransaction } from '../public/scripts/nora-compat/mvu-update-observer.js';
+
+test('unobserved status matches the observer and never shares mutable validation errors', () => {
+    const observer = createMvuUpdateObserver({
+        eventSource: { on() {} },
+        events: { VARIABLE_UPDATE_STARTED: 'start', COMMAND_PARSED: 'commands', VARIABLE_UPDATE_ENDED: 'end' },
+        identity: () => 'test-chat',
+    });
+    const first = createEmptyMvuUpdateStatus();
+    assert.deepEqual(first, observer.status());
+    first.lastUpdateValidationErrors.push({ reason: 'previous failure' });
+    first.updatePhase = 'failed';
+    const next = createEmptyMvuUpdateStatus();
+    assert.equal(next.updatePhase, 'unobserved');
+    assert.deepEqual(next.lastUpdateValidationErrors, []);
+    assert.deepEqual(next, observer.status());
+});
 
 test('UI and diagnostics share terminal projection without trusting a payload status', () => {
     const cases = [

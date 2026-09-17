@@ -67,6 +67,23 @@ export function createMessageController({
         return result;
     }
 
+    function restoreDraft(text) {
+        const input = select('#nora-input');
+        if (!input.value) input.value = text;
+        updateComposer();
+    }
+
+    function handleGenerationError(error, context = {}) {
+        console.error('[Nora UI] Failed to generate a reply:', error);
+        if (context.type === 'story.slash' || context.type === 'sidecar.run') {
+            showToast(t`角色卡操作失败：${normalizeError(error)}`, { tone: 'error', duration: 4200 });
+            return;
+        }
+        if (context.scope === 'sidecar:suggest-replies') {
+            showToast(t`智能回复失败：${normalizeError(error)}`, { tone: 'error', duration: 4200 });
+        } else if (context.scope === 'story') showSendError(error, context.persisted);
+    }
+
     function showSendError(error, persisted = Boolean(error?.noraMessagePersisted)) {
         if (error?.phase === 'save') {
             const conflict = error?.status === 409 || error?.code === 'integrity';
@@ -268,6 +285,8 @@ export function createMessageController({
         composerKeydown,
         updateComposer,
         showSendError,
+        handleGenerationError,
+        restoreDraft,
         sendMessage,
         decorateMessages,
         handleMessageAction,

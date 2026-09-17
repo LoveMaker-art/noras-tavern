@@ -2,6 +2,88 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { createStartupController } from '../../../native-extensions/nora-ui/startup-controller.js';
+import { createPerformanceReporter } from '../../../native-extensions/nora-ui/performance-reporter.js';
+
+function pageDocument(classes = new Set()) {
+    return { documentElement: { dataset: {} }, body: { classList: {
+        add: value => classes.add(value), remove: value => classes.delete(value), contains: value => classes.has(value),
+    } } };
+}
+
+test('startup finalization owns shell readiness, preserves the original clock and orders readiness signals', async t => {
+    const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
+    t.mock.method(Date, 'now', () => 5000);
+    for (const mode of ['hidden-shell', 'visible-shell', 'no-metrics']) {
+        const classes = new Set(['nora-booting']);
+        if (mode === 'visible-shell') classes.add('nora-shell-visible');
+        const doc = pageDocument(classes);
+        globalThis.document = doc;
+        globalThis.window = {};
+        const metrics = mode === 'no-metrics' ? null : { startedAt: 100, milestones: [], ...(mode === 'visible-shell' ? { shellReadyAt: 80 } : {}) };
+        const events = [];
+        globalThis.dispatchEvent = event => {
+            assert.equal(classes.has('nora-ui-ready'), true, 'Shell readiness must precede runtime/usable/app events');
+            assert.equal(classes.has('nora-booting'), false);
+            events.push(event.type);
+        };
+        const startup = createStartupController({
+            extensionStartedAt: 4500,
+            readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
+            select: () => ({ disabled: false, getAttribute: () => null }),
+            messageView: { hasMessages: () => true },
+            performanceReporter: createPerformanceReporter({ getMetrics: () => metrics, now: () => 350, reportPhase() {} }),
+        });
+        await startup.finalizeUi();
+        assert.equal(doc.documentElement.dataset.noraReadyMs, '500', 'Use bootstrap time, not controller creation time');
+        assert.deepEqual(events, ['nora:runtime-ready', 'nora:usable', 'nora:app-ready']);
+        if (metrics) {
+            assert.equal(doc.documentElement.dataset.noraShellReadyMs, mode === 'visible-shell' ? '80' : '250');
+            assert.equal(doc.documentElement.dataset.noraInteractiveMs, '250');
+            assert.equal(metrics.milestones.filter(item => item.name === 'shell-visible').length, mode === 'visible-shell' ? 0 : 1);
+        } else assert.equal(doc.documentElement.dataset.noraInteractiveMs, undefined);
+        await startup.finalizeUi();
+        assert.equal(events.filter(name => name === 'nora:runtime-ready').length, 1);
+        if (metrics) assert.equal(metrics.milestones.filter(item => item.name === 'shell-hydrated').length, 1);
+    }
+});
+
+test('startup does not announce ready until both runtime readiness and World-list hydration settle', { timeout: 2000 }, async t => {
+    const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
+    t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
+    const classes = new Set(['nora-booting']);
+    globalThis.document = pageDocument(classes);
+    globalThis.window = {};
+    let resolveRuntime;
+    let resolveWorlds;
+    let resolveApp;
+    const runtime = new Promise(resolve => { resolveRuntime = resolve; });
+    const worlds = new Promise(resolve => { resolveWorlds = resolve; });
+    const app = new Promise(resolve => { resolveApp = resolve; });
+    const events = [];
+    globalThis.dispatchEvent = event => { events.push(event.type); if (event.type === 'nora:app-ready') resolveApp(); };
+    const startup = createStartupController({
+        state: { subscribe() {}, whenReady: () => runtime },
+        messageView: { hasMessages: () => true },
+        messageController: { observeMessages() {}, updateComposer() {} },
+        select: () => ({ disabled: false, getAttribute: () => null }), selectAll: () => [],
+        readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
+        settings() {}, buildLayout() {}, bindLayoutEvents() {}, refresh() {}, onStarted() {},
+        loadWorlds: () => worlds, recordBootMilestone() {},
+        performanceReporter: createPerformanceReporter({ getMetrics: () => null, reportPhase() {} }),
+    });
+    startup.start();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(events, []);
+    resolveRuntime();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(classes.has('nora-ui-ready'), false);
+    assert.deepEqual(events, [], 'Runtime alone must not announce application readiness');
+    resolveWorlds();
+    await app;
+    assert.equal(classes.has('nora-booting'), false);
+    assert.deepEqual(events, ['nora:runtime-ready', 'nora:usable', 'nora:app-ready']);
+});
 
 test('a mounted-page navigation cancels an automatic resume that has not been consumed', () => {
     const source = readFileSync(new URL('../public/index.html', import.meta.url), 'utf8');
@@ -68,7 +150,7 @@ test('empty-workspace finalization releases runtime prerequisites at the World l
     const implementation = source.slice(start, source.indexOf('async function finishDeferredInitialization', start));
     const events = new EventTarget();
     const classes = new Set();
-    const doc = { body: { classList: { add: value => classes.add(value), contains: value => classes.has(value) } } };
+    const doc = pageDocument(classes);
     const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
     globalThis.document = doc;
@@ -79,10 +161,10 @@ test('empty-workspace finalization releases runtime prerequisites at the World l
     let usable = false;
     events.addEventListener('nora:usable', () => { usable = true; });
     void wait().then(() => { resolved = true; });
-    const startup = createStartupController({ finishBootScreen() {}, readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
+    const startup = createStartupController({ readState: () => ({ activeCharacterId: -1, activeChatId: null, messages: [] }),
         select: () => ({ disabled: false, getAttribute: () => null }), messageView: { hasMessages: () => true },
         messageController: { updateComposer() {} }, selectAll: () => [],
-        performanceReporter: { phase() {}, milestone() {}, usable() {} } });
+        performanceReporter: createPerformanceReporter({ getMetrics: () => null, reportPhase() {} }) });
     await startup.finalizeUi();
     await Promise.resolve();
     assert.equal(resolved, true, 'the World list must release compatibility prerequisites without opening a World');
@@ -96,7 +178,7 @@ test('application startup stops at the World list without restoring a World', as
     const classes = new Set();
     const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
-    globalThis.document = { body: { classList: { add: value => classes.add(value), contains: value => classes.has(value) } } };
+    globalThis.document = pageDocument(classes);
     globalThis.window = {};
     globalThis.dispatchEvent = event => events.dispatchEvent(event);
     let usable = false;
@@ -120,9 +202,8 @@ test('application startup stops at the World list without restoring a World', as
         openNewWorldSheet() {},
         runPanelAction() {},
         updateActiveWorldSummary() {},
-        finishBootScreen: () => calls.push('shell-ready'),
         recordBootMilestone() {},
-        performanceReporter: { phase() {}, milestone() {}, usable() {} },
+        performanceReporter: createPerformanceReporter({ getMetrics: () => null, reportPhase() {} }),
         onStarted() {},
     });
 
@@ -131,7 +212,7 @@ test('application startup stops at the World list without restoring a World', as
     await startup.finalizeUi();
     assert.equal(classes.has('nora-app-ready'), true);
     assert.equal(classes.has('nora-runtime-ready'), true);
-    assert.equal(calls.includes('shell-ready'), true);
+    assert.equal(classes.has('nora-ui-ready'), true);
     assert.equal(usable, true);
     assert.equal(calls.includes('requested-world'), false);
 });

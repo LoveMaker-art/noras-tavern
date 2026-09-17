@@ -9,7 +9,7 @@ import {
 import { createMvuSettingsControls, isMvuVariableModelEnabled } from 'nora-module/scripts/nora-compat/mvu-settings.js';
 import { inspectMvuCompatibility, isMvuUpdateInstructionEntry, normalizeTavernHelperScripts } from 'nora-module/scripts/nora-compat/mvu-compatibility.js';
 import * as protocol from 'nora-module/scripts/nora-compat/mvu-protocol.js';
-import { createMvuUpdateObserver } from 'nora-module/scripts/nora-compat/mvu-update-observer.js';
+import { createEmptyMvuUpdateStatus, createMvuUpdateObserver } from 'nora-module/scripts/nora-compat/mvu-update-observer.js';
 import { reportMvuDiagnostic } from './diagnostics-reporter.js';
 import { createMvuTraceClient } from './trace-client.js';
 
@@ -51,20 +51,7 @@ function runtimeDataInitialized() {
 function statusSnapshot() {
     const settings = context().extensionSettings.mvu_settings ?? {};
     const model = settings['额外模型解析配置'] ?? {};
-    const updateStatus = state.updateObserver?.status?.() ?? {
-        updateOperational: null,
-        updatePhase: 'unobserved',
-        lastUpdateAt: null,
-        lastUpdateCode: null,
-        lastUpdateStage: null,
-        lastUpdateError: null,
-        lastUpdateCommandCount: null,
-        lastUpdateValidationErrors: [],
-        stateChanged: null,
-        transactionDurationMs: null,
-        transactionAttempt: null,
-        hasPreviousSnapshot: false,
-    };
+    const updateStatus = state.updateObserver?.status?.() ?? createEmptyMvuUpdateStatus();
     const initialized = runtimeDataInitialized() || updateStatus.hasPreviousSnapshot;
     return {
         ...state,

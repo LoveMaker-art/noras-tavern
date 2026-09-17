@@ -10,7 +10,7 @@ const worldControllerSource = fs.readFileSync(path.join(uiRoot, 'world-controlle
 const singleQuote = String.fromCharCode(39);
 
 if (!index.includes('function mount({ story })')
-    || !index.includes('const { state, messages, cards, worldbook, model, mvu, settings: settingsDomain, transport, worlds } = story || {};')) {
+    || !index.includes('const { state, messages, cards, worldbook, model, mvu, settings: settingsDomain, transport, worlds, presets } = story || {};')) {
     throw new Error('Nora UI mount must consume the named story domain interfaces.');
 }
 if (/function mount\(\{\s*runtime|\bruntime:\s*story\.runtime|story\.runtime/.test(index)) {

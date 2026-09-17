@@ -44,7 +44,7 @@ export function projectMvuTransaction(detail = {}, terminal = 'committed', fallb
     };
 }
 
-function emptyStatus() {
+export function createEmptyMvuUpdateStatus() {
     return {
         updateOperational: null,
         updatePhase: 'unobserved',
@@ -68,7 +68,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
     const endedEvent = events?.VARIABLE_UPDATE_ENDED;
     if (!startedEvent || !commandEvent || !endedEvent) throw new TypeError('MVU update observer requires the upstream event contract.');
 
-    let current = emptyStatus();
+    let current = createEmptyMvuUpdateStatus();
     let observedIdentity = '';
     let commandCount = 0;
     let transactionActive = false;
@@ -112,7 +112,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
             transactionActive = true;
             commandCount = 0;
             current = {
-                ...emptyStatus(),
+                ...createEmptyMvuUpdateStatus(),
                 updatePhase: 'updating',
                 lastUpdateAt: now(),
                 hasPreviousSnapshot: Boolean(detail.had_snapshot),
@@ -134,7 +134,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         observedIdentity = String(identity() || '');
         commandCount = 0;
         current = {
-            ...emptyStatus(),
+            ...createEmptyMvuUpdateStatus(),
             updatePhase: 'updating',
             lastUpdateAt: now(),
         };
@@ -147,7 +147,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         const hasCommands = commandCount > 0;
         const stateChanged = digest(variables?.stat_data) !== digest(before?.stat_data);
         current = {
-            ...emptyStatus(),
+            ...createEmptyMvuUpdateStatus(),
             // Upstream ENDED precedes final hooks and persistence. It is an
             // observation only, never proof of success or failure.
             updateOperational: null,
@@ -165,7 +165,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         status() {
             return observedIdentity && observedIdentity === String(identity() || '')
                 ? { ...current }
-                : emptyStatus();
+                : createEmptyMvuUpdateStatus();
         },
         dispose() {
             bindings.forEach(([event, handler]) => eventSource.off?.(event, handler));

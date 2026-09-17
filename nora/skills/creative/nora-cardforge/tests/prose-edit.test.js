@@ -100,6 +100,49 @@ test('code bodies, template macros and introduced markup cannot be edited as pro
   }
 });
 
+test('prose editing rejects changes inside an MVU operation without writing a candidate', t => {
+  const block = '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":1}]</JSONPatch></UpdateVariable>';
+  const s = setup(t, { first_mes: '雨落下来。' + block });
+  assert.throws(() => editProse(s.input, s.plan([{ path: ['first_mes'], before: 'replace', after: 'remove' }]), s.output), /recognizable code/);
+  assert.equal(fs.existsSync(s.output), false);
+  assert.deepEqual(fs.readFileSync(s.input), s.bytes);
+});
+
+test('known MVU blocks stay intact while surrounding prose can change in JSON and PNG', t => {
+  for (const block of [
+    '<UpdateVariable>\n_.set("体力",\n42);\n</UpdateVariable>',
+    '<JSONPatch>[{"op":"replace","path":"/hp","value":42}]</JSONPatch>',
+    '<NoraMvu>{"protocol":"nora-mvu/1","operations":[{"op":"set","path":["hp"],"value":42}]}</NoraMvu>',
+    '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":42}]',
+  ]) {
+    for (const ext of ['.json', '.png']) {
+      const card = raw(); card.data.first_mes = '雨落下来。' + block;
+      const s = setup(t, ext === '.png' ? writePngCardData(png, card) : card, ext);
+      assert.throws(() => editProse(s.input, s.plan([{ path: ['first_mes'], before: '42', after: '99' }]), s.output), /recognizable code/);
+      assert.equal(fs.existsSync(s.output), false);
+      editProse(s.input, s.plan([edit]), s.output);
+      const output = fs.readFileSync(s.output);
+      const actual = ext === '.png' ? payloads(output)[0][1] : JSON.parse(output);
+      assert.equal(actual.data.first_mes, edit.after + block);
+      assert.deepEqual(fs.readFileSync(s.input), s.bytes);
+    }
+  }
+});
+
+test('CLI rejects MVU payload edits in both preview and export without creating files', t => {
+  const s = setup(t, { first_mes: '<UpdateVariable><JSONPatch>[{"op":"replace","path":"/hp","value":1}]</JSONPatch></UpdateVariable>' });
+  const planPath = path.join(s.dir, 'prose.json');
+  fs.writeFileSync(planPath, JSON.stringify(s.plan([{ path: ['first_mes'], before: 'replace', after: 'remove' }])));
+  const cli = path.resolve(__dirname, '../scripts/nora-cardforge.js');
+  for (const flags of [['--dry-run'], []]) {
+    const result = spawnSync(process.execPath, [cli, 'prose-edit', '--input', s.input, '--edits', planPath, '--output', s.output, ...flags], { encoding: 'utf8' });
+    assert.equal(result.status, 2);
+    assert.match(result.stdout + result.stderr, /recognizable code/);
+    assert.equal(fs.existsSync(s.output), false);
+    assert.deepEqual(fs.readFileSync(s.input), s.bytes);
+  }
+});
+
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64');
 function payloads(buffer) {
   return extractChunks(buffer).map(decodeCardTextChunk).filter(x => x && ['chara', 'ccv3'].includes(x.keyword))

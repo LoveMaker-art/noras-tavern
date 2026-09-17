@@ -63,7 +63,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     let ensureWorldCreationController;
     let mounted = false;
     let started = false;
-    let hydrated = false;
     const extensionStartedAt = Date.now();
 
     const performanceReporter = createPerformanceReporter({
@@ -78,19 +77,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         if (log.length > 100) log.splice(0, log.length - 100);
         console.info('[Nora Action]', event);
     };
-
-    function finishBootScreen() {
-        if (hydrated) return;
-        hydrated = true;
-        document.documentElement.dataset.noraReadyMs = String(Date.now() - extensionStartedAt);
-        const timing = performanceReporter.hydrateShell({ alreadyVisible: document.body.classList.contains('nora-shell-visible') });
-        if (timing) {
-            document.documentElement.dataset.noraShellReadyMs = String(timing.shellReadyAt);
-            document.documentElement.dataset.noraInteractiveMs = String(timing.hydratedAt);
-        }
-        document.body.classList.add('nora-ui-ready');
-        document.body.classList.remove('nora-booting');
-    }
 
     function escapeHtml(value) {
         const node = document.createElement('span');
@@ -240,23 +226,14 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             hasWorld: () => Boolean(currentCharacter()),
             getSessionKey: () => JSON.stringify([activeWorldModel()?.id || '', readState().activeChatId || '']),
             onGenerationState: value => messageController?.setGenerating(value || messages.isGenerating()),
-            onGenerationError: (error, context = {}) => {
-                console.error('[Nora UI] Failed to generate a reply:', error);
-                if (context.type === 'story.slash' || context.type === 'sidecar.run') { showToast(t`角色卡操作失败：${normalizeNoticeMessage(error)}`, { tone: 'error', duration: 4200 }); return; }
-                if (context.scope === 'sidecar:suggest-replies') showToast(t`智能回复失败：${normalizeNoticeMessage(error)}`, { tone: 'error', duration: 4200 });
-                else if (context.scope === 'story') messageController.showSendError(error, context.persisted);
-            },
+            onGenerationError: (error, context) => messageController.handleGenerationError(error, context),
             onGenerationCompleted: notifyStoryProfileCheckpoint,
             onGenerationSettled: metric => {
                 if (metric.scope === 'story') performanceReporter.firstGeneration(metric);
             },
             onTaskEvent: recordActionEvent,
             onMissingWorld: () => showToast(tr("请先选择或开启一个世界。")),
-            restoreDraft: (text) => {
-                const input = $('#nora-input');
-                if (!input.value) input.value = text;
-                messageController.updateComposer();
-            },
+            restoreDraft: text => messageController.restoreDraft(text),
         });
         tavernHelperActions = createTavernHelperActionAdapter({ storyActions, messages });
         tavernHelperActions.start();
@@ -504,7 +481,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             openNewWorldSheet,
             runPanelAction,
             updateActiveWorldSummary,
-            finishBootScreen,
+            extensionStartedAt,
             recordBootMilestone,
             performanceReporter,
             onStarted: () => { started = true; },

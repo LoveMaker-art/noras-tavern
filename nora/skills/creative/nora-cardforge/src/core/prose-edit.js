@@ -6,8 +6,9 @@ const { readPngCardData, extractChunks, encodeChunks, decodeCardTextChunk,
 
 const TEXT_FIELDS = new Set(['description', 'personality', 'scenario', 'first_mes', 'mes_example']);
 const GREETINGS = new Set(['alternate_greetings', 'group_only_greetings']);
-// These delimiters are recognizable safeguards, not a parser for arbitrary card scripts.
-const PROTECTED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`|<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<%[\s\S]*?%>|\{\{[\s\S]*?\}\}|<[^>\n]+>|\[(?:\/?(?:nora_mvu[^\]]*|mvu[^\]]*|InitVar|UpdateVariable|JSONPatch))\]|\b(?:_\.(?:set|add|insert|remove|delete)|Mvu\.\w+)\s*\([^\n]*|https?:\/\/[^\s<>]+/gi;
+// Protect the whole known MVU payload, including an unfinished block. Other
+// delimiters remain safeguards, not a parser for arbitrary card scripts.
+const PROTECTED = /```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`]*`|<(UpdateVariable|JSONPatch|NoraMvu)\b[^>]*>[\s\S]*?(?:<\/\1\s*>|$)|<script\b[^>]*>[\s\S]*?<\/script\s*>|<style\b[^>]*>[\s\S]*?<\/style\s*>|<%[\s\S]*?%>|\{\{[\s\S]*?\}\}|<[^>\n]+>|\[(?:\/?(?:nora_mvu[^\]]*|mvu[^\]]*|InitVar|UpdateVariable|JSONPatch))\]|\b(?:_\.(?:set|add|insert|remove|delete)|Mvu\.\w+)\s*\([^\n]*|https?:\/\/[^\s<>]+/gi;
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
 function textTarget(card, targetPath) {
