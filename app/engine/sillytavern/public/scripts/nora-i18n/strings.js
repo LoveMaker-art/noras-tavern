@@ -304,8 +304,6 @@ export const english = Object.freeze({
     'MVU变量已更新': 'MVU variables updated',
     'MVU变量无变化': 'No MVU variable changes',
     'MVU变量更新失败': 'MVU variable update failed',
-    '部分MVU变量已更新，其余操作未通过校验': 'Some MVU variables updated; other operations failed validation',
-    '部分更新': 'Partially updated',
     '正在同步MVU变量，请稍候。': 'MVU variables are syncing. Please wait.',
     '原操作已结束或世界已切换，请在当前世界重新操作。': 'The action ended or the world changed. Try again in the current world.',
     '正在重试': 'Retrying',

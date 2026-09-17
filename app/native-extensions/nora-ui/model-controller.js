@@ -6,15 +6,16 @@ export { planModelRemoval } from '../../engine/sillytavern/public/scripts/nora-a
 export function renderMvuModelSection(status, escapeHtml, config = {}) {
     if (!status?.supported) return '';
     const enabled = status.enabled !== false;
+    // Partial results remain diagnostics, not a model-health warning or success claim.
+    const updateOperational = status.updatePhase === 'partial' && status.lastUpdatePersisted === true
+        ? null : status.updateOperational;
     const stateLabel = !enabled
         ? tr("已关闭")
         : status.phase === 'failed'
         ? tr("运行异常")
-        : status.updatePhase === 'partial' && status.lastUpdatePersisted === true
-        ? tr("部分更新")
-        : status.updateOperational === true
+        : updateOperational === true
         ? tr("更新正常")
-        : status.updateOperational === false
+        : updateOperational === false
         ? tr("更新未生效")
         : status.initialized && status.updateProtocol === 'initialization-only'
         ? tr("仅初始化")
@@ -26,11 +27,9 @@ export function renderMvuModelSection(status, escapeHtml, config = {}) {
     const modelLabel = followsStory
         ? tr("跟随文本模型")
         : config.model || status.variableModelName || tr("尚未配置");
-    const stateTone = status.phase === 'failed'
+    const stateTone = status.phase === 'failed' || updateOperational === false
         ? 'error'
-        : status.updatePhase === 'partial' && status.lastUpdatePersisted === true ? 'pending'
-        : status.updateOperational === false ? 'error'
-        : enabled && status.updateOperational === true ? 'ready' : 'pending';
+        : enabled && updateOperational === true ? 'ready' : 'pending';
     return `<section class="nora-model-group nora-mvu-model-group"><div class="nora-model-group-head"><span>${tr("MVU 变量模型")}</span><label class="nora-mvu-toggle"><input data-mvu-enabled type="checkbox" ${enabled ? 'checked' : ''}><span aria-hidden="true"></span><b>${stateLabel}</b></label></div><div class="nora-mode-switch nora-mvu-source"><button class="${followsStory ? 'active' : ''}" data-mvu-source="story" type="button">${tr("跟随文本模型")}</button><button class="${followsStory ? '' : 'active'}" data-mvu-source="independent" type="button">${tr("独立模型")}</button></div><div class="nora-mvu-model-summary"><span class="nora-mvu-status is-${stateTone}">${stateLabel}</span><strong>${escapeHtml(modelLabel)}</strong><button data-mvu-config type="button">${tr("配置独立模型")}</button></div></section>`;
 }
 

@@ -637,8 +637,8 @@ test('model UI is hidden for ordinary cards and labels MVU state precisely', () 
     assert.match(renderMvuModelSection({ supported: true, initialized: true, updateOperational: false, variableModel: '与插头相同' }, escapeHtml), /更新未生效/);
     const partial = renderMvuModelSection({ supported: true, initialized: true, updateOperational: false,
         updatePhase: 'partial', lastUpdatePersisted: true, variableModel: '与插头相同' }, escapeHtml);
-    assert.match(partial, /部分更新/);
-    assert.doesNotMatch(partial, /更新正常|更新未生效|is-error/);
+    assert.match(partial, /已初始化/);
+    assert.doesNotMatch(partial, /部分更新|更新正常|更新未生效|is-error/);
     assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'legacy-adaptable', variableModel: '与插头相同' }, escapeHtml), /兼容模式/);
     assert.match(renderMvuModelSection({ supported: true, initialized: true, updateProtocol: 'initialization-only', variableModel: '与插头相同' }, escapeHtml), /仅初始化/);
     assert.match(renderMvuModelSection({ supported: true, enabled: false, variableModel: '自定义' }, escapeHtml, { model: 'mvu-fast' }), /已关闭[\s\S]*独立模型[\s\S]*mvu-fast/);

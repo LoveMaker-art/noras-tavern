@@ -5,7 +5,6 @@ const PRESENTATION = Object.freeze({
     committed: Object.freeze({ label: 'MVU变量已更新', symbol: '✓', duration: 1000 }),
     'no-change': Object.freeze({ label: 'MVU变量无变化', symbol: '–', duration: 1000 }),
     failed: Object.freeze({ label: 'MVU变量更新失败', symbol: '!', duration: 3000 }),
-    partial: Object.freeze({ label: '部分MVU变量已更新，其余操作未通过校验', symbol: '!', duration: 3000 }),
 });
 
 /** Transient MVU transaction feedback. It never becomes part of ST chat history. */

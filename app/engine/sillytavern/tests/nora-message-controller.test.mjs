@@ -178,11 +178,11 @@ test('MVU handoff ends pending story feedback without disabling cancellation', (
     } finally { globalThis.document = previousDocument; }
 });
 
-test('skipped and interrupted MVU transactions clear syncing without a red failure', () => {
-    for (const status of ['skipped', 'cancelled', 'stale']) {
+test('partial, skipped and interrupted MVU transactions silently clear syncing', () => {
+    for (const status of ['partial', 'skipped', 'cancelled', 'stale']) {
         const shown = [];
         let clears = 0;
-        const { controller } = createHarness({ messageView: {
+        const { controller, send, toasts, notices } = createHarness({ messageView: {
             showMvuTransaction: value => shown.push(value),
             clearMvuTransaction: () => { clears++; },
         } });
@@ -190,6 +190,10 @@ test('skipped and interrupted MVU transactions clear syncing without a red failu
         controller.setMvuTransaction({ status });
         assert.deepEqual(shown, ['syncing']);
         assert.equal(clears, 1);
+        assert.equal(controller.isMvuSyncing(), false);
+        assert.equal(send.disabled, false);
+        assert.deepEqual(toasts, []);
+        assert.deepEqual(notices, []);
     }
 });
 

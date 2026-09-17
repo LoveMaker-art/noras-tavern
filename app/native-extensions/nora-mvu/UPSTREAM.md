@@ -115,10 +115,11 @@ The local Zod helper probes an object then an array when an insert container is 
 matching the reference helper's behavior instead of inferring type from argument count.
 Existing containers keep their type. Failed probes cannot leak into the live state.
 Persisted legacy partial results now emit a committed event with `outcome: partial`, never
-`outcome: updated`; UI and diagnostics preserve rejected operations and accepted counts.
+`outcome: updated`; diagnostics preserve rejected operations and accepted counts.
 Partial completion does not automatically retry already accepted deltas. Nora batches still
 reject partial candidates. Save acknowledgements, stale guards and command validation remain.
-The model settings and conversation status distinguish partial completion from full failure.
+Partial completion is log-only: conversation progress clears without a result notice,
+and model settings show runtime readiness rather than a partial-update warning or success claim.
 Reference replay and source tests establish the exercised semantics only, not universal card,
 provider, or browser compatibility. Unknown command-consuming callbacks still require result
 evidence; this revision does not bypass missing schema registration or run JS-valued commands.
