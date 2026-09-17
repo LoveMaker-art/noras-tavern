@@ -689,7 +689,7 @@ index 2f7a0bf..6adc9d5 100644
  import { tr } from '@/i18n';
  import { useDataStore } from '@/store';
 +import { getLastValidVariable } from '@/util';
-+import { variable_events } from '@/variable_def';
++import { isMvuData, variable_events } from '@/variable_def';
 +import { accessForMessage, MvuAccess } from './access';
 +import {
 +    emptyDiagnostics,
@@ -964,11 +964,13 @@ index 2f7a0bf..6adc9d5 100644
 +        }
 +    }
 +
-+    // Keep the last valid snapshot available even when the update model fails.
++    // Failed replacement attempts must not erase an already valid result.
++    // Inherit the previous snapshot only when this message still has none.
 +    if (
 +        !['MVU_CANCELLED', 'MVU_STALE_CHAT', 'MVU_PERSISTENCE_UNKNOWN'].includes(failure.code) &&
 +        SillyTavern.getCurrentChatId() === original_chat_id &&
-+        getChatMessages(message_id).at(-1)?.message === original_message
++        getChatMessages(message_id).at(-1)?.message === original_message &&
++        !isMvuData(getChatMessages(message_id).at(-1)?.data ?? {})
 +    ) {
 +        if (previous_snapshot?.stat_data) {
 +            try {

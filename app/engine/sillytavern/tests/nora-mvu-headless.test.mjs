@@ -12,13 +12,14 @@ import {
     ensureHeadlessMvuScript,
     ensureHeadlessMvuScriptInSettings,
     hasInitializedMvuData,
-    hasMvuDeclaration,
     initializeHeadlessMvuSettings,
-    isMvuVariableModelEnabled,
-    NORA_MVU_MODEL_PROXY_URL as FRONTEND_MVU_PROXY_URL,
-    setMvuVariableModelEnabled,
     waitForMvuRuntime,
 } from '../../../native-extensions/nora-mvu/runtime.js';
+import {
+    createMvuSettingsControls,
+    isMvuVariableModelEnabled,
+    NORA_MVU_MODEL_PROXY_URL as FRONTEND_MVU_PROXY_URL,
+} from '../public/scripts/nora-compat/mvu-settings.js';
 import { createManagedMvuRuntimeLoader } from '../../../native-extensions/nora-mvu/runtime.js';
 import { createMvuUpdateObserver } from '../public/scripts/nora-compat/mvu-update-observer.js';
 import { registerMvuSchema } from '../../../native-extensions/nora-mvu/mvu-zod.js';
@@ -86,14 +87,6 @@ import {
 } from '../public/scripts/nora-compat/mvu-world-info-policy.js';
 
 const escapeHtml = value => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
-
-test('MVU capability detection only accepts upstream worldbook markers', () => {
-    assert.equal(hasMvuDeclaration([{ comment: '[InitVar] initialized variables' }]), true);
-    assert.equal(hasMvuDeclaration([{ comment: '[mvu_update] variable rules' }]), true);
-    assert.equal(hasMvuDeclaration([{ comment: 'Plot [MVU_PLOT]' }]), true);
-    assert.equal(hasMvuDeclaration([{ comment: 'ordinary character and setting entry', content: '[mvu_update]' }]), false);
-    assert.equal(hasMvuDeclaration([]), false);
-});
 
 test('MVU runtime data accepts populated legacy snapshots without a Zod schema', () => {
     assert.equal(hasInitializedMvuData({ stat_data: {}, schema: {} }), true);
@@ -470,7 +463,8 @@ test('MVU variable model toggle returns variable updates to the story model when
         saveSettingsDebounced() {},
     };
 
-    const disabled = setMvuVariableModelEnabled(context, false);
+    const controls = createMvuSettingsControls(patch => applyMvuSettings(context, patch));
+    const disabled = controls.setEnabled(false);
     assert.equal(disabled['更新方式'], '随AI输出');
     assert.equal(disabled['额外模型解析配置']['启用自动请求'], false);
     assert.equal(disabled['额外模型解析配置']['模型来源'], '自定义');
@@ -478,11 +472,73 @@ test('MVU variable model toggle returns variable updates to the story model when
     assert.equal(disabled['额外模型解析配置']['请求次数'], 5);
     assert.equal(isMvuVariableModelEnabled(disabled), false);
 
-    const enabled = setMvuVariableModelEnabled(context, true);
+    const enabled = controls.setEnabled(true);
     assert.equal(enabled['更新方式'], '额外模型解析');
     assert.equal(enabled['额外模型解析配置']['启用自动请求'], true);
     assert.equal(enabled['额外模型解析配置']['模型名称'], 'variable-model');
     assert.equal(isMvuVariableModelEnabled(enabled), true);
+});
+
+test('managed and embedded settings controls share values, limits and preserve unrelated user choices', (t) => {
+    const initial = createHeadlessMvuSettings({
+        '更新方式': '随AI输出',
+        cardOwned: { keep: true },
+        '额外模型解析配置': { '启用自动请求': false, '请求次数': 5, '温度': 0.7, custom: ['keep'] },
+    });
+    let managedSaves = 0;
+    let embeddedSaves = 0;
+    let reloads = 0;
+    const live = { getMvuData: () => ({ stat_data: { day: 1 } }), reloadSettings: () => reloads++ };
+    const previous = globalThis.Mvu;
+    globalThis.Mvu = live;
+    t.after(() => { if (previous === undefined) delete globalThis.Mvu; else globalThis.Mvu = previous; });
+    const managedContext = { extensionSettings: { mvu_settings: structuredClone(initial) }, saveSettingsDebounced: () => managedSaves++ };
+    const embeddedContext = { extensionSettings: { mvu_settings: structuredClone(initial) }, saveSettingsDebounced: () => embeddedSaves++ };
+    const managed = createMvuSettingsControls(patch => applyMvuSettings(managedContext, patch));
+    const embedded = createStMvuSettingsAdapter(() => embeddedContext, { readMvuRuntime: () => live });
+    const actions = [
+        ['setEnabled', false], ['useStoryModel'],
+        ['useIndependentModel', { model: '  test-model  ', contextLimit: 1, maxTokens: 999999 }],
+        ['useIndependentModel', { model: 'test-model', contextLimit: 9999999, maxTokens: -1 }],
+        ['useIndependentModel', { model: 'test-model', contextLimit: 0, maxTokens: NaN }],
+        ['useIndependentModel', { model: 'test-model' }], ['setEnabled', true],
+    ];
+    const expectedLimits = [[512, 128000], [1000000, 1], [30000, 4000], [30000, 4000]];
+    for (const [method, argument] of actions) {
+        const left = managed[method](argument);
+        const right = embedded[method](argument);
+        assert.deepEqual(left, right);
+        assert.deepEqual(left.cardOwned, { keep: true });
+        assert.deepEqual(left['额外模型解析配置'].custom, ['keep']);
+        assert.equal(left['额外模型解析配置']['请求次数'], 5);
+        assert.equal(left['额外模型解析配置']['温度'], 0.7);
+        if (method === 'useIndependentModel') {
+            const config = left['额外模型解析配置'];
+            assert.deepEqual([config['最大上下文token数'], config['最大回复token数']], expectedLimits.shift());
+            assert.equal(config['模型名称'], 'test-model');
+            assert.equal(config['api地址'], FRONTEND_MVU_PROXY_URL);
+            assert.equal(config['密钥'], '');
+            assert.equal(config['启用自动请求'], false, 'Choosing a model must not silently enable automatic requests');
+        }
+        left.cardOwned.keep = false;
+        right['额外模型解析配置'].custom.push('mutation');
+        assert.equal(managedContext.extensionSettings.mvu_settings.cardOwned.keep, true);
+        assert.deepEqual(embeddedContext.extensionSettings.mvu_settings['额外模型解析配置'].custom, ['keep']);
+    }
+    assert.equal(managedSaves, actions.length);
+    assert.equal(embeddedSaves, actions.length);
+    assert.equal(reloads, actions.length * 2);
+});
+
+test('embedded settings guard still rejects writes before its runtime exists', () => {
+    let saves = 0;
+    const context = { extensionSettings: { mvu_settings: { cardOwned: true } }, saveSettingsDebounced: () => saves++ };
+    const embedded = createStMvuSettingsAdapter(() => context, { readMvuRuntime: () => undefined });
+    assert.throws(() => embedded.setEnabled(true), /not ready/);
+    assert.throws(() => embedded.useStoryModel(), /not ready/);
+    assert.throws(() => embedded.useIndependentModel({ model: 'test-model' }), /not ready/);
+    assert.deepEqual(context.extensionSettings.mvu_settings, { cardOwned: true });
+    assert.equal(saves, 0);
 });
 
 test('MVU variable model suppresses update instructions only from the story model prompt', () => {

@@ -2,11 +2,8 @@ import {
     inspectMvuCompatibility,
     isMvuUpdateInstructionEntry,
 } from './mvu-compatibility.js';
-
-export function isNoraMvuVariableModelEnabled(settings = {}) {
-    return settings?.['更新方式'] === '额外模型解析'
-        && settings?.['额外模型解析配置']?.['启用自动请求'] !== false;
-}
+import { isMvuVariableModelEnabled } from './mvu-settings.js';
+export { isMvuVariableModelEnabled as isNoraMvuVariableModelEnabled } from './mvu-settings.js';
 
 export function isNoraMvuUpdateInstructionEntry(entry = {}) {
     return isMvuUpdateInstructionEntry(entry);
@@ -40,7 +37,7 @@ export function shouldSuppressNoraMvuUpdateEntryForMainPrompt(entry, {
         ? candidates.filter(candidate => String(candidate?.world || '') === primary)
         : candidates;
     const plan = inspectMvuCompatibility({ books: [protocolEntries] });
-    return isNoraMvuVariableModelEnabled(settings)
+    return isMvuVariableModelEnabled(settings)
         && !isNoraMvuExtraAnalysisRunning(mvuRuntime)
         && plan.splitModelSupported
         && isNoraMvuUpdateInstructionEntry(entry);

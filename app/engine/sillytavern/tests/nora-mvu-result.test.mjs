@@ -51,6 +51,31 @@ test('inline observation without execution evidence does not invent a no-change 
     assert.equal(reports.length, 0);
 });
 
+test('transaction-owned end events do not traverse snapshots or override terminal evidence', () => {
+    const listeners = new Map();
+    const observer = createMvuUpdateObserver({
+        eventSource: { on: (event, fn) => listeners.set(event, fn), off() {} },
+        events: { VARIABLE_UPDATE_STARTED: 'start', COMMAND_PARSED: 'commands', VARIABLE_UPDATE_ENDED: 'end',
+            TRANSACTION_STARTED: 'tx-start', TRANSACTION_COMMITTED: 'tx-commit', TRANSACTION_FAILED: 'tx-fail' },
+        identity: () => 'test-chat',
+    });
+    let reads = 0;
+    const snapshot = { get stat_data() { reads += 1; return { score: 50 }; } };
+    listeners.get('tx-start')({ had_snapshot: true });
+    listeners.get('end')(snapshot, snapshot);
+    assert.equal(reads, 0, 'The transaction already owns final state comparison');
+    assert.equal(observer.status().updatePhase, 'updating');
+    listeners.get('tx-commit')({ outcome: 'unchanged', diagnostics: { command_count: 1, modified: false } });
+    assert.equal(observer.status().updatePhase, 'no-change');
+    // Legacy-only events still need their state comparison.
+    listeners.get('start')();
+    listeners.get('commands')({}, [{ type: 'set' }]);
+    listeners.get('end')({ stat_data: { score: 51 } }, snapshot);
+    assert.equal(reads, 1);
+    assert.equal(observer.status().stateChanged, true);
+    assert.equal(observer.status().updatePhase, 'unverified');
+});
+
 test('Zod reports accepted unchanged commands before consuming them', (t) => {
     const names = ['_', 'z', 'eventOn', 'registerVariableSchema'];
     const original = new Map(names.map(name => [name, globalThis[name]]));

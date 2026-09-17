@@ -57,7 +57,12 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
             emitted.push([name, ...structuredClone(args)]);
             for (const fn of events.get(name) || []) await fn(...args);
         },
-        getChatMessages: id => chat[id] ? [{ ...structuredClone(chat[id]), message_id: id }] : [],
+        getChatMessages: id => {
+            if (!chat[id]) return [];
+            const { stat_data, schema, initialized_lorebooks } = chat[id];
+            return [{ ...structuredClone(chat[id]), message_id: id,
+                data: structuredClone({ stat_data, schema, initialized_lorebooks }) }];
+        },
         setChatMessages: async updates => {
             writes.push(['text', structuredClone(updates)]);
             if (failSave === 'text') throw new Error('storage unavailable');
@@ -529,11 +534,38 @@ test('Nora protocol routes through the actual MVU executor', { skip: !source }, 
         await Promise.all([f.run(), f.run()]); await f.run();
         assert.equal(f.requests.length, 1); assert.equal(f.chat[2].stat_data.score, 51);
     });
-    await t.test('failed manual retry preserves the existing update text', async () => {
-        const message = 'Story <UpdateVariable>_.set(\'score\',51);</UpdateVariable>';
-        const f = fixture({ message, response: 'invalid' }); await f.run({ force: true });
-        assert.ok(f.chat[2].message.startsWith(message));
-    });
+    for (const nora of [false, true]) {
+        for (const zod of [false, true]) {
+            const label = `nora=${nora} zod=${zod}`;
+            const message = `Story ${nora ? envelope([{ op: 'increment', path: ['score'], amount: 1 }]) : '<UpdateVariable>_.add(\'score\',1);</UpdateVariable>'}`;
+            await t.test(`failed manual retry preserves existing text and successful snapshot: ${label}`, async () => {
+                const f = fixture({ nora, zod, message, response: 'invalid' });
+                Object.assign(f.chat[2], { stat_data: { score: 51 }, schema: {}, initialized_lorebooks: {} });
+                const existing = structuredClone(f.chat[2]);
+                await f.run({ force: true });
+                assert.deepEqual(f.chat[2], existing);
+                assert.equal(f.writes.length, 0, 'a rejected replacement must not overwrite the existing result');
+                assert.equal(f.terminal().persisted, false);
+            });
+            await t.test(`successful manual retry replaces from the previous turn, without accumulating twice: ${label}`, async () => {
+                const f = fixture({ nora, zod, message, response: () => {
+                    assert.equal(f.chat[2].stat_data.score, 51, 'keep the current result while waiting for its replacement');
+                    return nora ? envelope([{ op: 'increment', path: ['score'], amount: 2 }]) : "_.add('score',2);";
+                } });
+                Object.assign(f.chat[2], { stat_data: { score: 51 }, schema: {}, initialized_lorebooks: {} });
+                await f.run({ force: true });
+                assert.equal(f.chat[2].stat_data.score, 52, '50 + 2, not 51 + 2');
+                assert.equal(f.terminal().persisted, true);
+                assert.equal(f.requests.length, 1);
+            });
+            await t.test(`first failed update with no current snapshot still inherits the previous turn: ${label}`, async () => {
+                const f = fixture({ nora, zod, response: 'invalid' });
+                await f.run();
+                assert.equal(f.chat[2].stat_data.score, 50);
+                assert.equal(f.terminal().persisted, false, 'inherited state is not a successful model update');
+            });
+        }
+    }
     await t.test('prompt injection and request-time identity survive until commit', async () => {
         const f = fixture({ nora: true, inline: true });
         const messages = [{ role: 'assistant', content: 'Old story. ' + envelope([]) }];

@@ -143,9 +143,9 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         commandCount = Array.isArray(commands) ? commands.length : 0;
     });
     on(endedEvent, (variables, before) => {
+        if (transactionActive) return;
         const hasCommands = commandCount > 0;
         const stateChanged = digest(variables?.stat_data) !== digest(before?.stat_data);
-        if (transactionActive) return;
         current = {
             ...emptyStatus(),
             // Upstream ENDED precedes final hooks and persistence. It is an

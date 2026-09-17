@@ -99,6 +99,13 @@ together. Older hosts that ignore the option return no acknowledgement and are r
 persistence-unknown rather than successful. This does not claim process-crash atomicity or
 support for concurrent MVU requests.
 
+Revision 16 preserves a message's existing valid snapshot when an extra-model replacement
+fails. Previous-turn inheritance only fills messages that still have no valid MVU data;
+successful retries continue evaluating from the previous turn, not the current result.
+Legacy/Nora and with/without Zod share this rule. Source tests cover failed replacement,
+successful non-accumulating replacement and initial-failure inheritance. Protocol, prompts,
+attempt limits and uncertain-save handling are unchanged.
+
 Runtime dependencies are bundled locally in `vendor/bundle.js`; the MVU execution path does
 not fetch JavaScript modules from a CDN. The source build uses
 `NORA_BUNDLE_DEPENDENCIES=1 yarn build` against the pinned upstream checkout. Run
