@@ -3,6 +3,7 @@ import { renderStoryContext, normalizeWorldPersona } from '../nora-worlds/story-
 import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
 import { createWorldPreset, normalizeWorldPreset, validateWorldPresetParameters, validateWorldPresetModelLimits, WORLD_PRESET_FIELDS } from '../nora-worlds/world-preset.js';
 import { worldPresetProjection } from '../nora-worlds/world-preset-projection.js';
+import { worldbookOverrides } from '../nora-worlds/worldbook-bindings.js';
 function requireRuntime(getContext) {
     const current = getContext();
     const required = ['selectCharacterById', 'updateChatMetadata', 'saveMetadata'];
@@ -156,7 +157,7 @@ export function createStWorldAdapter(getContext) {
         return read();
     }
 
-    async function applyWorldbook(name, book) {
+    async function applyWorldbook(name, book, world) {
         const current = requireRuntime(getContext);
         const normalized = String(name || '').trim();
         if (!normalized || !book || typeof book !== 'object') throw new Error('World settings projection is invalid.');
@@ -167,6 +168,14 @@ export function createStWorldAdapter(getContext) {
         const character = characterId === null ? null : current.characters[characterId];
         if (!character) throw new Error('当前世界的运行角色卡不可用。');
         const data = character.data && typeof character.data === 'object' ? character.data : character;
+        if (world && current.chatMetadata?.nora_world?.id !== world.world_id) throw new Error('World changed; reopen the settings.');
+        if (world) {
+            const metadata = current.chatMetadata;
+            metadata.world_info = normalized;
+            metadata.nora_world.worldbook_overrides = worldbookOverrides(world.knowledge);
+            metadata.nora_world.library_worldbooks = world.knowledge.filter(resource => resource.binding.name !== normalized)
+                .map(resource => ({ name: resource.binding.name, title: resource.binding.display_name || resource.binding.name }));
+        }
         data.extensions = { ...(data.extensions || {}), world: normalized };
         current.primeWorldInfoSnapshot(normalized, book);
         await current.updateWorldInfoList();

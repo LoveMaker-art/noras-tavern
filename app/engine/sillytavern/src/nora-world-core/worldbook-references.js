@@ -6,10 +6,10 @@ export async function isExclusiveWorldbook(world, name, { worlds, roots, cardCod
     if (!Array.isArray(worlds) || !worlds.some(other => other.world_id === world.world_id)
         || worlds.some(other => other.world_id !== world.world_id
         && other.knowledge?.some(resource => resource.binding?.name === name))) return false;
-    return hasNoExternalReferences(name, { roots, cardCodec });
+    return hasNoExternalReferences(name, { roots, cardCodec, ownAvatar: world.runtime_card?.binding?.avatar });
 }
 
-async function hasNoExternalReferences(name, { roots, cardCodec }) {
+async function hasNoExternalReferences(name, { roots, cardCodec, ownAvatar }) {
     try {
         let settings = {};
         try {
@@ -24,6 +24,7 @@ async function hasNoExternalReferences(name, { roots, cardCodec }) {
         for (const item of await fs.readdir(roots.characters, { withFileTypes: true })) {
             if (!item.name.endsWith('.png')) continue;
             if (!item.isFile()) return false;
+            if (item.name === ownAvatar) continue;
             const sourcePath = path.join(roots.characters, item.name);
             const { card } = await cardCodec.decode({ buffer: await fs.readFile(sourcePath), format: 'png', sourcePath });
             const data = card?.data || card;

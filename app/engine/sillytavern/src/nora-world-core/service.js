@@ -641,10 +641,12 @@ export class NoraWorldCore {
                 }
                 const materialization = await this.#materializer.addWorldSetting(world, operation.command.setting, {
                     operationId: operation.operation_id,
+                    worlds: await this.#store.list(),
                 });
                 operation = await this.#mutations.advance(operation.operation_id, 'RESOURCE_WRITTEN', {
                     result: {
                         resource: cloneJson(materialization.resource),
+                        source_resource_id: materialization.source_resource_id || null,
                         entry_id: String(materialization.entry_id),
                         operation_id: operation.operation_id,
                     },
@@ -654,9 +656,9 @@ export class NoraWorldCore {
                 const resource = operation.result?.resource;
                 world = await this.#store.update(operation.world_id, current => {
                     if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
-                    const existing = current.knowledge.find(item => item.source_key === 'nora:user-settings');
+                    const existing = current.knowledge.find(item => item.resource_id === resource?.resource_id);
                     if (existing) {
-                        if (existing.resource_id !== resource?.resource_id) {
+                        if (existing.binding.name !== resource?.binding?.name) {
                             throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'World settings resource binding changed unexpectedly.');
                         }
                         return current;
@@ -664,7 +666,14 @@ export class NoraWorldCore {
                     if (current.revision !== operation.command.expected_revision) {
                         throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before adding a setting.');
                     }
-                    return { ...current, knowledge: [resource, ...current.knowledge], updated_at: this.#now() };
+                    const sourceId = operation.result?.source_resource_id;
+                    if (sourceId && !current.knowledge.some(item => item.resource_id === sourceId)) {
+                        throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'World settings resource binding changed unexpectedly.');
+                    }
+                    const knowledge = sourceId
+                        ? current.knowledge.map(item => item.resource_id === sourceId ? resource : item)
+                        : [...current.knowledge, resource];
+                    return { ...current, knowledge, updated_at: this.#now() };
                 });
                 operation = await this.#mutations.advance(operation.operation_id, 'WORLD_COMMITTED');
             }

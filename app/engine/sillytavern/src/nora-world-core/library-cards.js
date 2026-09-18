@@ -11,7 +11,7 @@ import { persistImmutable } from './st-import-staging.js';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
-const runtimeName = name => /--nora-(?:[a-f0-9]{10}|internal)\.png$/.test(name);
+const runtimeName = name => /--nora-(?:[a-f0-9]{10}|[a-f0-9]{24}|internal)\.png$/.test(name);
 
 async function readSafe(root, name) {
     if (typeof name !== 'string' || !name || /[/\\\0]/.test(name) || path.basename(name) !== name || name === '.' || name === '..') invalid('Invalid card filename.');
