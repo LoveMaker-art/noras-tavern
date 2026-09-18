@@ -1,4 +1,20 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+
+// The creation journal can resume only these creation operations, not mutations.
+const operationLabels = new Map([
+    ['BLANK', ['正在创建世界…', '世界创建未完成', true]],
+    ['IMPORT', ['正在导入角色卡…', '世界导入未完成', true]],
+    ['RESTART', ['正在准备新开局…', '新开局暂未完成', true]],
+    ['CREATE_RECOVERY', ['正在恢复世界创建…', '世界创建未完成', true]],
+    ['DELETE', ['正在删除世界…', '世界删除未完成', false]],
+    ['REPAIR', ['正在检查世界…', '世界检查未完成', false]],
+]);
+
+function canRetryCreation(operation) {
+    return operation?.status === 'FAILED' && operation.error?.retryable
+        && operationLabels.get(operation.kind)?.[2] === true;
+}
+
 export function createWorldController({
     settingsDomain,
     worldRuntime,
@@ -77,12 +93,14 @@ export function createWorldController({
         const list = select('#nora-world-list');
         if (!list) return;
         const operation = store.read().worldStatus?.operation;
-        const operationLabel = operation?.kind === 'RESTART' ? tr('正在准备新开局…')
-            : operation?.kind === 'IMPORT' ? tr("正在导入角色卡…") : tr("正在创建世界…");
+        const [runningLabel, failedLabel] = operationLabels.get(operation?.kind)
+            || ['正在处理世界操作…', '世界操作未完成'];
+        const retryHtml = canRetryCreation(operation)
+            ? `<button data-retry-world-import type="button">${tr("重试")}</button>` : '';
         const operationHtml = operation?.status === 'RUNNING'
-            ? `<div class="nora-world-progress" role="status"><span class="nora-progress-dot" aria-hidden="true"></span><span>${operationLabel}</span></div>`
-            : operation?.status === 'FAILED' && operation.error?.retryable
-                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr("世界创建暂时中断，可继续")}</span><button data-retry-world-import type="button">${tr("重试")}</button></div>`
+            ? `<div class="nora-world-progress" role="status"><span class="nora-progress-dot" aria-hidden="true"></span><span>${tr(runningLabel)}</span></div>`
+            : operation?.status === 'FAILED'
+                ? `<div class="nora-world-progress is-error" role="alert"><span>${tr(failedLabel)}</span>${retryHtml}</div>`
                 : '';
         const worldsHtml = worlds.length ? worlds.map((world) => {
             const name = world.name || tr("未命名世界");
@@ -233,6 +251,10 @@ export function createWorldController({
         }
         const retryImport = event.target instanceof Element ? event.target.closest('[data-retry-world-import]') : null;
         if (retryImport) {
+            if (!canRetryCreation(store.read().worldStatus?.operation)) {
+                renderRail();
+                return;
+            }
             retryImport.disabled = true;
             try {
                 await worldRuntime.retryPendingCreation();

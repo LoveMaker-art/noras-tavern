@@ -109,7 +109,7 @@ test('presents one small World Core interface and hides persistence mechanics', 
     const core = createNoraWorldCore({ root, materializer: adapter });
 
     assert.deepEqual(Object.keys(core).sort(), [
-        'importLibraryItem', 'listLibraryWorldbooks', 'readLibraryWorldbook', 'saveLibraryWorldbook',
+        'importLibraryItem', 'listLibraryWorldbooks', 'readLibraryWorldbook', 'saveLibraryWorldbook', 'deleteLibraryWorldbook',
         'listLibraryCards', 'saveLibraryCard', 'readLibraryCardSource',
         'listLibraryProfiles', 'readLibraryProfile', 'saveLibraryProfile', 'deleteLibraryProfile',
         'addWorldSetting',

@@ -77,7 +77,7 @@ test('reads character, bounded chat and all Worldbooks concurrently behind one s
     assert.equal(extensions.tavern_helper.scripts[1].enabled, true);
     assert.equal(
         extensions.tavern_helper.scripts[1].content,
-        "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora4'",
+        "import '/scripts/extensions/third-party/nora-mvu/mvu-zod.js?v=4.1.11-nora5'",
     );
     assert.equal(extensions.nora_mvu_compatibility.managed_runtime, true);
     assert.equal(extensions.nora_mvu_compatibility.schema_runtime_localized, true);
