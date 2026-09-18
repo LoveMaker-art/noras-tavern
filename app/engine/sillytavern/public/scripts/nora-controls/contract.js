@@ -1,6 +1,12 @@
 // Shared by the authenticated broker and the browser executor. No eval/reflective dispatch.
 const action = (description, fields = {}, options = {}) => Object.freeze({ description, fields, readOnly: false, ...options });
 export const CONTROL_ACTIONS = Object.freeze({
+    'preset.list': action('List stored chat-completion preset template names; no selection or generation.', {}, { readOnly: true }),
+    'preset.inspect': action('Read library template or current World preset, prompt identifiers/order/parameters and revision. For world scope name is empty. Connections and executable extensions are excluded.', { scope: ['library', 'world'], name: 'string' }, { readOnly: true }),
+    'preset.create': action('Create a library template from source {name,revision}; edits {prompts?:[{operation:create|update|delete,id,patch?}],order?:[{identifier,enabled}],parameters?:object}. Prompt patch: name,content,role(system|user|assistant),injection_position(0|1),injection_depth,injection_order. Parameters: temperature,top_p,openai_max_tokens,openai_max_context. Dynamic markers protected. Does not apply or execute scripts. Duplicate name rejected.', { name: 'string', source: 'object', edits: 'object' }),
+    'preset.edit': action('Edit selected library template or current World copy using the preset.create edits shape. Read revision first; never changes both scopes. World name is empty. Preserves unrequested fields; no model calls.', { scope: ['library', 'world'], name: 'string', expectedRevision: 'string', edits: 'object' }),
+    'preset.apply': action('Copy a stored template into current World only. Obtain sourceRevision from library inspect and expectedRevision from world inspect. Does not select a global preset, run scripts, change connections or generate.', { name: 'string', sourceRevision: 'string', expectedRevision: 'string' }),
+    'preset.save-as': action('Save current World preset as a new library template; duplicate names rejected. World remains unchanged. expectedRevision from world preset inspect.', { name: 'string', expectedRevision: 'string' }),
     'theme.catalog': action('Read supported original World Visuals theme fields, fonts and scope', {}, { readOnly: true }),
     'theme.backgrounds': action('List existing ST background images without downloading them', {}, { readOnly: true }),
     'theme.global.inspect': action('Read this user\'s GLOBAL default theme, revision and renderer; applies across Worlds without changing their overrides', {}, { readOnly: true }),

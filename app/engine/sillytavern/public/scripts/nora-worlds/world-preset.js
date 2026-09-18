@@ -1,3 +1,5 @@
+import { PRESET_MAX_BYTES, presetFileSize } from './preset-file.js';
+
 // World snapshots carry generation settings, never connections or executable extensions.
 export const WORLD_PRESET_PARAMETERS = Object.freeze([
     { key: 'openai_max_tokens', label: '回复上限', min: 1, max: 128000, step: 1 },
@@ -39,7 +41,7 @@ export function normalizeWorldPreset(value) {
         || !value.name.trim() || value.name.length > 150 || typeof value.modified !== 'boolean') invalid();
     const preset = value.preset;
     if (!preset || !Array.isArray(preset.prompts) || !Array.isArray(preset.prompt_order)
-        || JSON.stringify(value).length > 2_000_000) invalid();
+        || presetFileSize(JSON.stringify(preset)) > PRESET_MAX_BYTES) invalid();
     const ids = new Set();
     for (const prompt of preset.prompts) {
         if (!prompt || typeof prompt.identifier !== 'string' || !prompt.identifier || ids.has(prompt.identifier)
