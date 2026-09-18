@@ -715,6 +715,13 @@ function createWindow() {
   }
   win.on('close', (event) => {
     if (quitting && !quitReady) { event.preventDefault(); return; }
+    // Windows closes the last window to quit. Keep it visible until managed
+    // shutdown succeeds so a failed stop still has a usable retry surface.
+    if (process.platform !== 'darwin' && !quitReady && !uninstalling && !MOCK_SCENARIO) {
+      event.preventDefault();
+      app.quit();
+      return;
+    }
     if (!activeRun && !modelBusy) return;
     event.preventDefault();
     dialog.showMessageBox(win, {

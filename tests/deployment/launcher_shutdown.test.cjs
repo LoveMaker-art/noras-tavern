@@ -103,3 +103,38 @@ test('only the primary instance registers managed shutdown', () => {
   assert.match(source, /if \(!app\.requestSingleInstanceLock\(\)\) app\.quit\(\);\s*else\s*\{\s*app\.on\('before-quit', requestQuit\)/);
   assert.ok(source.includes("if (quitting && channel !== 'nora:status') throw new Error('正在退出"));
 });
+
+test('Windows window close waits for shutdown and remains open on failure', () => {
+  let closeNode;
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'CallExpression' && node.callee.object?.name === 'win'
+      && node.callee.property?.name === 'on' && node.arguments[0]?.value === 'close') closeNode = node.arguments[1];
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') visit(value);
+    }
+  }
+  visit(ast);
+  assert.ok(closeNode);
+  for (const platform of ['win32', 'darwin']) {
+    let quits = 0;
+    const context = vm.createContext({ process: { platform }, quitting: false, quitReady: false,
+      uninstalling: false, MOCK_SCENARIO: '', activeRun: false, modelBusy: false,
+      app: { quit: () => { quits++; } } });
+    const close = vm.runInContext(`(${source.slice(closeNode.start, closeNode.end)})`, context);
+    const event = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
+    const initial = event(); close(initial);
+    assert.equal(initial.prevented, platform === 'win32');
+    assert.equal(quits, platform === 'win32' ? 1 : 0);
+    context.quitting = true;
+    const stopping = event(); close(stopping);
+    assert.equal(stopping.prevented, true);
+    context.quitting = false;
+    const failedRetry = event(); close(failedRetry);
+    assert.equal(failedRetry.prevented, platform === 'win32');
+    context.quitReady = true;
+    const completed = event(); close(completed);
+    assert.equal(completed.prevented, false);
+  }
+});
