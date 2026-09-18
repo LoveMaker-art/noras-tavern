@@ -1,6 +1,6 @@
 ---
 name: tavern
-description: Manage worlds, chats, visuals, plugins and story profiles; find, save and apply reusable personas, character profiles and worldbooks.
+description: Manage worlds, chats, visuals, plugins and story profiles; find, save and apply reusable personas, character profiles, worldbooks and prompt presets.
 version: 1.25.1
 author: ClawChat Tavern
 license: AGPL-3.0-only
@@ -53,6 +53,7 @@ substituting the relevant file. Load a second reference only for a real second t
 
 | Requested outcome | Reference |
 | --- | --- |
+| Author/import preset JSON, edit/save templates or apply one to a World | [presets](references/presets.md) |
 | Find/read/save/apply library personas, character profiles or worldbooks | [worlds: library](references/worlds.md#reusable-library-material) |
 | Find/create/import/repair/delete a world; edit its Persona, background, runtime card or worldbook; switch/delete a saved text model | [worlds](references/worlds.md) |
 | Read/send/stop/regenerate/suggest replies; edit history; inspect or control story compression | [chat and ledger](references/chat-ledger.md) |

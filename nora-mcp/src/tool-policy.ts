@@ -18,6 +18,7 @@ export const READ_TOOLS = new Set([
 export const WRITE_TOOLS = new Set([
   "nora.library.save",
   "nora.background.import",
+  "nora.preset.import",
   "nora.control.execute",
   "nora.world.create", "nora.world.import", "nora.world.import_library", "nora.world.repair", "nora.world.delete", "nora.operation.retry",
   "nora.story.checkpoint", "nora.story.reflect_preview", "nora.story.learn", "nora.story.refresh", "nora.mvu_model.configure",
