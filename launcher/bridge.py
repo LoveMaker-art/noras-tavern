@@ -199,6 +199,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
     )
     emit("diagnostic", operation="subprocess-start", pid=process.pid, command=command)
     assert process.stdout is not None
+    failure = ""
     for line in process.stdout:
         line = ANSI.sub("", line).rstrip()
         if line:
@@ -207,6 +208,10 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
             except ValueError:
                 emit("log", line=line, stream="combined")
             else:
+                if isinstance(message, dict):
+                    detail = message.get("error") or (message.get("message") if message.get("event") == "error" else "")
+                    if detail:
+                        failure = str(detail)[-2000:]
                 if isinstance(message, dict) and message.get("event"):
                     emit(message.pop("event"), **message)
                 else:
@@ -215,7 +220,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
     emit("diagnostic", operation="subprocess-exit", pid=process.pid, exitCode=code,
          durationMs=round((time.monotonic() - started) * 1000))
     if code:
-        fail(f"命令执行失败，退出码 {code}")
+        fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。")
 
 
 def run_json(command: list[str], *, env: dict[str, str] | None = None, timeout: int = 60) -> dict:
@@ -241,7 +246,7 @@ def read_version(install_root: Path) -> dict:
     return {"version": None, "commit": None, "versionSource": "unknown"}
 
 
-def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None) -> dict:
+def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None, *, allow_pending=False) -> dict:
     def reject(reason: str) -> dict:
         if problems is not None:
             problems.append(reason)
@@ -291,9 +296,15 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
                     return reject("接口地址与验证记录不一致")
                 if not configured_key:
                     return reject("未找到自定义模型密钥配置")
+            credential = configured_key if is_custom else env_values.get(key_env, "")
+            if value.get("credentialSha256") and hashlib.sha256(credential.encode()).hexdigest() != value["credentialSha256"]:
+                return reject("密钥已更改，需要重新验证模型")
         except (OSError, ValueError, AttributeError, yaml.YAMLError):
             return reject("无法读取模型配置")
-        return {"provider": provider, "model": model, "keyEnv": key_env, "baseUrl": base_url}
+        if value.get("tavernSyncPending") and not allow_pending:
+            return reject("模型已验证，酒馆同步尚未完成")
+        return {"provider": provider, "model": model, "keyEnv": key_env, "baseUrl": base_url,
+                "authMode": value.get("authMode", "key"), "tavernSyncPending": bool(value.get("tavernSyncPending"))}
     except (OSError, ValueError, AttributeError):
         return reject("无法读取模型验证记录")
 
@@ -304,8 +315,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     # Installed files and live service health are separate facts. Avoid booting
     # the entire Hermes CLI on every five-second status poll.
     hermes_ready = bool(hermes and (hermes_home / "hermes-agent/.hermes-bootstrap-complete").is_file())
-    verified_model = read_verified_model(nora_home, hermes_home)
-    credentials_ready = bool(verified_model)
+    verified_model = read_verified_model(nora_home, hermes_home, allow_pending=True)
+    credentials_ready = bool(verified_model) and not verified_model.get("tavernSyncPending")
     connection = gateway_status(nora_home, hermes_home)
     clawchat_connected = connection["clawchatConnected"]
     paired = clawchat_paired(hermes_home)
@@ -319,6 +330,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "hermesInstalled": hermes_ready,
             "noraInstalled": nora_system.files_ready(hermes_home),
             "modelConfigured": credentials_ready,
+            "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
+            "modelAuthMode": verified_model.get("authMode", "key"),
             "modelProvider": verified_model.get("provider", ""),
             "modelName": verified_model.get("model", ""),
             "modelBaseUrl": verified_model.get("baseUrl", ""),
@@ -348,6 +361,8 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "hermesInstalled": hermes_ready,
         "noraInstalled": nora_system.files_ready(hermes_home),
         "modelConfigured": credentials_ready,
+        "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
+        "modelAuthMode": verified_model.get("authMode", "key"),
         "modelProvider": verified_model.get("provider", ""),
         "modelName": verified_model.get("model", ""),
         "modelBaseUrl": verified_model.get("baseUrl", ""),
@@ -448,7 +463,10 @@ def command_start(args) -> None:
         fail("请先连接 ClawChat。")
     if service != "tavern":
         sync_nora_profile(args)
-    emit("milestone", index=4, state="running", task="正在启动服务")
+    if service == "all":
+        emit("milestone", index=4, state="running", task="正在启动服务")
+    else:
+        emit("task", task="正在启动酒馆" if service == "tavern" else "正在启动诺拉")
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
     if service != "nora":
         run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env)
@@ -459,7 +477,7 @@ def command_start(args) -> None:
     if service == "nora":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
-    if service == "tavern" and not clawchat_paired(args.hermes_home):
+    if service == "tavern":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
     emit("task", task="正在准备 ClawChat 连接组件")
@@ -468,9 +486,6 @@ def command_start(args) -> None:
     # Registration and the model greeting run independently.
     run_stream([python_command(args.hermes_home), "-B",
                 str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
-    if service == "tavern":
-        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
-        return
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if not (status["running"] and status["clawchatConnected"]):
         fail("启动检查未通过，请检查服务连接后重试。")

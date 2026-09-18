@@ -125,6 +125,37 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
             runtime.install.assert_called_once_with()
             self.assertTrue(result["already_running"])
 
+    def test_start_reuses_node_symlink_but_rejects_different_arguments(self):
+        lifecycle = load_lifecycle()
+        with tempfile.TemporaryDirectory(prefix='nora-start-identity-') as temporary:
+            root = Path(temporary)
+            executable = root / 'node-real'
+            executable.write_text('fixture')
+            alias = root / 'node-link'
+            alias.symlink_to(executable)
+            runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
+            runtime.engine_root = root
+            runtime.native_data_root = root / 'data'
+            for name, value in [('dependencies_ready', True), ('verify_install', None), ('sync_assets', None),
+                                ('run_dir', root / 'run'), ('managed_service', None), ('_read_pid', 123),
+                                ('health', {'ok': True, 'checks': {}})]:
+                setattr(runtime, name, mock.Mock(return_value=value))
+            expected = [str(alias), 'server.js', '--port', '8799', '--dataRoot', str(root / 'data')]
+            runtime.node_command = mock.Mock(return_value=expected)
+            processes = mock.Mock()
+            actual = [str(executable), *expected[1:]]
+            processes.process_record.return_value = {'argv': actual, 'cwd': str(root)}
+            runtime.process_module = mock.Mock(return_value=processes)
+            self.assertTrue(runtime._start('production', 8799, None, assets_prepared=False)['already_running'])
+            for index, value in [(0, str(root / 'other-node')), (1, 'other.js'), (3, '8800'), (5, str(root / 'other-data'))]:
+                changed = actual.copy(); changed[index] = value
+                processes.process_record.return_value = {'argv': changed, 'cwd': str(root)}
+                with self.subTest(index=index), self.assertRaisesRegex(lifecycle.NativeLifecycleError, 'configuration differs'):
+                    runtime._start('production', 8799, None, assets_prepared=False)
+            processes.process_record.return_value = {'argv': actual, 'cwd': str(root / 'other-cwd')}
+            with self.assertRaisesRegex(lifecycle.NativeLifecycleError, 'configuration differs'):
+                runtime._start('production', 8799, None, assets_prepared=False)
+
 
 if __name__ == "__main__":
     unittest.main()

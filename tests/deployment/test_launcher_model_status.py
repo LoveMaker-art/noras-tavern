@@ -1,4 +1,5 @@
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -10,6 +11,46 @@ from ops.installer.launcher_bridge import read_verified_model
 
 
 class VerifiedModelStatusTests(unittest.TestCase):
+    def test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key(self):
+        with tempfile.TemporaryDirectory(prefix='nora-model-resume-') as temporary:
+            root = Path(temporary)
+            home = root / 'hermes'; home.mkdir()
+            (root / 'installer').mkdir()
+            key = 'nora-local-no-auth'
+            config = {'provider': 'custom:local', 'default': 'local-model',
+                      'base_url': 'http://127.0.0.1:8080/v1', 'api_key': key}
+            (home / 'config.yaml').write_text(json.dumps({'model': config}))
+            marker = {'schema': 1, 'provider': config['provider'], 'model': config['default'],
+                      'baseUrl': config['base_url'], 'keyEnv': '', 'authMode': 'none',
+                      'credentialSha256': hashlib.sha256(key.encode()).hexdigest(), 'tavernSyncPending': True}
+            (root / 'installer/model.json').write_text(json.dumps(marker))
+            self.assertFalse(read_verified_model(root, home))
+            self.assertTrue(read_verified_model(root, home, allow_pending=True)['tavernSyncPending'])
+            runtime = root / 'tavern/apps/tavern-runtime'; runtime.mkdir(parents=True)
+            (runtime / 'native_model_config.py').write_text(
+                'def launcher_config(provider, model, key, base):\n'
+                '    assert provider == "custom" and model == "local-model"\n'
+                '    assert key == "nora-local-no-auth"\n'
+                '    return {}\n'
+                'def initialize_launcher_model(config, marker, url):\n'
+                '    return {"ok": True, "changed": True}\n')
+            env = {**os.environ, 'HERMES_HOME': str(home), 'NORA_TAVERN_HOME': str(root),
+                   'TAVERN_DATA_ROOT': str(root / 'tavern')}
+            script = Path(__file__).resolve().parents[1] / 'installer/model_config.py'
+            def resume():
+                return subprocess.run([sys.executable, '-B', str(script)], env=env, capture_output=True,
+                    text=True, timeout=20, input=json.dumps({'action': 'sync-saved-tavern', 'port': 18999}))
+            result = resume()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertTrue(json.loads(result.stdout)['ok'])
+            self.assertNotIn(key, result.stdout + result.stderr)
+            config['api_key'] = 'changed-fixture-key'
+            (home / 'config.yaml').write_text(json.dumps({'model': config}))
+            result = resume()
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('密钥已更改', result.stdout)
+            self.assertNotIn('changed-fixture-key', result.stdout + result.stderr)
+
     def test_named_custom_mismatches_still_fail_without_exposing_values(self):
         import yaml
         for field, replacement in (("provider", "custom:other"), ("default", "wrong-model"),

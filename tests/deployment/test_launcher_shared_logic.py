@@ -128,9 +128,18 @@ class SharedLogicTests(unittest.TestCase):
         config = self.home / "config.yaml"
         config.write_text("user_setting: keep\nmcp_servers:\n  unrelated:\n    command: keep\n")
         expected = update.render_mcp(self.home, self.tavern, 18899)
-        self.assertEqual(first_install.render_mcp(self.home, self.tavern, 18899), expected)
+        import yaml
+        initial = yaml.safe_load(first_install.render_mcp(self.home, self.tavern, 18899))
+        self.assertEqual(initial.pop('approvals'), {'destructive_slash_confirm': False})
+        self.assertEqual(initial, yaml.safe_load(expected))
         self.assertIn(b"http://127.0.0.1:18899", expected)
         self.assertIn(b"user_setting: keep", expected)
+
+    def test_first_install_preserves_explicit_confirmation_and_command_policy(self):
+        import yaml
+        (self.home / 'config.yaml').write_text('approvals:\n  destructive_slash_confirm: true\n  mode: manual\n')
+        result = yaml.safe_load(first_install.render_mcp(self.home, self.tavern))
+        self.assertEqual(result['approvals'], {'destructive_slash_confirm': True, 'mode': 'manual'})
 
     def test_shared_defaults_do_not_assume_a_desktop_install(self):
         with patch.dict(os.environ, {"HERMES_HOME": str(self.home)}, clear=True):

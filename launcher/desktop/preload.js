@@ -58,6 +58,7 @@ if (contextBridge && ipcRenderer) {
     saveAndTestModel(payload) {
       return ipcRenderer.invoke('nora:model-save-test', payload);
     },
+    resumeModelSetup() { return ipcRenderer.invoke('nora:model-resume'); },
     openClawChat() {
       return ipcRenderer.invoke('nora:open-clawchat');
     },

@@ -628,7 +628,13 @@ class NativeRuntime:
         script = self.engine_root / 'server.js'
         if native_pid:
             process = processes.process_record(native_pid, script)
-            if process['argv'] != self.node_command(port, native_data) or Path(process['cwd']) != self.engine_root:
+            expected = self.node_command(port, native_data)
+            actual = process['argv']
+            # Only canonicalize the executable and working directory. Script and
+            # runtime arguments must still match; never adopt another data root.
+            if (not actual or actual[1:] != expected[1:]
+                    or Path(actual[0]).resolve() != Path(expected[0]).resolve()
+                    or Path(process['cwd']).resolve() != self.engine_root.resolve()):
                 raise NativeLifecycleError('Running Tavern configuration differs; stop the reviewed instance explicitly')
             processes.require_listener(process, script, port)
             current = self.health(port)

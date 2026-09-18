@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, net } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -8,6 +8,8 @@ const diagnostics = createDiagnostics({
   primary: () => path.join(installerDirectory(), 'install.log'),
   fallback: path.join(app.getPath('appData'), 'NoraTavern', 'diagnostics', 'install.log'),
 });
+const { createReleaseNetwork } = require('./release-network');
+const releaseNetwork = createReleaseNetwork({ app, net, diagnostics });
 for (const [name, value] of Object.entries(process.env)) {
   if (/(?:API_KEY|TOKEN|SECRET|PASSWORD|PAIR_CODE)$/i.test(name)) diagnostics.addSecret(value);
 }
@@ -28,6 +30,7 @@ const ISOLATED_TEST = LOCAL_TEST || CHANNEL === 'beta';
 const { consumeLines, externalUrl } = require('./process-output');
 const {
   loadProviderModels,
+  modelCredential,
   normalizeCustomBaseUrl,
   publicProviders,
   readVerifiedModel,
@@ -53,6 +56,8 @@ let releaseAbort = null;
 let updatingSystem = false;
 let uninstalling = false;
 let selectingLocation = false;
+let quitting = false;
+let quitReady = false;
 let selectedHome;
 const LOCATION_SCOPE = LOCAL_TEST ? `test-${LOCAL_TEST.buildId}` : CHANNEL;
 
@@ -478,7 +483,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
-    const timeoutMs = command === 'status' ? 90000 : 30 * 60 * 1000;
+    const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : 30 * 60 * 1000;
     const timeout = setTimeout(() => {
       timedOut = true;
       diagnostics.write('process.timeout', { command, pid: proc.pid, timeoutMs });
@@ -513,13 +518,45 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
         resolve(result);
         return;
       }
-      reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
+      reject(Object.assign(new Error(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
     });
   });
 }
 
 async function stopForUpdate() {
   if (findPython()) await runBridge('stop');
+}
+
+async function requestQuit(event) {
+  // Uninstall owns its shutdown; a second instance never registers this handler.
+  if (quitReady || uninstalling || MOCK_SCENARIO) return;
+  event.preventDefault();
+  if (quitting) return;
+  quitting = true;
+  try {
+    if (activeRun || modelBusy || selectingLocation) {
+      await dialog.showMessageBox({ type: 'info', title: '暂未退出',
+        message: '当前任务还没有结束', detail: '请等待任务完成，或先在启动器中取消，再退出。', buttons: ['知道了'] });
+      return;
+    }
+    if (statusRequest) await statusRequest.catch(() => {});
+    diagnostics.write('shutdown.start', { services: ['nora', 'tavern'] });
+    if (findPython()) {
+      const result = await runBridge('stop', { service: 'all' });
+      if (result.running !== false || result.gatewayRunning !== false) throw new Error('尚未确认诺拉与酒馆已全部停止。');
+    } else {
+      const status = nodeStatus();
+      if (status.installed || status.hermesInstalled) throw new Error('运行环境缺失，无法安全停止服务。请修复安装后再退出。');
+    }
+    diagnostics.write('shutdown.complete');
+    quitReady = true;
+    app.quit();
+  } catch (error) {
+    diagnostics.error('shutdown.failed', error);
+    await dialog.showMessageBox({ type: 'error', title: '退出未完成',
+      message: '后台服务停止失败，启动器未退出',
+      detail: `${diagnostics.clean(error.message || String(error))}\n请重试退出，或打开日志检查原因。`, buttons: ['知道了'] });
+  } finally { quitting = false; }
 }
 
 async function performSystemUpdate(selectedPayload, payload, webContents) {
@@ -613,6 +650,27 @@ function runModelConfigHelper(payload) {
   });
 }
 
+async function finishModelSetup() {
+  const saved = readVerifiedModel(noraHome());
+  if (!saved) throw new Error('请先配置并验证模型。');
+  if (saved.tavernSyncPending) {
+    recordEvent({ event: 'milestone', index: 2, state: 'running', task: '模型已验证，正在准备酒馆并同步配置' });
+    try {
+      const port = readInstallerState().port || DEFAULT_PORT;
+      const runtime = await runBridge('start', { service: 'tavern', port });
+      if (!runtime.running) throw new Error('酒馆接口尚未就绪。');
+      await runModelConfigHelper({ action: 'sync-saved-tavern', port });
+      writeVerifiedModel(noraHome(), { ...saved, tavernSyncPending: false });
+    } catch (error) {
+      throw new Error(`模型验证已通过，但酒馆同步未完成：${error.message}。可继续同步，无需重新填写 Key。`);
+    }
+  }
+  const verification = await runBridge('verify-model');
+  if (!verification.ok) throw new Error(verification.error || '模型配置复核未通过。');
+  recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成（已验证文字响应，工具调用能力未验证）' });
+  return { ok: true, provider: saved.provider, model: saved.model, toolSupport: 'unverified' };
+}
+
 function createWindow() {
   const uiPath = path.join(installerRoot(), 'launcher-conversation-prototype.html');
   const win = new BrowserWindow({
@@ -656,6 +714,7 @@ function createWindow() {
     });
   }
   win.on('close', (event) => {
+    if (quitting && !quitReady) { event.preventDefault(); return; }
     if (!activeRun && !modelBusy) return;
     event.preventDefault();
     dialog.showMessageBox(win, {
@@ -756,11 +815,12 @@ if (app && BrowserWindow && ipcMain && shell) {
       throw new Error('启动器页面来源无效。');
     }
     if (uninstalling && channel !== 'nora:status') throw new Error('正在处理卸载，请稍候。');
+    if (quitting && channel !== 'nora:status') throw new Error('正在退出，请等待后台服务停止。');
     if (selectingLocation && channel !== 'nora:status') throw new Error('正在选择安装位置，请稍候。');
     return fn(event, ...args);
   });
   handle('nora:status', async () => {
-    if (uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), busy: true };
+    if (quitting || uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), busy: true };
     if (statusRequest) return statusRequest;
     statusRequest = (async () => {
     try {
@@ -835,10 +895,20 @@ if (app && BrowserWindow && ipcMain && shell) {
         if (payload.action === 'update' && LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用 Beta 发布包。');
         releaseAbort = new AbortController();
         try {
+          if (LOCAL_TEST) {
+            sendBridgeEvent(event.sender, payload.runId, { event: 'task', task: '检查 GitHub 连接与证书（测试包）' });
+            await releaseNetwork.compare(fetcher => releases.latest(fetcher, releaseAbort.signal, 'stable'));
+            const check = await releases.check({ fetcher: releaseNetwork.fetch,
+              installRoot: installRoot(), launcherVersion: app.getVersion(), channel: 'stable' });
+            if (!check.installable) throw new Error(check.compatibilityError || check.error || '发布清单连接检查未通过。');
+            diagnostics.write('network.manifest.verified', { version: check.latest });
+            releaseAbort.signal.throwIfAborted();
+          }
           selectedPayload = LOCAL_TEST
             ? await prepareTestPayload(payloadDirectory(), LOCAL_TEST, app.getVersion(),
               message => sendBridgeEvent(event.sender, payload.runId, message))
             : await releases.prepare({
+            fetcher: releaseNetwork.fetch,
             cacheRoot: path.join(noraHome(), 'cache', 'releases'), bundledRoot: payloadDirectory(),
             launcherVersion: app.getVersion(), signal: releaseAbort.signal,
             channel: CHANNEL, tag: payload.action === 'update' ? payload.tag : undefined,
@@ -905,16 +975,27 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
   handle('nora:model-options', async (_event, payload) => {
     if (!findHermes()) throw new Error('请先安装 Nora。');
-    return { ok: true, ...(await loadProviderModels(payload?.provider, payload?.key)) };
+    return { ok: true, ...(await loadProviderModels(payload?.provider, payload?.key, payload?.baseUrl, payload?.authMode)) };
+  });
+  handle('nora:model-resume', async () => {
+    if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
+    modelBusy = true;
+    try {
+      if (statusRequest) await statusRequest.catch(() => {});
+      return await finishModelSetup();
+    } catch (error) {
+      diagnostics.error('model.resume-failed', error);
+      recordEvent({ event: 'milestone', index: 2, state: 'error', task: '酒馆模型同步未完成' });
+      throw error;
+    } finally { modelBusy = false; }
   });
   handle('nora:model-save-test', async (_event, payload) => {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
     const provider = requireProvider(payload?.provider);
-    const key = String(payload?.key || '').trim();
+    const key = modelCredential(provider, payload);
     diagnostics.addSecret(key);
     const model = String(payload?.model || '').trim();
     const baseUrl = provider.id === 'custom' ? normalizeCustomBaseUrl(payload?.baseUrl) : '';
-    if (!key || key.length > 8192 || /[\r\n]/.test(key)) throw new Error('请输入有效的 API Key。');
     if (!model || model.length > 240 || /[\r\n]/.test(model)) throw new Error('请选择模型。');
     modelBusy = true;
     recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在测试 Nora' });
@@ -940,22 +1021,10 @@ if (app && BrowserWindow && ipcMain && shell) {
         model: normalized.model,
         baseUrl,
       });
-      let tavern = { ok: true, changed: false, reason: 'setup-complete' };
-      if (!readInstallerState().setupCompleted) {
-        // A previous verification must not let a restarted launcher skip a
-        // failed first-install Tavern synchronization.
-        fs.rmSync(path.join(installerDirectory(), 'model.json'), { force: true });
-        recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在同步酒馆模型' });
-        tavern = await runModelConfigHelper({
-          action: 'sync-tavern', provider: provider.id, keyEnv: provider.keyEnv,
-          key, model: saved.model, baseUrl, port: readInstallerState().port || DEFAULT_PORT,
-        });
-      }
-      writeVerifiedModel(noraHome(), saved);
-      const verification = await runBridge('verify-model');
-      if (!verification.ok) throw new Error(verification.error || '模型配置复核未通过。');
-      recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成' });
-      return { ok: true, provider: saved.provider, model: saved.model, baseUrl: saved.baseUrl || '', tavern };
+      writeVerifiedModel(noraHome(), { ...saved, key,
+        authMode: provider.custom && payload.authMode === 'none' ? 'none' : 'key',
+        tavernSyncPending: !readInstallerState().setupCompleted });
+      return await finishModelSetup();
     } catch (error) {
       diagnostics.error('model.failed', error);
       recordEvent({ event: 'milestone', index: 2, state: 'error', task: '模型配置未完成' });
@@ -990,7 +1059,7 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
   handle('nora:check-update', async () => {
     if (activeRun || modelBusy) throw new Error('请等待当前任务完成。');
-    return releases.check({ installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
+    return releases.check({ fetcher: releaseNetwork.fetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
   });
   handle('nora:uninstall', beginUninstall);
   handle('nora:open-external', async (_event, url) => {
@@ -999,15 +1068,18 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
 
   if (!app.requestSingleInstanceLock()) app.quit();
-  else app.whenReady().then(async () => {
-    if (!SYSTEM_UNINSTALL) return createWindow();
-    try {
-      const destination = path.resolve(SYSTEM_UNINSTALL);
-      if (process.platform !== 'win32' || path.basename(destination) !== 'nora-uninstall.json'
-        || !destination.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error('系统卸载请求无效。');
-      if (!await confirmUninstall(destination)) app.exit(1);
-    } catch (error) { dialog.showErrorBox('卸载未完成', error.message); app.exit(1); }
-  });
+  else {
+    app.on('before-quit', requestQuit);
+    app.whenReady().then(async () => {
+      if (!SYSTEM_UNINSTALL) return createWindow();
+      try {
+        const destination = path.resolve(SYSTEM_UNINSTALL);
+        if (process.platform !== 'win32' || path.basename(destination) !== 'nora-uninstall.json'
+          || !destination.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error('系统卸载请求无效。');
+        if (!await confirmUninstall(destination)) app.exit(1);
+      } catch (error) { dialog.showErrorBox('卸载未完成', error.message); app.exit(1); }
+    });
+  }
   app.on('second-instance', () => { const win = BrowserWindow.getAllWindows()[0]; if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });
   app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') app.quit();

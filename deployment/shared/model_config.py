@@ -54,6 +54,23 @@ def main() -> None:
     try:
         body = json.load(sys.stdin)
         action = str(body.get("action") or "save").strip()
+        if action == "sync-saved-tavern":
+            # Read credentials only in the local helper, never return them to the
+            # renderer or logs. Verify the saved selection before resuming it.
+            from launcher_bridge import read_verified_model
+            import yaml
+            from dotenv import dotenv_values
+            home = Path(os.environ["HERMES_HOME"]).resolve()
+            problems = []
+            saved = read_verified_model(Path(os.environ["NORA_TAVERN_HOME"]), home, problems, allow_pending=True)
+            if not saved:
+                fail("无法继续同步：" + "；".join(problems))
+            custom = saved["provider"] == "custom" or saved["provider"].startswith("custom:")
+            config = yaml.safe_load((home / "config.yaml").read_text())
+            secret = config["model"].get("api_key", "") if custom else dotenv_values(home / ".env").get(saved["keyEnv"], "")
+            body = {**body, "provider": "custom" if custom else saved["provider"], "model": saved["model"],
+                    "keyEnv": saved["keyEnv"], "key": secret, "baseUrl": saved["baseUrl"]}
+            action = "sync-tavern"
         provider = str(body.get("provider") or "").strip()
         model = str(body.get("model") or "").strip()
         secret = str(body.get("key") or "").strip()

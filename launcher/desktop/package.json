@@ -41,6 +41,7 @@
       "uninstall.js",
       "runtime-worker.js",
       "diagnostics.js",
+      "release-network.js",
       "process-output.js"
     ],
     "extraResources": [

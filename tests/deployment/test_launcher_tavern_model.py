@@ -111,8 +111,10 @@ class LauncherTavernModelTests(unittest.TestCase):
     def test_sync_runs_before_marking_initial_model_complete(self):
         main = (ROOT / "ops/installer/desktop/main.js").read_text()
         handler = main[main.index("handle('nora:model-save-test'"):main.index("handle('nora:open-clawchat'")]
-        self.assertLess(handler.index("action: 'sync-tavern'"), handler.index("writeVerifiedModel(noraHome(), saved)"))
-        self.assertIn("if (!readInstallerState().setupCompleted)", handler)
+        finish = main[main.index('async function finishModelSetup()'):main.index('function createWindow()')]
+        self.assertIn('tavernSyncPending: !readInstallerState().setupCompleted', handler)
+        self.assertLess(finish.index("action: 'sync-saved-tavern'"), finish.index('tavernSyncPending: false'))
+        self.assertLess(finish.index("runBridge('verify-model')"), finish.index("state: 'done'"))
 
     def test_real_http_client_performs_csrf_secret_save_and_settings_readback(self):
         storage = Client(self.settings)

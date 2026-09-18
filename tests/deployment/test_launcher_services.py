@@ -12,6 +12,31 @@ from ops.installer import launcher_bridge as bridge
 
 
 class LauncherServicesTests(unittest.TestCase):
+    def test_tavern_only_does_not_require_clawchat_registration(self):
+        args = Mock(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
+                    install_root=Path('/fixture/tavern'), port=8799, service='tavern')
+        with patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge, 'python_command', return_value=sys.executable), \
+             patch.object(bridge, 'run_stream') as run, \
+             patch.object(bridge, 'env_for', return_value={}), \
+             patch.object(bridge, 'status_payload', return_value={'running': True}), \
+             patch.object(bridge, 'require_bundled_clawchat', side_effect=RuntimeError('offline')), \
+             patch.object(bridge, 'clawchat_paired', return_value=True), \
+             patch.object(bridge, 'start_gateway') as gateway, patch.object(bridge, 'emit'):
+            bridge.command_start(args)
+        self.assertEqual(run.call_count, 1)
+        gateway.assert_not_called()
+
+    def test_subprocess_failure_retains_actual_error(self):
+        child = Mock(stdout=io.StringIO('{"error":"fixture configuration differs"}\n'))
+        child.wait.return_value = 1
+        with patch.object(bridge.subprocess, 'Popen', return_value=child), \
+             patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.run_stream(['fixture'])
+        self.assertIn('fixture configuration differs', str(emit.call_args_list[-1]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

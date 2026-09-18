@@ -2,6 +2,19 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
+const { createHash } = require('node:crypto');
+
+// Hermes/OpenAI SDKs require a nonempty credential even for unauthenticated
+// local servers. This public placeholder is not a user secret.
+const NO_AUTH_KEY = 'nora-local-no-auth';
+const redact = (value, secret) => secret ? String(value).replaceAll(secret, '***') : String(value);
+
+function modelCredential(provider, payload) {
+  if (provider.custom && payload?.authMode === 'none') return NO_AUTH_KEY;
+  const key = String(payload?.key || '').trim();
+  if (!key || key.length > 8192 || /[\r\n]/.test(key)) throw new Error('请输入有效的 API Key，或为自定义服务选择“无需鉴权”。');
+  return key;
+}
 
 const PROVIDERS = Object.freeze([
   {
@@ -87,7 +100,8 @@ function normalizeCustomBaseUrl(value) {
   if (!['http:', 'https:'].includes(url.protocol) || !url.hostname || url.username || url.password) {
     throw new Error('中转地址必须是不含账号信息的 HTTP/HTTPS 地址。');
   }
-  return text;
+  if (url.search || url.hash) throw new Error('接口地址不能包含查询参数或片段，请填写基础地址。');
+  return text.replace(/\/chat\/completions$/, '');
 }
 
 function requestHeaders(provider, key) {
@@ -95,7 +109,7 @@ function requestHeaders(provider, key) {
   if (provider.id === 'anthropic') {
     headers['x-api-key'] = key;
     headers['anthropic-version'] = '2023-06-01';
-  } else if (provider.id !== 'gemini') {
+  } else if (provider.id !== 'gemini' && key && key !== NO_AUTH_KEY) {
     headers.Authorization = `Bearer ${key}`;
   }
   return headers;
@@ -103,7 +117,8 @@ function requestHeaders(provider, key) {
 
 function requestJson(url, headers, secret, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
-    const request = https.get(url, { headers, timeout: timeoutMs }, (response) => {
+    const transport = new URL(url).protocol === 'http:' ? http : https;
+    const request = transport.get(url, { headers, timeout: timeoutMs }, (response) => {
       let body = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
@@ -119,17 +134,16 @@ function requestJson(url, headers, secret, timeoutMs = 20000) {
           return;
         }
         if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
-          const detail = String(data?.error?.message || data?.message || `HTTP ${response.statusCode}`)
-            .replaceAll(secret, '***')
+          const detail = redact(data?.error?.message || data?.message || `HTTP ${response.statusCode}`, secret)
             .slice(0, 180);
-          reject(new Error(`Key 验证失败：${detail}`));
+          reject(new Error(`模型服务请求失败：${detail}`));
           return;
         }
         resolve(data);
       });
     });
     request.on('timeout', () => request.destroy(new Error('连接模型服务超时。')));
-    request.on('error', (error) => reject(new Error(String(error.message || error).replaceAll(secret, '***'))));
+    request.on('error', (error) => reject(new Error(redact(error.message || error, secret))));
   });
 }
 
@@ -155,7 +169,7 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
       headers: {
         Accept: 'application/json',
         ...(protocol === 'anthropic' ? { 'x-api-key': secret, 'anthropic-version': '2023-06-01' }
-          : protocol === 'gemini' ? { 'x-goog-api-key': secret } : { Authorization: `Bearer ${secret}` }),
+          : protocol === 'gemini' ? { 'x-goog-api-key': secret } : secret && secret !== NO_AUTH_KEY ? { Authorization: `Bearer ${secret}` } : {}),
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
         'User-Agent': 'Nora-Tavern-Launcher/0.1',
@@ -177,10 +191,9 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
           return;
         }
         if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
-          const detail = String(payload?.error?.message || payload?.message || `HTTP ${response.statusCode}`)
-            .replaceAll(secret, '***')
+          const detail = redact(payload?.error?.message || payload?.message || `HTTP ${response.statusCode}`, secret)
             .slice(0, 180);
-          reject(new Error(`中转模型连接失败：${detail}`));
+          reject(new Error(`模型服务连接失败：${detail}`));
           return;
         }
         const textParts = parts => Array.isArray(parts) ? parts.filter(part => part && !part.thought && typeof part.text === 'string').map(part => part.text).join('') : '';
@@ -191,11 +204,13 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
           reject(new Error('中转服务已响应，但没有返回模型内容。'));
           return;
         }
-        resolve({ ok: true });
+        resolve({ ok: true, toolSupport: 'unverified' });
       });
     });
-    request.on('timeout', () => request.destroy(new Error('模型响应超时，请检查中转地址。')));
-    request.on('error', (error) => reject(new Error(String(error.message || error).replaceAll(secret, '***'))));
+    request.on('timeout', () => request.destroy(new Error('模型响应超时；本地模型请检查是否加载完成，远端模型请检查服务状态。')));
+    request.on('error', (error) => reject(new Error(error.code === 'ECONNREFUSED'
+      ? '无法连接模型服务。若使用本地模型，请先启动 Ollama、LM Studio 等模型服务并检查端口；启动酒馆不会启动模型服务。'
+      : redact(error.message || error, secret))));
     request.end(body);
   });
 }
@@ -235,18 +250,14 @@ function normalizeModels(provider, payload) {
   )))].slice(0, 2000);
 }
 
-async function loadProviderModels(providerId, key) {
+async function loadProviderModels(providerId, key, baseUrl = '', authMode = 'key') {
   const provider = requireProvider(providerId);
-  if (provider.custom) throw new Error('请直接输入自定义模型名称。');
-  const secret = String(key || '').trim();
-  if (!secret || secret.length > 8192 || /[\r\n]/.test(secret)) {
-    throw new Error('请输入有效的 API Key。');
-  }
+  const secret = modelCredential(provider, { key, authMode });
   const headers = requestHeaders(provider, secret);
   if (provider.verifyUrl) await requestJson(provider.verifyUrl, headers, secret);
   const modelsUrl = provider.id === 'gemini'
     ? `${provider.modelsUrl}?key=${encodeURIComponent(secret)}&pageSize=1000`
-    : provider.modelsUrl;
+    : provider.custom ? `${normalizeCustomBaseUrl(baseUrl)}/models` : provider.modelsUrl;
   const payload = await requestJson(modelsUrl, headers, secret);
   const models = normalizeModels(provider, payload);
   if (!models.length) throw new Error('未获取到可用模型。');
@@ -267,6 +278,11 @@ function writeVerifiedModel(noraHome, value) {
     model: value.model,
     keyEnv: value.keyEnv || '',
     ...(value.baseUrl ? { baseUrl: normalizeCustomBaseUrl(value.baseUrl) } : {}),
+    authMode: value.authMode === 'none' ? 'none' : 'key',
+    toolSupport: 'unverified',
+    tavernSyncPending: Boolean(value.tavernSyncPending),
+    ...(value.key ? { credentialSha256: createHash('sha256').update(value.key).digest('hex') }
+      : value.credentialSha256 ? { credentialSha256: value.credentialSha256 } : {}),
     verifiedAt: new Date().toISOString(),
   }, null, 2)}\n`, { mode: 0o600 });
   fs.renameSync(temporary, target);
@@ -286,6 +302,8 @@ function readVerifiedModel(noraHome) {
 }
 
 module.exports = {
+  modelCredential,
+  NO_AUTH_KEY,
   loadProviderModels,
   normalizeCustomBaseUrl,
   normalizeModels,

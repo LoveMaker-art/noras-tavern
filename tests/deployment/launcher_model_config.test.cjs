@@ -7,6 +7,8 @@ const test = require('node:test');
 
 const {
   loadProviderModels,
+  modelCredential,
+  NO_AUTH_KEY,
   normalizeCustomBaseUrl,
   normalizeModels,
   publicProviders,
@@ -47,6 +49,41 @@ test('normalizes OpenAI-compatible and Gemini model responses', () => {
 
 test('rejects an empty key before making a network request', async () => {
   await assert.rejects(loadProviderModels('openrouter', ''), /API Key/);
+});
+
+test('no-auth is explicit and cannot bypass a cloud provider key requirement', () => {
+  const custom = publicProviders().find(p => p.custom);
+  assert.equal(modelCredential(custom, { authMode: 'none' }), NO_AUTH_KEY);
+  assert.throws(() => modelCredential(custom, {}), /API Key/);
+  assert.throws(() => modelCredential(publicProviders()[0], { authMode: 'none' }), /API Key/);
+});
+
+test('local custom endpoint lists models and tests content without an Authorization header', async () => {
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    seen.push([req.url, req.headers.authorization]);
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(req.url.endsWith('/models') ? { data: [{ id: 'local-test' }] }
+        : { choices: [{ message: { content: 'NORA_OK' } }] }));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/v1`;
+    assert.deepEqual((await loadProviderModels('custom', '', base, 'none')).models, ['local-test']);
+    assert.equal((await testCustomModel(base, NO_AUTH_KEY, 'local-test')).toolSupport, 'unverified');
+    assert.deepEqual(seen, [['/v1/models', undefined], ['/v1/chat/completions', undefined]]);
+  } finally { await new Promise(resolve => server.close(resolve)); }
+});
+
+test('local service refusal points to model service, not an invalid key', async () => {
+  const server = http.createServer();
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  await new Promise(resolve => server.close(resolve));
+  await assert.rejects(testCustomModel(`http://127.0.0.1:${port}/v1`, NO_AUTH_KEY, 'local'), /先启动 Ollama/);
 });
 
 test('normalizes and validates a custom OpenAI-compatible endpoint', () => {

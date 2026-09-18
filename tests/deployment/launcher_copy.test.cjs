@@ -35,7 +35,7 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
       if (!elements.has(id)) elements.set(id, { value: '', disabled: false, replaceChildren() {} });
       return elements.get(id);
     };
-    const context = vm.createContext({ $, snapshot, selected: () => ({ id: provider, custom: provider === 'custom' }) });
+    const context = vm.createContext({ $, snapshot, authField: {}, syncAuth() {}, selected: () => ({ id: provider, custom: provider === 'custom' }) });
     vm.runInContext(`${source.slice(saved.start, saved.end)}\n${source.slice(sync.start, sync.end)}\nsyncProvider();`, context);
     assert.equal($('model').value, expected, JSON.stringify({ provider, snapshot }));
     assert.equal($('model').disabled, false, 'the default remains editable');
@@ -162,9 +162,56 @@ test('an empty model list does not claim the key has connected', async () => {
   const context = vm.createContext({
     requireProvider: () => ({ id: 'test', modelsUrl: 'https://example.invalid/models' }),
     requestHeaders: () => ({}), requestJson: async () => ({ data: [] }), normalizeModels: () => [],
+    modelCredential: () => 'test-key',
   });
   vm.runInContext(modelSource.slice(node.start, node.end), context);
   await assert.rejects(vm.runInContext("loadProviderModels('test', 'test-key')", context), { message: '未获取到可用模型。' });
+});
+
+test('opening an installed launcher starts only Tavern once, including unfinished model setup', () => {
+  for (const setupCompleted of [false, true]) {
+    const calls = [];
+    const context = uiContext({
+      autoStartAttempted: false,
+      snapshot: { installed: true, hermesInstalled: true, systemReady: true, running: false, setupCompleted },
+      run: (action, options) => calls.push([action, options.service]),
+      dailyHome: () => calls.push('daily'), modelForm: () => calls.push('model'),
+    });
+    vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+    assert.deepEqual(calls, [['start', 'tavern']]);
+    vm.runInContext('route();', context);
+    assert.equal(calls.filter(c => Array.isArray(c)).length, 1, 'no restart loop after failure or manual stop');
+    assert.equal(calls.at(-1), setupCompleted ? 'daily' : 'model');
+  }
+});
+
+test('startup does not compete with an update, reuse a missing install, or start Nora', () => {
+  for (const snapshot of [
+    { busy: true },
+    { installed: false, hermesInstalled: false },
+    { installed: true, hermesInstalled: true, systemReady: false },
+  ]) {
+    const calls = [];
+    const context = uiContext({ snapshot, autoStartAttempted: false, say() {}, install() {},
+      serviceRunning: () => false, run: () => calls.push('start'), dailyHome() {},
+      $: () => ({ hidden: false, append() {}, classList: { add() {}, remove() {} } }),
+      document: { createElement: () => ({ append() {}, setAttribute() {} }) },
+    });
+    vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+    assert.deepEqual(calls, []);
+  }
+});
+
+test('pending saved model routes to resume rather than requesting the key again', () => {
+  let resumed = false;
+  const context = uiContext({
+    autoStartAttempted: false,
+    snapshot: { installed: true, hermesInstalled: true, systemReady: true, running: true, modelSyncPending: true },
+    pendingModel: () => { resumed = true; }, run: () => assert.fail('must reuse running service'),
+    modelForm: () => assert.fail('must not ask for key again'),
+  });
+  vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+  assert.equal(resumed, true);
 });
 
 test('installation messages describe ClawChat access and the full-system update scope', () => {

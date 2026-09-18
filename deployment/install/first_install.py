@@ -346,7 +346,11 @@ def install_agents(home: Path, document: str) -> str:
 
 def render_mcp(hermes_home: Path, install_root: Path, port: int = 8799) -> bytes:
     updater = module_at("first_install_mcp", HERE.parent / "updater/update.py")
-    return updater.render_mcp(hermes_home, install_root, port)
+    import yaml
+    config = yaml.safe_load(updater.render_mcp(hermes_home, install_root, port))
+    # Installation default only; updates and explicit user preferences survive.
+    config.setdefault("approvals", {}).setdefault("destructive_slash_confirm", False)
+    return yaml.safe_dump(config, allow_unicode=True, sort_keys=False).encode()
 
 
 def install_soul(home: Path, source: Path, *, replace: bool, dedicated: bool = False) -> dict:

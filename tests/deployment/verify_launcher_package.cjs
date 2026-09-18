@@ -54,7 +54,7 @@ async function main() {
   const sourceMetadata = JSON.parse(fs.readFileSync(path.join(source, 'desktop/package.json')));
   assert.equal(metadata.version, sourceMetadata.version, 'Packaged launcher version differs from source');
   const diagnostics = {};
-  for (const name of ['main.js', 'diagnostics.js', 'runtime.js', 'runtime-worker.js']) {
+  for (const name of ['main.js', 'diagnostics.js', 'runtime.js', 'runtime-worker.js', 'release-network.js']) {
     const bytes = asar.extractFile(path.join(resources, 'app.asar'), name);
     assert.deepEqual(bytes, fs.readFileSync(path.join(source, 'desktop', name)), `Packaged diagnostic code differs: ${name}`);
     diagnostics[name] = digest(bytes);

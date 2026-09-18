@@ -13,6 +13,7 @@
   let milestoneStates = [], currentTask = '', operationCancelled = false;
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
   let sawIncompleteSetup = false, firstCompletionPending = false;
+  let autoStartAttempted = false;
   $('stop').remove(); $('runtimeState').remove();
   const launchHint = document.createElement('p'); launchHint.className = 'launch-hint'; $('launchbar').prepend(launchHint);
   const textError = error => String(error?.message || error || '操作未完成，请重试。')
@@ -155,6 +156,10 @@
       say('后台任务仍在进行。', snapshot.installer?.task || '请稍候，完成后会自动继续。');
       return;
     }
+    if (!autoStartAttempted && snapshot.installed && snapshot.hermesInstalled && snapshot.systemReady === true) {
+      autoStartAttempted = true;
+      if (!snapshot.running) { run('start', { service: 'tavern', resumeSetup: true }); return; }
+    }
     if (complete()) { dailyHome(); return; }
     if (!snapshot.hermesInstalled || !snapshot.installed || snapshot.systemReady === false) {
       view = 'welcome'; daily = false; $('main').classList.add('welcome'); $('main').classList.remove('daily', 'editing');
@@ -186,6 +191,7 @@
       $('inline').append(note);
       controls(); return;
     }
+    if (snapshot.modelSyncPending) { pendingModel(); return; }
     if (!snapshot.modelConfigured) { modelForm(); return; }
     if (!snapshot.clawchatPaired) { clawForm(); return; }
     setupStage(4); run('start');
@@ -235,6 +241,12 @@
     view = 'error'; lastFailure = { action }; clearInline();
     say(operationCancelled ? '操作已取消。' : '这一步还没有完成。', textError(error));
     $('inline').append(button(operationCancelled ? '继续' : '重试', retry));
+    if (!complete() && snapshot.running) {
+      $('inline').append(button('打开已启动的酒馆', async () => {
+        try { await api.openExternal(snapshot.url); }
+        catch (openError) { say('无法打开酒馆页面。', textError(openError)); }
+      }, false));
+    }
     if (complete()) $('inline').append(button('返回', () => { lastFailure = null; dailyHome(); }, false));
     controls();
   }
@@ -250,6 +262,7 @@
       syncState(result); await readStatus();
       const selectedRunning = activeService === 'nora' ? snapshot.gatewayRunning && snapshot.clawchatConnected : activeService === 'tavern' ? snapshot.running : allRunning();
       if (['start', 'restart'].includes(action) && !selectedRunning) throw new Error('所选服务尚未就绪，请重试。');
+      if (['start', 'restart'].includes(action) && activeService === 'all' && !complete()) throw new Error('服务已启动，但安装复核尚未完成，请重试启动检查。');
       if (action === 'start' && !wasComplete && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
         $('steps').classList.add('depart');
         await wait(350);
@@ -261,7 +274,8 @@
         if (wasComplete) dailyHome(activeService === 'all' ? '服务已停止，故事还在。' : activeService === 'nora' ? '诺拉已暂停。' : '酒馆已停止。');
         else route();
       } else if (['start', 'restart'].includes(action)) {
-        dailyHome();
+        if (options.resumeSetup || !complete()) route();
+        else dailyHome();
         if (options.openAfter) await openTavern();
       } else if (action === 'update' || action === 'repair') {
         versionInfo = null; autoVersionChecked = false; route();
@@ -303,34 +317,45 @@
     const form = document.createElement('form');
     form.innerHTML = '<div class="fields"><div><div class="field-line"><label for="provider">模型服务</label><a class="quiet" id="getKey" target="_blank" rel="noopener noreferrer">获取 Key</a></div><select id="provider"></select></div><div><label for="key">API Key</label><div class="secret"><input id="key" type="password" autocomplete="off" placeholder="粘贴 API Key"><button class="eye" type="button" title="显示或隐藏 Key"><i class="fa-solid fa-eye"></i></button></div></div><div class="wide" id="endpointField" hidden><label for="endpoint">接口地址</label><input id="endpoint" type="url" placeholder="https://example.com/v1"></div><div class="wide"><div class="field-line"><label for="model">模型名称</label><button type="button" class="quiet" id="loadModels">获取模型列表</button></div><input id="model" list="modelOptions" placeholder="选择或输入模型名称"><datalist id="modelOptions"></datalist></div></div><p class="model-feedback" id="feedback" role="status">Key 仅保存在本机</p><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div>';
     $('inline').append(form);
+    const authField = document.createElement('div');
+    authField.innerHTML = '<label for="authMode">鉴权方式</label><select id="authMode"><option value="key">API Key</option><option value="none">无需鉴权（本地服务）</option></select>';
+    form.querySelector('.fields').append(authField);
+    const notice = document.createElement('p'); notice.className = 'model-feedback';
+    notice.textContent = '连接测试只验证文字响应，不代表工具调用可用。本地模型需先启动模型服务；无需鉴权模式会为运行时 SDK 保存公开占位值。';
+    form.append(notice);
     providers.forEach(provider => { const option = document.createElement('option'); option.value = provider.id; option.textContent = provider.label; $('provider').append(option); });
     const savedProvider = snapshot.modelProvider?.startsWith('custom:') ? 'custom' : snapshot.modelProvider;
     $('provider').value = providers.some(p => p.id === savedProvider) ? savedProvider : providers[0].id;
     const selected = () => providers.find(p => p.id === $('provider').value);
     const syncProvider = () => {
-      const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = provider.custom;
+      const provider = selected(); $('endpointField').hidden = !provider.custom; $('loadModels').hidden = false;
+      authField.hidden = !provider.custom;
+      $('authMode').value = provider.custom && savedProvider === provider.id && snapshot.modelAuthMode === 'none' ? 'none' : 'key';
+      syncAuth();
       $('getKey').hidden = !provider.signupUrl; if (provider.signupUrl) $('getKey').href = provider.signupUrl;
       $('key').value = ''; $('modelOptions').replaceChildren();
       $('model').value = (savedProvider === provider.id ? snapshot.modelName : '')
         || (provider.id === 'deepseek' ? 'deepseek-v4-flash' : '');
       $('endpoint').value = savedProvider === provider.id ? snapshot.modelBaseUrl || '' : '';
     };
+    const syncAuth = () => { $('key').closest('.secret').parentElement.hidden = selected().custom && $('authMode').value === 'none'; };
+    $('authMode').onchange = syncAuth;
     $('provider').onchange = syncProvider; syncProvider();
     form.querySelector('.eye').onclick = () => { $('key').type = $('key').type === 'password' ? 'text' : 'password'; };
     const feedback = (text, error = false) => { $('feedback').textContent = text; $('feedback').classList.toggle('error', error); };
     const lock = value => { busy = value; form.querySelectorAll('input,select,button').forEach(c => { c.disabled = value; }); controls(); };
     $('loadModels').onclick = async () => {
-      if (!$('key').value.trim()) { feedback('请先填写 API Key。', true); return; }
+      if (!$('key').value.trim() && !(selected().custom && $('authMode').value === 'none')) { feedback('请先填写 API Key。', true); return; }
       lock(true); feedback('正在获取模型列表。');
-      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim() });
+      try { const result = await api.modelOptions({ provider: $('provider').value, key: $('key').value.trim(), baseUrl: $('endpoint').value.trim(), authMode: $('authMode').value });
         $('modelOptions').replaceChildren(); result.models.forEach(name => { const option = document.createElement('option'); option.value = name; $('modelOptions').append(option); });
         feedback('模型列表已更新，也可以直接输入模型名称。');
-      } catch (error) { feedback(textError(error), true); } finally { lock(false); }
+      } catch (error) { feedback(`${textError(error)}；也可以手动输入模型名称。`, true); } finally { lock(false); }
     };
     form.onsubmit = async event => {
       event.preventDefault(); if (busy) return;
-      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: selected().custom ? $('endpoint').value.trim() : '' };
-      if (!payload.key || !payload.model || (selected().custom && !payload.baseUrl)) { feedback('请填写 Key、模型名称和所需的接口地址。', true); return; }
+      const payload = { provider: $('provider').value, key: $('key').value.trim(), model: $('model').value.trim(), baseUrl: selected().custom ? $('endpoint').value.trim() : '', authMode: selected().custom ? $('authMode').value : 'key' };
+      if ((!payload.key && payload.authMode !== 'none') || !payload.model || (selected().custom && !payload.baseUrl)) { feedback('请填写模型名称、接口地址和所需的 Key。', true); return; }
       lock(true); feedback('正在测试模型响应。');
       try { await api.saveAndTestModel(payload); $('key').value = ''; await readStatus(); lock(false);
         if (!snapshot.modelConfigured) throw new Error('模型配置复核未通过，请重新连接。');
@@ -338,9 +363,32 @@
           dailyHome(snapshot.gatewayRunning ? '模型已保存，重启诺拉后生效。' : '模型已更换。');
           if (snapshot.gatewayRunning) $('inline').append(button('重启诺拉', () => run('restart', { service: 'nora' })));
         } else route();
-      } catch (error) { lock(false); feedback(textError(error).replaceAll(payload.key, '***'), true); }
+      } catch (error) {
+        lock(false);
+        const message = payload.key ? textError(error).replaceAll(payload.key, '***') : textError(error);
+        try { await readStatus(); } catch {}
+        if (snapshot.modelSyncPending) pendingModel(message);
+        else feedback(message, true);
+      }
     };
   };
+  function pendingModel(message = '') {
+    view = 'model-pending'; setupStage(2); clearInline();
+    say('模型已验证，继续同步到酒馆。', message || '已保存配置，无需重新填写 Key；文字响应已验证，工具调用能力尚未验证。');
+    $('inline').append(button('继续同步', async () => {
+      if (busy) return;
+      busy = true; controls();
+      try {
+        await api.resumeModelSetup(); await readStatus(); busy = false; route();
+      } catch (error) {
+        busy = false;
+        try { await readStatus(); } catch {}
+        pendingModel(textError(error));
+      } finally { controls(); }
+    }));
+    $('inline').append(button('更换模型配置', modelForm, false));
+    controls();
+  }
   clawForm = () => {
     if (busy) return;
     view = 'claw'; setupStage(3); clearInline();
