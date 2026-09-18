@@ -286,7 +286,10 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                 <div class="nora-form-actions"><button class="nora-secondary" data-cancel-setting type="button">${tr("取消")}</button><button class="nora-primary" type="submit">${tr("添加")}</button></div>
             </form>`, 'nora-worldbook-add-modal nora-plain-sheet');
         select('[data-book-library-heading]', modal)?.insertAdjacentHTML?.('beforeend', `<div class="nora-library-editor-actions"><button type="button" data-pick-book><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('从库选择')}</span></button></div>`);
-        select('[data-pick-book]', modal)?.addEventListener('click', () => openLibrary(target));
+        const draft = dialogs.protectForm(select('#nora-add-setting-form', modal), {
+            readState: () => mode, isBusy: () => operations.isBusy('world'),
+        });
+        select('[data-pick-book]', modal)?.addEventListener('click', () => draft.leave(() => openLibrary(target)));
         const syncMode = () => {
             selectAll('[data-entry-mode]', modal).forEach((button) => button.classList.toggle('active', button.dataset.entryMode === mode));
             select('[data-entry-keys]', modal).classList.toggle('hidden', mode !== 'trigger');
@@ -327,6 +330,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                 }));
                 store.cacheWorldbook(result.resource.binding.name, result.book);
                 await reloadWorlds();
+                draft.release();
                 dialogs.close();
                 onChanged();
                 dialogs.toast(tr("设定已添加。"));
@@ -335,6 +339,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     const result = error.result;
                     store.cacheWorldbook(result.resource?.binding?.name, result.book);
                     await reloadWorlds().catch(() => {});
+                    draft.release();
                     dialogs.close();
                     onChanged();
                     dialogs.toast(tr("设定已保存，重新打开世界后生效。"));
@@ -365,12 +370,16 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     <button class="nora-primary" type="submit">${tr('保存')}</button>
                 </div>
             </form>`;
+        const draft = dialogs.protectForm(select('#nora-scenario-form', modal), { isBusy: () => operations.isBusy('world') });
         select('[data-cancel-setting]', modal)?.addEventListener('click', () => {
             if (!operations.isBusy('world')) dialogs.close();
         });
         select('[data-delete-setting]', modal)?.addEventListener('click', async event => {
             if (readState().world.metadata?.nora_world?.id !== worldId) return;
-            if (await removeEntry('scenario', '', event.currentTarget)) dialogs.close();
+            if (await removeEntry('scenario', '', event.currentTarget)) {
+                draft.release();
+                dialogs.close();
+            }
         });
         select('[data-reset-scenario]', modal).addEventListener('click', async (event) => {
             if (operations.isBusy('world')) {
@@ -385,6 +394,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     await worldbook.saveWorldScenario('');
                     persisted = true;
                     onChanged();
+                    draft.release();
                     if (returnToWorldbook) open();
                     else dialogs.close();
                 });
@@ -411,6 +421,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     await worldbook.saveWorldScenario(value && value !== cardScenario ? value : '');
                     persisted = true;
                     onChanged();
+                    draft.release();
                     if (returnToWorldbook) open();
                     else dialogs.close();
                 });
@@ -518,6 +529,9 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     <button class="nora-primary" type="submit">${tr('保存')}</button>
                 </div>
             </form>`;
+        const draft = dialogs.protectForm(select('#nora-entry-form', modal), {
+            readState: () => mode, isBusy: () => operations.isBusy('world'),
+        });
         select('[data-cancel-setting]', modal)?.addEventListener('click', () => {
             if (!operations.isBusy('world')) dialogs.close();
         });
@@ -527,18 +541,21 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                 dialogs.toast(tr('世界书绑定已改变，请重新打开编辑。'));
                 return;
             }
-            if (await removeEntry('embedded', id, event.currentTarget, name || null)) dialogs.close();
+            if (await removeEntry('embedded', id, event.currentTarget, name || null)) {
+                draft.release();
+                dialogs.close();
+            }
         });
         const syncMode = () => {
             selectAll('[data-entry-mode]', modal).forEach((button) => button.classList.toggle('active', button.dataset.entryMode === mode));
             select('[data-entry-keys]', modal).classList.toggle('hidden', mode !== 'trigger');
         };
-        select('[data-back-entries]', modal).addEventListener('click', () => options.onBack ? options.onBack() : renderEntries(modal, book, name, false));
+        select('[data-back-entries]', modal).addEventListener('click', () => draft.leave(() => options.onBack ? options.onBack() : renderEntries(modal, book, name, false)));
         select('[data-save-entry-library]', modal)?.addEventListener('click', () => {
             const data = new FormData(select('#nora-entry-form', modal));
             const savedEntry = { ...structuredClone(entry), comment: String(data.get('comment') || ''), content: String(data.get('content') || ''),
                 constant: mode === 'constant', key: String(data.get('keys') || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean) };
-            saveLibraryBook(savedEntry.comment, { entries: { [id]: savedEntry } });
+            draft.leave(() => saveLibraryBook(savedEntry.comment, { entries: { [id]: savedEntry } }));
         });
         selectAll('[data-entry-mode]', modal).forEach((button) => button.addEventListener('click', () => {
             mode = button.dataset.entryMode;
@@ -573,7 +590,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     if (content !== String(entry.content || '')) patch.content = content;
                     if (mode !== (isAlwaysOn(entry) ? 'constant' : 'trigger')) patch.constant = mode === 'constant';
                     if (mode === 'trigger' && keysChanged) patch.key = nextKeys;
-                    if (!Object.keys(patch).length) { dialogs.close(); return; }
+                    if (!Object.keys(patch).length) { draft.release(); dialogs.close(); return; }
                     const result = await worldbook.saveWorldbookEntry(name, book, id, patch, worldId);
                     persisted = true;
                     name = result.resource.binding.name;
@@ -581,6 +598,7 @@ export function createWorldbookController({ worldbook, worldRuntime, operations,
                     store.cacheWorldbook(name, book);
                     await reloadWorlds();
                     onChanged();
+                    draft.release();
                     if (options.onSaved) await options.onSaved();
                     else renderEntries(modal, book, name, false);
                 });
