@@ -156,6 +156,10 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
 
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Verify runtime independently of original installation
         timeout-minutes: 15
         shell: bash
@@ -163,10 +167,6 @@ jobs:
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
           node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
-
-      - name: Install launcher test dependencies
-        working-directory: launcher/desktop
-        run: npm ci --ignore-scripts --no-audit --no-fund
 
       - name: Test release channels and update rollback
         run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
