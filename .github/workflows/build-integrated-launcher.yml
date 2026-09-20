@@ -275,9 +275,9 @@ jobs:
           archive="$(find release -path '*/desktop/dist/*-update.zip' | head -n 1)"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
           py="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/Scripts/python.exe"; fi
-          export NORA_TEST_LAUNCHER_ARCHIVE="$PWD/$archive"
-          export NORA_TEST_LAUNCHER_DESKTOP="$PWD/$release_dir/nora-tavern-launcher/desktop"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes-build-source/python/python.exe"; fi
+          export NORA_TEST_LAUNCHER_ARCHIVE="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$archive")"
+          export NORA_TEST_LAUNCHER_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher/desktop")"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
 
       - name: Upload launcher
