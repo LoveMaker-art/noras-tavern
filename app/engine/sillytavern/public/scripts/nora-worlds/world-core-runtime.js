@@ -71,7 +71,7 @@ export function createWorldCoreRuntime(runtime, {
         const active = String(state.metadata?.nora_world?.id || '') === manifest.world_id
             && String(state.metadata?.nora_session?.id || '') === String(session?.session_id || '');
         const capabilityStatus = manifest.capabilities?.status;
-        const worldbookName = String(manifest.knowledge?.find(item => item.source_key === 'nora:user-settings')?.binding?.name || '');
+        const worldbookName = String(manifest.knowledge?.[0]?.binding?.name || '');
         const openingState = session?.opening_state === 'empty' ? 'empty' : 'message';
         return Object.freeze({
             id: manifest.world_id,
@@ -382,7 +382,7 @@ export function createWorldCoreRuntime(runtime, {
         let runtimeApplied = false;
         if (String(runtime.read().metadata?.nora_world?.id || '').trim() === worldId) {
             try {
-                await runtime.applyWorldbook(result.resource?.binding?.name, result.book);
+                await runtime.applyWorldbook(result.resource?.binding?.name, result.book, result.world);
                 runtimeApplied = true;
             } catch (error) {
                 emit();

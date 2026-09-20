@@ -105,18 +105,13 @@ export function createPanelController({
         const castFoldClass = castFolded ? ' folded' : '';
         const settingsFoldClass = worldSettingsFolded ? ' folded' : '';
         const presetFoldClass = presetFolded ? ' folded' : '';
-        const activeCharacterId = readState().activeCharacterId;
-        const emptyCastEdit = castEditing && character && !hasWorldCardSummary(world?.storyContext) && !world?.storyContext?.removed_card_fields?.length && Number.isInteger(activeCharacterId) && activeCharacterId >= 0
-            ? `<div class="emptyEditRow"><span>${tr("暂无角色设定")}</span><button class="itemEdit" data-cast-edit="${activeCharacterId}" type="button" aria-label="${tr("编辑基础角色资料")}" title="${tr("编辑基础角色资料")}">${icons.edit}</button></div>`
-            : `<p class="pmuted">${tr("暂无角色设定")}</p>`;
         const castItems = cast.map(({ character: member, index, mode, enabled = true }) => {
             const toggle = castEditing ? `<button class="nora-lore-toggle" data-cast-toggle="${mode === 'legacy' ? 'card-profile' : index}" type="button" aria-pressed="${enabled}" aria-label="${tr(enabled ? '关闭角色注入' : '开启角色注入')}" title="${tr(enabled ? '关闭角色注入' : '开启角色注入')}"><span class="nora-lore-dot" aria-hidden="true"></span></button>` : '';
             return `<div class="castCard castProfileCard loreItem loreSummaryItem is-${mode === 'triggered' ? 'triggered' : 'always'}${enabled ? '' : ' is-disabled'}" data-cast-character="${index}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(member.name || tr("未命名角色"))}资料`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(member.name || tr("未命名角色"))}</span>${enabled ? '' : `<small class="nora-lore-status">${tr('已关闭')}</small>`}${toggle}${castEditing ? `<span class="itemActions"><button class="itemEdit" data-cast-edit="${index}" type="button" aria-label="${tr("编辑角色设定")}" title="${tr("编辑角色设定")}">${icons.edit}</button></span>` : ''}</div></div>`;
         });
         const groupItems = triggered => castItems.filter((_, index) => (cast[index].mode === 'triggered') === triggered).join('');
         const castHtml = `<div class="loreGroupTitle">${tr('常驻角色')}</div>${groupItems(false) || `<p class="pmuted">${tr('暂无常驻角色')}</p>`}
-            <div class="loreGroupTitle is-triggered">${tr('触发角色')}</div>${groupItems(true) || `<p class="pmuted">${tr('暂无触发角色')}</p>`}
-            ${!cast.length && castEditing && !hasWorldCardSummary(world?.storyContext) ? emptyCastEdit : ''}`;
+            <div class="loreGroupTitle is-triggered">${tr('触发角色')}</div>${groupItems(true) || `<p class="pmuted">${tr('暂无触发角色')}</p>`}`;
         const reviewHref = buildCuratorReviewLink({ agentUserId: agentUserId(), worldName: world?.name });
         const reviewLink = reviewHref
             ? `<a class="pLink" href="${escapeHtml(reviewHref)}" target="_blank" rel="noopener external"><i class="fa-solid fa-comments" aria-hidden="true"></i>${tr("找主理人复盘")}</a>`
@@ -245,11 +240,12 @@ export function createPanelController({
         const persona = currentWorldPersona();
         const modal = dialogs.open(tr("我的角色"), `<form id="nora-persona-form" class="nora-form" autocomplete="off"><div class="nora-library-field"><div class="nora-library-heading" data-persona-library-heading><label for="nora-persona-name">${tr("名字")}</label></div><input id="nora-persona-name" name="name" value="${escapeHtml(persona.name)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div><label>${tr("故事中的你")}<textarea name="description" rows="10" placeholder="${tr("身份、性格、外貌，以及希望角色了解的背景。")}" autocomplete="off">${escapeHtml(persona.description)}</textarea></label><button class="nora-primary" type="submit">${tr("保存到当前世界")}</button></form>`);
         const personaForm = select('#nora-persona-form', modal);
+        const draft = dialogs.protectForm(personaForm);
         select('[data-persona-library-heading]', modal)?.insertAdjacentHTML?.('beforeend', `<div class="nora-library-editor-actions"><button type="button" data-pick-persona><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('从库选择')}</span></button><button type="button" data-save-persona><i class="fa-regular fa-bookmark" aria-hidden="true"></i><span>${tr('另存到库')}</span></button></div>`);
-        select('[data-pick-persona]', modal)?.addEventListener('click', () => openProfileLibrary('persona', editingWorld));
-        select('[data-save-persona]', modal)?.addEventListener('click', () => saveProfile('persona', {
+        select('[data-pick-persona]', modal)?.addEventListener('click', () => draft.leave(() => openProfileLibrary('persona', editingWorld)));
+        select('[data-save-persona]', modal)?.addEventListener('click', () => draft.leave(() => saveProfile('persona', {
             name: personaForm.elements.name.value.trim(), description: personaForm.elements.description.value,
-        }));
+        })));
         select('#nora-persona-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
             const form = event.currentTarget;
@@ -260,6 +256,7 @@ export function createPanelController({
                     name: String(data.get('name') || '').trim(),
                     description: String(data.get('description') || '').trim(),
                 } }, { expectedRevision: editingWorld.revision });
+                draft.release();
                 dialogs.close();
                 await refreshWorldsAfterCommit(tr("我的角色已保存"));
             }, { control: form.querySelector('[type="submit"]'), errorLabel: tr("我的角色保存失败"), logLabel: 'Failed to update persona' });

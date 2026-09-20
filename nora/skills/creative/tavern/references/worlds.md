@@ -157,6 +157,12 @@ edit files to bypass it. All operations below use the live-page protocol in SKIL
 | Switch text model | `models.list` | `models.select`: id, expectedRevision |
 | Delete saved custom text model | `models.list` | `models.delete`: id, expectedRevision |
 
+For an additional World rule, use `world.setting.add` and verify the original
+entries remain alongside the new entry. `cards.fields.system_prompt` changes the
+card's main-prompt override; it is not an append-to-settings operation. New Worlds
+own independent runtime copies. World edits stay in that World; saving a changed
+card, character or Worldbook back to the library requires an explicit user request.
+
 Persona belongs to the authoritative World manifest and applies again when opened.
 Do not change the player's Persona by editing the AI character's description.
 Background overrides live in session metadata; editing card.scenario may not change

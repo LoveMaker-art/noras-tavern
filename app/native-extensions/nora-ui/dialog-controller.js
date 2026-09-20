@@ -69,7 +69,42 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     }
 
     function outsideClick(event) {
-        if (event.target === select('#nora-modal')) close();
+        if (!closeGuard && event.target === select('#nora-modal')) close();
+    }
+
+    function protectForm(form, { readState = () => null, isBusy = () => false } = {}) {
+        const snapshot = () => JSON.stringify([
+            [...form.elements].filter(field => field.name && !['submit', 'button', 'reset'].includes(field.type))
+                .map(field => [field.name, field.type === 'checkbox' || field.type === 'radio' ? field.checked
+                    : field.multiple && field.options ? [...field.options].filter(option => option.selected).map(option => option.value)
+                        : field.value]), readState(),
+        ]);
+        const initial = snapshot();
+        let leaving = false;
+        const guard = () => {
+            if (isBusy() || form.querySelector('[type="submit"]:disabled')) return false;
+            return snapshot() === initial || confirm({ title: tr('放弃未保存的修改？'),
+                body: tr('关闭后，本次修改不会保存。'), confirmLabel: tr('放弃修改'),
+                cancelLabel: tr('继续编辑'), restoreSheet: true });
+        };
+        closeGuard = guard;
+        return Object.freeze({
+            release() { if (closeGuard === guard) closeGuard = null; },
+            async leave(action) {
+                if (leaving || checkingClose || closeGuard !== guard) return;
+                leaving = true;
+                try {
+                    if (await guard() && closeGuard === guard) {
+                        closeGuard = null;
+                        const currentVersion = version;
+                        try { return await action(); }
+                        finally {
+                            if (version === currentVersion && !closeGuard && form.isConnected) closeGuard = guard;
+                        }
+                    }
+                } finally { leaving = false; }
+            },
+        });
     }
 
     function open(title, content, className = '', { reuseKey, preserveSelector } = {}) {
@@ -195,6 +230,6 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         });
     }
 
-    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm,
+    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm, protectForm,
         setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; } });
 }

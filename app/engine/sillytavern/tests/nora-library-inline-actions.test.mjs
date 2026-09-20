@@ -32,6 +32,7 @@ function fixture() {
     const errors = [], picked = [], world = { id: 'world:a', revision: 1 };
     const common = {
         dialogs: { open: (_title, markup) => { $ = load(`<main><div class="nora-sheet-body">${markup}</div></main>`); return wrap($('main')[0]); },
+            protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; },
             toast: value => errors.push(value), close() {}, normalizeError: error => error.message },
         select, selectAll, escapeHtml: String, icons: {}, activeWorldModel: () => world,
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },

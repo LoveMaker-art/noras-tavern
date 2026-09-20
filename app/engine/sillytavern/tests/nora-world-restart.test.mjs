@@ -183,13 +183,15 @@ test('new playthrough owns user lore and survives deleting the original World', 
     const next = await complete(core, await core.restartWorld(world.world_id, {
         name: 'With lore', expectedRevision: added.world.revision, idempotencyKey: 'test:with-lore',
     }));
-    assert.equal(next.knowledge.length, 2);
-    const lore = next.knowledge.find(item => item.source_key === 'nora:user-settings');
+    assert.equal(next.knowledge.length, 1);
+    const lore = next.knowledge[0];
+    assert.notEqual(lore.binding.name, added.resource.binding.name);
     const filePath = path.join(directories.worlds, lore.binding.name + '.json');
     const book = JSON.parse(await fs.readFile(filePath));
     assert.equal(book.extensions.nora_resource.world_id, next.world_id);
-    assert.equal(book.extensions.nora_resource.kind, 'world-settings');
-    assert.equal(Object.values(book.entries)[0].content, 'Independent lore');
+    assert.equal(book.extensions.nora_resource.kind, 'world-restart');
+    assert.deepEqual(book.entries, added.book.entries);
+    assert.equal(book.entries[added.entry_id].content, 'Independent lore');
     await core.deleteWorld(world.world_id, { idempotencyKey: 'test:delete-original' });
     assert.deepEqual(JSON.parse(await fs.readFile(filePath)), book);
     assert.equal((await core.prepareOpen(next.world_id)).world_id, next.world_id);

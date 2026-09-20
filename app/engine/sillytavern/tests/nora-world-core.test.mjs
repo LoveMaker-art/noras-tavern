@@ -47,13 +47,14 @@ function materializer({ failOnce = false, deleteFailOnce = false, delay = null, 
         async addWorldSetting(world, setting, { operationId }) {
             settingCalls += 1;
             const result = {
-                resource: {
+                resource: world.knowledge[0] || {
                     resource_id: `resource:${world.world_id}:settings`,
                     source_key: 'nora:user-settings',
                     engine: 'sillytavern',
                     binding: { name: `${world.name} 自建设定` },
                     ownership: 'owned',
                 },
+                source_resource_id: world.knowledge[0]?.resource_id || null,
                 entry_id: '0',
                 entry: { uid: 0, comment: setting.title, content: setting.content, constant: setting.type === 'constant', key: setting.keys },
                 book: { entries: { 0: { uid: 0, comment: setting.title, content: setting.content, key: setting.keys } } },
@@ -193,7 +194,7 @@ test('character array CRUD persists across reopen with revision protection and i
     assert.deepEqual(world.sessions, original.sessions);
 });
 
-test('adds one owned setting book ahead of imported knowledge and deduplicates retries', async (t) => {
+test('appends a setting without replacing the knowledge binding and deduplicates retries', async (t) => {
     const root = await temporaryRoot(t);
     const adapter = materializer();
     const core = createNoraWorldCore({ root, materializer: adapter });
@@ -206,9 +207,10 @@ test('adds one owned setting book ahead of imported knowledge and deduplicates r
     });
 
     assert.equal(added.reused, false);
-    assert.equal(added.world.knowledge[0].source_key, 'nora:user-settings');
+    assert.equal(added.world.knowledge[0].source_key, 'embedded-worldbook:0');
     assert.equal(added.world.knowledge[0].ownership, 'owned');
-    assert.equal(added.world.knowledge[1].source_key, 'embedded-worldbook:0');
+    assert.equal(added.world.knowledge.length, 1);
+    assert.deepEqual(added.world.knowledge, created.world.knowledge);
     assert.equal(added.entry.comment, '雨夜');
     assert.deepEqual(added.entry.key, ['雨', '街道']);
     assert.equal(adapter.settingCalls, 1);

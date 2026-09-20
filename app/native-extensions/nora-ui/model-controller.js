@@ -126,12 +126,13 @@ export function createModelController({ model, settingsDomain, operations, readS
 
     function openMvuConfigForm(config = {}, status = {}) {
         const modal = dialogs.open(tr("配置 MVU 独立模型"), `<form id="nora-mvu-model-form" class="nora-form nora-model-config-form"><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(config.base_url || '')}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(config.model || status.variableModelName || '')}" placeholder="${tr("填写变量模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${config.has_api_key ? tr("留空沿用已保存密钥") : tr("填写变量模型密钥")}"></label><div class="nora-form-grid"><label>${tr("上下文")}<input name="context" type="number" min="512" max="1000000" value="${Number(config.context) || 30000}"></label><label>${tr("最大回复")}<input name="tokens" type="number" min="1" max="128000" value="${Number(config.max_tokens) || 4000}"></label></div><p class="nora-model-note">${tr("密钥保存在后端，不会写入角色卡、聊天记录或前端设置。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-mvu-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
-        select('[data-mvu-cancel]', modal).addEventListener('click', open);
-        select('#nora-mvu-model-form', modal).addEventListener('submit', saveMvuConfig);
+        const draft = dialogs.protectForm(select('#nora-mvu-model-form', modal), { isBusy: () => operations.isBusy('mvu-model') });
+        select('[data-mvu-cancel]', modal).addEventListener('click', () => draft.leave(open));
+        select('#nora-mvu-model-form', modal).addEventListener('submit', event => saveMvuConfig(event, draft));
         select('#nora-mvu-model-form input[name="base"]', modal)?.focus();
     }
 
-    async function saveMvuConfig(event) {
+    async function saveMvuConfig(event, draft) {
         event.preventDefault();
         if (operations.isBusy('mvu-model')) {
             dialogs.toast(tr("MVU 模型设置正在保存，请稍候。"));
@@ -148,6 +149,7 @@ export function createModelController({ model, settingsDomain, operations, readS
                 maxTokens: data.get('tokens'),
                 apiKey: data.get('key'),
             }));
+            draft.release();
             open();
         } catch (error) {
             submit.disabled = false;
@@ -177,12 +179,13 @@ export function createModelController({ model, settingsDomain, operations, readS
         const base = custom ? native.custom_url || '' : provider?.base || '';
         const model = custom ? native.custom_model || '' : provider?.model || '';
         const modal = dialogs.open(t`配置 ${name}`, `<form id="nora-model-form" class="nora-form nora-model-config-form"><label>${tr("配置名称")}<input name="name" required maxlength="60" autocomplete="off" value="${escapeHtml(name)}"></label><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(base)}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(model)}" placeholder="${tr("填写供应商提供的模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${tr("留空则沿用已保存密钥")}"></label><p class="nora-model-note">${tr("保存时会先测试连接；完整密钥不会显示在模型列表中。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-model-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("测试并保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
-        select('[data-model-cancel]', modal).addEventListener('click', openConfig);
-        select('#nora-model-form', modal).addEventListener('submit', save);
+        const draft = dialogs.protectForm(select('#nora-model-form', modal), { isBusy: () => operations.isBusy('model') });
+        select('[data-model-cancel]', modal).addEventListener('click', () => draft.leave(openConfig));
+        select('#nora-model-form', modal).addEventListener('submit', event => save(event, draft));
         select('#nora-model-form input[name="name"]', modal)?.focus();
     }
 
-    async function save(event) {
+    async function save(event, draft) {
         event.preventDefault();
         if (operations.isBusy('model')) {
             dialogs.toast(tr("模型配置正在保存，请稍候。"));
@@ -206,6 +209,7 @@ export function createModelController({ model, settingsDomain, operations, readS
                 configured = true;
                 persisted = true;
                 onChanged();
+                draft.release();
                 open();
             });
         } catch (error) {

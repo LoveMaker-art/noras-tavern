@@ -32,6 +32,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             ${kind === 'character' ? `<label>${tr('性格')}<textarea name="personality" rows="4">${html(data.personality || '')}</textarea></label>` : ''}
             ${kind === 'character' ? `<label>${tr('设定类型')}<select name="mode"><option value="constant">${tr('常驻角色')}</option><option value="triggered" ${data.activation?.mode === 'triggered' ? 'selected' : ''}>${tr('触发角色')}</option></select></label><label>${tr('触发关键词（每行一个）')}<textarea name="keys" rows="2">${html((data.activation?.keys || []).join('\n'))}</textarea></label><label class="nora-library-check"><input type="checkbox" name="enabled" ${data.activation?.enabled === false ? '' : 'checked'}>${tr('启用')}</label>` : ''}
             </div><footer class="nora-form-actions nora-editor-toolbar"><button type="button" data-cancel>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></footer></form>`, 'nora-detail-modal nora-fixed-editor nora-plain-sheet');
+        const draft = dialogs.protectForm($('[data-save-profile]', modal), { isBusy: () => operations.isBusy('library') });
         $('[data-cancel]', modal).addEventListener('click', () => dialogs.close());
         $('[data-save-profile]', modal).addEventListener('submit', async event => {
             event.preventDefault();
@@ -43,6 +44,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                     ...(kind === 'character' ? { ...(data.profile ? { profile: data.profile } : {}), personality: form.elements.personality.value, activation: { ...data.activation,
                         mode: form.elements.mode.value, keys: form.elements.keys.value.split(/\r?\n/), enabled: form.elements.enabled.checked } } : {}) };
                 await operations.run('library', () => worlds.saveLibraryProfile({ kind, name: form.elements.label.value.trim(), data: value }));
+                draft.release();
                 dialogs.close();
                 dialogs.toast(tr('已存入库，当前世界未修改。'));
             } catch (error) { errorToast(error); }
@@ -139,19 +141,21 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
     function openSaveBook(name, book) {
         const snapshot = structuredClone(book);
         const modal = dialogs.open(tr('另存世界书'), `<form class="nora-form" data-save-book><label>${tr('库中名称')}<input name="name" value="${html(name || '')}" required maxlength="200"></label><p>${Object.keys(snapshot.entries || {}).length} ${tr('条目')}</p><button type="submit" class="nora-primary">${tr('存入库')}</button></form>`);
+        const draft = dialogs.protectForm($('[data-save-book]', modal), { isBusy: () => operations.isBusy('library') });
         $('[data-save-book]', modal).addEventListener('submit', async event => {
             event.preventDefault();
             if (operations.isBusy('library')) return;
             const form = event.currentTarget, button = $('button[type="submit"]', form); button.disabled = true;
             try {
                 await operations.run('library', () => worlds.saveLibraryWorldbook(form.elements.name.value.trim(), snapshot));
+                draft.release();
                 dialogs.close(); dialogs.toast(tr('已存入库，当前世界未修改。'));
             } catch (error) { errorToast(error); }
             finally { button.disabled = false; }
         });
     }
 
-    async function commit(world, input, button) {
+    async function commit(world, input, button, draft) {
         if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
         if (!world || activeWorldModel()?.id !== world.id) return dialogs.toast(tr('当前世界已改变，请重新打开导入预览。'));
         button.disabled = true;
@@ -160,11 +164,12 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                 if (isGenerating() || activeWorldModel()?.id !== world.id) throw new Error(tr('当前状态已改变，请重新打开导入预览。'));
                 await worlds.importLibraryItem(world.id, { ...input, expected_revision: world.revision });
             });
+            draft?.release();
             dialogs.close();
             refresh();
             dialogs.toast(tr('已添加到当前世界。'));
         } catch (error) {
-            if (error.saved) { dialogs.close(); refresh(); }
+            if (error.saved) { draft?.release(); dialogs.close(); refresh(); }
             errorToast(error);
         } finally { button.disabled = false; }
     }
@@ -194,6 +199,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             <div class="nora-form-actions nora-editor-toolbar"><span class="nora-editor-toolbar-spacer"></span><button type="button" data-cancel>${tr('取消')}</button><button class="nora-primary" type="submit">${tr('添加角色设定')}</button></div>
             </form>`, 'nora-detail-modal nora-fixed-editor nora-plain-sheet');
         const characterId = `character:${crypto.randomUUID()}`;
+        const draft = dialogs.protectForm($('[data-library-role]', modal), { isBusy: () => operations.isBusy('world') });
         $('[data-cancel]', modal).addEventListener('click', () => dialogs.close());
         $('[data-library-role]', modal).addEventListener('submit', async event => {
             event.preventDefault();
@@ -207,7 +213,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             if (patch.activation.mode === 'triggered' && !patch.activation.keys.length) return dialogs.toast(tr('触发角色至少需要一个关键词。'));
             const withBook = book && !bookAttached && form.elements.withBook?.checked;
             await commit(world, { character: { id: characterId, operation: 'create', patch },
-                ...(withBook ? { source: book.source, source_revision: book.revision } : {}) }, $('button[type="submit"]', form));
+                ...(withBook ? { source: book.source, source_revision: book.revision } : {}) }, $('button[type="submit"]', form), draft);
         });
     }
 

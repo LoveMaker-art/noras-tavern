@@ -14,6 +14,9 @@ import {
 } from '../src/nora-world-core/st-backend-materializer.js';
 import { createNoraWorldCore } from '../src/nora-world-core/index.js';
 import { createStoryContext, editStoryCharacter } from '../public/scripts/nora-worlds/story-context.js';
+import { createStWorldAdapter } from '../public/scripts/nora-adapters/st-world-adapter.js';
+import { createWorldbookController } from '../../../native-extensions/nora-ui/worldbook-controller.js';
+import { readActivationSnapshot } from '../src/nora-world-core/activation-snapshot.js';
 
 test('imports World Card character arrays while preserving legacy card fields and scripts', async (t) => {
     const card = complexCard();
@@ -174,6 +177,64 @@ function identities(suffix = 'one') {
         runtimeCardResourceId: `resource:${suffix}`,
     };
 }
+
+test('independent World copies append and edit lore without changing another World or the library', async t => {
+    const current = await harness(t);
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const first = await core.createWorld(current.command, { idempotencyKey: 'isolation:first' });
+    await fs.writeFile(current.stagedPath, current.sourceBuffer);
+    const second = await core.createWorld(current.command, { idempotencyKey: 'isolation:second' });
+    const a = first.world.knowledge[0], b = second.world.knowledge[0];
+    assert.notEqual(a.binding.name, b.binding.name, 'identical imports must get different Worldbooks immediately');
+    assert.equal(a.ownership, 'owned');
+    const libraryFile = (await fs.readdir(current.directories.characters)).find(file => file.startsWith('nora-card-'));
+    const original = await fs.readFile(path.join(current.directories.characters, libraryFile));
+    const bookPath = resource => path.join(current.directories.worlds, `${resource.binding.name}.json`);
+    const otherBefore = await fs.readFile(bookPath(b));
+    const before = JSON.parse(await fs.readFile(bookPath(a), 'utf8'));
+    const added = await core.addWorldSetting(first.world.world_id, {
+        type: 'constant', title: 'Weather', content: 'It rains today.',
+    }, { expectedRevision: first.world.revision, idempotencyKey: 'isolation:add' });
+    assert.equal(added.world.knowledge.length, 1, 'append to the existing private Worldbook');
+    assert.equal(added.resource.binding.name, a.binding.name, 'adding lore must not replace the active binding');
+    for (const [id, entry] of Object.entries(before.entries)) assert.deepEqual(added.book.entries[id], entry);
+    assert.equal(Object.keys(added.book.entries).length, Object.keys(before.entries).length + 1);
+    const characters = [JSON.parse(await fs.readFile(path.join(current.directories.characters, first.world.runtime_card.binding.avatar), 'utf8'))];
+    const chatPath = path.join(current.directories.chats, path.parse(first.world.runtime_card.binding.avatar).name,
+        `${first.world.sessions.items[0].binding.chat_id}.jsonl`);
+    const chatHeader = JSON.parse((await fs.readFile(chatPath, 'utf8')).split('\n')[0]);
+    const cached = new Map();
+    const context = { characters, characterId: 0, chatMetadata: chatHeader.chat_metadata,
+        selectCharacterById() {}, updateChatMetadata() {}, saveMetadata() {}, updateWorldInfoList: async () => {},
+        primeWorldInfoSnapshot: (name, book) => cached.set(name, book) };
+    await createStWorldAdapter(() => context).applyWorldbook(added.resource.binding.name, added.book, added.world);
+    const controller = createWorldbookController({
+        currentCharacter: () => context.characters[0], readState: () => ({ world: { metadata: context.chatMetadata } }),
+        store: { cachedWorldbook: name => cached.get(name) }, characterField: () => '', icons: {}, escapeHtml: String,
+    });
+    assert.equal((controller.summary(context.characters[0]).match(/class="loreItem loreSummaryItem/g) || []).length,
+        Object.keys(added.book.entries).length, 'the real panel renders both original and appended entries');
+    const snapshot = await readActivationSnapshot(await core.prepareOpen(first.world.world_id), current.directories, {
+        revision: 'fixture', readers: {
+            character: async () => JSON.parse(await fs.readFile(path.join(current.directories.characters, first.world.runtime_card.binding.avatar), 'utf8')),
+            chat: async () => ({ header: chatHeader, messages: [] }),
+            worldbook: async (_roots, name) => JSON.parse(await fs.readFile(path.join(current.directories.worlds, `${name}.json`), 'utf8')),
+        },
+    });
+    assert.equal(snapshot.snapshot.character.data.extensions.world, a.binding.name);
+    assert.equal(snapshot.snapshot.chat.header.chat_metadata.world_info, a.binding.name);
+    assert.deepEqual(snapshot.snapshot.worldbooks[0].data.entries, added.book.entries, 'reopening preserves original and new lore');
+    const edit = await current.materializer.editWorldbookEntry(added.world, {
+        name: a.binding.name, entry_id: added.entry_id, patch: { content: 'It snows today.' },
+        expected_revision: crypto.createHash('sha256').update(JSON.stringify(added.book)).digest('hex'),
+    }, { worlds: [added.world, second.world] });
+    assert.equal(edit.resource.binding.name, a.binding.name, 'editing a private Worldbook stays in place');
+    assert.deepEqual(await fs.readFile(bookPath(b)), otherBefore);
+    assert.deepEqual(await fs.readFile(path.join(current.directories.characters, libraryFile)), original);
+    const catalog = await current.materializer.listLibraryCards([added.world, second.world]);
+    assert.equal(catalog.items.length, 1, 'World edits do not become library entries');
+    assert.equal(catalog.items[0].avatar, libraryFile);
+});
 
 function complexCard({ name = '复杂角色', bookName = '同名设定集', content = '<status_current_variables>\n<UpdateVariable>' } = {}) {
     return {
@@ -404,6 +465,78 @@ test('keeps card-authored MVU schema code enabled while localizing its runtime d
     });
 });
 
+test('copies a named external Worldbook instead of leaving a live library reference', async t => {
+    const card = complexCard();
+    const book = convertEmbeddedBook(card.data.character_book);
+    delete card.data.character_book;
+    card.data.extensions.world = 'Library source';
+    const current = await harness(t, { card });
+    const libraryPath = path.join(current.directories.worlds, 'Library source.json');
+    await fs.writeFile(libraryPath, JSON.stringify(book));
+    const original = await fs.readFile(libraryPath);
+    const result = await current.materializer.materialize(current.command, identities('linked'));
+    assert.equal(result.knowledge[0].ownership, 'owned');
+    assert.notEqual(result.knowledge[0].binding.name, 'Library source');
+    const copied = JSON.parse(await fs.readFile(path.join(current.directories.worlds, result.knowledge[0].binding.name + '.json'), 'utf8'));
+    assert.deepEqual(copied.entries, book.entries);
+    assert.deepEqual(await fs.readFile(libraryPath), original);
+});
+
+test('missing named Worldbooks fail explicitly instead of keeping an unresolved shared binding', async t => {
+    const card = complexCard();
+    delete card.data.character_book;
+    card.data.extensions.world = 'Missing source';
+    const current = await harness(t, { card });
+    await assert.rejects(current.materializer.materialize(current.command, identities('missing-linked')), { code: 'NORA_WORLD_KNOWLEDGE_MISSING' });
+    assert.deepEqual(await fs.readdir(current.directories.characters), []);
+});
+
+test('an empty World owns its first setting and concurrent additions preserve siblings', async t => {
+    const card = complexCard();
+    delete card.data.character_book;
+    const current = await harness(t, { card });
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const created = await core.createWorld(current.command, { idempotencyKey: 'empty-world' });
+    const setting = { type: 'constant', title: 'First', content: 'First rule' };
+    const first = await core.addWorldSetting(created.world.world_id, setting, {
+        expectedRevision: created.world.revision, idempotencyKey: 'empty-first',
+    });
+    assert.equal(first.world.knowledge.length, 1);
+    assert.equal(first.resource.ownership, 'owned');
+    const results = await Promise.allSettled(['second', 'third'].map(key => core.addWorldSetting(created.world.world_id,
+        { ...setting, title: key, content: key }, { expectedRevision: first.world.revision, idempotencyKey: key })));
+    assert.equal(results.filter(result => result.status === 'fulfilled').length, 1);
+    assert.equal(results.find(result => result.status === 'rejected').reason.code, 'NORA_WORLD_REVISION_CONFLICT');
+    const book = JSON.parse(await fs.readFile(path.join(current.directories.worlds, first.resource.binding.name + '.json'), 'utf8'));
+    assert.equal(Object.keys(book.entries).length, 2);
+    assert.deepEqual(book.entries[first.entry_id], first.entry);
+});
+
+test('adding to a legacy globally referenced settings book copies it without changing the source', async t => {
+    const card = complexCard();
+    delete card.data.character_book;
+    const current = await harness(t, { card });
+    const core = createNoraWorldCore({ root: path.join(current.root, 'core'), materializer: current.materializer });
+    const created = await core.createWorld(current.command, { idempotencyKey: 'legacy-referenced' });
+    const setting = { type: 'constant', title: 'First', content: 'First rule' };
+    const first = await core.addWorldSetting(created.world.world_id, setting, {
+        expectedRevision: created.world.revision, idempotencyKey: 'legacy-first',
+    });
+    const originalPath = path.join(current.directories.worlds, first.resource.binding.name + '.json');
+    const original = await fs.readFile(originalPath);
+    await fs.writeFile(path.join(current.root, 'settings.json'), JSON.stringify({ world_info_settings: {
+        world_info: { globalSelect: [first.resource.binding.name] },
+    } }));
+    const second = await core.addWorldSetting(created.world.world_id, { ...setting, title: 'Second', content: 'Second rule' }, {
+        expectedRevision: first.world.revision, idempotencyKey: 'legacy-second',
+    });
+    assert.notEqual(second.resource.binding.name, first.resource.binding.name);
+    assert.equal(second.world.knowledge.length, 1);
+    assert.deepEqual(second.book.entries[first.entry_id], first.entry);
+    assert.equal(Object.keys(second.book.entries).length, 2);
+    assert.deepEqual(await fs.readFile(originalPath), original);
+});
+
 test('materializes one Runtime Card, collision-safe Worldbook and canonical initial Session without a browser', async (t) => {
     const current = await harness(t, { sourceBuffer: Buffer.from([0, 255, 128, 64, 1, 2, 3]) });
     const result = await current.materializer.materialize(current.command, identities());
@@ -413,7 +546,7 @@ test('materializes one Runtime Card, collision-safe Worldbook and canonical init
     assert.equal(result.defaultSession.openingState, 'message');
     assert.deepEqual(result.declaredCapabilities, ['mvu', 'regex', 'tavern_helper']);
     assert.equal(result.knowledge.length, 1);
-    assert.equal(result.knowledge[0].ownership, 'shared');
+    assert.equal(result.knowledge[0].ownership, 'owned');
 
     const avatar = result.runtimeCard.binding.avatar;
     const chatId = result.defaultSession.binding.chat_id;
@@ -471,7 +604,7 @@ test('materializes CHARX auxiliary assets into the ST resource directories', asy
     );
 });
 
-test('reuses one shared internal Runtime Card while blank Worlds keep independent sessions', async (t) => {
+test('blank Worlds have independent Runtime Cards and sessions', async (t) => {
     const card = complexCard({ name: 'Nora 空白世界' });
     card.data.first_mes = '';
     card.data.alternate_greetings = [];
@@ -488,24 +621,24 @@ test('reuses one shared internal Runtime Card while blank Worlds keep independen
         identities('blank-two'),
     );
 
-    assert.equal(first.runtimeCard.ownership, 'shared');
-    assert.equal(first.runtimeCard.binding.avatar, second.runtimeCard.binding.avatar);
+    assert.equal(first.runtimeCard.ownership, 'owned');
+    assert.notEqual(first.runtimeCard.binding.avatar, second.runtimeCard.binding.avatar);
     assert.equal(first.defaultSession.openingState, 'empty');
     assert.notEqual(first.defaultSession.binding.chat_id, second.defaultSession.binding.chat_id);
-    assert.equal((await fs.readdir(current.directories.characters)).length, 1);
+    assert.equal((await fs.readdir(current.directories.characters)).length, 2);
 });
 
-test('serializes concurrent reuse of one shared embedded Worldbook', async (t) => {
+test('concurrent imports each create an independent embedded Worldbook', async (t) => {
     const current = await harness(t);
     const [first, second] = await Promise.all([
         current.materializer.materialize(current.command, identities('parallel-one')),
         current.materializer.materialize(current.command, identities('parallel-two')),
     ]);
 
-    assert.equal(first.knowledge[0].binding.name, second.knowledge[0].binding.name);
-    assert.equal(first.knowledge[0].ownership, 'shared');
-    assert.equal(second.knowledge[0].ownership, 'shared');
-    assert.equal((await fs.readdir(current.directories.worlds)).length, 1);
+    assert.notEqual(first.knowledge[0].binding.name, second.knowledge[0].binding.name);
+    assert.equal(first.knowledge[0].ownership, 'owned');
+    assert.equal(second.knowledge[0].ownership, 'owned');
+    assert.equal((await fs.readdir(current.directories.worlds)).length, 2);
 });
 
 test('plugs into NoraWorldCore and commits authoritative ST bindings', async (t) => {
@@ -521,11 +654,11 @@ test('plugs into NoraWorldCore and commits authoritative ST bindings', async (t)
     assert.equal(created.world.capabilities.status, 'PENDING');
     assert.equal(created.world.runtime_card.binding.avatar.endsWith('.png'), true);
     assert.equal(created.world.sessions.items[0].binding.avatar, created.world.runtime_card.binding.avatar);
-    assert.equal(created.world.knowledge[0].binding.name, '同名设定集');
+    assert.match(created.world.knowledge[0].binding.name, /^同名设定集--nora-/);
     await assert.rejects(fs.stat(current.stagedPath), error => error?.code === 'ENOENT');
 });
 
-test('adds durable user lore without mutating an imported Worldbook', async (t) => {
+test('adds durable user lore into the existing private Worldbook without duplicate retry entries', async (t) => {
     const current = await harness(t);
     const core = createNoraWorldCore({
         root: path.join(current.root, 'world-core'),
@@ -545,17 +678,18 @@ test('adds durable user lore without mutating an imported Worldbook', async (t) 
         idempotencyKey: 'setting:add:rain',
     });
 
-    assert.equal(added.world.knowledge[0].source_key, 'nora:user-settings');
+    assert.equal(added.world.knowledge[0].source_key, 'embedded-worldbook:0');
     assert.equal(added.world.knowledge[0].ownership, 'owned');
-    assert.equal(added.world.knowledge[1].binding.name, importedName);
-    assert.equal(await fs.readFile(path.join(current.directories.worlds, `${importedName}.json`), 'utf8'), importedBefore);
+    assert.equal(added.world.knowledge.length, 1);
+    assert.equal(added.world.knowledge[0].binding.name, importedName);
     const userBook = JSON.parse(await fs.readFile(path.join(current.directories.worlds, `${added.resource.binding.name}.json`), 'utf8'));
-    assert.deepEqual(Object.keys(userBook.entries), ['0']);
-    assert.equal(userBook.entries[0].constant, false);
-    assert.equal(userBook.entries[0].selective, true);
-    assert.deepEqual(userBook.entries[0].key, ['雨', '街道']);
+    assert.equal(Object.keys(userBook.entries).length, Object.keys(JSON.parse(importedBefore).entries).length + 1);
+    assert.deepEqual(userBook.entries[0], JSON.parse(importedBefore).entries[0]);
+    assert.equal(userBook.entries[added.entry_id].constant, false);
+    assert.equal(userBook.entries[added.entry_id].selective, true);
+    assert.deepEqual(userBook.entries[added.entry_id].key, ['雨', '街道']);
     assert.equal(repeated.reused, true);
-    assert.deepEqual(Object.keys(repeated.book.entries), ['0']);
+    assert.deepEqual(repeated.book, userBook);
 });
 
 test('repairs from filesystem evidence and deletes only owned World resources', async (t) => {
@@ -579,7 +713,7 @@ test('repairs from filesystem evidence and deletes only owned World resources', 
     assert.equal(deleted.world.lifecycle.status, 'DELETED');
     await assert.rejects(fs.stat(cardPath), error => error?.code === 'ENOENT');
     await assert.rejects(fs.stat(chatPath), error => error?.code === 'ENOENT');
-    assert.ok((await fs.stat(worldbookPath)).isFile(), 'shared Worldbook must survive World deletion');
+    await assert.rejects(fs.stat(worldbookPath), error => error?.code === 'ENOENT');
     assert.deepEqual(await core.listWorlds(), []);
 });
 
@@ -697,7 +831,7 @@ test('treats an unmarked matching Worldbook as external and never compensates it
     assert.deepEqual(await fs.readdir(current.directories.chats), []);
 });
 
-test('never removes a shared Worldbook during compensation', async (t) => {
+test('removes only the newly created private Worldbook during compensation', async (t) => {
     const current = await harness(t, {
         checkpoint(stage) {
             if (stage === 'SESSION_CREATED') throw new Error('injected failure');
@@ -709,7 +843,7 @@ test('never removes a shared Worldbook during compensation', async (t) => {
         /injected failure/,
     );
 
-    assert.equal((await fs.readdir(current.directories.worlds)).length, 1);
+    assert.equal((await fs.readdir(current.directories.worlds)).length, 0);
     const remaining = await fs.readdir(current.directories.characters);
     assert.equal(remaining.length, 1);
     assert.match(remaining[0], /^nora-card-[a-f0-9]{64}\.png$/, 'Compensate runtime resources, not the successfully imported library original');

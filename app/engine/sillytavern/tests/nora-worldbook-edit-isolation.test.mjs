@@ -59,10 +59,11 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     }
     const a = await create('world-a');
     const b = await create('world-b');
-    assert.equal(a.knowledge[0].binding.name, b.knowledge[0].binding.name);
+    assert.notEqual(a.knowledge[0].binding.name, b.knowledge[0].binding.name);
     const sourceName = a.knowledge[0].binding.name;
     const readBook = async name => JSON.parse(await fs.readFile(path.join(directories.worlds, `${name}.json`), 'utf8'));
     const original = await readBook(sourceName);
+    const otherOriginal = await readBook(b.knowledge[0].binding.name);
     const cardsBefore = await Promise.all([a, b].map(w => fs.readFile(path.join(directories.characters, w.runtime_card.binding.avatar))));
     await assert.rejects(core.editWorldbookEntry(a.world_id, { name: sourceName, entry_id: '0', patch: { content: 'bad' }, expected_revision: 'stale' }), /changed/);
     const app = express();
@@ -89,7 +90,7 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     const adapter = createStorySurface(createStRuntimeAdapter(() => browserRuntime), { activate() {} }).worldbook;
     const loaded = await adapter.loadWorldbook(sourceName);
     const edited = await adapter.saveWorldbookEntry(sourceName, loaded, '0', { content: 'Only A changed' }, a.world_id);
-    assert.notEqual(edited.resource.binding.name, sourceName);
+    assert.equal(edited.resource.binding.name, sourceName);
     assert.equal(edited.resource.ownership, 'owned');
     assert.equal(browserRuntime.characters[0].data.extensions.world, edited.resource.binding.name);
     assert.equal(browserRuntime.chatMetadata.world_info, edited.resource.binding.name);
@@ -97,7 +98,7 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     const expected = structuredClone(original);
     expected.entries['0'].content = 'Only A changed';
     assert.deepEqual(edited.book, expected, 'Only the edited content changes, including empty-key trigger semantics');
-    assert.deepEqual(await readBook(sourceName), original, 'Shared original unchanged');
+    assert.deepEqual(await readBook(b.knowledge[0].binding.name), otherOriginal, 'Other World copy unchanged');
     assert.deepEqual(await core.getWorld(b.world_id), b, 'Other World manifest unchanged');
     assert.equal(await fs.readFile(libraryPath, 'utf8'), library, 'Library source unchanged');
     for (const [index, world] of [a, b].entries()) assert.deepEqual(await fs.readFile(path.join(directories.characters, world.runtime_card.binding.avatar)), cardsBefore[index]);
@@ -138,7 +139,7 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     assert.equal(control.disabled, false);
     await toggleController.toggleEntry('1', control);
     assert.equal((await readBook(second.resource.binding.name)).entries['1'].disable, false, 'Re-enabling reads the latest revision');
-    assert.deepEqual(await readBook(sourceName), original, 'Toggle leaves the shared source unchanged');
+    assert.deepEqual(await readBook(b.knowledge[0].binding.name), otherOriginal, 'Toggle leaves the other World copy unchanged');
     assert.deepEqual(await core.getWorld(b.world_id), b, 'Toggle leaves the other World unchanged');
     const deletionNotices = [];
     const deleteController = createWorldbookController({ worldbook: adapter,
@@ -156,7 +157,7 @@ test('edits isolate Worlds, preserve other fields and survive reopening', async 
     assert.deepEqual(afterDelete.entries['0'], beforeDelete.entries['0']);
     await assert.rejects(reopenedCore.editWorldbookEntry(a.world_id, { name: second.resource.binding.name, entry_id: '0', operation: 'delete', expected_revision: revision(beforeDelete) }), /changed/);
     await assert.rejects(reopenedCore.editWorldbookEntry(a.world_id, { name: second.resource.binding.name, entry_id: '1', operation: 'delete', expected_revision: revision(afterDelete) }), /no longer exists/);
-    assert.deepEqual(await readBook(sourceName), original);
+    assert.deepEqual(await readBook(b.knowledge[0].binding.name), otherOriginal);
     assert.deepEqual(await core.getWorld(b.world_id), b);
     assert.equal(await fs.readFile(libraryPath, 'utf8'), library);
     const reloadedWorld = await createNoraWorldCore({ root: coreRoot, materializer: makeMaterializer() }).getWorld(a.world_id);

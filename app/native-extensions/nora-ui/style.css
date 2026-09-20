@@ -406,7 +406,6 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 #nora-panel .itemActions { display: flex; flex: 0 0 auto; align-items: center; gap: 2px; }
 #nora-panel .itemEdit { display: grid; width: 22px; height: 22px; flex: 0 0 22px; place-items: center; padding: 0; border: 1px solid transparent; border-radius: 5px; background: transparent; color: var(--nora-muted); font-size: 10px; line-height: 1; cursor: pointer; opacity: .68; }
 #nora-panel .itemEdit:hover { border-color: rgba(255, 128, 48, .22); background: rgba(255, 128, 48, .08); color: var(--nora-brand); opacity: 1; }
-#nora-panel .emptyEditRow { display: flex; min-height: 34px; align-items: center; justify-content: space-between; gap: 8px; color: var(--nora-muted); font-size: 12px; }
 #nora-panel .pmuted { margin: 0; color: var(--nora-muted); font-size: 12px; line-height: 1.55; }
 #nora-panel .pLink { display: flex; width: 100%; align-items: center; gap: 7px; padding: 7px 0; border: 0; background: transparent; color: var(--nora-brand-ink); font-size: 12.5px; text-align: left; text-decoration: none; cursor: pointer; }
 #nora-panel .pLink:hover, #nora-panel .actorMore:hover { text-decoration: underline; }

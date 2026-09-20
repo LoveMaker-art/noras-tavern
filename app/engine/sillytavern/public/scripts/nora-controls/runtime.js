@@ -2,6 +2,7 @@ import { CONTROL_ACTIONS, validateControl, controlError } from './contract.js';
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { createThemeActions } from './theme-actions.js';
 import { createPanelActions } from './panel-actions.js';
+import { createPresetActions } from './preset-actions.js';
 
 const denied = ['assets', 'attachments', 'connection-manager', 'gallery', 'memory', 'token-counter'];
 const managedScriptId = 'nora-mvu-headless-runtime';
@@ -98,6 +99,7 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false },
         renderTheme: () => globalRef.NoraUI?.refreshTheme?.() || { ready: false } });
     const panelAction = createPanelActions({ getContext, story, request, character, assertOwnedCard, save });
+    const presetAction = createPresetActions({ getContext, story, request });
     async function execute(command) {
         const definition = validateControl(command);
         const currentScope = scope();
@@ -109,7 +111,7 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             if (globalRef.Mvu?.isDuringExtraAnalysis?.()) throw controlError('NORA_CONTROL_BUSY', 'MVU is still updating variables.');
         }
         const params = command.params ?? {};
-        if (params.scope && params.scope !== 'global') character();
+        if (params.scope && params.scope !== 'global' && !(command.action.startsWith('preset.') && params.scope === 'library')) character();
         if (!definition.readOnly && !isStop) mutating = true;
         try {
             // Use the existing task registry: World changes already consult this registry.
@@ -125,6 +127,7 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
     }
     async function apply(action, params, command) {
         if (scope().worldId !== command.worldId || scope().sessionId !== command.sessionId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World/Session changed before execution.');
+        if (action.startsWith('preset.')) return presetAction(action, params);
         if (action.startsWith('theme.')) return themeAction(action, params);
         const context = getContext();
         if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params, command);

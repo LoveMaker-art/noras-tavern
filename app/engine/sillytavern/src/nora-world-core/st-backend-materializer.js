@@ -199,12 +199,6 @@ function worldbookDocumentDigest(worldbookData) {
     return sha256(stableStringify(copy));
 }
 
-function isNoraWorldbook(worldbookData, digest) {
-    return worldbookData?.extensions?.nora_resource?.schema === 1
-        && worldbookData.extensions.nora_resource.content_sha256 === digest
-        && worldbookDocumentDigest(worldbookData) === digest;
-}
-
 export function convertEmbeddedBook(characterBook) {
     const entries = Array.isArray(characterBook?.entries) ? characterBook.entries : [];
     const result = { entries: {}, originalData: cloneJson(characterBook) };
@@ -365,51 +359,20 @@ function initialChat({ command, identities, report, avatar, worldbookName, times
     return `${chat.map(item => JSON.stringify(item)).join('\n')}\n`;
 }
 
-async function resolveWorldbook({ directory, report, sourceSha256, operationId }) {
+async function resolveWorldbook({ directory, report, sourceSha256, operationId, worldId }) {
     const book = report.worldbooks[0];
     if (!book) return null;
-    const candidates = [
-        book.preferred_name,
-        `${book.preferred_name}--nora-${book.content_sha256.slice(0, 10)}`,
-        `${book.preferred_name}--nora-${book.content_sha256.slice(0, 10)}-${sha256(operationId).slice(0, 6)}`,
-    ];
-    for (const name of candidates) {
-        const filePath = path.join(directory, `${name}.json`);
-        try {
-            const existing = JSON.parse(await fs.readFile(filePath, 'utf8'));
-            if (worldbookDocumentDigest(existing) === book.content_sha256) {
-                return {
-                    name,
-                    filePath,
-                    created: false,
-                    digest: await fileDigest(filePath),
-                    ownership: isNoraWorldbook(existing, book.content_sha256) ? 'shared' : 'external',
-                };
-            }
-        } catch (error) {
-            if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-            if (error?.code === 'ENOENT') {
-                const worldbookData = {
-                    ...book.converted,
-                    extensions: {
-                        ...(book.converted.extensions || {}),
-                        nora_resource: {
-                            schema: 1,
-                            content_sha256: book.content_sha256,
-                            source_sha256: sourceSha256,
-                        },
-                    },
-                };
-                const text = `${JSON.stringify(worldbookData, null, 4)}\n`;
-                const persisted = await ensureFile(filePath, text);
-                return { name, filePath, ...persisted, ownership: 'shared' };
-            }
-        }
-    }
-    throw new NoraWorldCoreError(
-        'NORA_ST_RESOURCE_CONFLICT',
-        `No collision-safe ST Worldbook name is available for ${book.preferred_name}.`,
-    );
+    const name = `${book.preferred_name}--nora-${sha256(worldId).slice(0, 24)}`;
+    const filePath = path.join(directory, `${name}.json`);
+    const worldbookData = {
+        ...book.converted,
+        extensions: { ...book.converted.extensions, nora_resource: {
+            schema: 1, kind: 'world-copy', world_id: worldId, operation_id: operationId,
+            content_sha256: book.content_sha256, source_sha256: sourceSha256,
+        } },
+    };
+    const persisted = await ensureFile(filePath, `${JSON.stringify(worldbookData, null, 4)}\n`);
+    return { name, filePath, ...persisted, ownership: 'owned' };
 }
 
 async function compensate(created, protectedRoots) {
@@ -476,26 +439,37 @@ function nextWorldbookEntryId(entries) {
     return String((used.length ? Math.max(...used) : -1) + 1);
 }
 
-async function persistWorldSetting({ world, setting, operationId, roots }) {
-    const existing = world.knowledge.find(item => item.source_key === 'nora:user-settings');
-    const binding = existing ? { name: existing.binding.name, resourceId: existing.resource_id } : worldSettingsBinding(world);
+async function persistWorldSetting({ world, setting, operationId, roots, exclusive }) {
+    const existing = world.knowledge[0];
+    const inPlace = existing?.ownership === 'owned' && exclusive;
+    const binding = inPlace ? { name: existing.binding.name, resourceId: existing.resource_id }
+        : existing ? {
+            name: `nora-worldbook-${sha256(`${world.world_id}\u0000${operationId}`).slice(0, 32)}`,
+            resourceId: `resource:${sha256(`${world.world_id}\u0000${operationId}`).slice(0, 32)}`,
+        } : worldSettingsBinding(world);
     const filePath = path.join(roots.worlds, `${binding.name}.json`);
     const operationDigest = sha256(stableStringify(setting));
     return withWorldbookLock(filePath, async () => {
         let book;
         try {
+            const stat = await fs.lstat(filePath);
+            if (!stat.isFile() || stat.isSymbolicLink()) throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'Unsafe Worldbook file.');
             book = JSON.parse(await fs.readFile(filePath, 'utf8'));
         } catch (error) {
             if (error?.code !== 'ENOENT') {
                 throw new NoraWorldCoreError('NORA_WORLD_KNOWLEDGE_CORRUPT', 'The World settings book is unreadable.', { cause: error });
             }
-            book = {
-                entries: {},
-                extensions: { nora_resource: { schema: 1, kind: 'world-settings', world_id: world.world_id } },
-            };
+            if (inPlace) throw new NoraWorldCoreError('NORA_WORLD_KNOWLEDGE_CORRUPT', 'The World settings book is missing.');
+            if (existing) {
+                const source = path.join(roots.worlds, `${safeBindingName(existing.binding.name, 'Worldbook')}.json`);
+                const stat = await fs.lstat(source);
+                if (!stat.isFile() || stat.isSymbolicLink()) throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'Unsafe Worldbook file.');
+                book = JSON.parse(await fs.readFile(source, 'utf8'));
+            } else book = { entries: {} };
+            book.extensions = { ...book.extensions, nora_resource: { schema: 1, kind: 'world-settings', world_id: world.world_id } };
         }
-        if (book?.extensions?.nora_resource?.kind !== 'world-settings'
-            || book.extensions.nora_resource.world_id !== world.world_id
+        if ((!inPlace && book?.extensions?.nora_resource?.world_id !== world.world_id)
+            || (book?.extensions?.nora_resource?.world_id && book.extensions.nora_resource.world_id !== world.world_id)
             || !book.entries || Array.isArray(book.entries) || typeof book.entries !== 'object') {
             throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'The World settings book binding is occupied by another resource.');
         }
@@ -505,6 +479,9 @@ async function persistWorldSetting({ world, setting, operationId, roots }) {
         ));
         let entryId = repeated?.[0] || '';
         if (!entryId) {
+            book.extensions = { ...book.extensions, nora_resource: {
+                ...book.extensions?.nora_resource, schema: 1, world_id: world.world_id,
+            } };
             entryId = nextWorldbookEntryId(book.entries);
             book.entries[entryId] = {
                 ...ENTRY_DEFAULTS,
@@ -523,11 +500,15 @@ async function persistWorldSetting({ world, setting, operationId, roots }) {
         return {
             resource: {
                 resource_id: binding.resourceId,
-                source_key: 'nora:user-settings',
+                source_key: existing?.source_key || 'nora:user-settings',
                 engine: 'sillytavern',
-                binding: existing?.binding || { name: binding.name },
+                binding: inPlace ? existing.binding : { name: binding.name, ...(existing ? {
+                    original_name: existing.binding.original_name || existing.binding.name,
+                    original_names: [...new Set([...(existing.binding.original_names || []), existing.binding.name])],
+                } : {}) },
                 ownership: 'owned',
             },
+            source_resource_id: existing?.resource_id || null,
             entry_id: entryId,
             entry: cloneJson(book.entries[entryId]),
             book: cloneJson(book),
@@ -680,20 +661,22 @@ export function createStBackendMaterializer({
                 && await isExclusiveWorldbook(world, input?.name, { worlds, roots, cardCodec });
             return prepareWorldbookEntryEdit({ world, input, directory: roots.worlds, exclusive, embedded });
         },
-        addWorldSetting(world, setting, { operationId } = {}) {
+        async addWorldSetting(world, setting, { operationId, worlds = [] } = {}) {
+            const existing = world.knowledge[0];
+            const exclusive = existing?.ownership === 'owned'
+                && await isExclusiveWorldbook(world, existing.binding.name, { worlds, roots, cardCodec });
             return persistWorldSetting({
                 world,
                 setting,
                 operationId: assertIdentity(operationId, 'operationId'),
                 roots,
-                locks,
+                exclusive,
             });
         },
         async readWorldSettingBook(worldId, resource) {
             const name = safeBindingName(resource?.binding?.name, 'Knowledge Resource');
             const book = JSON.parse(await fs.readFile(path.join(roots.worlds, `${name}.json`), 'utf8'));
-            if (book?.extensions?.nora_resource?.kind !== 'world-settings'
-                || book.extensions.nora_resource.world_id !== String(worldId || '')) {
+            if (resource.ownership !== 'owned' || book?.extensions?.nora_resource?.world_id !== String(worldId || '')) {
                 throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'The World settings book does not belong to this World.');
             }
             return book;
@@ -846,8 +829,28 @@ export function createStBackendMaterializer({
                 // portable lore. World Core now owns these actors and the persona.
                 prepared = { ...prepared, card: projected, changed: true };
             }
-            const report = inspectPreparedStCard(prepared.card);
+            let report = inspectPreparedStCard(prepared.card);
             const restart = command?.payload?.restart;
+            const linkedName = cardData(prepared.card).extensions?.world;
+            if (!restart && !report.worldbooks.length && linkedName) {
+                const name = safeBindingName(linkedName, 'Worldbook');
+                const source = path.join(roots.worlds, `${name}.json`);
+                const stat = await fs.lstat(source).catch(error => {
+                    if (error.code === 'ENOENT') throw new NoraWorldCoreError('NORA_WORLD_KNOWLEDGE_MISSING', 'The card references a missing Worldbook; import its Worldbook before creating this World.');
+                    throw error;
+                });
+                if (!stat.isFile() || stat.isSymbolicLink()) throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'Unsafe Worldbook file.');
+                const book = JSON.parse(await fs.readFile(source, 'utf8'));
+                if (!book?.entries || typeof book.entries !== 'object' || Array.isArray(book.entries)) {
+                    throw new NoraWorldCoreError('NORA_WORLD_KNOWLEDGE_CORRUPT', 'The referenced Worldbook is unreadable.');
+                }
+                report = {
+                    ...report,
+                    worldbooks: [{ source_key: 'linked-worldbook:0', preferred_name: name,
+                        entry_count: Object.keys(book.entries).length, content_sha256: worldbookDocumentDigest(book), converted: book }],
+                    declared_capabilities: capabilityInspection(prepared.card, [book]).declared,
+                };
+            }
             if (!restart && command?.payload?.runtime_card_kind !== 'nora-internal-blank') {
                 await cardLibrary.save({ buffer: sourceBuffer, format }, identities.worlds || []);
             }
@@ -855,9 +858,7 @@ export function createStBackendMaterializer({
             const created = [];
             try {
                 const internalBlank = command?.payload?.runtime_card_kind === 'nora-internal-blank';
-                const runtimeBase = internalBlank
-                    ? INTERNAL_BLANK_RUNTIME_BASE
-                    : `${safeEngineName(report.character_name, 'Character')}--nora-${sha256(worldId).slice(0, 10)}`;
+                const runtimeBase = `${internalBlank ? INTERNAL_BLANK_RUNTIME_BASE : safeEngineName(report.character_name, 'Character')}--nora-${sha256(worldId).slice(0, 24)}`;
                 const avatar = `${runtimeBase}.png`;
                 const runtimePath = path.join(roots.characters, avatar);
 
@@ -887,8 +888,10 @@ export function createStBackendMaterializer({
                         report,
                         sourceSha256: actualSourceSha,
                         operationId,
+                        worldId,
                     }),
                 );
+                if (worldbook?.created) created.push({ filePath: worldbook.filePath, digest: worldbook.digest });
                 await checkpoint('WORLDBOOK_CREATED');
 
                 const projectedCard = bindRuntimeCardWorldbook(prepared.card, worldbook?.name);
@@ -936,7 +939,7 @@ export function createStBackendMaterializer({
                     runtimeCard: {
                         engine: 'sillytavern',
                         binding: { avatar },
-                        ownership: internalBlank ? 'shared' : 'owned',
+                        ownership: 'owned',
                     },
                     defaultSession: {
                         engine: 'sillytavern',
@@ -946,7 +949,7 @@ export function createStBackendMaterializer({
                     knowledge: restart ? copiedBooks : worldbook ? [{
                         sourceKey: report.worldbooks[0].source_key,
                         engine: 'sillytavern',
-                        binding: { name: worldbook.name },
+                        binding: { name: worldbook.name, original_name: report.worldbooks[0].preferred_name },
                         ownership: worldbook.ownership,
                     }] : [],
                     declaredCapabilities: [...new Set([...report.declared_capabilities,

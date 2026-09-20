@@ -26,7 +26,9 @@ test('new-character editor submits a real World array mutation with distinct key
     const controller = createCharacterController({
         cards: { updateCharacter() { throw new Error('Must not overwrite a legacy card'); } },
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },
-        dialogs: { open: (_title, content) => { html = content; return {}; }, close() {}, toast() {}, normalizeError: error => error.message },
+        dialogs: { open: (_title, content) => { html = content; return {}; },
+            protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; },
+            close() {}, toast() {}, normalizeError: error => error.message },
         readState: () => ({}), settings: () => ({}),
         characterField: (character, key) => character.data?.[key] || '',
         select: () => form, selectAll: selector => selector === '[data-character-mode]' ? modes : [], escapeHtml: value => String(value ?? ''), icons: {},
