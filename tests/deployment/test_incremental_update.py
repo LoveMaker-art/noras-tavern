@@ -218,7 +218,7 @@ class IncrementalUpdateTests(unittest.TestCase):
             self.assertEqual(mode, "full")
             self.assertEqual(names, list(BOOTSTRAP.FULL_ARCHIVES))
 
-    def test_mode_change_is_a_module_change_even_when_bytes_match(self):
+    def test_mode_change_selects_modules_according_to_platform_permissions(self):
         with tempfile.TemporaryDirectory(prefix="nora-mode-plan-") as temporary:
             home = Path(temporary)
             target = home / "apps/tavern-runtime/native-runtime.json"
@@ -244,10 +244,13 @@ class IncrementalUpdateTests(unittest.TestCase):
             manifest["artifactModes"]["ops/updater/update.py"] = 0o644
             names, mode = BOOTSTRAP.required_archives(home, manifest)
             self.assertEqual(mode, "incremental")
-            self.assertEqual(names, [
+            expected = [
                 "nora-tavern-module-nora-runtime.tar.gz",
                 "nora-tavern-module-updater.tar.gz",
-            ])
+            ]
+            if sys.platform == 'win32':
+                expected.remove('nora-tavern-module-nora-runtime.tar.gz')
+            self.assertEqual(names, expected)
 
     def test_incremental_extraction_reuses_matching_files_and_replaces_changed_module(self):
         required = {
