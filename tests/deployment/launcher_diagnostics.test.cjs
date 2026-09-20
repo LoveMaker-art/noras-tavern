@@ -59,14 +59,14 @@ test('operation handler logs original failure even if persisting the error state
     const original = Object.assign(new Error('release fixture failure'), { code: 'ECONNRESET' });
     const context = mainContext(root, {
       './test-build': { testBuild: () => null },
-      './releases': { prepare: async () => { throw original; } },
+      './releases': { prepareBundled: async () => { throw original; } },
     });
     context.AbortController = AbortController;
     const source = fs.readFileSync(path.resolve(__dirname, '../installer/desktop/main.js'), 'utf8');
     let callback;
     function visit(node) {
       if (!node || typeof node !== 'object') return;
-      if (node.type === 'CallExpression' && node.callee.name === 'handle' && node.arguments[0]?.value === 'nora:run') callback = node.arguments[1];
+      if (node.type === 'VariableDeclarator' && node.id.name === 'runAction') callback = node.init;
       for (const value of Object.values(node)) {
         if (Array.isArray(value)) value.forEach(visit);
         else if (value && typeof value === 'object') visit(value);

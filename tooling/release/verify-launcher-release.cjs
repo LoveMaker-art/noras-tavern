@@ -22,6 +22,8 @@ const digest = file => {
   } finally { fs.closeSync(fd); }
   return hash.digest('hex');
 };
+const shared = JSON.parse(fs.readFileSync(byName.get('release-manifest.json')));
+assert.match(shared.bootstrap?.minimumLauncherVersion, /^\d+\.\d+\.\d+$/);
 let reuse;
 if (mode === 'components') {
   reuse = JSON.parse(fs.readFileSync(byName.get('component-release.json')));
@@ -50,6 +52,10 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   assert.equal(payload.commit, commit);
   assert.equal(payload.candidate, false);
   assert.equal(payload.versions.tavern, tag.slice(1));
+  assert.equal(payload.launcherVersion, shared.launcherVersion);
+  assert.equal(manifest.launcherVersion, shared.launcherVersion);
+  assert.equal(payload.bootstrap?.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
+  assert.equal(manifest.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
   for (const [name, fingerprint] of [['nora-hermes-runtime.json', 'runtimeSha256'], ['nora-tavern-dependencies.json', 'dependenciesSha256']]) {
     const component = payloadJson(name);
     assert.equal(`${component.platform}-${component.arch}`, platform);
@@ -66,7 +72,20 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   assert.ok([...byName.keys()].some(name => name.startsWith('Nora-Tavern-') && name.endsWith(`${suffix}${platform.startsWith('darwin') ? '.dmg' : '-setup.exe'}`)), `Missing installer: ${platform}`);
   }
 }
-const shared = JSON.parse(fs.readFileSync(byName.get('release-manifest.json')));
+for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
+  const item = JSON.parse(fs.readFileSync(byName.get(`nora-launcher-${platform}.json`)));
+  assert.equal(item.schema, 'nora-launcher/v1');
+  assert.equal(item.candidate, false);
+  assert.equal(item.version, shared.launcherVersion);
+  assert.match(item.commit, /^[a-f0-9]{40}$/);
+  if (mode === 'full') assert.equal(item.commit, commit, 'Launcher commit differs from full release');
+  else assert.deepEqual(Object.fromEntries(['commit', 'version', 'asset', 'size', 'sha256'].map(key => [key, item[key]])),
+    reuse.reused.find(entry => entry.platform === platform)?.launcher, 'Launcher differs from approved reuse provenance');
+  assert.equal(`${item.platform}-${item.arch}`, platform);
+  assert.ok(item.asset.endsWith('-update.zip'));
+  assert.equal(fs.statSync(byName.get(item.asset)).size, item.size);
+  assert.equal(digest(byName.get(item.asset)), item.sha256);
+}
 assert.equal(shared.commit, commit);
 assert.equal(shared.candidate, false);
 assert.equal(shared.versions.tavern, tag.slice(1));

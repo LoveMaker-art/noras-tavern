@@ -55,11 +55,12 @@ test('comparison fails when Chromium fails even if Node succeeds', async () => {
     /ERR_CERT_AUTHORITY_INVALID/);
 });
 
-test('installation and version checks explicitly inject the desktop network transport', () => {
+test('online updates and version checks explicitly inject the desktop network transport', () => {
   const source = fs.readFileSync(path.join(desktop, 'main.js'), 'utf8');
-  assert.match(source, /releases\.prepare\(\{\s*fetcher: releaseNetwork\.fetch/);
-  assert.match(source, /releases\.check\(\{\s*fetcher: releaseNetwork\.fetch/);
-  assert.match(source, /await releaseNetwork\.compare/);
+  assert.match(source, /releases\.prepareUpdate\(\{\s*fetcher: updateFetch/);
+  assert.match(source, /releases\.check\(\{\s*fetcher: updateFetch/);
+  assert.match(source, /createLocalRelease\(localReleaseDirectory\) : releaseNetwork\.fetch/);
+  assert.doesNotMatch(source, /await releaseNetwork\.compare/);
   const metadata = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
   assert.ok(metadata.build.files.includes('release-network.js'));
 });

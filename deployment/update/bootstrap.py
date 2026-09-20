@@ -45,7 +45,7 @@ def default_install_root():
 
 
 def managed_instance(home, root):
-    """Authorize the desktop adapter only inside its recoverable transaction."""
+    """Bind the desktop adapter to its existing instance; update.py owns rollback."""
     home, root = Path(home).resolve(), Path(root).resolve()
     try:
         instance = json.loads((home / "nora-instance.json").read_text(encoding="utf-8"))
@@ -64,12 +64,6 @@ def managed_instance(home, root):
             raise ValueError("invalid system receipt")
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise RuntimeError("无法核对启动器实例记录，已停止更新") from error
-    try:
-        journal = json.loads((root / "installer/system-update/journal.json").read_text(encoding="utf-8"))
-        if journal.get("schema") != 1 or journal.get("phase") != "applying":
-            raise ValueError("not applying")
-    except (OSError, ValueError, AttributeError) as error:
-        raise RuntimeError("启动器更新事务未就绪，请从启动器执行更新") from error
     return instance
 
 
@@ -234,7 +228,7 @@ def matches(path, expected, expected_mode=None):
     try:
         return (path is not None and path.is_file() and not path.is_symlink()
                 and sha(path) == expected
-                and (expected_mode is None or path.stat().st_mode & 0o777 == expected_mode))
+                and (sys.platform == "win32" or expected_mode is None or path.stat().st_mode & 0o777 == expected_mode))
     except OSError:
         return False
 
@@ -309,6 +303,7 @@ def main():
     parser.add_argument("--install-root")
     parser.add_argument("--hermes-home", dest="hermes_home")
     parser.add_argument("--managed-home", type=Path, help=argparse.SUPPRESS)
+    parser.add_argument("--plan", action="store_true", help="Only report required archives for the existing installation")
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--manifest-sha256")
@@ -328,6 +323,14 @@ def main():
     hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root,
                                                      managed_home=args.managed_home)
     print(f"[tavern-updater] 已确认现有安装：{install_root}", file=sys.stderr, flush=True)
+    if args.plan:
+        if not args.release_dir:
+            raise RuntimeError("更新计划需要已下载的发布清单")
+        manifest, _, sums = verify_metadata(args.release_dir, args.manifest_sha256)
+        archives, mode = required_archives(install_root, manifest)
+        print(json.dumps({"archives": [{"name": name, "sha256": sums[name]} for name in archives],
+                          "mode": mode, "version": manifest["versions"]["tavern"]}))
+        return
     root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"

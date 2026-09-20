@@ -102,7 +102,9 @@ try {
         fs.writeFileSync(path.join(release, name), bytes);
         checksums.push(`${digest(bytes)}  ${name}`);
     }
-    identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer) };
+    identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer), managedComponents: 1, managedLifecycle: 1,
+        minimumLauncherVersion: '1.1.0' };
+    identity.launcherVersion = JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'), 'utf8')).version;
     const firstBootstrap = fs.readFileSync(path.join(stage, 'ops/installer/bootstrap.py'));
     const firstInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.sh'));
     const firstPowerShellInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.ps1'));
@@ -238,7 +240,7 @@ try {
         fs.writeFileSync(packageFile, JSON.stringify(desktop, null, 2));
     }
     writeSystemRelease({ release, payload: starterPayload, identity,
-        launcherVersion: JSON.parse(fs.readFileSync(path.join(starterRoot, 'desktop/package.json'), 'utf8')).version });
+        launcherVersion: identity.launcherVersion, minimumLauncherVersion: identity.bootstrap.minimumLauncherVersion });
     if (identity.hermesRuntime) configureCandidateLauncher({
         packageFile: path.join(starterRoot, 'desktop/package.json'), payload: starterPayload, identity,
     });

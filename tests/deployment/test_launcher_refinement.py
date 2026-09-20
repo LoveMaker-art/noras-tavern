@@ -11,6 +11,36 @@ from ops.updater.managed_context import LEGACY_GREETING
 
 
 class RefinementTests(unittest.TestCase):
+    def test_skill_diagnostics_distinguish_missing_and_changed_files(self):
+        relative = 'skills/creative/tavern/SKILL.md'
+        file = self.args.hermes_home / relative
+        file.parent.mkdir(parents=True)
+        file.write_text('installed skill')
+        system.save_json(self.args.install_root / 'tavern-updates/nora-system.json',
+                         {'schema': 1, 'skills': {relative: system.digest(file)}})
+        with patch.object(system, 'managed_problems', return_value=[]):
+            file.write_text('changed skill')
+            problems = system.inspect(self.args.hermes_home, self.args.install_root, self.args.port)['problems']
+            self.assertIn('技能文件内容与安装记录不一致：' + relative, problems)
+            file.unlink()
+            problems = system.inspect(self.args.hermes_home, self.args.install_root, self.args.port)['problems']
+            self.assertIn('技能文件缺失：' + relative, problems)
+
+    def test_existing_managed_install_cannot_enter_first_install_on_skill_failure(self):
+        self.args.release_dir = None
+        system.save_json(self.args.install_root / 'tavern-updates/nora-system.json',
+                         {'schema': 1, 'setupCompleted': True})
+        with patch.object(system, 'inspect', return_value={'ready': False}), \
+             patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge, 'release_dir', return_value=None), \
+             patch.object(bridge, 'ensure_hermes') as ensure, \
+             patch.object(bridge, 'run_stream') as run, \
+             patch.object(bridge, 'emit'):
+            with self.assertRaises(SystemExit):
+                bridge.command_install(self.args)
+        ensure.assert_not_called()
+        run.assert_not_called()
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

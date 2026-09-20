@@ -42,6 +42,23 @@ export function verifyFile(file, entry) {
     assert.equal(fileDigest(file), entry.sha256, `Component checksum mismatch: ${path.basename(file)}`);
 }
 
+export function launcherProvenance(current, baseline, launcher, platform, previous) {
+    assertReusable(current, baseline);
+    assert.equal(launcher.schema, 'nora-launcher/v1');
+    assert.equal(launcher.candidate, false);
+    assert.equal(`${launcher.platform}-${launcher.arch}`, platform);
+    assert.equal(launcher.version, current.launcherVersion);
+    assert.match(launcher.commit, /^[a-f0-9]{40}$/);
+    const provenance = Object.fromEntries(['commit', 'version', 'asset', 'size', 'sha256'].map(key => [key, launcher[key]]));
+    if (previous) {
+        assert.equal(previous.commit, baseline.commit);
+        assert.equal(previous.version, baseline.versions.tavern);
+        assert.deepEqual(provenance, previous.reused.find(item => item.platform === platform)?.launcher,
+            'Reused launcher differs from baseline provenance');
+    } else assert.equal(launcher.commit, baseline.commit, 'Launcher differs from full baseline commit');
+    return provenance;
+}
+
 export function assemblePlatform({ release, baseline, system, baselineRoot, output, candidate = false }) {
     const current = json(path.join(release, 'release-manifest.json'));
     assertReusable(current, baseline);
@@ -80,8 +97,8 @@ export function assemblePlatform({ release, baseline, system, baselineRoot, outp
         fs.writeFileSync(path.join(temporary, 'release-manifest.json'), JSON.stringify(identity, null, 2) + '\n');
         checks.push(`${fileDigest(path.join(temporary, 'release-manifest.json'))}  release-manifest.json`);
         fs.writeFileSync(path.join(temporary, 'SHA256SUMS'), checks.join('\n') + '\n');
-        writeSystemRelease({ release: output, payload: temporary, identity, launcherVersion: system.launcherVersion,
-            minimumLauncherVersion: system.minimumLauncherVersion });
+        writeSystemRelease({ release: output, payload: temporary, identity, launcherVersion: current.launcherVersion,
+            minimumLauncherVersion: current.bootstrap.minimumLauncherVersion });
         return { platform, runtimeSha256: runtime.sha256, dependenciesSha256: dependencies.sha256 };
     } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
 }
@@ -109,6 +126,7 @@ function main() {
         return path.join(directory, name);
     };
     try {
+        const previous = names.includes('component-release.json') ? json(download('component-release.json', work)) : null;
         const inputs = [];
         // Validate every platform before downloading any multi-GB environment.
         for (const platform of PLATFORMS) {
@@ -122,14 +140,20 @@ function main() {
                 fs.renameSync(file, path.join(directory, name));
             }
             const baseline = json(path.join(directory, 'release-manifest.json'));
+            const launcherName = `nora-launcher-${platform}.json`;
+            const launcher = json(download(launcherName, directory));
+            assert.equal(launcher.version, current.launcherVersion, 'Launcher version changed: build fresh launcher updates before publishing');
+            assert.equal(launcher.candidate, false);
+            const launcherArchive = download(launcher.asset, directory);
+            verifyFile(launcherArchive, launcher);
             assertReusable(current, baseline);
+            launcherProvenance(current, baseline, launcher, platform, previous);
             assert.equal(system.version, baselineTag.slice(1));
-            inputs.push({ directory, baseline, system });
+            inputs.push({ directory, baseline, system, launcherName, launcher });
         }
         let installerTag = baselineTag;
         let installers = names.filter(name => /^Nora-Tavern-Launcher-/.test(name) && /(?:-mac-(?:arm64|x64)\.dmg|-win-x64-setup\.exe)$/.test(name));
         if (names.includes('component-release.json')) {
-            const previous = json(download('component-release.json', work));
             installerTag = previous.installerTag; installers = previous.installers;
             assert.match(installerTag, /^v\d+\.\d+\.\d+$/);
             const original = JSON.parse(gh(['release', 'view', installerTag, '--repo', REPO, '--json', 'isDraft,isPrerelease,assets']));
@@ -143,7 +167,8 @@ function main() {
             if (fs.statSync(path.join(release, name)).isFile()) fs.copyFileSync(path.join(release, name), path.join(shared, name));
         }
         const reused = [];
-        for (const { directory, baseline, system } of inputs) {
+        for (const { directory, baseline, system, launcherName, launcher } of inputs) {
+            for (const name of [launcherName, launcher.asset]) fs.copyFileSync(path.join(directory, name), path.join(shared, name));
             for (const manifest of ['nora-hermes-runtime.json', 'nora-tavern-dependencies.json']) {
                 const { archive } = json(path.join(directory, manifest));
                 const item = system.files[safeName(archive)];
@@ -151,7 +176,8 @@ function main() {
                 verifyFile(file, item);
                 fs.renameSync(file, path.join(directory, archive));
             }
-            reused.push(assemblePlatform({ release, baseline, system, baselineRoot: directory, output }));
+            reused.push({ ...assemblePlatform({ release, baseline, system, baselineRoot: directory, output }),
+                launcher: launcherProvenance(current, baseline, launcher, `${system.platform}-${system.arch}`, previous) });
         }
         fs.writeFileSync(path.join(output, 'component-release.json'), JSON.stringify({
             schema: 'nora-component-release/v1', version: current.versions.tavern, commit: current.commit,

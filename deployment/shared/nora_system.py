@@ -160,6 +160,17 @@ def save_json(path, value):
             os.unlink(temporary)
 
 
+def update_recovery(root):
+    file = root / 'tavern-updates/transaction.json'
+    if not file.exists():
+        return None
+    record = read_json(file)
+    if record.get('schema') == 1 and record.get('status') in ('committed', 'restored'):
+        return None
+    return {**record, 'status': record.get('status', 'unknown'),
+            'backup': record.get('backup', str(root / 'tavern-backups'))}
+
+
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -198,8 +209,16 @@ def inspect(home, root, port):
         problems.append("缺少技能完整性记录")
     for relative, expected in skills.items():
         file = (home / relative).resolve()
-        if not file.is_relative_to((home / "skills").resolve()) or not file.is_file() or digest(file) != expected:
-            problems.append("技能文件缺失或已修改：" + relative)
+        if not file.is_relative_to((home / "skills").resolve()):
+            problems.append("技能路径超出安装目录：" + relative)
+        elif not file.is_file():
+            problems.append("技能文件缺失：" + relative)
+        else:
+            try:
+                if digest(file) != expected:
+                    problems.append("技能文件内容与安装记录不一致：" + relative)
+            except OSError:
+                problems.append("技能文件无法读取：" + relative)
     for skill in SKILLS:
         if not (home / "skills" / skill / "SKILL.md").is_file():
             problems.append("缺少技能：" + skill)

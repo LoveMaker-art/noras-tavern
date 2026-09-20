@@ -6,11 +6,14 @@ const path = require('node:path');
 const net = require('node:net');
 const { spawnSync } = require('node:child_process');
 const { installBundledHermes, validateRuntimeLinks } = require('../installer/desktop/runtime');
-const systemUpdate = require('../installer/desktop/system-update');
+const releases = require('../installer/desktop/releases');
+const { createLocalRelease } = require('../installer/desktop/local-release');
 
 async function main() {
   if (!process.argv[2]) throw new Error('Pass the candidate launcher payload directory');
   const payload = path.resolve(process.argv[2]);
+  const updateArgument = process.argv.indexOf('--update-release');
+  const historicalBaseline = updateArgument >= 0 && path.resolve(process.argv[updateArgument + 1]) !== payload;
   const runtimeOnly = process.argv.includes('--runtime-only');
   const release = runtimeOnly ? {} : JSON.parse(fs.readFileSync(path.join(payload, 'nora-system.json'), 'utf8'));
   const testBase = process.platform === 'win32'
@@ -42,8 +45,8 @@ async function main() {
     PATH: [path.join(home, 'clawchat/liveware'), path.join(home, '.local/bin'), path.join(home, 'node/bin'), path.join(home, 'node'),
       path.join(home, 'hermes-agent/venv/bin'), process.env.PATH || ''].join(path.delimiter),
   };
-  const run = (args, timeout = 180000) => {
-    const result = spawnSync(python, ['-B', ...args], { env, encoding: 'utf8', timeout });
+  const run = (args, timeout = 180000, extraEnv = {}) => {
+    const result = spawnSync(python, ['-B', ...args], { env: { ...env, ...extraEnv }, encoding: 'utf8', timeout });
     assert.equal(result.status, 0, result.error?.message || result.stderr || result.stdout);
     return result.stdout;
   };
@@ -118,9 +121,9 @@ async function main() {
     ]) {
       const expected = fs.readFileSync(path.join(tavern, 'apps/tavern-ops', template), 'utf8');
       assert.equal(fs.readFileSync(path.join(home, installed), 'utf8'), expected, `${installed} differs from the packaged template`);
-      assert.equal(expected, fs.readFileSync(path.resolve(__dirname, '..', template), 'utf8'), `${installed} differs from the build source`);
+      if (!historicalBaseline) assert.equal(expected, fs.readFileSync(path.resolve(__dirname, '..', template), 'utf8'), `${installed} differs from the build source`);
     }
-    console.log('PASS: installed SOUL.md and AGENTS.md exactly match package and source');
+    console.log('PASS: installed SOUL.md and AGENTS.md exactly match packaged templates');
     const status = JSON.parse(run([path.resolve(__dirname, '../installer/launcher_bridge.py'),
       '--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port), 'status']).trim());
     assert.equal(status.systemReady, true, JSON.stringify(status.systemProblems));
@@ -150,11 +153,22 @@ print('PASS: actual Hermes cron script execution, local release fixture, no mode
     console.log('PASS: real runtime, Nora identity / skills / Hook loader, ClawChat registration, cron execution, MCP instance read; setup still pending');
     const updateIndex = process.argv.indexOf('--update-release');
     if (updateIndex >= 0) {
-      const selected = path.join(root, 'update-payload');
-      fs.cpSync(path.resolve(process.argv[updateIndex + 1]), selected, { recursive: true });
-      const dependencies = JSON.parse(fs.readFileSync(path.join(payload, 'nora-tavern-dependencies.json')));
-      for (const name of ['nora-tavern-dependencies.json', dependencies.archive]) {
-        fs.copyFileSync(path.join(payload, name), path.join(selected, name));
+      const bridge = path.resolve(__dirname, '../installer/launcher_bridge.py');
+      const bridgeArgs = ['--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port)];
+      const updateDirectory = path.resolve(process.argv[updateIndex + 1]);
+      const candidate = JSON.parse(fs.readFileSync(path.join(updateDirectory, 'release-manifest.json'))).candidate;
+      // CI candidates are not discoverable releases; only this isolated harness permits them.
+      const selected = candidate ? path.join(root, 'candidate-update') : await releases.prepareUpdate({ cacheRoot: path.join(root, 'update-payload'), launcherVersion: '1.1.0',
+        fetcher: createLocalRelease(path.resolve(process.argv[updateIndex + 1])),
+        plan: async releaseDir => run([bridge, ...bridgeArgs, 'plan-update', '--release-dir', releaseDir])
+          .trim().split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line))
+          .find(event => event.event === 'result'),
+        onEvent: event => console.log(event.task),
+      });
+      if (candidate) fs.cpSync(updateDirectory, selected, { recursive: true });
+      else {
+        assert.equal(fs.existsSync(path.join(selected, 'nora-hermes-runtime.json')), false);
+        assert.equal(fs.existsSync(path.join(selected, 'nora-tavern-dependencies.json')), false);
       }
       const target = JSON.parse(fs.readFileSync(path.join(selected, 'release-manifest.json')));
       assert.ok(target.versions.tavern, 'Rehearsal requires an explicit local release');
@@ -167,26 +181,39 @@ print('PASS: actual Hermes cron script execution, local release fixture, no mode
         ...fs.readdirSync(path.join(userRoot, 'nora-world-core/worlds'))
           .map(file => path.join(userRoot, 'nora-world-core/worlds', file))];
       const before = protectedPaths.map(file => fs.readFileSync(file));
-      const stop = async () => run([path.join(tavern, 'apps/tavern-runtime/native_lifecycle.py'), 'stop']);
-      await systemUpdate.perform({ home: root, target: target.versions.tavern, stop,
-        apply: async () => {
-          console.log(run([path.join(selected, 'tavern-updater-bootstrap.py'), '--hermes-home', home,
-            '--install-root', tavern, '--managed-home', root, '--release-dir', selected,
-            '--allow-candidate', '--apply', '--confirm'], 240000).slice(-3500));
-        },
-        verify: async () => {
+      const pythonIdentity = fs.statSync(python).ino;
+      const beforeState = JSON.parse(run([bridge, ...bridgeArgs, 'status']).trim());
+      assert.equal(beforeState.running, true, 'Rehearsal must exercise restoration of a running Tavern');
+      const lifecycle = { bridge, noraHome: root, hermesHome: home, installRoot: tavern, port,
+        before: Object.fromEntries(['version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected']
+          .map(key => [key, beforeState[key]])) };
+      const updateCommand = candidate
+        ? [path.join(selected, 'tavern-updater-bootstrap.py'), '--hermes-home', home, '--install-root', tavern,
+          '--managed-home', root, '--release-dir', selected, '--allow-candidate', '--apply', '--confirm']
+        : [bridge, ...bridgeArgs, 'update', '--release-dir', selected];
+      const updateOutput = run(updateCommand, 240000, candidate
+        ? { NORA_UPDATE_LIFECYCLE: JSON.stringify(lifecycle) } : {});
+      const updateResult = updateOutput.split(/\r?\n/).filter(line => line.startsWith('{'))
+        .map(line => { try { return JSON.parse(line); } catch { return {}; } })
+        .findLast(item => item.event === 'result');
+      assert.equal(updateResult?.updateVerified, true);
+      assert.equal(updateResult.updateRecovery, null, 'Committed update must not report pending recovery');
+      assert.equal(fs.statSync(python).ino, pythonIdentity, 'Update must retain the installed Python runtime');
+      {
           const result = JSON.parse(run([path.resolve(__dirname, '../installer/launcher_bridge.py'),
             '--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port), 'status']).trim());
           assert.equal(result.systemReady, true, JSON.stringify(result.systemProblems));
           assert.equal(result.version, target.versions.tavern);
+          for (const key of ['running', 'gatewayRunning']) assert.equal(result[key], beforeState[key], key);
+          if (beforeState.clawchatConnected) assert.equal(result.clawchatConnected, true);
           protectedPaths.forEach((file, index) => assert.deepEqual(fs.readFileSync(file), before[index], file));
           const installed = JSON.parse(fs.readFileSync(path.join(tavern, 'tavern-updates/installed.json')));
           assert.equal(installed.sourceDigest, target.sourceDigest);
           assert.equal(installed.worldVerification.status, 'verified');
+          assert.equal(fs.readFileSync(path.join(home, 'AGENTS.md'), 'utf8'),
+            fs.readFileSync(path.resolve(__dirname, '../skills/agents-tavern.md'), 'utf8'));
           assert.equal((await fetch(`http://127.0.0.1:${port}/`)).status, 200);
-          return result;
-        },
-      });
+      }
       console.log('PASS: installed payload -> shared updater; actual Hermes/MCP verification, custom port, world/chat bytes and user configuration retained');
     }
   } finally {

@@ -4,6 +4,7 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
+import sys
 import tarfile
 import urllib.request
 
@@ -95,7 +96,7 @@ def file_matches(path, expected, expected_mode=None):
         if path is None or not path.is_file() or path.is_symlink():
             return False
         return (digest(path.read_bytes()) == expected
-                and (expected_mode is None or path.stat().st_mode & 0o777 == expected_mode))
+                and (sys.platform == "win32" or expected_mode is None or path.stat().st_mode & 0o777 == expected_mode))
     except OSError:
         return False
 

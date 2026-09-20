@@ -153,7 +153,23 @@
     lastFailure = null;
     if (snapshot.busy) {
       view = 'monitor'; clearInline(); setupStage(stage);
-      say('后台任务仍在进行。', snapshot.installer?.task || '请稍候，完成后会自动继续。');
+      say(snapshot.installer?.phase === 'update' ? '正在完成更新。' : '后台任务仍在进行。', snapshot.installer?.task || '请稍候，完成后会自动继续。');
+      return;
+    }
+    if (snapshot.updateRecovery) {
+      view = 'recovery'; daily = false; clearInline();
+      $('main').classList.remove('welcome', 'daily', 'editing');
+      $('steps').hidden = true;
+      say('上次更新尚未恢复完成。', '请保留日志和备份，暂勿重装或再次更新。');
+      const note = document.createElement('p'); note.className = 'install-location';
+      note.textContent = snapshot.updateRecovery.backup || '';
+      $('inline').append(note);
+      if (api.openLogs) $('inline').append(button('查看日志', () => api.openLogs()));
+      controls(); $('launchbar').hidden = true; $('status').hidden = false; $('status').textContent = '需要恢复';
+      return;
+    }
+    if (snapshot.installer?.resumeTarget && snapshot.installer.phase === 'error') {
+      fail(snapshot.installer.error, 'update', () => run('update', { tag: snapshot.installer.resumeTarget }));
       return;
     }
     if (!autoStartAttempted && snapshot.installed && snapshot.hermesInstalled && snapshot.systemReady === true) {
@@ -161,6 +177,20 @@
       if (!snapshot.running) { run('start', { service: 'tavern', resumeSetup: true }); return; }
     }
     if (complete()) { dailyHome(); return; }
+    if (snapshot.installed && snapshot.systemReady === false) {
+      view = 'recovery'; daily = false;
+      $('status').textContent = '需要修复';
+      $('main').classList.remove('welcome', 'daily', 'editing');
+      $('steps').hidden = true; $('management').hidden = true; clearInline();
+      say('当前安装需要修复。', (snapshot.systemProblems || []).slice(0, 2).join('；'));
+      const repair = button('修复当前安装', () => run('update', { tag: `v${snapshot.version.replace(/^v/, '')}` }));
+      repair.disabled = !snapshot.version;
+      $('inline').append(repair);
+      const note = document.createElement('p'); note.className = 'install-location';
+      note.textContent = '修复受管文件，保留世界、对话和配置。' + (!snapshot.version ? '无法确认版本，请先导出日志。' : '');
+      $('inline').append(note);
+      controls(); return;
+    }
     if (!snapshot.hermesInstalled || !snapshot.installed || snapshot.systemReady === false) {
       view = 'welcome'; daily = false; $('main').classList.add('welcome'); $('main').classList.remove('daily', 'editing');
       $('steps').hidden = true; $('management').hidden = true; clearInline();
@@ -259,6 +289,7 @@
     controls();
     try {
       const result = await api[action]({ port: snapshot.port || 8799, ...options, onEvent });
+      if (result.restarting) { currentTask = '正在重启，随后继续更新'; updateTask(); return; }
       syncState(result); await readStatus();
       const selectedRunning = activeService === 'nora' ? snapshot.gatewayRunning && snapshot.clawchatConnected : activeService === 'tavern' ? snapshot.running : allRunning();
       if (['start', 'restart'].includes(action) && !selectedRunning) throw new Error('所选服务尚未就绪，请重试。');
@@ -437,7 +468,7 @@
     $('inline').append(notice);
   }
   async function checkVersionsInBackground() {
-    if (autoVersionChecked || versionChecking || busy || snapshot.busy) return;
+    if (!complete() || autoVersionChecked || versionChecking || busy || snapshot.busy) return;
     autoVersionChecked = true; versionChecking = true;
     try { versionInfo = await api.checkUpdate(); }
     catch (error) { versionInfo = { state: 'unavailable', error: textError(error) }; }

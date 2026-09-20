@@ -187,6 +187,12 @@ def stop_unmanaged(app):
 
 
 def run(command, *, cwd=None, env=None, timeout=None, capture=False):
+    if command and command[0] == "npm" and os.name == "nt":
+        node = shutil.which("node", path=(env or os.environ).get("PATH"))
+        npm = Path(node).parent / "node_modules/npm/bin/npm-cli.js" if node else None
+        if npm is None or not npm.is_file():
+            raise RuntimeError("未找到当前实例的 Node/npm，无法准备更新依赖；当前安装尚未替换")
+        command = [node, str(npm), *command[1:]]
     return subprocess.run(
         [str(value) for value in command],
         cwd=cwd,
@@ -783,6 +789,41 @@ def install_update_check(home, ops_root):
     }
 
 
+def managed_lifecycle(phase, home, root, version):
+    """Run the desktop's existing service controller inside the update transaction."""
+    raw = os.environ.get("NORA_UPDATE_LIFECYCLE")
+    if not raw:
+        raise RuntimeError("缺少启动器事务检查上下文，未确认服务恢复能力")
+    plan = json.loads(raw)
+    if (Path(plan["hermesHome"]).resolve() != home.resolve()
+            or Path(plan["installRoot"]).resolve() != root.resolve()):
+        raise RuntimeError("更新事务实例不匹配")
+    command = [sys.executable, "-B", plan["bridge"], "--nora-home", plan["noraHome"],
+               "--hermes-home", str(home), "--install-root", str(root),
+               "--port", str(plan["port"]), "update-lifecycle"]
+    result = subprocess.run(command, input=json.dumps({**plan, "phase": phase, "version": version}),
+                            text=True, capture_output=True, timeout=300)
+    messages = []
+    for line in result.stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            messages.append(item)
+    # Forward diagnostics, but only the transaction itself can report success.
+    for item in messages:
+        if item.get("event") != "result":
+            print(json.dumps(item, ensure_ascii=False), flush=True)
+    if result.returncode:
+        detail = next((m.get("message") for m in reversed(messages) if m.get("event") == "error"), None)
+        raise RuntimeError(f"服务事务检查失败（{phase}）：{detail or result.stderr[-2000:] or result.returncode}")
+    state = next((m for m in reversed(messages) if m.get("event") == "result"), None)
+    if state is None:
+        raise RuntimeError("服务事务检查未返回结果：" + phase)
+    return {key: value for key, value in state.items() if key != "event"}
+
+
 def install(args):
     managed_home = getattr(args, "managed_home", None)
     def resolve():
@@ -802,6 +843,11 @@ def install(args):
         resolve()
         update_root = install_root / "tavern-updates"
         update_root.mkdir(parents=True, exist_ok=True)
+        transaction_file = update_root / "transaction.json"
+        if transaction_file.exists():
+            previous = json.loads(transaction_file.read_text(encoding="utf-8"))
+            if previous.get("status") not in ("committed", "restored"):
+                raise RuntimeError("上次更新事务未完成，禁止覆盖恢复现场；请保留备份：" + str(previous.get("backup", "")))
         with tempfile.TemporaryDirectory(prefix="direct-", dir=filesystem_path(update_root)) as temporary:
             work = Path(temporary)
             source = work / "source"
@@ -826,8 +872,8 @@ def install(args):
                 managed = module_at("update_nora_system", source / "ops/installer/nora_system.py")
                 helpers = module_at("update_install_helpers", source / "ops/installer/first_install.py")
                 bundled = bool(helpers.extract_dependency_bundle(args.release_dir, source))
-                if not bundled:
-                    raise RuntimeError("启动器更新缺少已校验的依赖包，未修改当前安装")
+                # Component updates reuse the same dependency lock comparison as
+                # standalone updates; a full platform bundle is optional.
             dependencies = prepare_dependencies(
                 source,
                 old_app,
@@ -898,6 +944,8 @@ def install(args):
                 return
             stamp = time.strftime("%Y%m%d-%H%M%S")
             resolve()
+            if managed:
+                managed_lifecycle("preflight", hermes_home, install_root, version)
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             Path(filesystem_path(backup)).mkdir(parents=True)
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
@@ -915,10 +963,15 @@ def install(args):
             state_snapshot = False
             runtime_stopped = False
             story_inventory, story_worlds = {}, {}
+            transaction = {"schema": 1, "status": "prepared", "version": version, "backup": str(backup)}
+            json_write(transaction_file, transaction)
+            committed = False
             try:
                 if runtime_changed:
                     log("备份旧版本并停止 Tavern")
+                    runtime_stopped = True
                     if managed:
+                        managed_lifecycle("stop", hermes_home, install_root, version)
                         helpers.stop_install_runtime(install_root)
                     elif service:
                         service.stop()
@@ -1030,6 +1083,12 @@ def install(args):
                 }
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
+                verified_state = managed_lifecycle("verify", hermes_home, install_root, version) if managed else None
+                if managed and state_snapshot:
+                    verify_preserved_worlds(install_root / "apps/tavern-runtime",
+                                           install_root / "tavern-state", story_inventory, story_worlds)
+                json_write(transaction_file, {**transaction, "status": "committed"})
+                committed = True
                 try:
                     backup_retention = prune_backup_history(install_root, backup)
                     log(f"备份保留策略：保留最新 1 份，已清理 {len(backup_retention['removed'])} 份旧备份")
@@ -1063,6 +1122,8 @@ def install(args):
                              "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。"),
                 }
                 print(json.dumps(result, ensure_ascii=False, indent=2))
+                if verified_state is not None:
+                    print(json.dumps({**verified_state, "updateRecovery": None, "event": "result", "updateVerified": True}, ensure_ascii=False), flush=True)
                 log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required and not managed else ""))
                 try:
                     shutil.rmtree(agents_backup)
@@ -1070,12 +1131,15 @@ def install(args):
                     log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
                 return
             except BaseException as error:
+                if committed:
+                    raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
                 log("更新未完成，恢复旧版本")
                 if runtime_stopped:
                     try:
                         active_app = install_root / "apps/tavern-runtime"
                         active_service = service_module.ManagedService.discover(install_root, active_app)
                         if managed:
+                            managed_lifecycle("stop", hermes_home, install_root, version)
                             helpers.stop_install_runtime(install_root)
                         elif active_service:
                             active_service.stop()
@@ -1083,26 +1147,35 @@ def install(args):
                             stop_unmanaged(active_app)
                     except Exception as stop_error:
                         raise RuntimeError("更新失败且无法停止新进程，未覆盖运行中的数据。请保留备份：" + str(backup)) from stop_error
-                failed_root = backup / "failed-new"
-                for name, target, saved in reversed(applied):
-                    restore_tree(target, saved, failed_root / name)
-                if state_swapped or state_snapshot:
-                    active_state = install_root / "tavern-state"
-                    if active_state.exists():
-                        failed_root.mkdir(parents=True, exist_ok=True)
-                        os.replace(active_state, failed_root / "state")
-                    os.replace(backup / "state", active_state)
-                restore_host(hermes_home, install_root, backup)
-                if managed:
-                    helpers.restore_targets(hermes_home, managed_records, backup / "managed")
-                restore_agents(hermes_home, agents_backup)
-                shutil.rmtree(agents_backup)
+                try:
+                    failed_root = backup / "failed-new"
+                    for name, target, saved in reversed(applied):
+                        restore_tree(target, saved, failed_root / name)
+                    if state_swapped or state_snapshot:
+                        active_state = install_root / "tavern-state"
+                        if active_state.exists():
+                            failed_root.mkdir(parents=True, exist_ok=True)
+                            os.replace(active_state, failed_root / "state")
+                        os.replace(backup / "state", active_state)
+                    restore_host(hermes_home, install_root, backup)
+                    if managed:
+                        helpers.restore_targets(hermes_home, managed_records, backup / "managed")
+                    restore_agents(hermes_home, agents_backup)
+                except BaseException as restore_error:
+                    raise RuntimeError(f"更新失败：{error}; 文件恢复失败：{restore_error}; recovery=incomplete; backup={backup}") from restore_error
                 recovery = "restored"
+                if runtime_stopped and managed:
+                    try:
+                        managed_lifecycle("rollback", hermes_home, install_root, version)
+                    except Exception as recovery_error:
+                        recovery = "files-restored-start-failed: " + str(recovery_error)
                 if runtime_stopped and not managed:
                     try:
                         start_old(hermes_home, install_root, service, service_snapshot)
                     except Exception as recovery_error:
                         recovery = "files-restored-start-failed: " + str(recovery_error)
+                json_write(transaction_file, {**transaction, "status": "restored" if recovery == "restored" else "recovery-failed",
+                                              "recovery": recovery, "error": str(error)})
                 raise RuntimeError(f"{error}; recovery={recovery}; backup={backup}") from error
 
 

@@ -51,7 +51,13 @@ async function main() {
   const html = fs.readFileSync(path.join(resources, 'launcher-conversation-prototype.html'), 'utf8');
   assert.ok(html.includes('src="assets/nora-launcher-portrait.png"'), 'UI does not reference the packaged Nora portrait');
   const metadata = JSON.parse(asar.extractFile(path.join(resources, 'app.asar'), 'package.json'));
+  for (const name of ['skill-update.js', 'launcher-update.js', 'local-release.js', 'main.js', 'releases.js']) {
+    assert.deepEqual(asar.extractFile(path.join(resources, 'app.asar'), name),
+      fs.readFileSync(path.join(source, 'desktop', name)), `Packaged update code differs: ${name}`);
+  }
   const sourceMetadata = JSON.parse(fs.readFileSync(path.join(source, 'desktop/package.json')));
+  assert.deepEqual(fs.readFileSync(path.join(resources, 'replace-launcher.py')),
+    fs.readFileSync(path.join(source, 'desktop/replace-launcher.py')));
   assert.equal(metadata.version, sourceMetadata.version, 'Packaged launcher version differs from source');
   const diagnostics = {};
   for (const name of ['main.js', 'diagnostics.js', 'runtime.js', 'runtime-worker.js', 'release-network.js']) {
@@ -68,6 +74,7 @@ async function main() {
   const manifest = JSON.parse(fs.readFileSync(path.join(payload, 'release-manifest.json')));
   const instructions = {};
   for (const relative of ['ops/skills/agents-tavern.md', 'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
+    'ops/skills/system/tavern-updater/SKILL.md', 'ops/skills/system/tavern-updater/scripts/update.py',
     'ops/skills/system/model-provider-config/SKILL.md', 'ops/skills/system/model-provider-config/scripts/configure_provider.py']) {
     instructions[relative] = digest(fs.readFileSync(path.resolve(__dirname, '../..', relative)));
     assert.equal(manifest.artifacts[relative], instructions[relative], `Packaged instruction hash differs: ${relative}`);

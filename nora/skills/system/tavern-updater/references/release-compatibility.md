@@ -19,8 +19,8 @@ module. A complete target tree is assembled off-line from downloaded modules
 and matching local files, so files removed by the release cannot survive the
 switch.
 
-Changed application, operations and MCP roots are replaced atomically. Four
-official skills and the Tavern block in `AGENTS.md` are updated only when their
+Changed application, operations and MCP roots are replaced atomically. Managed
+skills and the full managed `AGENTS.md` are updated only when their
 target content differs. Existing native `tavern-state` remains in place, so
 Worlds, chats, model configuration and Story Profile data are not migration
 inputs.
@@ -28,7 +28,8 @@ inputs.
 Tavern and MCP dependencies are reused when their lock-file hashes match the
 installed trees. `npm ci` runs only for a changed root whose dependency lock no
 longer matches. Tavern stays running for operations-, MCP- and skill-only
-updates.
+updates on standalone installations. Launcher-managed updates restore the prior
+Nora/Tavern service selection after validation.
 
 The updater owns the `mcp_servers.nora` runtime paths and permission mode. It
 sets the official Nora MCP to `operator`; write tools still enforce their own
@@ -40,6 +41,13 @@ Compatible records become Node Worlds. Unsupported records are left in the
 timestamped backup and reported; they do not prevent the program update.
 
 The updater uses one direct installation flow. The only retained
-installation backup is `HERMES_HOME/tavern-backups/<timestamp>-<version>-<id>`.
+installation backup is `<verified-install-root>/tavern-backups/<timestamp>-<version>-<id>`.
 It is used immediately if the new local Tavern fails to start and is kept for
 manual recovery after success.
+
+The skill and desktop UI share one updater, not two installation implementations.
+The launcher exposes a local task handoff under
+`<noraHome>/installer/skill-update`; no network listener is opened. Only the last
+task is retained. A request is bound to the current launcher session and expires
+after 60 seconds. Interrupted tasks are never replayed automatically. Logs remain
+in the launcher's normal diagnostics. Managed updates require a running launcher.

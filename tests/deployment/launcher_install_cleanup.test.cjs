@@ -45,7 +45,8 @@ test('cleanup is packaged and runs after payload validation but before starting 
   const desktop = path.resolve(__dirname, '../installer/desktop');
   assert.ok(require(path.join(desktop, 'package.json')).build.files.includes('install-cleanup.js'));
   const main = fs.readFileSync(path.join(desktop, 'main.js'), 'utf8');
-  const run = main.slice(main.indexOf("handle('nora:run'"));
+  const run = main.slice(main.indexOf('const runAction = async'));
+  assert.ok(run.indexOf('prepareTestPayload(') >= 0);
   assert.ok(run.indexOf('prepareTestPayload(') < run.indexOf('cleanupInstallTemps(noraHome())'));
   assert.ok(run.indexOf('cleanupInstallTemps(noraHome())') < run.indexOf('await ensureHermesFromNode('));
   assert.ok(main.includes('app.requestSingleInstanceLock()'));

@@ -152,24 +152,31 @@ class SharedLogicTests(unittest.TestCase):
         bootstrap = payload / "tavern-updater-bootstrap.py"
         bootstrap.write_bytes(b"# pinned target updater\n")
         (payload / "release-manifest.json").write_text(json.dumps({
-            "bootstrap": {"sha256": hashlib.sha256(bootstrap.read_bytes()).hexdigest()}}))
+            "bootstrap": {"sha256": hashlib.sha256(bootstrap.read_bytes()).hexdigest(), "managedLifecycle": 1}}))
         record = self.tavern / "tavern-updates/nora-system.json"
         record.parent.mkdir(parents=True)
         record.write_text('{"schema":1}')
         (self.home / "nora-instance.json").write_text('{"port":18899}')
         args = SimpleNamespace(nora_home=self.root, hermes_home=self.home, install_root=self.tavern,
                                port=18899, release_dir=str(payload), tag=None)
+        before = {'version': '2.3.7', 'systemReady': False, 'running': True, 'gatewayRunning': False,
+                  'clawchatConnected': False,
+                  'systemProblems': ['技能文件缺失：skills/creative/tavern/SKILL.md']}
         with patch.object(bridge, "installed", return_value=True), \
              patch.object(bridge, "python_command", return_value=sys.executable), \
              patch.object(bridge, "gateway_status", return_value={"running": False}), \
-             patch.object(bridge, "status_payload", return_value={}), \
-             patch.object(bridge, "emit"), patch.object(bridge, "run_stream") as run:
+             patch.object(bridge, "status_payload", return_value=before), \
+             patch.object(bridge, "emit"), patch.object(bridge, "run_stream", return_value={'updateVerified': True}) as run:
             bridge.command_update(args)
         command = run.call_args.args[0]
         self.assertEqual(command[3], str(bootstrap))
         self.assertEqual(command[command.index("--managed-home") + 1], str(self.root))
         self.assertEqual(command[command.index("--release-dir") + 1], str(payload))
         self.assertNotIn("--force-first-install", command)
+        plan = json.loads(run.call_args.kwargs['env']['NORA_UPDATE_LIFECYCLE'])
+        self.assertEqual(plan['port'], 18899)
+        self.assertEqual(plan['installRoot'], str(self.tavern))
+        self.assertEqual(plan['before'], before)
         bootstrap.write_bytes(b"changed")
         with patch.object(bridge, "installed", return_value=True), patch.object(bridge, "run_stream") as run:
             with self.assertRaises(SystemExit):

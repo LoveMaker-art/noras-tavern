@@ -6,7 +6,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { assemblePlatform, assertReusable, PLATFORMS } from '../tooling/release/package-component-update.mjs';
+import { assemblePlatform, assertReusable, launcherProvenance, PLATFORMS } from '../tooling/release/package-component-update.mjs';
 import { fileDigest } from '../tooling/release/system-release.mjs';
 import { NORA_SYSTEM_REQUIRED_FILES } from '../tooling/release/release-source.mjs';
 
@@ -24,7 +24,8 @@ function fixture(t, platform = 'darwin-arm64') {
     fs.mkdirSync(release); fs.mkdirSync(baselineRoot);
     const [systemPlatform, arch] = platform.split('-');
     const baseline = { schema: 'tavern-release/v2', candidate: false, commit: 'a'.repeat(40),
-        versions: { tavern: '2.3.0' }, sourceFiles: Object.fromEntries(sourceNames.map(name => [name, 'a'.repeat(64)])) };
+        versions: { tavern: '2.3.0' }, launcherVersion: '0.3.3', bootstrap: { minimumLauncherVersion: '0.3.3' },
+        sourceFiles: Object.fromEntries(sourceNames.map(name => [name, 'a'.repeat(64)])) };
     const current = { ...baseline, commit: 'b'.repeat(40), versions: { tavern: '2.3.1' },
         sourceFiles: { ...baseline.sourceFiles, 'deployment/update/update.py': 'c'.repeat(64), 'nora/greeting.md': 'd'.repeat(64) },
         artifacts: Object.fromEntries(NORA_SYSTEM_REQUIRED_FILES.map(name => [name, 'e'.repeat(64)])) };
@@ -73,7 +74,8 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
     const assetsRoot = path.join(f.output, 'system-assets');
     const system = JSON.parse(fs.readFileSync(path.join(assetsRoot, `nora-system-${platform}.json`)));
     assert.equal(system.version, '2.3.1'); assert.equal(system.commit, f.current.commit);
-    assert.equal(system.minimumLauncherVersion, '0.3.2'); assert.equal(system.launcherVersion, '0.3.3');
+    assert.equal(system.minimumLauncherVersion, '0.3.3'); assert.equal(system.launcherVersion, '0.3.3');
+    assert.notEqual(system.minimumLauncherVersion, f.system.minimumLauncherVersion);
     assert.equal(system.files['hermes.tar.gz'].sha256, f.system.files['hermes.tar.gz'].sha256);
     assert.equal(system.files['deps.tar.gz'].sha256, f.system.files['deps.tar.gz'].sha256);
     assert.ok(!fs.readdirSync(assetsRoot).some(name => /\.(?:dmg|exe|zip)$/.test(name)));
@@ -81,6 +83,7 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
     fs.cpSync(path.dirname(desktopRequire.resolve('semver/package.json')), path.join(f.temporary, 'node_modules/semver'), { recursive: true });
     fs.copyFileSync(path.join(root, 'deployment/update/releases.js'), path.join(f.temporary, 'releases.cjs'));
     const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.cjs'));
+    assert.throws(() => client.validateSystem(system, { tag_name: 'v2.3.1' }, system.platform, system.arch, '0.3.2'), /升级启动器/);
     const tag = 'v2.3.1', base = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/`;
     const release = { tag_name: tag, draft: false, prerelease: false, assets: fs.readdirSync(assetsRoot)
         .map(name => ({ name, browser_download_url: base+name })) };
@@ -114,11 +117,42 @@ test('component verifier requires complete system assets without requiring new i
         const item = fixture(t, platform); reused.push(assemblePlatform({ ...item, output: f.output }));
     }
     fs.cpSync(f.release, path.join(f.output, 'shared'), { recursive: true });
+    for (const platform of PLATFORMS) {
+        const [system, arch] = platform.split('-');
+        const asset = `Nora-Tavern-Launcher-0.3.3-${platform}-update.zip`;
+        f.write(f.output, asset, 'launcher');
+        const launcher = { schema: 'nora-launcher/v1', candidate: false, commit: f.baseline.commit,
+            platform: system, arch, version: '0.3.3', asset, size: 8, sha256: fileDigest(path.join(f.output, asset)) };
+        f.write(f.output, `nora-launcher-${platform}.json`, launcher);
+        reused.find(item => item.platform === platform).launcher = launcherProvenance(f.current, f.baseline, launcher, platform);
+    }
     f.write(f.output, 'component-release.json', { schema: 'nora-component-release/v1', version: '2.3.1', commit: f.current.commit,
         baselineTag: 'v2.3.0', installerTag: 'v2.3.0', reused });
     const args = ['tooling/release/verify-launcher-release.cjs', f.output, 'v2.3.1', f.current.commit];
     assert.doesNotThrow(() => execFileSync(process.execPath, [...args, 'components'], { cwd: root, stdio: 'pipe' }));
     assert.throws(() => execFileSync(process.execPath, [...args, 'full'], { cwd: root, stdio: 'pipe' }));
+    const launcherFile = path.join(f.output, 'nora-launcher-win32-x64.json');
+    const launcher = JSON.parse(fs.readFileSync(launcherFile));
+    f.write(f.output, path.basename(launcherFile), { ...launcher, commit: 'c'.repeat(40) });
+    assert.throws(() => execFileSync(process.execPath, [...args, 'components'], { cwd: root, stdio: 'pipe' }));
+    f.write(f.output, path.basename(launcherFile), launcher);
     fs.unlinkSync(path.join(f.output, 'system-assets/nora-system-win32-x64.json'));
     assert.throws(() => execFileSync(process.execPath, [...args, 'components'], { cwd: root, stdio: 'pipe' }));
+});
+
+test('launcher reuse follows full and chained component baseline provenance', t => {
+    const f = fixture(t);
+    const platform = 'darwin-arm64';
+    const launcher = { schema: 'nora-launcher/v1', candidate: false, commit: f.baseline.commit,
+        version: f.current.launcherVersion, platform: 'darwin', arch: 'arm64', asset: 'launcher-update.zip', size: 8, sha256: 'd'.repeat(64) };
+    const provenance = launcherProvenance(f.current, f.baseline, launcher, platform);
+    const baseline = { ...f.baseline, commit: 'e'.repeat(40) };
+    const previous = { commit: baseline.commit, version: baseline.versions.tavern, reused: [{ platform, launcher: provenance }] };
+    assert.deepEqual(launcherProvenance(f.current, baseline, launcher, platform, previous), provenance);
+    assert.throws(() => launcherProvenance(f.current, baseline, launcher, platform), /baseline commit/);
+    for (const change of [{ commit: 'f'.repeat(40) }, { sha256: 'f'.repeat(64) }, { size: 9 }, { version: '0.3.4' }, { arch: 'x64' }]) {
+        assert.throws(() => launcherProvenance(f.current, baseline, { ...launcher, ...change }, platform, previous));
+    }
+    assert.throws(() => launcherProvenance({ ...f.current, sourceFiles: { ...f.current.sourceFiles,
+        'launcher/desktop/main.js': 'changed' } }, baseline, launcher, platform, previous), /Full launcher/);
 });

@@ -12,7 +12,8 @@ function fixture(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const commit = 'a'.repeat(40);
   const write = (name, value) => fs.writeFileSync(path.join(root, name), JSON.stringify(value));
-  const release = { version: '2.2.11', versions: { tavern: '2.2.11' }, commit, candidate: false, archives: {}, modules: {} };
+  const release = { version: '2.2.11', versions: { tavern: '2.2.11' }, launcherVersion: '0.3.2',
+    bootstrap: { minimumLauncherVersion: '0.3.2' }, commit, candidate: false, archives: {}, modules: {} };
   for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     const [system, arch] = platform.split('-');
     const files = {};
@@ -31,12 +32,17 @@ function fixture(t) {
     }
     write(`nora-system-${platform}.json`, {
       version: '2.2.11', commit, candidate: false, channel: 'stable', platform: system, arch,
+      launcherVersion: release.launcherVersion, minimumLauncherVersion: release.bootstrap.minimumLauncherVersion,
       files,
     });
     write(`Nora-Tavern-package-verification-${platform}.json`, {
       version: '2.2.11', commit, nativeIcon: true, instructions: { 'ops/installer/templates/greeting.md': 'verified' },
     });
     write(`Nora-Tavern-Launcher-0.3.2-${system === 'darwin' ? 'mac' : 'win'}-${arch}${system === 'darwin' ? '.dmg' : '-setup.exe'}`, {});
+    const asset = `Nora-Tavern-Launcher-0.3.2-${platform}-update.zip`;
+    write(asset, {});
+    write(`nora-launcher-${platform}.json`, { schema: 'nora-launcher/v1', candidate: false, version: '0.3.2',
+      commit, platform: system, arch, asset, size: 2, sha256: crypto.createHash('sha256').update('{}').digest('hex') });
   }
   write('release-manifest.json', release);
   return { root, run: () => spawnSync(process.execPath, [script, root, 'v2.2.11', commit], { encoding: 'utf8' }) };
@@ -52,6 +58,11 @@ test('missing Windows installer prevents publication', t => {
   fs.unlinkSync(path.join(root, 'Nora-Tavern-Launcher-0.3.2-win-x64-setup.exe'));
   assert.notEqual(run().status, 0);
 });
+test('missing lightweight launcher prevents publication', t => {
+  const { root, run } = fixture(t);
+  fs.unlinkSync(path.join(root, 'Nora-Tavern-Launcher-0.3.2-win32-x64-update.zip'));
+  assert.notEqual(run().status, 0);
+});
 test('corrupted component prevents publication', t => {
   const { root, run } = fixture(t);
   fs.writeFileSync(path.join(root, 'darwin-arm64-payload.json'), 'corrupt');
@@ -63,6 +74,18 @@ test('mixed commits prevent publication', t => {
   const value = JSON.parse(fs.readFileSync(file));
   value.commit = 'b'.repeat(40);
   fs.writeFileSync(file, JSON.stringify(value));
+  assert.notEqual(run().status, 0);
+});
+for (const commit of [undefined, 'b'.repeat(40)]) test(`launcher provenance ${commit || 'missing'} prevents publication`, t => {
+  const { root, run } = fixture(t);
+  const file = path.join(root, 'nora-launcher-win32-x64.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file)), commit }));
+  assert.notEqual(run().status, 0);
+});
+test('legacy platform minimum must match the shared update contract', t => {
+  const { root, run } = fixture(t);
+  const file = path.join(root, 'nora-system-win32-x64.json');
+  fs.writeFileSync(file, JSON.stringify({ ...JSON.parse(fs.readFileSync(file)), minimumLauncherVersion: '0.3.1' }));
   assert.notEqual(run().status, 0);
 });
 test('missing platform payload manifest prevents publication', t => {

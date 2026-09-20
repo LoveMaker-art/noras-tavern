@@ -13,7 +13,8 @@ function fixture(t) {
   const sha = value => crypto.createHash('sha256').update(value).digest('hex');
   const commit = 'a'.repeat(40);
   const data = {
-    'release-manifest.json': JSON.stringify({ commit, versions: { tavern: '2.2.8' } }),
+    'release-manifest.json': JSON.stringify({ schema: 'tavern-release/v2', commit, versions: { tavern: '2.2.8' },
+      bootstrap: { sha256: sha('updater'), managedComponents: 1, minimumLauncherVersion: '0.1.0' } }),
     'SHA256SUMS': 'checksums', 'nora-tavern-app.tar.gz': 'app', 'nora-tavern-ops.tar.gz': 'ops',
     'nora-tavern-nora-mcp.tar.gz': 'mcp', 'nora-tavern-first-install-bootstrap.py': 'bootstrap', 'first-install-manifest.json': '{}',
     'hermes.tar.gz': 'hermes', 'dependencies.tar.gz': 'deps',
@@ -26,7 +27,7 @@ function fixture(t) {
     fs.writeFileSync(path.join(bundledRoot, name), bytes);
     system.files[name] = { asset: `darwin-arm64-${name}`, sha256: sha(bytes), size: Buffer.byteLength(bytes) };
   }
-  const names = ['nora-system-darwin-arm64.json', ...Object.values(system.files).map(i => i.asset)];
+  const names = ['release-manifest.json', 'nora-system-darwin-arm64.json', ...Object.values(system.files).map(i => i.asset)];
   const release = { tag_name: 'v2.2.8', assets: names.map(name => ({ name, browser_download_url: `https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.2.8/${name}` })) };
   const requested = [];
   const fetcher = async url => {
@@ -44,6 +45,42 @@ test('latest is resolved once, matching packaged bytes are reused, not downloade
   assert.equal(f.requested.length, 2);
   assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'nora-system.json'))).version, '2.2.8');
 });
+test('first install validates bundled release without requesting GitHub or creating download cache', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.bundledRoot, 'nora-system.json'), JSON.stringify(f.system));
+  const root = await releases.prepareBundled({ ...f.options, fetcher: () => { throw new Error('offline'); } });
+  assert.equal(root, f.bundledRoot);
+  assert.deepEqual(f.requested, []);
+  assert.equal(fs.existsSync(f.options.cacheRoot), false);
+});
+test('bundled install fails closed on missing or corrupt files without network fallback', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.bundledRoot, 'nora-system.json'), JSON.stringify(f.system));
+  const file = path.join(f.bundledRoot, 'nora-tavern-app.tar.gz');
+  fs.writeFileSync(file, 'bad');
+  await assert.rejects(releases.prepareBundled(f.options), /组件校验失败/);
+  fs.unlinkSync(file);
+  await assert.rejects(releases.prepareBundled(f.options), /缺少组件/);
+  assert.deepEqual(f.requested, []);
+});
+test('bundled install rejects wrong platform, candidate and incompatible launcher', async t => {
+  const f = fixture(t);
+  const file = path.join(f.bundledRoot, 'nora-system.json');
+  for (const changes of [{ platform: 'win32' }, { candidate: true }, { minimumLauncherVersion: '99.0.0' }]) {
+    fs.writeFileSync(file, JSON.stringify({ ...f.system, ...changes }));
+    await assert.rejects(releases.prepareBundled(f.options));
+  }
+  assert.deepEqual(f.requested, []);
+});
+test('bundled install honors cancellation and rejects inconsistent inner manifests', async t => {
+  const f = fixture(t);
+  const file = path.join(f.bundledRoot, 'nora-system.json');
+  fs.writeFileSync(file, JSON.stringify(f.system));
+  await assert.rejects(releases.prepareBundled({ ...f.options, signal: AbortSignal.abort() }), { name: 'AbortError' });
+  f.system.commit = 'b'.repeat(40);
+  fs.writeFileSync(file, JSON.stringify(f.system));
+  await assert.rejects(releases.prepareBundled(f.options), /内部版本/);
+});
 test('older packaged component is replaced from the pinned release, never latest/download', async t => {
   const f = fixture(t); fs.writeFileSync(path.join(f.bundledRoot, 'nora-tavern-app.tar.gz'), 'old');
   const target = await releases.prepare(f.options);
@@ -55,7 +92,7 @@ test('missing platform package stops before creating install cache', async t => 
   await assert.rejects(releases.prepare(f.options), /缺少完整组件/);
   assert.equal(fs.existsSync(f.options.cacheRoot), false);
 });
-test('a newer release without a complete platform package is blocked, not an available update', async t => {
+test('a newer release without an updater manifest is blocked', async t => {
   const f = fixture(t);
   fs.mkdirSync(path.join(f.root, 'tavern-updates'));
   fs.writeFileSync(path.join(f.root, 'tavern-updates/installed.json'), JSON.stringify({ version: '2.2.4' }));
@@ -66,13 +103,15 @@ test('a newer release without a complete platform package is blocked, not an ava
   assert.equal(result.releaseAvailable, true);
   assert.equal(result.installable, false);
   assert.equal(result.latest, 'v2.2.8');
-  assert.match(result.compatibilityError, /nora-system-darwin-arm64.json/);
+  assert.match(result.compatibilityError, /release-manifest.json/);
 });
-test('matching version without a valid system manifest is not reported as a current complete system', async t => {
+test('an incompatible component updater is blocked', async t => {
   const f = fixture(t);
   fs.mkdirSync(path.join(f.root, 'tavern-updates'));
   fs.writeFileSync(path.join(f.root, 'tavern-updates/installed.json'), JSON.stringify({ version: '2.2.8' }));
-  f.system.minimumLauncherVersion = '99.0.0';
+  const manifest = JSON.parse(f.data['release-manifest.json']);
+  manifest.bootstrap.minimumLauncherVersion = '99.0.0';
+  f.data['release-manifest.json'] = JSON.stringify(manifest);
   const result = await releases.check(f.options);
   assert.equal(result.state, 'blocked');
   assert.equal(result.available, false);

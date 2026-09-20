@@ -171,6 +171,47 @@ class IncrementalUpdateTests(unittest.TestCase):
             self.assertEqual(mode, "incremental")
             self.assertEqual(names, ["nora-tavern-module-updater.tar.gz"])
 
+    def test_desktop_plan_uses_same_selector_without_downloading_or_applying(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifest = {"versions": {"tavern": "2.3.7"}}
+            sums = {"module.tar.gz": "a" * 64}
+            output = io.StringIO()
+            with mock.patch.object(sys, "argv", ["bootstrap.py", "--managed-home", str(root),
+                    "--release-dir", str(root), "--plan", "--apply", "--confirm"]), \
+                    mock.patch.object(BOOTSTRAP, "resolve_update_target", return_value=(root, root)), \
+                    mock.patch.object(BOOTSTRAP, "verify_metadata", return_value=(manifest, "sha", sums)), \
+                    mock.patch.object(BOOTSTRAP, "required_archives", return_value=(["module.tar.gz"], "incremental")) as selector, \
+                    mock.patch.object(BOOTSTRAP, "download", side_effect=AssertionError("no network")), \
+                    mock.patch.object(BOOTSTRAP.subprocess, "run", side_effect=AssertionError("no apply")), \
+                    mock.patch("sys.stdout", output):
+                BOOTSTRAP.main()
+            selector.assert_called_once_with(root, manifest)
+            self.assertEqual(json.loads(output.getvalue())["archives"], [{"name": "module.tar.gz", "sha256": "a" * 64}])
+
+    def test_windows_module_comparison_does_not_require_posix_executable_bits(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file = Path(temporary) / "file.py"
+            file.write_bytes(b"same")
+            file.chmod(0o644)
+            with mock.patch.object(sys, "platform", "win32"):
+                self.assertTrue(BOOTSTRAP.matches(file, digest(b"same"), 0o755))
+                self.assertTrue(BUNDLE.file_matches(file, digest(b"same"), 0o755))
+                self.assertFalse(BUNDLE.file_matches(file, digest(b"changed"), 0o755))
+
+    def test_windows_dependencies_use_node_cli_not_a_cmd_shell(self):
+        with tempfile.TemporaryDirectory(prefix="node with spaces ") as temporary:
+            node = Path(temporary) / "node.exe"
+            cli = Path(temporary) / "node_modules/npm/bin/npm-cli.js"
+            cli.parent.mkdir(parents=True)
+            cli.write_text("fixture")
+            with mock.patch.object(UPDATER, "os", SimpleNamespace(name="nt", environ={"PATH": temporary})), \
+                    mock.patch.object(UPDATER.shutil, "which", return_value=str(node)), \
+                    mock.patch.object(UPDATER.subprocess, "run") as run:
+                UPDATER.run(["npm", "ci", "--ignore-scripts"], cwd=temporary)
+            self.assertEqual(run.call_args.args[0], [str(node), str(cli), "ci", "--ignore-scripts"])
+            self.assertNotIn("shell", run.call_args.kwargs)
+
     def test_python_install_uses_complete_release_archives(self):
         with tempfile.TemporaryDirectory(prefix="nora-full-plan-") as temporary:
             names, mode = BOOTSTRAP.required_archives(Path(temporary), {"modules": {"updater": {}}})

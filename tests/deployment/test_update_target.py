@@ -195,14 +195,14 @@ class UpdateTargetTests(unittest.TestCase):
         journal.write_text(json.dumps({"schema": 1, "phase": "applying"}))
         return tavern
 
-    def test_managed_update_requires_matching_instance_and_active_transaction(self):
+    def test_managed_update_requires_matching_instance_not_outer_directory_backup(self):
         tavern = self.managed_installation()
         self.assertEqual(BOOTSTRAP.resolve_update_target(
             self.home, tavern, managed_home=self.root), (self.home, tavern))
         journal = self.root / "installer/system-update/journal.json"
         journal.unlink()
-        with self.assertRaisesRegex(RuntimeError, "事务"):
-            BOOTSTRAP.resolve_update_target(self.home, tavern, managed_home=self.root)
+        self.assertEqual(BOOTSTRAP.resolve_update_target(
+            self.home, tavern, managed_home=self.root), (self.home, tavern))
 
     def test_managed_update_rejects_stale_mcp_binding(self):
         tavern = self.managed_installation()

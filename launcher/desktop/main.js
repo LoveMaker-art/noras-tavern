@@ -10,6 +10,9 @@ const diagnostics = createDiagnostics({
 });
 const { createReleaseNetwork } = require('./release-network');
 const releaseNetwork = createReleaseNetwork({ app, net, diagnostics });
+const localReleaseDirectory = process.argv.find(value => value.startsWith('--nora-local-release='))?.slice('--nora-local-release='.length);
+const updateFetch = localReleaseDirectory
+  ? require('./local-release').createLocalRelease(localReleaseDirectory) : releaseNetwork.fetch;
 for (const [name, value] of Object.entries(process.env)) {
   if (/(?:API_KEY|TOKEN|SECRET|PASSWORD|PAIR_CODE)$/i.test(name)) diagnostics.addSecret(value);
 }
@@ -18,6 +21,9 @@ process.on('uncaughtExceptionMonitor', (error, origin) => diagnostics.error('mai
 const { findBundledRuntime } = require('./runtime');
 const releases = require('./releases');
 const systemUpdate = require('./system-update');
+const { createSkillUpdateReceiver, finishHandoff } = require('./skill-update');
+const launcherUpdate = require('./launcher-update');
+const SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
 const { testBuild, prepareTestPayload } = require('./test-build');
 const { cleanupInstallTemps } = require('./install-cleanup');
 const uninstall = require('./uninstall');
@@ -470,6 +476,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       const spec = bridgeArgs(command, options);
       if (command !== 'status') diagnostics.write('process.start', { command: [spec.command, ...spec.args], cwd: installerRoot() });
       proc = spawn(spec.command, spec.args, { env: launcherEnv(), cwd: installerRoot(), detached: command !== 'status' && process.platform !== 'win32', windowsHide: true });
+      proc.cancelSafe = command !== 'update';
       if (command !== 'status') diagnostics.write('process.spawned', { pid: proc.pid });
       if (command !== 'status') activeProcess = proc;
       proc.stdin.end(command === 'pair' ? JSON.stringify({ code: options.code }) : undefined);
@@ -485,6 +492,11 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }, 1000);
     const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : 30 * 60 * 1000;
     const timeout = setTimeout(() => {
+      if (command === 'update') {
+        diagnostics.write('update.waiting-for-transaction', { pid: proc.pid, timeoutMs });
+        sendBridgeEvent(webContents, runId, { event: 'task', task: '更新仍在处理，请保留窗口；为避免中断恢复，不会强制终止更新进程。' });
+        return;
+      }
       timedOut = true;
       diagnostics.write('process.timeout', { command, pid: proc.pid, timeoutMs });
       terminateProcess(proc);
@@ -563,41 +575,23 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
   if (hermesHome() !== path.join(noraHome(), 'hermes') || installRoot() !== path.join(noraHome(), 'tavern')) {
     throw new Error('完整系统更新仅支持启动器管理的专属安装目录。');
   }
-  const target = JSON.parse(fs.readFileSync(path.join(selectedPayload, 'nora-system.json')));
+  const target = JSON.parse(fs.readFileSync(path.join(selectedPayload, 'release-manifest.json'))).versions;
   const before = await runBridge('status');
-  if (releases.compare(before.version, target.version) !== -1) throw new Error('目标必须高于当前安装版本。');
+  const comparison = releases.compare(before.version, target.tavern);
+  if (comparison !== -1 && !(comparison === 0 && before.systemReady === false)) {
+    throw new Error('目标必须高于当前版本，或为需要修复的同一版本；不会降级现有安装。');
+  }
   updatingSystem = true;
   const onEvent = message => sendBridgeEvent(webContents, payload.runId, message);
   try {
-    return await systemUpdate.perform({ home: noraHome(), target: target.version, stop: stopForUpdate, onEvent,
-      restoreRunning: async () => {
-        if (before.setupCompleted && (before.running || before.gatewayRunning)) await runBridge('start', {
-          port: payload.port, service: before.running && before.gatewayRunning ? 'all' : before.running ? 'tavern' : 'nora',
-        }, webContents, payload.runId);
-      },
-      apply: async backup => {
-        const bundle = findBundledRuntime(selectedPayload);
-        const marker = JSON.parse(fs.readFileSync(path.join(hermesHome(), 'hermes-agent/.hermes-bootstrap-complete')));
-        if (marker.sha256 !== bundle.manifest.sha256) {
-          await runProcess(process.execPath, [path.join(__dirname, 'runtime-worker.js'), selectedPayload, noraHome(), hermesHome()], webContents, payload.runId);
-          onEvent({ event: 'task', task: '保留模型、配对和会话配置' });
-          await systemUpdate.restoreUserHome(path.join(backup, 'hermes'), hermesHome());
-        }
-        await runBridge('update', { port: payload.port, releaseDir: selectedPayload }, webContents, payload.runId);
-      },
-      verify: async () => {
-        let result = await runBridge('status');
-        if (!result.systemReady || releases.compare(result.version, target.version) !== 0) throw new Error('更新后的完整性或版本检查未通过。');
-        if (before.setupCompleted) {
-          await runBridge('finish-update');
-          result = await runBridge('stop');
-          if (before.running || before.gatewayRunning) result = await runBridge('start', {
-            port: payload.port, service: before.running && before.gatewayRunning ? 'all' : before.running ? 'tavern' : 'nora',
-          }, webContents, payload.runId);
-        } else result = await runBridge('stop');
-        return result;
-      },
-    });
+    onEvent({ event: 'task', task: '由更新器备份、替换并验证服务；失败时恢复旧版本' });
+    // Stop, validate and restore services inside the shared transaction. Nothing
+    // after this call may start/stop a service or change the installed files.
+    const verified = await runBridge('update', { port: payload.port, releaseDir: selectedPayload }, webContents, payload.runId);
+    if (!verified.updateVerified || !verified.systemReady || releases.compare(verified.version, target.tavern) !== 0) {
+      throw new Error('更新事务未返回有效确认。请保留日志和备份，不要重新安装。');
+    }
+    return verified;
   } finally { updatingSystem = false; }
 }
 
@@ -867,7 +861,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       return { cancelled: false, noraHome: noraHome() };
     } finally { selectingLocation = false; }
   });
-  handle('nora:run', async (event, payload) => {
+  const runAction = async (event, payload) => {
     if (modelBusy || activeRun) throw new Error('Nora 正在处理任务，请稍候。');
     if (!['install', 'start', 'stop', 'restart', 'pair', 'update', 'repair'].includes(payload?.action)) throw new Error('不支持的操作。');
     if (payload.port !== undefined && (!Number.isInteger(payload.port) || payload.port < 1024 || payload.port > 65535)) throw new Error('端口无效。');
@@ -898,27 +892,60 @@ if (app && BrowserWindow && ipcMain && shell) {
           : state.milestones,
       });
       let selectedPayload;
+      if (payload.action === 'update') {
+        if (LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用正式模式包。');
+        const current = await runBridge('status', { port: payload.port }, event.sender, payload.runId);
+        if (current.updateRecovery) throw new Error('上次更新尚未恢复完成，请保留日志和备份，暂勿再次更新。');
+        releaseAbort = new AbortController();
+        let prepared;
+        try {
+          prepared = await launcherUpdate.prepare({ fetcher: updateFetch, channel: CHANNEL, tag: payload.tag,
+            launcherVersion: app.getVersion(), cacheRoot: path.join(noraHome(), 'cache', 'releases'),
+            signal: releaseAbort.signal, onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) });
+        } finally { releaseAbort = null; }
+        payload.tag = prepared.tag;
+        if (cancelled) throw new Error('更新已取消。');
+        if (prepared.launcher) {
+          if (!app.isPackaged || !findPython()) throw new Error('需要已安装的完整系统才能自动替换启动器。');
+          const job = await launcherUpdate.handoff({ prepared, home: noraHome(), executable: process.execPath,
+            python: findPython().command, helper: path.join(installerRoot(), 'replace-launcher.py'),
+            skillId: /^skill-[a-f0-9-]{36}$/.test(payload.runId) ? payload.runId.slice(6) : null,
+            localRelease: localReleaseDirectory, onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) });
+          if (cancelled) { fs.writeFileSync(path.join(job, 'cancel'), 'cancel'); throw new Error('更新已取消。'); }
+          diagnostics.write('update.handoff', { job, target: payload.tag });
+          diagnostics.finish('restarting');
+          // Leave the managed services running; only the desktop process is replaced.
+          activeRun = false; quitReady = true;
+          setImmediate(() => app.quit());
+          return { restarting: true };
+        }
+        const comparison = releases.compare(current.version, prepared.manifest.versions.tavern);
+        if (comparison === null) throw new Error('当前安装版本不明确，未修改现有安装。');
+        if (comparison > 0 && current.systemReady === false) {
+          throw new Error('当前安装需要修复，但目标版本更旧；未修改现有安装。');
+        }
+        if (comparison >= 0 && current.systemReady !== false) {
+          writeInstallerState({ ...readInstallerState(), phase: current.systemReady ? 'ready' : 'idle', error: '', task: '', resumeTarget: null });
+          diagnostics.finish('success');
+          return current;
+        }
+      }
       if (['install', 'update'].includes(payload.action)) {
         if (payload.action === 'update' && LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用 Beta 发布包。');
         releaseAbort = new AbortController();
         try {
-          if (LOCAL_TEST) {
-            sendBridgeEvent(event.sender, payload.runId, { event: 'task', task: '检查 GitHub 连接与证书（测试包）' });
-            await releaseNetwork.compare(fetcher => releases.latest(fetcher, releaseAbort.signal, 'stable'));
-            const check = await releases.check({ fetcher: releaseNetwork.fetch,
-              installRoot: installRoot(), launcherVersion: app.getVersion(), channel: 'stable' });
-            if (!check.installable) throw new Error(check.compatibilityError || check.error || '发布清单连接检查未通过。');
-            diagnostics.write('network.manifest.verified', { version: check.latest });
-            releaseAbort.signal.throwIfAborted();
-          }
-          selectedPayload = LOCAL_TEST
+          selectedPayload = payload.action === 'install' ? (LOCAL_TEST
             ? await prepareTestPayload(payloadDirectory(), LOCAL_TEST, app.getVersion(),
               message => sendBridgeEvent(event.sender, payload.runId, message))
-            : await releases.prepare({
-            fetcher: releaseNetwork.fetch,
+            : await releases.prepareBundled({ bundledRoot: payloadDirectory(), launcherVersion: app.getVersion(),
+              signal: releaseAbort.signal, channel: CHANNEL,
+              onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) }))
+            : await releases.prepareUpdate({
+            fetcher: updateFetch,
             cacheRoot: path.join(noraHome(), 'cache', 'releases'), bundledRoot: payloadDirectory(),
             launcherVersion: app.getVersion(), signal: releaseAbort.signal,
             channel: CHANNEL, tag: payload.action === 'update' ? payload.tag : undefined,
+            plan: releaseDir => runBridge('plan-update', { port: payload.port, releaseDir }, event.sender, payload.runId),
             onEvent: message => sendBridgeEvent(event.sender, payload.runId, message),
           });
         } finally { releaseAbort = null; }
@@ -937,7 +964,7 @@ if (app && BrowserWindow && ipcMain && shell) {
         : await runBridge(payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
         ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
       const finalState = readInstallerState();
-      writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '' });
+      writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '', resumeTarget: null });
       diagnostics.finish('success');
       return result;
     } catch (error) {
@@ -955,12 +982,31 @@ if (app && BrowserWindow && ipcMain && shell) {
     } finally {
       activeRun = false;
     }
+  };
+  handle('nora:run', runAction);
+  const skillUpdates = createSkillUpdateReceiver({
+    home: noraHome,
+    busy: () => activeRun || modelBusy || quitting || uninstalling || selectingLocation || Boolean(statusRequest) || Boolean(MOCK_SCENARIO),
+    clean: value => diagnostics.clean(value),
+    execute: async (action, id) => {
+      if (systemUpdate.pending(noraHome())) throw new Error('上次更新尚待恢复，请先在启动器中检查状态。');
+      if (action === 'check') {
+        const result = await releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
+        if (result.error) throw new Error(result.error);
+        return result;
+      }
+      // runAction takes ownership synchronously, before it first yields.
+      const result = await runAction({ sender: null }, { action: 'update', runId: `skill-${id}` });
+      if (result.restarting) return result;
+      return { version: result.version, systemReady: result.systemReady,
+        running: result.running, gatewayRunning: result.gatewayRunning };
+    },
   });
   handle('nora:cancel', async () => {
     if (updatingSystem) return { ok: false, warning: '正在替换并验证系统，请等待完成；失败时将自动恢复。' };
     if (releaseAbort) { cancelled = true; releaseAbort.abort(); return { ok: true }; }
     if (!activeProcess) return { ok: false, warning: '当前没有正在运行的任务。' };
-    if (activeProcess.cancelSafe === false) return { ok: false, warning: '正在释放核心文件，请等待这一步完成。' };
+    if (activeProcess.cancelSafe === false) return { ok: false, warning: '正在处理受管文件或恢复旧版本，请等待当前事务完成。' };
     cancelled = true;
     terminateProcess(activeProcess);
     const state = readInstallerState();
@@ -1066,7 +1112,7 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
   handle('nora:check-update', async () => {
     if (activeRun || modelBusy) throw new Error('请等待当前任务完成。');
-    return releases.check({ fetcher: releaseNetwork.fetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
+    return releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
   });
   handle('nora:uninstall', beginUninstall);
   handle('nora:open-external', async (_event, url) => {
@@ -1078,7 +1124,32 @@ if (app && BrowserWindow && ipcMain && shell) {
   else {
     app.on('before-quit', requestQuit);
     app.whenReady().then(async () => {
-      if (!SYSTEM_UNINSTALL) return createWindow();
+      if (!SYSTEM_UNINSTALL) {
+        const timer = setInterval(() => skillUpdates.tick().catch(error => diagnostics.error('skill-update.failed', error)), 2000);
+        timer.unref();
+        app.once('will-quit', () => { clearInterval(timer); skillUpdates.close(); });
+        if (SELF_UPDATE_JOB) activeRun = true;
+        createWindow();
+        if (SELF_UPDATE_JOB) {
+          const window = BrowserWindow.getAllWindows()[0];
+          window.webContents.once('did-finish-load', async () => {
+            let plan;
+            try {
+              plan = launcherUpdate.resume(SELF_UPDATE_JOB, { home: noraHome(), executable: process.execPath, version: app.getVersion() });
+              activeRun = false;
+              if (plan) {
+                writeInstallerState({ ...readInstallerState(), resumeTarget: plan.target });
+                const result = await runAction({ sender: window.webContents }, { action: 'update', tag: plan.target, runId: `resume-${Date.now()}` });
+                finishHandoff(noraHome(), plan.skillId, { version: result.version, systemReady: result.systemReady });
+              }
+            } catch (error) {
+              activeRun = false; diagnostics.error('update.resume', error);
+              if (plan?.skillId) finishHandoff(noraHome(), plan.skillId, null, diagnostics.clean(error.message));
+            }
+          });
+        }
+        return;
+      }
       try {
         const destination = path.resolve(SYSTEM_UNINSTALL);
         if (process.platform !== 'win32' || path.basename(destination) !== 'nora-uninstall.json'

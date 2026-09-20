@@ -186,7 +186,7 @@ def installed(install_root: Path) -> bool:
 ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
-def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None:
+def run_stream(command: list[str], *, env: dict[str, str] | None = None):
     started = time.monotonic()
     emit("command", command=command)
     process = subprocess.Popen(
@@ -200,6 +200,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
     emit("diagnostic", operation="subprocess-start", pid=process.pid, command=command)
     assert process.stdout is not None
     failure = ""
+    last_result = None
     for line in process.stdout:
         line = ANSI.sub("", line).rstrip()
         if line:
@@ -209,6 +210,8 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
                 emit("log", line=line, stream="combined")
             else:
                 if isinstance(message, dict):
+                    if message.get("event") == "result":
+                        last_result = dict(message)
                     detail = message.get("error") or (message.get("message") if message.get("event") == "error" else "")
                     if detail:
                         failure = str(detail)[-2000:]
@@ -221,6 +224,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None) -> None
          durationMs=round((time.monotonic() - started) * 1000))
     if code:
         fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。")
+    return last_result
 
 
 def run_json(command: list[str], *, env: dict[str, str] | None = None, timeout: int = 60) -> dict:
@@ -311,6 +315,7 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
     system = nora_system.inspect(hermes_home, install_root, port)
+    recovery = nora_system.update_recovery(install_root)
     hermes = hermes_command(nora_home, hermes_home, install_root)
     # Installed files and live service health are separate facts. Avoid booting
     # the entire Hermes CLI on every five-second status poll.
@@ -324,6 +329,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     if not installed(install_root):
         return {
             "installed": False,
+            "updateRecovery": recovery,
             "systemReady": False,
             "setupCompleted": False,
             "running": False,
@@ -353,6 +359,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     running = bool(status.get("health", {}).get("ok"))
     payload = {
         "installed": True,
+        "updateRecovery": recovery,
         "systemReady": system["ready"],
         "setupCompleted": system["setupCompleted"] and profile_ready,
         "clawchatProfileReady": profile_ready,
@@ -405,6 +412,8 @@ def command_install(args) -> None:
     if installed(args.install_root) and system["ready"] and matches_target:
         command_status(args)
         return
+    if nora_system.read_json(args.install_root / "tavern-updates/nora-system.json").get("schema") == 1:
+        fail("已有 Nora 安装记录，请通过修复当前安装恢复受管文件；不会重新执行首次安装。")
     if gateway_status(args.nora_home, args.hermes_home).get("gatewayRunning"):
         fail("请先停止 Nora，再继续初始化。现有配置与数据已保留。")
     if installed(args.install_root) and status_payload(args.nora_home, args.hermes_home, args.install_root, args.port).get("running"):
@@ -449,12 +458,25 @@ def command_install(args) -> None:
     emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
 
 
-def command_start(args) -> None:
+def _same_skill_damage(before, system):
+    problems = before.get('systemProblems')
+    return (before.get('systemReady') is False and isinstance(problems, list) and bool(problems)
+            and all(isinstance(problem, str) and problem.startswith((
+                '技能文件内容与安装记录不一致：', '技能文件缺失：', '缺少技能：')) for problem in problems)
+            and sorted(problems) == sorted(system.get('problems', []))
+            and bool(before.get('version'))
+            and str(system.get('version', '')).lstrip('v') == str(before['version']).lstrip('v'))
+
+
+def command_start(args, *, _rollback_before=None) -> None:
     service = getattr(args, "service", "all")
+    if (nora_system.update_recovery(args.install_root)
+            and getattr(args, 'command', '') != 'update-lifecycle'):
+        fail('上次更新尚未恢复完成，暂不启动可能混合版本的服务。请保留日志和备份。')
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
     system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
-    if not system["ready"]:
+    if not system["ready"] and not (_rollback_before is not None and _same_skill_damage(_rollback_before, system)):
         fail("Nora 初始化未完成：" + "；".join(system["problems"][:3]))
     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
     if service != "tavern" and not read_verified_model(args.nora_home, args.hermes_home):
@@ -597,7 +619,59 @@ def command_pair(args) -> None:
     command_status(args)
 
 
-def command_update(args, *, repair: bool = False) -> None:
+def command_update_lifecycle(args):
+    plan = json.load(sys.stdin)
+    before = plan["before"]
+    phase = plan["phase"]
+    if phase not in ("preflight", "stop", "verify", "rollback"):
+        fail("未知的更新事务阶段")
+    for name in ("nora_home", "hermes_home", "install_root"):
+        key = {"nora_home": "noraHome", "hermes_home": "hermesHome", "install_root": "installRoot"}[name]
+        if Path(plan[key]).resolve() != getattr(args, name).resolve():
+            fail("更新事务路径不匹配")
+    if phase == 'preflight':
+        state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+        if (not before.get('version') or str(state.get('version', '')).lstrip('v') != str(before['version']).lstrip('v')
+                or any(bool(state.get(key)) != bool(before.get(key)) for key in ('running', 'gatewayRunning'))):
+            fail('更新前的版本或服务状态已变化，请重新检查更新')
+        emit('result', **state)
+        return
+    args.service = 'all'
+    command_stop(args)
+    if phase == 'stop':
+        return
+    damaged_rollback = phase == 'rollback' and before.get('systemReady') is False
+    if damaged_rollback:
+        system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+        if not _same_skill_damage(before, system):
+            fail('旧安装的版本或完整性问题与更新前不一致，未恢复服务')
+        # Restore services separately without rerunning first-setup verification.
+        for key, service in (('running', 'tavern'), ('gatewayRunning', 'nora')):
+            if before.get(key):
+                args.service = service
+                command_start(args, _rollback_before=before)
+    elif before.get('running') or before.get('gatewayRunning'):
+        args.service = ('all' if before.get('running') and before.get('gatewayRunning') else
+                        'tavern' if before.get('running') else 'nora')
+        command_start(args)
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if damaged_rollback and not _same_skill_damage(before, {
+            'version': state.get('version'), 'problems': state.get('systemProblems', [])}):
+        fail('恢复服务后旧安装的完整性问题发生变化')
+    expected = plan['version'] if phase == 'verify' else before.get('version')
+    if str(state.get('version', '')).lstrip('v') != str(expected).lstrip('v'):
+        fail('更新事务版本复核失败')
+    if (phase == 'verify' or before.get('systemReady')) and not state.get('systemReady'):
+        fail('更新事务完整性复核失败：' + '；'.join(state.get('systemProblems', [])))
+    for key in ('running', 'gatewayRunning'):
+        if bool(state.get(key)) != bool(before.get(key)):
+            fail('未能恢复更新前的服务状态：' + key)
+    if before.get('clawchatConnected') and not state.get('clawchatConnected'):
+        fail('未能恢复更新前的 ClawChat 连接')
+    emit('result', **state)
+
+
+def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
     managed = (args.install_root / "tavern-updates/nora-system.json").is_file()
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
@@ -613,8 +687,8 @@ def command_update(args, *, repair: bool = False) -> None:
         instance = nora_system.read_json(args.hermes_home / "nora-instance.json")
         if instance.get("port") != args.port:
             fail("启动器端口与实例记录不一致，已停止更新。")
-        if gateway_status(args.nora_home, args.hermes_home).get("running"):
-            fail("更新前必须先停止诺拉。")
+        if not plan and manifest.get('bootstrap', {}).get('managedLifecycle') != 1:
+            fail('目标更新组件不支持启动验证失败回滚，现有安装未修改。请使用支持事务恢复的新版本。')
     if not bootstrap.is_file():
         fail("没有找到更新器，请先修复安装目录。")
     emit("step", index=0, label="检查版本")
@@ -640,8 +714,24 @@ def command_update(args, *, repair: bool = False) -> None:
         if not re.fullmatch(r"[a-zA-Z0-9._-]{1,100}", args.tag):
             fail("版本编号无效。")
         command += ["--tag", args.tag]
-    run_stream(command, env=env_for(args.nora_home, args.hermes_home, args.install_root))
-    emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
+    if plan:
+        result = run_json(command + ["--plan"], env=env_for(args.nora_home, args.hermes_home, args.install_root), timeout=180)
+        emit("result", **result)
+        return
+    env = env_for(args.nora_home, args.hermes_home, args.install_root)
+    if managed:
+        before = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+        env['NORA_UPDATE_LIFECYCLE'] = json.dumps({
+            'bridge': str(Path(__file__).resolve()), 'noraHome': str(args.nora_home),
+            'hermesHome': str(args.hermes_home), 'installRoot': str(args.install_root),
+            'port': args.port, 'before': {key: before.get(key) for key in
+                ('version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected')}})
+    result = run_stream(command, env=env)
+    if managed:
+        if not result or not result.get('updateVerified'):
+            fail('更新事务未返回验证结果；请保留日志，不要重新安装。')
+    else:
+        emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
 
 
 def command_check_update(args) -> None:
@@ -704,10 +794,12 @@ def main() -> None:
     for action in ("start", "stop", "restart"):
         sub.add_parser(action).add_argument("--service", choices=("all", "nora", "tavern"), default="all")
     sub.add_parser("finish-update")
+    sub.add_parser("update-lifecycle")
     sub.add_parser("pair")
     update = sub.add_parser("update")
     update.add_argument("--tag")
     update.add_argument("--release-dir")
+    sub.add_parser("plan-update").add_argument("--release-dir", required=True)
     sub.add_parser("check-update")
     sub.add_parser("repair")
     sub.add_parser("open-logs")
@@ -747,6 +839,10 @@ def main() -> None:
         command_status(args)
     elif args.command == "update":
         command_update(args)
+    elif args.command == "update-lifecycle":
+        command_update_lifecycle(args)
+    elif args.command == "plan-update":
+        command_update(args, plan=True)
     elif args.command == "check-update":
         command_check_update(args)
     elif args.command == "repair":

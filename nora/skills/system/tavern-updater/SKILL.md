@@ -1,7 +1,7 @@
 ---
 name: tavern-updater
-description: Check Nora Tavern release versions and route authorized updates to the correct installer.
-version: 3.2.0
+description: Check Nora Tavern versions, perform owner-authorized updates, and inspect update results on Windows, macOS and Linux.
+version: 3.3.0
 author: Tavern Project
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]
@@ -29,34 +29,40 @@ Python command, including background jobs. Do not resolve its virtualenv symlink
 Foreground and background PATH may differ; never substitute bare `python3` after
 the probe. Do not install packages into system Python to bypass a failed check.
 No cloud-machine absolute path belongs in a portable command template.
+In PowerShell, prefix a quoted executable with `&`.
+
+## Commands
+
+Use the verified interpreter to run this skill's `scripts/update.py`:
+
+- `--check`: check versions without applying updates.
+- `--apply --confirm`: update only after the owner explicitly authorizes it.
+- `--status`: inspect the last launcher task; on standalone installations,
+  check the installed and published versions.
 
 ## Launcher-Managed Nora
 
-If `managed` is true, use the verified interpreter to run
-`<HERMES_HOME>/scripts/nora-tavern-update-check.py --check-only`.
-The managed interpreter is under HERMES_HOME: `hermes-agent/venv/bin/python3`
-on macOS, or `hermes-agent/venv/Scripts/python.exe` on Windows.
+Keep the matching launcher open. The script hands the task to it, so stopping
+Nora does not stop the update worker. The launcher uses its existing download,
+validation, update and service-restoration flow. If it is closed or too old,
+explain the error and ask the owner to open or upgrade it. Do not bypass this
+with a standalone installer or replace Hermes.
 
-Report current and latest versions, or the concrete check failure. A network
-error does not mean "up to date". Checking never installs or changes user data.
-For installation, direct the owner to the Nora launcher's version check and its
-release entry. Do not run the standalone updater, curl installers, pip/uv
-upgrades, or replace Hermes in this managed installation. Do not claim success
-until the launcher's installed version and readiness checks confirm it.
+`queued` and `running` mean accepted or in progress, not successful. Tell the
+owner before submission that Nora may briefly disconnect. After reconnection,
+use `--status`. Report success only when the matching task reports `success`
+and its update result has the expected version and `systemReady: true`.
+A successful `check` task only means the version check completed. Report
+`error` or `interrupted` before retrying; never silently resubmit an interrupted
+update. A network error does not mean "up to date".
 
 ## Standalone Tavern
 
-If `managed` is false, inspect the installed version and host platform.
-Use the verified interpreter with
-`<HERMES_HOME>/apps/tavern-ops/scripts/nora-tavern-update-check.py --check-only`.
-For an explicitly authorized update on a supported standalone host, use that
-same interpreter with
-`<HERMES_HOME>/apps/tavern-ops/updater/bootstrap.py --hermes-home <HERMES_HOME> --apply --confirm`.
-Replace placeholders with discovered absolute paths; quote each path separately.
-The existing bootstrap owns target resolution, release download, verification
-and execution of the target updater using the same interpreter. Do not manually
-assemble release archives or call the installed update.py with guessed flags.
-This is not a Windows or full-Nora installer.
+The same skill script runs the installed `bootstrap.py` using the verified
+interpreter. That updater owns target resolution, release download, verification
+and execution of the target updater. Do not manually assemble release archives,
+invent an installation path, or call raw `update.py` with guessed flags.
+This updates an existing installation; it does not install Hermes.
 
 Report progress before starting, when a stage changes, and during long waits.
 After an error, report it before further diagnosis; distinguish dependency

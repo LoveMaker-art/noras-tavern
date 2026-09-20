@@ -18,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ManagedUpdateTests(unittest.TestCase):
-    def transaction(self, *, failure=False):
+    def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
@@ -28,7 +28,6 @@ class ManagedUpdateTests(unittest.TestCase):
             instance = {"schema": 1, "noraHome": str(root), "hermesHome": str(home),
                         "installRoot": str(tavern), "port": 18899, "releaseChannel": "beta"}
             write(home / "nora-instance.json", json.dumps(instance))
-            write(root / "installer/system-update/journal.json", '{"schema":1,"phase":"applying"}')
             write(tavern / "tavern-updates/installed.json", '{"version":"2.3.0","commit":"old"}')
             write(tavern / "tavern-updates/nora-system.json", '{"schema":1,"commit":"old","setupCompleted":true}')
             write(tavern / "apps/tavern-runtime/native-runtime.json", '{"old":true}')
@@ -48,6 +47,8 @@ class ManagedUpdateTests(unittest.TestCase):
             old_config = update.render_mcp(home, tavern, 18899)
             (home / "config.yaml").write_bytes(old_config)
             manifest = {"versions": {"tavern": "2.3.2"}, "commit": "new", "artifacts": {}}
+            if same_version:
+                manifest["versions"]["tavern"] = "2.3.0"
             before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
             receipts = {p: p.read_bytes() for p in (tavern / "tavern-updates").iterdir()}
 
@@ -85,6 +86,17 @@ class ManagedUpdateTests(unittest.TestCase):
                 return {"id": "new"}
 
             original_module = update.module_at
+            lifecycle_calls = []
+            def lifecycle(phase, *_args):
+                lifecycle_calls.append(phase)
+                if phase == 'preflight' and preflight_failure:
+                    raise RuntimeError('injected preflight failure')
+                if phase == 'verify' and late_failure:
+                    raise RuntimeError('injected final service failure')
+                if phase == 'rollback' and rollback_failure:
+                    raise RuntimeError('old gateway cannot start')
+                return {'systemReady': True, 'version': manifest['versions']['tavern']}
+            stack.enter_context(patch.object(update, 'managed_lifecycle', side_effect=lifecycle, create=True))
             def module(name, file):
                 if name == "update_nora_system":
                     return nora_system
@@ -115,7 +127,9 @@ class ManagedUpdateTests(unittest.TestCase):
             stack.enter_context(patch.object(update, "dependency_marker", return_value={}))
             stack.enter_context(patch.object(update, "verify_worlds", return_value={"default-user": [{"worldId": "story"}]}))
             stack.enter_context(patch.object(update, "configure_update_check_job", side_effect=cron))
-            stack.enter_context(patch.object(first_install, "extract_dependency_bundle", return_value={"schema": 1}))
+            stack.enter_context(patch.object(first_install, "extract_dependency_bundle", return_value={"schema": 1} if bundled else None))
+            if not bundled:
+                dependencies = stack.enter_context(patch.object(update, "prepare_dependencies", return_value={"tavern": "reused", "mcp": "unchanged"}))
             stop = stack.enter_context(patch.object(first_install, "stop_install_runtime"))
             stack.enter_context(patch.object(nora_system, "seed_clawchat_skills", side_effect=seed))
             stack.enter_context(patch.object(nora_system, "verify_runtime", side_effect=verify))
@@ -126,12 +140,29 @@ class ManagedUpdateTests(unittest.TestCase):
             stack.enter_context(patch("sys.stdout", new_callable=io.StringIO))
             args = SimpleNamespace(home=home, install_root=tavern, managed_home=root,
                                    release_dir=root / "payload", manifest_sha256="test")
-            if failure:
-                with self.assertRaisesRegex(RuntimeError, "injected MCP failure.*recovery=restored"):
+            if preflight_failure:
+                with self.assertRaisesRegex(RuntimeError, 'injected preflight failure'):
+                    update.install(args)
+                self.assertEqual(lifecycle_calls, ['preflight'])
+                start.assert_not_called()
+                stop.assert_not_called()
+                self.assertFalse((tavern / 'tavern-updates/transaction.json').exists())
+                for file, value in {**before, **receipts}.items():
+                    self.assertEqual(file.read_bytes(), value)
+                return
+            if failure or late_failure:
+                recovery_text = 'files-restored-start-failed' if rollback_failure else 'restored'
+                with self.assertRaisesRegex(RuntimeError, "injected .*failure.*recovery=" + recovery_text):
                     update.install(args)
                 for file, value in {**before, **receipts}.items():
                     self.assertEqual(file.read_bytes(), value, str(file.relative_to(root)))
                 self.assertFalse((home / "clawchat-skills").exists())
+                journal = json.loads((tavern / 'tavern-updates/transaction.json').read_text())
+                self.assertEqual(journal['status'], 'recovery-failed' if rollback_failure else 'restored')
+                self.assertTrue(Path(journal['backup']).is_dir())
+                if rollback_failure:
+                    with self.assertRaisesRegex(RuntimeError, '上次更新事务未完成'):
+                        update.install(args)
             else:
                 update.install(args)
                 self.assertEqual((home / "AGENTS.md").read_text(), "# New Nora instructions\n")
@@ -140,6 +171,7 @@ class ManagedUpdateTests(unittest.TestCase):
                 receipt = json.loads((tavern / "tavern-updates/nora-system.json").read_text())
                 self.assertEqual(receipt["commit"], "new")
                 self.assertTrue(receipt["setupCompleted"])
+                self.assertEqual(receipt["skills"], nora_system.inventory(home))
                 self.assertTrue(nora_system.files_ready(home))
                 self.assertEqual((home / "SOUL.md").read_text(), "custom persona")
                 self.assertEqual((home / "nora-instance.json").read_bytes(), before[home / "nora-instance.json"])
@@ -148,16 +180,38 @@ class ManagedUpdateTests(unittest.TestCase):
             self.assertEqual(story.read_text(), '{"worldId":"story"}')
             self.assertEqual(chat.read_text(), '{"message":"keep"}\n')
             self.assertEqual(start.call_args.kwargs["port"], 18899)
-            self.assertEqual(stop.call_count, 2 if failure else 1)
+            self.assertEqual(stop.call_count, 2 if failure or late_failure else 1)
+            if late_failure:
+                self.assertEqual(lifecycle_calls, ['preflight', 'stop', 'verify', 'stop', 'rollback'])
             no_install.assert_not_called()
             no_liveware.assert_not_called()
             no_old_start.assert_not_called()
+            if not bundled:
+                self.assertFalse(dependencies.call_args.kwargs.get("bundled", False))
 
     def test_managed_update_uses_shared_transaction_and_preserves_user_data(self):
         self.transaction()
 
+    def test_invalid_lifecycle_fails_before_stopping_or_changing_installation(self):
+        self.transaction(preflight_failure=True)
+
     def test_failed_managed_proof_restores_worlds_and_managed_configuration(self):
         self.transaction(failure=True)
+
+    def test_component_update_without_platform_bundle_uses_shared_dependencies(self):
+        self.transaction(bundled=False)
+
+    def test_component_update_without_platform_bundle_rolls_back(self):
+        self.transaction(bundled=False, failure=True)
+
+    def test_same_version_repairs_skills_and_refreshes_receipt_without_first_install(self):
+        self.transaction(bundled=False, same_version=True)
+
+    def test_final_service_failure_restores_old_files_receipts_worlds_and_services(self):
+        self.transaction(bundled=False, late_failure=True)
+
+    def test_failed_old_service_recovery_keeps_backup_and_blocks_another_update(self):
+        self.transaction(bundled=False, late_failure=True, rollback_failure=True)
 
 
 if __name__ == "__main__":
