@@ -37,7 +37,10 @@ def extract(archive, destination, platform):
             raise ValueError('更新包解压大小超限')
         names = set()
         for item in members:
-            name = item.filename
+            # Validate archive bytes before Windows normalizes separators or NULs.
+            name = item.orig_filename
+            if '\x00' in name:
+                raise ValueError('更新包包含非法路径')
             # 7-Zip can write UTF-8 names without setting the ZIP UTF-8 flag.
             if not item.flag_bits & 0x800:
                 try:
