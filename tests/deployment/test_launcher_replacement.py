@@ -39,7 +39,9 @@ class ReplacementTests(unittest.TestCase):
                 root = Path(directory)
                 archive = root / 'bad.zip'
                 with zipfile.ZipFile(archive, 'w') as bundle:
-                    bundle.writestr(name, 'bad')
+                    info = zipfile.ZipInfo()
+                    info.filename = name
+                    bundle.writestr(info, 'bad')
                 with self.assertRaises(ValueError):
                     worker.extract(archive, root / 'stage', 'win32')
 

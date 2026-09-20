@@ -157,9 +157,14 @@ print('PASS: actual Hermes cron script execution, local release fixture, no mode
       const bridgeArgs = ['--nora-home', root, '--hermes-home', home, '--install-root', tavern, '--port', String(port)];
       const updateDirectory = path.resolve(process.argv[updateIndex + 1]);
       const candidate = JSON.parse(fs.readFileSync(path.join(updateDirectory, 'release-manifest.json'))).candidate;
+      const updateAssets = fs.existsSync(path.join(updateDirectory, 'nora-tavern-module-updater.tar.gz'))
+        ? updateDirectory : path.resolve(updateDirectory, '../..');
+      if (!candidate) assert.equal(
+        JSON.parse(fs.readFileSync(path.join(updateAssets, 'release-manifest.json'))).sourceDigest,
+        JSON.parse(fs.readFileSync(path.join(updateDirectory, 'release-manifest.json'))).sourceDigest);
       // CI candidates are not discoverable releases; only this isolated harness permits them.
       const selected = candidate ? path.join(root, 'candidate-update') : await releases.prepareUpdate({ cacheRoot: path.join(root, 'update-payload'), launcherVersion: '1.1.0',
-        fetcher: createLocalRelease(path.resolve(process.argv[updateIndex + 1])),
+        fetcher: createLocalRelease(updateAssets),
         plan: async releaseDir => run([bridge, ...bridgeArgs, 'plan-update', '--release-dir', releaseDir])
           .trim().split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line))
           .find(event => event.event === 'result'),
