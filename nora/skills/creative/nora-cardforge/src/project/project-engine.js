@@ -71,6 +71,8 @@ function buildProject(projectDir, options = {}) {
     : null;
   let { card } = parseCardMarkdown(fs.readFileSync(cardMdPath, 'utf8'), { baseCard });
   card = compileWorld(card, config.world);
+  // Score authored content after World compilation, before generated technical entries.
+  const writingCard = card;
 
   const mvuPath = featurePath(root, config.features?.mvu, 'features/mvu.json');
   if (mvuPath && fs.existsSync(mvuPath)) {
@@ -90,7 +92,7 @@ function buildProject(projectDir, options = {}) {
   }
 
   const profile = options.profile || config.build?.profile || 'release';
-  const quality = runQualityGate({ card, cardMdPath, statusbarHtml, profile, scoreWriting: options.scoreWriting === true });
+  const quality = runQualityGate({ card, writingCard, cardMdPath, statusbarHtml, profile, scoreWriting: options.scoreWriting === true });
   ensureDir(path.join(root, 'reports'));
   writeJson(path.join(root, 'reports/quality.json'), quality);
   if (!quality.passed) {

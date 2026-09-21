@@ -147,7 +147,10 @@ function parseLorebook(text) {
       use_regex: false,
       extensions: {}
     };
-    for (const part of parts) applyLoreDirective(entry, part);
+    for (const part of parts) {
+      try { applyLoreDirective(entry, part); }
+      catch (error) { throw new Error(`Lorebook "${entry.comment}" | ${part}: ${error.message}`); }
+    }
     if (!entry.keys.length && !entry.constant) entry.constant = true;
     entry.selective = entry.secondary_keys.length > 0;
     return entry;
@@ -158,29 +161,40 @@ function applyLoreDirective(entry, directive) {
   const [rawKey, ...rest] = directive.split(':');
   const key = rawKey.trim().toLowerCase();
   const value = rest.join(':').trim();
+  if (key === 'constant' || key === 'regex') {
+    if (rest.length) throw new Error(`${key} is a flag; omit the colon and value`);
+  } else if (!value) throw new Error(`Missing value for ${key}`);
   if (key === 'constant') entry.constant = true;
-  else if (key === 'keys') entry.keys = splitValues(value);
-  else if (key === 'secondary') entry.secondary_keys = splitValues(value);
+  else if (key === 'keys' || key === 'secondary') {
+    const values = splitValues(value);
+    if (!values.length) throw new Error(`${key} requires keywords`);
+    entry[key === 'keys' ? 'keys' : 'secondary_keys'] = values;
+  }
   else if (key === 'order') entry.insertion_order = integer(value, 'order');
-  else if (key === 'position') entry.position = value.includes('after') ? 'after_char' : 'before_char';
+  else if (key === 'position') entry.position = enumValue(value, { before_char: 'before_char', after_char: 'after_char' }, key);
   else if (key === 'depth') {
-    entry.extensions.depth = integer(value, 'depth');
+    entry.extensions.depth = boundedInteger(value, key, 0, Number.MAX_SAFE_INTEGER);
     entry.extensions.position = 4;
   } else if (key === 'role') {
-    entry.extensions.role = ({ system: 0, user: 1, assistant: 2 })[value.toLowerCase()] ?? 0;
+    entry.extensions.role = enumValue(value.toLowerCase(), { system: 0, user: 1, assistant: 2 }, key);
   } else if (key === 'logic') {
-    entry.extensions.selectiveLogic = ({ and_any: 0, not_all: 1, not_any: 2, and_all: 3 })[value] ?? 0;
+    entry.extensions.selectiveLogic = enumValue(value, { and_any: 0, not_all: 1, not_any: 2, and_all: 3 }, key);
   } else if (key === 'prob') {
     entry.extensions.useProbability = true;
     entry.extensions.probability = boundedInteger(value, 'prob', 0, 100);
   } else if (key === 'sticky' || key === 'cooldown') {
-    entry.extensions[key] = integer(value, key);
+    entry.extensions[key] = boundedInteger(value, key, 0, Number.MAX_SAFE_INTEGER);
   } else if (key === 'recursion') {
-    if (value === 'exclude') entry.extensions.exclude_recursion = true;
-    if (value === 'prevent') entry.extensions.prevent_recursion = true;
+    entry.extensions[enumValue(value, { exclude: 'exclude_recursion', prevent: 'prevent_recursion' }, key)] = true;
   } else if (key === 'group') entry.extensions.group = value;
-  else if (key === 'weight') entry.extensions.group_weight = integer(value, 'weight');
+  else if (key === 'weight') entry.extensions.group_weight = boundedInteger(value, key, 0, Number.MAX_SAFE_INTEGER);
   else if (key === 'regex') entry.use_regex = true;
+  else throw new Error(`Unknown directive ${key}`);
+}
+
+function enumValue(value, choices, label) {
+  if (!Object.hasOwn(choices, value)) throw new Error(`${label} must be one of: ${Object.keys(choices).join(', ')}`);
+  return choices[value];
 }
 
 function serializeLorebook(entries) {
@@ -248,8 +262,8 @@ function splitValues(value) {
 }
 
 function integer(value, label) {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) throw new Error(`Invalid lorebook ${label}: ${value}`);
+  const parsed = Number(value);
+  if (!/^[+-]?\d+$/.test(value) || !Number.isSafeInteger(parsed)) throw new Error(`Invalid lorebook integer ${label}: ${value}`);
   return parsed;
 }
 

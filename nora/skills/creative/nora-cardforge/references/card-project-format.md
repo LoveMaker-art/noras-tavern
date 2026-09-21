@@ -170,9 +170,12 @@ Example:
 Runtime meanings follow [SillyTavern World Info](https://docs.sillytavern.app/usage/core-concepts/worldinfo/),
 not a promise about Nora's runtime. Sticky/cooldown use messages, not dialogue
 pairs; zero disables the timed effect. Budget, global settings, and target version
-can affect activation. This Markdown parser accepts only the directives above;
-unknown directives are ignored, not implemented. Numeric validation is incomplete
-outside `prob`; do not interpret an accepted integer as a meaningful runtime value.
+can affect activation. This Markdown parser rejects unknown directives, missing
+values and invalid enum values, identifying the entry and directive. `constant`
+and `regex` are bare flags. Numeric values must be complete safe integers;
+`depth`, `sticky`, `cooldown` and `weight` are nonnegative, `prob` is 0..100.
+An omitted `keys` still defaults to constant; an explicitly empty `keys` is an error.
+These are authoring checks, not proof of runtime activation or budget behavior.
 
 Unknown card fields are preserved by the passthrough base.
 V2/V3 exports remove the six deprecated top-level V1 narrative aliases (name,
