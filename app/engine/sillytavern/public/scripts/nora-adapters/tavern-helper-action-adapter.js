@@ -25,7 +25,7 @@ export function createTavernHelperActionAdapter({ storyActions, messages = {}, g
         if (method === 'triggerSlash' || method === 'triggerSlashWithResult') {
             if (!messages.runSlash) return native(...args);
             return unwrap(storyActions.execute({ type: 'sidecar.run', key: createGenerationId(), origin: 'helper.' + method,
-                run: ({ signal }) => messages.runSlash(String(args[0] || ''), { signal }),
+                run: ({ signal, onGenerationStart }) => messages.runSlash(String(args[0] || ''), { signal, onGenerationStart }),
             }));
         }
         const generation = method === 'generate' || method === 'generateRaw';

@@ -13,6 +13,49 @@ function deferred() {
     return { promise, resolve, reject };
 }
 
+test('a command that starts generation becomes visible once and cannot revive a settled task', async () => {
+    const pending = deferred();
+    const entered = deferred();
+    const states = [];
+    let startGeneration;
+    const dispatcher = createStoryActionDispatcher({ messages: {}, onGenerationState: state => states.push(state) });
+    const result = dispatcher.execute({ type: 'sidecar.run', key: 'card-command', run: ({ onGenerationStart }) => {
+        startGeneration = onGenerationStart;
+        entered.resolve();
+        return pending.promise;
+    } });
+    await entered.promise;
+    assert.equal(dispatcher.status('visible').active, false);
+    startGeneration();
+    startGeneration();
+    assert.equal(dispatcher.status('visible').active, true);
+    assert.deepEqual(states, [true]);
+    pending.resolve();
+    await result;
+    startGeneration();
+    assert.deepEqual(states, [true, false]);
+});
+
+test('a cancelled command cannot promote itself to visible generation', async () => {
+    const pending = deferred();
+    const entered = deferred();
+    const states = [];
+    let startGeneration;
+    const dispatcher = createStoryActionDispatcher({ messages: {}, onGenerationState: state => states.push(state) });
+    const result = dispatcher.execute({ type: 'sidecar.run', key: 'card-command', run: ({ onGenerationStart }) => {
+        startGeneration = onGenerationStart;
+        entered.resolve();
+        return pending.promise;
+    } });
+    await entered.promise;
+    await dispatcher.cancel('sidecar:card-command');
+    startGeneration();
+    assert.deepEqual(states, []);
+    pending.resolve();
+    assert.equal((await result).status, 'cancelled');
+    assert.equal(dispatcher.status('visible').active, false);
+});
+
 test('story send crosses one dispatcher seam and reports the observable result', async () => {
     const calls = [];
     const dispatcher = createStoryActionDispatcher({
