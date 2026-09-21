@@ -228,6 +228,14 @@ function validatePayload(root, system, platform, arch) {
   }
 }
 
+function bundledUpgradeTarget({ bundledRoot, currentVersion, launcherVersion, platform = process.platform,
+  arch = process.arch, channel = 'stable' }) {
+  const system = readJson(path.join(bundledRoot, 'nora-system.json'));
+  try { validateSystem(system, null, platform, arch, launcherVersion, channel); }
+  catch { return null; }
+  // This is only a target hint; the updater still verifies the selected release before any mutation.
+  return compare(currentVersion, system.version) === -1 ? `v${system.version.replace(/^v/, '')}` : null;
+}
 async function prepareBundled({ bundledRoot, launcherVersion, platform = process.platform, arch = process.arch,
   signal, onEvent = () => {}, channel = 'stable' }) {
   const system = readJson(path.join(bundledRoot, 'nora-system.json'));
@@ -248,4 +256,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch);
   return bundledRoot;
 }
-module.exports = { compare, check, prepare, prepareUpdate, prepareBundled, validateSystem, validateUpdate, hash, latest, accepts, requestJson, assetUrl };
+module.exports = { compare, check, prepare, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate, hash, latest, accepts, requestJson, assetUrl };

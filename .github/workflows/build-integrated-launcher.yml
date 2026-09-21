@@ -14,6 +14,10 @@ on:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
         default: ''
+      production_mode:
+        description: Use real installation paths for replacement testing (branch artifacts only)
+        type: boolean
+        default: false
   push:
     tags:
       - 'v*-beta.*'
@@ -199,9 +203,11 @@ jobs:
 
       - name: Build release payload
         shell: bash
+        env:
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
         run: |
           mode=--candidate
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then mode=""; fi
+          if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
           node tooling/release/package-release.mjs $mode \
             --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
 

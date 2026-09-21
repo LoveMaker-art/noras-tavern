@@ -836,7 +836,10 @@ if (app && BrowserWindow && ipcMain && shell) {
       }
       if (!findPython()) return nodeStatus();
       const runtime = await runBridge('status');
-      return { ...runtime, installer: readInstallerState(), busy: activeRun || modelBusy, ...locationStatus() };
+      const bundledUpgradeTarget = !LOCAL_TEST && runtime.installed ? releases.bundledUpgradeTarget({
+        bundledRoot: payloadDirectory(), currentVersion: runtime.version, launcherVersion: app.getVersion(), channel: CHANNEL,
+      }) : null;
+      return { ...runtime, bundledUpgradeTarget, installer: readInstallerState(), busy: activeRun || modelBusy, ...locationStatus() };
     } catch (error) {
       return nodeStatus(!findPython() ? '' : error.message);
     }
@@ -896,6 +899,8 @@ if (app && BrowserWindow && ipcMain && shell) {
         if (LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用正式模式包。');
         const current = await runBridge('status', { port: payload.port }, event.sender, payload.runId);
         if (current.updateRecovery) throw new Error('上次更新尚未恢复完成，请保留日志和备份，暂勿再次更新。');
+        diagnostics.write('update.target.requested', { currentVersion: current.version, requestedTag: payload.tag || null,
+          selection: payload.tag ? 'explicit' : 'latest', systemReady: current.systemReady, systemProblems: current.systemProblems });
         releaseAbort = new AbortController();
         let prepared;
         try {
@@ -904,6 +909,7 @@ if (app && BrowserWindow && ipcMain && shell) {
             signal: releaseAbort.signal, onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) });
         } finally { releaseAbort = null; }
         payload.tag = prepared.tag;
+        diagnostics.write('update.target.resolved', { currentVersion: current.version, target: prepared.tag });
         if (cancelled) throw new Error('更新已取消。');
         if (prepared.launcher) {
           if (!app.isPackaged || !findPython()) throw new Error('需要已安装的完整系统才能自动替换启动器。');

@@ -45,6 +45,45 @@ test('latest is resolved once, matching packaged bytes are reused, not downloade
   assert.equal(f.requested.length, 2);
   assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'nora-system.json'))).version, '2.2.8');
 });
+test('bundled upgrade selects only a newer valid platform release and never downgrades', t => {
+  const f = fixture(t);
+  const file = path.join(f.bundledRoot, 'nora-system.json');
+  fs.writeFileSync(file, JSON.stringify(f.system));
+  assert.equal(releases.bundledUpgradeTarget({ ...f.options, currentVersion: '2.2.4' }), 'v2.2.8');
+  for (const currentVersion of ['2.2.8', '2.3.2', '', null]) {
+    assert.equal(releases.bundledUpgradeTarget({ ...f.options, currentVersion }), null);
+  }
+  for (const changes of [{ candidate: true }, { platform: 'win32' }, { channel: 'beta' }]) {
+    fs.writeFileSync(file, JSON.stringify({ ...f.system, ...changes }));
+    assert.equal(releases.bundledUpgradeTarget({ ...f.options, currentVersion: '2.2.4' }), null);
+  }
+  fs.unlinkSync(file);
+  assert.equal(releases.bundledUpgradeTarget({ ...f.options, currentVersion: '2.2.4' }), null);
+});
+test('historical receipt and legacy runtime versions select the new package on all platform descriptors', async t => {
+  const f = fixture(t);
+  const versions = ['2.2.4', '2.2.8', '2.2.11', '2.3.0', '2.3.1', '2.3.2', '2.3.3', '2.3.4', '2.3.5', '2.3.6', '2.3.7'];
+  const record = path.join(f.root, 'tavern-updates', 'installed.json');
+  const runtimeVersion = path.join(f.root, 'apps/tavern-runtime/.tavern-release-version');
+  fs.mkdirSync(path.dirname(record), { recursive: true });
+  fs.mkdirSync(path.dirname(runtimeVersion), { recursive: true });
+  for (const [platform, arch] of [['win32', 'x64'], ['darwin', 'x64'], ['darwin', 'arm64']]) {
+    fs.writeFileSync(path.join(f.bundledRoot, 'nora-system.json'), JSON.stringify({ ...f.system,
+      version: '2.3.13', platform, arch }));
+    for (const current of versions) {
+      for (const schema of [1, 2, null]) {
+        if (schema === null) fs.rmSync(record, { force: true });
+        else fs.writeFileSync(record, JSON.stringify({ schema, version: current }));
+        fs.writeFileSync(runtimeVersion, current);
+        const checked = await releases.check(f.options);
+        assert.equal(checked.current, current);
+        assert.equal(checked.versionSource, schema === null ? 'legacy-runtime' : 'receipt');
+        assert.equal(releases.bundledUpgradeTarget({ ...f.options, platform, arch,
+          currentVersion: checked.current }), 'v2.3.13', `${platform}/${arch}/${current}/${schema}`);
+      }
+    }
+  }
+});
 test('first install validates bundled release without requesting GitHub or creating download cache', async t => {
   const f = fixture(t);
   fs.writeFileSync(path.join(f.bundledRoot, 'nora-system.json'), JSON.stringify(f.system));

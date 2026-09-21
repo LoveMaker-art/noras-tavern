@@ -677,6 +677,8 @@ def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
         fail("还没有安装 Nora Tavern。")
     bootstrap = args.install_root / "apps/tavern-ops/updater/bootstrap.py"
     selected = release_dir(args.release_dir) if getattr(args, "release_dir", None) else None
+    if selected and not managed:
+        fail("缺少系统安装记录，无法确认此旧部署的安全升级与回滚方式。未修改当前安装；请保留数据并导出日志，勿清空重装。")
     if managed:
         if not selected or repair:
             fail("请从启动器的检查更新入口更新完整系统。")

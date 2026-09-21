@@ -11,6 +11,24 @@ from ops.updater.managed_context import LEGACY_GREETING
 
 
 class RefinementTests(unittest.TestCase):
+    def test_selected_update_without_managed_receipt_stops_before_legacy_updater(self):
+        self.args.release_dir = self.root / 'selected-release'
+        self.args.release_dir.mkdir()
+        bootstrap = self.args.install_root / 'apps/tavern-ops/updater/bootstrap.py'
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text('# old updater')
+        with patch.object(bridge, 'installed', return_value=True), \
+             patch.object(bridge, 'release_dir', return_value=self.args.release_dir), \
+             patch.object(bridge, 'python_command', return_value='python'), \
+             patch.object(bridge, 'env_for', return_value={}), \
+             patch.object(bridge, 'run_stream') as run, \
+             patch.object(bridge, 'status_payload', return_value={}), \
+             patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.command_update(self.args)
+            run.assert_not_called()
+            self.assertIn('缺少系统安装记录', str(emit.call_args_list))
+
     def test_skill_diagnostics_distinguish_missing_and_changed_files(self):
         relative = 'skills/creative/tavern/SKILL.md'
         file = self.args.hermes_home / relative

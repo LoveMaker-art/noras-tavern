@@ -14,6 +14,7 @@
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
+  let bundledUpgradeAttempted = false;
   $('stop').remove(); $('runtimeState').remove();
   const launchHint = document.createElement('p'); launchHint.className = 'launch-hint'; $('launchbar').prepend(launchHint);
   const textError = error => String(error?.message || error || '操作未完成，请重试。')
@@ -172,6 +173,20 @@
       fail(snapshot.installer.error, 'update', () => run('update', { tag: snapshot.installer.resumeTarget }));
       return;
     }
+    if (snapshot.installed && snapshot.hermesInstalled && snapshot.bundledUpgradeTarget) {
+      const target = snapshot.bundledUpgradeTarget;
+      if (!bundledUpgradeAttempted && snapshot.installer?.phase !== 'error') {
+        bundledUpgradeAttempted = true;
+        run('update', { tag: target });
+        return;
+      }
+      view = 'recovery'; daily = false; clearInline();
+      $('main').classList.remove('welcome', 'daily', 'editing');
+      $('steps').hidden = true;
+      say('继续完成版本升级。', snapshot.installer?.error || `启动器已就绪，酒馆将升级到 ${target}。世界、对话和配置会保留。`);
+      $('inline').append(button('继续更新', () => run('update', { tag: target })));
+      controls(); return;
+    }
     if (!autoStartAttempted && snapshot.installed && snapshot.hermesInstalled && snapshot.systemReady === true) {
       autoStartAttempted = true;
       if (!snapshot.running) { run('start', { service: 'tavern', resumeSetup: true }); return; }
@@ -183,11 +198,11 @@
       $('main').classList.remove('welcome', 'daily', 'editing');
       $('steps').hidden = true; $('management').hidden = true; clearInline();
       say('当前安装需要修复。', (snapshot.systemProblems || []).slice(0, 2).join('；'));
-      const repair = button('修复当前安装', () => run('update', { tag: `v${snapshot.version.replace(/^v/, '')}` }));
+      const repair = button('修复当前安装', () => run('update'));
       repair.disabled = !snapshot.version;
       $('inline').append(repair);
       const note = document.createElement('p'); note.className = 'install-location';
-      note.textContent = '修复受管文件，保留世界、对话和配置。' + (!snapshot.version ? '无法确认版本，请先导出日志。' : '');
+      note.textContent = '使用最新兼容版本修复，保留世界、对话和配置。' + (!snapshot.version ? '无法确认版本，请先导出日志。' : '');
       $('inline').append(note);
       controls(); return;
     }

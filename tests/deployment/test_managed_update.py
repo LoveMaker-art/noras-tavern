@@ -18,7 +18,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ManagedUpdateTests(unittest.TestCase):
-    def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False):
+    def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False,
+                    source_version="2.3.0", target_version="2.3.2", receipt_schema=1):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
@@ -28,7 +29,8 @@ class ManagedUpdateTests(unittest.TestCase):
             instance = {"schema": 1, "noraHome": str(root), "hermesHome": str(home),
                         "installRoot": str(tavern), "port": 18899, "releaseChannel": "beta"}
             write(home / "nora-instance.json", json.dumps(instance))
-            write(tavern / "tavern-updates/installed.json", '{"version":"2.3.0","commit":"old"}')
+            write(tavern / "tavern-updates/installed.json", json.dumps({"schema": receipt_schema,
+                  "version": source_version, "commit": "old"}))
             write(tavern / "tavern-updates/nora-system.json", '{"schema":1,"commit":"old","setupCompleted":true}')
             write(tavern / "apps/tavern-runtime/native-runtime.json", '{"old":true}')
             story = tavern / "tavern-state/native/default-user/nora-world-core/worlds/story.json"
@@ -46,9 +48,9 @@ class ManagedUpdateTests(unittest.TestCase):
                 write(home / relative, "old managed file")
             old_config = update.render_mcp(home, tavern, 18899)
             (home / "config.yaml").write_bytes(old_config)
-            manifest = {"versions": {"tavern": "2.3.2"}, "commit": "new", "artifacts": {}}
+            manifest = {"versions": {"tavern": target_version}, "commit": "new", "artifacts": {}}
             if same_version:
-                manifest["versions"]["tavern"] = "2.3.0"
+                manifest["versions"]["tavern"] = source_version
             before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
             receipts = {p: p.read_bytes() for p in (tavern / "tavern-updates").iterdir()}
 
@@ -165,6 +167,8 @@ class ManagedUpdateTests(unittest.TestCase):
                         update.install(args)
             else:
                 update.install(args)
+                installed = json.loads((tavern / "tavern-updates/installed.json").read_text())
+                self.assertEqual(installed["version"], manifest["versions"]["tavern"])
                 self.assertEqual((home / "AGENTS.md").read_text(), "# New Nora instructions\n")
                 for relative in nora_system.SKILLS:
                     self.assertEqual((home / "skills" / relative / "SKILL.md").read_text(), "new skill")
@@ -191,6 +195,15 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_managed_update_uses_shared_transaction_and_preserves_user_data(self):
         self.transaction()
+
+    def test_historical_managed_receipts_upgrade_or_restore_without_data_loss(self):
+        # Versions label representative receipt fixtures, not downloaded historical runtimes.
+        for version in ("2.2.11", "2.3.0", "2.3.1", "2.3.2", "2.3.3", "2.3.4", "2.3.5", "2.3.6", "2.3.7"):
+            for schema in (1, 2):
+                for fail in (False, True):
+                    with self.subTest(version=version, schema=schema, rollback=fail):
+                        self.transaction(source_version=version, target_version="2.3.13",
+                                         receipt_schema=schema, bundled=False, late_failure=fail)
 
     def test_invalid_lifecycle_fails_before_stopping_or_changing_installation(self):
         self.transaction(preflight_failure=True)
