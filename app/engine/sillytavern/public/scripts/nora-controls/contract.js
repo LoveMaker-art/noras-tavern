@@ -1,6 +1,8 @@
 // Shared by the authenticated broker and the browser executor. No eval/reflective dispatch.
 const action = (description, fields = {}, options = {}) => Object.freeze({ description, fields, readOnly: false, ...options });
 export const CONTROL_ACTIONS = Object.freeze({
+    'appearance.inspect': action('Read whole-page light/dark/system mode, local control availability and applied mode. Separate from World visuals.', {}, { readOnly: true }),
+    'appearance.set': action('Set and persist whole-page appearance on a local loopback page; no World/model/card changes. Non-local Liveware pages remain automatic. Inspect first; do not edit CSS.', { mode: ['system', 'light', 'dark'], expectedRevision: 'string' }),
     'preset.list': action('List stored chat-completion preset template names; no selection or generation.', {}, { readOnly: true }),
     'preset.inspect': action('Read library template or current World preset, prompt identifiers/order/parameters and revision. For world scope name is empty. Connections and executable extensions are excluded.', { scope: ['library', 'world'], name: 'string' }, { readOnly: true }),
     'preset.create': action('Create a library template from source {name,revision}; edits {prompts?:[{operation:create|update|delete,id,patch?}],order?:[{identifier,enabled}],parameters?:object}. Prompt patch: name,content,role(system|user|assistant),injection_position(0|1),injection_depth,injection_order. Parameters: temperature,top_p,openai_max_tokens,openai_max_context. Dynamic markers protected. Does not apply or execute scripts. Duplicate name rejected.', { name: 'string', source: 'object', edits: 'object' }),

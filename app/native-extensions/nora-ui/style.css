@@ -25,6 +25,36 @@
     gap: 8px;
 }
 
+#nora-panel .nora-capability-heading { display: flex; align-items: center; justify-content: flex-start; gap: 4px; margin-bottom: 2px; }
+.nora-capability-manage { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--nora-muted); font-size: 12px; cursor: pointer; }
+.nora-capability-manage:hover { color: var(--nora-brand-ink); background: var(--nora-brand-tint); }
+.nora-capability-manage:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+.nora-extension-item { display: grid; gap: 10px; min-width: 0; padding: 18px 0; border-bottom: 1px solid var(--nora-line); }
+.nora-extension-item:last-child { border-bottom: 0; }
+.nora-extension-item summary { overflow-wrap: anywhere; cursor: pointer; }
+.nora-extension-manager .nora-capability-row { flex-wrap: wrap; }
+.nora-extensions-modal .nora-sheet { width: min(480px, 100%); }
+.nora-form.nora-extension-manager { gap: 0; }
+.nora-extension-world { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 0 0 12px; border-bottom: 1px solid var(--nora-line); color: var(--nora-muted); font-size: 12px; line-height: 1.6; }
+.nora-extension-world span { min-width: 0; overflow-wrap: anywhere; }
+.nora-capability-name { display: inline-flex; align-items: center; gap: 10px; min-width: 0; overflow-wrap: anywhere; }
+.nora-extension-icon { display: grid; place-items: center; flex: 0 0 30px; width: 30px; height: 30px; border-radius: 8px; background: var(--nora-brand-tint); color: var(--nora-brand-ink); font-size: 12px; }
+.nora-extension-manager .nora-capability-name { font-size: 13px; font-weight: 500; }
+.nora-capability-badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; }
+.nora-capability-badge::before { content: ''; width: 4px; height: 4px; flex: 0 0 4px; border-radius: 50%; background: currentColor; opacity: .7; }
+.nora-capability-row[data-capability-status="READY"] .nora-capability-badge { color: var(--nora-brand-ink); }
+.nora-extension-manager .nora-capability-badge { padding: 4px 7px; border-radius: 5px; background: var(--nora-bg); }
+.nora-extension-item .nora-model-note { margin: 0; font-size: 11.5px; line-height: 1.7; }
+.nora-extension-action { display: inline-flex; align-items: center; justify-self: end; gap: 14px; min-height: 34px; max-width: 100%; padding: 6px 10px; border: 1px solid var(--nora-line); border-radius: 6px; background: transparent; color: var(--nora-ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.nora-extension-action span { min-width: 0; overflow-wrap: anywhere; text-align: start; }
+.nora-extension-action i { color: var(--nora-muted); font-size: 9px; }
+.nora-extension-action:hover { border-color: var(--nora-brand-ink); color: var(--nora-brand-ink); }
+.nora-extension-action:focus-visible, .nora-extension-script summary:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+.nora-extension-script { min-width: 0; padding: 8px 10px; border: 1px solid var(--nora-line); border-radius: 6px; color: var(--nora-ink-2); font-size: 12px; }
+.nora-extension-script summary { line-height: 1.7; }
+.nora-extension-script[open] summary { margin-bottom: 10px; }
+.nora-extension-script textarea { max-height: 240px; }
+
 .nora-capability-row {
     display: flex;
     align-items: center;
@@ -57,7 +87,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-nora-appearance]) {
         --nora-bg: #15140f;
         --nora-surface: #1d1b15;
         --nora-ink: #ece7da;
@@ -72,6 +102,22 @@
         --nora-scrim: rgba(0, 0, 0, .64);
         --nora-shadow: 0 16px 50px rgba(0, 0, 0, .52);
     }
+}
+
+:root[data-nora-appearance="dark"] {
+    --nora-bg: #15140f;
+    --nora-surface: #1d1b15;
+    --nora-ink: #ece7da;
+    --nora-ink-2: #b3ab9a;
+    --nora-muted: #7d7565;
+    --nora-line: #2b281f;
+    --nora-line-2: #39342a;
+    --nora-user-bg: #23211a;
+    --nora-brand-ink: #ffa45c;
+    --nora-brand-tint: rgba(255, 129, 42, .13);
+    --nora-danger: #e06a5a;
+    --nora-scrim: rgba(0, 0, 0, .64);
+    --nora-shadow: 0 16px 50px rgba(0, 0, 0, .52);
 }
 
 body.nora-product {
@@ -532,6 +578,38 @@ body.nora-no-world #nora-chat .mes { display: none !important; }
 .nora-form label, .nora-clone-section label { display: grid; gap: 6px; color: var(--nora-muted); font-size: 12px; }
 .nora-form input:not([type="checkbox"]):not([type="radio"]):not([type="range"]), .nora-form textarea, .nora-form select, .nora-clone-section input:not([type="file"]) { width: 100%; padding: 9px 10px; border: 1px solid var(--nora-line-2); border-radius: 10px; outline: none; background: var(--nora-bg); color: var(--nora-ink); font-size: 13px; line-height: 1.55; }
 .nora-form textarea { resize: vertical; }
+body.nora-product .nora-form textarea.nora-regex-code { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; tab-size: 4; }
+.nora-regex-placements { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 12px; border: 1px solid var(--nora-line); border-radius: 10px; }
+.nora-regex-placements legend { color: var(--nora-muted); font-size: 12px; padding: 0 4px; }
+.nora-regex-list-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; border-bottom: 1px solid var(--nora-line); padding: 8px 0; }
+.nora-regex-list-row > .nora-library-row { display: flex; flex-direction: column; gap: 6px; flex: 1 1 180px; min-width: 0; padding: 10px 4px; border: 0; background: transparent; color: var(--nora-ink); text-align: left; overflow-wrap: anywhere; cursor: pointer; }
+.nora-regex-list-row > .nora-library-row:hover { color: var(--nora-brand-ink); }
+.nora-regex-list-row.is-disabled .nora-library-row { color: var(--nora-muted); }
+.nora-regex-list-row strong { font-size: 13px; line-height: 1.6; font-weight: 500; }
+.nora-regex-list-row small { color: var(--nora-muted); font-size: 11px; line-height: 1.7; }
+.nora-regex-order { display: inline-block; min-width: 24px; margin-right: 4px; color: var(--nora-muted); font: 11px ui-monospace, monospace; }
+.nora-regex-list-modal .nora-sheet, .nora-regex-editor-modal .nora-sheet { width: min(620px, 100%); height: min(680px, 84vh); }
+.nora-regex-list-modal .nora-sheet-body { display: flex; flex-direction: column; gap: 12px; overflow: hidden; }
+.nora-regex-list-modal .nora-sheet-back { align-self: flex-start; flex-shrink: 0; margin: 0; }
+.nora-regex-list-intro { flex: 0 0 auto; min-width: 0; }
+.nora-regex-list-intro strong { font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.nora-regex-list-intro .nora-model-note { margin: 6px 0 0; }
+.nora-regex-list { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; gap: 0; }
+.nora-regex-list-note { flex: 0 0 auto; margin: 0; padding-top: 10px; border-top: 1px solid var(--nora-line); }
+.nora-regex-editor-modal h3 { margin: 0; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.nora-regex-editor-modal .nora-model-note { margin: 0; }
+.nora-regex-editor-modal .nora-library-check { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; }
+.nora-regex-editor-modal input[type="checkbox"] { accent-color: var(--nora-brand); }
+.nora-regex-editor-modal details { min-width: 0; padding-top: 12px; border-top: 1px solid var(--nora-line); }
+.nora-regex-editor-modal summary { color: var(--nora-muted); font-size: 12px; line-height: 1.6; cursor: pointer; }
+.nora-regex-editor-modal details[open] summary { margin-bottom: 10px; }
+.nora-regex-editor-modal textarea[readonly] { color: var(--nora-ink-2); }
+.nora-regex-editor-modal .nora-editor-toolbar button:disabled { opacity: .55; cursor: wait; }
+.nora-regex-list-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-left: auto; }
+.nora-regex-list-actions > button { min-height: 32px; padding: 5px 9px; border: 1px solid var(--nora-line); border-radius: 8px; background: transparent; color: var(--nora-ink-2); font: inherit; font-size: 12px; cursor: pointer; }
+.nora-regex-list-actions > button:hover:not(:disabled) { border-color: var(--nora-brand); color: var(--nora-brand-ink); }
+.nora-regex-list-actions > button:disabled { opacity: .4; cursor: not-allowed; }
+.nora-regex-list-row button:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
 .nora-form input:focus, .nora-form textarea:focus, .nora-form select:focus { border-color: var(--nora-brand); }
 .nora-form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 .nora-form-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }

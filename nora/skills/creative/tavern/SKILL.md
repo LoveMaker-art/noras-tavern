@@ -59,7 +59,7 @@ substituting the relevant file. Load a second reference only for a real second t
 | Read/send/stop/regenerate/suggest replies; edit history; inspect or control story compression | [chat and ledger](references/chat-ledger.md) |
 | Inspect/control installed plugins, Helper scripts/buttons, Regex, MVU variables or MVU models; diagnose a card button | [plugins](references/plugins.md) |
 | Read story archives or tastes; learn a preference; request or inspect reflection | [story profile](references/story-profile.md) |
-| Change global default or one world's background image, fonts, palette or reading surface | [world visuals](references/world-visuals.md) |
+| Switch local page light/dark/system appearance; change global or per-world backgrounds, fonts, palette or reading surface | [appearance and world visuals](references/world-visuals.md) |
 
 ## Procedure
 

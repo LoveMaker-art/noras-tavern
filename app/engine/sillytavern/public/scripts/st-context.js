@@ -120,7 +120,7 @@ import { getTextGenServer, textgenerationwebui_settings } from './textgen-settin
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
+import { timestampToMoment, uuidv4, importFromExternalUrl, regexFromString } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
 import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, primeWorldInfoSnapshot, reloadEditor, saveWorldInfo, updateWorldInfoList, world_names } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
@@ -340,6 +340,7 @@ export function getContext() {
         getExtensionManifest,
         openThirdPartyExtensionMenu,
         regex: {
+            parse: regexFromString,
             allowCharacter: allowScopedScripts,
             disallowCharacter: disallowScopedScripts,
             isCharacterAllowed: isScopedScriptsAllowed,

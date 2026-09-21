@@ -34,6 +34,7 @@ export function renderMvuModelSection(status, escapeHtml, config = {}) {
 }
 
 export function createModelController({ model, settingsDomain, operations, readState, activeWorldModel, settings, dialogs, select, selectAll, escapeHtml, icons, mvu, onChanged }) {
+    let onBack = null;
     const profileActions = createModelProfiles({ model, settings, persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
     const profiles = () => settings().modelProfiles || [];
     const activeWorldCapabilities = () => activeWorldModel()?.capabilities || null;
@@ -106,6 +107,11 @@ export function createModelController({ model, settingsDomain, operations, readS
         const rows = available.map((choice) => `<div class="nora-model-item ${choice.active ? 'active' : ''}" data-model-choice="${escapeHtml(choice.id)}" role="button" tabindex="0"><div class="nora-model-info"><strong>${escapeHtml(choice.name)}</strong><span>${escapeHtml(choice.model)}</span></div><span class="nora-model-check" aria-hidden="true">✓</span>${choice.deletable ? `<button class="nora-delete-button nora-model-delete" data-model-delete="${escapeHtml(choice.id)}" type="button" aria-label="${t`删除模型 ${escapeHtml(choice.name)}`}" title="${tr("删除模型")}">${icons.trash}</button>` : ''}</div>`).join('');
         const initialMvuStatus = mvu?.status?.(activeWorldCapabilities());
         const modal = dialogs.open(tr("模型"), `<section class="nora-model-group"><div class="nora-model-group-head"><span>${tr("文本模型")}</span><button data-model-add type="button">${icons.plus}<span>${tr("添加")}</span></button></div><p class="nora-model-hint">${t`当前使用：${escapeHtml(display.label)}`}</p><div class="nora-model-list">${rows || `<p class="nora-model-empty">${tr("还没有保存自定义模型。")}</p>`}</div></section><div data-mvu-model-slot>${renderMvuModelSection(initialMvuStatus, escapeHtml)}</div>`, 'nora-model-modal nora-plain-sheet');
+        if (onBack) {
+            const back = onBack;
+            select('.nora-sheet-body', modal)?.insertAdjacentHTML('afterbegin', `<button class="nora-sheet-back" data-model-back type="button">${tr('‹ 返回增强能力')}</button>`);
+            select('[data-model-back]', modal)?.addEventListener('click', back);
+        }
         void refreshMvuSection(modal);
         selectAll('[data-model-choice]', modal).forEach((row) => {
             row.addEventListener('click', () => apply(row.dataset.modelChoice));
@@ -288,5 +294,5 @@ export function createModelController({ model, settingsDomain, operations, readS
         }
     }
 
-    return Object.freeze({ open });
+    return Object.freeze({ open: (back = null) => { onBack = typeof back === 'function' ? back : null; open(); } });
 }

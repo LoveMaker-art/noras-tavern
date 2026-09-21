@@ -128,6 +128,11 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
     async function apply(action, params, command) {
         if (scope().worldId !== command.worldId || scope().sessionId !== command.sessionId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World/Session changed before execution.');
         if (action.startsWith('preset.')) return presetAction(action, params);
+        if (action.startsWith('appearance.')) {
+            const ui = globalRef.NoraUI;
+            if (!ui?.appearanceState?.().ready) throw controlError('NORA_APPEARANCE_NOT_READY', 'Page appearance is not ready.');
+            return action === 'appearance.inspect' ? ui.appearanceState() : ui.setAppearance(params);
+        }
         if (action.startsWith('theme.')) return themeAction(action, params);
         const context = getContext();
         if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params, command);

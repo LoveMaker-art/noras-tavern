@@ -32,6 +32,8 @@ export function createPanelController({
     runWorldOperation,
     refreshWorldsAfterCommit,
     retryWorldCapability = async () => {},
+    openCardRegex = () => {},
+    characterCapabilities = () => ({ helperScripts: [] }),
     agentUserId = () => '',
     currentUrl = () => globalThis.location?.href || '/',
 }) {
@@ -63,10 +65,11 @@ export function createPanelController({
         return cast;
     }
 
-    function capabilitySection(world) {
+    function capabilityRows(world, management = false) {
         const capabilities = world?.capabilities;
         if (!capabilities?.declared?.length) return '';
-        const labels = { prompt_template: tr("提示词模板"), regex: tr("Regex 显示规则"), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
+        const labels = { prompt_template: tr("提示词模板"), regex: tr('正则规则'), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
+        const symbols = { prompt_template: 'fa-file-lines', regex: 'fa-code', tavern_helper: 'fa-scroll', mvu: 'fa-sliders' };
         const statuses = { READY: tr("已就绪"), PENDING: tr("加载中"), DEGRADED: tr("未就绪") };
         const reasons = {
             NORA_MVU_TIMEOUT: tr("变量系统启动超时，可以重试。"),
@@ -82,9 +85,59 @@ export function createPanelController({
             const retry = item.status === 'DEGRADED'
                 ? `<button class="nora-capability-retry" data-retry-capability="${escapeHtml(capability)}" type="button">${tr("重试")}</button>`
                 : '';
-            return `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span>${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state">${escapeHtml(statuses[item.status] || item.status)}${retry}</span></div>`;
+            const row = `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${management ? `<i class="fa-solid ${symbols[capability] || 'fa-puzzle-piece'} nora-extension-icon" aria-hidden="true"></i>` : ''}${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(statuses[item.status] || item.status)}</span>${retry}</span></div>`;
+            if (!management) return row;
+            const actions = {
+                regex: () => `<button class="nora-extension-action" data-extension-regex type="button"><span>${tr('查看正则规则')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
+                mvu: () => `<button class="nora-extension-action" data-extension-model type="button"><span>${tr('模型设置')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
+                tavern_helper: () => `<p class="nora-model-note">${tr('脚本仅供查看；不会在这里执行或修改。')}</p>${(characterCapabilities(currentCharacter()).helperScripts || []).map((script, index) => `<details class="nora-extension-script"><summary>${escapeHtml(script.name || `${tr('角色脚本')} ${index + 1}`)}</summary><textarea class="nora-regex-code" rows="10" readonly aria-label="${tr('角色脚本')}" spellcheck="false">\n${escapeHtml(script.content || '')}</textarea></details>`).join('')}`,
+                prompt_template: () => `<p class="nora-model-note">${tr('模板随当前世界加载，此处显示运行状态。')}</p>`,
+            };
+            return `<section class="nora-extension-item" data-extension="${escapeHtml(capability)}">${row}${error ? `<p class="nora-model-note">${escapeHtml(error)}</p>` : ''}${actions[capability]?.() || ''}</section>`;
         }).join('');
-        return `<div class="pSection nora-capability-section"><div class="pHead">${tr("增强能力")}</div>${rows}</div>`;
+        return rows;
+    }
+
+    function capabilitySection(world) {
+        const rows = capabilityRows(world);
+        if (!rows) return '';
+        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('增强能力')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('管理增强能力')}" title="${tr('管理增强能力')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div>${rows}</div>`;
+    }
+
+    function bindCapabilityRetries(root, worldId, afterRetry) {
+        selectAll('[data-retry-capability]', root).forEach(button => button.addEventListener('click', async event => {
+            event.stopPropagation();
+            if (!worldId || activeWorldModel()?.id !== worldId || button.disabled) return;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            try {
+                await retryWorldCapability(worldId, button.dataset.retryCapability);
+                if (activeWorldModel()?.id === worldId) afterRetry();
+            } catch (error) {
+                dialogs.toast(t`增强能力重试失败：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
+            } finally {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
+        }));
+    }
+
+    function openExtensions() {
+        const world = activeWorldModel();
+        if (!world?.capabilities?.declared?.length) return;
+        const worldId = world.id, avatar = currentCharacter()?.avatar;
+        const modal = dialogs.open(tr('增强能力'), `<div class="nora-form nora-extension-manager">${world.name ? `<p class="nora-extension-world"><i class="fa-solid fa-globe" aria-hidden="true"></i><span>${escapeHtml(world.name)}</span></p>` : ''}${capabilityRows(world, true)}</div>`, 'nora-detail-modal nora-plain-sheet nora-extensions-modal');
+        const version = dialogs.version;
+        const isCurrent = () => activeWorldModel()?.id === worldId && currentCharacter()?.avatar === avatar;
+        bindCapabilityRetries(modal, worldId, () => {
+            render();
+            if (dialogs.version === version && isCurrent()) openExtensions();
+        });
+        select('[data-extension-regex]', modal)?.addEventListener('click', () => {
+            if (!isCurrent() || !avatar) return;
+            void openCardRegex(avatar, () => { if (isCurrent()) openExtensions(); }, { backLabel: tr('‹ 返回增强能力') });
+        });
+        select('[data-extension-model]', modal)?.addEventListener('click', () => { if (isCurrent()) openModelSheet(() => { if (isCurrent()) openExtensions(); }); });
     }
 
     function render() {
@@ -183,21 +236,7 @@ export function createPanelController({
             closeDrawers();
             worldbookController.openAdd();
         }));
-        selectAll('[data-retry-capability]', body).forEach(button => button.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const world = activeWorldModel();
-            if (!world || button.disabled) return;
-            button.disabled = true;
-            button.setAttribute('aria-busy', 'true');
-            try {
-                await retryWorldCapability(world.id, button.dataset.retryCapability);
-                render();
-            } catch (error) {
-                dialogs.toast(t`增强能力重试失败：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
-                button.disabled = false;
-                button.removeAttribute('aria-busy');
-            }
-        }));
+        bindCapabilityRetries(body, world?.id, render);
         selectAll('[data-fold]', body).forEach(header => header.addEventListener('click', () => {
             if (header.dataset.fold === 'cast') castFolded = !castFolded;
             if (header.dataset.fold === 'settings') worldSettingsFolded = !worldSettingsFolded;
@@ -220,7 +259,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
+        const actions = { extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         actions[action]?.();
     }
 
