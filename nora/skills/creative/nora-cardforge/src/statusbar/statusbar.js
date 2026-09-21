@@ -1,4 +1,6 @@
 const { getMvuVariablePaths, resolveFieldSchema } = require('../mvu/var-paths');
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
 
 function validateStatusbarHtml(card, html) {
   const issues = [];
@@ -9,6 +11,13 @@ function validateStatusbarHtml(card, html) {
   if (/\bfetch\s*\(|XMLHttpRequest|WebSocket\s*\(|EventSource\s*\(|sendBeacon\s*\(|localStorage|sessionStorage|indexedDB|document\.cookie|\beval\s*\(|\bFunction\s*\(|window\.open\s*\(|location\s*=|<script[^>]+src=|<iframe\b|<form[^>]+action=|<meta[^>]+http-equiv=["']?refresh|(?:src|href)\s*=\s*["']?\s*(?:https?:|\/\/)|url\(\s*["']?\s*(?:https?:|\/\/)/i.test(text)) {
     issues.push(issue('error', 'HTML 含不允许的外部访问或持久化能力'));
   }
+  const syntax = issues.some(i => i.severity === 'error')
+    ? { checked: 0, status: 'skipped', issues: [] } : checkScriptSyntax(text);
+  issues.push(...syntax.issues);
+  const verification = {
+    scope: 'literal-bindings', scriptsExecuted: false, runtime: 'not-verified',
+    scriptSyntax: { checked: syntax.checked, status: syntax.status },
+  };
 
   const targets = [...text.matchAll(/data-target=["']([^"']+)["']/g)].map(m => m[1]);
   for (const target of targets) {
@@ -23,11 +32,11 @@ function validateStatusbarHtml(card, html) {
     for (const path of bindings.paths) if (!resolveFieldSchema(contract, path)) issues.push(issue('error', `未声明的显示路径：${JSON.stringify(path)}`));
     // Literal bindings can be checked. Custom code is preserved, not executed
     // or certified by this scanner; interaction acceptance is a separate step.
-    issues.push(issue('warning', '仅检查字面字段绑定；自定义脚本读写、显示和交互仍需运行验收'));
+    issues.push(issue('warning', '仅检查字面字段绑定与内嵌脚本语法；自定义脚本读写、显示和交互仍需运行验收'));
     return {
       passed: !issues.some(i => i.severity === 'error'),
       stats: { usedPaths: bindings.paths, tabTargets: targets },
-      verification: { scope: 'literal-bindings', scriptsExecuted: false, runtime: 'not-verified' },
+      verification,
       issues
     };
   }
@@ -41,8 +50,25 @@ function validateStatusbarHtml(card, html) {
   return {
     passed: !issues.some(i => i.severity === 'error'),
     stats: { usedPaths: [...usedPaths], declaredPaths: [...variablePaths], tabTargets: targets },
+    verification: { ...verification, scope: 'legacy-paths' },
     issues
   };
+}
+
+function checkScriptSyntax(html) {
+  const python = process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const result = spawnSync(python, [path.resolve(__dirname, '../../scripts/check_statusbar.py'), process.execPath], {
+    input: html, encoding: 'utf8', timeout: 20000, maxBuffer: 1024 * 1024,
+    env: { ...process.env, PYTHONUTF8: '1' },
+  });
+  try {
+    if (result.error || result.status !== 0) throw new Error(result.error?.message || `checker exit ${result.status}`);
+    const report = JSON.parse(result.stdout);
+    if (!Array.isArray(report.issues) || !Number.isInteger(report.checked)) throw new Error('invalid checker report');
+    return { ...report, status: report.issues.some(i => i.severity === 'error') ? 'failed' : 'passed' };
+  } catch (error) {
+    return { checked: 0, status: 'unavailable', issues: [issue('error', `脚本语法检查不可用：${error.message}`)] };
+  }
 }
 
 function createStatusbarPatch(html, options = {}) {

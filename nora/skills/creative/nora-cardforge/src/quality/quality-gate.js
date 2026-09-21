@@ -4,12 +4,13 @@ const { runDiagnostics } = require('../diagnostics/static-checks');
 const { validateStatusbarHtml } = require('../statusbar/statusbar');
 const { validateCompiledMvu } = require('../mvu/mvu-compiler');
 
-function runQualityGate({ card, cardMdPath, statusbarHtml = '', profile = 'release', scoreWriting = false }) {
+function runQualityGate({ card, writingCard = card, cardMdPath, statusbarHtml = '', profile = 'release', scoreWriting = false }) {
   const structure = runDiagnostics(card, { profile });
   const mvu = validateCompiledMvu(card);
   const statusbar = statusbarHtml ? validateStatusbarHtml(card, statusbarHtml) : null;
   const strictWriting = profile === 'release-strict';
-  const writing = cardMdPath && (scoreWriting || strictWriting) ? runWritingScore(cardMdPath) : null;
+  const writing = cardMdPath && (scoreWriting || strictWriting)
+    ? runWritingScore(cardMdPath, writingCard?.data?.extensions?.nora_world ? writingCard : undefined) : null;
   const hardFailures = [];
   if (!structure.passed) hardFailures.push('structure');
   if (!mvu.passed) hardFailures.push('mvu-contract');
@@ -32,10 +33,13 @@ function runQualityGate({ card, cardMdPath, statusbarHtml = '', profile = 'relea
   };
 }
 
-function runWritingScore(cardMdPath) {
+function runWritingScore(cardMdPath, card) {
   const script = path.resolve(__dirname, '../../scripts/score_card.py');
-  const result = spawnSync('python3', [script, path.resolve(cardMdPath), '--json'], {
+  const python = process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const result = spawnSync(python, [script, path.resolve(cardMdPath), '--json', ...(card ? ['--compiled-stdin'] : [])], {
+    input: card ? JSON.stringify(card) : undefined,
     encoding: 'utf8',
+    env: { ...process.env, PYTHONUTF8: '1' },
     timeout: 60000,
     maxBuffer: 10 * 1024 * 1024
   });
@@ -43,10 +47,12 @@ function runWritingScore(cardMdPath) {
     return { available: false, score: null, error: result.error.message };
   }
   try {
-    const parsed = JSON.parse(result.stdout || '[]')[0];
+    if (![0, 1].includes(result.status)) throw new Error(`scorer exit ${result.status}`);
+    const parsed = JSON.parse(result.stdout)[0];
+    if (!parsed || !Number.isFinite(parsed.score)) throw new Error('missing numeric score');
     return {
       available: true,
-      score: Number(parsed?.score || 0),
+      score: parsed.score,
       categories: parsed?.categories || {},
       issues: parsed?.issues || [],
       detail: parsed?.detail || {},

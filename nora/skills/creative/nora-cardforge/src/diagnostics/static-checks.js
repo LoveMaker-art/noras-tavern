@@ -58,9 +58,6 @@ function checkWorldbookStructure(card) {
         suggestedFix: { type: 'upsertWorldEntry', comment: entry.comment, entry: { constant: true, selective: false } }
       });
     }
-    if (entry.insertion_order !== 100 && !String(entry.comment || '').includes('[mvu_update]')) {
-      issues.push(issue('warning', '普通世界书条目 order 不是 100', label, `order=${entry.insertion_order}`));
-    }
     if (Array.isArray(entry.keys) && entry.keys.some(k => !String(k || '').trim())) {
       issues.push(issue('warning', '关键词包含空值', label));
     }
@@ -100,18 +97,14 @@ function checkTokenUsage(card) {
 }
 
 function checkRecursionSettings(card) {
-  const issues = [];
-  for (const entry of card.data.character_book.entries) {
-    if (!entry.enabled) continue;
-    const ext = entry.extensions || {};
-    if (entry.constant && !ext.exclude_recursion) {
-      issues.push(issue('warning', '蓝灯条目未开启不可递归', entry.comment || `#${entry.id}`));
-    }
-    if (!entry.constant && (!ext.exclude_recursion || !ext.prevent_recursion)) {
-      issues.push(issue('warning', '绿灯条目递归保护不完整', entry.comment || `#${entry.id}`));
-    }
-  }
-  return result('recursion_settings', '递归设置', issues);
+  const entries = card.data.character_book.entries.filter(entry => entry.enabled);
+  // These switches describe author intent, not a universal requirement to
+  // disable recursion. Actual activation also depends on host settings/budget.
+  return result('recursion_settings', '递归设置', [], {
+    enabledEntries: entries.length,
+    eligibleForRecursiveActivation: entries.filter(entry => !entry.constant && !entry.extensions.exclude_recursion).length,
+    mayTriggerOtherEntries: entries.filter(entry => !entry.extensions.prevent_recursion).length,
+  });
 }
 
 function checkRegexScripts(card) {

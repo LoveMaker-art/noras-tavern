@@ -20,8 +20,10 @@ intent through the `tavern` skill; do not substitute new-World creation.
 
 ## Prepare locally
 
-1. Build the latest authored sources, inspect the artifact, and review the returned
-   quality report. `release` gates structure; writing scoring is opt-in and advisory.
+1. Reuse this task's successful build and reviewed artifact when the sources are
+   unchanged. Otherwise build the current sources and review its artifact/quality
+   result first. `prepare-import` verifies source and artifact hashes; it does not
+   replace content review. Do not rebuild merely because the task entered import.
 2. Discover the installed `nora.world.import` and `nora.operation.get` schemas.
    Hermes normally registers these as `mcp__nora__nora_world_import` and
    `mcp__nora__nora_operation_get`. If deferred, use `tool_search`, `tool_describe`

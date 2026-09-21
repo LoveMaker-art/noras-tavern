@@ -7,6 +7,7 @@ const { readCard, writeCardArtifact } = require('../core/card-io');
 const { summarizeCard } = require('../core/card-model');
 const { runDiagnostics } = require('../diagnostics/static-checks');
 const { validateStatusbarHtml } = require('../statusbar/statusbar');
+const { createBasicStatusbar } = require('../statusbar/basic-template');
 const { initProject, ingestProject, buildProject, inspectProject } = require('../project/project-engine');
 const { prepareImport, verifyImport } = require('../install/prepare-import');
 const { editProse } = require('../core/prose-edit');
@@ -113,6 +114,21 @@ async function commandStatusbarValidate(args) {
   writeJsonOutput({ ok: report.passed, report }, args.output);
 }
 
+async function commandStatusbarTemplate(args) {
+  for (const key of Object.keys(args)) {
+    if (!['_', 'vars', 'output', 'title'].includes(key)) throw new Error(`Unknown statusbar-template option --${key}`);
+  }
+  const spec = JSON.parse(readTextFile(requireArg(args, 'vars')));
+  const result = createBasicStatusbar(spec, args.title === undefined ? {} : { title: args.title });
+  const output = path.resolve(requireArg(args, 'output'));
+  fs.mkdirSync(path.dirname(output), { recursive: true });
+  // Scaffolding must never replace a user's existing interface or variable file.
+  fs.writeFileSync(output, result.html, { encoding: 'utf8', flag: 'wx' });
+  writeJsonOutput({ ok: true, template: 'basic-readonly/v1', output,
+    sha256: crypto.createHash('sha256').update(result.html).digest('hex'),
+    fieldCount: result.paths.length, report: result.report });
+}
+
 async function commandExport(args) {
   const loaded = readCard(requireArg(args, 'input'));
   const outputPath = requireArg(args, 'output');
@@ -145,6 +161,7 @@ Commands:
   diagnose --input card.png|card.json [--profile nora] [--output report.json]
   prose-edit --input card.png|card.json --edits prose.json --output NEW.png|json [--dry-run]
   statusbar-validate --input card.png|card.json --html statusbar.html [--output report.json]
+  statusbar-template --vars features/mvu.json --output NEW.html [--title TITLE]
   export --input card.png|card.json --output card.out.png|json [--cover cover.png]
 `);
 }
@@ -176,6 +193,7 @@ async function main() {
     diagnose: commandDiagnose,
     'prose-edit': commandProseEdit,
     'statusbar-validate': commandStatusbarValidate,
+    'statusbar-template': commandStatusbarTemplate,
     export: commandExport
   };
   if (!commands[command]) throw new Error(`Unknown command: ${command}`);

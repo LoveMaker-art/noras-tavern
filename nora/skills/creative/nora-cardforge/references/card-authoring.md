@@ -75,6 +75,19 @@ The supported heading format is:
 
 Advanced directives are documented in `card-project-format.md`.
 
+For important triggered actors or lore, check a concrete positive and negative
+input while reviewing the brief. Example: a merchant keyed by `商店` and `买地图`
+should be eligible for `我去商店买地图`, not `我在车站休息`. Write the expected entry
+or actor ID next to the example in the existing checklist, not a second keyword
+database. If the intended input does not contain a key, revise the key or explain
+the limitation instead of claiming that the model will infer the trigger.
+
+Keyword matching is not intent understanding: `我不去商店` still contains `商店`.
+Secondary keys can narrow matching but do not provide general negation handling.
+Treat these as authoring examples until tested against the actual scan context,
+enablement, budget and recursion settings. An actor's activation keys do not
+force physical entrance into the scene. Original cards retain their own rules.
+
 ### MVU Lore Routing
 
 For new MVU cards, decide the consumer of each instruction before writing its
@@ -117,11 +130,11 @@ also inject instructions; card entry markers do not filter preset content.
 
 ## Review Loop
 
-Run `build --profile release` after a coherent draft. It checks technical gates
-without invoking the writing scorer. When the user asks for a score, add
-`--score-writing`; treat it as a diagnostic, not a substitute for intended style.
-Repair concrete issues while preserving voice. Use `release-strict` only for a
-release candidate that the user expects to meet the 75-point publication gate.
+Review meaning and playability against the brief: opening agency, actor voice,
+reachable facts, and consistent action conditions. Automated checks cannot judge
+these. Resolve concrete findings in the same source project, then follow the
+SKILL.md build step and [quality gates](quality-gates.md); an unrequested score
+or a possible cosmetic improvement is not a reason to restart the workflow.
 
 Attribution: Based on character-card-skills by the Foreverse team
 (https://foreverse.app), CC BY 4.0. Adapted for Nora's project and runtime model.

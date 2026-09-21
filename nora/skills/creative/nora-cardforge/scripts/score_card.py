@@ -1,27 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Structural scorer for character cards in card.md format (rule-based, deterministic).
+"""Heuristic writing feedback, not a schema validator or universal literary grade.
 
-角色卡结构化评分——基线来自 2 万+ 张社区热门卡统计观察、2907 张酒馆卡/64766 条世界书
-词条解包与四大社区预设拆解。对 card.md（frontmatter + ## 章节）做逐项检测，输出八大类
-得分 + 命中明细。评分标准全文见 skills/character-card-author/SKILL.md §7。
-
-维度分值（100）：字段完整度13 / 开场白结构18 / 活人感九写法24 / 标签与赛道10 /
-              美化与指令12 / 世界书8 / 图片提示词10 / 反AI味5
-
-内含 `ai_flavor_scan()`：AI 味检测器（黑名单套话 + 句式病灶配额制），权重经 gold
-判例集校准——孤立套话词降权（人类也用「一丝凉意」）、句式 tic（引语点题/对仗翻转/
-生造概念词/伪精确数字）高权重。回归锁在 tools/tests/test_ai_flavor_gold.py。
-
-用法（仓库根目录）：
-    python3 tools/score_card.py cards/zh/*/card.md [--json]
-退出码：任一卡 <75 分返回 1（可直接当 CI 闸门）。
+New World projects: use build --score-writing so the compiled cast is included.
+Standalone: score_card.py --compiled-card build/card.v2.json --json
+Legacy Markdown: score_card.py card.md --json
+Exit 1 means a score below 75; exit 2 means invalid/unavailable input.
 """
 from __future__ import annotations
 
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +130,44 @@ def parse_card(path: Path) -> dict[str, Any]:
     return {"path": str(path), "text": text, "front": front, "sections": sections}
 
 
+def parse_compiled_card(raw: dict[str, Any], label: str, source=None) -> dict[str, Any]:
+    data = raw.get("data")
+    if not isinstance(data, dict):
+        raise ValueError("Compiled card requires data")
+    sections = {field: str(data.get(field, "")) for field in (
+        "description", "personality", "scenario", "first_mes", "mes_example", "creator_notes",
+        "system_prompt", "post_history_instructions")}
+    entries = data.get("character_book", {}).get("entries", [])
+    # Technical MVU instructions are not evidence of authored narrative quality.
+    entries = [entry for entry in entries if entry.get("enabled", True)
+               and not re.search(r"\[(?:initvar|mvu_update|nora_mvu[^\]]*)\]", entry.get("comment", ""))
+               and "{{format_message_variable::stat_data}}" not in entry.get("content", "")]
+    sections["lorebook"] = "\n\n".join(
+        "### " + str(entry.get("comment", ""))
+        + (" | constant" if entry.get("constant") else "")
+        + (" | keys: " + ", ".join(entry["keys"]) if entry.get("keys") else "")
+        + "\n" + str(entry.get("content", "")) for entry in entries)
+    for index, greeting in enumerate(data.get("alternate_greetings", [])):
+        sections[f"alternate greeting {index + 1}"] = greeting
+    if source:
+        sections["image_prompt"] = sec(source, "image_prompt", "image prompt", "生图提示词")
+    card = {"path": label, "front": {"name": data.get("name", ""),
+            "tags": json.dumps(data.get("tags", []), ensure_ascii=False)}, "sections": sections,
+            "text": "\n\n".join(f"## {key}\n{value}" for key, value in sections.items())}
+    world = data.get("extensions", {}).get("nora_world")
+    if world is not None:
+        if world.get("format") != "nora-world-card/2":
+            raise ValueError("Unsupported World card format")
+        if sections["personality"].strip() or sections["scenario"].strip():
+            raise ValueError("World cards keep whole-card personality/scenario empty; use the cast and Lorebook")
+        context = world.get("story_context", {})
+        if not isinstance(context.get("characters"), list):
+            raise ValueError("World card requires story_context.characters")
+        card["world_context"] = context
+        card["world_lore"] = entries
+    return card
+
+
 def sec(card: dict[str, Any], *names: str) -> str:
     out = []
     for n in names:
@@ -240,6 +269,16 @@ def score_card(card: dict[str, Any]) -> dict[str, Any]:
     creator = sec(card, "creator notes", "creator_notes", "作者注", "作者的话")
     image_prompt = sec(card, "image_prompt", "image prompt", "生图提示词")
     detail: dict[str, Any] = {}
+    world = card.get("world_context")
+    if world is not None:
+        actors = world["characters"]
+        personality = "\n".join(
+            actor.get("profile", {}).get("identity", {}).get("description", "") + "\n"
+            + actor.get("profile", {}).get("personality", {}).get("summary", "") for actor in actors)
+        scenario = "\n".join(entry.get("content", "") for entry in card["world_lore"])
+        text += "\n" + personality
+        detail["source"] = "nora-world-card/2"
+        detail["characters"] = len(actors)
 
     # ============ A. 字段完整度 (13) ============
     alt_greet = bool(re.search(r"^##\s+(alternate greeting|alt greeting|备选开场白|备用开场白)", card["text"], re.M | re.I))
@@ -253,8 +292,17 @@ def score_card(card: dict[str, Any]) -> dict[str, Any]:
         "system_prompt>=80": len(system) >= 80,
         "creator_notes": len(creator) >= 60,
     }
-    completeness = clamp(sum(required.values()) / len(required) * 12 + (1 if alt_greet else 0), 13)
-    detail["required"] = {k: bool(v) for k, v in required.items()}
+    if world is not None:
+        del required["personality>=100"]
+        del required["scenario>=60"]
+        required["角色定义"] = all(
+            actor.get("profile", {}).get("identity", {}).get("name", "").strip()
+            and actor.get("profile", {}).get("identity", {}).get("description", "").strip()
+            for actor in actors) if actors else None
+        required["世界设定"] = bool(scenario.strip())
+    applicable = [value for value in required.values() if value is not None]
+    completeness = clamp(sum(applicable) / len(applicable) * 12 + (1 if alt_greet else 0), 13)
+    detail["required"] = required.copy()
     detail["required"]["alt_greeting(加分)"] = alt_greet
 
     # ============ B. 开场白结构 (18) ============
@@ -470,10 +518,10 @@ def score_card(card: dict[str, Any]) -> dict[str, Any]:
     matched_genres = [route for kws, route in GENRE_ROUTES if tagset & set(kws)]
     if matched_genres:
         detail["genre_hint"] = matched_genres
-        issues.append(f"[分类路由] 通用分过线后还须过专属评分表: skills/character-card-author/genres/{' + '.join(matched_genres[:2])} §9")
+        issues.append(f"[题材参考] {', '.join(matched_genres[:2])}；按用户题材与风格审阅，不作为额外门禁")
     if completeness < 11:
-        missing = [k for k, v in required.items() if not v]
-        issues.append(f"字段缺失: {', '.join(missing)}")
+        missing = [k for k, v in required.items() if v is False]
+        issues.append(f"写作参考未命中（不等于字段非法）: {', '.join(missing)}")
     if greeting < 13:
         miss4 = [k for k, v in detail["greeting"].items() if v is False]
         issues.append(f"开场白弱: {', '.join(miss4)}")
@@ -496,10 +544,31 @@ def score_card(card: dict[str, Any]) -> dict[str, Any]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("cards", nargs="+")
+    ap.add_argument("cards", nargs="*")
     ap.add_argument("--json", action="store_true")
+    inputs = ap.add_mutually_exclusive_group()
+    inputs.add_argument("--compiled-card", type=Path)
+    inputs.add_argument("--compiled-stdin", action="store_true")
     args = ap.parse_args()
-    results = [score_card(parse_card(Path(p))) for p in args.cards]
+    try:
+        if args.compiled_card or args.compiled_stdin:
+            if len(args.cards) > 1:
+                raise ValueError("Compiled input accepts at most one source Markdown file")
+            raw = json.loads(args.compiled_card.read_text("utf-8") if args.compiled_card else sys.stdin.read())
+            source = parse_card(Path(args.cards[0])) if args.cards else None
+            results = [score_card(parse_compiled_card(raw, str(args.compiled_card or (args.cards[0] if args.cards else '<stdin>')), source))]
+        else:
+            if not args.cards:
+                raise ValueError("Provide Markdown paths or --compiled-card")
+            results = []
+            for name in args.cards:
+                path = Path(name)
+                project = path.parent / "card.project.json"
+                if project.exists() and "world" in json.loads(project.read_text("utf-8")):
+                    raise ValueError("World projects require build --score-writing or --compiled-card; Markdown alone omits the cast")
+                results.append(score_card(parse_card(path)))
+    except (ValueError, OSError, TypeError, KeyError, AttributeError) as error:
+        ap.error(str(error))
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2))
     else:
