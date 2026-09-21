@@ -299,7 +299,7 @@ jobs:
           compression-level: 0
 
       - name: Upload shared updater assets
-        if: matrix.platform == 'darwin' && matrix.arch == 'arm64' && github.ref_type == 'tag'
+        if: matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)
         uses: actions/upload-artifact@v4
         with:
           name: nora-tavern-shared
