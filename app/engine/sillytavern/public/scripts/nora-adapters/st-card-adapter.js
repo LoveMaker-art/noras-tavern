@@ -373,6 +373,60 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         await current.getCharacters();
     }
 
+    async function readCharacterRegex(avatar) {
+        if (typeof avatar !== 'string' || !avatar.trim()) throw new Error('请选择一张卡。');
+        const response = await fetch('/api/characters/get', {
+            method: 'POST', headers: runtime().getRequestHeaders(),
+            body: JSON.stringify({ avatar_url: avatar }), cache: 'no-store',
+        });
+        if (!response.ok) throw new Error(`正则规则读取失败 (${response.status})。`);
+        const character = await response.json();
+        if (!character?.data) throw new Error('角色卡数据不完整。');
+        return { avatar, name: character.name, scripts: character.data.extensions?.regex_scripts || [] };
+    }
+
+    async function saveCharacterRegex({ avatar, index, expectedScripts, patch, worldId }) {
+        const assertCurrent = () => {
+            if (worldId && runtime().chatMetadata?.nora_world?.id !== worldId) throw new Error('世界已切换，请重新打开。');
+            if (runtime().isGenerating?.()) throw new Error('请等待当前回复生成完成后再保存。');
+        };
+        const allowed = ['scriptName', 'findRegex', 'replaceString', 'disabled', 'markdownOnly', 'promptOnly', 'runOnEdit', 'placement'];
+        if (!patch || Array.isArray(patch) || typeof patch !== 'object'
+            || Object.entries(patch).some(([key, value]) => !allowed.includes(key)
+                || (key === 'placement' ? !Array.isArray(value) || !value.length || value.some(item => !Number.isInteger(item) || item < 0)
+                    : typeof value !== (['scriptName', 'findRegex', 'replaceString'].includes(key) ? 'string' : 'boolean')))) {
+            throw new Error('正则规则修改字段无效。');
+        }
+        if (('scriptName' in patch && !patch.scriptName.trim()) || ('findRegex' in patch && !patch.findRegex.trim())) {
+            throw new Error('规则名称和匹配表达式不能为空。');
+        }
+        if ('findRegex' in patch && !patch.findRegex.includes('{{') && !runtime().regex?.parse?.(patch.findRegex)) {
+            throw new Error('匹配表达式无效，请检查括号和正则标志。');
+        }
+        assertCurrent();
+        const current = await readCharacterRegex(avatar);
+        if (!Array.isArray(expectedScripts) || JSON.stringify(current.scripts) !== JSON.stringify(expectedScripts)) {
+            throw new Error('正则规则已发生变化，请重新打开后编辑。');
+        }
+        if (!Number.isInteger(index) || !current.scripts[index] || typeof current.scripts[index] !== 'object') {
+            throw new Error('这条正则规则不存在。');
+        }
+        assertCurrent();
+        const scripts = structuredClone(current.scripts);
+        scripts[index] = { ...scripts[index], ...patch };
+        const response = await fetch('/api/characters/merge-attributes', {
+            method: 'POST', headers: runtime().getRequestHeaders(),
+            body: JSON.stringify({ avatar, data: { extensions: { regex_scripts: scripts } } }),
+        });
+        if (!response.ok) throw new Error(`正则规则保存失败 (${response.status})。`);
+        try {
+            await runtime().getCharacters();
+            await rerenderCharacterChat(avatar);
+        } catch (cause) {
+            throw Object.assign(new Error('规则已保存，但页面刷新失败，请重新打开当前世界。'), { saved: true, cause });
+        }
+    }
+
     async function updateCharacter({ avatar, name, description, personality }) {
         return patchCharacter({ avatar, patch: { name: String(name || '').trim(),
             description: String(description || '').trim(), personality: String(personality || '').trim() } });
@@ -433,6 +487,8 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         },
         updateCharacter,
         patchCharacter,
+        readCharacterRegex,
+        saveCharacterRegex,
         deleteCharacterCards,
         savePersona: async ({ name, description }) => {
             const current = runtime();

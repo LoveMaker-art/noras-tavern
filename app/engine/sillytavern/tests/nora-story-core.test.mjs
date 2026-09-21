@@ -5,7 +5,7 @@ import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-
 
 const domainMethods = [
     'listPresets', 'importPreset', 'applyPreset', 'readPreset', 'savePresetEntries', 'toggleablePresetEntries', 'deletePreset',
-    'patchCharacter', 'importLibraryCard',
+    'patchCharacter', 'importLibraryCard', 'readCharacterRegex', 'saveCharacterRegex',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',
     'isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'deleteCharacterCards', 'savePersona',

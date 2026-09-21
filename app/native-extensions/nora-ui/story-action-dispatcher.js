@@ -66,7 +66,14 @@ export function createStoryActionDispatcher({
             case 'sidecar.run': {
                 if (typeof command.run !== 'function') throw new TypeError('Sidecar actions require a run function.');
                 if (task.controller.signal.aborted) throw Object.assign(new Error('Sidecar action cancelled before dispatch.'), { name: 'AbortError' });
-                return command.run({ actionId: task.actionId, signal: task.controller.signal });
+                return command.run({ actionId: task.actionId, signal: task.controller.signal,
+                    onGenerationStart: () => {
+                        if (task.visible || task.controller.signal.aborted || task.sessionKey !== getSessionKey()
+                            || active.get(commandScope(command)) !== task) return;
+                        task.visible = true;
+                        notify(onGenerationState, true);
+                    },
+                });
             }
             default: {
                 const error = new Error(`Unsupported story action: ${String(command.type || 'unknown')}`);
@@ -157,7 +164,7 @@ export function createStoryActionDispatcher({
             })
             .finally(() => {
                 if (active.get(scope) === task) active.delete(scope);
-                if (generation) notify(onGenerationState, status('visible').active);
+                if (task.visible) notify(onGenerationState, status('visible').active);
             });
         task.promise = task.promise.then((result) => {
             notify(onGenerationSettled, Object.freeze({

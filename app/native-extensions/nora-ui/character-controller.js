@@ -24,6 +24,7 @@ export function createCharacterController({
     createWorldFromCard,
     openWorldbookLibrary = () => {},
     openCardWorldbook = () => {},
+    openCardRegex = () => {},
     openProfileLibrary = () => {},
     saveProfile = () => {},
     addRoleFromCard = () => {},
@@ -268,12 +269,17 @@ export function createCharacterController({
             ? t`触发词：${activation.keys.join('、')}`
             : tr('常驻：无需关键词触发');
         const activationDetail = activation ? `<section><h3>${tr('进入方式')}</h3><p>${escapeHtml(entryMode)}</p>${activation.enabled === false ? `<p class="pmuted">${tr('已关闭')}</p>` : ''}</section>` : '';
-        const detail = `${back}<div class="nora-character-detail">${overview}${rules}${bookAction}${activationDetail}${fieldMarkup}${empty}${management}</div>`;
+        const regexAction = !member && character.avatar && capabilities.regexScripts.length ? `<button class="nora-library-action" data-card-regex type="button"><i class="fa-solid fa-code" aria-hidden="true"></i><span>${tr('查看正则规则')} · ${capabilities.regexScripts.length}</span></button>` : '';
+        const detail = `${back}<div class="nora-character-detail">${overview}${rules}${bookAction}${regexAction}${activationDetail}${fieldMarkup}${empty}${management}</div>`;
         const modal = dialogs.open(character.name, `${backToLibrary ? `<div class="nora-library-detail-scroll">${detail}</div>` : detail}${createAction}`, backToLibrary ? 'nora-detail-modal nora-world-library-modal nora-library-detail-modal nora-plain-sheet' : 'nora-detail-modal');
         select('[data-library-delete]', modal)?.addEventListener('click', () => deleteGroup(groups().find(item => item.members.some(member => member.character.avatar === character.avatar))));
         select('[data-card-create-world]', modal)?.addEventListener('click', event => createWorldFromCard(character, event.currentTarget));
         select('[data-card-add-role]', modal)?.addEventListener('click', () => addRoleFromCard(character));
         select('[data-card-worldbook]', modal)?.addEventListener('click', () => openCardWorldbook({ kind: 'card', name: character.avatar }, () => openSheet(characterId, true)));
+        select('[data-card-regex]', modal)?.addEventListener('click', () => openCardRegex(character.avatar, () => {
+            const nextId = readState().characters.findIndex(item => item.avatar === character.avatar);
+            if (nextId >= 0) openSheet(nextId, backToLibrary);
+        }));
         if (backToLibrary && !worldCard) {
             select('.nora-library-actions', modal)?.insertAdjacentHTML?.('afterbegin', `<button type="button" class="nora-library-action" data-save-card-profile><i class="fa-solid fa-copy" aria-hidden="true"></i><span>${tr('另存角色资料')}</span></button>`);
             select('[data-save-card-profile]', modal)?.addEventListener('click', () => saveProfile('character', {

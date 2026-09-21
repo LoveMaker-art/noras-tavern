@@ -1,5 +1,19 @@
 # World visuals
 
+## Page appearance
+
+For whole-page light/dark/system switching, target the connected local page and
+read `appearance.inspect` through the live-page controls. If `controllable:true`,
+submit `appearance.set` with `{mode,expectedRevision}` using its revision, then
+read the receipt and inspect again. Modes are `light`, `dark`, `system`.
+The setting persists across refresh/restart and covers navigation and dialogs.
+World palette overrides remain separate and are preserved. `effectiveMode`
+reports the selected page palette, not visual verification of card-owned content.
+Non-local Liveware pages follow their browser/WebView preference; when
+`controllable:false`, explain that boundary. This does not prove the host app
+forwards its manually selected theme. Other open tabs see changes on reload.
+Use this operation for appearance, not World palette controls or file/CSS edits.
+
 For background images, palette, font presets and reading surfaces, use the current
 Nora MCP theme controls. These are the original World Visuals options adapted to
 World Core; they style existing elements without adding controls or status widgets.
