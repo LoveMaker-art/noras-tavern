@@ -95,15 +95,15 @@ Nora Tavern 是一个以世界为核心、可以被 Agent 管理的开源 AI 角
 
 <a id="下载安装包"></a>
 
-| 你的电脑 | 直接下载 | 打开方式 |
+| 你的电脑 | 下载入口 | 打开方式 |
 | :--- | :--- | :--- |
-| **Windows · x64** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.14/Nora-Tavern-Launcher-1.1.1-win-x64-setup.exe)** | 双击安装程序，按提示安装 |
-| **Mac · Apple 芯片** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.14/Nora-Tavern-Launcher-1.1.1-mac-arm64.dmg)** | 打开 DMG，拖入“应用程序” |
-| **Mac · Intel** | **[下载安装包](https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.14/Nora-Tavern-Launcher-1.1.1-mac-x64.dmg)** | 打开 DMG，拖入“应用程序” |
+| **Windows · x64** | **[前往下载](https://lovemaker-art.github.io/nora-landing/#download-windows)** | 双击安装程序，按提示安装 |
+| **Mac · Apple 芯片** | **[前往下载](https://lovemaker-art.github.io/nora-landing/#download-mac-arm64)** | 打开 DMG，拖入“应用程序” |
+| **Mac · Intel** | **[前往下载](https://lovemaker-art.github.io/nora-landing/#download-mac-x64)** | 打开 DMG，拖入“应用程序” |
 
-以上完整安装包对应 **v2.3.14 / 启动器 1.1.1**，包含统一更新、失败恢复和完整安装诊断。旧启动器需先覆盖升级一次，**保留原目录和数据，不要彻底卸载**；新版通过同一更新入口按需更新酒馆组件或启动器，无需每次重新下载安装包。Windows 便携版不支持启动器自动替换，请使用安装版。**[已有用户更新](docs/update-nora-tavern.md#提示需要更新启动器时)** · **[完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
+下载入口自动查找最新可用的完整安装包，无需手动选择版本。安装后可在启动器中检查组件更新。完整安装包包含统一更新、失败恢复和完整安装诊断。旧启动器需先覆盖升级一次，**保留原目录和数据，不要彻底卸载**；新版通过同一更新入口按需更新酒馆组件或启动器，无需每次重新下载安装包。Windows 便携版不支持启动器自动替换，请使用安装版。**[已有用户更新](docs/update-nora-tavern.md#提示需要更新启动器时)** · **[完整安装步骤](docs/install-nora-tavern.md)** · [查看最新发布](https://github.com/LoveMaker-art/noras-tavern/releases/latest)
 
-点击上方链接即可下载，无需翻找附件。Mac 可在“关于本机”中查看芯片类型；Windows ARM 暂不作为原生支持平台。
+点击上方链接进入对应平台下载区，再点击安装包即可下载，无需翻找 GitHub 附件。Mac 可在“关于本机”中查看芯片类型；Windows ARM 暂不作为原生支持平台。
 
 #### 第一次使用
 
