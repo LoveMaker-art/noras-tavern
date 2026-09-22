@@ -1,7 +1,7 @@
 ---
 name: tavern
 description: Manage worlds, chats, visuals, plugins and story profiles; find, save and apply reusable personas, character profiles, worldbooks and prompt presets.
-version: 1.25.1
+version: 1.25.2
 author: ClawChat Tavern
 license: AGPL-3.0-only
 platforms: [linux, macos, windows]

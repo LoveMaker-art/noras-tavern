@@ -12,7 +12,10 @@ reports the selected page palette, not visual verification of card-owned content
 Non-local Liveware pages follow their browser/WebView preference; when
 `controllable:false`, explain that boundary. This does not prove the host app
 forwards its manually selected theme. Other open tabs see changes on reload.
-Use this operation for appearance, not World palette controls or file/CSS edits.
+Use this operation for appearance, including requests for "global dark mode".
+If it is absent from the current catalog or the page is not ready, report that
+capability gap. A previous conversation's CSS workaround is not an alternative
+operation; leave settings and files unchanged.
 
 For background images, palette, font presets and reading surfaces, use the current
 Nora MCP theme controls. These are the original World Visuals options adapted to
@@ -21,8 +24,10 @@ Story background/scenario text is a different operation in the worlds reference.
 
 ## Global defaults or one World
 
-For "global", "all worlds" or "set once", use `theme.global.inspect`,
-`theme.global.apply` and `theme.global.clear` through the live-page controls.
+For backgrounds, palette, fonts or reading surfaces shared by all Worlds, use
+`theme.global.inspect`, `theme.global.apply` and `theme.global.clear` through the
+live-page controls. "Global" describes the scope of those World visuals, not
+whole-page light/dark/system mode.
 Global means this Tavern user's Worlds, not every server user. Keep single-World
 requests on the existing `theme.inspect/apply/clear` actions. Resolve ambiguity
 before writing; never loop over Worlds to imitate a global default.
