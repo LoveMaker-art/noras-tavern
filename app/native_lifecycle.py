@@ -609,13 +609,14 @@ class NativeRuntime:
             return self._start(run_id, port, data_root, assets_prepared=assets_prepared)
 
     def _start(self, run_id, port, data_root, *, assets_prepared):
-        if self.dependencies_ready():
-            self.verify_install()
-        else:
-            self.install()
+        # Installation/update owns source acceptance, dependency preparation and
+        # extension delivery. Normal start must not undo local edits or run npm.
+        # Keep assets_prepared for callers from older update bundles.
+        if not (self.engine_root / 'server.js').is_file():
+            raise NativeLifecycleError('Tavern startup entry is missing: server.js')
+        if not self.config_path.is_file():
+            raise NativeLifecycleError(f'Tavern configuration is missing: {self.config_path}')
         native_data = Path(data_root or self.native_data_root)
-        if not assets_prepared:
-            self.sync_assets(native_data)
         run_dir = self.run_dir(run_id)
         run_dir.mkdir(parents=True, exist_ok=True)
         service = self.managed_service() if run_id == 'production' else None
@@ -888,6 +889,7 @@ def execute(runtime, args):
     else:
         runtime.install()
         canary_data = runtime.state_root / "native-canary"
+        runtime.sync_assets(canary_data)
         result = runtime._start("canary", 18801, canary_data, assets_prepared=False)
         try:
             result = runtime.write_ready_marker(result["health"])

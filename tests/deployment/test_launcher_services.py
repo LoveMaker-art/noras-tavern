@@ -16,7 +16,7 @@ class LauncherServicesTests(unittest.TestCase):
         args = Mock(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
                     install_root=Path('/fixture/tavern'), port=8799, service='tavern')
         with patch.object(bridge, 'installed', return_value=True), \
-             patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge.nora_system, 'installation_state', return_value={'ready': True, 'setupCompleted': True}), \
              patch.object(bridge, 'python_command', return_value=sys.executable), \
              patch.object(bridge, 'run_stream') as run, \
              patch.object(bridge, 'env_for', return_value={}), \
@@ -215,7 +215,7 @@ else:
     def test_failed_start_never_emits_completion(self):
         args = Mock(nora_home=self.root, hermes_home=self.hermes, install_root=self.root / 'tavern', port=8799, service='nora')
         with patch.object(bridge, 'installed', return_value=True), \
-             patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge.nora_system, 'installation_state', return_value={'ready': True, 'setupCompleted': True}), \
              patch.object(bridge, 'read_verified_model', return_value={'model': 'test'}), \
              patch.object(bridge, 'clawchat_paired', return_value=True), \
              patch.object(bridge, 'sync_nora_profile'), \
@@ -230,7 +230,7 @@ else:
     def test_profile_failure_prevents_gateway_start_and_completion(self):
         args = Mock(nora_home=self.root, hermes_home=self.hermes, install_root=self.root / 'tavern', port=18999)
         with patch.object(bridge, 'installed', return_value=True), \
-             patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge.nora_system, 'installation_state', return_value={'ready': True, 'setupCompleted': False}), \
              patch.object(bridge, 'read_verified_model', return_value={'model': 'test'}), \
              patch.object(bridge, 'clawchat_paired', return_value=True), \
              patch.object(bridge, 'sync_nora_profile', side_effect=RuntimeError('profile not saved')) as sync, \

@@ -150,6 +150,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
             runtime.calls,
             [
                 ("install",),
+                ("sync", runtime.state_root / "native-canary"),
                 ("start", "canary", 18801, runtime.state_root / "native-canary", False),
                 ("ready", {"ok": True}),
                 ("stop", "canary"),
@@ -169,6 +170,9 @@ class NativeLifecycleLockTests(unittest.TestCase):
             runtime.engine_root.mkdir()
             runtime.contract = types.SimpleNamespace(commit="test")
             runtime.config_path = runtime.runtime_state / "config.yaml"
+            (runtime.engine_root / 'server.js').write_text('// fixture')
+            runtime.config_path.parent.mkdir(parents=True)
+            runtime.config_path.write_text('fixture config')
             runtime._children = {}
             runtime.dependencies_ready = mock.Mock(return_value=True)
             runtime.verify_install = mock.Mock()
@@ -255,6 +259,9 @@ class NativeLifecycleLockTests(unittest.TestCase):
             runtime.engine_root.mkdir()
             runtime.contract = types.SimpleNamespace(commit="test")
             runtime.config_path = runtime.runtime_state / "config.yaml"
+            (runtime.engine_root / 'server.js').write_text('// fixture')
+            runtime.config_path.parent.mkdir(parents=True)
+            runtime.config_path.write_text('fixture config')
             runtime._children = {}
             runtime.dependencies_ready = mock.Mock(return_value=True)
             runtime.verify_install = mock.Mock()
@@ -305,7 +312,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
             )
 
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("dependencies", result.stderr.lower())
+        self.assertIn("configuration is missing", result.stderr.lower())
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ class UpdateLifecycleTests(unittest.TestCase):
         with patch.object(bridge.sys, 'stdin', io.StringIO(json.dumps(plan))), \
                 patch.object(bridge, 'command_stop') as stop, \
                 patch.object(bridge, 'command_start') as start, \
+                patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
                 patch.object(bridge, 'status_payload', return_value=state), \
                 patch.object(bridge, 'emit'):
             bridge.command_update_lifecycle(self.args)
@@ -75,6 +76,8 @@ class UpdateLifecycleTests(unittest.TestCase):
             stack.enter_context(patch.object(bridge, 'command_stop'))
             stack.enter_context(patch.object(bridge, 'installed', return_value=True))
             stack.enter_context(patch.object(bridge.nora_system, 'inspect', return_value=system))
+            stack.enter_context(patch.object(bridge.nora_system, 'installation_state',
+                                           return_value={'ready': True, 'setupCompleted': True}))
             stack.enter_context(patch.object(bridge, 'status_payload', return_value=state))
             stack.enter_context(patch.object(bridge, 'read_verified_model', return_value=True))
             stack.enter_context(patch.object(bridge, 'clawchat_paired', return_value=True))
@@ -121,11 +124,11 @@ class UpdateLifecycleTests(unittest.TestCase):
         self.damaged_rollback(problems=['技能文件缺失：skills/creative/tavern/SKILL.md',
                                         '缺少技能：creative/tavern'])
 
-    def test_normal_start_cannot_opt_into_damaged_rollback(self):
+    def test_unverified_install_cannot_start(self):
         self.args.command = 'start'
         self.args.service = 'tavern'
         with patch.object(bridge, 'installed', return_value=True), \
-                patch.object(bridge.nora_system, 'inspect', return_value={'ready': False, 'problems': ['技能文件缺失：x']}), \
+                patch.object(bridge.nora_system, 'installation_state', return_value={'ready': False, 'problems': ['缺少安装验收记录']}), \
                 patch.object(bridge, 'run_stream') as run:
             with self.assertRaises(SystemExit):
                 bridge.command_start(self.args)

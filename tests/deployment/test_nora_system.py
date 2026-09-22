@@ -3,8 +3,12 @@ import shutil
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+from contextlib import ExitStack
+from types import SimpleNamespace
 from ops.installer import nora_system as system
 from ops.installer import first_install
+from ops.installer import launcher_bridge as bridge
 
 
 class NoraSystemTests(unittest.TestCase):
@@ -146,6 +150,124 @@ class NoraSystemTests(unittest.TestCase):
         self.assertFalse(system.inspect(self.home, self.root, 18899)["ready"])
         with self.assertRaises(RuntimeError):
             system.mark_setup_complete(self.root)
+
+    def test_daily_state_reads_acceptance_receipts_without_inspecting_user_files(self):
+        self.initialize()
+        system.record_files_ready(self.home)
+        system.mark_setup_complete(self.root)
+        with patch.object(system, 'digest', side_effect=AssertionError('daily hash check')), \
+                patch.object(system, 'managed_problems', side_effect=AssertionError('daily acceptance check')):
+            state = system.installation_state(self.home, self.root)
+        self.assertTrue(state['ready'])
+        self.assertTrue(state['setupCompleted'])
+        self.assertTrue(state['noraInstalled'])
+
+    def test_daily_state_preserves_edit_delete_disable_and_add_operations(self):
+        self.initialize()
+        system.record_files_ready(self.home)
+        system.mark_setup_complete(self.root)
+        for name in ('skills/creative/tavern/SKILL.md', 'SOUL.md', 'AGENTS.md',
+                     'hooks/tavern-liveware-register/handler.py', 'config.yaml'):
+            (self.home / name).write_text('user edited content')
+        (self.home / 'skills/creative/tavern-ops/SKILL.md').unlink()
+        (self.home / 'clawchat/greeting.md').unlink()
+        personal = self.home / 'skills/personal/SKILL.md'
+        personal.parent.mkdir()
+        personal.write_text('my own skill')
+        system.save_json(self.home / 'cron/jobs.json', {'jobs': [{**self.job, 'enabled': False}]})
+        for _ in range(2):
+            state = system.installation_state(self.home, self.root)
+            self.assertTrue(state['ready'], state)
+            self.assertTrue(state['setupCompleted'])
+        self.assertEqual((self.home / 'config.yaml').read_text(), 'user edited content')
+        self.assertFalse((self.home / 'skills/creative/tavern-ops/SKILL.md').exists())
+        self.assertFalse(system.read_json(self.home / 'cron/jobs.json')['jobs'][0]['enabled'])
+        # Explicit installation acceptance still rejects incomplete/mutated delivery.
+        self.assertFalse(system.inspect(self.home, self.root, 18899)['ready'])
+
+    def test_daily_state_requires_recorded_initial_acceptance_not_current_file_hashes(self):
+        state = system.installation_state(self.home, self.root)
+        self.assertFalse(state['ready'])
+        self.initialize()
+        self.assertTrue(system.installation_state(self.home, self.root)['ready'])
+        self.assertFalse(system.installation_state(self.home, self.root)['setupCompleted'])
+        record = self.root / 'tavern-updates/nora-system.json'
+        system.save_json(record, {'schema': 1, 'proof': None, 'setupCompleted': True})
+        self.assertFalse(system.installation_state(self.home, self.root)['ready'])
+
+    def test_status_poll_does_not_revalidate_files_or_rewrite_customizations(self):
+        self.initialize()
+        system.record_files_ready(self.home)
+        system.mark_setup_complete(self.root)
+        (self.home / 'skills/creative/tavern/SKILL.md').write_text('my edited skill')
+        with ExitStack() as stack:
+            for name in ('inspect', 'files_ready', 'digest', 'managed_problems'):
+                stack.enter_context(patch.object(system, name, side_effect=AssertionError('poll revalidated ' + name)))
+            stack.enter_context(patch.object(bridge, 'hermes_command', return_value='python'))
+            stack.enter_context(patch.object(bridge, 'read_verified_model', return_value={}))
+            stack.enter_context(patch.object(bridge, 'gateway_status', return_value={'clawchatConnected': False}))
+            stack.enter_context(patch.object(bridge, 'clawchat_paired', return_value=False))
+            stack.enter_context(patch.object(bridge, 'installed', return_value=True))
+            stack.enter_context(patch.object(bridge, 'run_json', return_value={'health': {'ok': True}}))
+            stack.enter_context(patch.object(bridge, 'env_for', return_value={}))
+            stack.enter_context(patch.object(bridge, 'python_command', return_value='python'))
+            for _ in range(2):
+                state = bridge.status_payload(self.home.parent, self.home, self.root, 18899)
+                self.assertTrue(state['systemReady'])
+                self.assertTrue(state['noraInstalled'])
+                self.assertTrue(state['running'])
+        self.assertEqual((self.home / 'skills/creative/tavern/SKILL.md').read_text(), 'my edited skill')
+
+    def exercise_start(self, *, first_setup=False, failure=None):
+        self.initialize()
+        if not first_setup:
+            system.mark_setup_complete(self.root)
+        (self.root / 'apps/tavern-runtime/native-runtime.json').write_text('{}')
+        (self.home / 'skills/creative/tavern/SKILL.md').write_text('custom skill')
+        system.save_json(self.home / 'cron/jobs.json', {'jobs': []})
+        args = SimpleNamespace(nora_home=self.home.parent, hermes_home=self.home,
+                               install_root=self.root, port=18899, service='all', command='start')
+        with ExitStack() as stack:
+            for name in ('inspect', 'files_ready', 'digest'):
+                stack.enter_context(patch.object(system, name, side_effect=AssertionError('startup revalidated ' + name)))
+            for name, value in (('env_for', {}), ('python_command', 'fixture-python'),
+                                ('status_payload', {'running': True, 'clawchatConnected': True})):
+                stack.enter_context(patch.object(bridge, name, return_value=value))
+            model = stack.enter_context(patch.object(bridge, 'read_verified_model', return_value={'model': 'fixture'}))
+            paired = stack.enter_context(patch.object(bridge, 'clawchat_paired', return_value=True))
+            sync = stack.enter_context(patch.object(bridge, 'sync_nora_profile'))
+            bundle = stack.enter_context(patch.object(bridge, 'require_bundled_clawchat'))
+            run = stack.enter_context(patch.object(bridge, 'run_stream', side_effect=failure))
+            gateway = stack.enter_context(patch.object(bridge, 'start_gateway'))
+            verify = stack.enter_context(patch.object(system, 'verify_runtime'))
+            mark = stack.enter_context(patch.object(system, 'mark_setup_complete'))
+            emit = stack.enter_context(patch.object(bridge, 'emit'))
+            if failure:
+                with self.assertRaisesRegex(RuntimeError, 'fixture start failure'):
+                    bridge.command_start(args)
+                gateway.assert_not_called()
+                verify.assert_not_called()
+                self.assertFalse(any(call.kwargs.get('state') == 'done' for call in emit.call_args_list))
+            else:
+                bridge.command_start(args)
+                self.assertEqual(run.call_count, 2 if first_setup else 1)
+                gateway.assert_called_once()
+                self.assertEqual(verify.call_count, int(first_setup))
+                self.assertEqual(mark.call_count, int(first_setup))
+                self.assertEqual(bundle.call_count, int(first_setup))
+                self.assertEqual(sync.call_count, int(first_setup))
+            self.assertEqual(model.call_count, int(first_setup))
+            self.assertEqual(paired.call_count, int(first_setup))
+        self.assertEqual(system.read_json(self.home / 'cron/jobs.json'), {'jobs': []})
+
+    def test_completed_install_starts_without_reaccepting_or_forcing_registration(self):
+        self.exercise_start()
+
+    def test_first_setup_still_runs_delivery_acceptance(self):
+        self.exercise_start(first_setup=True)
+
+    def test_actual_start_failure_is_not_hidden_by_historical_acceptance(self):
+        self.exercise_start(failure=RuntimeError('fixture start failure'))
 
 
 if __name__ == "__main__":

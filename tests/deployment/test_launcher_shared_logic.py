@@ -92,7 +92,7 @@ class SharedLogicTests(unittest.TestCase):
         def run(command, **kwargs):
             order.append("hook" if command[-1].endswith("handler.py") else "tavern")
         with patch.object(bridge, "installed", return_value=True), \
-             patch.object(bridge.nora_system, "inspect", return_value={"ready": True}), \
+             patch.object(bridge.nora_system, "installation_state", return_value={"ready": True, "setupCompleted": False}), \
              patch.object(bridge, "read_verified_model", return_value={"model": "test"}), \
              patch.object(bridge, "clawchat_paired", return_value=True), \
              patch.object(bridge, "sync_nora_profile"), \

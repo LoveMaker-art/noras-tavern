@@ -96,18 +96,22 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
             self.assertEqual(runtime.materialize_local_dependencies(), ["image-size"])
             self.assertTrue(target.joinpath("package.json").is_file())
 
-    def test_start_uses_install_path_that_can_repair_dependencies(self):
+    def test_start_does_not_install_validate_or_overwrite_user_files(self):
         lifecycle = load_lifecycle()
         with tempfile.TemporaryDirectory(prefix="nora-native-start-repair-") as temporary:
             root = Path(temporary)
             runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
             runtime.engine_root = root
             runtime.native_data_root = root / "data"
-            runtime.install = mock.Mock(return_value={"ok": True})
+            runtime.install = mock.Mock(side_effect=AssertionError('start attempted installation'))
+            runtime.dependencies_ready = mock.Mock(side_effect=AssertionError('start hashed dependency files'))
             runtime.verify_install = mock.Mock(
-                side_effect=AssertionError("start bypassed dependency repair"),
+                side_effect=AssertionError("start repeated installation acceptance"),
             )
-            runtime.sync_assets = mock.Mock(return_value={})
+            runtime.sync_assets = mock.Mock(side_effect=AssertionError('start overwrote extensions'))
+            (root / 'server.js').write_text('// user implementation')
+            runtime.config_path = root / 'config.yaml'
+            runtime.config_path.write_text('user settings')
             runtime.run_dir = mock.Mock(return_value=root / "run")
             runtime.managed_service = mock.Mock(return_value=None)
             runtime._read_pid = mock.Mock(return_value=123)
@@ -122,7 +126,9 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
 
             result = runtime._start("production", 8799, None, assets_prepared=False)
 
-            runtime.install.assert_called_once_with()
+            runtime.install.assert_not_called()
+            runtime.verify_install.assert_not_called()
+            runtime.sync_assets.assert_not_called()
             self.assertTrue(result["already_running"])
 
     def test_start_reuses_node_symlink_but_rejects_different_arguments(self):
@@ -136,6 +142,9 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
             runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
             runtime.engine_root = root
             runtime.native_data_root = root / 'data'
+            (root / 'server.js').write_text('// fixture server')
+            runtime.config_path = root / 'config.yaml'
+            runtime.config_path.write_text('fixture config')
             for name, value in [('dependencies_ready', True), ('verify_install', None), ('sync_assets', None),
                                 ('run_dir', root / 'run'), ('managed_service', None), ('_read_pid', 123),
                                 ('health', {'ok': True, 'checks': {}})]:
@@ -155,6 +164,23 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
             processes.process_record.return_value = {'argv': actual, 'cwd': str(root / 'other-cwd')}
             with self.assertRaisesRegex(lifecycle.NativeLifecycleError, 'configuration differs'):
                 runtime._start('production', 8799, None, assets_prepared=False)
+
+    def test_missing_start_files_report_failure_without_reinstalling(self):
+        lifecycle = load_lifecycle()
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runtime = lifecycle.NativeRuntime.__new__(lifecycle.NativeRuntime)
+            runtime.engine_root = root
+            runtime.config_path = root / 'config.yaml'
+            runtime.install = mock.Mock(side_effect=AssertionError('unrequested install'))
+            runtime.sync_assets = mock.Mock(side_effect=AssertionError('unrequested sync'))
+            with self.assertRaisesRegex(lifecycle.NativeLifecycleError, 'startup entry is missing'):
+                runtime._start('production', 8799, None, assets_prepared=False)
+            (root / 'server.js').write_text('// custom server')
+            with self.assertRaisesRegex(lifecycle.NativeLifecycleError, 'configuration is missing'):
+                runtime._start('production', 8799, None, assets_prepared=False)
+            runtime.install.assert_not_called()
+            runtime.sync_assets.assert_not_called()
 
 
 if __name__ == "__main__":

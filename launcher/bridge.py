@@ -314,7 +314,7 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
-    system = nora_system.inspect(hermes_home, install_root, port)
+    system = nora_system.installation_state(hermes_home, install_root)
     recovery = nora_system.update_recovery(install_root)
     hermes = hermes_command(nora_home, hermes_home, install_root)
     # Installed files and live service health are separate facts. Avoid booting
@@ -334,7 +334,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
             "setupCompleted": False,
             "running": False,
             "hermesInstalled": hermes_ready,
-            "noraInstalled": nora_system.files_ready(hermes_home),
+            "noraInstalled": system["noraInstalled"],
             "modelConfigured": credentials_ready,
             "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
             "modelAuthMode": verified_model.get("authMode", "key"),
@@ -366,7 +366,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
         "systemProblems": system["problems"],
         "running": running,
         "hermesInstalled": hermes_ready,
-        "noraInstalled": nora_system.files_ready(hermes_home),
+        "noraInstalled": system["noraInstalled"],
         "modelConfigured": credentials_ready,
         "modelSyncPending": bool(verified_model.get("tavernSyncPending")),
         "modelAuthMode": verified_model.get("authMode", "key"),
@@ -468,22 +468,23 @@ def _same_skill_damage(before, system):
             and str(system.get('version', '')).lstrip('v') == str(before['version']).lstrip('v'))
 
 
-def command_start(args, *, _rollback_before=None) -> None:
+def command_start(args) -> None:
     service = getattr(args, "service", "all")
     if (nora_system.update_recovery(args.install_root)
             and getattr(args, 'command', '') != 'update-lifecycle'):
         fail('上次更新尚未恢复完成，暂不启动可能混合版本的服务。请保留日志和备份。')
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
-    system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
-    if not system["ready"] and not (_rollback_before is not None and _same_skill_damage(_rollback_before, system)):
+    system = nora_system.installation_state(args.hermes_home, args.install_root)
+    if not system["ready"]:
         fail("Nora 初始化未完成：" + "；".join(system["problems"][:3]))
+    first_setup = not system["setupCompleted"]
     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
-    if service != "tavern" and not read_verified_model(args.nora_home, args.hermes_home):
+    if first_setup and service != "tavern" and not read_verified_model(args.nora_home, args.hermes_home):
         fail("请先配置并测试模型。")
-    if service != "tavern" and not clawchat_paired(args.hermes_home):
+    if first_setup and service != "tavern" and not clawchat_paired(args.hermes_home):
         fail("请先连接 ClawChat。")
-    if service != "tavern":
+    if service != "tavern" and first_setup:
         sync_nora_profile(args)
     if service == "all":
         emit("milestone", index=4, state="running", task="正在启动服务")
@@ -502,17 +503,19 @@ def command_start(args, *, _rollback_before=None) -> None:
     if service == "tavern":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
-    emit("task", task="正在准备 ClawChat 连接组件")
-    require_bundled_clawchat(args.hermes_home)
-    # The gateway and launcher share one idempotent registration worker.
-    # Registration and the model greeting run independently.
-    run_stream([python_command(args.hermes_home), "-B",
-                str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
+    if first_setup:
+        emit("task", task="正在准备 ClawChat 连接组件")
+        require_bundled_clawchat(args.hermes_home)
+        # Initial setup explicitly verifies registration. Subsequent starts use
+        # the user's gateway hooks, including their choice to disable a hook.
+        run_stream([python_command(args.hermes_home), "-B",
+                    str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if not (status["running"] and status["clawchatConnected"]):
         fail("启动检查未通过，请检查服务连接后重试。")
-    nora_system.verify_runtime(args.hermes_home, args.install_root, args.port, python_command(args.hermes_home), env)
-    nora_system.mark_setup_complete(args.install_root)
+    if first_setup:
+        nora_system.verify_runtime(args.hermes_home, args.install_root, args.port, python_command(args.hermes_home), env)
+        nora_system.mark_setup_complete(args.install_root)
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     emit("milestone", index=4, state="done", task="启动检查通过")
     emit("result", **status)
@@ -640,6 +643,10 @@ def command_update_lifecycle(args):
     command_stop(args)
     if phase == 'stop':
         return
+    if phase == 'verify':
+        acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+        if not acceptance['ready']:
+            fail('更新事务完整性复核失败：' + '；'.join(acceptance['problems']))
     damaged_rollback = phase == 'rollback' and before.get('systemReady') is False
     if damaged_rollback:
         system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
@@ -649,7 +656,7 @@ def command_update_lifecycle(args):
         for key, service in (('running', 'tavern'), ('gatewayRunning', 'nora')):
             if before.get(key):
                 args.service = service
-                command_start(args, _rollback_before=before)
+                command_start(args)
     elif before.get('running') or before.get('gatewayRunning'):
         args.service = ('all' if before.get('running') and before.get('gatewayRunning') else
                         'tavern' if before.get('running') else 'nora')
@@ -834,6 +841,9 @@ def main() -> None:
     elif args.command == "pair":
         command_pair(args)
     elif args.command == "finish-update":
+        acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+        if not acceptance['ready']:
+            fail('更新验收未通过：' + '；'.join(acceptance['problems']))
         state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
         if not all(state.get(key) for key in ('systemReady', 'modelConfigured', 'clawchatPaired', 'clawchatProfileReady')):
             fail('更新后的 Nora 配置未通过检查。')

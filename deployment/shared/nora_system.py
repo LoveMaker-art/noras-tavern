@@ -187,8 +187,28 @@ def inventory(home):
     return files
 
 
+def installation_state(home, root):
+    """Read historical acceptance only; user files are not an installation lock.
+
+    Used by status polling and normal startup. Delivery validation belongs to
+    install/update transactions (inspect and verify_runtime), not this path.
+    """
+    record = read_json(root / "tavern-updates/nora-system.json")
+    receipt = read_json(root / "tavern-updates/installed.json")
+    files = read_json(home / "nora-installation.json")
+    proof = record.get("proof") if isinstance(record.get("proof"), dict) else {}
+    accepted = record.get("schema") == 1 and all(proof.get(name) for name in PROOFS)
+    return {
+        "ready": accepted,
+        "problems": [] if accepted else ["缺少安装验收记录，安装尚未确认完成"],
+        "version": receipt.get("version"),
+        "setupCompleted": accepted and bool(record.get("setupCompleted")),
+        "noraInstalled": files.get("schema") == 1 and bool(files.get("files")),
+    }
+
+
 def inspect(home, root, port):
-    """Read-only structural check; custom SOUL/AGENTS edits are not overwritten."""
+    """Strict delivery acceptance for explicit installation/update, not polling."""
     import yaml
     problems = []
     record = read_json(root / "tavern-updates/nora-system.json")
