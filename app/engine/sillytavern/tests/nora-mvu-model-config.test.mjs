@@ -78,6 +78,12 @@ test('MVU model config rejects unsupported URL schemes', () => {
     assert.throws(() => normalizeMvuModelBaseUrl('file:///tmp/model'), NoraMvuModelConfigError);
 });
 
+test('the internal routing marker cannot be saved as a real model endpoint', (t) => {
+    const { root, store } = createStore(t);
+    assert.throws(() => store.save({ base_url: NORA_MVU_MODEL_PROXY_URL, model: 'fixture' }), NoraMvuModelConfigError);
+    assert.equal(fs.existsSync(path.join(root, NORA_MVU_MODEL_FILE)), false);
+});
+
 test('reserved MVU model address resolves the independent backend configuration only', (t) => {
     const { root, store } = createStore(t);
     store.save({ base_url: 'https://api.example.com/v1', model: 'mvu-fast' });

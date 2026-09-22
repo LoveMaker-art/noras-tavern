@@ -33,6 +33,9 @@ export function normalizeMvuModelBaseUrl(value) {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
         throw new NoraMvuModelConfigError('invalid_mvu_model_config', 'base_url must use HTTP or HTTPS.');
     }
+    if (parsed.hostname === 'nora-mvu.invalid') {
+        throw new NoraMvuModelConfigError('invalid_mvu_model_config', 'Please enter the real model API URL, not the internal MVU routing address.');
+    }
     parsed.hash = '';
     parsed.search = '';
     parsed.pathname = parsed.pathname.replace(/\/(?:chat\/completions)?\/*$/i, '') || '/';

@@ -68,7 +68,7 @@ import {
     getWebTokenizer,
 } from '../tokenizers.js';
 import { getVertexAIAuth, getProjectIdFromServiceAccount } from '../google.js';
-import { resolveNoraMvuModelRequest } from '../../nora-mvu-model-config.js';
+import { isNoraMvuModelProxyUrl, NoraMvuModelConfigError, resolveNoraMvuModelRequest } from '../../nora-mvu-model-config.js';
 
 const API_OPENAI = 'https://api.openai.com/v1';
 const API_CLAUDE = 'https://api.anthropic.com/v1';
@@ -1736,22 +1736,27 @@ async function sendAzureOpenAIRequest(request, response) {
 
 export const router = express.Router();
 
-function resolveCustomApiConnection(request) {
-    const noraMvuModel = resolveNoraMvuModelRequest(request.user.directories, request.body.custom_url);
-    if (!noraMvuModel) {
-        return {
-            apiUrl: request.body.custom_url,
-            apiKey: readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id),
-        };
+// Helper uses OPENAI/reverse_proxy for custom_api without an explicit source,
+// and CUSTOM/custom_url for v4-compatible output. Resolve the same managed
+// connection before provider dispatch; never expose its key in the request body.
+function resolveNoraMvuConnection(request) {
+    const { chat_completion_source: source, custom_url: customUrl, reverse_proxy: reverseProxy } = request.body;
+    if (!isNoraMvuModelProxyUrl(customUrl) && !isNoraMvuModelProxyUrl(reverseProxy)) return null;
+    const apiUrl = source === CHAT_COMPLETION_SOURCES.OPENAI ? reverseProxy
+        : source === CHAT_COMPLETION_SOURCES.CUSTOM ? customUrl : null;
+    if (!isNoraMvuModelProxyUrl(apiUrl)) {
+        throw new NoraMvuModelConfigError('mvu_model_route_invalid', 'The independent MVU model requires an OpenAI-compatible request route.');
     }
+    const noraMvuModel = resolveNoraMvuModelRequest(request.user.directories, apiUrl);
     const apiKey = readSecret(request.user.directories, SECRET_KEYS.NORA_MVU);
-    if (!apiKey) throw new Error('MVU variable model API key is missing.');
+    if (!apiKey) throw new NoraMvuModelConfigError('mvu_model_key_required', 'The independent MVU model API key is missing. Please configure it in MVU model settings.');
     return { apiUrl: noraMvuModel.base_url, apiKey, model: noraMvuModel.model };
 }
 
 router.post('/status', async function (request, statusResponse) {
     try {
         if (!request.body) return statusResponse.sendStatus(400);
+        const mvuConnection = resolveNoraMvuConnection(request);
 
         let apiUrl = '';
         let apiKey = '';
@@ -1759,8 +1764,8 @@ router.post('/status', async function (request, statusResponse) {
         let queryParams = {};
 
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI) {
-            apiUrl = new URL(request.body.reverse_proxy || API_OPENAI).toString();
-            apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.OPENAI, request.body.secret_id);
+            apiUrl = mvuConnection?.apiUrl ?? new URL(request.body.reverse_proxy || API_OPENAI).toString();
+            apiKey = mvuConnection?.apiKey ?? (request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.OPENAI, request.body.secret_id));
             headers = {};
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENROUTER) {
             apiUrl = 'https://openrouter.ai/api/v1';
@@ -1772,10 +1777,8 @@ router.post('/status', async function (request, statusResponse) {
             apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.MISTRALAI, request.body.secret_id);
             headers = {};
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
-            const connection = resolveCustomApiConnection(request);
-            apiUrl = connection.apiUrl;
-            apiKey = connection.apiKey;
-            if (connection.model) request.body.model = connection.model;
+            apiUrl = mvuConnection?.apiUrl ?? request.body.custom_url;
+            apiKey = mvuConnection?.apiKey ?? readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);
             headers = {};
             mergeObjectWithYaml(headers, request.body.custom_include_headers);
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.COHERE) {
@@ -2079,6 +2082,9 @@ router.post('/status', async function (request, statusResponse) {
             statusResponse.send({ error: true, data: { data: [] } });
         }
     } catch (e) {
+        if (e instanceof NoraMvuModelConfigError && !statusResponse.headersSent) {
+            return statusResponse.status(400).send({ error: { message: e.message, code: e.code } });
+        }
         console.error(e);
 
         if (!statusResponse.headersSent) {
@@ -2177,6 +2183,8 @@ router.post('/generate', traceGeneration, async function (request, response) {
     let ledgerDispatch = null;
     try {
         if (!request.body) return response.status(400).send({ error: true });
+        const mvuConnection = resolveNoraMvuConnection(request);
+        if (mvuConnection) request.body.model = mvuConnection.model;
         if (request.body.nora_story_ledger && request.body.chat_completion_source !== CHAT_COMPLETION_SOURCES.CUSTOM) {
             throw new LedgerConflict('This provider does not support the ledger dispatch contract.', 'NORA_LEDGER_CONTEXT_STALE');
         }
@@ -2217,8 +2225,8 @@ router.post('/generate', traceGeneration, async function (request, response) {
         const isTextCompletion = Boolean(request.body.model && TEXT_COMPLETION_MODELS.includes(request.body.model)) || typeof request.body.messages === 'string';
 
         if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.OPENAI) {
-            apiUrl = new URL(request.body.reverse_proxy || API_OPENAI).toString();
-            apiKey = request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.OPENAI, request.body.secret_id);
+            apiUrl = mvuConnection?.apiUrl ?? new URL(request.body.reverse_proxy || API_OPENAI).toString();
+            apiKey = mvuConnection?.apiKey ?? (request.body.reverse_proxy ? request.body.proxy_password : readSecret(request.user.directories, SECRET_KEYS.OPENAI, request.body.secret_id));
             headers = {};
             bodyParams = {
                 logprobs: request.body.logprobs,
@@ -2325,10 +2333,8 @@ router.post('/generate', traceGeneration, async function (request, response) {
                 bodyParams['safety_settings'] = GEMINI_SAFETY;
             }
         } else if (request.body.chat_completion_source === CHAT_COMPLETION_SOURCES.CUSTOM) {
-            const connection = resolveCustomApiConnection(request);
-            apiUrl = connection.apiUrl;
-            apiKey = connection.apiKey;
-            if (connection.model) request.body.model = connection.model;
+            apiUrl = mvuConnection?.apiUrl ?? request.body.custom_url;
+            apiKey = mvuConnection?.apiKey ?? readSecret(request.user.directories, SECRET_KEYS.CUSTOM, request.body.secret_id);
             headers = {};
             bodyParams = {
                 logprobs: request.body.logprobs,
@@ -2661,6 +2667,9 @@ router.post('/generate', traceGeneration, async function (request, response) {
             }
         }
     } catch (error) {
+        if (error instanceof NoraMvuModelConfigError && !response.headersSent) {
+            return response.status(400).send({ error: { message: error.message, code: error.code } });
+        }
         if (error instanceof LedgerConflict && !response.headersSent) {
             return response.status(409).send({ error: { message: error.message, code: error.code } });
         }
