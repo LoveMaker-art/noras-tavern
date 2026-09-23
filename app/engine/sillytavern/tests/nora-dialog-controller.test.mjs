@@ -60,7 +60,7 @@ test('protected editors ignore backdrop clicks, including before any edits', () 
     const f = draftFixture();
     for (const value of ['original', 'unsaved']) {
         f.text.value = value;
-        f.modal.onclick({ target: f.modal });
+        f.modal.onclick?.({ target: f.modal });
         assert.equal(f.modal.classList.contains('open'), true);
         assert.doesNotMatch(f.modal.markup, /nora-confirm-title/);
     }
@@ -140,17 +140,46 @@ test('duplicate navigation and stale editor callbacks cannot discard a replaceme
     f.draft.release();
     await pending; await duplicate;
     assert.equal(navigations, 0);
-    f.modal.onclick({ target: f.modal });
+    f.modal.onclick?.({ target: f.modal });
     assert.equal(f.modal.classList.contains('open'), true);
     next.release();
     f.dialogs.close();
 });
 
-test('ordinary read-only sheets retain backdrop dismissal', () => {
+test('all sheets ignore outside clicks across library list, detail and unguarded editor navigation', () => {
     const f = sheetFixture();
-    f.dialogs.open('Details', '<p>Details</p>');
-    f.modal.onclick({ target: f.modal });
+    for (const [title, content] of [['Library', '<p>List</p>'], ['Details', '<p>Details</p>'], ['Editor', '<form></form>']]) {
+        f.dialogs.open(title, content);
+        const nodes = [...f.modal.childNodes];
+        f.modal.onclick?.({ target: f.modal });
+        assert.equal(f.modal.classList.contains('open'), true, title);
+        assert.deepEqual(f.modal.childNodes, nodes);
+    }
+    f.close.click();
     assert.equal(f.modal.classList.contains('open'), false);
+});
+
+test('confirmation ignores outside clicks and remains actionable', async () => {
+    for (const action of ['accept', 'cancel', 'escape']) {
+        const f = sheetFixture();
+        f.dialogs.open('Library', '<p>List</p>');
+        const nodes = [...f.modal.childNodes];
+        let settled = false;
+        const pending = f.dialogs.confirm({ title: 'Delete?', body: 'Confirm', restoreSheet: true });
+        pending.then(() => { settled = true; });
+        f.modal.onclick?.({ target: f.modal });
+        await Promise.resolve();
+        assert.equal(settled, false);
+        assert.equal(f.modal.classList.contains('open'), true);
+        if (action === 'escape') f.dialogs.close();
+        else f.select(action === 'accept' ? '.nora-confirm-submit' : '.nora-confirm-cancel').click();
+        assert.equal(await pending, action === 'accept');
+        assert.deepEqual(f.modal.childNodes, nodes);
+        f.modal.onclick?.({ target: f.modal });
+        assert.equal(f.modal.classList.contains('open'), true);
+        f.close.click();
+        assert.equal(f.modal.classList.contains('open'), false);
+    }
 });
 
 test('failed navigation retains the editor guard when its form is still on screen', async () => {
@@ -158,7 +187,7 @@ test('failed navigation retains the editor guard when its form is still on scree
     f.form.isConnected = true;
     await assert.rejects(f.draft.leave(() => { throw new Error('Library unavailable'); }), /Library unavailable/);
     f.text.value = 'still editable';
-    f.modal.onclick({ target: f.modal });
+    f.modal.onclick?.({ target: f.modal });
     assert.equal(f.modal.classList.contains('open'), true);
     const closing = f.dialogs.close();
     await Promise.resolve();

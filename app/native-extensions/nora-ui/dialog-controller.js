@@ -68,10 +68,6 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         }));
     }
 
-    function outsideClick(event) {
-        if (!closeGuard && event.target === select('#nora-modal')) close();
-    }
-
     function protectForm(form, { readState = () => null, isBusy = () => false } = {}) {
         const snapshot = () => JSON.stringify([
             [...form.elements].filter(field => field.name && !['submit', 'button', 'reset'].includes(field.type))
@@ -145,7 +141,8 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         }
         modal.innerHTML = `<div class="nora-dialog nora-dialog--entering nora-dialog--sheet nora-sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header><div><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${tr("酒馆")}</span><h2 tabindex="-1">${escapeHtml(title)}</h2></div><button class="nora-icon-button nora-modal-close" type="button" aria-label="${tr("关闭")}">${closeIcon}</button></header><div class="nora-sheet-body">${content}</div></div>`;
         select('.nora-modal-close', modal).addEventListener('click', close);
-        modal.onclick = outsideClick;
+        // Dismiss sheets explicitly; outside clicks must never discard a library view or draft.
+        modal.onclick = null;
         return modal;
     }
 
@@ -225,7 +222,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
             };
             select('.nora-confirm-cancel', modal).addEventListener('click', () => finish(false));
             select('.nora-confirm-submit', modal).addEventListener('click', () => finish(true));
-            modal.onclick = outsideClick;
+            modal.onclick = null;
             select('.nora-confirm-submit', modal).focus();
         });
     }
