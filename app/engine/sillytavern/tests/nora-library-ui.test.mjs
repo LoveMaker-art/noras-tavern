@@ -14,12 +14,18 @@ function fixture() {
     let generating = false;
     let accepted = true;
     let deleteError = null;
+    let saveError = null;
+    const persona = { name: 'New player', description: 'New identity' };
+    const saved = [];
     const deleted = [];
     const calls = []; const toasts = []; let content = '';
     const book = { source: { kind: 'card', name: 'card.png' }, source_key: 'library:source', source_name: 'Alice', name: 'Lore', count: 1, revision: 'book-rev', book: { entries: { 0: { content: 'Rule' } } } };
     const standalone = { ...book, source: { kind: 'book', name: 'library-lore' }, source_name: 'Lore' };
     const controller = createLibraryController({
-        worlds: { readLibraryWorldbook: async source => source.kind === 'book' ? standalone : book,
+        worlds: { listLibraryProfiles: async () => ({ items: [{ id: 'persona:one', name: 'Player', character_name: persona.name }], warnings: [] }),
+            readLibraryProfile: async () => ({ id: 'persona:one', name: 'Player', kind: 'persona', data: persona }),
+            updateActive: async (...args) => { if (saveError) throw saveError; saved.push(args); },
+            readLibraryWorldbook: async source => source.kind === 'book' ? standalone : book,
             deleteLibraryWorldbook: async (...args) => { if (deleteError) throw deleteError; deleted.push(args); },
             importLibraryItem: async (...args) => calls.push(args), listLibraryWorldbooks: async () => ({ items: [standalone], warnings: [] }) },
         presets: {}, dialogs: { open: (_title, html) => { content = html; return {}; },
@@ -28,10 +34,33 @@ function fixture() {
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },
         activeWorldModel: () => world, isGenerating: () => generating,
         characterField: (card, field) => card.data[field], openCards() {}, refresh() {},
-        select: node, selectAll: selector => selector === '[data-book]' ? [Object.assign(node('[data-book]'), { dataset: { book: '0' } })] : [], escapeHtml: value => String(value).replaceAll('<', '&lt;'),
+        select: node, selectAll: selector => selector === '[data-book]' ? [Object.assign(node('[data-book]'), { dataset: { book: '0' } })] : selector === '[data-profile]' ? [Object.assign(node('[data-profile]'), { dataset: { profile: 'persona:one' } })] : [], escapeHtml: value => String(value).replaceAll('<', '&lt;'),
     });
-    return { controller, node, calls, deleted, toasts, html: () => content, setWorld: value => { world = value; }, setGenerating: value => { generating = value; },
+    return { controller, node, calls, deleted, saved, persona, toasts, setSaveError: value => { saveError = value; }, html: () => content, setWorld: value => { world = value; }, setGenerating: value => { generating = value; },
         setAccepted: value => { accepted = value; }, setDeleteError: value => { deleteError = value; } };
+}
+
+for (const outcome of ['confirm', 'cancel', 'switch', 'generating', 'save-error']) {
+    test(`persona replacement survives event dispatch ending: ${outcome}`, async () => {
+        const f = fixture();
+        await f.controller.openProfiles('persona', { id: 'world:a', revision: 9, name: 'A' });
+        await f.node('[data-profile]').handlers.click();
+        if (outcome === 'cancel') f.setAccepted(false);
+        if (outcome === 'save-error') f.setSaveError(new Error('Save unavailable'));
+        const button = f.node('[data-use]');
+        const event = { currentTarget: button };
+        const pending = button.handlers.click(event);
+        // Browsers clear currentTarget when dispatch ends, before confirmation resumes.
+        event.currentTarget = null;
+        if (outcome === 'switch') f.setWorld({ id: 'world:b', revision: 1 });
+        if (outcome === 'generating') f.setGenerating(true);
+        await pending;
+        assert.equal(button.disabled, false);
+        assert.deepEqual(f.saved, outcome === 'confirm' ? [[{ persona: f.persona }, { expectedRevision: 9 }]] : []);
+        if (outcome === 'confirm') assert.equal(f.toasts.at(-1), '我的角色已替换。');
+        if (outcome === 'save-error') assert.equal(f.toasts.at(-1), 'Save unavailable');
+        if (outcome !== 'confirm') assert.ok(!f.toasts.includes('我的角色已替换。'));
+    });
 }
 
 test('embedded book preview returns to its card and allows saving, never deleting the card', async () => {

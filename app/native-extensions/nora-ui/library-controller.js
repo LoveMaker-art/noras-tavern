@@ -106,12 +106,13 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                 finally { button.disabled = false; }
             });
             $('[data-use]', modal).addEventListener('click', async event => {
+                const button = event.currentTarget;
                 if (!world || busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
                 if (activeWorldModel()?.id !== world.id) return dialogs.toast(tr('当前世界已改变，请重新打开选择器。'));
                 if (item.kind === 'character') return openRoleImport({ name: item.data.name, data: item.data }, world);
                 if (!await dialogs.confirm({ title: tr('替换我的角色？'), body: `${world.name}：${tr('替换玩家名字和描述，其他世界保持不变。')}`, confirmLabel: tr('替换'), restoreSheet: true })) return;
                 if (busy() || activeWorldModel()?.id !== world.id) return dialogs.toast(tr('当前状态已改变，请重新打开选择器。'));
-                const button = event.currentTarget; button.disabled = true;
+                button.disabled = true;
                 try {
                     await operations.run('world', async () => {
                         if (isGenerating() || activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变。'));
