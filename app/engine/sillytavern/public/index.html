@@ -480,6 +480,33 @@
             }
             return bootstrap;
         });
+        // Start fetching compatibility modules with the runtime assets, while
+        // retaining their existing ordered evaluation after legacy.js is ready.
+        globalThis.__NORA_COMPATIBILITY_PRELUDE__ = [
+            ...(typeof globalThis.structuredClone === 'function' ? [] : ['lib/structured-clone/monkey-patch.js']),
+            'lib/swiped-events.js',
+            'lib/eventemitter.js',
+            'scripts/i18n.js',
+        ];
+        globalThis.__NORA_PRELOAD_CORE_GRAPH__ = () => {
+            // Fetch the known core graph in parallel. Import-map aliases may
+            // point to the same URL; preload each URL once without evaluating it.
+            if (typeof HTMLScriptElement.supports === 'function' && HTMLScriptElement.supports('importmap')) {
+                const imports = JSON.parse(document.querySelector('script[type="importmap"]')?.textContent || '{}').imports || {};
+                const scheduled = new Set(Array.from(document.querySelectorAll('link[rel="modulepreload"]'), link => link.getAttribute('href')));
+                for (const [specifier, url] of Object.entries(imports)) {
+                    if (!specifier.startsWith('nora-module/') || typeof url !== 'string' || !url.startsWith('/asset-files/')) continue;
+                    if (typeof globalThis.structuredClone === 'function' && specifier.startsWith('nora-module/lib/structured-clone/')) continue;
+                    if (scheduled.has(url)) continue;
+                    scheduled.add(url);
+                    const preload = document.createElement('link');
+                    preload.rel = 'modulepreload';
+                    preload.href = url;
+                    preload.fetchPriority = 'low';
+                    document.head.append(preload);
+                }
+            }
+        };
         let runtimeAssetStart;
         let runtimeAssetsStarted = false;
         globalThis.__NORA_RUNTIME_ASSET_START_PROMISE__ = new Promise(resolve => { runtimeAssetStart = resolve; });
@@ -489,6 +516,13 @@
             for (const [base, asset] of [
                 [globalThis.__NORA_VENDOR_ASSET_BASE__, 'dist/nora/lib-core.js'],
                 [globalThis.__NORA_ASSET_BASES__['nora-entry'], 'dist/nora/entry.js'],
+                ...globalThis.__NORA_COMPATIBILITY_PRELUDE__.map(asset => [globalThis.__NORA_ASSET_BASES__['st-static'], asset]),
+                ...(typeof globalThis.structuredClone === 'function' ? [] : [
+                    'lib/structured-clone/index.js',
+                    'lib/structured-clone/deserialize.js',
+                    'lib/structured-clone/serialize.js',
+                    'lib/structured-clone/types.js',
+                ].map(asset => [globalThis.__NORA_ASSET_BASES__['st-static'], asset])),
             ]) {
                 const tracker = globalThis.__NORA_TRACK_BOOT_RESOURCE__(`preload:${asset}`, `${base}/${asset}`);
                 const preload = document.createElement('link');
@@ -2163,10 +2197,16 @@
             });
             const legacy = document.createElement('script');
             legacy.src = `${globalThis.__NORA_LEGACY_ASSET_BASE__}/dist/nora/legacy.js`;
-            legacy.fetchPriority = 'low';
+            legacy.fetchPriority = 'high';
             const legacyResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('legacy-runtime', legacy.src);
             legacy.addEventListener('load', () => {
                 legacyResource.complete();
+                try {
+                    globalThis.__NORA_PRELOAD_CORE_GRAPH__();
+                } catch (error) {
+                    // A speculative fetch must never prevent the ordered imports below.
+                    console.warn('[Nora Boot] Core preload skipped:', error);
+                }
                 resolve();
             }, { once: true });
             legacy.addEventListener('error', () => {
@@ -2186,12 +2226,8 @@
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
                 source: 'dist/nora/legacy.js',
             });
-            const compatibilityPreludeModules = [
-                'nora-module/lib/structured-clone/monkey-patch.js',
-                'nora-module/lib/swiped-events.js',
-                'nora-module/lib/eventemitter.js',
-                'nora-module/scripts/i18n.js',
-            ];
+            const compatibilityPreludeModules = globalThis.__NORA_COMPATIBILITY_PRELUDE__
+                .map(asset => `nora-module/${asset}`);
             const preludeResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('compatibility-prelude', '[inline-module]');
             try {
                 for (const specifier of compatibilityPreludeModules) {

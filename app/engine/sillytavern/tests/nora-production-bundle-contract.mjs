@@ -31,7 +31,8 @@ assert.match(index, /globalThis\.importShim\.addImportMap\(importMap\)/, 'unsupp
 assert.match(index, /return specifier => import\(specifier\)/, 'native WebViews must use the browser module loader');
 assert.match(index, /resolve\(specifier => globalThis\.importShim\(specifier\)\)/, 'unsupported WebViews must retain the compatibility loader');
 assert.match(index, /legacy\.src = `\$\{globalThis\.__NORA_LEGACY_ASSET_BASE__\}\/dist\/nora\/legacy\.js`/);
-assert.match(index, /'nora-module\/scripts\/i18n\.js'/);
+assert.match(index, /'scripts\/i18n\.js'/);
+assert.match(index, /__NORA_COMPATIBILITY_PRELUDE__[\s\S]*?\.map\(asset => `nora-module\/\$\{asset\}`\)/);
 const compatibilityPreludeLoad = index.indexOf('for (const specifier of compatibilityPreludeModules)');
 const runtimeEntryLoad = index.indexOf('await globalThis.__NORA_LOAD_MODULE__(entryUrl)', compatibilityPreludeLoad);
 assert.notEqual(compatibilityPreludeLoad, -1, 'startup must await compatibility prelude evaluation');
