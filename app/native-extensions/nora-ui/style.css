@@ -812,10 +812,19 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-format-trigger:focus-visible, .nora-format-menu button:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
 .nora-format-menu button > span { flex-shrink: 0; }
 .nora-format-menu button > :is(q, em, strong) { font-size: 12px; }
-.nora-format-menu q, #nora-chat .mes:not(.nora-rich-message) .mes_text q { color: var(--nora-brand-ink); quotes: none; }
+/* Rich messages still contain ordinary prose beside their card-owned UI. */
+.nora-format-menu q,
+#nora-chat .mes:not(.nora-rich-message) .mes_text q,
+#nora-chat .mes.nora-rich-message .mes_text > q,
+#nora-chat .mes.nora-rich-message .mes_text > :is(p, ol, ul, blockquote) q { color: var(--nora-brand-ink); quotes: none; }
 .nora-format-menu q::before { content: '“'; }
 .nora-format-menu q::after { content: '”'; }
-#nora-chat .mes:not(.nora-rich-message) .mes_text q::before, #nora-chat .mes:not(.nora-rich-message) .mes_text q::after { content: none; }
+#nora-chat .mes:not(.nora-rich-message) .mes_text q::before,
+#nora-chat .mes:not(.nora-rich-message) .mes_text q::after,
+#nora-chat .mes.nora-rich-message .mes_text > q::before,
+#nora-chat .mes.nora-rich-message .mes_text > q::after,
+#nora-chat .mes.nora-rich-message .mes_text > :is(p, ol, ul, blockquote) q::before,
+#nora-chat .mes.nora-rich-message .mes_text > :is(p, ol, ul, blockquote) q::after { content: none; }
 .nora-format-menu em, #nora-chat .mes:not(.nora-rich-message) .mes_text em { color: var(--nora-ink-2); font-family: var(--nora-serif); }
 #nora-chat .mes:not(.nora-rich-message) .mes_text q em { color: inherit; }
 .nora-format-menu strong, #nora-chat .mes:not(.nora-rich-message) .mes_text strong { font-weight: 700; }
