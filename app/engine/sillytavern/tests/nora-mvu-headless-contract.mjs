@@ -168,7 +168,7 @@ for (const dependency of [
     assert.equal(fs.existsSync(path.join(iframeVendorRoot, dependency)), true, `missing iframe dependency asset: ${dependency}`);
 }
 
-assert.match(modelController, /MVU 变量模型/);
+assert.match(modelController, /额外模型更新变量/);
 assert.match(modelController, /data-mvu-model-slot/);
 assert.match(modelController, /data-mvu-enabled/);
 assert.match(modelController, /data-mvu-source="independent"/);

@@ -16,6 +16,18 @@ function fixture(operation) {
     return { controller, list, state, calls };
 }
 
+test('unchanged World list keeps its nodes while changed operation updates once', () => {
+    const f = fixture({ kind: 'IMPORT', status: 'RUNNING' });
+    let html = '', writes = 0;
+    Object.defineProperty(f.list, 'innerHTML', { get: () => html, set(value) { html = value; writes++; } });
+    f.controller.renderRail();
+    f.controller.renderRail();
+    assert.equal(writes, 1);
+    f.state.worldStatus.operation.status = 'COMPLETED';
+    f.controller.renderRail();
+    assert.equal(writes, 2);
+});
+
 test('World progress uses the actual operation, not a creation fallback', () => {
     for (const [kind, label] of Object.entries({
         DELETE: '正在删除世界…', REPAIR: '正在检查世界…',

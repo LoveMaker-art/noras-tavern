@@ -10,7 +10,7 @@ export function renderMvuModelSection(status, escapeHtml, config = {}) {
     const updateOperational = status.updatePhase === 'partial' && status.lastUpdatePersisted === true
         ? null : status.updateOperational;
     const stateLabel = !enabled
-        ? tr("已关闭")
+        ? tr("正文解析")
         : status.phase === 'failed'
         ? tr("运行异常")
         : updateOperational === true
@@ -30,11 +30,13 @@ export function renderMvuModelSection(status, escapeHtml, config = {}) {
     const stateTone = status.phase === 'failed' || updateOperational === false
         ? 'error'
         : enabled && updateOperational === true ? 'ready' : 'pending';
-    return `<section class="nora-model-group nora-mvu-model-group"><div class="nora-model-group-head"><span>${tr("MVU 变量模型")}</span><label class="nora-mvu-toggle"><input data-mvu-enabled type="checkbox" ${enabled ? 'checked' : ''}><span aria-hidden="true"></span><b>${stateLabel}</b></label></div><div class="nora-mode-switch nora-mvu-source"><button class="${followsStory ? 'active' : ''}" data-mvu-source="story" type="button">${tr("跟随文本模型")}</button><button class="${followsStory ? '' : 'active'}" data-mvu-source="independent" type="button">${tr("独立模型")}</button></div><div class="nora-mvu-model-summary"><span class="nora-mvu-status is-${stateTone}">${stateLabel}</span><strong>${escapeHtml(modelLabel)}</strong><button data-mvu-config type="button">${tr("配置独立模型")}</button></div></section>`;
+    return `<section class="nora-model-group nora-mvu-model-group"><div class="nora-model-group-head"><span>${tr("额外模型更新变量")}</span><label class="nora-mvu-toggle"><input data-mvu-enabled type="checkbox" ${enabled ? 'checked' : ''}><span aria-hidden="true"></span><b>${enabled ? tr('已启用') : tr('已停用')}</b></label></div><p class="nora-model-note">${tr('关闭后从正文输出解析变量，MVU 程序仍然运行。以下设置影响所有世界。')}</p>${enabled ? `<div class="nora-mode-switch nora-mvu-source"><button class="${followsStory ? 'active' : ''}" data-mvu-source="story" type="button">${tr("跟随文本模型")}</button><button class="${followsStory ? '' : 'active'}" data-mvu-source="independent" type="button">${tr("独立模型")}</button></div><div class="nora-mvu-model-summary"><span class="nora-mvu-status is-${stateTone}">${stateLabel}</span><strong>${escapeHtml(modelLabel)}</strong><button data-mvu-config type="button">${tr("配置独立模型")}</button></div>` : `<p class="nora-model-note">${tr('正文解析')}</p>`}</section>`;
 }
 
 export function createModelController({ model, settingsDomain, operations, readState, activeWorldModel, settings, dialogs, select, selectAll, escapeHtml, icons, mvu, onChanged }) {
     let onBack = null;
+    let backLabel = tr('返回');
+    let mvuOnly = false;
     const profileActions = createModelProfiles({ model, settings, persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
     const profiles = () => settings().modelProfiles || [];
     const activeWorldCapabilities = () => activeWorldModel()?.capabilities || null;
@@ -55,19 +57,20 @@ export function createModelController({ model, settingsDomain, operations, readS
     async function refreshMvuSection(modal) {
         const slot = select('[data-mvu-model-slot]', modal);
         if (!slot) return;
-        const status = await mvu?.inspect?.(activeWorldCapabilities());
-        if (!slot.isConnected) return;
-        let config = {};
-        if (status?.supported) {
-            try {
-                config = await mvu.config();
-            } catch (error) {
-                console.warn('[Nora UI] Unable to read MVU model configuration', error);
-            }
+        const worldId = activeWorldModel()?.id;
+        const current = () => slot.isConnected && activeWorldModel()?.id === worldId;
+        try {
+            const status = await mvu?.inspect?.(activeWorldCapabilities());
+            if (!current()) return;
+            const config = status?.supported ? await mvu.config() : {};
+            if (!current()) return;
+            slot.innerHTML = renderMvuModelSection(status, escapeHtml, config) || (mvuOnly ? `<p class="nora-model-note">${tr('当前世界未使用 MVU。')}</p>` : '');
+            bindMvuControls(modal, status, config);
+        } catch (error) {
+            if (!current()) return;
+            slot.innerHTML = `<p class="nora-model-note" role="alert">${escapeHtml(t`MVU 模型设置失败：${dialogs.normalizeError(error)}`)}</p><button class="nora-secondary" data-mvu-retry type="button">${tr('重试')}</button>`;
+            select('[data-mvu-retry]', slot)?.addEventListener('click', () => refreshMvuSection(modal));
         }
-        if (!slot.isConnected) return;
-        slot.innerHTML = renderMvuModelSection(status, escapeHtml, config);
-        bindMvuControls(modal, status, config);
     }
 
     async function runMvu(operation, modal) {
@@ -106,12 +109,7 @@ export function createModelController({ model, settingsDomain, operations, readS
         const display = projectTextModelDisplay({ nativeModel: native, uiSettings: settings() });
         const rows = available.map((choice) => `<div class="nora-model-item ${choice.active ? 'active' : ''}" data-model-choice="${escapeHtml(choice.id)}" role="button" tabindex="0"><div class="nora-model-info"><strong>${escapeHtml(choice.name)}</strong><span>${escapeHtml(choice.model)}</span></div><span class="nora-model-check" aria-hidden="true">✓</span>${choice.deletable ? `<button class="nora-delete-button nora-model-delete" data-model-delete="${escapeHtml(choice.id)}" type="button" aria-label="${t`删除模型 ${escapeHtml(choice.name)}`}" title="${tr("删除模型")}">${icons.trash}</button>` : ''}</div>`).join('');
         const initialMvuStatus = mvu?.status?.(activeWorldCapabilities());
-        const modal = dialogs.open(tr("模型"), `<section class="nora-model-group"><div class="nora-model-group-head"><span>${tr("文本模型")}</span><button data-model-add type="button">${icons.plus}<span>${tr("添加")}</span></button></div><p class="nora-model-hint">${t`当前使用：${escapeHtml(display.label)}`}</p><div class="nora-model-list">${rows || `<p class="nora-model-empty">${tr("还没有保存自定义模型。")}</p>`}</div></section><div data-mvu-model-slot>${renderMvuModelSection(initialMvuStatus, escapeHtml)}</div>`, 'nora-model-modal nora-plain-sheet');
-        if (onBack) {
-            const back = onBack;
-            select('.nora-sheet-body', modal)?.insertAdjacentHTML('afterbegin', `<button class="nora-sheet-back" data-model-back type="button">${tr('‹ 返回增强能力')}</button>`);
-            select('[data-model-back]', modal)?.addEventListener('click', back);
-        }
+        const modal = dialogs.open(tr(mvuOnly ? '变量更新方式与模型' : '模型'), `${mvuOnly ? '' : `<section class="nora-model-group"><div class="nora-model-group-head"><span>${tr("文本模型")}</span><button data-model-add type="button">${icons.plus}<span>${tr("添加")}</span></button></div><p class="nora-model-hint">${t`当前使用：${escapeHtml(display.label)}`}</p><div class="nora-model-list">${rows || `<p class="nora-model-empty">${tr("还没有保存自定义模型。")}</p>`}</div></section>`}<div data-mvu-model-slot>${renderMvuModelSection(initialMvuStatus, escapeHtml) || (mvuOnly ? `<p class="nora-model-note">${tr('当前世界未使用 MVU。')}</p>` : '')}</div>`, 'nora-model-modal nora-plain-sheet', { back: onBack, backLabel });
         void refreshMvuSection(modal);
         selectAll('[data-model-choice]', modal).forEach((row) => {
             row.addEventListener('click', () => apply(row.dataset.modelChoice));
@@ -127,7 +125,7 @@ export function createModelController({ model, settingsDomain, operations, readS
             event.stopPropagation();
             void remove(button.dataset.modelDelete);
         }));
-        select('[data-model-add]', modal).addEventListener('click', openConfig);
+        select('[data-model-add]', modal)?.addEventListener('click', openConfig);
     }
 
     function openMvuConfigForm(config = {}, status = {}) {
@@ -294,5 +292,5 @@ export function createModelController({ model, settingsDomain, operations, readS
         }
     }
 
-    return Object.freeze({ open: (back = null) => { onBack = typeof back === 'function' ? back : null; open(); } });
+    return Object.freeze({ open: (back = null, options = {}) => { mvuOnly = options.mvuOnly === true; onBack = typeof back === 'function' ? back : null; backLabel = options.backLabel || tr('返回'); open(); } });
 }

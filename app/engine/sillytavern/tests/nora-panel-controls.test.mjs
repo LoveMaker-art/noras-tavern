@@ -200,6 +200,20 @@ test('World controls refuse busy generation, MVU analysis and target changes acr
     await assert.rejects(f.execute('world.library.apply', params), { code: 'NORA_CONTROL_SCOPE_CHANGED' });
 });
 
+test('generic World edits cannot grant preset execution permission or smuggle unsupported fields', async () => {
+    const f = panelFixture();
+    const preset = { name: 'Existing', preset: { extensions: { tavern_helper: { scripts: [] } } }, extension_permissions: { scripts: true, regex: true } };
+    for (const patch of [
+        { preset }, { name: 'New name', preset }, { extension_permissions: { scripts: true } },
+        { removeSetting: 'scenario' }, {},
+    ]) {
+        await assert.rejects(f.execute('world.update', { patch, expectedRevision: '3' }), { code: 'NORA_CONTROL_INVALID' });
+        assert.equal(f.worldPatch, undefined, 'Rejected edits must not reach World persistence');
+    }
+    await f.execute('world.update', { patch: { name: 'Allowed name', persona: { name: 'Player' }, cardProfileEnabled: false }, expectedRevision: '3' });
+    assert.deepEqual(f.worldPatch.patch, { name: 'Allowed name', persona: { name: 'Player' }, cardProfileEnabled: false });
+});
+
 test('control actions edit World persona, real scenario override, and global model via existing services', async () => {
     const f = panelFixture(); const before = await f.execute('world.inspect');
     await f.execute('world.update', { patch: { persona: { name: 'Player' } }, expectedRevision: before.revision });

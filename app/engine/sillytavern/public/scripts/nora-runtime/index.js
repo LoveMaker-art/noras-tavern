@@ -52,6 +52,7 @@ async function start() {
     void story.state.whenReady().then(async () => {
         const kernel = await loadStCompatibilityKernel();
         const controls = createRuntimeControls({ getContext: kernel.getContext, story, dispatch: () => ui.controlActions() });
+        ui.setRuntimeControls(controls);
         startControlClient({ controls, headers: story.transport.requestHeaders });
     }).catch(error => console.warn('[Nora Controls] Runtime control connection unavailable', error));
     document.documentElement.dataset.noraRuntimeVersion = RELEASE_VERSION;

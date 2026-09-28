@@ -13,7 +13,9 @@ const shellHtmlBrotliSize = brotliCompressSync(Buffer.from(index), {
     params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 11 },
 }).length;
 
-assert.ok(manifestBrotliSize <= 550_000, `critical module manifest exceeds 550 KB Brotli budget: ${manifestBrotliSize}`);
+// 2026-09-28: reviewed World-preset extension support; final measurement 553,378 bytes.
+// User-approved 555 KB ceiling retains a bounded gate, not an unbounded exemption.
+assert.ok(manifestBrotliSize <= 555_000, `critical module manifest exceeds 555 KB Brotli budget: ${manifestBrotliSize}`);
 assert.ok(shellHtmlBrotliSize <= 30_000, `visible shell HTML exceeds 30 KB Brotli budget: ${shellHtmlBrotliSize}`);
 assert.equal(manifest.legacy, 'dist/nora/legacy.js', 'legacy libraries must use their immutable standalone asset');
 assert.equal(manifest.compiled?.['lib-core.js'], 'dist/nora/lib-core.js', 'compiled core libraries must use their immutable standalone module');

@@ -82,8 +82,9 @@ function runtimeFixture() {
     const mvu = createStMvuSettingsAdapter(() => context, { readMvuRuntime: () => mv });
     // Deliberately separate Helper's live store from ST's serialized settings.
     const live = { settings: structuredClone(context.extensionSettings.tavern_helper) };
+    const scriptScopes = Object.fromEntries(['global', 'character', 'preset'].map(type => [type, { source: type === 'global' ? 'global' : 'Fixture', enabled: true }]));
     const helperControl = createHelperControlAdapter({ globalStore: () => live,
-        scopeStore: type => ({ source: type === 'global' ? 'global' : 'Fixture', enabled: true }),
+        scopeStore: type => scriptScopes[type],
         clone: structuredClone, validateSettings: value => value,
         flushScope: async () => { context.extensionSettings.tavern_helper = structuredClone(live.settings); },
     });
@@ -95,8 +96,62 @@ function runtimeFixture() {
             enableExtension: async name => { context.extensionSettings.disabledExtensions = context.extensionSettings.disabledExtensions.filter(item => item !== name); },
             disableExtension: async name => { context.extensionSettings.disabledExtensions.push(name); } }),
     });
-    return { context, controls, get saved() { return saved; }, get trees() { return trees; }, get stopped() { return stopped; }, set failSave(value) { failSave = value; } };
+    return { context, controls, scriptScopes, get saved() { return saved; }, get trees() { return trees; }, get stopped() { return stopped; }, set failSave(value) { failSave = value; } };
 }
+
+test('activation checks permission revision, authorizes after saving, and does not authorize a failed save', async () => {
+    for (const fail of [false, true]) {
+        const f = runtimeFixture();
+        const read = () => f.controls.execute(command('scripts.list', { scope: 'global' }));
+        const stale = (await read()).revision;
+        f.scriptScopes.global.enabled = false;
+        await assert.rejects(f.controls.execute(command('scripts.activate', { scope: 'global', id: 'one', expectedRevision: stale })), { code: 'NORA_CONTROL_EDIT_STALE' });
+        const revision = (await read()).revision;
+        f.failSave = fail;
+        const operation = f.controls.execute(command('scripts.activate', { scope: 'global', id: 'one', expectedRevision: revision }));
+        if (fail) await assert.rejects(operation, /save rejected/);
+        else await operation;
+        assert.equal(f.scriptScopes.global.enabled, !fail);
+        assert.equal(f.trees.find(x => x.id === 'two').enabled, true, 'Existing choices are not silently disabled');
+    }
+});
+
+test('script import appends disabled trees, rejects stale revisions, and protects managed core', async () => {
+    const f = runtimeFixture();
+    const before = structuredClone(f.trees);
+    const { revision } = await f.controls.execute(command('scripts.list', { scope: 'global' }));
+    const params = { scope: 'global', expectedRevision: revision, tree: { type: 'script', name: 'Map', id: 'nora-mvu-headless-runtime', enabled: true, content: 'x', data: { map: true } } };
+    const result = await f.controls.execute(command('scripts.import', params));
+    assert.equal(result.enabled, false);
+    assert.notEqual(result.id, 'nora-mvu-headless-runtime');
+    assert.deepEqual(f.trees.slice(0, 2), before);
+    assert.deepEqual(f.trees.at(-1).data, { map: true });
+    assert.equal(f.trees.at(-1).enabled, false);
+    await assert.rejects(f.controls.execute(command('scripts.import', params)), { code: 'NORA_CONTROL_EDIT_STALE' });
+    assert.equal(f.trees.length, 3);
+    await assert.rejects(f.controls.execute(command('scripts.authorize', { scope: 'global', expectedRevision: revision })), { code: 'NORA_CONTROL_EDIT_STALE' });
+});
+
+test('taken-over embedded MVU stays inspectable but cannot be reactivated alongside the managed core', async () => {
+    const f = runtimeFixture();
+    const code = 'import("https://cdn.jsdelivr.net/gh/MagicalAstrogy/MagVarUpdate@main/artifact/bundle.js")';
+    const read = () => f.controls.execute(command('scripts.list', { scope: 'global' }));
+    const { id } = await f.controls.execute(command('scripts.import', { scope: 'global', expectedRevision: (await read()).revision,
+        tree: { type: 'script', name: 'Renamed core', content: code } }));
+    let list = await read();
+    assert.equal(list.trees.find(x => x.id === id).managedByNora, true);
+    assert.equal((await f.controls.execute(command('scripts.inspect', { scope: 'global', id }))).script.content, code);
+    for (const action of ['scripts.enabled', 'scripts.update']) {
+        await assert.rejects(f.controls.execute(command(action, { scope: 'global', id, expectedRevision: list.revision,
+            ...(action === 'scripts.enabled' ? { enabled: true } : { patch: { enabled: true } }) })), { code: 'NORA_CONTROL_USE_MVU' });
+    }
+    assert.equal(f.trees.find(x => x.id === id).enabled, false);
+    f.context.extensionSettings.nora_mvu.managedRuntimeEnabled = false;
+    list = await read();
+    assert.equal(list.trees.find(x => x.id === id).managedByNora, false);
+    await f.controls.execute(command('scripts.enabled', { scope: 'global', id, expectedRevision: list.revision, enabled: true }));
+    assert.equal(f.trees.find(x => x.id === id).enabled, true);
+});
 
 test('actual MVU adapter distinguishes extra-model switch from managed runtime, and disabled runtime stays disabled after initialization', async () => {
     const f = runtimeFixture();

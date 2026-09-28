@@ -1,4 +1,5 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { createExtensionController } from './extension-controller.js';
 import { projectTextModelDisplay } from './model-display.js';
 import { storyCharacterView, hasWorldCardSummary } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 import { buildCuratorReviewLink, storyProfileHref } from './story-profile-controller.js';
@@ -21,6 +22,10 @@ export function createPanelController({
     worldbookController,
     openCharacterLibrary,
     openPresetLibrary = () => {},
+    openPluginLibrary = () => {},
+    plugins,
+    ledgerRequest,
+    isGenerating,
     openWorldPreset = () => {},
     openProfileLibrary = () => {},
     saveProfile = () => {},
@@ -33,7 +38,7 @@ export function createPanelController({
     refreshWorldsAfterCommit,
     retryWorldCapability = async () => {},
     openCardRegex = () => {},
-    characterCapabilities = () => ({ helperScripts: [] }),
+    executeControl = async () => { throw new Error(tr('扩展管理尚未就绪，请稍后重试。')); },
     agentUserId = () => '',
     currentUrl = () => globalThis.location?.href || '/',
 }) {
@@ -43,6 +48,9 @@ export function createPanelController({
     let worldSettingsFolded = true;
     let presetFolded = true;
     let worldSettingsWorldKey = '';
+    let renderedBody = null;
+    let renderedMarkup = null;
+    let renderedWorldKey = null;
 
     function hasCharacterProfile(character) {
         if (hasWorldCardSummary(activeWorldModel()?.storyContext)) return false;
@@ -65,11 +73,10 @@ export function createPanelController({
         return cast;
     }
 
-    function capabilityRows(world, management = false) {
+    function capabilityRows(world) {
         const capabilities = world?.capabilities;
         if (!capabilities?.declared?.length) return '';
-        const labels = { prompt_template: tr("提示词模板"), regex: tr('正则规则'), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
-        const symbols = { prompt_template: 'fa-file-lines', regex: 'fa-code', tavern_helper: 'fa-scroll', mvu: 'fa-sliders' };
+        const labels = { prompt_template: tr("提示词模板"), regex: tr('正则扩展'), tavern_helper: tr("酒馆助手"), mvu: tr("MVU 变量") };
         const statuses = { READY: tr("已就绪"), PENDING: tr("加载中"), DEGRADED: tr("未就绪") };
         const reasons = {
             NORA_MVU_TIMEOUT: tr("变量系统启动超时，可以重试。"),
@@ -85,23 +92,15 @@ export function createPanelController({
             const retry = item.status === 'DEGRADED'
                 ? `<button class="nora-capability-retry" data-retry-capability="${escapeHtml(capability)}" type="button">${tr("重试")}</button>`
                 : '';
-            const row = `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${management ? `<i class="fa-solid ${symbols[capability] || 'fa-puzzle-piece'} nora-extension-icon" aria-hidden="true"></i>` : ''}${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(statuses[item.status] || item.status)}</span>${retry}</span></div>`;
-            if (!management) return row;
-            const actions = {
-                regex: () => `<button class="nora-extension-action" data-extension-regex type="button"><span>${tr('查看正则规则')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
-                mvu: () => `<button class="nora-extension-action" data-extension-model type="button"><span>${tr('模型设置')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
-                tavern_helper: () => `<p class="nora-model-note">${tr('脚本仅供查看；不会在这里执行或修改。')}</p>${(characterCapabilities(currentCharacter()).helperScripts || []).map((script, index) => `<details class="nora-extension-script"><summary>${escapeHtml(script.name || `${tr('角色脚本')} ${index + 1}`)}</summary><textarea class="nora-regex-code" rows="10" readonly aria-label="${tr('角色脚本')}" spellcheck="false">\n${escapeHtml(script.content || '')}</textarea></details>`).join('')}`,
-                prompt_template: () => `<p class="nora-model-note">${tr('模板随当前世界加载，此处显示运行状态。')}</p>`,
-            };
-            return `<section class="nora-extension-item" data-extension="${escapeHtml(capability)}">${row}${error ? `<p class="nora-model-note">${escapeHtml(error)}</p>` : ''}${actions[capability]?.() || ''}</section>`;
+            return `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(statuses[item.status] || item.status)}</span>${retry}</span></div>`;
         }).join('');
         return rows;
     }
 
     function capabilitySection(world) {
         const rows = capabilityRows(world);
-        if (!rows) return '';
-        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('增强能力')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('管理增强能力')}" title="${tr('管理增强能力')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div>${rows}</div>`;
+        if (!world) return '';
+        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('扩展')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('扩展管理')}" title="${tr('扩展管理')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div>${rows}</div>`;
     }
 
     function bindCapabilityRetries(root, worldId, afterRetry) {
@@ -122,23 +121,10 @@ export function createPanelController({
         }));
     }
 
-    function openExtensions() {
-        const world = activeWorldModel();
-        if (!world?.capabilities?.declared?.length) return;
-        const worldId = world.id, avatar = currentCharacter()?.avatar;
-        const modal = dialogs.open(tr('增强能力'), `<div class="nora-form nora-extension-manager">${world.name ? `<p class="nora-extension-world"><i class="fa-solid fa-globe" aria-hidden="true"></i><span>${escapeHtml(world.name)}</span></p>` : ''}${capabilityRows(world, true)}</div>`, 'nora-detail-modal nora-plain-sheet nora-extensions-modal');
-        const version = dialogs.version;
-        const isCurrent = () => activeWorldModel()?.id === worldId && currentCharacter()?.avatar === avatar;
-        bindCapabilityRetries(modal, worldId, () => {
-            render();
-            if (dialogs.version === version && isCurrent()) openExtensions();
-        });
-        select('[data-extension-regex]', modal)?.addEventListener('click', () => {
-            if (!isCurrent() || !avatar) return;
-            void openCardRegex(avatar, () => { if (isCurrent()) openExtensions(); }, { backLabel: tr('‹ 返回增强能力') });
-        });
-        select('[data-extension-model]', modal)?.addEventListener('click', () => { if (isCurrent()) openModelSheet(() => { if (isCurrent()) openExtensions(); }); });
-    }
+    const extensions = createExtensionController({ dialogs, select, selectAll, escapeHtml, activeWorldModel,
+        currentCharacter, readState, executeControl, openCardRegex, openModelSheet,
+        retryCapability: retryWorldCapability, renderPanel: () => render(), plugins, ledgerRequest, isGenerating });
+    const openExtensions = () => extensions.open();
 
     function render() {
         const world = activeWorldModel();
@@ -173,8 +159,8 @@ export function createPanelController({
         const actorSection = `<div class="pSection actorSec"><div class="pHead">${tr("故事主理人")}</div>${reviewLink}<a class="pLink" href="${escapeHtml(archiveHref)}"><i class="fa-solid fa-book-open" aria-hidden="true"></i>${tr("主理人的故事档案")}</a></div>`;
         const modelDisplay = projectTextModelDisplay({ nativeModel: readState().model, uiSettings: settings() });
         const modelSection = `<div class="pSection modelSection"><div class="pHead">${tr("模型")}</div><div class="modelGroup"><div class="modelUnit"><div class="modelUnitHead">${tr("文本模型")}</div><p class="mdlCur">${escapeHtml(modelDisplay.label)}</p><button class="actorMore" data-action="model" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr("切换 / 管理")}</button></div></div></div>`;
-        const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("世界卡库")}</button><button class="actorMore" data-action="preset-library" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr('预设库')}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
-        body.innerHTML = `
+        const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("世界卡库")}</button><button class="actorMore" data-action="preset-library" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr('预设库')}</button><button class="actorMore" data-action="plugin-library" type="button"><i class="fa-solid fa-puzzle-piece" aria-hidden="true"></i>${tr('插件库')}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
+        const markup = `
             ${hasWorldCardSummary(world?.storyContext) && characterField(character, 'description') ? `<div class="pSection"><details><summary>${tr('世界概要')}</summary><p class="pdesc">${escapeHtml(characterField(character, 'description'))}</p></details></div>` : ''}
             <div class="pSection"><div class="pHead pHeadAction"><span>${tr("我的角色")}</span><button class="sectionEdit" data-action="profile" type="button" ${world ? '' : 'disabled'}>${tr("编辑")}</button></div>${world ? `<p class="pname">${escapeHtml(persona?.name || tr("我"))}</p><p class="pdesc">${escapeHtml(persona?.description || tr("补充你在这个世界中的身份与性格"))}</p>` : `<p class="pmuted">${tr("选择世界后设置我的角色。")}</p>`}</div>
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${castFoldClass}" data-fold="cast"><span>${tr("角色设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="cast" type="button">${castEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${castFoldClass}" id="nora-cast-body">${castHtml}${castEditing ? `<button class="nora-add-setting" data-action="add-character" type="button">${icons.plus}${cast.length ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}</div></div>` : `<div class="pSection"><div class="pHead">${tr("角色设定")}</div><p class="pmuted">${tr("选择世界后显示角色设定。")}</p></div>`}
@@ -183,6 +169,11 @@ export function createPanelController({
             ${world ? capabilitySection(world) : ''}
             ${librarySection}
             <footer class="lwFoot"><span class="mark">✦</span>tavern</footer>`;
+        if (renderedBody === body && renderedWorldKey === nextWorldKey && renderedMarkup === markup) return;
+        body.innerHTML = markup;
+        renderedBody = body;
+        renderedWorldKey = nextWorldKey;
+        renderedMarkup = markup;
         selectAll('[data-action]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
             runAction(button.dataset.action);
@@ -259,7 +250,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
+        const actions = { extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'plugin-library': openPluginLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         actions[action]?.();
     }
 
@@ -302,5 +293,5 @@ export function createPanelController({
         });
     }
 
-    return Object.freeze({ render, runAction, refreshHeader, applyHostPersonality, openPersona });
+    return Object.freeze({ render, runAction, refreshHeader, applyHostPersonality, openPersona, openExtensions });
 }

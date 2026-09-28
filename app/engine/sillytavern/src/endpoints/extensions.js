@@ -8,6 +8,7 @@ import { CheckRepoActions, default as simpleGit } from 'simple-git';
 import { PUBLIC_DIRECTORIES } from '../constants.js';
 import { getConfigValue, isValidUrl } from '../util.js';
 import { createGitClient } from '../git/client.js';
+import { builtinPlugins, discoverInstalledExtensions, installDisabledExtension, isManagedExtension, readExtensionLibraryState, setExtensionLibraryState } from '../nora-extension-library.js';
 
 const gitBackend = getConfigValue('git.backend', 'auto');
 
@@ -30,6 +31,7 @@ async function getManifest(extensionPath) {
     }
 
     const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) throw new Error('Invalid extension manifest');
     return manifest;
 }
 
@@ -80,6 +82,64 @@ export const extensionsEnabledFeatureGuard = (_, response, next) => {
 
 router.use(extensionsEnabledFeatureGuard);
 
+// Nora owns these bundles; third-party management must not replace product code.
+router.use((request, response, next) => {
+    if (['/update', '/delete', '/switch', '/move'].includes(request.path)) {
+        const name = request.body?.extensionName;
+        if (typeof name !== 'string' || sanitize(name) !== name || ['.', '..'].includes(name)) return response.status(400).send('插件名称无效。');
+        if (isManagedExtension(name)) return response.status(403).send('内置扩展由诺拉管理，请通过诺拉更新。');
+        const base = request.body.global ? PUBLIC_DIRECTORIES.globalExtensions : request.user.directories.extensions;
+        if (fs.existsSync(path.join(base, name)) && fs.lstatSync(path.join(base, name)).isSymbolicLink()) return response.status(403).send('不能通过插件库修改链接目录。');
+    }
+    next();
+});
+
+router.get('/library', async (request, response) => {
+    try {
+        const directory = request.user.directories.extensions;
+        const state = readExtensionLibraryState(directory);
+        // Feature plugins belong in the library; infrastructure stays runtime-only.
+        const installed = discoverInstalledExtensions(directory, PUBLIC_DIRECTORIES.extensions, PUBLIC_DIRECTORIES.globalExtensions)
+            .filter(item => Object.hasOwn(builtinPlugins, item.name) || item.type !== 'system' && !isManagedExtension(item.name.replace(/^third-party\//, '')));
+        const items = await Promise.all(installed.map(async item => {
+            const folder = item.name.replace(/^third-party\//, '');
+            const builtin = builtinPlugins[item.name];
+            const managed = Boolean(builtin);
+            const base = item.type === 'system' ? PUBLIC_DIRECTORIES.extensions : item.type === 'global' ? PUBLIC_DIRECTORIES.globalExtensions : directory;
+            let manifest = {}, manifestError = false, source = item.type === 'local' ? state[folder]?.source || '' : '';
+            try { manifest = await getManifest(path.join(base, folder)); } catch { manifestError = true; }
+            const repository = !managed && fs.existsSync(path.join(base, folder, '.git'));
+            if (repository && !source) {
+                try { source = (await simpleGit({ baseDir: path.join(base, folder), ...OPTIONS }).getRemotes(true)).find(remote => remote.name === 'origin')?.refs.fetch || ''; } catch { /* not a usable Git repository */ }
+            }
+            // Repository-supplied metadata is display-only, never interpreted as HTML.
+            return { ...item, builtin, managed, editable: !managed && item.type === 'local' && !fs.lstatSync(path.join(base, folder)).isSymbolicLink(), repository,
+                displayName: String(manifest?.display_name || folder), version: String(manifest?.version || ''),
+                author: String(manifest?.author || ''), source: String(source).replace(/\/\/[^/@]+@/, '//'), manifestError };
+        }));
+        response.send({ items });
+    } catch (error) {
+        console.error('Reading plugin library failed', error);
+        response.status(500).send('插件库读取失败，请检查服务端日志。');
+    }
+});
+
+router.post('/library/state', (request, response) => {
+    try {
+        const { extensionName, enabled } = request.body;
+        if (typeof extensionName !== 'string' || sanitize(extensionName) !== extensionName || ['.', '..'].includes(extensionName) || typeof enabled !== 'boolean') return response.status(400).send('插件名称或启停状态无效。');
+        if (isManagedExtension(extensionName)) return response.status(403).send('内置扩展请在对应功能设置中管理。');
+        const directory = request.user.directories.extensions;
+        const target = path.join(directory, extensionName);
+        if (!fs.existsSync(target) || !fs.lstatSync(target).isDirectory()) return response.status(404).send('未找到当前用户安装的插件。');
+        setExtensionLibraryState(directory, extensionName, { enabled });
+        response.send({ enabled, reloadRequired: true });
+    } catch (error) {
+        console.error('Saving plugin state failed', error);
+        response.status(500).send('插件状态保存失败，未确认生效。');
+    }
+});
+
 /**
  * HTTP POST handler function to clone a git repository from a provided URL, read the extension manifest,
  * and return extension information and path.
@@ -122,6 +182,15 @@ router.post('/install', async (request, response) => {
         const extensionNameSanitized = sanitize(path.basename(parsedUrl.pathname, '.git'));
         if (!extensionNameSanitized) {
             return response.status(400).send('Could not determine the extension name from the URL. Please provide a valid git repository URL.');
+        }
+
+        if (isManagedExtension(extensionNameSanitized)) return response.status(403).send('内置扩展随诺拉更新，不能覆盖安装。');
+        if (request.body.disabled === true) {
+            if (global) return response.status(400).send('插件库仅支持安装到当前用户。');
+            if (parsedUrl.username || parsedUrl.password) return response.status(400).send('请使用不含账号或密钥的仓库链接。');
+            const result = await installDisabledExtension({ directory: basePath, name: extensionNameSanitized, url: parsedUrl.href,
+                clone: (source, target) => git.clone(source, target, { depth: 1, ...(branch ? { branch } : {}) }) });
+            return response.send(result);
         }
 
         const extensionPath = path.join(basePath, extensionNameSanitized);
@@ -486,29 +555,7 @@ router.get('/discover', function (request, response) {
         fs.mkdirSync(PUBLIC_DIRECTORIES.globalExtensions);
     }
 
-    // Get all folders in system extensions folder, excluding third-party
-    const builtInExtensions = fs
-        .readdirSync(PUBLIC_DIRECTORIES.extensions)
-        .filter(f => fs.statSync(path.join(PUBLIC_DIRECTORIES.extensions, f)).isDirectory())
-        .filter(f => f !== 'third-party')
-        .map(f => ({ type: 'system', name: f }));
-
-    // Get all folders in local extensions folder
-    const userExtensions = fs
-        .readdirSync(path.join(request.user.directories.extensions))
-        .filter(f => fs.statSync(path.join(request.user.directories.extensions, f)).isDirectory())
-        .map(f => ({ type: 'local', name: `third-party/${f}` }));
-
-    // Get all folders in global extensions folder
-    // In case of a conflict, the extension will be loaded from the user folder
-    const globalExtensions = fs
-        .readdirSync(PUBLIC_DIRECTORIES.globalExtensions)
-        .filter(f => fs.statSync(path.join(PUBLIC_DIRECTORIES.globalExtensions, f)).isDirectory())
-        .map(f => ({ type: 'global', name: `third-party/${f}` }))
-        .filter(f => !userExtensions.some(e => e.name === f.name));
-
-    // Combine all extensions
-    const allExtensions = [...builtInExtensions, ...userExtensions, ...globalExtensions];
+    const allExtensions = discoverInstalledExtensions(request.user.directories.extensions, PUBLIC_DIRECTORIES.extensions, PUBLIC_DIRECTORIES.globalExtensions);
     console.debug('Extensions available for', request.user.profile.handle, allExtensions);
 
     return response.send(allExtensions);

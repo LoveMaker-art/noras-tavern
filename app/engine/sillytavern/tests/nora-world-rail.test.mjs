@@ -4,7 +4,7 @@ import vm from 'node:vm';
 import test from 'node:test';
 
 const source = fs.readFileSync(new URL('../../../native-extensions/nora-ui/shell-controller.js', import.meta.url), 'utf8')
-    .replace(/^import .*;\n/gm, '').replace('export function createShellController', 'function createShellController');
+    .replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
 function harness({ mobile = false, stored = null, storageBlocked = false } = {}) {
     const classes = new Set();
@@ -62,6 +62,31 @@ test('desktop toggle preserves layout and records a reversible browser preferenc
     assert.equal(h.select('#nora-rail'), rail, 'do not rebuild the world list');
     assert.equal(rail.inert, false);
     assert.deepEqual(h.writes, [['nora.ui.world-rail-collapsed', 'true'], ['nora.ui.world-rail-collapsed', 'false']]);
+});
+
+test('shell message bridge preserves toast, confirmation, errors and character capability targeting', () => {
+    const h = harness();
+    const calls = [];
+    let messageController;
+    const selected = { name: 'selected' }, requested = { name: 'requested' };
+    h.shell.installMessageApi({
+        showToast: (...args) => calls.push(['toast', ...args]),
+        confirmAction: value => calls.push(['confirm', value]),
+        getMessageController: () => messageController,
+        readState: () => ({ characters: [selected, requested], activeCharacterId: 0 }),
+        promptCharacterCapabilities: (character, options) => calls.push(['capability', character.name, options]),
+    });
+    messageController = { showSendError: error => calls.push(['error', error]) };
+    h.window.__NORA_MESSAGES__.toast('hello');
+    h.window.__NORA_MESSAGES__.confirm('confirm');
+    h.window.__NORA_MESSAGES__.composerError('failure');
+    h.window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__({ characterName: 'requested', refresh: true });
+    h.window.__NORA_CONFIRM_CHARACTER_REGEX__();
+    assert.deepEqual(calls.slice(0, 3), [['toast', 'hello', undefined], ['confirm', 'confirm'], ['error', 'failure']]);
+    assert.equal(calls[3][1], 'requested');
+    assert.equal(calls[3][2].refresh, true);
+    assert.equal(calls[3][2].force, true);
+    assert.equal(calls[4][1], 'selected');
 });
 
 test('reload restores collapse and unavailable storage never blocks toggling', () => {

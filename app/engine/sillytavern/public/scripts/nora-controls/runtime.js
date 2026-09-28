@@ -3,6 +3,9 @@ import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { createThemeActions } from './theme-actions.js';
 import { createPanelActions } from './panel-actions.js';
 import { createPresetActions } from './preset-actions.js';
+import { worldPresetExtensions } from '../nora-worlds/world-preset-extensions.js';
+import { prepareScriptImport } from './script-import.js';
+import { isEmbeddedMvuRuntimeScript } from '../nora-compat/mvu-compatibility.js';
 
 const denied = ['assets', 'attachments', 'connection-manager', 'gallery', 'memory', 'token-counter'];
 const managedScriptId = 'nora-mvu-headless-runtime';
@@ -48,12 +51,23 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         return api;
     };
     async function saveHelper(type, source) {
+        const target = type === 'character' ? { ...scope(), avatar: character().avatar, ownerId: getContext().characterId } : null;
+        const expected = target ? structuredClone(helper().getScriptTrees({ type })) : null;
+        const assertTarget = () => {
+            if (target && (scope().worldId !== target.worldId || scope().sessionId !== target.sessionId
+                || getContext().characterId !== target.ownerId || character().avatar !== target.avatar)) {
+                throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World changed during script save; inspect the original World before retrying.');
+            }
+        };
         await helperControl().flush(type, source);
+        assertTarget();
         await save();
-        if (type === 'character') {
-            const stored = await request('/api/characters/get', { avatar_url: character().avatar });
+        assertTarget();
+        if (target) {
+            const stored = await request('/api/characters/get', { avatar_url: target.avatar });
+            assertTarget();
             const actual = stored.data?.extensions?.tavern_helper?.scripts ?? [];
-            if (await revision(actual) !== await revision(helper().getScriptTrees({ type }))) throw controlError('NORA_CONTROL_SAVE_UNCONFIRMED', 'Character script persistence could not be confirmed.');
+            if (await revision(actual) !== await revision(expected)) throw controlError('NORA_CONTROL_SAVE_UNCONFIRMED', 'Character script persistence could not be confirmed.');
         }
     }
     const character = () => {
@@ -166,17 +180,26 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         }
         if (action.startsWith('scripts.')) {
             const api = helper(); const option = { type: params.scope }; const trees = api.getScriptTrees(option);
+            const managedMvu = context.extensionSettings.nora_mvu?.managedRuntimeEnabled !== false
+                && !context.extensionSettings.disabledExtensions?.includes('third-party/nora-mvu');
+            const activeEmbeddedCores = items => items.filter(item => item.enabled !== false)
+                .flatMap(item => item.type === 'folder' ? activeEmbeddedCores(item.scripts || []) : isEmbeddedMvuRuntimeScript(item) ? [item.id] : []);
+            const rejectDuplicateCore = () => { throw controlError('NORA_CONTROL_USE_MVU', '诺拉已接管 MVU 核心，请通过 MVU 设置管理，不能重复启用卡内核心脚本。'); };
             const source = helperControl().scope(params.scope);
             if (params.scope === 'character' && String(source.ownerId) !== String(context.characterId)) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Helper has not switched to the current character.');
-            const treeRevision = () => revision([source.source, source.ownerId, api.getScriptTrees(option)]);
+            const treeRevision = () => revision([source.source, source.ownerId, helperControl().scope(params.scope).enabled, api.getScriptTrees(option)]);
             const replace = async next => {
                 const current = helperControl().scope(params.scope);
                 if (current.source !== source.source || current.ownerId !== source.ownerId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Helper source changed before mutation.');
+                const previous = new Set(activeEmbeddedCores(trees));
+                if (managedMvu && activeEmbeddedCores(next).some(id => !previous.has(id))) rejectDuplicateCore();
                 await api.replaceScriptTrees(next, option);
                 await saveHelper(params.scope, source.source);
             };
             if (action === 'scripts.list') {
-                const summary = items => items.map(item => ({ id: item.id, type: item.type, name: item.name, enabled: item.enabled, contentLength: item.content?.length ?? 0, scripts: item.scripts ? summary(item.scripts) : undefined }));
+                const summary = items => items.map(item => ({ id: item.id, type: item.type, name: item.name, enabled: item.enabled,
+                    managedByNora: managedMvu && isEmbeddedMvuRuntimeScript(item),
+                    contentLength: item.content?.length ?? 0, scripts: item.scripts ? summary(item.scripts) : undefined }));
                 return { trees: summary(trees), revision: await treeRevision(), scope: params.scope, ...source };
             }
             if (action === 'scripts.inspect') {
@@ -185,7 +208,19 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 return { script: selected.item, revision: await treeRevision(), ...source };
             }
             if (await treeRevision() !== params.expectedRevision) throw controlError('NORA_CONTROL_EDIT_STALE', 'Scripts or their source changed; read again.');
+            if (action === 'scripts.authorize') {
+                if (managedMvu && activeEmbeddedCores(trees).length) rejectDuplicateCore();
+                if (params.scope === 'preset' && worldPresetExtensions.active) await worldPresetExtensions.permission('scripts', true);
+                else { helperControl().setScopeEnabled(params.scope, true); await saveHelper('global', 'global'); }
+                return { saved: true, runtimeAccepted: true, source: source.source, cleanupGuaranteed: false };
+            }
             const next = structuredClone(trees);
+            if (action === 'scripts.import') {
+                const imported = prepareScriptImport(params.tree);
+                next.push(imported);
+                await replace(next);
+                return { id: imported.id, enabled: false, runtimeAccepted: true, persistence: 'native-save-completed' };
+            }
             if (action === 'scripts.create') {
                 const id = crypto.randomUUID();
                 next.push({ id, type: 'script', name: params.name, content: params.content, enabled: false, info: '', button: { enabled: false, buttons: [] }, data: {} });
@@ -197,16 +232,34 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             if (params.id === managedScriptId || findScript(selected.item.scripts || [], managedScriptId)) throw controlError('NORA_CONTROL_USE_MVU', 'Managed MVU script is controlled through mvu.runtime.');
             if (action === 'scripts.delete') selected.items.splice(selected.index, 1);
             if (action === 'scripts.enabled') selected.item.enabled = params.enabled;
+            if (action === 'scripts.activate') {
+                selected.item.enabled = true;
+                if (managedMvu && activeEmbeddedCores(next).length) rejectDuplicateCore();
+            }
             if (action === 'scripts.update') {
                 for (const key of Object.keys(params.patch)) if (!['name', 'content', 'info', 'enabled', 'button', 'data'].includes(key)) throw controlError('NORA_CONTROL_FIELD_DENIED', 'Unsupported script field.');
                 Object.assign(selected.item, params.patch);
             }
             await replace(next);
+            if (action === 'scripts.activate' && !source.enabled) {
+                // Never authorize a different or concurrently edited set of scripts.
+                const latest = helperControl().scope(params.scope);
+                if (latest.source !== source.source || latest.ownerId !== source.ownerId
+                    || await revision(api.getScriptTrees(option)) !== await revision(next)) {
+                    throw controlError('NORA_CONTROL_EDIT_STALE', 'Script state changed; permission was not granted. Read again.');
+                }
+                if (params.scope === 'preset' && worldPresetExtensions.active) await worldPresetExtensions.permission('scripts', true);
+                else { helperControl().setScopeEnabled(params.scope, true); await saveHelper('global', 'global'); }
+            }
             return { runtimeAccepted: true, revision: await treeRevision(), persistence: 'native-save-completed', cleanupGuaranteed: false };
         }
         if (action.startsWith('regex.')) {
             const module = await loadRegex(); const type = { global: 0, character: 1, preset: 2 }[params.scope];
             if (action === 'regex.permission') {
+                if (params.scope === 'preset' && worldPresetExtensions.active) {
+                    await worldPresetExtensions.permission('regex', params.enabled);
+                    return { saved: true, runtimeApplied: true };
+                }
                 if (params.scope === 'character') (params.enabled ? module.allowScopedScripts : module.disallowScopedScripts)(character());
                 else {
                     if (!module.getCurrentPresetAPI() || !module.getCurrentPresetName()) throw controlError('NORA_CONTROL_PRESET_MISSING', 'No active preset.');
@@ -215,9 +268,9 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 await save(); return { saved: true, runtimeApplied: true };
             }
             const scripts = module.getScriptsByType(type, { allowedOnly: false });
-            const source = params.scope === 'preset' ? [module.getCurrentPresetAPI(), module.getCurrentPresetName()] : params.scope === 'character' ? character().avatar : 'global';
+            const source = params.scope === 'preset' ? [module.getCurrentPresetAPI(), worldPresetExtensions.source || module.getCurrentPresetName()] : params.scope === 'character' ? character().avatar : 'global';
             const persistRules = async next => {
-                if (params.scope === 'preset' && (source[0] !== module.getCurrentPresetAPI() || source[1] !== module.getCurrentPresetName())) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Preset changed before mutation.');
+                if (params.scope === 'preset' && (source[0] !== module.getCurrentPresetAPI() || source[1] !== (worldPresetExtensions.source || module.getCurrentPresetName()))) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Preset changed before mutation.');
                 await module.saveScriptsByType(next, type); await save();
                 if (params.scope === 'character') {
                     const stored = await request('/api/characters/get', { avatar_url: source });
@@ -225,7 +278,9 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
                 }
             };
             if (params.scope === 'preset' && (!source[0] || !source[1])) throw controlError('NORA_CONTROL_PRESET_MISSING', 'No active preset.');
-            if (action === 'regex.list') return { scripts, revision: await revision([source, scripts]), scope: params.scope, source };
+            if (action === 'regex.list') return { scripts, revision: await revision([source, scripts]), scope: params.scope, source,
+                allowed: params.scope === 'global' ? true : params.scope === 'preset' && worldPresetExtensions.active ? worldPresetExtensions.enabled('regex')
+                    : params.scope === 'preset' ? module.isPresetScriptsAllowed(...source) : context.extensionSettings.character_allowed_regex?.includes(character().avatar) === true };
             if (await revision([source, scripts]) !== params.expectedRevision) throw controlError('NORA_CONTROL_EDIT_STALE', 'Regex configuration or source changed.');
             const next = structuredClone(scripts);
             if (action === 'regex.create') {
@@ -345,6 +400,10 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             return { saved: true, runtimeAccepted: true, cleanupGuaranteed: false };
         }
         if (action === 'helper.permissions') {
+            if (params.scope === 'preset' && worldPresetExtensions.active) {
+                await worldPresetExtensions.permission('scripts', params.enabled);
+                return { saved: true, runtimeAccepted: true, source: worldPresetExtensions.source, cleanupGuaranteed: false };
+            }
             const api = helperControl(); const source = api.scope(params.scope);
             if (params.scope === 'character' && String(source.ownerId) !== String(context.characterId)) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'Helper has not switched to the current character.');
             if (params.scope === 'global') {

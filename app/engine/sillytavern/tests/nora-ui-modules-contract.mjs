@@ -9,6 +9,10 @@ const messageControllerSource = fs.readFileSync(path.join(uiRoot, 'message-contr
 const worldControllerSource = fs.readFileSync(path.join(uiRoot, 'world-controller.js'), 'utf8');
 const singleQuote = String.fromCharCode(39);
 
+if (!/createRuntimePluginLibrary\(\{[^}]*selectAll: \$\$/s.test(index)) {
+    throw new Error('Plugin library must receive the multi-element selector, not querySelector.');
+}
+
 if (!index.includes('function mount({ story })')
     || !index.includes('const { state, messages, cards, worldbook, model, mvu, settings: settingsDomain, transport, worlds, presets } = story || {};')) {
     throw new Error('Nora UI mount must consume the named story domain interfaces.');

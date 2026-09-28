@@ -13,8 +13,8 @@ function fixture(worldMode = true) {
     const deletedNames = new Set();
     const preset = { temperature: 0.5, top_p: 0.9, openai_max_tokens: 2048, openai_max_context: 32768,
         prompts: [{ identifier: 'a', name: 'A', content: '<unsafe>' }, { identifier: 'b', name: 'B', content: 'B' },
-        { identifier: 'c', content: 'C' }, { identifier: 'locked', marker: true }],
-    prompt_order: [{ character_id: 100001, order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: false }, { identifier: 'locked', enabled: true }] }] };
+            { identifier: 'c', content: 'C' }, { identifier: 'locked', marker: true }],
+        prompt_order: [{ character_id: 100001, order: [{ identifier: 'a', enabled: true }, { identifier: 'b', enabled: false }, { identifier: 'locked', enabled: true }] }] };
     let world = { id: 'a', name: 'World A', revision: 1, preset: createWorldPreset('Test', preset) };
     let currentId = 'a';
     const snapshot = (name = 'Test') => ({ name, current: false, preset: structuredClone(name === 'Other' ? { ...preset, temperature: 0.9 } : preset), revision: '1', runtimeRevision: '1', toggleable: ['a', 'b', 'c'] });
@@ -32,11 +32,11 @@ function fixture(worldMode = true) {
         };
         for (const key of ['hidden', 'disabled', 'checked', 'open']) Object.defineProperty(node, key, {
             get: () => dom(raw).attr(key) !== undefined,
-            set: value => value ? dom(raw).attr(key, '') : dom(raw).removeAttr(key),
+            set: value => { if (value) dom(raw).attr(key, ''); else dom(raw).removeAttr(key); },
         });
-        Object.defineProperty(node, 'innerHTML', { get: () => dom(raw).html(), set: value => dom(raw).html(value) });
-        Object.defineProperty(node, 'textContent', { get: () => dom(raw).text(), set: value => dom(raw).text(value) });
-        Object.defineProperty(node, 'value', { get: () => dom(raw).attr('value') || '', set: value => dom(raw).attr('value', value) });
+        Object.defineProperty(node, 'innerHTML', { get: () => dom(raw).html(), set: value => { dom(raw).html(value); } });
+        Object.defineProperty(node, 'textContent', { get: () => dom(raw).text(), set: value => { dom(raw).text(value); } });
+        Object.defineProperty(node, 'value', { get: () => dom(raw).val() || '', set: value => { dom(raw).val(value); } });
         Object.defineProperty(node, 'elements', { get: () => Object.fromEntries(dom(raw).find('[name]').toArray().map(el => [el.attribs.name, wrap(el)])) });
         wrappers.set(raw, node); return node;
     };
@@ -56,6 +56,9 @@ function fixture(worldMode = true) {
             importPreset: async (...args) => { if (importFailure) throw importFailure; imports.push(args); },
             readPreset: snapshot, savePresetEntries: async (_snapshot, changes, options) => {
                 writes.push({ changes, options }); if (fail) throw fail;
+                for (const change of options.contentChanges || []) {
+                    preset.prompts.find(prompt => prompt.identifier === change.identifier).content = change.content;
+                }
                 for (const change of changes) {
                     const order = preset.prompt_order[0].order, entry = order.find(item => item.identifier === change.identifier);
                     if (entry) entry.enabled = change.enabled; else order.push({ identifier: change.identifier, enabled: change.enabled });
@@ -83,6 +86,92 @@ async function open(f) {
     await f.controller.openPresets();
     await f.select('[data-preset]').fire('click');
 }
+
+test('prompt text edits save to the current world without changing the library template', async () => {
+    const f = fixture(); await open(f);
+    const edit = f.select('[data-edit-prompt="0"]');
+    assert.ok(edit);
+    await edit.fire('click');
+    const textarea = f.select('[data-prompt-content="0"]');
+    assert.equal(textarea.hidden, false);
+    textarea.value = '500-800 words';
+    await textarea.fire('input');
+    assert.equal(f.select('[data-apply]').disabled, false);
+    await f.select('[data-apply]').fire('click');
+    assert.equal(f.world().preset.preset.prompts[0].content, '500-800 words');
+    assert.equal(f.template().prompts[0].content, '<unsafe>');
+});
+
+test('pencil stays beside the title actions and opens a collapsed prompt without changing its enabled state', async () => {
+    const f = fixture(); await open(f);
+    const row = f.select('[data-prompt-row="0"]');
+    const details = f.select('details', row);
+    const pencil = f.select('.nora-preset-entry-action [data-edit-prompt]', row);
+    const toggle = f.select('[data-prompt-toggle]', row);
+    const textarea = f.select('[data-prompt-content]', row);
+    assert.ok(pencil);
+    assert.equal(f.select('details [data-edit-prompt]', row), null);
+    assert.equal(details.open, false);
+    assert.equal(pencil.getAttribute('aria-controls'), textarea.getAttribute('id'));
+    await pencil.fire('click');
+    assert.equal(details.open, true);
+    assert.equal(textarea.hidden, false);
+    assert.equal(f.focused(), textarea);
+    assert.equal(pencil.getAttribute('aria-expanded'), 'true');
+    assert.equal(toggle.checked, true);
+    assert.equal(f.select('[data-apply]').disabled, true);
+    details.open = false;
+    await details.fire('toggle');
+    assert.equal(pencil.getAttribute('aria-expanded'), 'false');
+    await pencil.fire('click');
+    assert.equal(textarea.hidden, false);
+    assert.equal(details.open, true);
+    await pencil.fire('click');
+    assert.equal(textarea.hidden, true);
+    assert.equal(f.select('[data-prompt-preview]', row).hidden, false);
+    assert.equal(pencil.getAttribute('aria-expanded'), 'false');
+    assert.equal(f.writes.length, 0);
+});
+
+test('collapsing and reopening a prompt keeps preview, draft and saved text consistent', async () => {
+    for (const worldMode of [true, false]) {
+        const f = fixture(worldMode); await open(f);
+        const pencil = f.select('[data-edit-prompt="0"]');
+        const row = f.select('[data-prompt-row="0"]');
+        const textarea = f.select('[data-prompt-content]', row);
+        const preview = f.select('[data-prompt-preview]', row);
+        await pencil.fire('click');
+        textarea.value = '<script>plain text, not executable</script>\nNew draft';
+        await textarea.fire('input');
+        await pencil.fire('click');
+        assert.equal(preview.hidden, false);
+        assert.equal(preview.textContent, textarea.value);
+        assert.equal(f.select('script', preview), null);
+        assert.equal(f.writes.length, 0);
+        await pencil.fire('click');
+        assert.equal(textarea.hidden, false);
+        assert.equal(textarea.value, '<script>plain text, not executable</script>\nNew draft');
+        textarea.value = '';
+        await textarea.fire('input');
+        await pencil.fire('click');
+        assert.equal(preview.textContent, '', 'Clearing text must not resurrect the old prompt');
+        await f.select('[data-apply]').fire('click');
+        assert.equal((worldMode ? f.world().preset.preset : f.template()).prompts[0].content, '');
+    }
+});
+
+test('template prompt text saves only to the library and keeps the world copy', async () => {
+    const f = fixture(false); await open(f);
+    const before = f.world();
+    await f.select('[data-edit-prompt="0"]').fire('click');
+    const textarea = f.select('[data-prompt-content="0"]');
+    textarea.value = '500-800 words';
+    await textarea.fire('input');
+    await f.select('[data-apply]').fire('click');
+    assert.equal(f.template().prompts[0].content, '500-800 words');
+    assert.deepEqual(f.world(), before);
+    assert.deepEqual(f.writes[0].options.contentChanges, [{ identifier: 'a', content: '500-800 words' }]);
+});
 
 test('delete is library-only, requires confirmation and preserves every World field', async () => {
     const current = fixture(); await open(current);

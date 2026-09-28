@@ -51,6 +51,23 @@ test('save inactive toggles preserves payload and ordering without selecting or 
     assert.deepEqual(f.calls, [['save', { skipUpdate: true }]]);
 });
 
+test('saving prompt content preserves the rest of the template and rejects stale or invalid edits', async () => {
+    const f = fixture(), before = structuredClone(f.settings);
+    await f.adapter.savePresetEntries(f.adapter.readPreset('Beta', { storedOnly: true }), [], {
+        contentChanges: [{ identifier: 'a', content: '500-800 words' }],
+    });
+    const expected = structuredClone(f.original); expected.prompts[0].content = '500-800 words';
+    assert.deepEqual(f.values[1], expected);
+    assert.deepEqual(f.disk.get('Beta'), expected);
+    assert.deepEqual(f.settings, before);
+    const snapshot = f.adapter.readPreset('Beta', { storedOnly: true });
+    await assert.rejects(f.adapter.savePresetEntries(snapshot, [], { contentChanges: [{ identifier: 'missing', content: 'x' }] }), /不存在/);
+    await assert.rejects(f.adapter.savePresetEntries(snapshot, [], { contentChanges: [{ identifier: 'a', content: 42 }] }), /不存在/);
+    f.values[1].temperature = 0.3;
+    await assert.rejects(f.adapter.savePresetEntries(snapshot, [], { contentChanges: [{ identifier: 'a', content: 'stale' }] }), /改变/);
+    assert.equal(f.disk.get('Beta').prompts[0].content, '500-800 words');
+});
+
 test('save and apply active toggles changes next-request settings, not sampler, connection or scripts', async () => {
     const f = fixture();
     await f.adapter.savePresetEntries(f.adapter.readPreset('Alpha'), [{ identifier: 'a', enabled: false }], { apply: true });

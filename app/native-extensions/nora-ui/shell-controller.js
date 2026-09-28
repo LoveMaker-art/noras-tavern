@@ -2,6 +2,16 @@ import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i1
 import { createComposerFormatController } from './composer-format-controller.js';
 import { createViewportController } from './viewport-controller.js';
 
+export const shellIcons = {
+    menu: '<i class="fa-solid fa-bars"></i>', info: '<i class="fa-solid fa-circle-info"></i>',
+    plus: '<i class="fa-solid fa-plus"></i>', close: '<i class="fa-solid fa-xmark"></i>',
+    send: '<i class="fa-solid fa-arrow-up"></i>', stop: '<i class="fa-solid fa-stop"></i>',
+    edit: '<i class="fa-solid fa-pen"></i>', repeat: '<i class="fa-solid fa-rotate-right"></i>',
+    suggest: '<i class="fa-solid fa-wand-magic-sparkles"></i>',
+    left: '<i class="fa-solid fa-chevron-left"></i>', right: '<i class="fa-solid fa-chevron-right"></i>',
+    trash: '<i class="fa-solid fa-trash-can"></i>',
+};
+
 export function createShellController({ select, selectAll, icons, messageView, exposeMessageApi }) {
     const composerFormats = createComposerFormatController();
     const viewport = createViewportController();
@@ -141,5 +151,29 @@ export function createShellController({ select, selectAll, icons, messageView, e
         }
     }
 
-    return Object.freeze({ removeNestedLayoutCopies, buildLayout, bindLayoutEvents, openDrawer, closeDrawers, prepareShell });
+    function installMessageApi({ showToast, confirmAction, getMessageController, readState, promptCharacterCapabilities }) {
+        window.__NORA_MESSAGES__ = Object.freeze({
+            toast: (message, options) => showToast(message, options),
+            confirm: (options) => confirmAction(options),
+            composerError: (error) => getMessageController().showSendError(error),
+        });
+        window.__NORA_PREPARE_ST_POPUP__ = (popup) => {
+            const dialog = popup?.dlg;
+            if (!(dialog instanceof HTMLDialogElement)) return;
+            dialog.classList.add('nora-popup-adapted');
+            dialog.dataset.noraPopupType = String(popup.type || '');
+        };
+        const confirmCharacterCapabilities = ({ characterName, refresh = false } = {}) => {
+            const current = readState();
+            const characters = current.characters;
+            const character = characters.find((item) => item?.name === characterName)
+                || characters[current.activeCharacterId]
+                || null;
+            return promptCharacterCapabilities(character, { refresh, force: true });
+        };
+        window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__ = confirmCharacterCapabilities;
+        window.__NORA_CONFIRM_CHARACTER_REGEX__ = confirmCharacterCapabilities;
+    }
+
+    return Object.freeze({ installMessageApi, removeNestedLayoutCopies, buildLayout, bindLayoutEvents, openDrawer, closeDrawers, prepareShell });
 }

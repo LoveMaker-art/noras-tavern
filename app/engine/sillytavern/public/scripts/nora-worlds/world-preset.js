@@ -1,6 +1,18 @@
 import { PRESET_MAX_BYTES, presetFileSize } from './preset-file.js';
 
-// World snapshots carry generation settings, never connections or executable extensions.
+// Shared authorization comparisons are pure: importing them on the server must
+// not create or read the browser's active preset projection.
+export function scriptCode(preset) {
+    const walk = items => (Array.isArray(items) ? items : []).map(item => item.type === 'folder'
+        ? { id: item.id, scripts: walk(item.scripts) } : { id: item.id, content: item.content });
+    return JSON.stringify(walk(preset?.extensions?.tavern_helper?.scripts || preset?.extensions?.TavernHelper_scripts));
+}
+export function regexCode(preset) {
+    return JSON.stringify((preset?.extensions?.regex_scripts || []).map(({ disabled, ...rule }) => rule));
+}
+
+// World snapshots carry generation settings and extension data, never connections.
+// Retaining an extension is not permission to execute it.
 export const WORLD_PRESET_PARAMETERS = Object.freeze([
     { key: 'openai_max_tokens', label: '回复上限', min: 1, max: 128000, step: 1 },
     { key: 'openai_max_context', label: '上下文上限', min: 512, max: 1000000, step: 1 },
@@ -62,8 +74,16 @@ export function normalizeWorldPreset(value) {
         if (!['number', 'string', 'boolean'].includes(typeof field) || (typeof field === 'number' && !Number.isFinite(field))) invalid();
         parameters[key] = field;
     }
+    const extensions = {};
+    for (const key of ['regex_scripts', 'tavern_helper', 'TavernHelper_scripts', 'TavernHelper_characterScriptVariables']) {
+        if (preset.extensions?.[key] !== undefined) extensions[key] = structuredClone(preset.extensions[key]);
+    }
+    if (extensions.regex_scripts !== undefined && !Array.isArray(extensions.regex_scripts)) invalid();
+    if (extensions.tavern_helper !== undefined && (!extensions.tavern_helper || typeof extensions.tavern_helper !== 'object' || Array.isArray(extensions.tavern_helper))) invalid();
     return { schema: 'nora-world-preset/v1', name: value.name.trim(), modified: value.modified,
+        extension_permissions: { regex: value.extension_permissions?.regex === true, scripts: value.extension_permissions?.scripts === true },
         preset: { ...parameters, prompts: structuredClone(preset.prompts),
+            ...(Object.keys(extensions).length ? { extensions } : {}),
             prompt_order: [{ character_id: 100001, order: group.order.map(({ identifier, enabled }) => ({ identifier, enabled })) }] } };
 }
 

@@ -79,6 +79,7 @@ function uiFixture() {
         updateActive: async (...args) => writes.push(['apply', ...args]),
         importLibraryItem: async (...args) => writes.push(['character', ...args]),
     }, presets: {}, dialogs: { open: (_title, html) => { markup = html; return {}; }, close() {}, toast: text => notices.push(text), normalizeError: e => e.message,
+        protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; },
         confirm: async value => { confirmations.push(value); onConfirm(); return confirm; } },
     operations: { isBusy: () => false, run: async (_key, fn) => fn() }, activeWorldModel: () => world, isGenerating: () => generating,
     characterField: (c, field) => c.data?.[field], openCards() {}, refresh() {}, select: node,

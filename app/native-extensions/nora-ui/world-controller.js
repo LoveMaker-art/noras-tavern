@@ -47,6 +47,8 @@ export function createWorldController({
     let selectionPromise;
     let selectionRevision = 0;
     let unsubscribeWorldRuntime = null;
+    let renderedList = null;
+    let renderedMarkup = null;
 
     function models() {
         return store.read().worldModels;
@@ -57,7 +59,6 @@ export function createWorldController({
         if (!unsubscribeWorldRuntime && typeof worldRuntime.subscribe === 'function') {
             unsubscribeWorldRuntime = worldRuntime.subscribe(() => {
                 if (!select('#nora-world-list')) return;
-                renderRail();
                 refresh();
             });
         }
@@ -110,7 +111,11 @@ export function createWorldController({
             const remove = `<button class="nora-icon-button nora-world-more" data-world-options="${escapeHtml(world.id)}" type="button" aria-label="${t`世界操作 ${escapeHtml(name)}`}" title="${tr('世界操作')}"><i class="fa-solid fa-ellipsis" aria-hidden="true"></i></button>`;
             return `<div class="nora-world ${world.active ? 'active' : ''}${world.available === false ? ' needs-repair' : ''}" data-world="${escapeHtml(world.id)}" role="button" tabindex="0" aria-label="${t`打开世界 ${escapeHtml(name)}`}"><div class="nora-world-copy"><strong>${escapeHtml(name)}</strong><small>${escapeHtml(world.meta)}</small></div><div class="nora-world-actions">${repair}${remove}</div></div>`;
         }).join('') : `<div class="nora-rail-empty"><span>✦</span><p>${tr("还没有世界")}</p><small>${tr("导入角色卡开始第一场故事")}</small></div>`;
-        list.innerHTML = operationHtml + worldsHtml;
+        const markup = operationHtml + worldsHtml;
+        if (renderedList === list && renderedMarkup === markup) return;
+        list.innerHTML = markup;
+        renderedList = list;
+        renderedMarkup = markup;
     }
 
     function listKeydown(event) {

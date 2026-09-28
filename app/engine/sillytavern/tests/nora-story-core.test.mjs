@@ -18,6 +18,28 @@ function runtimeFixture() {
     return Object.fromEntries(domainMethods.map(name => [name, () => name]));
 }
 
+test('validated bootstrap starts list read while the kernel is still loading', async () => {
+    let releaseKernel;
+    let prefetched = false;
+    let headers;
+    const runtime = runtimeFixture();
+    const client = { prefetchList() { prefetched = true; } };
+    const pending = createNoraStoryCore({
+        bootstrap: Promise.resolve({ csrfToken: 'test-token' }),
+        loadKernel: () => new Promise(resolve => { releaseKernel = resolve; }),
+        createRuntime: () => runtime,
+        createWorldAdapter: () => ({}),
+        createV2Client: getHeaders => { headers = getHeaders; return client; },
+        createV2Worlds: (_adapter, options) => { assert.equal(options.client, client); return { activate() {} }; },
+    });
+    await Promise.resolve();
+    assert.equal(prefetched, true);
+    assert.equal(headers()['X-CSRF-Token'], 'test-token');
+    releaseKernel({ getContext() {}, whenAppReady: Promise.resolve() });
+    await pending;
+    assert.equal(headers(), 'requestHeaders');
+});
+
 test('story surface exposes only explicit headless domains', () => {
     const runtime = runtimeFixture();
     const worlds = { activate() {} };

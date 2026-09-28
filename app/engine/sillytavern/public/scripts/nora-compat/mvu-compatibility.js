@@ -13,6 +13,10 @@ const LOCAL_MVU_SCHEMA_URL = '/scripts/extensions/third-party/nora-mvu/mvu-zod.j
 const LOCAL_MVU_SCHEMA_IMPORT = /\/scripts\/extensions\/third-party\/nora-mvu\/mvu-zod\.js(?:\?[^'"\s]*)?/g;
 const ADAPTATION_SCHEMA = 1;
 
+export function isEmbeddedMvuRuntimeScript(script) {
+    return MVU_RUNTIME_SCRIPT.test(String(script?.content || ''));
+}
+
 function record(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
@@ -113,7 +117,7 @@ export function inspectMvuCompatibility({ card = null, books = [], helperScripts
         .filter(({ entry }) => isActiveUpdateEntry(entry))
         .map(({ id }) => id);
     const hasVariableReference = entries.some(entry => VARIABLE_CONTENT_MARKER.test(String(entry?.content || '')));
-    const embeddedRuntime = scripts.some(script => script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(String(script?.content || '')));
+    const embeddedRuntime = scripts.some(script => script?.enabled !== false && isEmbeddedMvuRuntimeScript(script));
     const schemaRuntime = scripts.some(script => script?.enabled !== false && MVU_SCHEMA_SCRIPT.test(String(script?.content || '')));
     const managedRuntime = record(data.extensions?.nora_mvu_compatibility).managed_runtime === true;
     const declared = protocol !== 'legacy' || Boolean(protocolError) || hasInit || hasSplitUpdate || hasSplitPlot
@@ -156,7 +160,7 @@ function projectManagedMvuScripts(trees) {
     const project = (script) => {
         if (script?.type === 'folder') return { ...script, scripts: script.scripts.map(project) };
         const content = String(script?.content || '');
-        if (script?.enabled !== false && MVU_RUNTIME_SCRIPT.test(content)) {
+        if (script?.enabled !== false && isEmbeddedMvuRuntimeScript(script)) {
             runtimeSuppressed = true;
             return { ...script, enabled: false };
         }

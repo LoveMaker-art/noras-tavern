@@ -53,13 +53,14 @@ function contextFixture() {
     return { current, runtime: createStWorldAdapter(() => current) };
 }
 
-test('snapshot removes connections, script extensions and foreign character orders; validates entries', () => {
+test('snapshot removes connections and foreign orders, preserving unapproved extensions; validates entries', () => {
     const original = preset('A', true);
     original.preset.custom_url = 'must-not-copy'; original.preset.proxy_password = 'must-not-copy';
     original.preset.extensions = { tavern_helper: { scripts: ['must-not-run'] } };
     original.preset.prompt_order.push({ character_id: 7, order: [] });
     const value = normalizeWorldPreset(original);
-    assert.equal(value.preset.custom_url, undefined); assert.equal(value.preset.extensions, undefined);
+    assert.equal(value.preset.custom_url, undefined); assert.deepEqual(value.preset.extensions, original.preset.extensions);
+    assert.equal(value.extension_permissions.scripts, false);
     assert.equal(value.preset.prompt_order.length, 1);
     value.preset.prompts[0].content = 'different'; assert.equal(original.preset.prompts[0].content, 'A');
     for (const change of [v => { v.preset.prompts.push(v.preset.prompts[0]); }, v => { v.preset.prompt_order[0].order[0].enabled = 'false'; },
@@ -215,9 +216,27 @@ test('preset entry is below World settings with Edit, and generation restores be
     assert.ok(source.indexOf('eventSource.emit(event_types.GENERATION_STARTED', start) > start);
 });
 
-test('preset toggles use the existing dot visual without reducing the click target', async () => {
+test('role, world and preset setting controls share compact dimensions without increasing title height', async () => {
     const css = await fs.readFile(new URL('../../../native-extensions/nora-ui/style.css', import.meta.url), 'utf8');
-    assert.match(css, /\.nora-preset-toggle \{[^}]*width:44px; height:44px/);
+    const property = (selector, name) => {
+        const start = css.indexOf(selector + ' {');
+        assert.ok(start >= 0, selector);
+        const body = css.slice(start + selector.length + 2, css.indexOf('}', start));
+        return body.split(';').map(value => value.trim().split(':')).find(([key]) => key === name)?.[1]?.trim();
+    };
+    for (const name of ['width', 'height']) {
+        assert.equal(property('.nora-preset-toggle', name), property('#nora-panel .nora-lore-toggle', name));
+        assert.equal(property('.nora-preset-entry-action .nora-icon-button, .nora-preset-locked', name), property('#nora-panel .itemEdit', name));
+    }
+    assert.equal(property('.nora-preset-edit > i', 'font-size'), property('#nora-panel .itemEdit', 'font-size'));
+    assert.equal(property('.nora-preset-toggle::after', 'width'), property('#nora-panel .nora-lore-dot', 'width'));
+    assert.equal(property('.nora-preset-toggle::after', 'top'), '4px');
+    assert.equal(property('.nora-preset-toggle::after', 'left'), '6px');
+    const compactHeight = parseFloat(property('#nora-panel .itemEdit', 'height'));
+    const titleHeight = parseFloat(property('#nora-panel .loreTitle', 'font-size')) * parseFloat(property('#nora-panel .loreItem', 'line-height'));
+    assert.equal(compactHeight, 18);
+    assert.ok(compactHeight <= titleHeight, 'editing controls must fit within the existing lore title line');
+    assert.doesNotMatch(css, /\.loreSummaryLine :is\(\.nora-lore-toggle, \.itemEdit\)/, 'use base dimensions rather than a local height override');
     assert.match(css, /\.nora-preset-toggle::after \{[^}]*width:10px; height:10px; border-radius:50%/);
     assert.match(css, /\.nora-preset-toggle:checked::after \{ background:var\(--nora-brand\)/);
     assert.doesNotMatch(css, /\.nora-preset-toggle::before/);

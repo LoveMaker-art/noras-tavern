@@ -328,11 +328,13 @@ test('browser manifest invalidates only the namespace whose final bytes changed'
             assert.equal(mvuChange.namespaces[name].release, stChange.namespaces[name].release, `${name} should survive an MVU-only update`);
         }
 
-        const ttsDirectory = path.join(options.globalExtensionDirectory, 'nora-tts');
+        const ttsDirectory = path.join(options.globalExtensionDirectory, 'user-tts');
         fs.mkdirSync(ttsDirectory, { recursive: true });
         fs.writeFileSync(path.join(ttsDirectory, 'index.js'), 'tts-v1');
         const ttsAddition = computeBrowserAssetManifest(options);
-        assert.ok(ttsAddition.extensions['third-party/nora-tts']);
+        // Installable third-party plugins must not be frozen in the startup snapshot.
+        assert.equal(ttsAddition.extensions['third-party/user-tts'], undefined);
+        assert.equal(ttsAddition.release, mvuChange.release);
         assert.equal(ttsAddition.extensions['third-party/nora-mvu'].release, mvuChange.extensions['third-party/nora-mvu'].release);
         for (const name of Object.values(NORA_ASSET_NAMESPACE)) {
             assert.equal(ttsAddition.namespaces[name].release, mvuChange.namespaces[name].release, `${name} should survive a TTS-only addition`);

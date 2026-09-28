@@ -3,6 +3,7 @@ import { renderStoryContext, normalizeWorldPersona } from '../nora-worlds/story-
 import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
 import { createWorldPreset, normalizeWorldPreset, validateWorldPresetParameters, validateWorldPresetModelLimits, WORLD_PRESET_FIELDS } from '../nora-worlds/world-preset.js';
 import { worldPresetProjection } from '../nora-worlds/world-preset-projection.js';
+import { worldPresetExtensions } from '../nora-worlds/world-preset-extensions.js';
 import { worldbookOverrides } from '../nora-worlds/worldbook-bindings.js';
 function requireRuntime(getContext) {
     const current = getContext();
@@ -74,6 +75,7 @@ export function createStWorldAdapter(getContext) {
             manager.sanitizeServiceSettings();
         };
         project();
+        worldPresetExtensions.bind(current.chatMetadata?.nora_world?.id, snapshot);
         worldPresetProjection.bind(current.chatMetadata?.nora_world?.id, () => {
             validateWorldPresetModelLimits(snapshot.preset, current.getChatCompletionModelLimits?.());
             project();
@@ -184,6 +186,7 @@ export function createStWorldAdapter(getContext) {
 
     async function activate(characterId, chatId) {
         interactionBridge.assertSessionIdle();
+        worldPresetExtensions.clear();
         await requireRuntime(getContext).selectCharacterById(characterId, {
             switchMenu: false,
             chatId,
@@ -194,6 +197,7 @@ export function createStWorldAdapter(getContext) {
 
     async function activateSnapshot(characterId, snapshot) {
         interactionBridge.assertSessionIdle();
+        worldPresetExtensions.clear();
         const current = requireRuntime(getContext);
         if (typeof current.activateNoraWorldSnapshot !== 'function') {
             throw new Error('故事运行核心缺少聚合世界快照能力。');
@@ -239,6 +243,7 @@ export function createStWorldAdapter(getContext) {
         const result = await current.closeCurrentChat();
         applyStoryContext(null);
         worldPresetProjection.clear();
+        worldPresetExtensions.clear();
         return result;
     }
 

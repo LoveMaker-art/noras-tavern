@@ -23,6 +23,59 @@ function memoryStore() {
     };
 }
 
+test('initial list prefetch is consumed once, deduplicated and never a permanent cache', async () => {
+    let calls = 0;
+    const client = createWorldCoreClient(() => ({}), { fetchImpl: async () => response(200, { worlds: [{ id: ++calls }] }) });
+    client.prefetchList();
+    client.prefetchList();
+    assert.deepEqual(await client.list(), [{ id: 1 }]);
+    assert.deepEqual(await client.list(), [{ id: 2 }]);
+});
+
+test('mutations invalidate even a prefetch already being consumed', async () => {
+    let release;
+    let reads = 0;
+    const client = createWorldCoreClient(() => ({}), { fetchImpl: async (_url, options) => {
+        if (options.method === 'PATCH') return response(200, { world: { id: 'new' } });
+        if (++reads === 1) return new Promise(resolve => { release = () => resolve(response(200, { worlds: [{ id: 'old' }] })); });
+        return response(200, { worlds: [{ id: 'new' }] });
+    } });
+    client.prefetchList();
+    const pending = client.list();
+    await client.updateWorld('new', {}, 'revision');
+    release();
+    assert.deepEqual(await pending, [{ id: 'new' }]);
+});
+
+test('failed and expired startup reads fall back to fresh requests', async () => {
+    for (const failed of [true, false]) {
+        let now = 0;
+        let reads = 0;
+        const client = createWorldCoreClient(() => ({}), { clock: () => now, fetchImpl: async () => {
+            reads++;
+            if (failed && reads === 1) throw new Error('offline');
+            return response(200, { worlds: [{ id: reads }] });
+        } });
+        client.prefetchList();
+        await new Promise(resolve => setTimeout(resolve, 0));
+        if (!failed) now = 30_001;
+        assert.deepEqual(await client.list(), [{ id: 2 }]);
+    }
+});
+
+test('a hung initial prefetch releases hydration at its deadline and retries fresh', async () => {
+    let calls = 0;
+    let signal;
+    const client = createWorldCoreClient(() => ({}), { requestTimeoutMs: 10, fetchImpl: async (_url, options) => {
+        if (++calls === 1) { signal = options.signal; return new Promise(() => {}); }
+        return response(200, { worlds: [] });
+    } });
+    client.prefetchList();
+    assert.deepEqual(await client.list(), []);
+    assert.equal(signal.aborted, true);
+    assert.equal(calls, 2);
+});
+
 test('operation deadline aborts a hung HTTP request and retains its recovery identity', async () => {
     let signal;
     const client = createWorldCoreClient(() => ({}), {

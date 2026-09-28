@@ -45,12 +45,23 @@ export async function createNoraStoryCore({
     createWorldAdapter = createStWorldAdapter,
     createV2Client = createWorldCoreClient,
     createV2Worlds = createWorldCoreRuntime,
+    bootstrap = globalThis.__NORA_SHELL_BOOTSTRAP_PROMISE__,
 } = {}) {
+    let runtime;
+    // Only the release-validated bootstrap may authorize the early read.
+    const earlyClient = bootstrap ? Promise.resolve(bootstrap).then(data => {
+        if (!data?.csrfToken) return null;
+        const client = createV2Client(() => runtime ? runtime.requestHeaders() : {
+            'Content-Type': 'application/json', 'X-CSRF-Token': data.csrfToken,
+        });
+        client.prefetchList?.();
+        return client;
+    }).catch(() => null) : null;
     const kernel = await loadKernel();
-    const runtime = createRuntime(kernel.getContext, { whenAppReady: () => kernel.whenAppReady });
+    runtime = createRuntime(kernel.getContext, { whenAppReady: () => kernel.whenAppReady });
     const worldAdapter = createWorldAdapter(kernel.getContext);
     const worlds = createV2Worlds(worldAdapter, {
-        client: createV2Client(runtime.requestHeaders),
+        client: await earlyClient || createV2Client(runtime.requestHeaders),
         capabilityRuntime: runtime,
         refreshCharacters: runtime.refreshCharacters,
     });

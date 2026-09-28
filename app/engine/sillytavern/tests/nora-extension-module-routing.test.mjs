@@ -63,7 +63,7 @@ test('Tavern Helper shares Nora core module singletons instead of loading a seco
     const relativeImports = imports.filter(value => value.startsWith('.'));
     const coreImports = imports.filter(value => value.startsWith('nora-module/'));
 
-    assert.deepEqual(relativeImports.sort(), ['../lib/jsoneditor.js', '../nora-control-adapter.js']);
+    assert.deepEqual(relativeImports.sort(), ['../deferred-json-editor.js', '../nora-control-adapter.js']);
     assert.equal(coreImports.length, imports.length - relativeImports.length);
     assert.ok(coreImports.includes('nora-module/script.js'));
     assert.ok(coreImports.includes('nora-module/scripts/openai.js'));
@@ -75,6 +75,19 @@ test('Tavern Helper shares Nora core module singletons instead of loading a seco
             inlineManifest.modules[modulePath] || inlineManifest.compiled?.[modulePath],
             `managed extension core dependency is absent from the inline manifest: ${modulePath}`,
         );
+    }
+});
+
+test('editor and faker libraries remain dynamic dependencies, not startup imports', () => {
+    for (const [file, dependency] of [
+        ['JS-Slash-Runner/deferred-json-editor.js', './lib/jsoneditor.js'],
+        ['ST-Prompt-Template/deferred-faker.js', './libs/faker.mjs'],
+    ]) {
+        const source = fs.readFileSync(path.join(nativeExtensionsDirectory, file), 'utf8');
+        const [imports] = parse(source);
+        assert.equal(imports.filter(item => item.d === -1).length, 0);
+        assert.ok(imports.some(item => item.d >= 0 && item.n === dependency));
+        assert.ok(fs.existsSync(path.resolve(nativeExtensionsDirectory, path.dirname(file), dependency)));
     }
 });
 

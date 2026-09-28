@@ -255,8 +255,11 @@ if (!html.includes('#nora-chat .mes_buttons') || !html.includes('#nora-chat .mes
     throw new Error('Critical CSS must suppress native message controls before the deferred Nora stylesheet loads.');
 }
 
-for (const signal of ['const showToast = (message, options) => dialogs.toast(message, options);', 'const confirmAction = (options) => dialogs.confirm(options);', '__NORA_CONFIRM_CHARACTER_REGEX__']) {
+for (const signal of ['const showToast = (message, options) => dialogs.toast(message, options);', 'const confirmAction = (options) => dialogs.confirm(options);', 'shellController.installMessageApi(']) {
     if (!noraUi.includes(signal)) throw new Error(`Nora must own the product message surface: ${signal}`);
+}
+for (const signal of ['__NORA_CONFIRM_CHARACTER_REGEX__', '__NORA_MESSAGES__', '__NORA_PREPARE_ST_POPUP__']) {
+    if (!shellController.includes(signal)) throw new Error(`Nora shell must install the product message bridge: ${signal}`);
 }
 for (const signal of ['dialogs.notice({', 'function showSendError(']) {
     if (!messageController.includes(signal)) throw new Error(`The message controller must own composer errors: ${signal}`);
@@ -279,7 +282,7 @@ for (const signal of [
     if (!capabilityController.includes(signal)) throw new Error(`Complex-card capabilities must use Nora authorization: ${signal}`);
 }
 for (const signal of ['__NORA_CONFIRM_CHARACTER_CAPABILITIES__', '__NORA_CONFIRM_CHARACTER_REGEX__']) {
-    if (!noraUi.includes(signal)) throw new Error(`Nora must expose complex-card authorization to compatibility runtimes: ${signal}`);
+    if (!shellController.includes(signal)) throw new Error(`Nora shell must expose complex-card authorization to compatibility runtimes: ${signal}`);
 }
 
 for (const signal of [
@@ -361,7 +364,7 @@ for (const obsoleteSignal of ['runtime.importCharacter', 'characterController.fi
 }
 
 const characterLibrary = getNamedFunction(characterController, 'openLibrary');
-for (const signal of ['世界卡库', 'groups()', 'nora-card-waterfall', '/thumbnail?type=avatar', 'nora-card-library-delete', 'data-library-delete', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)', 'deleteGroup']) {
+for (const signal of ['世界卡库', 'groups()', 'nora-card-waterfall', '/thumbnail?type=avatar', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)']) {
     if (!characterLibrary.includes(signal)) throw new Error(`The character-card library must use imported card artwork: ${signal}`);
 }
 for (const blockingSignal of ['cards.resolveCharacter', 'for (let index = 0; index < characters.length', 'Promise.all']) {
@@ -373,12 +376,12 @@ if (characterLibrary.includes('worldRuntime.create')) {
     throw new Error('Browsing the character library must not create a World.');
 }
 
-if (((noraUi + characterController + modelController + worldController).match(/nora-delete-button/g) || []).length < 3) {
-    throw new Error('All Nora trash-icon actions must share the fixed-size delete-button contract.');
+if (characterLibrary.includes('data-library-delete')) {
+    throw new Error('Card deletion belongs in explicit detail management, not the browsing tile.');
 }
 
 const characterSheet = getNamedFunction(characterController, 'openSheet');
-for (const signal of ["characterField(character, 'first_mes')", 'worldbookCount', 'nora-character-overview', 'data-back-character-library', 'openLibrary']) {
+for (const signal of ["characterField(character, 'first_mes')", 'worldbookCount', 'nora-character-overview', 'data-back-character-library', 'openLibrary', 'data-library-delete', 'deleteGroup', 'nora-library-management']) {
     if (!characterSheet.includes(signal)) throw new Error(`Character-card details must expose meaningful complex-card information: ${signal}`);
 }
 
@@ -396,7 +399,7 @@ for (const signal of ['class="nora-form" autocomplete="off"', 'name="name"', 'au
 }
 
 const renderPanel = getNamedFunction(panelController, 'render');
-for (const signal of ['常驻角色', '世界书', 'worldbookSummary(character, worldbookEditing)', '角色卡库', 'class="pSection', 'pHeadFold', 'pFoldBody', 'librarySupport', 'data-edit-section="cast"', 'data-cast-edit', 'openCharacterEditor', 'data-edit-section="worldbook"', 'data-worldbook-kind', 'data-worldbook-edit-kind', 'worldbookController.openEntryEditor', 'castEditing', 'worldbookEditing', 'castFolded', 'worldSettingsFolded', 'emptyEditRow', '文本模型', '切换 / 管理']) {
+for (const signal of ['常驻角色', '世界书', 'worldbookSummary(character, worldbookEditing)', 'class="pSection', 'pHeadFold', 'pFoldBody', 'data-edit-section="cast"', 'data-cast-edit', 'openCharacterEditor', 'data-edit-section="worldbook"', 'data-worldbook-kind', 'data-worldbook-edit-kind', 'worldbookController.openEntryEditor', 'castEditing', 'worldbookEditing', 'castFolded', 'worldSettingsFolded', '文本模型', '切换 / 管理']) {
     if (!renderPanel.includes(signal)) throw new Error(`The Nora panel must expose World Settings using Python Tavern semantics: ${signal}`);
 }
 for (const removedSignal of ['世界书库', 'data-edit-section="settings"', 'worldSettingsEditing']) {
@@ -429,19 +432,16 @@ for (const leakedBinding of ['world.character', 'world.characterId', 'world.chat
 }
 
 const hasCharacterProfile = getNamedFunction(panelController, 'hasCharacterProfile');
-if (!hasCharacterProfile.includes("characterField(character, 'personality')")) {
-    throw new Error('A Runtime Card may appear as a resident character only when its personality field is non-empty.');
-}
-if (hasCharacterProfile.includes("characterField(character, 'description')")) {
-    throw new Error('A description alone must not classify a Runtime Card as a resident character.');
+for (const signal of ['hasWorldCardSummary(activeWorldModel()?.storyContext)', 'removed_card_fields', "['description', 'personality', 'scenario']"]) {
+    if (!hasCharacterProfile.includes(signal)) throw new Error('World-card summaries must stay out of cast; legacy character fields and explicit removals remain supported.');
 }
 
 const worldbookSummary = getNamedFunction(worldbookController, 'summary');
 for (const signal of ['data-worldbook-kind="scenario"', 'data-worldbook-edit-kind="scenario"', "panelItems(alwaysOn, 'always', canEditEntries)", "panelItems(triggered, 'triggered', canEditEntries)", 'is-always', 'is-triggered', 'class="loreTitle"', 'data-add-world-setting']) {
     if (!worldbookSummary.includes(signal)) throw new Error(`The Worldbook panel must render compact drill-down summaries: ${signal}`);
 }
-for (const signal of ['editing && runtimeName(character) === editableWorldbookName()', '添加第一条设定']) {
-    if (!worldbookSummary.includes(signal)) throw new Error(`Only Nora-owned Worldbook entries may be edited while add-setting remains available: ${signal}`);
+for (const signal of ['const canEditEntries = editing;', '添加第一条设定']) {
+    if (!worldbookSummary.includes(signal)) throw new Error(`World settings must expose editing and add-setting through their controller: ${signal}`);
 }
 if (worldbookSummary.includes('loreSummary(') || worldbookSummary.includes('entry.content')) {
     throw new Error('Compact Worldbook rows must display titles only.');
@@ -483,7 +483,7 @@ for (const signal of ['current.chatMetadata.scenario', 'delete current.chatMetad
 }
 
 const entryEditor = getNamedFunction(worldbookController, 'editEntry');
-for (const signal of ["mode === 'constant'", "mode === 'trigger'", '!nextKeys.length', 'entry.constant', 'worldbook.saveWorldbook(name, book)']) {
+for (const signal of ["mode === 'constant'", "mode === 'trigger'", '!nextKeys.length', 'patch.constant', 'worldbook.saveWorldbookEntry(name, book, id, patch, worldId)']) {
     if (!entryEditor.includes(signal)) throw new Error(`Worldbook editing must preserve ST entry semantics: ${signal}`);
 }
 
@@ -502,14 +502,14 @@ for (const signal of ['进入方式', '完整内容', 'entry.content', 'data-bac
 
 const modelSheet = getNamedFunction(modelController, 'open');
 for (const signal of [
-    'clamp(native.openai_max_context, 32768, 512, 1000000)',
-    'clamp(native.openai_max_tokens, 2048, 1, 128000)',
+    'projectTextModelChoices(settings())',
+    'projectTextModelDisplay({ nativeModel: native, uiSettings: settings() })',
     'nora-model-group-head',
     'data-model-add',
     'openConfig',
 ]) {
     if (!modelSheet.includes(signal)) {
-        throw new Error(`Model configuration must normalize persisted values before rendering: ${signal}`);
+        throw new Error(`Model configuration must render saved model choices through the shared projection: ${signal}`);
     }
 }
 

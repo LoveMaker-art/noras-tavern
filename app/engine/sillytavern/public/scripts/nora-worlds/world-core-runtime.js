@@ -1,4 +1,5 @@
 import { executeStActivationSnapshot } from './world-core-client.js';
+import { worldPresetExtensions } from './world-preset-extensions.js';
 import { translate } from '../nora-i18n/core.js';
 import { createWorldCapabilityController } from './world-capability-controller.js';
 
@@ -31,6 +32,10 @@ export function createWorldCoreRuntime(runtime, {
         ? createWorldCapabilityController({ client, runtime: capabilityRuntime })
         : null;
     let manifests = [];
+    worldPresetExtensions.setWriter(async (worldId, preset) => {
+        if (runtime.read().metadata?.nora_world?.id !== worldId) throw new Error('世界已切换，请重新打开。');
+        return updateActive({ preset }, { expectedRevision: manifestById(worldId).revision });
+    });
     let recoveryTask = null;
     let operationState = Object.freeze({ status: 'IDLE', kind: null, operationId: null, error: null });
     const subscribers = new Set();

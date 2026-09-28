@@ -26,6 +26,7 @@ for (const type of ['legacy', 'character', 'scenario', 'worldbook']) {
             select: element, selectAll: () => [], escapeHtml: String, icons: {},
             operations: { isBusy: () => false, run: async (_key, fn) => fn() },
             dialogs: { open: (_title, content) => { html = content; return {}; }, close: () => closed++,
+                protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; },
                 confirm: async options => { assert.equal(options.restoreSheet, true); return true; }, toast() {}, normalizeError: e => e.message },
             reloadWorlds: async () => {}, refresh() {}, onChanged() {},
             updateWorld: async patch => mutations.push(patch), worldRuntime: { updateActive: async patch => mutations.push(patch) },

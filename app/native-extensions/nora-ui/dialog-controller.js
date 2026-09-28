@@ -103,7 +103,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         });
     }
 
-    function open(title, content, className = '', { reuseKey, preserveSelector } = {}) {
+    function open(title, content, className = '', { reuseKey, preserveSelector, back, backLabel = tr('返回') } = {}) {
         cancelConfirmation?.();
         const modal = select('#nora-modal');
         const body = modal.classList.contains('open')
@@ -133,17 +133,26 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
             sheet.setAttribute('aria-label', title);
             const header = select('header', modal);
             // Page-owned header actions must not leak into the next view.
-            header.replaceChildren(header.firstElementChild, select('.nora-modal-close', modal));
+            header.replaceChildren(select('header > div', modal), select('.nora-modal-close', modal));
             select('header h2', modal).textContent = title;
+            addHeaderBack();
             if (focusedButton >= 0) previous.querySelectorAll('button')[focusedButton]?.focus({ preventScroll: true });
             else if (focusWasInBody) select('header h2', modal).focus({ preventScroll: true });
             return modal;
         }
         modal.innerHTML = `<div class="nora-dialog nora-dialog--entering nora-dialog--sheet nora-sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header><div><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${tr("酒馆")}</span><h2 tabindex="-1">${escapeHtml(title)}</h2></div><button class="nora-icon-button nora-modal-close" type="button" aria-label="${tr("关闭")}">${closeIcon}</button></header><div class="nora-sheet-body">${content}</div></div>`;
         select('.nora-modal-close', modal).addEventListener('click', close);
+        addHeaderBack();
         // Dismiss sheets explicitly; outside clicks must never discard a library view or draft.
         modal.onclick = null;
         return modal;
+
+        function addHeaderBack() {
+            if (!back) return;
+            const header = select('header', modal);
+            header.insertAdjacentHTML('afterbegin', `<button class="nora-icon-button nora-sheet-header-back" data-sheet-back type="button" aria-label="${escapeHtml(backLabel)}" title="${escapeHtml(backLabel)}"><span aria-hidden="true">‹</span></button>`);
+            select('[data-sheet-back]', header).addEventListener('click', back);
+        }
     }
 
     function close({ dismissed = true } = {}) {

@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
+import { createExtensionController } from '../../../native-extensions/nora-ui/extension-controller.js';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const sourceDir = process.env.NORA_PANEL_FIXTURE_DIR;
@@ -11,15 +12,19 @@ const panel = fs.readFileSync(sourceDir ? path.join(sourceDir, 'panel-controller
 const story = fs.readFileSync(sourceDir ? path.join(sourceDir, 'story-context.js') : path.join(root, 'engine/sillytavern/public/scripts/nora-worlds/story-context.js'), 'utf8');
 const executable = text => text.replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
-function render({ format = 'nora-world-card/2', count = 7, editing = false, disabled = false } = {}) {
+function render({ format = 'nora-world-card/2', count = 7, editing = false, disabled = false, inspect } = {}) {
     const members = Array.from({ length: count }, (_, i) => ({ id: `actor-${i}`, profile: { identity: { name: `Actor ${i}` } }, persistent_status: {}, activation: i < 5 ? { mode: 'constant' } : { mode: 'triggered', keys: [`key-${i}`] } }));
     if (disabled && members[5]) members[5].activation.enabled = false;
     const storyContext = { ...(format ? { card_format: format } : {}), characters: members, relationships: [] };
     const world = { id: 'world:fixture', name: 'World title', storyContext, preset: { name: 'Independent preset' } };
     const card = { name: 'World title', description: 'Reader summary' };
-    const body = { innerHTML: '' };
+    let writes = 0;
+    let bindings = 0;
+    let markup = '';
+    const body = { get innerHTML() { return markup; }, set innerHTML(value) { writes++; markup = value; } };
     let edit;
     const sandbox = {
+        createExtensionController,
         tr: text => text,
         t: (strings, ...values) => strings.reduce((s, part, i) => s + part + (values[i] ?? ''), ''),
         projectTextModelDisplay: () => ({ label: 'Model' }),
@@ -33,13 +38,31 @@ function render({ format = 'nora-world-card/2', count = 7, editing = false, disa
         currentWorldPersona: () => ({ name: 'Player' }), characterField: (c, key) => c?.[key],
         escapeHtml: value => String(value ?? ''), icons: {}, worldbookSummary: () => '',
         select: () => body,
-        selectAll: selector => selector === '[data-edit-section="cast"]' ? [{ addEventListener: (_type, handler) => { edit = handler; } }] : [],
+        selectAll: selector => selector === '[data-edit-section="cast"]' ? [{ addEventListener: (_type, handler) => { bindings++; edit = handler; } }] : [],
         currentUrl: () => 'http://localhost/',
     });
     controller.render();
     if (editing) edit({ stopPropagation() {} });
+    inspect?.({ controller, world, card, body, counts: () => ({ writes, bindings }), edit: () => edit({ stopPropagation() {} }) });
     return body.innerHTML;
 }
+
+test('identical panel refresh preserves nodes and handlers; real changes still render', () => {
+    render({ inspect: ({ controller, world, card, counts, edit }) => {
+        controller.render();
+        assert.deepEqual(counts(), { writes: 1, bindings: 1 });
+        card.description = 'Changed summary';
+        controller.render();
+        assert.deepEqual(counts(), { writes: 2, bindings: 2 });
+        world.id = 'world:other';
+        controller.render();
+        assert.deepEqual(counts(), { writes: 3, bindings: 3 });
+        edit();
+        assert.deepEqual(counts(), { writes: 4, bindings: 4 });
+        controller.render();
+        assert.deepEqual(counts(), { writes: 4, bindings: 4 });
+    } });
+});
 
 test('world card renders seven array characters, never a synthetic eighth card profile', () => {
     const html = render();
@@ -74,6 +97,7 @@ test('all seven array edit targets remain available', () => {
 
 test('v2.3.5 integration keeps independent-world-preset UI', () => {
     assert.match(render(), /data-action="world-preset"/);
+    assert.match(render(), /data-action="plugin-library"/);
     assert.match(render(), /Independent preset/);
 });
 

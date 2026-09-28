@@ -11,6 +11,13 @@ function sheetFixture() {
     let rebuilds = 0, body;
     const title = make(), close = make();
     const header = { firstElementChild: title, children: [title, close],
+        insertAdjacentHTML(position, markup) {
+            assert.equal(position, 'afterbegin');
+            assert.match(markup, /aria-label=/);
+            const back = make();
+            controls.set('[data-sheet-back]', back);
+            this.children.unshift(back);
+        },
         replaceChildren(...children) { this.children = children; } };
     const sheet = make();
     const modal = { className: '', childNodes: [], setAttribute() {},
@@ -34,6 +41,7 @@ function sheetFixture() {
         if (selector === '.nora-sheet-body') return body;
         if (selector === '.nora-dialog' || selector === '.nora-sheet') return body ? sheet : null;
         if (selector === 'header') return header;
+        if (selector === 'header > div') return title;
         if (selector === 'header h2') return title;
         if (selector === '.nora-modal-close') return close;
         if (!controls.has(selector)) controls.set(selector, make());
@@ -55,6 +63,19 @@ function draftFixture() {
     return { ...f, draft, text, toggle, submit, form,
         busy: value => { busy = value; }, mode: value => { mode = value; } };
 }
+
+test('header back precedes title and close, uses the current callback and never leaks into another view', () => {
+    const f = sheetFixture(); const visits = [];
+    f.dialogs.open('Scripts', '<p>scripts</p>', '', { back: () => visits.push('menu') });
+    assert.equal(f.header.children[0], f.select('[data-sheet-back]'));
+    f.select('[data-sheet-back]').click();
+    f.dialogs.open('Detail', '<p>detail</p>', '', { back: () => visits.push('scripts') });
+    assert.equal(f.header.children.length, 3);
+    f.select('[data-sheet-back]').click();
+    assert.deepEqual(visits, ['menu', 'scripts']);
+    f.dialogs.open('Menu', '<p>menu</p>');
+    assert.deepEqual(f.header.children, [f.title, f.close]);
+});
 
 test('protected editors ignore backdrop clicks, including before any edits', () => {
     const f = draftFixture();

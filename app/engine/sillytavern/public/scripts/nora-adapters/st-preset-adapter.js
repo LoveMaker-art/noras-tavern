@@ -25,13 +25,14 @@ export function createStPresetAdapter(runtime) {
             toggleable: (preset.prompts || []).filter(prompt => promptManager.isPromptToggleAllowed(prompt)).map(prompt => prompt.identifier) };
     }
 
-    async function savePresetEntries(snapshot, changes, { apply = false, enableScripts = false } = {}) {
+    async function savePresetEntries(snapshot, changes, { apply = false, enableScripts = false, contentChanges = [] } = {}) {
         if (saving || runtime().isGenerating?.()) throw new Error('请等待当前生成或保存完成。');
         const latest = readPreset(snapshot.name, { storedOnly: snapshot.storedOnly });
         if (latest.revision !== snapshot.revision || (!snapshot.storedOnly && latest.runtimeRevision !== snapshot.runtimeRevision)) {
             throw new Error('预设已改变，请重新打开后再编辑。');
         }
         if (!Array.isArray(changes)) throw new Error('预设条目修改无效。');
+        if (!Array.isArray(contentChanges)) throw new Error('提示词内容修改无效。');
         const current = manager(), { presets, preset_names } = current.getPresetList();
         const index = preset_names[snapshot.name];
         const updated = structuredClone(presets[index]);
@@ -55,6 +56,15 @@ export function createStPresetAdapter(runtime) {
             if (!updated.prompts.some(item => item.identifier === change.identifier)) updated.prompts.push(structuredClone(prompt));
             patch(updated, change);
             patch({ prompt_order: running }, change);
+        }
+        const contentIds = new Set();
+        for (const change of contentChanges) {
+            const matches = updated.prompts?.filter(prompt => prompt.identifier === change.identifier) || [];
+            if (typeof change.content !== 'string' || matches.length !== 1 || contentIds.has(change.identifier)) {
+                throw new Error('提示词条目不存在或重复，请重新打开预设。');
+            }
+            contentIds.add(change.identifier);
+            matches[0].content = change.content;
         }
         saving = true;
         try {

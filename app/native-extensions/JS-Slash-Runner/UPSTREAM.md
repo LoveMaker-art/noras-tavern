@@ -37,3 +37,22 @@ Nora's control adapter is connected in the readable prefix of `dist/index.js`.
 stores and their native persistence functions. It does not replace the script
 runner. On upstream upgrades this binding must be checked against the new
 store symbols; a changed vendor bundle must not be published without this check.
+
+`node apply-world-preset.mjs` reproducibly connects the preset store to Nora's
+active World snapshot. The native script executor is unchanged. The projection
+keeps library templates read-only, persists `in_use` edits to the owning World,
+and exposes only explicitly permitted scripts. World switches refresh the native
+reactive store; clearing the World empties that scope. The transformation fails
+closed if the pinned upstream bindings no longer match.
+
+The JSON editor library loads on editor mount, not extension startup.
+`node apply-deferred-json-editor.mjs` reproduces the guarded bundle transform.
+The async mount checks disposal before initialization; unmount also stops its
+explicit watcher and cancels debounced edits. Nora's other adaptations are kept.
+
+`node apply-character-persistence.mjs` routes the shared extension-field save
+function through the existing control adapter. It uses the actual avatar binding,
+propagates failed saves, and guards the target across asynchronous boundaries.
+All three transforms are idempotent and must coexist; do not replace the bundle
+with one branch's copy when combining changes. Run the Helper transform and
+persistence regressions after upgrading the pinned upstream bundle.

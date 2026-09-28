@@ -10,6 +10,27 @@ function pageDocument(classes = new Set()) {
     } } };
 }
 
+test('state notifications coalesce without losing Worldbook invalidations', async () => {
+    let handlers, refreshes = 0;
+    const invalidations = [];
+    const startup = createStartupController({
+        state: { subscribe(value) { handlers = value; } },
+        refresh() { refreshes++; },
+        onWorldbookChanged: name => invalidations.push(name),
+    });
+    startup.wireEvents();
+    handlers.stateChanged();
+    handlers.stateChanged();
+    handlers.worldbookChanged('first', {});
+    handlers.worldbookChanged('second', {});
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(refreshes, 1);
+    assert.deepEqual(invalidations, ['first', 'second']);
+    handlers.stateChanged();
+    await new Promise(resolve => setTimeout(resolve, 10));
+    assert.equal(refreshes, 2);
+});
+
 test('startup finalization owns shell readiness, preserves the original clock and orders readiness signals', async t => {
     const originals = Object.fromEntries(['document', 'window', 'dispatchEvent'].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     t.after(() => { for (const [key, descriptor] of Object.entries(originals)) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });

@@ -164,6 +164,27 @@ export function createWorldCoreClient(getHeaders, {
     const snapshotCache = new Map();
     const snapshotRequests = new Map();
     const snapshotEpochs = new Map();
+    let initialList = null;
+    let listEpoch = 0;
+
+    function prefetchList() {
+        if (initialList) return;
+        const entry = { epoch: listEpoch, startedAt: clock() };
+        entry.promise = request('/worlds', { headers: requestHeaders(getHeaders) })
+            .then(payload => Array.isArray(payload.worlds) ? payload.worlds : null)
+            .catch(() => null);
+        initialList = entry;
+    }
+
+    async function list() {
+        const entry = initialList;
+        initialList = null;
+        if (entry && clock() - entry.startedAt < requestTimeoutMs) {
+            const worlds = await entry.promise;
+            if (worlds && entry.epoch === listEpoch && clock() - entry.startedAt < requestTimeoutMs) return worlds;
+        }
+        return (await request('/worlds', { headers: requestHeaders(getHeaders) })).worlds || [];
+    }
     function readPending() {
         try {
             return JSON.parse(pendingStore?.getItem(PENDING_CREATION_KEY) || 'null');
@@ -212,6 +233,10 @@ export function createWorldCoreClient(getHeaders, {
     }
 
     async function request(path, options = {}, deadline = {}) {
+        if (options.method && options.method !== 'GET') {
+            listEpoch++;
+            initialList = null;
+        }
         return withDeadline(async signal => decodeResponse(await fetchImpl(`/api/nora-worlds-v2${path}`, {
             cache: 'no-cache',
             credentials: 'same-origin',
@@ -474,7 +499,8 @@ export function createWorldCoreClient(getHeaders, {
             snapshotRequests.delete(worldId);
             return result;
         },
-        list: async () => (await request('/worlds', { headers: requestHeaders(getHeaders) })).worlds || [],
+        list,
+        prefetchList,
         importCard,
         createBlank,
         restartWorld,

@@ -71,7 +71,8 @@ test('editing content preserves regex keys containing commas', async () => {
         currentCharacter: () => ({ data: { extensions: { world: 'shared' } } }),
         readState: () => ({ world: { metadata: { nora_world: { id: 'world-a' } } } }),
         operations: { run: async (_key, operation) => operation(), isBusy: () => false },
-        store: { cacheWorldbook() {} }, dialogs: { open: () => ({}), close() {}, toast() {}, normalizeError: String },
+        store: { cacheWorldbook() {} }, dialogs: { open: () => ({}), close() {}, toast() {}, normalizeError: String,
+            protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; } },
         select: selector => selector === '#nora-entry-form' ? form : selector === '.nora-sheet-body' ? {} : inert,
         selectAll: () => [], escapeHtml: String, reloadWorlds: async () => {}, onChanged() {},
     });

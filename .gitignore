@@ -5,9 +5,11 @@
 
 # Reproducible dependencies and generated output
 **/node_modules/
+**/node_modules
 **/.cache/
 **/coverage/
 /release/
+/dist/
 /launcher/desktop/dist/
 /.build/
 /artifacts/

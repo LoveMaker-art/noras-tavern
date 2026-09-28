@@ -3,6 +3,7 @@ import { extension_settings, writeExtensionField } from '../../extensions.js';
 import { getPresetManager } from '../../preset-manager.js';
 import { regexFromString } from '../../utils.js';
 import { lodash } from '../../../lib.js';
+import { worldPresetExtensions } from '../../nora-worlds/world-preset-extensions.js';
 
 /**
  * @readonly
@@ -119,6 +120,8 @@ export function getScriptsByType(scriptType, { allowedOnly } = DEFAULT_GET_REGEX
             return Array.isArray(scopedScripts) ? scopedScripts : [];
         }
         case SCRIPT_TYPES.PRESET: {
+            if (worldPresetExtensions.active) return allowedOnly && !worldPresetExtensions.enabled('regex') ? []
+                : worldPresetExtensions.snapshot().preset.extensions?.regex_scripts || [];
             if (allowedOnly && !extension_settings?.preset_allowed_regex?.[getCurrentPresetAPI()]?.includes(getCurrentPresetName())) {
                 return [];
             }
@@ -148,6 +151,7 @@ export async function saveScriptsByType(scripts, scriptType) {
             await writeExtensionField(this_chid, 'regex_scripts', scripts);
             break;
         case SCRIPT_TYPES.PRESET: {
+            if (worldPresetExtensions.active) { await worldPresetExtensions.extension('regex_scripts', scripts); break; }
             const presetManager = getPresetManager();
             await presetManager.writePresetExtensionField({ path: 'regex_scripts', value: scripts });
             break;

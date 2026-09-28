@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { renderLocaleBootstrap } from './nora-locale-bootstrap.js';
+import { isManagedExtension } from './nora-extension-library.js';
 
 export const IMMUTABLE_ASSET_CACHE_CONTROL = 'public, max-age=31536000, immutable';
 export const REVALIDATED_ASSET_CACHE_CONTROL = 'no-cache, must-revalidate';
@@ -209,7 +210,7 @@ export function extensionReleaseForPath(extension, relativePath) {
  * @param {number} [options.length]
  * @returns {{release: string, extensions: Record<string, ReturnType<typeof buildNamespace>>}}
  */
-export function computeExtensionAssetManifest({ userDirectory, globalDirectory, length = NORA_ASSET_HASH_LENGTH }) {
+export function computeExtensionAssetManifest({ userDirectory, globalDirectory, length = NORA_ASSET_HASH_LENGTH, managedOnly = false }) {
     const extensionNames = [...new Set([
         ...extensionDirectoryNames(globalDirectory),
         ...extensionDirectoryNames(userDirectory),
@@ -220,6 +221,8 @@ export function computeExtensionAssetManifest({ userDirectory, globalDirectory, 
 
     for (const extensionName of extensionNames) {
         if (!SAFE_SEGMENT_PATTERN.test(extensionName)) continue;
+        // User-installable extensions remain mutable without restarting the server.
+        if (managedOnly && !isManagedExtension(extensionName)) continue;
         const key = `third-party/${extensionName}`;
         const extension = buildExtensionNamespace(
             extensionName,
@@ -299,6 +302,7 @@ export function computeBrowserAssetManifest({
         userDirectory: userExtensionDirectory,
         globalDirectory: globalExtensionDirectory,
         length,
+        managedOnly: true,
     });
     const deploymentHash = crypto.createHash('sha256');
     deploymentHash.update(`nora-assets/v${NORA_ASSET_SCHEMA_VERSION}\0deployment\0`);

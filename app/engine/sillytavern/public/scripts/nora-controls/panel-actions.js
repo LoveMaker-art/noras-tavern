@@ -35,6 +35,11 @@ export function createPanelActions({ getContext, story, request, character, asse
                 cardProfileEnabled: current.story_context?.card_profile_enabled !== false, revision: String(current.world_revision) };
         }
         if (action === 'world.update') {
+            // This control edits World content, not preset/script execution permissions.
+            // Keep its boundary narrower than the internal World Core editor.
+            if (!params.patch || Array.isArray(params.patch) || typeof params.patch !== 'object'
+                || !Object.keys(params.patch).length
+                || Object.keys(params.patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled'].includes(key))) throw invalid();
             const current = await plan();
             if (String(current.world_revision) !== params.expectedRevision) throw stale();
             return story.worlds.updateActive(params.patch, { expectedRevision: current.world_revision });

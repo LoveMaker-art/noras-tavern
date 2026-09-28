@@ -10,11 +10,11 @@ export function beginLibraryView(dialogs, target = null) {
     const isCurrent = () => pendingViews.get(dialogs) === request && dialogs.version === version;
     return {
         isCurrent,
-        open(title, content, className) {
+        open(title, content, className, options = {}) {
             if (!isCurrent()) return null;
-            const modal = dialogs.open(title, content, className, target ? {} : {
+            const modal = dialogs.open(title, content, className, { ...(!target ? {
                 reuseKey: 'world-library', preserveSelector: '.nora-library-tabs',
-            });
+            } : {}), ...options });
             version = dialogs.version;
             return modal;
         },

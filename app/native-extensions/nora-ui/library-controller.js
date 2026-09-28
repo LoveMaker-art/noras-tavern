@@ -5,7 +5,7 @@ import { normalizeCharacterActivation } from '../../engine/sillytavern/public/sc
 import { createWorldPreset, validateWorldPresetParameters, WORLD_PRESET_PARAMETERS } from '../../engine/sillytavern/public/scripts/nora-worlds/world-preset.js';
 
 export function createLibraryController({ worlds, presets, dialogs, operations, activeWorldModel, isGenerating,
-    characterField, openCards, refresh, select: $, selectAll: $$, escapeHtml: html }) {
+    characterField, openCards, openExtensions, refresh, select: $, selectAll: $$, escapeHtml: html }) {
     const errorToast = error => dialogs.toast(dialogs.normalizeError(error), { tone: 'error', duration: 5000 });
     const busy = () => isGenerating() || operations.isBusy('world') || operations.isBusy('library');
     let presetQuery = '';
@@ -319,6 +319,7 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
         let panel = null;
         let expectedRevision = world?.revision;
         const changes = new Map();
+        const contentChanges = new Map();
         const parameterChanges = new Map();
         let saving = false;
         let savedPending = false;
@@ -334,11 +335,15 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                 if (entry) entry.enabled = change.enabled;
                 else group.order.push({ identifier: change.identifier, enabled: change.enabled });
             }
+            for (const [identifier, content] of contentChanges) {
+                const prompt = draft.prompts?.find(item => item.identifier === identifier);
+                if (prompt) prompt.content = content;
+            }
             return draft;
         };
         const dirty = () => world
             ? JSON.stringify([presetName, draftPreset()]) !== JSON.stringify([persistedPreset.name, persistedPreset.preset])
-            : changes.size > 0;
+            : changes.size > 0 || contentChanges.size > 0;
         const parameterError = () => {
             if (!world) return '';
             try { validateWorldPresetParameters(draftPreset()); return ''; } catch (error) { return error.message; }
@@ -353,11 +358,12 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             const rows = view.rows.map((prompt, index) => {
                 const status = !view.configured ? tr('顺序未配置') : !prompt.listed ? tr('未加入顺序') : prompt.enabled ? tr('已启用') : tr('已禁用');
                 const allowed = snapshot.toggleable.includes(prompt.identifier);
-                return `<div class="nora-preset-prompt-row${prompt.enabled === false ? ' is-disabled' : ''}" data-prompt-row="${index}"><details class="nora-preset-prompt"><summary><span>${html(prompt.name || prompt.identifier)}</span><small data-prompt-status>${status}</small></summary><p>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p></details>
-                <div class="nora-preset-entry-action">${allowed ? `<input type="checkbox" role="switch" class="nora-preset-toggle" data-prompt-toggle="${index}" aria-label="${html(prompt.name || prompt.identifier)}" ${prompt.enabled ? 'checked' : ''} ${prompt.listed ? '' : 'hidden'}>
+                return `<div class="nora-preset-prompt-row${prompt.enabled === false ? ' is-disabled' : ''}" data-prompt-row="${index}"><details class="nora-preset-prompt"><summary><span>${html(prompt.name || prompt.identifier)}</span><small data-prompt-status>${status}</small></summary><p data-prompt-preview>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p><textarea id="nora-prompt-content-${index}" class="nora-preset-content-editor" data-prompt-content="${index}" aria-label="${tr('编辑提示词')}：${html(prompt.name || prompt.identifier)}" hidden>${html(prompt.content ?? '')}</textarea></details>
+                <div class="nora-preset-entry-action"><button type="button" class="nora-icon-button nora-preset-edit" data-edit-prompt="${index}" title="${tr('编辑提示词')}" aria-label="${tr('编辑提示词')}：${html(prompt.name || prompt.identifier)}" aria-controls="nora-prompt-content-${index}" aria-expanded="false"><i class="fa-solid fa-pen" aria-hidden="true"></i></button>${allowed ? `<input type="checkbox" role="switch" class="nora-preset-toggle" data-prompt-toggle="${index}" aria-label="${html(prompt.name || prompt.identifier)}" ${prompt.enabled ? 'checked' : ''} ${prompt.listed ? '' : 'hidden'}>
                 <button type="button" class="nora-icon-button" data-prompt-add="${index}" title="${tr('加入执行顺序')}" aria-label="${tr('加入执行顺序')}：${html(prompt.name || prompt.identifier)}" ${prompt.listed ? 'hidden' : ''}><i class="fa-solid fa-plus" aria-hidden="true"></i></button>` : `<span class="nora-preset-locked" title="${tr('此条目由引擎管理，不支持切换')}" aria-label="${tr('此条目由引擎管理，不支持切换')}" tabindex="0"><i class="fa-solid fa-lock" aria-hidden="true"></i></span>`}</div></div>`;
             }).join('');
             return `${world ? parameterEditor : view.parameters.length ? `<dl class="nora-preset-parameters">${view.parameters.map(parameter => `<div><dt>${tr(parameter.label)}</dt><dd>${html(parameter.value)}</dd></div>`).join('')}</dl>` : ''}
+                ${world && (view.scripts || snapshot.preset.extensions?.regex_scripts?.length) ? `<button type="button" class="nora-preset-row" data-preset-extensions><strong>${tr('附带扩展')}</strong><span>${tr('正则')} ${snapshot.preset.extensions?.regex_scripts?.length || 0} · ${tr('脚本')} ${view.scripts} ${tr('管理')} ›</span></button>` : ''}
                 <details class="nora-preset-prompts" open><summary>${tr('提示词条目')} <small>${view.rows.length}</small></summary>${rows || `<p class="nora-sheet-empty">${tr('暂无条目')}</p>`}</details>`;
         };
         const modal = dialogs.open(world ? tr('编辑预设') : item.name, `<div class="nora-preset-detail-scroll">${world ? `<button type="button" class="nora-preset-selector" data-change-preset aria-expanded="false" aria-controls="nora-preset-choices" title="${tr('更换预设')}"><strong data-current-preset>${html(presetName)}</strong><i class="fa-solid fa-chevron-down" aria-hidden="true"></i></button>
@@ -375,13 +381,43 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
             const apply = $('[data-apply]', modal);
             apply.disabled = saving || Boolean(panel) || Boolean(error) || (!dirty() && !savedPending);
             apply.textContent = tr(saving ? '正在保存' : savedPending ? '重试应用' : world ? '保存' : '保存模板');
-            $$('[data-prompt-toggle], [data-prompt-add], [data-preset-parameter], [data-preset-range]', modal).forEach(control => { control.disabled = saving; });
+            $$('[data-prompt-toggle], [data-prompt-add], [data-preset-parameter], [data-preset-range], [data-edit-prompt], [data-prompt-content]', modal).forEach(control => { control.disabled = saving; });
             $$('[data-save-as], [data-change-preset], [data-delete-preset]', modal).forEach(control => { control.disabled = saving || Boolean(error); });
             $$('[data-editor-cancel], [data-copy-cancel], [data-chooser-cancel], [data-search], [data-choice], [data-save-preset-form] input, [data-save-preset-form] button[type="submit"]', modal).forEach(control => { control.disabled = saving; });
             const copySubmit = $('[data-save-preset-form] button[type="submit"]', modal);
             if (copySubmit) copySubmit.disabled = saving || Boolean(error);
         };
         const bindFields = () => {
+            $$('[data-edit-prompt]', modal).forEach(button => button.addEventListener('click', () => {
+                if (saving) return;
+                const row = $(`[data-prompt-row="${button.dataset.editPrompt}"]`, modal);
+                const details = $('details', row);
+                const textarea = $('[data-prompt-content]', row);
+                textarea.hidden = details.open && !textarea.hidden;
+                details.open = true;
+                const preview = $('[data-prompt-preview]', row);
+                preview.textContent = textarea.value;
+                preview.hidden = !textarea.hidden;
+                button.setAttribute('aria-expanded', String(!textarea.hidden));
+                if (!textarea.hidden) textarea.focus();
+            }));
+            $$('[data-prompt-row]', modal).forEach(row => {
+                const details = $('details', row);
+                const syncEditorState = () => $('[data-edit-prompt]', row).setAttribute('aria-expanded', String(details.open && !$('[data-prompt-content]', row).hidden));
+                details.addEventListener('toggle', syncEditorState);
+            });
+            $$('[data-prompt-content]', modal).forEach(textarea => textarea.addEventListener('input', () => {
+                if (saving) return;
+                const prompt = view.rows[Number(textarea.dataset.promptContent)];
+                if (textarea.value === (prompt.content ?? '')) contentChanges.delete(prompt.identifier);
+                else contentChanges.set(prompt.identifier, textarea.value);
+                savedPending = false;
+                updateActions();
+            }));
+            $('[data-preset-extensions]', modal)?.addEventListener('click', () => {
+                if (dirty()) return dialogs.toast(tr('请先保存预设，再管理附带扩展。'));
+                openExtensions?.();
+            });
             $$('[data-preset-parameter], [data-preset-range]', modal).forEach(input => input.addEventListener('input', () => {
                 if (saving) return;
                 const key = input.dataset.presetParameter || input.dataset.presetRange;
@@ -463,13 +499,14 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                     if (isGenerating()) throw new Error(tr('请等待当前生成或保存完成。'));
                     if (world) {
                         if (activeWorldModel()?.id !== world.id) throw new Error(tr('当前世界已改变，请重新打开编辑。'));
-                        const value = createWorldPreset(presetName, draftPreset(), templateChanged ? changes.size + parameterChanges.size > 0 : (world.preset.modified || dirty()));
+                        const value = createWorldPreset(presetName, draftPreset(), templateChanged ? changes.size + parameterChanges.size + contentChanges.size > 0 : (world.preset.modified || dirty()));
+                        if (!templateChanged) value.extension_permissions = { ...world.preset.extension_permissions };
                         const result = await worlds.updateActive({ preset: value }, { expectedRevision });
                         savedWorld = result.world;
                         if (!result.runtimeApplied) throw Object.assign(new Error(tr('预设已保存，请回到对应世界查看。')), { saved: true });
-                    } else await presets.savePresetEntries(snapshot, [...changes.values()], options);
+                    } else await presets.savePresetEntries(snapshot, [...changes.values()], { ...options, contentChanges: [...contentChanges].map(([identifier, content]) => ({ identifier, content })) });
                 });
-                changes.clear(); savedPending = false;
+                changes.clear(); contentChanges.clear(); savedPending = false;
                 dialogs.setCloseGuard(null);
                 // Keep the user on the same preset after saving, rather than returning to the library.
                 if (world && activeWorldModel()?.id !== world.id) { reopened = true; dialogs.close({ dismissed: false }); refresh(); return; }
@@ -520,19 +557,19 @@ export function createLibraryController({ worlds, presets, dialogs, operations, 
                     const candidate = presets.readPreset(name, { storedOnly: true });
                     const info = describePreset(candidate.preset);
                     const order = candidate.preset.prompt_order.find(group => String(group.character_id) === '100001') || { character_id: 100001, order: [] };
-                    const selected = createWorldPreset(candidate.name, { ...draftPreset(), ...candidate.preset, prompt_order: [order] });
+                    const selected = createWorldPreset(candidate.name, { ...draftPreset(), ...candidate.preset, extensions: candidate.preset.extensions, prompt_order: [order] });
                     const toggleable = presets.toggleablePresetEntries(selected.preset);
                     snapshot = { preset: selected.preset, toggleable };
                     presetName = selected.name;
                     templateChanged = true;
                     view = describePreset(snapshot.preset);
-                    changes.clear(); parameterChanges.clear(); savedPending = false;
+                    changes.clear(); contentChanges.clear(); parameterChanges.clear(); savedPending = false;
                     $('[data-current-preset]', modal).textContent = presetName;
                     $('[data-preset-fields]', modal).innerHTML = renderFields();
                     bindFields();
                     closePanel();
                     $('.nora-preset-detail-scroll', modal).scrollTop = 0;
-                    if (info.scripts) dialogs.toast(tr('已载入提示词与生成参数，模板内嵌脚本未启用。'));
+                    if (info.scripts || candidate.preset.extensions?.regex_scripts?.length) dialogs.toast(tr('附带扩展已保留。保存后请在扩展管理中确认启用。'));
                 } catch (error) { errorToast(error); }
             }));
         };

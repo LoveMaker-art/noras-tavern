@@ -14,6 +14,7 @@ import {
 import { createStoryStatistics } from '../src/nora-story-statistics.js';
 import {
     buildCuratorReviewLink,
+    createStoryProfileCheckpoint,
     storyProfileHref,
 } from '../../../native-extensions/nora-ui/story-profile-controller.js';
 
@@ -392,7 +393,25 @@ test('Nora send lifecycle and Story Profile maintenance use the new checkpoint s
     assert.match(endpointSource, /runAdapter\('reflect'/);
     assert.match(endpointSource, /router\.post\('\/refresh'/);
     assert.match(noraUiSource, /onGenerationCompleted: notifyStoryProfileCheckpoint/);
-    assert.match(noraUiSource, /\/api\/nora-story-profile\/checkpoint/);
+    assert.match(noraUiSource, /createStoryProfileCheckpoint\(/);
     assert.doesNotMatch(profileMemorySource, /\/api\/event/);
     assert.doesNotMatch(profileMemorySource, /HermesModelClient|refresh_taste_profile/);
+});
+
+test('Story Profile checkpoint uses the explicit leaving world and skips missing worlds', async () => {
+    const requests = [];
+    let world = { id: 'active' };
+    const checkpoint = createStoryProfileCheckpoint({
+        activeWorldModel: () => world,
+        requestHeaders: () => ({ 'x-fixture': 'yes' }),
+        fetchImpl: async (url, options) => { requests.push({ url, ...options }); return { ok: true }; },
+    });
+    checkpoint('leaving');
+    checkpoint();
+    world = null;
+    checkpoint();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(requests.map(request => JSON.parse(request.body).world_id), ['leaving', 'active']);
+    assert.equal(requests[0].url, '/api/nora-story-profile/checkpoint');
+    assert.equal(requests[0].headers['x-fixture'], 'yes');
 });

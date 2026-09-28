@@ -56,7 +56,7 @@ test('real library files use conditional writes, preserve extensions, reject dup
     const dir = fixture(t);
     const source = readPresetTemplate(dir, 'Base');
     assert.equal(source.preset.custom_url, undefined);
-    assert.equal(source.preset.extensions, undefined);
+    assert.deepEqual(source.preset.extensions, base().extensions);
     const created = savePresetTemplate(dir, { mode: 'create', name: 'New', source: { name: 'Base', revision: source.revision }, edits: change('New') });
     assert.deepEqual(created.storedPreset.extensions, base().extensions);
     assert.equal(readPresetTemplate(dir, 'Base').revision, source.revision);
@@ -125,7 +125,7 @@ test('world edit, apply and save-as preserve library originals and copy only saf
     assert.equal(readPresetTemplate(f.directory, 'Base').revision, original.revision);
     const saved = await f.execute('preset.save-as', { name: 'World copy', expectedRevision: edited.revision });
     assert.equal(saved.worldUnchanged, true);
-    assert.equal(saved.preset.extensions, undefined);
+    assert.deepEqual(saved.preset.extensions, base().extensions);
     const applied = await f.execute('preset.apply', { name: 'Base', sourceRevision: original.revision, expectedRevision: edited.revision });
     assert.equal(applied.runtimeApplied, true);
     assert.equal(applied.world.preset.preset.prompts[0].content, 'Original');

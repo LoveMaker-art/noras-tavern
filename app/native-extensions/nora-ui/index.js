@@ -5,11 +5,13 @@ import { createCardActionGateway } from './card-action-gateway.js';
 import { createDialogController } from './dialog-controller.js';
 import { createMessageController } from './message-controller.js';
 import { createPanelController } from './panel-controller.js';
+import { createRuntimePluginLibrary } from './plugin-library-controller.js';
 import { createWorldThemeController } from './world-theme-controller.js';
 import { createAppearanceController } from './appearance-controller.js';
 import { createPerformanceReporter } from './performance-reporter.js';
 import { createSmartReplyController } from './smart-reply-controller.js';
 import { createShellController } from './shell-controller.js';
+import { shellIcons } from './shell-controller.js';
 import { createStMessageViewAdapter } from './st-message-view-adapter.js';
 import { createStartupController } from './startup-controller.js';
 import { createStoryActionDispatcher } from './story-action-dispatcher.js';
@@ -19,6 +21,8 @@ import { createUiOperationRegistry } from './ui-operation-registry.js';
 import { createWorldController } from './world-controller.js';
 import { createWorldbookController } from './worldbook-controller.js';
 import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public/scripts/nora-adapters/tavern-helper-action-adapter.js';
+import { createLedgerRequest } from './extension-controller.js';
+import { createStoryProfileCheckpoint } from './story-profile-controller.js';
 (() => {
     'use strict';
 
@@ -33,15 +37,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
 
     const $ = (selector, root = document) => root.querySelector(selector);
     const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
-    const ICON = {
-        menu: '<i class="fa-solid fa-bars"></i>', info: '<i class="fa-solid fa-circle-info"></i>',
-        plus: '<i class="fa-solid fa-plus"></i>', close: '<i class="fa-solid fa-xmark"></i>',
-        send: '<i class="fa-solid fa-arrow-up"></i>', stop: '<i class="fa-solid fa-stop"></i>',
-        edit: '<i class="fa-solid fa-pen"></i>', repeat: '<i class="fa-solid fa-rotate-right"></i>',
-        suggest: '<i class="fa-solid fa-wand-magic-sparkles"></i>',
-        left: '<i class="fa-solid fa-chevron-left"></i>', right: '<i class="fa-solid fa-chevron-right"></i>',
-        trash: '<i class="fa-solid fa-trash-can"></i>',
-    };
+    const ICON = shellIcons;
 
     let uiStore;
     let operations;
@@ -64,6 +60,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     let ensureModelController;
     let ensureWorldCreationController;
     let mounted = false;
+    let runtimeControls;
     let started = false;
     const extensionStartedAt = Date.now();
 
@@ -94,21 +91,15 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         return uiStore.read().runtime;
     }
 
-    function settings() {
-        return uiStore.read().settings;
-    }
+    const settings = () => uiStore.read().settings;
     function characterField(character, field) {
         return character?.data?.[field] ?? character?.[field] ?? '';
     }
 
-    function currentCharacter() {
-        return uiStore.read().currentCharacter;
-    }
+    const currentCharacter = () => uiStore.read().currentCharacter;
     const activeWorldModel = () => uiStore.read().activeWorld;
 
-    function currentWorldPersona() {
-        return uiStore.read().persona;
-    }
+    const currentWorldPersona = () => uiStore.read().persona;
     const removeNestedLayoutCopies = () => shellController.removeNestedLayoutCopies();
     const buildLayout = () => shellController.buildLayout();
     function bindLayoutEvents() {
@@ -159,27 +150,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const confirmAction = (options) => dialogs.confirm(options);
 
     function exposeMessageApi() {
-        window.__NORA_MESSAGES__ = Object.freeze({
-            toast: (message, options) => showToast(message, options),
-            confirm: (options) => confirmAction(options),
-            composerError: (error) => messageController.showSendError(error),
-        });
-        window.__NORA_PREPARE_ST_POPUP__ = (popup) => {
-            const dialog = popup?.dlg;
-            if (!(dialog instanceof HTMLDialogElement)) return;
-            dialog.classList.add('nora-popup-adapted');
-            dialog.dataset.noraPopupType = String(popup.type || '');
-        };
-        const confirmCharacterCapabilities = ({ characterName, refresh = false } = {}) => {
-            const current = readState();
-            const characters = current.characters;
-            const character = characters.find((item) => item?.name === characterName)
-                || characters[current.activeCharacterId]
-                || null;
-            return promptCharacterCapabilities(character, { refresh, force: true });
-        };
-        window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__ = confirmCharacterCapabilities;
-        window.__NORA_CONFIRM_CHARACTER_REGEX__ = confirmCharacterCapabilities;
+        shellController.installMessageApi({ showToast, confirmAction, getMessageController: () => messageController, readState, promptCharacterCapabilities });
     }
 
     const characterCapabilities = character => capabilityController.capabilities(character);
@@ -198,7 +169,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const openCharacterSheet = async (characterId, backToLibrary = false) => (await ensureCharacterController()).openSheet(characterId, backToLibrary);
     const openCharacterEditor = async characterId => (await ensureCharacterController()).openEditor(characterId);
 
-    const openModelSheet = async onBack => (await ensureModelController()).open(onBack);
+    const openModelSheet = async (onBack, options) => (await ensureModelController()).open(onBack, options);
 
     function mount({ story }) {
         if (mounted) return;
@@ -212,19 +183,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             media: window.matchMedia('(prefers-color-scheme: dark)'), hostname: window.location.hostname,
             settings: () => settingsDomain.uiSettings(), persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
         worldThemeController = createWorldThemeController(selector => $(selector), () => settingsDomain.uiSettings().globalTheme ?? {});
-        const notifyStoryProfileCheckpoint = (requestedWorldId = '') => {
-            const worldId = String(requestedWorldId || activeWorldModel()?.id || '').trim();
-            if (!worldId) return;
-            void fetch('/api/nora-story-profile/checkpoint', {
-                method: 'POST',
-                headers: transport.requestHeaders(),
-                body: JSON.stringify({ world_id: worldId }),
-            }).then((response) => {
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-            }).catch((error) => {
-                console.warn('[Nora Story Profile] Background checkpoint failed:', error);
-            });
-        };
+        const notifyStoryProfileCheckpoint = createStoryProfileCheckpoint({ activeWorldModel, requestHeaders: transport.requestHeaders });
         operations = createUiOperationRegistry();
         storyActions = createStoryActionDispatcher({
             messages,
@@ -313,7 +272,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         const ensureLibraryController = () => libraryControllerPromise ??= import('./library-controller.js').then(({ createLibraryController }) => createLibraryController({
             worlds, presets, dialogs, operations, activeWorldModel, characterField,
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
-            openCards: openCharacterLibrary, refresh, select: $, selectAll: $$, escapeHtml,
+            openCards: openCharacterLibrary, openExtensions: () => panelController.openExtensions(), refresh, select: $, selectAll: $$, escapeHtml,
         }));
         let characterControllerPromise;
         ensureCharacterController = () => {
@@ -453,9 +412,19 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             closeModal,
             openRestartWorldSheet: async world => (await ensureWorldCreationController()).openRestartWorldSheet(world),
         });
+        const pluginLibrary = createRuntimePluginLibrary({ state, dialogs, select: $, selectAll: $$, escapeHtml,
+            headers: transport.requestHeaders, openExtensions: () => panelController.openExtensions(),
+            isGenerating: () => messageController.isGenerating() });
         panelController = createPanelController({
+            openPluginLibrary: pluginLibrary.open,
+            plugins: pluginLibrary,
+            isGenerating: () => messageController.isGenerating(),
+            ledgerRequest: createLedgerRequest({ requestHeaders: transport.requestHeaders }),
             openCardRegex,
-            characterCapabilities,
+            executeControl: command => {
+                if (!runtimeControls) throw new Error(tr('扩展管理尚未就绪，请稍后重试。'));
+                return runtimeControls.execute(command);
+            },
             settingsDomain,
             worldRuntime: worlds,
             dialogs,
@@ -519,6 +488,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const prepareShell = () => shellController.prepareShell();
 
     window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions,
+        setRuntimeControls: controls => { runtimeControls = controls; },
         appearanceState: () => appearanceController?.inspect() || { ready: false },
         setAppearance: params => {
             if (!appearanceController) throw Object.assign(new Error('Page appearance is not ready.'), { code: 'NORA_APPEARANCE_NOT_READY' });

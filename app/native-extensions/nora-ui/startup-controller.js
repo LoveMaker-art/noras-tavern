@@ -24,6 +24,16 @@ export function createStartupController({
 }) {
     let runtimeReady = false;
     let hydrated = false;
+    let refreshScheduled = false;
+
+    function scheduleRefresh() {
+        if (refreshScheduled) return;
+        refreshScheduled = true;
+        setTimeout(() => {
+            refreshScheduled = false;
+            refresh();
+        }, 0);
+    }
 
     function finishBootScreen() {
         if (hydrated) return;
@@ -72,8 +82,8 @@ export function createStartupController({
 
     function wireEvents() {
         state.subscribe({
-            stateChanged: () => setTimeout(refresh, 0),
-            worldbookChanged: (name, book) => { onWorldbookChanged(name, book); setTimeout(refresh, 0); },
+            stateChanged: scheduleRefresh,
+            worldbookChanged: (name, book) => { onWorldbookChanged(name, book); scheduleRefresh(); },
             worldChanged: () => {
                 messageController.clearMvuTransaction();
                 setTimeout(messageController.syncGenerating, 500);

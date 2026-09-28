@@ -17,6 +17,7 @@
 - [安装、更新和卸载](../deployment/README.md)
 - [领域语言](../CONTEXT.md)
 - [本次目录整理的验证范围](repository-organization-verification.md)
+- [数据存储与生命周期重构：执行及逐阶段验收](design/storage-lifecycle-refactor-plan.md) — 开始或验收备份、恢复、删除与数据清理重构时，先对照此方案并更新阶段证据。
 
 ## 历史资料
 

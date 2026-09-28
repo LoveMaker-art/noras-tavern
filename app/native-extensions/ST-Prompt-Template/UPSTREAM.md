@@ -14,3 +14,8 @@ The release contains only the browser runtime, worker, required libraries,
 locales, settings template, manifest, license, and this provenance record. It
 does not ship source maps, development dependencies, tests, or repository
 metadata.
+
+Nora defers faker until async context preparation and awaits the original module
+namespace before exposing the synchronous `faker` API. Run
+`node apply-deferred-faker.mjs` to reproduce the change on the pinned bundle;
+unknown anchors are rejected. Extension auto-update remains disabled.

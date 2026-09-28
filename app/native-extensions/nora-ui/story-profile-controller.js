@@ -27,3 +27,19 @@ export function storyProfileHref(returnUrl = '') {
     if (target) query.set('return', target);
     return `/actor?${query.toString()}`;
 }
+
+export function createStoryProfileCheckpoint({ activeWorldModel, requestHeaders, fetchImpl = (...args) => fetch(...args) }) {
+    return (requestedWorldId = '') => {
+        const worldId = String(requestedWorldId || activeWorldModel()?.id || '').trim();
+        if (!worldId) return;
+        void fetchImpl('/api/nora-story-profile/checkpoint', {
+            method: 'POST',
+            headers: requestHeaders(),
+            body: JSON.stringify({ world_id: worldId }),
+        }).then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        }).catch((error) => {
+            console.warn('[Nora Story Profile] Background checkpoint failed:', error);
+        });
+    };
+}

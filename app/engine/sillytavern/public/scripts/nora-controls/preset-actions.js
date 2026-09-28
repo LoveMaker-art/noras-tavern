@@ -74,6 +74,7 @@ export function createPresetActions({ getContext, story, request }) {
             }
         } else if (action === 'preset.edit' && params.scope === 'world') {
             value = createWorldPreset(plan.preset.name, editPreset(plan.preset.preset, params.edits), true);
+            value.extension_permissions = { ...plan.preset.extension_permissions };
         } else throw controlError('NORA_CONTROL_UNSUPPORTED', 'Unsupported preset action.');
         const result = await story.worlds.updateActive({ preset: value }, { expectedRevision: plan.world_revision });
         if (JSON.stringify(result).length > 128000) {

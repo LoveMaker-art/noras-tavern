@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { normalizeWorldPreset, validateWorldPresetParameters } from '../../public/scripts/nora-worlds/world-preset.js';
+import { normalizeWorldPreset, validateWorldPresetParameters, scriptCode, regexCode } from '../../public/scripts/nora-worlds/world-preset.js';
 import { createProfileLibrary } from './library-profiles.js';
 import { resolveCharacterReferences } from '../../public/scripts/nora-worlds/character-references.js';
 import { createStoryContext, editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
@@ -363,6 +363,10 @@ export class NoraWorldCore {
                 || Object.entries(patch.persona).some(([key, value]) => !['name', 'description'].includes(key) || typeof value !== 'string' || value.length > 100000)) invalid('Invalid World persona.');
         }
         const world = await this.#store.update(worldId, current => {
+            if (preset) {
+                if (current.preset?.name !== preset.name || scriptCode(current.preset?.preset) !== scriptCode(preset.preset)) preset.extension_permissions.scripts = false;
+                if (current.preset?.name !== preset.name || regexCode(current.preset?.preset) !== regexCode(preset.preset)) preset.extension_permissions.regex = false;
+            }
             if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
             if (!Number.isInteger(expectedRevision) || expectedRevision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before editing.');
             let context = current.story_context;

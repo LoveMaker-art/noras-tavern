@@ -236,6 +236,8 @@ const NORA_PRODUCT_DEFERRED_EXTENSIONS = Object.freeze([
 ]);
 let prepareExtensionsForActivation = null;
 const extensionActivationTasks = new Map();
+let libraryExtensionStates = new Map();
+const extensionFailureReasons = new Map();
 
 function applyNoraProductExtensionPolicy() {
     const configured = Array.isArray(extension_settings.disabledExtensions)
@@ -245,7 +247,15 @@ function applyNoraProductExtensionPolicy() {
 }
 
 function isExtensionDisabled(name) {
+    if (libraryExtensionStates.has(name)) return !libraryExtensionStates.get(name);
     return extension_settings.disabledExtensions.includes(name);
+}
+
+export function getExtensionLibraryRuntime() {
+    return Object.fromEntries(extensionNames.map(name => [name, {
+        enabled: !isExtensionDisabled(name), loaded: activeExtensions.has(name),
+        error: extensionFailureReasons.get(name) || '',
+    }]));
 }
 
 /**
@@ -374,6 +384,7 @@ async function callExtensionHook(name, hookName) {
  * @param {boolean} [reload=true] If true, reload the page after enabling the extension
  */
 export async function enableExtension(name, reload = true) {
+    if (libraryExtensionStates.has(name)) await saveLibraryExtensionState(name, true);
     await callExtensionHook(name, 'enable');
     extension_settings.disabledExtensions = extension_settings.disabledExtensions.filter(x => x !== name);
     await saveSettings();
@@ -388,12 +399,20 @@ export async function enableExtension(name, reload = true) {
  * @param {boolean} [reload=true] If true, reload the page after disabling the extension
  */
 export async function disableExtension(name, reload = true) {
+    if (libraryExtensionStates.has(name)) await saveLibraryExtensionState(name, false);
     await callExtensionHook(name, 'disable');
     extension_settings.disabledExtensions.push(name);
     await saveSettings();
     if (reload) {
         location.reload();
     }
+}
+
+async function saveLibraryExtensionState(name, enabled) {
+    const response = await fetch('/api/extensions/library/state', { method: 'POST', headers: getRequestHeaders(),
+        body: JSON.stringify({ extensionName: name.replace(/^third-party\//, ''), enabled }) });
+    if (!response.ok) throw new Error(await response.text());
+    libraryExtensionStates.set(name, enabled);
 }
 
 /**
@@ -407,7 +426,7 @@ export function findExtension(name) {
         return equalsIgnoreCaseAndAccents(extName, name) || equalsIgnoreCaseAndAccents(extName, `third-party/${name}`);
     });
     if (!internalExtensionName) return null;
-    const isEnabled = !extension_settings.disabledExtensions.includes(internalExtensionName);
+    const isEnabled = !isExtensionDisabled(internalExtensionName);
     return { name: internalExtensionName, enabled: isEnabled };
 }
 
@@ -443,9 +462,11 @@ async function getManifests(names) {
                     obj[name] = json;
                     resolve();
                 } else {
+                    extensionFailureReasons.set(name, `扩展清单读取失败（HTTP ${response.status}）`);
                     reject();
                 }
             }).catch(err => {
+                extensionFailureReasons.set(name, String(err?.message || err));
                 reject();
                 console.log('Could not load manifest.json for ' + name, err);
             });
@@ -488,6 +509,7 @@ async function activateExtensions({ onlyNames = null } = {}) {
         if (activationNames && !activationNames.has(name)) {
             continue;
         }
+        extensionFailureReasons.delete(name);
         const loadingOrder = Number.parseInt(manifest.loading_order) || 0;
         if (currentLoadingOrder !== null && loadingOrder !== currentLoadingOrder) {
             await flushActivationBatch();
@@ -567,6 +589,7 @@ async function activateExtensions({ onlyNames = null } = {}) {
                         return callExtensionHook(name, 'activate');
                     })
                     .catch(err => {
+                        extensionFailureReasons.set(name, String(err?.message || err));
                         console.log('Could not activate extension', name, err);
                         extensionLoadErrors.add(t`Extension "${displayName}" failed to load: ${err}`);
                     })
@@ -580,12 +603,15 @@ async function activateExtensions({ onlyNames = null } = {}) {
                 activationBatch.push(activation);
                 promises.push(activation);
             } catch (error) {
+                extensionFailureReasons.set(name, String(error?.message || error));
                 console.error('Could not activate extension', name, error);
             }
         } else if (!meetsModuleRequirements && !isDisabled) {
+            extensionFailureReasons.set(name, `缺少 Extras 模块：${missingModules.join(', ')}`);
             console.warn(t`Extension "${name}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
             extensionLoadErrors.add(t`Extension "${displayName}" did not load. Missing required Extras module(s): "${missingModules.join(', ')}"`);
         } else if (!meetsExtensionDeps && !isDisabled) {
+            extensionFailureReasons.set(name, `依赖扩展缺失或未启用：${[...missingDependencies, ...disabledDependencies].join(', ')}`);
             if (disabledDependencies.length > 0) {
                 console.warn(t`Extension "${name}" did not load. Required extensions exist but are disabled: "${disabledDependencies.join(', ')}". Enable them first, then reload.`);
                 extensionLoadErrors.add(t`Extension "${displayName}" did not load. Required extensions exist but are disabled: "${disabledDependencies.join(', ')}". Enable them first, then reload.`);
@@ -594,6 +620,7 @@ async function activateExtensions({ onlyNames = null } = {}) {
                 extensionLoadErrors.add(t`Extension "${displayName}" did not load. Missing required extensions: "${missingDependencies.join(', ')}"`);
             }
         } else if (!meetsClientMinimumVersion && !isDisabled) {
+            extensionFailureReasons.set(name, `需要 ST ${minClientVersion}，当前内核 ${clientVersion}`);
             console.warn(t`Extension "${name}" did not load. Requires ST client version ${minClientVersion}, but current version is ${clientVersion}.`);
             extensionLoadErrors.add(t`Extension "${displayName}" did not load. Requires ST client version ${minClientVersion}, but current version is ${clientVersion}.`);
         }
@@ -768,6 +795,7 @@ export async function loadExtensionSettings(settings, _versionChanged, _enableAu
         const extensions = await discoverExtensions();
         extensionNames = extensions.map(x => x.name);
         extensionTypes = Object.fromEntries(extensions.map(x => [x.name, x.type]));
+        libraryExtensionStates = new Map(extensions.filter(item => typeof item.libraryEnabled === 'boolean').map(item => [item.name, item.libraryEnabled]));
         const eligibleExtensionNames = extensionNames.filter(name => !isExtensionDisabled(name));
         manifests = await getManifests(eligibleExtensionNames);
         const noraProduct = globalThis.__NORA_ENTRY_ACTIVE__ || document.body.classList.contains('nora-product');

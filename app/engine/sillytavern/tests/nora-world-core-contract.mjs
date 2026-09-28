@@ -26,6 +26,7 @@ const sharedModules = [
     'nora-worlds/story-context.js',
     'nora-worlds/character-references.js',
     'nora-worlds/world-preset.js',
+    'nora-worlds/preset-file.js',
     'nora-compat/mvu-compatibility.js',
     'nora-compat/mvu-protocol.js',
     'nora-compat/prompt-template-compatibility.js',
