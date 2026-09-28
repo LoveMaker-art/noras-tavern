@@ -172,6 +172,8 @@ export const english = Object.freeze({
     '密钥保存在后端，不会写入角色卡、聊天记录或前端设置。': 'Your key is stored on the server, not in cards, chat history or frontend settings.',
     '返回': 'Back',
     '保存': 'Save',
+    '编辑提示词': 'Edit prompt',
+    '已保存。重新应用预设后生效。': 'Saved. Reapply the preset to use the changes.',
     '留空沿用已保存密钥': 'Leave blank to keep the saved key',
     '填写变量模型密钥': 'Enter the variable model API key',
     'MVU 模型设置正在保存，请稍候。': 'Saving MVU model settings. Please wait.',

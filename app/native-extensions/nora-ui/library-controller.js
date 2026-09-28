@@ -36,9 +36,9 @@ export function createLibraryController({ presets, dialogs, operations, isGenera
     function openPreset(item) {
         const view = describePreset(item.preset);
         const current = presets.listPresets().selected === item.name;
-        const rows = view.rows.map(prompt => {
+        const rows = view.rows.map((prompt, index) => {
             const status = !view.configured ? tr('顺序未配置') : !prompt.listed ? tr('未加入顺序') : prompt.enabled ? tr('已启用') : tr('已禁用');
-            return `<details class="nora-preset-prompt${prompt.enabled === false ? ' is-disabled' : ''}"><summary><span>${html(prompt.name || prompt.identifier)}</span><small>${status}</small></summary><p>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p></details>`;
+            return `<details class="nora-preset-prompt${prompt.enabled === false ? ' is-disabled' : ''}"><summary><span>${html(prompt.name || prompt.identifier)}</span><small>${status}</small></summary><p>${html(prompt.content || tr(prompt.marker ? '动态内容' : '暂无内容'))}</p><button class="nora-icon-button" type="button" data-edit-prompt="${index}" title="${tr('编辑提示词')}" aria-label="${tr('编辑提示词')}"><i class="fa-solid fa-pen" aria-hidden="true"></i></button></details>`;
         }).join('');
         const modal = dialogs.open(item.name, `<div class="nora-preset-detail-scroll"><button type="button" class="nora-sheet-back" data-back><i class="fa-solid fa-chevron-left" aria-hidden="true"></i> ${tr('预设库')}</button>
             <div class="nora-preset-meta"><span>${tr('全局预设')}</span>${current ? `<span><i class="fa-solid fa-check" aria-hidden="true"></i> ${tr('使用中')}</span>` : ''}</div>
@@ -46,6 +46,7 @@ export function createLibraryController({ presets, dialogs, operations, isGenera
             <details class="nora-preset-prompts"><summary>${tr('提示词条目')} <small>${view.rows.length}</small></summary>${rows || `<p class="nora-sheet-empty">${tr('暂无条目')}</p>`}</details></div>
             <footer class="nora-form-actions nora-editor-toolbar nora-preset-footer">${view.scripts ? `<label class="nora-library-check"><input type="checkbox" data-scripts>${tr('启用嵌入式脚本')} (${view.scripts})</label>` : ''}<button type="button" data-apply class="nora-primary">${tr(current ? '重新应用' : '应用预设')}</button></footer>`, 'nora-preset-modal nora-preset-detail-modal nora-plain-sheet');
         $('[data-back]', modal).addEventListener('click', openPresets);
+        $$('[data-edit-prompt]', modal).forEach(button => button.addEventListener('click', () => openPromptEditor(item, view.rows[Number(button.dataset.editPrompt)])));
         $('[data-apply]', modal).addEventListener('click', async event => {
             if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
             const button = event.currentTarget;
@@ -56,8 +57,30 @@ export function createLibraryController({ presets, dialogs, operations, isGenera
                 await operations.run('library', () => presets.applyPreset(item.name, { enableScripts: Boolean($('[data-scripts]', modal)?.checked) }));
                 await openPresets();
                 refresh();
-            } catch (error) { errorToast(error); }
-            finally { button.disabled = false; }
+            } catch (error) { errorToast(error); } finally { button.disabled = false; }
+        });
+    }
+
+    function openPromptEditor(item, prompt) {
+        if (!prompt) return;
+        const modal = dialogs.open(tr('编辑提示词'), `<form class="nora-form nora-preset-edit-form" data-prompt-form>
+            <label>${html(prompt.name || prompt.identifier)}<textarea data-prompt-content rows="12"></textarea></label>
+            <div class="nora-form-actions"><button type="button" data-back>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('保存')}</button></div></form>`, 'nora-preset-modal nora-preset-edit-modal nora-plain-sheet');
+        const form = $('[data-prompt-form]', modal);
+        const content = $('[data-prompt-content]', modal);
+        content.value = prompt.content ?? '';
+        $('[data-back]', modal).addEventListener('click', () => openPreset(item));
+        form.addEventListener('submit', async event => {
+            event.preventDefault();
+            if (busy()) return dialogs.toast(tr('请等待当前生成或保存完成。'));
+            const button = $('button[type="submit"]', form);
+            button.disabled = true;
+            try {
+                await operations.run('library', () => presets.updatePromptContent(item.name, prompt.identifier, content.value));
+                const updated = presets.listPresets().items.find(entry => entry.name === item.name);
+                if (updated) openPreset(updated);
+                dialogs.toast(tr('已保存。重新应用预设后生效。'));
+            } catch (error) { errorToast(error); } finally { button.disabled = false; }
         });
     }
 

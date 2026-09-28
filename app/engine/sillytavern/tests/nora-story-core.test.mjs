@@ -4,7 +4,7 @@ import test from 'node:test';
 import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-story-core/index.js';
 
 const domainMethods = [
-    'listPresets', 'importPreset', 'applyPreset',
+    'listPresets', 'importPreset', 'updatePromptContent', 'applyPreset',
     'patchCharacter',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',

@@ -24,6 +24,21 @@ export function createStPresetAdapter(runtime) {
         presets.push(structuredClone(preset));
     }
 
+    async function updatePromptContent(name, identifier, content) {
+        if (typeof content !== 'string') throw new Error('提示词内容无效。');
+        const current = manager();
+        const { presets, preset_names } = current.getPresetList();
+        const index = preset_names[name];
+        const original = presets[index];
+        if (!original) throw new Error('预设不存在，请重新打开预设库。');
+        const matches = original.prompts?.filter(prompt => prompt?.identifier === identifier) ?? [];
+        if (matches.length !== 1) throw new Error('提示词条目不存在或重复，请重新打开预设。');
+        const updated = structuredClone(original);
+        updated.prompts.find(prompt => prompt.identifier === identifier).content = content;
+        await current.savePreset(name, updated, { skipUpdate: true });
+        presets[index] = updated;
+    }
+
     async function applyPreset(name, { enableScripts = false } = {}) {
         const context = runtime();
         const current = manager();
@@ -44,11 +59,10 @@ export function createStPresetAdapter(runtime) {
         // Filter before ST emits preset events, so helper subscribers never see unapproved scripts.
         presets[index] = projected;
         settings.bind_preset_to_connection = false;
-        try { await current.selectPreset(current.findPreset(name)); }
-        finally {
+        try { await current.selectPreset(current.findPreset(name)); } finally {
             settings.bind_preset_to_connection = previousBinding;
             presets[index] = original;
         }
     }
-    return { listPresets, importPreset, applyPreset };
+    return { listPresets, importPreset, updatePromptContent, applyPreset };
 }

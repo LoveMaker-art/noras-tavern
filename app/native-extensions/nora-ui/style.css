@@ -765,6 +765,9 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-preset-prompt summary small { margin-left:8px; color:var(--nora-muted); }
 .nora-preset-prompt.is-disabled summary { color:var(--nora-muted); }
 .nora-preset-prompt p { white-space:pre-wrap; overflow-wrap:anywhere; font-size:12px; line-height:1.7; }
+.nora-preset-prompt > .nora-icon-button { margin-left:auto; }
+.nora-preset-edit-form { flex:1; min-height:0; overflow-y:auto; align-content:start; padding:18px; }
+.nora-preset-edit-form textarea { min-height:240px; }
 .nora-preset-footer { flex-wrap:wrap; justify-content:flex-end; }
 .nora-preset-footer .nora-library-check { flex:1 1 180px; margin:0; min-width:0; font-size:12px; }
 .nora-preset-footer > button { min-width:112px; margin-left:auto; }
