@@ -128,8 +128,24 @@ export class NoraControlPlane {
         nativeDataRoot: this.config.nativeDataRoot,
         userDataRoot: this.config.userDataRoot,
         configPath: this.config.configPath,
+        uploadRoot: this.config.uploadRoot,
       },
       noraDomains: [
+        {
+          domain: "presets",
+          storage: "Native chat-completion templates; independent World Core preset snapshots",
+          readTools: ["nora.control.catalog", "nora.control.clients", "nora.control.read", "nora.control.operation"],
+          writeTools: ["nora.control.execute", "nora.preset.import"],
+          actions: ["preset.list", "preset.inspect", "preset.create", "preset.edit", "preset.apply", "preset.save-as"],
+          requiresLivePage: true,
+          fileImport: { tool: "nora.preset.import", requiresLivePage: false, maxBytes: 10 * 1024 * 1024, directory: this.config.uploadRoot },
+        },
+        {
+          domain: "library",
+          storage: "World Core library-profiles; native worlds for worldbooks",
+          location: path.join(this.config.userDataRoot, "nora-world-core", "library-profiles"),
+          readTools: ["nora.library.list", "nora.library.read"], writeTools: ["nora.library.save"],
+        },
         {
           domain: "world_core",
           storage: "default-user/nora-world-core",
@@ -336,6 +352,22 @@ export class NoraControlPlane {
     return this.worldMutation("POST", "/api/nora-worlds-v2/library-imports", { avatar }, idempotencyKey);
   }
 
+  async libraryList(kind: "character" | "persona" | "worldbook"): Promise<unknown> {
+    return this.http.get(kind === "worldbook" ? "/api/nora-worlds-v2/library/worldbooks" : `/api/nora-worlds-v2/library/profiles?kind=${kind}`);
+  }
+
+  async libraryRead(request: { id?: string; source?: { kind: "book" | "card"; name: string } }): Promise<unknown> {
+    return request.source
+      ? this.http.post("/api/nora-worlds-v2/library/worldbooks/read", { source: request.source })
+      : this.http.post("/api/nora-worlds-v2/library/profiles/read", { id: request.id });
+  }
+
+  async librarySave(request: { kind: "character" | "persona" | "worldbook"; name: string; data: Record<string, unknown> }): Promise<unknown> {
+    return request.kind === "worldbook"
+      ? this.http.post("/api/nora-worlds-v2/library/worldbooks/import", { name: request.name, book: request.data })
+      : this.http.post("/api/nora-worlds-v2/library/profiles/save", request);
+  }
+
   async importBackground(filePath: string): Promise<unknown> {
     const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(filePath)]);
     const relative = path.relative(root, file);
@@ -345,6 +377,34 @@ export class NoraControlPlane {
     const body = new FormData();
     body.set("avatar", new Blob([new Uint8Array(await fs.readFile(file))]), path.basename(file));
     return this.http.post("/api/nora-worlds-v2/backgrounds/import", body);
+  }
+
+  async importPreset(request: { filePath: string; name: string }): Promise<unknown> {
+    const maxBytes = 10 * 1024 * 1024;
+    const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(request.filePath)]);
+    const relative = path.relative(root, file);
+    if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+      throw new NoraRequestError("Preset must be inside the configured upload directory.", "NORA_IMPORT_PATH_DENIED");
+    }
+    if (path.extname(file).toLowerCase() !== ".json") throw new NoraRequestError("Preset must be a JSON file.", "NORA_IMPORT_FILE_INVALID");
+    const handle = await fs.open(file, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+    let json: string;
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile()) throw new NoraRequestError("Preset must be a regular file.", "NORA_IMPORT_FILE_INVALID");
+      if (stat.size > maxBytes) throw new NoraRequestError("Preset exceeds 10 MB.", "NORA_PRESET_TOO_LARGE");
+      const buffer = Buffer.alloc(maxBytes + 1);
+      let size = 0;
+      while (size < buffer.length) {
+        const { bytesRead } = await handle.read(buffer, size, buffer.length - size, size);
+        if (!bytesRead) break;
+        size += bytesRead;
+      }
+      if (size > maxBytes) throw new NoraRequestError("Preset exceeds 10 MB.", "NORA_PRESET_TOO_LARGE");
+      try { json = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size)); JSON.parse(json); }
+      catch { throw new NoraRequestError("Preset must contain valid UTF-8 JSON.", "NORA_PRESET_INVALID"); }
+    } finally { await handle.close(); }
+    return this.http.post("/api/presets/nora-import", { name: request.name, json });
   }
 
   async importWorld(request: { filePath: string; name?: string; personaName?: string; personaDescription?: string; idempotencyKey: string }): Promise<unknown> {

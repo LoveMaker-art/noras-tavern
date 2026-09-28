@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import process from 'node:process';
-import crypto from 'node:crypto';
+import { getChatRevision } from '../chat-revision.js';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -458,12 +458,6 @@ class NoraPartialChatSaveError extends Error {
     }
 }
 
-function getChatRevision(chatData) {
-    return crypto.createHash('sha256')
-        .update(chatData.map(message => JSON.stringify(message)).join('\n'))
-        .digest('hex');
-}
-
 /**
  * Detects a Nora replacement that could discard or rewrite stored history.
  * Append-only writes remain backward-compatible; every other replacement is
@@ -657,7 +651,9 @@ router.post('/get', validateAvatarUrlMiddleware, function (request, response) {
                 before: request.body.nora_before,
             }));
         }
-        return response.send(getChatData(chatFilePath));
+        const data = getChatData(chatFilePath);
+        response.set('X-Nora-Chat-Revision', getChatRevision(data));
+        return response.send(data);
     } catch (error) {
         console.error(error);
         return response.send({});

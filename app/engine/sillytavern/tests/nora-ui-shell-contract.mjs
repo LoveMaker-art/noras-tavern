@@ -95,7 +95,7 @@ if (prepareShell.includes('finishBootScreen()')) {
     throw new Error('Runtime preparation must not own the authoritative-summary reveal transition.');
 }
 
-const finishBootScreen = getNamedFunction(noraUi, 'finishBootScreen');
+const finishBootScreen = getNamedFunction(startupController, 'finishBootScreen');
 if (!finishBootScreen.includes("classList.remove('nora-booting')")) {
     throw new Error('The completed World activation must reveal the Nora UI.');
 }
@@ -361,7 +361,7 @@ for (const obsoleteSignal of ['runtime.importCharacter', 'characterController.fi
 }
 
 const characterLibrary = getNamedFunction(characterController, 'openLibrary');
-for (const signal of ['角色卡库', 'groups()', 'nora-card-waterfall', '/thumbnail?type=avatar', 'nora-card-library-delete', 'data-library-delete', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)', 'deleteGroup']) {
+for (const signal of ['世界卡库', 'groups()', 'nora-card-waterfall', '/thumbnail?type=avatar', 'nora-card-library-delete', 'data-library-delete', 'character?.shallow', 'resolveCharacter(characterId)', 'openSheet(characterId, true)', 'deleteGroup']) {
     if (!characterLibrary.includes(signal)) throw new Error(`The character-card library must use imported card artwork: ${signal}`);
 }
 for (const blockingSignal of ['cards.resolveCharacter', 'for (let index = 0; index < characters.length', 'Promise.all']) {

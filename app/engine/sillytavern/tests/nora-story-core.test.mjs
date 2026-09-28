@@ -4,8 +4,8 @@ import test from 'node:test';
 import { createNoraStoryCore, createStorySurface } from '../public/scripts/nora-story-core/index.js';
 
 const domainMethods = [
-    'listPresets', 'importPreset', 'updatePromptContent', 'applyPreset',
-    'patchCharacter',
+    'listPresets', 'importPreset', 'applyPreset', 'readPreset', 'savePresetEntries', 'toggleablePresetEntries', 'deletePreset',
+    'patchCharacter', 'importLibraryCard', 'readCharacterRegex', 'saveCharacterRegex',
     'snapshot', 'subscribe', 'whenReady',
     'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage', 'runSlash', 'prepareMutation',
     'isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'deleteCharacterCards', 'savePersona',
@@ -26,6 +26,7 @@ test('story surface exposes only explicit headless domains', () => {
     assert.equal(story.state.snapshot(), 'snapshot');
     assert.equal(story.messages.sendText(), 'sendText');
     assert.equal(story.cards.resolveCharacter(), 'resolveCharacter');
+    assert.equal(story.cards.importLibraryCard(), 'importLibraryCard');
     assert.equal(story.cards.rerenderCharacterChat(), 'rerenderCharacterChat');
     assert.equal(story.worldbook.loadWorldbook(), 'loadWorldbook');
     assert.equal(story.worldbook.saveWorldbookEntry, runtime.saveWorldbookEntry);
@@ -34,6 +35,8 @@ test('story surface exposes only explicit headless domains', () => {
     assert.equal(story.mvu.setEnabled(), 'setEnabled');
     assert.equal(story.settings.uiSettings(), 'uiSettings');
     assert.equal(story.transport.requestHeaders(), 'requestHeaders');
+    assert.equal(story.presets.readPreset, runtime.readPreset);
+    assert.equal(story.presets.savePresetEntries, runtime.savePresetEntries);
     assert.equal(story.worlds, worlds);
     assert.equal('runtime' in story, false);
     assert.equal('whenReady' in story, false);

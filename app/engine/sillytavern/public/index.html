@@ -129,7 +129,7 @@
         .nora-rail-actions { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--nora-line); }
         .nora-outline-button { display: flex; width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 7px; border: 1px solid var(--nora-brand); border-radius: 8px; background: transparent; color: var(--nora-brand-ink); cursor: pointer; }
         #nora-stage { position: relative; display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; overflow: hidden; }
-        #nora-topbar { position: relative; display: none; min-height: 54px; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
+        #nora-topbar { position: relative; display: flex; min-height: 54px; flex: 0 0 auto; align-items: center; justify-content: space-between; padding: 7px 12px; border-bottom: 1px solid var(--nora-line); background: var(--nora-surface); }
         #nora-panel-toggle { margin-left: auto; }
         .nora-title-wrap { position: absolute; top: 50%; left: 50%; max-width: calc(100% - 116px); transform: translate(-50%, -50%); text-align: center; }
         .nora-title { display: flex; justify-content: center; gap: 6px; font-weight: 600; }
@@ -162,7 +162,10 @@
         #nora-scrim { position: fixed; inset: 0; z-index: 1001; visibility: hidden; border: 0; background: rgba(0, 0, 0, .55); opacity: 0; }
         #nora-runtime { position: fixed; left: -10000px; top: -10000px; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
         @media (max-width: 1020px) { #nora-topbar { display: flex; } #nora-panel { position: fixed; z-index: 1002; top: 0; right: 0; width: 80%; max-width: 320px; height: var(--nora-vh); visibility: hidden; opacity: 0; } body.nora-panel-open #nora-panel { visibility: visible; opacity: 1; } body.nora-panel-open #nora-scrim { visibility: visible; opacity: 1; } }
-        @media (min-width: 761px) { #nora-rail-toggle { display: none; } }
+        #nora-rail-toggle { display: inline-flex; width: 40px; height: 40px; border-radius: 6px; }
+        #nora-rail-toggle:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+        @media (min-width: 1021px) { #nora-panel-toggle { display: none; } }
+        @media (min-width: 761px) { body.nora-rail-collapsed #nora-rail { width: 0; padding-left: 0; padding-right: 0; border-right: 0; visibility: hidden; overflow: hidden; pointer-events: none; } }
         @media (max-width: 760px) { #nora-rail { position: fixed; z-index: 1002; top: 0; left: 0; width: 78%; max-width: 300px; height: var(--nora-vh); transform: translateX(-110%); } body.nora-rail-open #nora-rail { transform: none; } body.nora-rail-open #nora-scrim { visibility: visible; opacity: 1; } #nora-input { font-size: 16px; } }
     </style>
     <script>
@@ -241,6 +244,8 @@
             const round = value => Math.round(Number(value || 0) * 10) / 10;
             const elapsed = () => round(performance.now() - metrics.startedAt);
             const resourceName = (value) => {
+                if (!String(value || '').trim()) return '';
+                if (/^(?:data|blob):/i.test(String(value))) return '[inline-resource]';
                 try {
                     return new URL(String(value || ''), location.href).pathname.slice(0, 200);
                 } catch {
@@ -320,7 +325,8 @@
             globalThis.__NORA_MARK_BOOT_RESOURCES_STALLED__ = details => pendingResources.forEach(tracker => tracker.stalled(details));
             globalThis.__NORA_EARLY_REPORT_QUEUE__ ??= Promise.resolve();
             globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__ = (phase, details = {}) => {
-                const reportKey = `${phase}:${String(details.resource || details.stage || '')}`;
+                const reportKey = JSON.stringify([phase, details.resource || details.stage || '',
+                    details.elementTag || '', details.elementId || '', details.templateId || '', details.elementClass || '']);
                 if (reportedEarlyFailures.has(reportKey) || reportedEarlyFailures.size >= 12) {
                     return globalThis.__NORA_EARLY_REPORT_QUEUE__;
                 }
@@ -360,9 +366,36 @@
             };
             globalThis.addEventListener('error', (event) => {
                 if (document.body?.classList.contains('nora-runtime-ready')) return;
+                const target = event.target;
+                const src = target?.getAttribute?.('src') ?? null;
+                const href = target?.getAttribute?.('href') ?? null;
+                // Read the attribute, not only .src: browsers resolve src="" to
+                // the page URL, hiding the distinction between empty and failed.
+                const rawResource = event.filename || (src !== null ? src : href !== null ? href : target?.currentSrc || '');
+                let resourceOrigin = '';
+                if (rawResource && !/^(?:data|blob):/i.test(rawResource)) {
+                    try { resourceOrigin = new URL(rawResource, location.href).origin; } catch { /* Invalid URL is reported by its bounded path. */ }
+                }
                 globalThis.__NORA_REPORT_EARLY_BOOT_METRICS__('boot-runtime-error', {
+                    diagnosticVersion: 'resource-error-v1',
+                    errorKind: event.error || event.message ? 'javascript' : 'resource',
                     message: String(event.error?.message || event.message || 'resource error').slice(0, 200),
-                    resource: resourceName(event.filename || event.target?.src || event.target?.href || ''),
+                    resource: resourceName(rawResource),
+                    resourceOrigin,
+                    elementTag: String(target?.tagName || '').slice(0, 30),
+                    elementId: String(target?.id || '').slice(0, 100),
+                    elementClass: typeof target?.className === 'string' ? target.className.slice(0, 100) : '',
+                    templateId: String(target?.closest?.('[id$="_template"]')?.id || '').slice(0, 100),
+                    srcPresent: src !== null,
+                    srcEmpty: src !== null && !src.trim(),
+                    hrefPresent: href !== null,
+                    hrefEmpty: href !== null && !href.trim(),
+                    currentResource: resourceName(target?.currentSrc || ''),
+                    imageComplete: typeof target?.complete === 'boolean' ? target.complete : undefined,
+                    naturalWidth: target?.naturalWidth,
+                    naturalHeight: target?.naturalHeight,
+                    line: Number(event.lineno) || 0,
+                    column: Number(event.colno) || 0,
                 });
             }, true);
             globalThis.addEventListener('unhandledrejection', (event) => {
@@ -379,9 +412,10 @@
                 ...details,
             });
         };
+        const bootLocaleQuery = '?' + new URLSearchParams({ lang: globalThis.__NORA_LOCALE__ });
         recordAssetCacheMilestone('shell-summary-requested');
         const shellResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('shell-summary', '/api/nora-boot/shell');
-        const shellNetworkPromise = fetch('/api/nora-boot/shell', {
+        const shellNetworkPromise = fetch('/api/nora-boot/shell' + bootLocaleQuery, {
             cache: 'no-store',
             credentials: 'same-origin',
             priority: 'high',
@@ -399,7 +433,7 @@
         });
         recordAssetCacheMilestone('runtime-bootstrap-requested');
         const bootstrapResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('runtime-bootstrap', '/api/nora-boot/bootstrap');
-        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap', {
+        const runtimeBootstrapNetworkPromise = fetch('/api/nora-boot/bootstrap' + bootLocaleQuery, {
             cache: 'no-store',
             credentials: 'same-origin',
             priority: 'low',
@@ -446,6 +480,33 @@
             }
             return bootstrap;
         });
+        // Start fetching compatibility modules with the runtime assets, while
+        // retaining their existing ordered evaluation after legacy.js is ready.
+        globalThis.__NORA_COMPATIBILITY_PRELUDE__ = [
+            ...(typeof globalThis.structuredClone === 'function' ? [] : ['lib/structured-clone/monkey-patch.js']),
+            'lib/swiped-events.js',
+            'lib/eventemitter.js',
+            'scripts/i18n.js',
+        ];
+        globalThis.__NORA_PRELOAD_CORE_GRAPH__ = () => {
+            // Fetch the known core graph in parallel. Import-map aliases may
+            // point to the same URL; preload each URL once without evaluating it.
+            if (typeof HTMLScriptElement.supports === 'function' && HTMLScriptElement.supports('importmap')) {
+                const imports = JSON.parse(document.querySelector('script[type="importmap"]')?.textContent || '{}').imports || {};
+                const scheduled = new Set(Array.from(document.querySelectorAll('link[rel="modulepreload"]'), link => link.getAttribute('href')));
+                for (const [specifier, url] of Object.entries(imports)) {
+                    if (!specifier.startsWith('nora-module/') || typeof url !== 'string' || !url.startsWith('/asset-files/')) continue;
+                    if (typeof globalThis.structuredClone === 'function' && specifier.startsWith('nora-module/lib/structured-clone/')) continue;
+                    if (scheduled.has(url)) continue;
+                    scheduled.add(url);
+                    const preload = document.createElement('link');
+                    preload.rel = 'modulepreload';
+                    preload.href = url;
+                    preload.fetchPriority = 'low';
+                    document.head.append(preload);
+                }
+            }
+        };
         let runtimeAssetStart;
         let runtimeAssetsStarted = false;
         globalThis.__NORA_RUNTIME_ASSET_START_PROMISE__ = new Promise(resolve => { runtimeAssetStart = resolve; });
@@ -455,6 +516,13 @@
             for (const [base, asset] of [
                 [globalThis.__NORA_VENDOR_ASSET_BASE__, 'dist/nora/lib-core.js'],
                 [globalThis.__NORA_ASSET_BASES__['nora-entry'], 'dist/nora/entry.js'],
+                ...globalThis.__NORA_COMPATIBILITY_PRELUDE__.map(asset => [globalThis.__NORA_ASSET_BASES__['st-static'], asset]),
+                ...(typeof globalThis.structuredClone === 'function' ? [] : [
+                    'lib/structured-clone/index.js',
+                    'lib/structured-clone/deserialize.js',
+                    'lib/structured-clone/serialize.js',
+                    'lib/structured-clone/types.js',
+                ].map(asset => [globalThis.__NORA_ASSET_BASES__['st-static'], asset])),
             ]) {
                 const tracker = globalThis.__NORA_TRACK_BOOT_RESOURCE__(`preload:${asset}`, `${base}/${asset}`);
                 const preload = document.createElement('link');
@@ -784,6 +852,29 @@
             }
             retry.addEventListener('click', () => location.reload());
             const cachedWorlds = null;
+            function renderEarlyRail(toggle = false) {
+                const mobile = matchMedia('(max-width: 760px)').matches;
+                if (toggle && mobile) document.body.classList.toggle('nora-rail-open');
+                if (toggle && !mobile) {
+                    document.body.classList.toggle('nora-rail-collapsed');
+                    try { localStorage.setItem('nora.ui.world-rail-collapsed', String(document.body.classList.contains('nora-rail-collapsed'))); } catch {}
+                }
+                const expanded = mobile ? document.body.classList.contains('nora-rail-open') : !document.body.classList.contains('nora-rail-collapsed');
+                const button = document.getElementById('nora-rail-toggle');
+                button.setAttribute('aria-controls', 'nora-rail');
+                button.setAttribute('aria-expanded', String(expanded));
+                button.setAttribute('aria-label', tr(expanded ? '收起世界栏' : '展开世界栏'));
+                button.title = button.getAttribute('aria-label');
+                document.getElementById('nora-rail').inert = !expanded;
+                document.getElementById('nora-rail').setAttribute('aria-hidden', String(!expanded));
+            }
+            try { document.body.classList.toggle('nora-rail-collapsed', localStorage.getItem('nora.ui.world-rail-collapsed') === 'true'); } catch {}
+            renderEarlyRail();
+            matchMedia('(max-width: 760px)').addEventListener('change', () => {
+                if (document.body.classList.contains('nora-ui-hydrated')) return;
+                document.body.classList.remove('nora-rail-open');
+                renderEarlyRail();
+            });
             try {
                 localStorage.removeItem('nora-early-worlds');
                 localStorage.removeItem('nora-early-worlds:v2');
@@ -799,9 +890,9 @@
                     }
                     return;
                 }
-                if (target?.closest('#nora-rail-toggle')) document.body.classList.add('nora-rail-open');
-                if (target?.closest('#nora-panel-toggle')) document.body.classList.add('nora-panel-open');
-                if (target?.closest('#nora-scrim')) document.body.classList.remove('nora-rail-open', 'nora-panel-open');
+                if (target?.closest('#nora-rail-toggle')) { document.body.classList.remove('nora-panel-open'); renderEarlyRail(true); }
+                if (target?.closest('#nora-panel-toggle')) { document.body.classList.add('nora-panel-open'); document.body.classList.remove('nora-rail-open'); renderEarlyRail(); }
+                if (target?.closest('#nora-scrim')) { document.body.classList.remove('nora-rail-open', 'nora-panel-open'); renderEarlyRail(); }
                 if (target?.closest('#nora-new-world')) queueAction('new-world', target.closest('#nora-new-world'));
                 const earlyWorld = target?.closest('[data-early-world]');
                 if (earlyWorld) {
@@ -903,7 +994,7 @@
                     <div class="fa-fw fa-solid fa-circle-xmark dragClose" id="closeZoom"></div>
                 </div>
                 <div class="zoomed_avatar_container">
-                    <img class="zoomed_avatar_img" src="" data-izoomify-url="" data-izoomify-magnify="1.8" data-izoomify-duration="300" alt="">
+                    <img class="zoomed_avatar_img" data-izoomify-url="" data-izoomify-magnify="1.8" data-izoomify-duration="300" alt="">
                 </div>
             </div>
         </div>
@@ -919,7 +1010,7 @@
         <div id="user_avatar_template" class="template_element">
             <div class="avatar-container">
                 <div imgfile="" class="avatar">
-                    <img src="" alt="User Avatar">
+                    <img alt="User Avatar">
                 </div>
                 <div class="flex-container wide100pLess70px character_select_container">
                     <div class="wide100p character_name_block">
@@ -949,7 +1040,7 @@
                         <h3 class="popup-header">text</h3>
                     </div>
                     <div class="popup-crop-wrap">
-                        <img class="popup-crop-image" src="">
+                        <img class="popup-crop-image">
                     </div>
                     <textarea class="popup-input text_pole result-control auto-select" rows="1" data-result="1" data-result-event="submit"></textarea>
                     <div class="popup-inputs"></div>
@@ -1686,7 +1777,7 @@
         <div id="character_template" class="template_element">
             <div class="character_select entity_block flex-container wide100p alignitemsflexstart" chid="" id="">
                 <div class="avatar" title="">
-                    <img src="">
+                    <img>
                 </div>
                 <div class="flex-container wide100pLess70px character_select_container">
                     <div class="wide100p character_name_block">
@@ -1847,7 +1938,7 @@
                 <div class="for_checkbox"></div><input type="checkbox" class="del_checkbox">
                 <div class="mesAvatarWrapper">
                     <div class="avatar">
-                        <img src="">
+                        <img>
                     </div>
                     <div class="mesIDDisplay"></div>
                     <div class="mes_timer"></div>
@@ -1960,7 +2051,7 @@
         </div>
         <div id="inline_avatar_template" class="template_element">
             <div class="avatar inline_avatar flex alignitemscenter textAlignCenter">
-                <img src="">
+                <img>
             </div>
         </div>
         <div id="alternate_greetings_template" class="template_element">
@@ -2028,7 +2119,7 @@
                     <div title="Caption" class="right_menu_button fa-lg fa-solid fa-envelope-open-text mes_img_caption" data-i18n="[title]Caption"></div>
                     <div title="Delete" class="right_menu_button fa-lg fa-solid fa-trash-can mes_media_delete" data-i18n="[title]Delete"></div>
                 </div>
-                <img class="mes_img" src="" />
+                <img class="mes_img" />
             </div>
         </div>
 
@@ -2106,10 +2197,16 @@
             });
             const legacy = document.createElement('script');
             legacy.src = `${globalThis.__NORA_LEGACY_ASSET_BASE__}/dist/nora/legacy.js`;
-            legacy.fetchPriority = 'low';
+            legacy.fetchPriority = 'high';
             const legacyResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('legacy-runtime', legacy.src);
             legacy.addEventListener('load', () => {
                 legacyResource.complete();
+                try {
+                    globalThis.__NORA_PRELOAD_CORE_GRAPH__();
+                } catch (error) {
+                    // A speculative fetch must never prevent the ordered imports below.
+                    console.warn('[Nora Boot] Core preload skipped:', error);
+                }
                 resolve();
             }, { once: true });
             legacy.addEventListener('error', () => {
@@ -2129,12 +2226,8 @@
                 at: Math.round((performance.now() - globalThis.__NORA_BOOT_METRICS__.startedAt) * 10) / 10,
                 source: 'dist/nora/legacy.js',
             });
-            const compatibilityPreludeModules = [
-                'nora-module/lib/structured-clone/monkey-patch.js',
-                'nora-module/lib/swiped-events.js',
-                'nora-module/lib/eventemitter.js',
-                'nora-module/scripts/i18n.js',
-            ];
+            const compatibilityPreludeModules = globalThis.__NORA_COMPATIBILITY_PRELUDE__
+                .map(asset => `nora-module/${asset}`);
             const preludeResource = globalThis.__NORA_TRACK_BOOT_RESOURCE__('compatibility-prelude', '[inline-module]');
             try {
                 for (const specifier of compatibilityPreludeModules) {

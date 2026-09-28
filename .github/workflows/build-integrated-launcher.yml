@@ -1,0 +1,344 @@
+name: Build full Nora Tavern installers
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Build all platforms or debug Windows only
+        type: choice
+        default: all
+        options:
+          - all
+          - win32-x64
+      runtime_source_run:
+        description: Optional verified build run whose Hermes archives are reused for install compatibility
+        type: string
+        default: ''
+      production_mode:
+        description: Use real installation paths for replacement testing (branch artifacts only)
+        type: boolean
+        default: false
+  push:
+    tags:
+      - 'v*-beta.*'
+
+concurrency:
+  group: nora-release-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref_type != 'tag' }}
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PYTHONUTF8: '1'
+  PYTHONIOENCODING: 'utf-8'
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Tags always build every supported platform. Windows ARM lacks Liveware.
+        include: >-
+          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
+            && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
+            || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Preserve repository bytes on every platform
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Verify release tag matches committed payload version
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            app/engine/sillytavern/package-lock.json
+            nora-mcp/npm-shrinkwrap.json
+
+      - name: Verify embedded Story Profile before preparing runtimes
+        run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
+
+      - name: Verify source ownership and compatible delivery layout
+        run: node --test tests/repository-layout.test.mjs
+
+      - name: Fetch official ClawChat plugin for the runtime bundle
+        uses: actions/checkout@v4
+        with:
+          repository: clawling/clawchat-plugin-hermes-agent
+          ref: 8651f7078916e60ed1da9f78ec4d1278fef49dd9
+          path: .build-clawchat-plugin
+          persist-credentials: false
+
+      - name: Keep build inputs outside the release source tree
+        shell: bash
+        run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
+
+      - name: Install Hermes core without browser components (macOS)
+        if: runner.os == 'macOS' && inputs.runtime_source_run == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          export HERMES_HOME="$RUNNER_TEMP/hermes"
+          export UV_MANAGED_PYTHON=1
+          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
+          export UV_PYTHON_INSTALL_BIN=0
+          curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$RUNNER_TEMP/hermes-install.sh"
+          sh "$RUNNER_TEMP/hermes-install.sh" \
+            --dir "$HERMES_HOME/hermes-agent" \
+            --hermes-home "$HERMES_HOME" \
+            --skip-setup \
+            --skip-browser \
+            --skip-computer-use \
+            --non-interactive
+
+      - name: Install Hermes core without browser components (Windows)
+        if: runner.os == 'Windows' && inputs.runtime_source_run == ''
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
+          Invoke-WebRequest https://hermes-agent.nousresearch.com/install.ps1 -OutFile $installer
+          $stages = @(
+            'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
+            'dependencies', 'path', 'config-templates', 'platform-sdks', 'bootstrap-marker'
+          )
+          foreach ($stage in $stages) {
+            & $installer -HermesHome $env:HERMES_HOME `
+              -InstallDir (Join-Path $env:HERMES_HOME 'hermes-agent') `
+              -Stage $stage -NonInteractive -Json -SkipComputerUse
+            if ($LASTEXITCODE -ne 0) { throw "Hermes stage failed: $stage" }
+          }
+
+      - name: Build integrated runtime
+        if: inputs.runtime_source_run == ''
+        shell: bash
+        run: |
+          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}"
+
+      - name: Download verified runtime baseline
+        if: inputs.runtime_source_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nora-baseline-artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.runtime_source_run }}
+
+      - name: Restore the exact baseline runtime
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+
+      - name: Reseal baseline with current ClawChat integration
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
+            --hermes-home "$RUNNER_TEMP/hermes" \
+            --output "$RUNNER_TEMP/hermes-runtime" \
+            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
+            --platform "${{ matrix.platform }}" \
+            --arch "${{ matrix.arch }}"
+
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify runtime independently of original installation
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
+          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
+
+      - name: Test release channels and update rollback
+        run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
+
+      - name: Test installation diagnostics on the target platform
+        run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
+
+      - name: Test unified update and application replacement
+        shell: bash
+        run: |
+          node tooling/run.mjs node --test tests/deployment/launcher_self_update.test.cjs tests/deployment/launcher_local_release.test.cjs tests/deployment/launcher_recovery_route.test.cjs tests/deployment/launcher_update_package.test.cjs
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+
+      - name: Test Nora initialization and profile synchronization
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_lifecycle
+          "$py" -B -m unittest tests.deployment.test_updater_skill_environment
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
+          export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_model_provider_skill
+
+      - name: Build release payload
+        shell: bash
+        env:
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
+        run: |
+          mode=--candidate
+          if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
+          node tooling/release/package-release.mjs $mode \
+            --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+
+      - name: Test real fresh installation and managed update before desktop packaging
+        if: runner.os != 'Windows'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload" \
+            --update-release "$release_dir/nora-tavern-launcher/payload"
+
+      - name: Test Windows installation and managed update with legacy path limits
+        if: runner.os == 'Windows'
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $registry = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+          $previous = Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
+          try {
+            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value 0
+            if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
+              throw 'Windows long-path test precondition was not applied'
+            }
+            node tooling/run.mjs node --test tests/deployment/launcher_install_cleanup.test.cjs
+            if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
+            $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
+            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths -v
+            if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
+            Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
+            $release = Get-ChildItem release -Directory |
+              Where-Object { $_.Name -match '^(candidate|stable)-' } |
+              Sort-Object Name | Select-Object -Last 1
+            if (-not $release) { throw 'Candidate release payload is missing' }
+            $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
+            node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs $payload --update-release $payload
+            if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
+          } finally {
+            if ($null -eq $previous) {
+              Remove-ItemProperty -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
+            } else {
+              Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value $previous
+            }
+          }
+
+      - name: Build desktop package
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm ci --no-audit --no-fund
+          npm run "${{ matrix.package_script }}"
+
+      - name: Verify packaged Nora images and instructions
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/run.mjs node tests/deployment/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
+
+      - name: Build lightweight launcher replacement
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/release/package-launcher-update.cjs "$release_dir/nora-tavern-launcher/desktop" "${{ matrix.platform }}" "${{ matrix.arch }}"
+
+      - name: Verify actual lightweight update archive
+        shell: bash
+        run: |
+          archive="$(find release -path '*/desktop/dist/*-update.zip' | head -n 1)"
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          py="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes-build-source/python/python.exe"; fi
+          export NORA_TEST_LAUNCHER_ARCHIVE="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$archive")"
+          export NORA_TEST_LAUNCHER_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher/desktop")"
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+
+      - name: Upload launcher
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
+            release/*/system-assets/*
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+      - name: Upload shared updater assets
+        if: matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-shared
+          path: |
+            release/*/*.tar.gz
+            release/*/release-manifest.json
+            release/*/bootstrap-manifest.json
+            release/*/first-install-manifest.json
+            release/*/install-*.sh
+            release/*/install-*.ps1
+            release/*/*bootstrap.py
+            release/*/SHA256SUMS
+          if-no-files-found: error
+          compression-level: 0
+
+  publish-release:
+    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nora-tavern-*
+          path: artifacts
+      - name: Publish only after all platform builds pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
+          done
+          node --test tests/launcher-release-notes.test.cjs
+          node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full

@@ -254,7 +254,9 @@ test('encodes the normalized MVU compatibility projection into the Runtime Card 
     assert.equal(roundTrip.card.data.extensions.tavern_helper.scripts[0].id, 'legacy-mvu');
     assert.equal(roundTrip.card.data.extensions.tavern_helper.scripts[0].enabled, false);
     assert.equal(roundTrip.card.data.extensions.nora_mvu_compatibility.managed_runtime, true);
-    assert.match(roundTrip.card.data.character_book.entries[0].comment, /^\[mvu_update\]/i);
+    // Runtime ownership changes must not reclassify or rewrite the card's lore.
+    assert.equal(roundTrip.card.data.character_book.entries[0].comment, decoded.card.data.character_book.entries[0].comment);
+    assert.equal(roundTrip.card.data.character_book.entries[0].content, decoded.card.data.character_book.entries[0].content);
 });
 
 for (const fixture of [

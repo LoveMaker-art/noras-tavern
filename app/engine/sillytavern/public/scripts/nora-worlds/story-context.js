@@ -6,6 +6,10 @@ const clone = value => JSON.parse(JSON.stringify(value));
 const id = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value);
 const invalid = () => { throw new TypeError('Invalid World story context or entity reference.'); };
 
+export function normalizeWorldPersona(value) {
+    return { name: String(value?.name || '').trim() || '玩家', description: String(value?.description || '').trim() };
+}
+
 export function normalizeCharacterActivation(value = { mode: 'constant' }) {
     if (!object(value) || !['constant', 'triggered'].includes(value.mode)) invalid();
     const allowed = ['enabled', 'mode', 'keys', 'secondaryKeys', 'selectiveLogic', 'scanDepth', 'sticky', 'cooldown', 'delay', 'caseSensitive', 'matchWholeWords'];
@@ -33,10 +37,15 @@ export function createStoryContext(persona = {}) {
         player: { profile: { identity: { ...persona } }, persistent_status: {} }, author_note: '', language: 'zh' };
 }
 
+export function hasWorldCardSummary(context) {
+    return context?.card_format === 'nora-world-card/2';
+}
+
 export function normalizeStoryContext(value) {
     if (!object(value) || value.schema_version !== 1 || !Array.isArray(value.characters)
         || !Array.isArray(value.relationships) || !object(value.player)) invalid();
     const result = clone(value);
+    if ('card_format' in result && !['nora-world-card/1', 'nora-world-card/2'].includes(result.card_format)) invalid();
     if ('card_profile_enabled' in result && typeof result.card_profile_enabled !== 'boolean') invalid();
     if ('removed_card_fields' in result && (!Array.isArray(result.removed_card_fields)
         || result.removed_card_fields.some(field => !['description', 'personality', 'scenario'].includes(field)))) invalid();

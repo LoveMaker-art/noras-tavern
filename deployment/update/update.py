@@ -1,0 +1,1202 @@
+#!/usr/bin/env python3
+"""Direct Tavern updater: backup, replace, start."""
+import argparse
+from contextlib import contextmanager
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import uuid
+
+sys.dont_write_bytecode = True
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
+from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path
+
+UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
+UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
+UPDATE_CHECK_SCHEDULE = "0 9 * * *"
+UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py", "nora-instance.py")
+HOST_HOOK = Path("hooks/tavern-liveware-register")
+
+
+def log(message):
+    print("[tavern-updater] " + message, file=sys.stderr, flush=True)
+
+
+def safe(path):
+    value = Path(path).expanduser().absolute()
+    if value == Path("/"):
+        raise RuntimeError("拒绝使用根目录")
+    return value
+
+
+def atomic(path, data, mode=0o600):
+    path = Path(filesystem_path(path))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, mode)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def json_write(path, value):
+    atomic(path, (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode())
+
+
+def module_at(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        if sys.modules.get(name) is module:
+            del sys.modules[name]
+        raise
+    return module
+
+
+def remove(path):
+    path = Path(filesystem_path(path))
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+
+
+def prune_backup_history(home, keep):
+    home = Path(home).absolute()
+    primary = home / "tavern-backups"
+    keep = Path(keep).absolute()
+    if keep.parent != primary or not keep.is_dir():
+        raise RuntimeError(f"refusing to prune backups with invalid keep path: {keep}")
+
+    removed = []
+    for root in (primary, home / "tavern-updates" / "backups"):
+        if not root.is_dir():
+            continue
+        for candidate in sorted(root.iterdir()):
+            if candidate.absolute() == keep:
+                continue
+            remove(candidate)
+            removed.append(str(candidate))
+    return {"status": "pruned", "kept": str(keep), "removed": removed}
+
+
+def port_open(port=8799):
+    with socket.socket() as probe:
+        probe.settimeout(0.3)
+        return probe.connect_ex(("127.0.0.1", port)) == 0
+
+
+@contextmanager
+def installer_lock(home):
+    from runtime_lock import installation_lock
+    with installation_lock(home, "tavern-installer.lock"):
+        yield
+
+
+def python_layout(app):
+    app = Path(app)
+    if (app / "native-runtime.json").is_file():
+        return None
+    for entry, web in (
+        ("backend/server.py", "frontend"),
+        ("server.py", "web"),
+    ):
+        if (app / entry).is_file():
+            if entry == "backend/server.py" and not (app / web).is_dir():
+                web = "backend/web"
+            return {"entry": entry, "web": web}
+    return None
+
+
+def path_is_within(path, root):
+    return path == root or root in path.parents
+
+
+def runtime_process_belongs_to_app(app, cwd, argv):
+    app = Path(app).resolve()
+    cwd = Path(cwd).resolve()
+    for value in argv:
+        if not value.endswith(("server.py", "server.js")):
+            continue
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        if path_is_within(candidate.resolve(), app):
+            return True
+    return False
+
+
+def process_rows(app):
+    app = Path(app).resolve()
+    rows = []
+    if not Path("/proc").is_dir():
+        return rows
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cwd = Path(entry / "cwd").resolve()
+            argv = [os.fsdecode(value) for value in (entry / "cmdline").read_bytes().split(b"\0") if value]
+        except OSError:
+            continue
+        if not runtime_process_belongs_to_app(app, cwd, argv):
+            continue
+        rows.append(int(entry.name))
+    return rows
+
+
+def stop_unmanaged(app):
+    pids = process_rows(app)
+    for pid in pids:
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    deadline = time.monotonic() + 8
+    # A terminated child can remain as a zombie in /proc until its parent
+    # reaps it.  A zombie no longer owns the Tavern listener and must not keep
+    # the update in maintenance for the full timeout.
+    while time.monotonic() < deadline and any(pid in process_rows(app) for pid in pids):
+        time.sleep(0.1)
+    remaining = set(process_rows(app))
+    for pid in pids:
+        if pid in remaining:
+            os.kill(pid, signal.SIGKILL)
+    return pids
+
+
+def run(command, *, cwd=None, env=None, timeout=None, capture=False):
+    if command and command[0] == "npm" and os.name == "nt":
+        node = shutil.which("node", path=(env or os.environ).get("PATH"))
+        npm = Path(node).parent / "node_modules/npm/bin/npm-cli.js" if node else None
+        if npm is None or not npm.is_file():
+            raise RuntimeError("未找到当前实例的 Node/npm，无法准备更新依赖；当前安装尚未替换")
+        command = [node, str(npm), *command[1:]]
+    return subprocess.run(
+        [str(value) for value in command],
+        cwd=cwd,
+        env=env,
+        timeout=timeout,
+        check=True,
+        text=True,
+        capture_output=capture,
+    )
+
+
+def file_sha(path):
+    digest = hashlib.sha256()
+    with Path(filesystem_path(path)).open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def same_file(left, right):
+    try:
+        return Path(left).is_file() and Path(right).is_file() and file_sha(left) == file_sha(right)
+    except OSError:
+        return False
+
+
+def world_data_inventory(state):
+    """Hash existing story resources, excluding logs and runtime bookkeeping."""
+    state = Path(filesystem_path(state))
+    native = Path(state) / "native"
+    result = {}
+    if not native.is_dir():
+        return result
+    for user in native.iterdir():
+        if not user.is_dir():
+            continue
+        for relative in ("nora-world-core/worlds", "chats", "group chats", "worlds", "characters"):
+            directory = user / relative
+            if not directory.is_dir():
+                continue
+            for file in directory.rglob("*"):
+                if file.is_file():
+                    result[str(file.relative_to(state))] = file_sha(file)
+    return result
+
+
+def verify_worlds(app, state):
+    native = Path(state) / "native"
+    if not native.is_dir():
+        return {}
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("无法验证原有世界：未找到 Node.js")
+    def node_path(value):
+        # Node's module loader cannot resolve Win32 device-prefixed entry paths.
+        value = str(value)
+        if sys.platform == "win32":
+            if value.startswith("\\\\?\\UNC\\"):
+                return "\\\\" + value[8:]
+            if value.startswith("\\\\?\\"):
+                return value[4:]
+        return value
+    try:
+        result = run([node_path(value) for value in (node, HERE / "verify-worlds.mjs", app, native)],
+                     capture=True, timeout=120)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError("世界读取验证失败：" + (error.stderr or "验证程序退出异常").strip()[:1000]) from error
+    return json.loads(result.stdout)
+
+
+def verify_preserved_worlds(app, state, inventory, worlds):
+    current = world_data_inventory(state)
+    changed = [name for name, digest in inventory.items() if current.get(name) != digest]
+    if changed:
+        raise RuntimeError("原有世界或会话文件发生变化，更新验收失败：" + "; ".join(changed[:5]))
+    loaded = verify_worlds(app, state)
+    for user, expected in worlds.items():
+        actual = {world["worldId"]: world for world in loaded.get(user, [])}
+        if any(actual.get(world["worldId"]) != world for world in expected):
+            raise RuntimeError("原有世界或会话未能完整加载，更新验收失败：" + user)
+    return {"status": "verified", "worlds": sum(len(value) for value in worlds.values()),
+            "files": len(inventory)}
+
+
+def package_dependency_manifests(root):
+    root = Path(root)
+    try:
+        package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"无法读取生产依赖清单：{error}") from error
+    dependencies = package.get("dependencies")
+    if not isinstance(dependencies, dict):
+        raise RuntimeError("生产依赖清单格式无效")
+    manifests = []
+    for name in sorted(dependencies):
+        path = Path(name)
+        if path.is_absolute() or not path.parts or ".." in path.parts:
+            raise RuntimeError(f"生产依赖名称无效：{name}")
+        manifests.append(str(path / "package.json"))
+    return tuple(manifests)
+
+
+def link_or_copy(source, target):
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copy2(source, target)
+    return target
+
+
+def reuse_or_install_dependencies(target, current, lock_name, command, required):
+    target = Path(target)
+    current = Path(current)
+    modules = target / "node_modules"
+    reusable = same_file(target / lock_name, current / lock_name) and all(
+        (current / "node_modules" / relative).is_file() for relative in required
+    )
+    if reusable:
+        shutil.copytree(current / "node_modules", modules, symlinks=True, copy_function=link_or_copy)
+        return "reused"
+    run(command, cwd=target)
+    return "installed"
+
+
+def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, bundled=False):
+    if bundled:
+        return {"tavern": "bundled", "mcp": "bundled"}
+    report = {"tavern": "unchanged", "mcp": "unchanged"}
+    if app_changed:
+        log("准备 Tavern 依赖")
+        engine = source / "app/engine/sillytavern"
+        report["tavern"] = reuse_or_install_dependencies(
+            engine,
+            Path(old_app) / "engine/sillytavern",
+            "package-lock.json",
+            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+            package_dependency_manifests(engine),
+        )
+    if mcp_changed:
+        log("准备 Nora MCP 依赖")
+        report["mcp"] = reuse_or_install_dependencies(
+            source / "nora-mcp",
+            old_mcp,
+            "npm-shrinkwrap.json",
+            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
+            package_dependency_manifests(source / "nora-mcp"),
+        )
+    return report
+
+
+def prepare_skills(source, destination, *, local=False):
+    installer = module_at("simple_skill_installer", source / "ops/scripts/install-hermes-skills.py")
+    return installer.prepare_skill_trees(source, destination, **({"local": True} if local else {}))
+
+
+def prepare_host_hook_swap(hermes_home, source, prepared_root):
+    origin = Path(source) / "ops" / HOST_HOOK
+    required = ("HOOK.yaml", "handler.py", "run.sh")
+    missing = [name for name in required if not (origin / name).is_file()]
+    if missing:
+        raise RuntimeError("发布包缺少 Tavern 启动钩子：" + ", ".join(missing))
+    target = Path(hermes_home) / HOST_HOOK
+    if trees_equal(origin, target):
+        return None
+    prepared_root = Path(prepared_root)
+    prepared_root.mkdir(parents=True, exist_ok=True)
+    prepared = prepared_root / HOST_HOOK.name
+    shutil.copytree(origin, prepared, symlinks=False)
+    return "host-hook-tavern-liveware-register", prepared, target
+
+
+def hermes_model(hermes_home, source):
+    try:
+        model = module_at("release_native_model", source / "app/native_model_config.py")
+        return model.load_model_config(hermes_home / "config.yaml")
+    except Exception:
+        return None
+
+
+def legacy_model(home):
+    try:
+        from python_model import load_python_model
+        return load_python_model(home)
+    except Exception:
+        return None
+
+
+def migration_copy(hermes_home, install_root, source, work, layout):
+    old_state = install_root / "tavern-state"
+    prepared = work / "prepared/state"
+    if old_state.is_dir():
+        shutil.copytree(old_state, prepared, symlinks=False)
+    else:
+        prepared.mkdir(parents=True)
+    options = {
+        "hermesModel": hermes_model(hermes_home, source),
+        "legacyModel": legacy_model(hermes_home),
+        "legacyApp": str(install_root / "apps/tavern-runtime"),
+        "legacyWeb": layout["web"],
+    }
+    options_path = work / "model-input.json"
+    json_write(options_path, options)
+    result = run(
+        ["node", source / "ops/updater/prepare-state.mjs", prepared, source / "app", options_path],
+        timeout=300,
+        capture=True,
+    )
+    return prepared, json.loads(result.stdout)
+
+
+def fallback_python_state(install_root, work, reason):
+    old = install_root / "tavern-state"
+    prepared = work / "prepared-fallback/state"
+    if old.is_dir():
+        # An unsupported legacy record must not turn into lost configuration.
+        # Keep the complete state tree so Liveware identities, model settings,
+        # Story Profile data and the original import material remain usable or
+        # recoverable.  The native runtime can create its own missing layout.
+        shutil.copytree(old, prepared, symlinks=False)
+    else:
+        prepared.mkdir(parents=True)
+    report = {
+        "status": "archived",
+        "reason": reason,
+        "importedWorlds": 0,
+        "note": "原 Python 数据完整保存在更新备份中，可后续手动导入",
+    }
+    return prepared, report
+
+
+def render_mcp(hermes_home, install_root, port=8799):
+    try:
+        import yaml
+    except ImportError as error:
+        raise RuntimeError("Hermes Python 缺少 PyYAML，无法写入 MCP 配置") from error
+    path = hermes_home / "config.yaml"
+    value = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {}
+    value = value or {}
+    servers = value.setdefault("mcp_servers", {})
+    current = servers.get("nora") if isinstance(servers.get("nora"), dict) else {}
+    env = current.get("env") if isinstance(current.get("env"), dict) else {}
+    env.update({
+        "NORA_MCP_PROJECT_ROOT": str(install_root / "apps/tavern-runtime"),
+        "NORA_MCP_ST_ROOT": str(install_root / "apps/tavern-runtime/engine/sillytavern"),
+        "NORA_MCP_STATE_ROOT": str(install_root / "tavern-state"),
+        "NORA_MCP_NATIVE_DATA_ROOT": str(install_root / "tavern-state/native"),
+        "NORA_MCP_USER_DATA_ROOT": str(install_root / "tavern-state/native/default-user"),
+        "NORA_MCP_CONFIG_PATH": str(install_root / "tavern-state/native-runtime/config.yaml"),
+        "NORA_MCP_UPLOAD_ROOT": str(install_root / "tavern-state/imports"),
+        "NORA_MCP_BASE_URL": f"http://127.0.0.1:{port}",
+        "NORA_MCP_MODE": "operator",
+    })
+    servers["nora"] = {
+        **current,
+        "command": shutil.which("node") or "node",
+        "args": [str(install_root / "apps/nora-mcp/dist/server.js")],
+        "env": env,
+        "timeout": current.get("timeout", 420),
+    }
+    return yaml.safe_dump(value, allow_unicode=True, sort_keys=False).encode()
+
+
+def merged_agents(home, managed):
+    # Keep the public helper name for installer compatibility; no merging remains.
+    return agents_document(managed)
+
+
+def tree_inventory(root):
+    root = Path(filesystem_path(root))
+    if not root.is_dir():
+        return None
+    inventory = {}
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or not path.is_file():
+            continue
+        relative = path.relative_to(root).as_posix()
+        inventory[relative] = file_sha(path)
+    return inventory
+
+
+def trees_equal(left, right):
+    return tree_inventory(left) == tree_inventory(right)
+
+
+def changed_roots(manifest, changed_modules):
+    modules = manifest.get("modules") or {}
+    if not modules:
+        return {"app", "ops", "nora-mcp"}
+    roots = set()
+    for module in changed_modules:
+        for artifact in modules[module]["artifacts"]:
+            roots.add(artifact.split("/", 1)[0])
+    return roots
+
+
+def dependency_marker(app_root):
+    """Describe dependencies for an installed Tavern application tree.
+
+    Release staging keeps the application below ``source/app`` while the
+    installed tree itself is ``apps/tavern-runtime``.  Keeping this function
+    explicitly on the installed-tree contract prevents callers from applying
+    the staging prefix twice during a legacy-to-native upgrade.
+    """
+    result = run(["node", "--version"], capture=True)
+    value = result.stdout.strip()
+    if not value.startswith("v") or not value[1:].split(".", 1)[0].isdigit():
+        raise RuntimeError("无法识别 Node.js 版本：" + value)
+    return {
+        "schema": 1,
+        "lock_sha256": file_sha(Path(app_root) / "engine/sillytavern/package-lock.json"),
+        "node_major": int(value[1:].split(".", 1)[0]),
+        "prepared_at": int(time.time()),
+    }
+
+
+def roots_with_unmanaged_files(home, manifest):
+    expected = set(manifest.get("artifacts") or {})
+    roots = {
+        "app": Path(home) / "apps/tavern-runtime",
+        "ops": Path(home) / "apps/tavern-ops",
+        "nora-mcp": Path(home) / "apps/nora-mcp",
+    }
+    changed = set()
+    for name, root in roots.items():
+        if not root.is_dir():
+            changed.add(name)
+            continue
+        for directory, directories, files in os.walk(root):
+            directories[:] = [entry for entry in directories if entry != "node_modules"]
+            base = Path(directory)
+            for filename in files:
+                path = base / filename
+                if path.is_symlink():
+                    changed.add(name)
+                    break
+                relative = f"{name}/{path.relative_to(root).as_posix()}"
+                if relative not in expected:
+                    changed.add(name)
+                    break
+            if name in changed:
+                break
+    return changed
+
+
+def copy_host_backup(hermes_home, install_root, backup, service_snapshot):
+    host = Path(filesystem_path(backup / "host"))
+    host.mkdir(parents=True)
+    for name in ("config.yaml",):
+        source = hermes_home / name
+        if source.is_file():
+            shutil.copy2(source, host / name)
+    marker = install_root / "tavern-state/native-runtime/dependencies.json"
+    if marker.is_file():
+        (host / "native-runtime").mkdir()
+        shutil.copy2(marker, host / "native-runtime/dependencies.json")
+    if service_snapshot:
+        json_write(host / "service.json", service_snapshot)
+    receipts = host / "update-receipts"
+    receipts.mkdir()
+    for name in ("installed.json", "installed-manifest.json", "nora-system.json"):
+        source = install_root / "tavern-updates" / name
+        if source.is_file():
+            shutil.copy2(source, receipts / name)
+
+
+def restore_host(hermes_home, install_root, backup):
+    host = Path(filesystem_path(backup / "host"))
+    for name in ("config.yaml",):
+        saved = host / name
+        target = hermes_home / name
+        if saved.is_file():
+            shutil.copy2(saved, target)
+        else:
+            target.unlink(missing_ok=True)
+    marker = install_root / "tavern-state/native-runtime/dependencies.json"
+    saved_marker = host / "native-runtime/dependencies.json"
+    if saved_marker.is_file():
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(saved_marker, marker)
+    else:
+        marker.unlink(missing_ok=True)
+    receipts = host / "update-receipts"
+    if receipts.is_dir():
+        for name in ("installed.json", "installed-manifest.json", "nora-system.json"):
+            target = install_root / "tavern-updates" / name
+            saved = receipts / name
+            if saved.is_file():
+                shutil.copy2(saved, target)
+            else:
+                target.unlink(missing_ok=True)
+
+
+def swap_tree(source, target, backup_target):
+    source, target, backup_target = [Path(filesystem_path(p)) for p in (source, target, backup_target)]
+    target.parent.mkdir(parents=True, exist_ok=True)
+    backup_target.parent.mkdir(parents=True, exist_ok=True)
+    had_target = target.exists()
+    if had_target:
+        os.replace(target, backup_target)
+    try:
+        os.replace(source, target)
+    except BaseException:
+        if had_target and backup_target.exists() and not target.exists():
+            os.replace(backup_target, target)
+        raise
+
+
+def restore_tree(target, backup_target, failed):
+    target, backup_target, failed = [Path(filesystem_path(p)) for p in (target, backup_target, failed)]
+    if target.exists():
+        failed.parent.mkdir(parents=True, exist_ok=True)
+        if failed.exists():
+            remove(failed)
+        os.replace(target, failed)
+    if backup_target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(backup_target, target)
+
+
+def start_old(hermes_home, install_root, service, snapshot):
+    app = install_root / "apps/tavern-runtime"
+    if (app / "native_lifecycle.py").is_file():
+        environment = {**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)}
+        run([sys.executable, "-B", app / "native_lifecycle.py", "install"], env=environment)
+        if service and snapshot:
+            service.restore(snapshot)
+            service.start()
+        else:
+            run([sys.executable, "-B", app / "native_lifecycle.py", "start"], env=environment)
+        return
+    if service and snapshot:
+        service.restore(snapshot)
+        service.start()
+        return
+    layout = python_layout(app)
+    if layout:
+        log_file = install_root / "tavern-state/runtime/python-recovery.log"
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with log_file.open("ab", buffering=0) as output:
+            subprocess.Popen(
+                [sys.executable, str(app / layout["entry"]), "--port", "8799"],
+                cwd=app,
+                env={**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)},
+                stdin=subprocess.DEVNULL,
+                stdout=output,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+
+
+@contextmanager
+def temporary_content_check_skip(config_path, enabled):
+    """Skip ST's content scan only for a restart whose engine did not change."""
+    config_path = Path(config_path)
+    if not enabled:
+        yield
+        return
+    original = config_path.read_bytes()
+    text = original.decode("utf-8")
+    patched, count = re.subn(
+        r"(?m)^skipContentCheck:\s*(?:false|true)\s*$",
+        "skipContentCheck: true",
+        text,
+        count=1,
+    )
+    if count != 1:
+        raise RuntimeError("无法定位 SillyTavern 内容检查配置")
+    changed = patched.encode("utf-8") != original
+    if changed:
+        atomic(config_path, patched.encode("utf-8"), mode=config_path.stat().st_mode & 0o777)
+    try:
+        yield
+    finally:
+        if changed:
+            atomic(config_path, original, mode=config_path.stat().st_mode & 0o777)
+
+
+def install_runtime(hermes_home, install_root, *, skip_content_check=False, port=8799):
+    app = install_root / "apps/tavern-runtime"
+    module = module_at("installed_native_lifecycle", app / "native_lifecycle.py")
+    contract = module.RuntimeContract.from_dict(json.loads((app / "native-runtime.json").read_text(encoding="utf-8")))
+    runtime = module.NativeRuntime(install_root, app, install_root / "tavern-state", contract)
+    runtime.install()
+    service = runtime.managed_service()
+    if service:
+        text = service.node_text(runtime.node_command(port, runtime.native_data_root), runtime.engine_root)
+        service.install_text(text, accepted_hash=None, mode=service.file.stat().st_mode & 0o777)
+    with temporary_content_check_skip(runtime.config_path, skip_content_check):
+        return runtime.start(port=port)
+
+
+def refresh_liveware(hermes_home, install_root, source):
+    try:
+        source = Path(source)
+        path = source / "updater/liveware_integration.py"
+        if not path.is_file():
+            path = source / "ops/updater/liveware_integration.py"
+        integration = module_at("simple_liveware", path)
+        return integration.repair(install_root, hermes_home=hermes_home)
+    except Exception as error:
+        return {"status": "pending", "warnings": [str(error)]}
+
+
+def read_cron_jobs(home):
+    path = Path(home) / "cron/jobs.json"
+    if not path.is_file():
+        return []
+    value = json.loads(path.read_text(encoding="utf-8"))
+    jobs = value.get("jobs", []) if isinstance(value, dict) else []
+    if not isinstance(jobs, list):
+        raise RuntimeError("Hermes cron jobs.json 格式无效")
+    return [job for job in jobs if isinstance(job, dict)]
+
+
+def hermes_command():
+    candidates = (
+        Path(sys.executable).with_name("hermes"),
+        Path(sys.executable).with_name("hermes.exe"),
+        Path("/opt/hermes/.venv/bin/hermes"),
+    )
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return candidate
+    found = shutil.which("hermes")
+    if found:
+        return Path(found)
+    raise RuntimeError("未找到 Hermes CLI，无法安装更新提醒任务")
+
+
+def update_check_jobs(home):
+    return [
+        job for job in read_cron_jobs(home)
+        if job.get("name") in (UPDATE_CHECK_JOB_NAME, "Nora Tavern daily update check (09:00 Asia/Shanghai)")
+        or job.get("script") in (UPDATE_CHECK_SCRIPT, "nora-tavern-update-check.sh")
+    ]
+
+
+def configure_update_check_job(home):
+    cli = hermes_command()
+    environment = {**os.environ, "HERMES_HOME": str(home)}
+    existing = update_check_jobs(home)
+    if existing:
+        primary = existing[0]
+        run([
+            cli, "cron", "edit", primary["id"],
+            "--schedule", UPDATE_CHECK_SCHEDULE,
+            "--prompt", "",
+            "--name", UPDATE_CHECK_JOB_NAME,
+            "--deliver", "local",
+            "--clear-skills",
+            "--script", UPDATE_CHECK_SCRIPT,
+            "--no-agent",
+        ], env=environment, capture=True)
+        for duplicate in existing[1:]:
+            run([cli, "cron", "remove", duplicate["id"]], env=environment, capture=True)
+    else:
+        run([
+            cli, "cron", "create", UPDATE_CHECK_SCHEDULE,
+            "--name", UPDATE_CHECK_JOB_NAME,
+            "--deliver", "local",
+            "--script", UPDATE_CHECK_SCRIPT,
+            "--no-agent",
+        ], env=environment, capture=True)
+
+    configured = update_check_jobs(home)
+    if len(configured) != 1:
+        raise RuntimeError(f"更新提醒任务数量异常：{len(configured)}")
+    job = configured[0]
+    schedule = job.get("schedule", {})
+    if (schedule.get("expr") != UPDATE_CHECK_SCHEDULE
+            or job.get("script") != UPDATE_CHECK_SCRIPT
+            or job.get("no_agent") is not True
+            or job.get("deliver") != "local"
+            or job.get("enabled") is not True):
+        raise RuntimeError("更新提醒任务配置未生效")
+    return job
+
+
+def install_update_check(home, ops_root):
+    """Install the daily checker from an installed or staged operations root."""
+    scripts = Path(home) / "scripts"
+    scripts.mkdir(parents=True, exist_ok=True)
+    for name in UPDATE_CHECK_FILES:
+        origin = Path(ops_root) / "scripts" / name
+        if not origin.is_file():
+            raise RuntimeError("发布包缺少更新提醒脚本：" + name)
+        atomic(scripts / name, origin.read_bytes(), mode=0o755)
+    job = configure_update_check_job(home)
+    return {
+        "status": "installed",
+        "jobId": job["id"],
+        "schedule": UPDATE_CHECK_SCHEDULE,
+        "mode": "no-agent",
+    }
+
+
+def managed_lifecycle(phase, home, root, version):
+    """Run the desktop's existing service controller inside the update transaction."""
+    raw = os.environ.get("NORA_UPDATE_LIFECYCLE")
+    if not raw:
+        raise RuntimeError("缺少启动器事务检查上下文，未确认服务恢复能力")
+    plan = json.loads(raw)
+    if (Path(plan["hermesHome"]).resolve() != home.resolve()
+            or Path(plan["installRoot"]).resolve() != root.resolve()):
+        raise RuntimeError("更新事务实例不匹配")
+    command = [sys.executable, "-B", plan["bridge"], "--nora-home", plan["noraHome"],
+               "--hermes-home", str(home), "--install-root", str(root),
+               "--port", str(plan["port"]), "update-lifecycle"]
+    result = subprocess.run(command, input=json.dumps({**plan, "phase": phase, "version": version}),
+                            text=True, capture_output=True, timeout=300)
+    messages = []
+    for line in result.stdout.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            messages.append(item)
+    # Forward diagnostics, but only the transaction itself can report success.
+    for item in messages:
+        if item.get("event") != "result":
+            print(json.dumps(item, ensure_ascii=False), flush=True)
+    if result.returncode:
+        detail = next((m.get("message") for m in reversed(messages) if m.get("event") == "error"), None)
+        raise RuntimeError(f"服务事务检查失败（{phase}）：{detail or result.stderr[-2000:] or result.returncode}")
+    state = next((m for m in reversed(messages) if m.get("event") == "result"), None)
+    if state is None:
+        raise RuntimeError("服务事务检查未返回结果：" + phase)
+    return {key: value for key, value in state.items() if key != "event"}
+
+
+def install(args):
+    managed_home = getattr(args, "managed_home", None)
+    def resolve():
+        return resolve_update_target(args.home, args.install_root, managed_home=managed_home)
+    hermes_home, install_root = resolve()
+    instance = managed_instance(hermes_home, managed_home) if managed_home else None
+    port = instance["port"] if instance else 8799
+    os.environ["HERMES_HOME"] = str(hermes_home)
+    os.environ["NORA_HERMES_HOME"] = str(hermes_home)
+    os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
+    os.environ["TAVERN_DATA_ROOT"] = str(install_root)
+    if not (hermes_home / "skills").is_dir():
+        raise RuntimeError("目标目录不是 Hermes 安装目录：" + str(hermes_home))
+    from bundle import extract_bundle, installed_roots, read_bundle
+    with installer_lock(install_root):
+        # Recheck after waiting for another updater, before downloading or writing.
+        resolve()
+        update_root = install_root / "tavern-updates"
+        update_root.mkdir(parents=True, exist_ok=True)
+        transaction_file = update_root / "transaction.json"
+        if transaction_file.exists():
+            previous = json.loads(transaction_file.read_text(encoding="utf-8"))
+            if previous.get("status") not in ("committed", "restored"):
+                raise RuntimeError("上次更新事务未完成，禁止覆盖恢复现场；请保留备份：" + str(previous.get("backup", "")))
+        with tempfile.TemporaryDirectory(prefix="direct-", dir=filesystem_path(update_root)) as temporary:
+            work = Path(temporary)
+            source = work / "source"
+            manifest = read_bundle(args.release_dir, args.manifest_sha256,
+                                   candidate=getattr(args, "allow_candidate", False))
+            roots = installed_roots(install_root)
+            old_app = roots["app"]
+            old_mcp = roots["nora-mcp"]
+            layout = python_layout(old_app)
+            bundle_report = extract_bundle(args.release_dir, source, manifest, roots=roots)
+            version = manifest["versions"]["tavern"]
+            changed = set(bundle_report["changedModules"])
+            root_changes = changed_roots(manifest, changed) | roots_with_unmanaged_files(install_root, manifest)
+            if layout:
+                root_changes.update(("app", "ops", "nora-mcp"))
+            app_changed = "app" in root_changes
+            ops_changed = "ops" in root_changes
+            mcp_changed = "nora-mcp" in root_changes
+            managed = None
+            bundled = False
+            if instance:
+                managed = module_at("update_nora_system", source / "ops/installer/nora_system.py")
+                helpers = module_at("update_install_helpers", source / "ops/installer/first_install.py")
+                bundled = bool(helpers.extract_dependency_bundle(args.release_dir, source))
+                # Component updates reuse the same dependency lock comparison as
+                # standalone updates; a full platform bundle is optional.
+            dependencies = prepare_dependencies(
+                source,
+                old_app,
+                old_mcp,
+                app_changed=app_changed,
+                mcp_changed=mcp_changed,
+                **({"bundled": True} if bundled else {}),
+            )
+            resolve()
+            skills = prepare_skills(source, work / "skills", local=bool(instance))
+            agents_bytes = (source / "ops/skills/agents-tavern.md").read_bytes()
+            desired_agents = merged_agents(hermes_home, agents_bytes)
+            mcp_config = render_mcp(hermes_home, install_root, port)
+            agents_changed = not (hermes_home / "AGENTS.md").is_file() or (hermes_home / "AGENTS.md").read_bytes() != desired_agents
+            config_changed = not (hermes_home / "config.yaml").is_file() or (hermes_home / "config.yaml").read_bytes() != mcp_config
+            migration = {"status": "not-required"}
+            prepared_state = None
+            if layout:
+                log("迁移旧 Python 数据；不兼容记录只归档，不阻止更新")
+                try:
+                    prepared_state, migration = migration_copy(hermes_home, install_root, source, work, layout)
+                except Exception as error:
+                    prepared_state, migration = fallback_python_state(install_root, work, str(error))
+            service_module = module_at("simple_service_manager", source / "ops/updater/service_manager.py")
+            service = service_module.ManagedService.discover(install_root, old_app)
+            service_snapshot = service.snapshot() if service else None
+            swaps = []
+            context = module_at("release_managed_context", source / "ops/updater/managed_context.py")
+            context_swaps, greeting_report = context.prepare_greeting(hermes_home, source, work / "greeting")
+            swaps.extend(context_swaps)
+            if app_changed:
+                swaps.append(("app", source / "app", roots["app"]))
+            if ops_changed:
+                swaps.append(("ops", source / "ops", roots["ops"]))
+            if mcp_changed:
+                swaps.append(("nora-mcp", source / "nora-mcp", roots["nora-mcp"]))
+            # The operations tree is swapped before host hooks. Keep the hook's
+            # prepared source outside source/ops so moving that parent tree
+            # cannot invalidate a later swap in the same transaction.
+            host_hook = prepare_host_hook_swap(hermes_home, source, work / "host-hooks")
+            if host_hook:
+                swaps.append(host_hook)
+            gateway_patch = module_at("release_clawchat_greeting_patch", source / "ops/updater/clawchat_greeting_patch.py")
+            gateway_swaps, gateway_report = gateway_patch.prepare(hermes_home, work / "clawchat-greeting")
+            swaps.extend(gateway_swaps)
+            if gateway_report.get("status") == "pending":
+                log("ClawChat 欢迎消息顺序补丁未应用，插件保留原状：" + "; ".join(gateway_report.get("warnings", [])))
+            for relative, prepared in skills.items():
+                target = hermes_home / "skills" / relative
+                if not trees_equal(prepared, target):
+                    swaps.append(("skill-" + relative.replace("/", "-"), prepared, target))
+            for retired in getattr(module_at("simple_skill_names", source / "ops/scripts/install-hermes-skills.py"), "RETIRED"):
+                target = hermes_home / "skills/creative" / retired
+                if target.exists():
+                    swaps.append(("retired-" + retired, None, target))
+            host_changed = agents_changed or config_changed
+            runtime_changed = app_changed or prepared_state is not None or bool(managed)
+            if not managed and not swaps and not host_changed and prepared_state is None:
+                result = {
+                    "status": "up-to-date",
+                    "version": version,
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
+                }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                log("已是最新版，无需替换文件。")
+                return
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            resolve()
+            if managed:
+                managed_lifecycle("preflight", hermes_home, install_root, version)
+            backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
+            Path(filesystem_path(backup)).mkdir(parents=True)
+            copy_host_backup(hermes_home, install_root, backup, service_snapshot)
+            agents_backup = Path(filesystem_path(backup / "agents-rollback"))
+            snapshot_agents(hermes_home, agents_backup)
+            managed_records = []
+            if managed:
+                managed_records = helpers.snapshot_targets(hermes_home, [
+                    hermes_home / name for name in ("SOUL.md", "SOUL.nora-tavern.example.md",
+                    "nora-installation.json", "cron/jobs.json", "clawchat-skills")
+                ] + [hermes_home / "scripts" / name for name in UPDATE_CHECK_FILES], backup / "managed")
+                setup_completed = managed.read_json(update_root / "nora-system.json").get("setupCompleted", False)
+            applied = []
+            state_swapped = False
+            state_snapshot = False
+            runtime_stopped = False
+            story_inventory, story_worlds = {}, {}
+            transaction = {"schema": 1, "status": "prepared", "version": version, "backup": str(backup)}
+            json_write(transaction_file, transaction)
+            committed = False
+            try:
+                if runtime_changed:
+                    log("备份旧版本并停止 Tavern")
+                    runtime_stopped = True
+                    if managed:
+                        managed_lifecycle("stop", hermes_home, install_root, version)
+                        helpers.stop_install_runtime(install_root)
+                    elif service:
+                        service.stop()
+                    else:
+                        stop_unmanaged(old_app)
+                    runtime_stopped = True
+                    if prepared_state is None:
+                        # Startup can quarantine incompatible manifests. Keep the
+                        # entire state, not only program/configuration backups.
+                        shutil.copytree(filesystem_path(install_root / "tavern-state"), filesystem_path(backup / "state"))
+                        state_snapshot = True
+                        story_inventory = world_data_inventory(backup / "state")
+                        story_worlds = verify_worlds(old_app, backup / "state")
+                        candidate_app = source / "app" if app_changed else old_app
+                        verify_preserved_worlds(candidate_app, backup / "state", story_inventory, story_worlds)
+                else:
+                    log("应用非运行时更新，Tavern 保持运行")
+                if managed:
+                    helpers.install_soul(hermes_home, source, replace=False, dedicated=True)
+                for name, prepared, target in swaps:
+                    saved = backup / "trees" / name
+                    if prepared is None:
+                        saved.parent.mkdir(parents=True, exist_ok=True)
+                        if target.exists():
+                            os.replace(target, saved)
+                        applied.append((name, target, saved))
+                        continue
+                    swap_tree(prepared, target, saved)
+                    applied.append((name, target, saved))
+                if gateway_swaps:
+                    gateway_report = {**gateway_report, "status": "installed"}
+                if prepared_state is not None:
+                    active_state = install_root / "tavern-state"
+                    saved_state = backup / "state"
+                    os.replace(active_state, saved_state)
+                    try:
+                        os.replace(prepared_state, active_state)
+                    except BaseException:
+                        os.replace(saved_state, active_state)
+                        raise
+                    state_swapped = True
+                if agents_changed:
+                    install_agents(hermes_home, desired_agents)
+                if config_changed:
+                    atomic(hermes_home / "config.yaml", mcp_config, mode=0o600)
+                if managed:
+                    log("更新诺拉技能、定时任务并核对当前实例")
+                    managed.seed_clawchat_skills(hermes_home, sys.executable, dict(os.environ))
+                    update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
+                    if update_check.get("status") != "installed":
+                        raise RuntimeError("诺拉更新提醒任务未成功注册")
+                    managed.record_files_ready(hermes_home)
+                if app_changed:
+                    json_write(
+                        install_root / "tavern-state/native-runtime/dependencies.json",
+                        dependency_marker(install_root / "apps/tavern-runtime"),
+                    )
+                if runtime_changed:
+                    log("启动新版 Tavern")
+                    runtime = install_runtime(
+                        hermes_home,
+                        install_root,
+                        skip_content_check="tavern-engine" not in changed,
+                        port=port,
+                    )
+                    if not runtime.get("health", {}).get("ok"):
+                        raise RuntimeError("新版酒馆健康检查未通过")
+                else:
+                    runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
+                               "health": {"ok": port_open(8799)}}
+                resolve()
+                world_verification = verify_preserved_worlds(
+                    install_root / "apps/tavern-runtime", install_root / "tavern-state",
+                    story_inventory, story_worlds,
+                ) if state_snapshot else {"status": "not-required"}
+                liveware_needed = not managed and (app_changed or ops_changed or host_hook is not None)
+                liveware = refresh_liveware(hermes_home, install_root, install_root / "apps/tavern-ops") if liveware_needed else {"status": "unchanged"}
+                if managed:
+                    proof = managed.verify_runtime(hermes_home, install_root, port, sys.executable, dict(os.environ))
+                    world_verification = verify_preserved_worlds(
+                        install_root / "apps/tavern-runtime", install_root / "tavern-state",
+                        story_inventory, story_worlds)
+                    managed.record_initialization(hermes_home, install_root, manifest, proof)
+                    if setup_completed:
+                        managed.mark_setup_complete(install_root)
+                elif ops_changed:
+                    try:
+                        update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
+                    except Exception as update_check_error:
+                        update_check = {"status": "pending", "warnings": [str(update_check_error)]}
+                else:
+                    update_check = {"status": "unchanged"}
+                installed = {
+                    "schema": 2,
+                    "version": version,
+                    "commit": manifest["commit"],
+                    "candidate": bool(manifest.get("candidate")),
+                    "sourceDigest": manifest.get("sourceDigest"),
+                    "releaseManifestSha256": args.manifest_sha256,
+                    "installedAt": int(time.time()),
+                    "backup": str(backup),
+                    "migration": migration,
+                    "liveware": liveware,
+                    "updateCheck": update_check,
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
+                    "clawchatGreeting": gateway_report,
+                    "worldVerification": world_verification,
+                }
+                json_write(update_root / "installed.json", installed)
+                json_write(update_root / "installed-manifest.json", manifest)
+                verified_state = managed_lifecycle("verify", hermes_home, install_root, version) if managed else None
+                if managed and state_snapshot:
+                    verify_preserved_worlds(install_root / "apps/tavern-runtime",
+                                           install_root / "tavern-state", story_inventory, story_worlds)
+                json_write(transaction_file, {**transaction, "status": "committed"})
+                committed = True
+                try:
+                    backup_retention = prune_backup_history(install_root, backup)
+                    log(f"备份保留策略：保留最新 1 份，已清理 {len(backup_retention['removed'])} 份旧备份")
+                except Exception as retention_error:
+                    backup_retention = {
+                        "status": "pending",
+                        "kept": str(backup),
+                        "warnings": [str(retention_error)],
+                    }
+                    log(f"旧备份清理未完成，当前备份仍保留：{retention_error}")
+                reload_required = (
+                    mcp_changed or agents_changed or config_changed
+                    or bool(gateway_swaps) or bool(context_swaps)
+                    or any(name.startswith(("skill-", "host-hook-")) for name, _, _ in swaps)
+                )
+                result = {
+                    "status": "installed",
+                    "version": version,
+                    "backup": str(backup),
+                    "dataImport": migration,
+                    "runtime": {"pid": runtime.get("native_pid"), "health": runtime.get("health", {}).get("ok")},
+                    "liveware": liveware,
+                    "updateCheck": update_check,
+                    "backupRetention": backup_retention,
+                    "clawchatGreeting": gateway_report,
+                    "delivery": bundle_report,
+                    "dependencies": dependencies,
+                    "greeting": greeting_report,
+                    "worldVerification": world_verification,
+                    "next": ("启动器将恢复更新前的运行状态。" if managed else
+                             "请在 ClawChat 输入 /restart 重新加载网关、MCP 和技能。" if reload_required else "更新已生效。"),
+                }
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                if verified_state is not None:
+                    print(json.dumps({**verified_state, "updateRecovery": None, "event": "result", "updateVerified": True}, ensure_ascii=False), flush=True)
+                log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required and not managed else ""))
+                try:
+                    shutil.rmtree(agents_backup)
+                except OSError as cleanup_error:
+                    log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
+                return
+            except BaseException as error:
+                if committed:
+                    raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
+                log("更新未完成，恢复旧版本")
+                if runtime_stopped:
+                    try:
+                        active_app = install_root / "apps/tavern-runtime"
+                        active_service = service_module.ManagedService.discover(install_root, active_app)
+                        if managed:
+                            managed_lifecycle("stop", hermes_home, install_root, version)
+                            helpers.stop_install_runtime(install_root)
+                        elif active_service:
+                            active_service.stop()
+                        else:
+                            stop_unmanaged(active_app)
+                    except Exception as stop_error:
+                        raise RuntimeError("更新失败且无法停止新进程，未覆盖运行中的数据。请保留备份：" + str(backup)) from stop_error
+                try:
+                    failed_root = backup / "failed-new"
+                    for name, target, saved in reversed(applied):
+                        restore_tree(target, saved, failed_root / name)
+                    if state_swapped or state_snapshot:
+                        active_state = install_root / "tavern-state"
+                        if active_state.exists():
+                            failed_root.mkdir(parents=True, exist_ok=True)
+                            os.replace(active_state, failed_root / "state")
+                        os.replace(backup / "state", active_state)
+                    restore_host(hermes_home, install_root, backup)
+                    if managed:
+                        helpers.restore_targets(hermes_home, managed_records, backup / "managed")
+                    restore_agents(hermes_home, agents_backup)
+                except BaseException as restore_error:
+                    raise RuntimeError(f"更新失败：{error}; 文件恢复失败：{restore_error}; recovery=incomplete; backup={backup}") from restore_error
+                recovery = "restored"
+                if runtime_stopped and managed:
+                    try:
+                        managed_lifecycle("rollback", hermes_home, install_root, version)
+                    except Exception as recovery_error:
+                        recovery = "files-restored-start-failed: " + str(recovery_error)
+                if runtime_stopped and not managed:
+                    try:
+                        start_old(hermes_home, install_root, service, service_snapshot)
+                    except Exception as recovery_error:
+                        recovery = "files-restored-start-failed: " + str(recovery_error)
+                json_write(transaction_file, {**transaction, "status": "restored" if recovery == "restored" else "recovery-failed",
+                                              "recovery": recovery, "error": str(error)})
+                raise RuntimeError(f"{error}; recovery={recovery}; backup={backup}") from error
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--hermes-home", dest="home", type=Path)
+    parser.add_argument("--install-root", type=Path)
+    parser.add_argument("--managed-home", type=Path, help=argparse.SUPPRESS)
+    sub = parser.add_subparsers(dest="command", required=True)
+    command = sub.add_parser("install")
+    command.add_argument("--release-dir", type=Path, required=True)
+    command.add_argument("--manifest-sha256", required=True)
+    command.add_argument("--confirm", action="store_true", required=True)
+    command.add_argument("--allow-candidate", action="store_true")
+    args = parser.parse_args()
+    install(args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as error:
+        print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False), file=sys.stderr)
+        raise SystemExit(1)

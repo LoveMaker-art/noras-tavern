@@ -57,10 +57,16 @@ export function selectRuntimeSettings(source) {
 }
 
 export function mergeRuntimeSettings(current, update) {
-    return {
+    const result = {
         ...current,
         ...update,
     };
+    const ui = current?.extension_settings?.nora_ui;
+    if (ui && Object.hasOwn(ui, 'globalTheme')) {
+        result.extension_settings = { ...result.extension_settings,
+            nora_ui: { ...result.extension_settings?.nora_ui, globalTheme: ui.globalTheme } };
+    }
+    return result;
 }
 
 export function selectNoraLastWorldId(source) {

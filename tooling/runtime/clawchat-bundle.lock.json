@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "repository": "https://github.com/clawling/clawchat-plugin-hermes-agent.git",
+  "revision": "8651f7078916e60ed1da9f78ec4d1278fef49dd9",
+  "version": "0.14.0-83",
+  "review": {
+    "scanner": "plugin-guard-v1",
+    "verdict": "caution",
+    "findings": 44,
+    "fingerprint": "5da32b51ff0d096d4b5a8dedf4379d980bdc38d1773cad87041ee156efa764c1"
+  }
+}

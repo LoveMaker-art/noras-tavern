@@ -1,7 +1,6 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { projectTextModelDisplay } from './model-display.js';
-import { storyCharacterView } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
-import { characterReference } from '../../engine/sillytavern/public/scripts/nora-worlds/character-references.js';
+import { storyCharacterView, hasWorldCardSummary } from '../../engine/sillytavern/public/scripts/nora-worlds/story-context.js';
 import { buildCuratorReviewLink, storyProfileHref } from './story-profile-controller.js';
 
 export function createPanelController({
@@ -22,6 +21,9 @@ export function createPanelController({
     worldbookController,
     openCharacterLibrary,
     openPresetLibrary = () => {},
+    openWorldPreset = () => {},
+    openProfileLibrary = () => {},
+    saveProfile = () => {},
     openCharacterSheet,
     openCharacterEditor,
     toggleCharacterInjection,
@@ -30,6 +32,8 @@ export function createPanelController({
     runWorldOperation,
     refreshWorldsAfterCommit,
     retryWorldCapability = async () => {},
+    openCardRegex = () => {},
+    characterCapabilities = () => ({ helperScripts: [] }),
     agentUserId = () => '',
     currentUrl = () => globalThis.location?.href || '/',
 }) {
@@ -37,9 +41,11 @@ export function createPanelController({
     let worldbookEditing = false;
     let castFolded = true;
     let worldSettingsFolded = true;
+    let presetFolded = true;
     let worldSettingsWorldKey = '';
 
     function hasCharacterProfile(character) {
+        if (hasWorldCardSummary(activeWorldModel()?.storyContext)) return false;
         const removed = activeWorldModel()?.storyContext?.removed_card_fields || [];
         return ['description', 'personality', 'scenario'].some(key => !removed.includes(key) && String(characterField(character, key) || '').trim());
     }
@@ -59,10 +65,11 @@ export function createPanelController({
         return cast;
     }
 
-    function capabilitySection(world) {
+    function capabilityRows(world, management = false) {
         const capabilities = world?.capabilities;
         if (!capabilities?.declared?.length) return '';
-        const labels = { prompt_template: tr("提示词模板"), regex: tr("Regex 显示规则"), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
+        const labels = { prompt_template: tr("提示词模板"), regex: tr('正则规则'), tavern_helper: tr("角色脚本"), mvu: tr("MVU 变量") };
+        const symbols = { prompt_template: 'fa-file-lines', regex: 'fa-code', tavern_helper: 'fa-scroll', mvu: 'fa-sliders' };
         const statuses = { READY: tr("已就绪"), PENDING: tr("加载中"), DEGRADED: tr("未就绪") };
         const reasons = {
             NORA_MVU_TIMEOUT: tr("变量系统启动超时，可以重试。"),
@@ -78,9 +85,59 @@ export function createPanelController({
             const retry = item.status === 'DEGRADED'
                 ? `<button class="nora-capability-retry" data-retry-capability="${escapeHtml(capability)}" type="button">${tr("重试")}</button>`
                 : '';
-            return `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span>${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state">${escapeHtml(statuses[item.status] || item.status)}${retry}</span></div>`;
+            const row = `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${management ? `<i class="fa-solid ${symbols[capability] || 'fa-puzzle-piece'} nora-extension-icon" aria-hidden="true"></i>` : ''}${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(statuses[item.status] || item.status)}</span>${retry}</span></div>`;
+            if (!management) return row;
+            const actions = {
+                regex: () => `<button class="nora-extension-action" data-extension-regex type="button"><span>${tr('查看正则规则')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
+                mvu: () => `<button class="nora-extension-action" data-extension-model type="button"><span>${tr('模型设置')}</span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`,
+                tavern_helper: () => `<p class="nora-model-note">${tr('脚本仅供查看；不会在这里执行或修改。')}</p>${(characterCapabilities(currentCharacter()).helperScripts || []).map((script, index) => `<details class="nora-extension-script"><summary>${escapeHtml(script.name || `${tr('角色脚本')} ${index + 1}`)}</summary><textarea class="nora-regex-code" rows="10" readonly aria-label="${tr('角色脚本')}" spellcheck="false">\n${escapeHtml(script.content || '')}</textarea></details>`).join('')}`,
+                prompt_template: () => `<p class="nora-model-note">${tr('模板随当前世界加载，此处显示运行状态。')}</p>`,
+            };
+            return `<section class="nora-extension-item" data-extension="${escapeHtml(capability)}">${row}${error ? `<p class="nora-model-note">${escapeHtml(error)}</p>` : ''}${actions[capability]?.() || ''}</section>`;
         }).join('');
-        return `<div class="pSection nora-capability-section"><div class="pHead">${tr("增强能力")}</div>${rows}</div>`;
+        return rows;
+    }
+
+    function capabilitySection(world) {
+        const rows = capabilityRows(world);
+        if (!rows) return '';
+        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('增强能力')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('管理增强能力')}" title="${tr('管理增强能力')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div>${rows}</div>`;
+    }
+
+    function bindCapabilityRetries(root, worldId, afterRetry) {
+        selectAll('[data-retry-capability]', root).forEach(button => button.addEventListener('click', async event => {
+            event.stopPropagation();
+            if (!worldId || activeWorldModel()?.id !== worldId || button.disabled) return;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            try {
+                await retryWorldCapability(worldId, button.dataset.retryCapability);
+                if (activeWorldModel()?.id === worldId) afterRetry();
+            } catch (error) {
+                dialogs.toast(t`增强能力重试失败：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
+            } finally {
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            }
+        }));
+    }
+
+    function openExtensions() {
+        const world = activeWorldModel();
+        if (!world?.capabilities?.declared?.length) return;
+        const worldId = world.id, avatar = currentCharacter()?.avatar;
+        const modal = dialogs.open(tr('增强能力'), `<div class="nora-form nora-extension-manager">${world.name ? `<p class="nora-extension-world"><i class="fa-solid fa-globe" aria-hidden="true"></i><span>${escapeHtml(world.name)}</span></p>` : ''}${capabilityRows(world, true)}</div>`, 'nora-detail-modal nora-plain-sheet nora-extensions-modal');
+        const version = dialogs.version;
+        const isCurrent = () => activeWorldModel()?.id === worldId && currentCharacter()?.avatar === avatar;
+        bindCapabilityRetries(modal, worldId, () => {
+            render();
+            if (dialogs.version === version && isCurrent()) openExtensions();
+        });
+        select('[data-extension-regex]', modal)?.addEventListener('click', () => {
+            if (!isCurrent() || !avatar) return;
+            void openCardRegex(avatar, () => { if (isCurrent()) openExtensions(); }, { backLabel: tr('‹ 返回增强能力') });
+        });
+        select('[data-extension-model]', modal)?.addEventListener('click', () => { if (isCurrent()) openModelSheet(() => { if (isCurrent()) openExtensions(); }); });
     }
 
     function render() {
@@ -96,19 +153,18 @@ export function createPanelController({
             worldbookEditing = false;
             castFolded = true;
             worldSettingsFolded = true;
+            presetFolded = true;
         }
         const castFoldClass = castFolded ? ' folded' : '';
         const settingsFoldClass = worldSettingsFolded ? ' folded' : '';
-        const activeCharacterId = readState().activeCharacterId;
-        const emptyCastEdit = castEditing && character && !world?.storyContext?.removed_card_fields?.length && Number.isInteger(activeCharacterId) && activeCharacterId >= 0
-            ? `<div class="emptyEditRow"><span>${tr("暂无角色设定")}</span><button class="itemEdit" data-cast-edit="${activeCharacterId}" type="button" aria-label="${tr("编辑基础角色资料")}" title="${tr("编辑基础角色资料")}">${icons.edit}</button></div>`
-            : `<p class="pmuted">${tr("暂无角色设定")}</p>`;
-        const castHtml = cast.length ? cast.map(({ character: member, index, mode, enabled = true }) => {
-            const reference = mode === 'legacy' ? '' : characterReference(index.slice('world-character:'.length));
-            const copy = reference ? `<button class="itemEdit" data-copy-character="${escapeHtml(reference)}" type="button" aria-label="${tr('复制引用')}" title="${tr('复制引用')}：${escapeHtml(reference)}"><i class="fa-regular fa-copy" aria-hidden="true"></i></button>` : '';
+        const presetFoldClass = presetFolded ? ' folded' : '';
+        const castItems = cast.map(({ character: member, index, mode, enabled = true }) => {
             const toggle = castEditing ? `<button class="nora-lore-toggle" data-cast-toggle="${mode === 'legacy' ? 'card-profile' : index}" type="button" aria-pressed="${enabled}" aria-label="${tr(enabled ? '关闭角色注入' : '开启角色注入')}" title="${tr(enabled ? '关闭角色注入' : '开启角色注入')}"><span class="nora-lore-dot" aria-hidden="true"></span></button>` : '';
-            return `<div class="castCard castProfileCard loreItem loreSummaryItem${enabled ? '' : ' is-disabled'}" data-cast-character="${index}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(member.name || tr("未命名角色"))}资料`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(member.name || tr("未命名角色"))}</span>${enabled ? '' : `<small class="nora-lore-status">${tr('已关闭')}</small>`}${copy}${toggle}${castEditing ? `<span class="itemActions"><button class="itemEdit" data-cast-edit="${index}" type="button" aria-label="${tr("编辑角色设定")}" title="${tr("编辑角色设定")}">${icons.edit}</button></span>` : ''}</div></div>`;
-        }).join('') : emptyCastEdit;
+            return `<div class="castCard castProfileCard loreItem loreSummaryItem is-${mode === 'triggered' ? 'triggered' : 'always'}${enabled ? '' : ' is-disabled'}" data-cast-character="${index}" role="button" tabindex="0" aria-label="${t`查看${escapeHtml(member.name || tr("未命名角色"))}资料`}"><div class="loreSummaryLine"><span class="loreTitle">${escapeHtml(member.name || tr("未命名角色"))}</span>${enabled ? '' : `<small class="nora-lore-status">${tr('已关闭')}</small>`}${toggle}${castEditing ? `<span class="itemActions"><button class="itemEdit" data-cast-edit="${index}" type="button" aria-label="${tr("编辑角色设定")}" title="${tr("编辑角色设定")}">${icons.edit}</button></span>` : ''}</div></div>`;
+        });
+        const groupItems = triggered => castItems.filter((_, index) => (cast[index].mode === 'triggered') === triggered).join('');
+        const castHtml = `<div class="loreGroupTitle">${tr('常驻角色')}</div>${groupItems(false) || `<p class="pmuted">${tr('暂无常驻角色')}</p>`}
+            <div class="loreGroupTitle is-triggered">${tr('触发角色')}</div>${groupItems(true) || `<p class="pmuted">${tr('暂无触发角色')}</p>`}`;
         const reviewHref = buildCuratorReviewLink({ agentUserId: agentUserId(), worldName: world?.name });
         const reviewLink = reviewHref
             ? `<a class="pLink" href="${escapeHtml(reviewHref)}" target="_blank" rel="noopener external"><i class="fa-solid fa-comments" aria-hidden="true"></i>${tr("找主理人复盘")}</a>`
@@ -119,9 +175,11 @@ export function createPanelController({
         const modelSection = `<div class="pSection modelSection"><div class="pHead">${tr("模型")}</div><div class="modelGroup"><div class="modelUnit"><div class="modelUnitHead">${tr("文本模型")}</div><p class="mdlCur">${escapeHtml(modelDisplay.label)}</p><button class="actorMore" data-action="model" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr("切换 / 管理")}</button></div></div></div>`;
         const librarySection = `<div class="pSection librarySec"><div class="pHead">${tr("库")}</div><div class="libraryLinks"><button class="actorMore" data-action="library" type="button"><i class="fa-solid fa-address-book" aria-hidden="true"></i>${tr("世界卡库")}</button><button class="actorMore" data-action="preset-library" type="button"><i class="fa-solid fa-sliders" aria-hidden="true"></i>${tr('预设库')}</button></div><div class="librarySupport">${actorSection}${modelSection}</div></div>`;
         body.innerHTML = `
+            ${hasWorldCardSummary(world?.storyContext) && characterField(character, 'description') ? `<div class="pSection"><details><summary>${tr('世界概要')}</summary><p class="pdesc">${escapeHtml(characterField(character, 'description'))}</p></details></div>` : ''}
             <div class="pSection"><div class="pHead pHeadAction"><span>${tr("我的角色")}</span><button class="sectionEdit" data-action="profile" type="button" ${world ? '' : 'disabled'}>${tr("编辑")}</button></div>${world ? `<p class="pname">${escapeHtml(persona?.name || tr("我"))}</p><p class="pdesc">${escapeHtml(persona?.description || tr("补充你在这个世界中的身份与性格"))}</p>` : `<p class="pmuted">${tr("选择世界后设置我的角色。")}</p>`}</div>
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${castFoldClass}" data-fold="cast"><span>${tr("角色设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="cast" type="button">${castEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${castFoldClass}" id="nora-cast-body">${castHtml}${castEditing ? `<button class="nora-add-setting" data-action="add-character" type="button">${icons.plus}${cast.length ? tr("添加设定") : tr("添加第一条设定")}</button>` : ''}</div></div>` : `<div class="pSection"><div class="pHead">${tr("角色设定")}</div><p class="pmuted">${tr("选择世界后显示角色设定。")}</p></div>`}
             ${world ? `<div class="pSection pFold"><div class="pHead pHeadFold${settingsFoldClass}" data-fold="settings"><span>${tr("世界设定")}</span><span class="headRight"><button class="sectionEdit" data-edit-section="worldbook" type="button">${worldbookEditing ? tr("完成") : tr("编辑")}</button><span class="arr">▼</span></span></div><div class="pFoldBody${settingsFoldClass}" id="nora-settings-body">${worldbookSummary(character, worldbookEditing)}</div></div>` : `<div class="pSection"><div class="pHead">${tr("世界设定")}</div><p class="pmuted">${tr("选择世界后查看世界书。")}</p></div>`}
+            ${world ? `<div class="pSection pFold nora-world-preset-section"><div class="pHead pHeadFold${presetFoldClass}" data-fold="preset"><span>${tr('预设')}</span><span class="headRight"><button class="sectionEdit" data-action="world-preset" type="button">${tr('编辑')}</button><span class="arr">▼</span></span></div><div class="pFoldBody${presetFoldClass}" id="nora-preset-body"><p class="pname">${escapeHtml(world.preset?.name || tr('当前配置'))}${world.preset?.modified ? ` <small class="pmuted">${tr('已调整')}</small>` : ''}</p></div></div>` : ''}
             ${world ? capabilitySection(world) : ''}
             ${librarySection}
             <footer class="lwFoot"><span class="mark">✦</span>tavern</footer>`;
@@ -138,16 +196,6 @@ export function createPanelController({
             event.stopPropagation();
             try { await toggleCharacterInjection(button.dataset.castToggle, button); }
             catch (error) { dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
-        }));
-        selectAll('[data-copy-character]', body).forEach(button => button.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const reference = button.dataset.copyCharacter;
-            try {
-                await navigator.clipboard.writeText(reference);
-                dialogs.toast(tr('人物引用已复制。'));
-            } catch {
-                dialogs.open(tr('复制人物引用'), `<p>${tr('自动复制不可用，请复制下方完整内容。')}</p><input readonly value="${escapeHtml(reference)}" aria-label="${tr('人物引用')}">`, 'nora-plain-sheet');
-            }
         }));
         selectAll('[data-cast-character]', body).forEach((card) => {
             const open = () => { closeDrawers(); openCharacterSheet(card.dataset.castCharacter.startsWith('world-character:') ? card.dataset.castCharacter : Number(card.dataset.castCharacter)); };
@@ -170,6 +218,10 @@ export function createPanelController({
                 open();
             });
         });
+        selectAll('[data-attached-worldbook]', body).forEach(button => button.addEventListener('click', () => {
+            closeDrawers();
+            void worldbookController.openNamed(button.dataset.attachedWorldbook);
+        }));
         selectAll('[data-worldbook-edit-kind]', body).forEach(button => button.addEventListener('click', (event) => {
             event.stopPropagation();
             closeDrawers();
@@ -184,24 +236,11 @@ export function createPanelController({
             closeDrawers();
             worldbookController.openAdd();
         }));
-        selectAll('[data-retry-capability]', body).forEach(button => button.addEventListener('click', async (event) => {
-            event.stopPropagation();
-            const world = activeWorldModel();
-            if (!world || button.disabled) return;
-            button.disabled = true;
-            button.setAttribute('aria-busy', 'true');
-            try {
-                await retryWorldCapability(world.id, button.dataset.retryCapability);
-                render();
-            } catch (error) {
-                dialogs.toast(t`增强能力重试失败：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
-                button.disabled = false;
-                button.removeAttribute('aria-busy');
-            }
-        }));
+        bindCapabilityRetries(body, world?.id, render);
         selectAll('[data-fold]', body).forEach(header => header.addEventListener('click', () => {
             if (header.dataset.fold === 'cast') castFolded = !castFolded;
             if (header.dataset.fold === 'settings') worldSettingsFolded = !worldSettingsFolded;
+            if (header.dataset.fold === 'preset') presetFolded = !presetFolded;
             render();
         }));
         selectAll('[data-edit-section="cast"]', body).forEach(button => button.addEventListener('click', (event) => {
@@ -220,7 +259,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, model: openModelSheet };
+        const actions = { extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         actions[action]?.();
     }
 
@@ -238,7 +277,14 @@ export function createPanelController({
         if (!activeWorldModel()) return;
         const editingWorld = activeWorldModel();
         const persona = currentWorldPersona();
-        const modal = dialogs.open(tr("我的角色"), `<form id="nora-persona-form" class="nora-form" autocomplete="off"><label>${tr("名字")}<input name="name" value="${escapeHtml(persona.name)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></label><label>${tr("故事中的你")}<textarea name="description" rows="10" placeholder="${tr("身份、性格、外貌，以及希望角色了解的背景。")}" autocomplete="off">${escapeHtml(persona.description)}</textarea></label><button class="nora-primary" type="submit">${tr("保存到当前世界")}</button></form>`);
+        const modal = dialogs.open(tr("我的角色"), `<form id="nora-persona-form" class="nora-form" autocomplete="off"><div class="nora-library-field"><div class="nora-library-heading" data-persona-library-heading><label for="nora-persona-name">${tr("名字")}</label></div><input id="nora-persona-name" name="name" value="${escapeHtml(persona.name)}" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></div><label>${tr("故事中的你")}<textarea name="description" rows="10" placeholder="${tr("身份、性格、外貌，以及希望角色了解的背景。")}" autocomplete="off">${escapeHtml(persona.description)}</textarea></label><button class="nora-primary" type="submit">${tr("保存到当前世界")}</button></form>`);
+        const personaForm = select('#nora-persona-form', modal);
+        const draft = dialogs.protectForm(personaForm);
+        select('[data-persona-library-heading]', modal)?.insertAdjacentHTML?.('beforeend', `<div class="nora-library-editor-actions"><button type="button" data-pick-persona><i class="fa-solid fa-book-open" aria-hidden="true"></i><span>${tr('从库选择')}</span></button><button type="button" data-save-persona><i class="fa-regular fa-bookmark" aria-hidden="true"></i><span>${tr('另存到库')}</span></button></div>`);
+        select('[data-pick-persona]', modal)?.addEventListener('click', () => draft.leave(() => openProfileLibrary('persona', editingWorld)));
+        select('[data-save-persona]', modal)?.addEventListener('click', () => draft.leave(() => saveProfile('persona', {
+            name: personaForm.elements.name.value.trim(), description: personaForm.elements.description.value,
+        })));
         select('#nora-persona-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
             const form = event.currentTarget;
@@ -249,6 +295,7 @@ export function createPanelController({
                     name: String(data.get('name') || '').trim(),
                     description: String(data.get('description') || '').trim(),
                 } }, { expectedRevision: editingWorld.revision });
+                draft.release();
                 dialogs.close();
                 await refreshWorldsAfterCommit(tr("我的角色已保存"));
             }, { control: form.querySelector('[type="submit"]'), errorLabel: tr("我的角色保存失败"), logLabel: 'Failed to update persona' });

@@ -60,6 +60,12 @@ test('saves the World persona without hydrating the hidden ST persona UI', async
         ['name', 'Nora', { toastPersonaNameChange: false }],
         ['description', 'Traveler', { syncUi: false }],
     ]);
+    calls.length = 0;
+    await adapter.savePersona({ name: '  ', description: '' });
+    assert.deepEqual(calls, [
+        ['name', '玩家', { toastPersonaNameChange: false }],
+        ['description', '', { syncUi: false }],
+    ], 'post-activation synchronization must not undo the default player identity');
 });
 
 test('delegates aggregate activation to one native snapshot transaction', async () => {

@@ -172,10 +172,23 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     const edited = await post('/ledger/edit', { ...scope, messageId: 30, text: 'Changed sixteenth action', expectedSignature });
     assert.equal(edited.status, 200);
     const editResult = await edited.json();
+    assert.match(editResult.revision ?? '', /^[a-f0-9]{64}$/, 'an edit returns the revision of the committed chat');
     assert.equal(editResult.chat.length, 32, 'header + 30 protected messages + edited user16');
     assert.equal(editResult.chat.at(-1).mes, 'Changed sixteenth action');
     assert.equal(editResult.ledger.active.coveredTurns, 15);
     assert.equal(editResult.ledger.totalTurns, 16);
+    editResult.chat.at(-1).variables = { location: 'Library' };
+    const saveBody = { avatar_url: 'fixture.png', file_name: 'fixture-chat', chat: editResult.chat,
+        skip_backup: true, nora_complete_history: true, nora_base_revision: 'outdated' };
+    const staleSave = await post('/chats/save', saveBody);
+    assert.equal(staleSave.status, 409);
+    assert.equal((await staleSave.json()).error, 'NORA_PARTIAL_CHAT_SAVE');
+    const variableSave = await post('/chats/save', { ...saveBody, nora_base_revision: editResult.revision });
+    assert.equal(variableSave.status, 200, 'MVU changes after the edit accept its authoritative revision');
+    const variableResult = await variableSave.json();
+    const fullRead = await post('/chats/get', { avatar_url: 'fixture.png', file_name: 'fixture-chat' });
+    assert.equal(fullRead.headers.get('X-Nora-Chat-Revision'), variableResult.revision);
+    assert.deepEqual((await fullRead.json()).at(-1).variables, { location: 'Library' });
     const obsoleteEdit = await post('/ledger/edit', { ...scope, messageId: 30, text: 'outdated', expectedSignature });
     assert.equal(obsoleteEdit.status, 409, 'an old inspection signature cannot overwrite a newer chat');
     const anotherSession = await post('/ledger/status', { ...scope, sessionId: 'different-session' });

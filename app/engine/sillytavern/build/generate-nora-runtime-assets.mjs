@@ -26,6 +26,7 @@ export const CORE_ENTRY_URLS = [
     '/script.js',
     '/scripts/user.js',
     '/scripts/nora-compat/interaction-bridge.js',
+    '/scripts/nora-compat/mvu-update-observer.js',
     '/lib/structured-clone/monkey-patch.js',
     '/lib/swiped-events.js',
     '/lib/eventemitter.js',

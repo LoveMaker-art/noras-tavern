@@ -147,9 +147,12 @@ export function getCookieSecret(dataRoot) {
     return secret;
 }
 
-export function getCookieSessionName() {
+/** @param {string} dataRoot The same data root used to load the signing secret. */
+export function getCookieSessionName(dataRoot = globalThis.DATA_ROOT) {
     const hostname = os.hostname() || 'localhost';
-    const suffix = crypto.createHash('sha256').update(hostname).digest('hex').slice(0, 8);
+    // Cookies ignore ports; independent data roots must not share a signed cookie.
+    const identity = `${hostname}\0${path.resolve(dataRoot)}`;
+    const suffix = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 16);
     return `session-${suffix}`;
 }
 

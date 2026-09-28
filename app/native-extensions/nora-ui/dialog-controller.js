@@ -2,6 +2,11 @@ import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i1
 export function createDialogController({ select, selectAll, escapeHtml, closeIcon }) {
     let toastTimer;
     let dismissHandler;
+    let cancelConfirmation;
+    let version = 0;
+    let viewKey;
+    let closeGuard;
+    let checkingClose = false;
 
     function normalizeError(error) {
         if (error?.code === 'NORA_LEDGER_HISTORY_LOCKED') return tr("这段历史已被剧情账本保护，无法编辑。若正在发送，请等发送结束后重试。");
@@ -63,22 +68,95 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         }));
     }
 
-    function outsideClick(event) {
-        if (event.target === select('#nora-modal')) close();
+    function protectForm(form, { readState = () => null, isBusy = () => false } = {}) {
+        const snapshot = () => JSON.stringify([
+            [...form.elements].filter(field => field.name && !['submit', 'button', 'reset'].includes(field.type))
+                .map(field => [field.name, field.type === 'checkbox' || field.type === 'radio' ? field.checked
+                    : field.multiple && field.options ? [...field.options].filter(option => option.selected).map(option => option.value)
+                        : field.value]), readState(),
+        ]);
+        const initial = snapshot();
+        let leaving = false;
+        const guard = () => {
+            if (isBusy() || form.querySelector('[type="submit"]:disabled')) return false;
+            return snapshot() === initial || confirm({ title: tr('放弃未保存的修改？'),
+                body: tr('关闭后，本次修改不会保存。'), confirmLabel: tr('放弃修改'),
+                cancelLabel: tr('继续编辑'), restoreSheet: true });
+        };
+        closeGuard = guard;
+        return Object.freeze({
+            release() { if (closeGuard === guard) closeGuard = null; },
+            async leave(action) {
+                if (leaving || checkingClose || closeGuard !== guard) return;
+                leaving = true;
+                try {
+                    if (await guard() && closeGuard === guard) {
+                        closeGuard = null;
+                        const currentVersion = version;
+                        try { return await action(); }
+                        finally {
+                            if (version === currentVersion && !closeGuard && form.isConnected) closeGuard = guard;
+                        }
+                    }
+                } finally { leaving = false; }
+            },
+        });
     }
 
-    function open(title, content, className = '') {
+    function open(title, content, className = '', { reuseKey, preserveSelector } = {}) {
+        cancelConfirmation?.();
         const modal = select('#nora-modal');
+        const body = modal.classList.contains('open')
+            ? select('.nora-sheet-body', modal) : null;
+        const keepNavigation = reuseKey && viewKey === reuseKey && preserveSelector;
+        version++;
+        viewKey = reuseKey;
         dismissHandler = null;
+        closeGuard = null;
         modal.className = `nora-modal open ${className}`;
         modal.setAttribute('aria-hidden', 'false');
-        modal.innerHTML = `<div class="nora-dialog nora-dialog--sheet nora-sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header><div><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${tr("酒馆")}</span><h2>${escapeHtml(title)}</h2></div><button class="nora-icon-button nora-modal-close" type="button" aria-label="${tr("关闭")}">${closeIcon}</button></header><div class="nora-sheet-body">${content}</div></div>`;
+        if (body) {
+            const template = body.ownerDocument.createElement('template');
+            template.innerHTML = content;
+            const previous = keepNavigation && body.querySelector(keepNavigation);
+            const next = keepNavigation && template.content.querySelector(keepNavigation);
+            const focusWasInBody = body.contains(body.ownerDocument.activeElement);
+            const focusedButton = previous ? [...previous.querySelectorAll('button')].indexOf(body.ownerDocument.activeElement) : -1;
+            if (previous && next) {
+                previous.replaceChildren(...next.childNodes);
+                next.replaceWith(previous);
+            }
+            body.replaceChildren(template.content);
+            body.scrollTop = 0;
+            const sheet = select('.nora-dialog', modal);
+            sheet.classList.remove('nora-dialog--entering');
+            sheet.setAttribute('aria-label', title);
+            const header = select('header', modal);
+            // Page-owned header actions must not leak into the next view.
+            header.replaceChildren(header.firstElementChild, select('.nora-modal-close', modal));
+            select('header h2', modal).textContent = title;
+            if (focusedButton >= 0) previous.querySelectorAll('button')[focusedButton]?.focus({ preventScroll: true });
+            else if (focusWasInBody) select('header h2', modal).focus({ preventScroll: true });
+            return modal;
+        }
+        modal.innerHTML = `<div class="nora-dialog nora-dialog--entering nora-dialog--sheet nora-sheet" role="dialog" aria-modal="true" aria-label="${escapeHtml(title)}"><header><div><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${tr("酒馆")}</span><h2 tabindex="-1">${escapeHtml(title)}</h2></div><button class="nora-icon-button nora-modal-close" type="button" aria-label="${tr("关闭")}">${closeIcon}</button></header><div class="nora-sheet-body">${content}</div></div>`;
         select('.nora-modal-close', modal).addEventListener('click', close);
-        modal.onclick = outsideClick;
+        // Dismiss sheets explicitly; outside clicks must never discard a library view or draft.
+        modal.onclick = null;
         return modal;
     }
 
     function close({ dismissed = true } = {}) {
+        if (dismissed && closeGuard) {
+            if (checkingClose) return;
+            const guard = closeGuard;
+            checkingClose = true;
+            return Promise.resolve().then(guard).then(allowed => {
+                if (allowed && closeGuard === guard) close({ dismissed: false });
+            }).finally(() => { checkingClose = false; });
+        }
+        version++;
+        viewKey = undefined;
         const modal = select('#nora-modal');
         if (!modal?.classList.contains('open')) return;
         modal.className = 'nora-modal';
@@ -87,14 +165,22 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         modal.onclick = null;
         const onDismiss = dismissHandler;
         dismissHandler = null;
+        closeGuard = null;
         if (dismissed) onDismiss?.();
     }
 
     function confirm({ kicker = tr("酒馆"), title, body, confirmLabel = tr("确认"), cancelLabel = tr("取消"), tone = 'primary', details = [], detailsLabel = tr("查看详情"), restoreSheet = false }) {
+        cancelConfirmation?.();
+        version++;
         return new Promise((resolve) => {
             const modal = select('#nora-modal');
+            const previousKey = viewKey;
+            viewKey = undefined;
+            modal.querySelector?.('.nora-sheet')?.classList?.remove('nora-dialog--entering');
             const previous = restoreSheet && modal.querySelector?.('.nora-sheet')
-                ? { className: modal.className, nodes: [...modal.childNodes], onclick: modal.onclick, dismiss: dismissHandler } : null;
+                ? { className: modal.className, nodes: [...modal.childNodes], onclick: modal.onclick, dismiss: dismissHandler,
+                    focus: modal.ownerDocument?.activeElement, closeGuard } : null;
+            closeGuard = null;
             const restore = () => {
                 if (!previous) return;
                 modal.className = previous.className;
@@ -103,11 +189,15 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
                 modal.replaceChildren(...previous.nodes);
                 modal.onclick = previous.onclick;
                 dismissHandler = previous.dismiss;
+                viewKey = previousKey;
+                closeGuard = previous.closeGuard;
+                if (previous.focus?.isConnected) previous.focus.focus({ preventScroll: true });
             };
             let settled = false;
             const finish = (value) => {
                 if (settled) return;
                 settled = true;
+                cancelConfirmation = undefined;
                 close({ dismissed: false });
                 restore();
                 resolve(value);
@@ -115,20 +205,28 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
             const detailMarkup = details.length ? `<details class="nora-dialog-details"><summary>${escapeHtml(detailsLabel)}<span>${details.length}</span></summary><ul>${details.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}</ul></details>` : '';
             modal.className = 'nora-modal open nora-confirm-modal';
             modal.setAttribute('aria-hidden', 'false');
-            modal.innerHTML = `<div class="nora-dialog nora-dialog--confirm ${tone === 'danger' ? 'nora-dialog--danger' : ''}" role="dialog" aria-modal="true" aria-labelledby="nora-confirm-title"><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${escapeHtml(kicker)}</span><h2 id="nora-confirm-title">${escapeHtml(title)}</h2><p class="nora-dialog-copy">${escapeHtml(body)}</p>${detailMarkup}<div class="nora-dialog-actions"><button class="nora-confirm-cancel" type="button">${escapeHtml(cancelLabel)}</button><button class="nora-confirm-submit" type="button">${escapeHtml(confirmLabel)}</button></div></div>`;
+            modal.innerHTML = `<div class="nora-dialog nora-dialog--entering nora-dialog--confirm ${tone === 'danger' ? 'nora-dialog--danger' : ''}" role="dialog" aria-modal="true" aria-labelledby="nora-confirm-title"><span class="nora-dialog-kicker"><b aria-hidden="true">✦</b> ${escapeHtml(kicker)}</span><h2 id="nora-confirm-title">${escapeHtml(title)}</h2><p class="nora-dialog-copy">${escapeHtml(body)}</p>${detailMarkup}<div class="nora-dialog-actions"><button class="nora-confirm-cancel" type="button">${escapeHtml(cancelLabel)}</button><button class="nora-confirm-submit" type="button">${escapeHtml(confirmLabel)}</button></div></div>`;
+            cancelConfirmation = () => {
+                if (settled) return;
+                settled = true;
+                cancelConfirmation = undefined;
+                resolve(false);
+            };
             dismissHandler = () => {
                 if (!settled) {
                     settled = true;
+                    cancelConfirmation = undefined;
                     restore();
                     resolve(false);
                 }
             };
             select('.nora-confirm-cancel', modal).addEventListener('click', () => finish(false));
             select('.nora-confirm-submit', modal).addEventListener('click', () => finish(true));
-            modal.onclick = outsideClick;
+            modal.onclick = null;
             select('.nora-confirm-submit', modal).focus();
         });
     }
 
-    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm });
+    return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm, protectForm,
+        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; } });
 }

@@ -92,12 +92,12 @@ export function createMvuModelAdapter({
         return requireApi('useStoryModel').useStoryModel();
     }
 
-    async function configureIndependent({ baseUrl, model, apiKey = '', context = 64000, maxTokens = 20000 }) {
+    async function configureIndependent({ baseUrl, model, apiKey = '', context = 30000, maxTokens = 4000 }) {
         const saved = await request('configure', {
             base_url: String(baseUrl || '').trim(),
             model: String(model || '').trim(),
-            context: Number(context) || 64000,
-            max_tokens: Number(maxTokens) || 20000,
+            context: Number(context) || 30000,
+            max_tokens: Number(maxTokens) || 4000,
             api_key: String(apiKey || '').trim(),
         });
         requireApi('useIndependentModel').useIndependentModel({

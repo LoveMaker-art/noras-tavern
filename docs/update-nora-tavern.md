@@ -1,128 +1,62 @@
 # 更新 Nora Tavern
 
-这份文档只用于已经完成首次安装的 Nora Tavern。
+[返回项目首页](../README.md) · [首次安装](install-nora-tavern.md)
 
-如果你还没有安装，请先看 [安装 Nora + Tavern](install-nora-tavern.md)。
+## 先选择你的安装方式
 
-## updater 是做什么的
+| 你当时怎么安装的？ | 使用这条流程 |
+| :--- | :--- |
+| 下载 DMG 或 EXE，通过启动器安装 | [启动器完全版](#启动器完全版) |
+| 运行 `git clone`，用 `npm start` 启动 | [源码版更新步骤](install-tavern.md#更新源码版) |
+| 以前在 Hermes 环境中用独立部署脚本安装，不由启动器管理 | [旧独立部署更新](update-standalone-tavern.md) |
 
-updater 只负责更新已经安装好的 Nora Tavern。
+不知道选哪个？平时从“诺拉·酒馆”桌面启动器启动，就选择第一项；从终端进入源码目录启动，就选择第二项。仍不确定时先[询问并附上安装方式](https://github.com/LoveMaker-art/noras-tavern/issues)，不要试运行多个更新命令。
 
-用户始终使用同一条更新命令。updater 会自动选择：
+## 启动器完全版
 
-- Python 1.x 安装：下载完整 2.x 程序并迁移数据。
-- 已安装的 2.x：按文件哈希只下载发生变化的模块。
-- 无法可靠复用的安装：自动使用完整发布包修复程序，用户数据仍保留。
+### 更新诺拉与酒馆
 
-2.x 更新中，依赖锁文件没有改变时会复用已安装依赖，不会重复执行 `npm ci`。
-只更新 MCP、技能或运维文件时，Tavern 不停服。
+1. 结束正在生成的对话，打开启动器。
+2. 点击 **更多 → 查看版本**；首页出现版本提示时，也可直接点击 **查看版本**。
+3. 发现可用更新后，点击 **安装更新**。没有此按钮时，不要删除文件或强制替换组件。
+4. 等待更新完成，不要关机、休眠、拔出安装盘或手动移动安装目录。
+5. 打开酒馆，确认原有世界和会话仍在；再到连接的 IM 平台测试与诺拉对话及应用入口。
 
-它会更新：
+这会更新当前安装目录中的诺拉、酒馆及其配套组件，保留用户数据与模型配置。项目管理的规则文件会随版本更新；自行修改过人格或规则的用户先看[文件管理范围](launcher-managed-files.md)。
 
-- Tavern 本体
-- Story Profile 运行快照
-- Nora MCP
-- Tavern 相关 Hermes skills
-- `AGENTS.md` 中的 Tavern 托管块
-- Nora MCP 配置
+### 提示需要更新启动器时
 
-它不负责：
+桌面启动器本身和它管理的诺拉、酒馆系统是两类组件。**启动器 1.1.0 使用同一更新入口，按需下载酒馆组件或轻量启动器更新包；普通内容更新不需要重新下载 DMG 或 EXE。**
 
-- 安装 Hermes
-- 首次初始化 Nora
-- 强制覆盖 `SOUL.md`
-- 重新配置模型或 API Key
+本轮事务更新要求启动器至少为 **1.1.0**。不具备自动替换能力的旧启动器按下面步骤覆盖升级一次；保留原数据，之后更新仍从启动器中完成。
 
-首次安装和后续更新是两条不同流程：
+下载入口自动获取最新可用的完整安装包，包含统一更新与失败恢复；若最新发布仅更新组件，安装后请在启动器中检查组件更新。Windows 便携版暂不支持启动器自动替换，请改用安装版。[选择对应平台下载](../README.md#下载安装包)，安装后再检查已安装系统的版本。
 
-| 场景 | 使用 |
-| --- | --- |
-| 空白 Hermes 环境第一次安装 Nora Tavern | `install-nora-tavern` |
-| 已经安装 Nora Tavern 后升级版本 | `install-tavern-updater` |
+1. 在 [README 下载区](../README.md#下载安装包) 选择对应平台的安装包。
+2. 关闭启动器窗口，保留原来的 Nora 安装目录和安装记录。
+3. **Windows**：运行新的安装程序覆盖升级，不要先执行“彻底卸载”。
+4. **Mac**：打开新的 DMG，将 App 拖入“应用程序”，按系统提示替换原 App。
+5. 打开新启动器，确认它识别的是原安装位置，再检查版本。
 
-## 更新前
+使用过自选目录或外置磁盘时，确保原位置可以访问。若新启动器显示未安装，先核对安装位置，不要立即新建或清空旧目录。
 
-更新前请确认：
+## 更新没有完成
 
-- Hermes 已经安装。
-- Nora Tavern 已经完成首次安装。
-- Tavern 中没有正在生成的对话。
-- 你没有手动删除 `$HERMES_HOME/apps/tavern-runtime`、`$HERMES_HOME/apps/nora-mcp`、`$HERMES_HOME/apps/tavern-ops`。
+| 界面提示 | 下一步 |
+| :--- | :--- |
+| 当前已是最新版本 | 不需要操作 |
+| 本机版本高于最新正式版 | 不要手动降级覆盖，先确认是否使用测试包 |
+| 暂时无法检查更新 | 检查网络，点击“重新检查” |
+| 最新发布暂不可用于完整安装 | 保留现有安装；等待对应组件补齐，或提交反馈 |
+| 更新失败 | 保留错误提示和日志，确认原服务是否恢复，不要反复删除重装 |
 
-默认 Hermes home 通常是：
+**不要为了更新而彻底卸载、清空数据或手动删除备份。** 回滚失败时先保留现场；“尝试恢复”不等于已经恢复成功。
 
-```text
-~/.hermes
-```
+<details>
+<summary>需要反馈错误时，如何保留现场？</summary>
 
-## 执行更新
+记录本机系统、启动器版本、原版本、目标版本及错误提示。启动器完整系统更新的事务记录位于 `<安装根目录>/installer/system-update/`。不要直接上传整个安装或备份目录，其中可能包含 Key 和会话；只分享脱敏后的错误信息。
 
-macOS 用户，在终端中执行：
+</details>
 
-```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm
-```
-
-如果你的 Hermes home 不是默认位置：
-
-```sh
-curl -fsSL https://github.com/LoveMaker-art/noras-tavern/releases/latest/download/install-tavern-updater.sh | sh -s -- --apply --confirm --hermes-home /path/to/hermes-home
-```
-
-更新器会在更新前创建备份。备份通常位于：
-
-```text
-$HERMES_HOME/tavern-backups/
-```
-
-更新成功后，终端会输出结构化结果。重点看：
-
-```text
-"status": "installed"
-```
-
-如果结果中出现 `partial`，通常表示程序已经安装成功，但部分旧数据需要后续人工处理。
-
-## 更新后
-
-更新完成后，请重启 Hermes 会话。
-
-如果你在终端中使用 Hermes：
-
-1. 退出当前 Hermes。
-2. 重新启动：
-
-```sh
-hermes --tui
-```
-
-或者：
-
-```sh
-hermes
-```
-
-然后发送：
-
-```text
-Nora，请检查 Nora Tavern 是否已经更新成功。
-```
-
-## 失败时
-
-如果更新失败，请先不要手动删除安装目录。
-
-请保留：
-
-- 终端完整输出
-- `$HERMES_HOME/tavern-backups/`
-- `$HERMES_HOME/config.yaml`
-- `$HERMES_HOME/AGENTS.md`
-
-如果新版 Tavern 无法启动，updater 会尝试恢复更新前的备份，并在终端输出中报告恢复结果。
-
-## Windows 用户
-
-当前首次安装器已经提供 Windows PowerShell 入口。
-
-后续 updater 目前以 macOS 的 shell 入口为主。Windows 用户如果需要更新，建议先等待 Windows updater 入口发布。
+[反馈问题](https://github.com/LoveMaker-art/noras-tavern/issues) · [卸载说明](launcher-uninstall.md) · [返回安装方式选择](#先选择你的安装方式)

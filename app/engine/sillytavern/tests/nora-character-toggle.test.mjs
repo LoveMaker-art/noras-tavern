@@ -122,6 +122,14 @@ test('original card toggle reaches the actual prompt field getters without chang
         sandbox.chat_metadata.nora_world.id = 'world:a';
         setWorldCharacterContext({ ...fixture(), card_profile_enabled: true }, 'world:a');
         assert.equal(fields().description, 'DESC');
+        setWorldCharacterContext({ ...fixture(), card_format: 'nora-world-card/2', card_profile_enabled: true }, 'world:a');
+        assert.equal(fields().description, '', 'World summary never becomes a model character description');
+        assert.equal(fields().firstMessage, 'OPENING');
+        assert.equal(fields().mesExamples, 'EXAMPLE');
+        assert.equal(fields().scenario, 'SCENE', 'explicit live world background keeps its own injection path');
+        assert.match(renderStoryContext({ ...fixture(), card_format: 'nora-world-card/2' }), /alice-private-profile/);
+        assert.doesNotMatch(renderStoryContext({ ...fixture(), card_format: 'nora-world-card/2' }), /DESC/);
+        assert.equal(sandbox.getCharacterCardFieldsLazy({ chid: 1 }).description, 'DESC', 'other cards retain legacy access');
         setWorldCharacterContext(fixture(), 'world:a');
         assert.equal(fields().personality, 'PERSONALITY', 'old worlds default to enabled');
         setWorldCharacterContext({ ...fixture(), removed_card_fields: ['scenario'] }, 'world:a');

@@ -227,9 +227,21 @@ server.tool("nora.mvu_model.configure", "Configure Nora's independent MVU parser
 }, async (request) => textResult(await nora.configureMvuModel(request)));
 
 const transport = new StdioServerTransport();
+server.tool("nora.library.list", "List independently reusable character profiles, player personas or worldbooks. Does not apply them to a World.", {
+  kind: z.enum(["character", "persona", "worldbook"]),
+}, async ({ kind }) => textResult(await nora.libraryList(kind)));
+server.tool("nora.library.read", "Read a listed profile by id, or a worldbook by source. Inspect before reusing. No model call.", {
+  id: z.string().regex(/^[a-f0-9]{64}$/).optional(), source: z.object({ kind: z.enum(["book", "card"]), name: z.string().min(1) }).optional(),
+}, async request => textResult(await nora.libraryRead(request)));
+server.tool("nora.library.save", "Save a reusable template ONLY to the library, never to the current World. Character data: name, description, personality, optional activation. Persona: name, description. Worldbook: full entries. Same name/content reuses; conflicting content requires another name. Does not extract people or run scripts/models.", {
+  kind: z.enum(["character", "persona", "worldbook"]), name: z.string().trim().min(1).max(200), data: z.record(z.unknown()), confirm: z.literal(true),
+}, async request => textResult(await nora.librarySave(request)));
 server.tool("nora.background.import", "Import a PNG/JPEG/WebP within the configured upload directory, at most 12 MiB. Returns a persistent content-addressed background URL; does NOT change any World. Applying it uses theme.apply.", {
   filePath: z.string().min(1), confirm: z.literal(true),
 }, async request => textResult(await nora.importBackground(request.filePath)));
+server.tool("nora.preset.import", "Import an authored or uploaded ST preset JSON file from the configured upload directory (maximum 10 MB = 10485760 bytes). Preserves all library fields. Same name/content reuses; different content conflicts. Does not apply to Worlds, select a global preset, execute scripts or call models. Read warnings before applying; refresh an already-open library to see the import.", {
+  filePath: z.string().min(1), name: z.string().trim().min(1).max(150), confirm: z.literal(true),
+}, async request => textResult(await nora.importPreset(request)));
 const scopeSchema = { worldId: z.string().min(1), sessionId: z.string().min(1) };
 const operationSchema = { idempotencyKey: z.string().trim().min(1).max(200), confirm: z.literal(true) };
 server.tool("nora.world.create", "Create a blank World through World Core. Reuse idempotencyKey on uncertain outcomes; does not open a browser.", {
@@ -256,7 +268,7 @@ server.tool("nora.session.edit", "Edit an unlocked narrative message and DELETE 
   ...scopeSchema, messageId: z.number().int().min(0), text: z.string().max(100000).refine(value => value.trim().length > 0, "Non-empty narrative text is required"), expectedSignature: z.string().regex(/^[a-f0-9]{64}$/),
   confirm: z.literal(true), allowModelCall: z.literal(true),
 }, async request => textResult(await nora.editSession(request)));
-server.tool("nora.control.catalog", "List the actual World/Persona/worldbook/text-model and plugin/script actions, parameter types, and authorization requirements.", {},
+server.tool("nora.control.catalog", "List actual World/Persona/worldbook/preset/text-model and plugin/script actions, parameter types, and authorization requirements. preset.* reads, authors, saves templates and applies independent World copies.", {},
   async () => textResult(await nora.controlCatalog()));
 server.tool("nora.control.clients", "List live Tavern pages with client IDs and World/Session identities. Never guess a target or select the first tab silently.", {},
   async () => textResult(await nora.controlClients()));

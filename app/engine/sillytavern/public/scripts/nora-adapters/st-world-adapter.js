@@ -1,6 +1,9 @@
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
-import { renderStoryContext } from '../nora-worlds/story-context.js';
+import { renderStoryContext, normalizeWorldPersona } from '../nora-worlds/story-context.js';
 import { setWorldCharacterContext } from '../nora-worlds/character-activation.js';
+import { createWorldPreset, normalizeWorldPreset, validateWorldPresetParameters, validateWorldPresetModelLimits, WORLD_PRESET_FIELDS } from '../nora-worlds/world-preset.js';
+import { worldPresetProjection } from '../nora-worlds/world-preset-projection.js';
+import { worldbookOverrides } from '../nora-worlds/worldbook-bindings.js';
 function requireRuntime(getContext) {
     const current = getContext();
     const required = ['selectCharacterById', 'updateChatMetadata', 'saveMetadata'];
@@ -30,6 +33,53 @@ function uniqueNames(values) {
 
 export function createStWorldAdapter(getContext) {
     let hasStoryContext = false;
+    let presetBaseline;
+    function captureWorldPreset() {
+        const current = requireRuntime(getContext);
+        current.getChatCompletionPromptManager();
+        const settings = current.chatCompletionSettings;
+        const fields = current.chatCompletionPresetFields;
+        const preset = { prompts: settings.prompts, prompt_order: settings.prompt_order };
+        for (const key of WORLD_PRESET_FIELDS) {
+            const setting = fields[key]?.[1];
+            if (setting && settings[setting] !== undefined) preset[key] = settings[setting];
+        }
+        const value = createWorldPreset(settings.preset_settings_openai || 'Default', preset);
+        presetBaseline ??= structuredClone(value);
+        return value;
+    }
+    function defaultWorldPreset() {
+        return structuredClone(presetBaseline || captureWorldPreset());
+    }
+    function validateWorldPreset(value) {
+        validateWorldPresetParameters(value.preset, requireRuntime(getContext).getChatCompletionModelLimits?.());
+    }
+    function applyWorldPreset(value) {
+        const snapshot = normalizeWorldPreset(value);
+        const current = requireRuntime(getContext);
+        if (current.isGenerating?.()) throw new Error('请等待当前生成完成。');
+        const baseline = defaultWorldPreset();
+        const settings = current.chatCompletionSettings;
+        const manager = current.getChatCompletionPromptManager();
+        const project = () => {
+            for (const key of WORLD_PRESET_FIELDS) {
+                const setting = current.chatCompletionPresetFields[key]?.[1];
+                if (!setting) continue;
+                const field = snapshot.preset[key] ?? baseline.preset[key];
+                if (field === undefined) delete settings[setting];
+                else settings[setting] = field;
+            }
+            settings.prompts = structuredClone(snapshot.preset.prompts);
+            settings.prompt_order = structuredClone(snapshot.preset.prompt_order);
+            manager.sanitizeServiceSettings();
+        };
+        project();
+        worldPresetProjection.bind(current.chatMetadata?.nora_world?.id, () => {
+            validateWorldPresetModelLimits(snapshot.preset, current.getChatCompletionModelLimits?.());
+            project();
+        });
+        // No preset selection event: world switching must not execute template scripts.
+    }
     function applyStoryContext(context, worldId = null) {
         const current = requireRuntime(getContext);
         if (!context && !hasStoryContext) { setWorldCharacterContext(null); return; }
@@ -107,7 +157,7 @@ export function createStWorldAdapter(getContext) {
         return read();
     }
 
-    async function applyWorldbook(name, book) {
+    async function applyWorldbook(name, book, world) {
         const current = requireRuntime(getContext);
         const normalized = String(name || '').trim();
         if (!normalized || !book || typeof book !== 'object') throw new Error('World settings projection is invalid.');
@@ -118,6 +168,14 @@ export function createStWorldAdapter(getContext) {
         const character = characterId === null ? null : current.characters[characterId];
         if (!character) throw new Error('当前世界的运行角色卡不可用。');
         const data = character.data && typeof character.data === 'object' ? character.data : character;
+        if (world && current.chatMetadata?.nora_world?.id !== world.world_id) throw new Error('World changed; reopen the settings.');
+        if (world) {
+            const metadata = current.chatMetadata;
+            metadata.world_info = normalized;
+            metadata.nora_world.worldbook_overrides = worldbookOverrides(world.knowledge);
+            metadata.nora_world.library_worldbooks = world.knowledge.filter(resource => resource.binding.name !== normalized)
+                .map(resource => ({ name: resource.binding.name, title: resource.binding.display_name || resource.binding.name }));
+        }
         data.extensions = { ...(data.extensions || {}), world: normalized };
         current.primeWorldInfoSnapshot(normalized, book);
         await current.updateWorldInfoList();
@@ -142,6 +200,7 @@ export function createStWorldAdapter(getContext) {
         }
         await current.activateNoraWorldSnapshot(characterId, snapshot);
         applyStoryContext(snapshot.plan?.story_context, snapshot.plan?.world_id);
+        if (snapshot.plan?.preset) applyWorldPreset(snapshot.plan.preset);
         return read();
     }
 
@@ -158,8 +217,9 @@ export function createStWorldAdapter(getContext) {
         if (typeof current.setUserName !== 'function' || typeof current.updatePersonaDescription !== 'function') {
             throw new Error('故事运行核心缺少世界身份能力。');
         }
-        current.setUserName(String(value.name || '').trim(), { toastPersonaNameChange: false });
-        await current.updatePersonaDescription(String(value.description || '').trim(), { syncUi: false });
+        const identity = normalizeWorldPersona(value);
+        current.setUserName(identity.name, { toastPersonaNameChange: false });
+        await current.updatePersonaDescription(identity.description, { syncUi: false });
         return read();
     }
 
@@ -178,8 +238,9 @@ export function createStWorldAdapter(getContext) {
         }
         const result = await current.closeCurrentChat();
         applyStoryContext(null);
+        worldPresetProjection.clear();
         return result;
     }
 
-    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, applyWorldbook, activate, activateSnapshot, applyStoryContext, saveMetadata, savePersona, deleteChat, closeChat });
+    return Object.freeze({ read, ensureCharacter, expandCharacter, ensureEmbeddedWorldbook, refreshWorldbooks, applyWorldbook, activate, activateSnapshot, applyStoryContext, captureWorldPreset, defaultWorldPreset, validateWorldPreset, applyWorldPreset, saveMetadata, savePersona, deleteChat, closeChat });
 }

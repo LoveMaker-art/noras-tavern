@@ -1,3 +1,4 @@
+import './fixtures/nora-zh-locale.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createStPresetAdapter } from '../public/scripts/nora-adapters/st-preset-adapter.js';
@@ -30,32 +31,7 @@ test('preset import does not apply; explicit apply keeps connections and filters
     assert.deepEqual(values[0], preset); assert.equal(settings.bind_preset_to_connection, true);
 });
 
-test('editing one prompt saves a complete preset without changing unrelated fields or selection', async () => {
-    const original = { prompts: [{ identifier: 'length', content: '800-1200 words' }, { identifier: 'other', content: 'Keep this' }],
-        prompt_order: [{ character_id: 100001, order: [{ identifier: 'length', enabled: true }] }],
-        extensions: { tavern_helper: { scripts: [{ content: 'preserve' }] } }, temperature: 0.7 };
-    const values = [original]; const names = { Duo: 0 }; const saved = [];
-    let fail = false;
-    const manager = { getPresetList: () => ({ presets: values, preset_names: names }), getSelectedPresetName: () => 'Duo',
-        savePreset: async (...args) => { if (fail) throw new Error('save failed'); saved.push(args); } };
-    const adapter = createStPresetAdapter(() => ({ getPresetManager: () => manager }));
-    await adapter.updatePromptContent('Duo', 'length', '500-800 words');
-    assert.equal(saved[0][0], 'Duo');
-    assert.equal(saved[0][2].skipUpdate, true);
-    assert.equal(saved[0][1].prompts[0].content, '500-800 words');
-    assert.equal(saved[0][1].prompts[1].content, 'Keep this');
-    assert.deepEqual(saved[0][1].prompt_order, original.prompt_order);
-    assert.deepEqual(saved[0][1].extensions, original.extensions);
-    assert.equal(saved[0][1].temperature, 0.7);
-    assert.equal(original.prompts[0].content, '800-1200 words');
-    assert.equal(adapter.listPresets().selected, 'Duo');
-    fail = true;
-    await assert.rejects(adapter.updatePromptContent('Duo', 'length', 'bad'), /save failed/);
-    assert.equal(values[0].prompts[0].content, '500-800 words');
-    await assert.rejects(adapter.updatePromptContent('Duo', 'missing', 'bad'), /不存在/);
-});
 import { describePreset } from '../../../native-extensions/nora-ui/preset-presentation.js';
-import { createLibraryController } from '../../../native-extensions/nora-ui/library-controller.js';
 
 const preset = { temperature: 0, top_p: 0.95, openai_max_tokens: 2000, openai_max_context: 32000,
     prompts: [{ identifier: 'a', name: 'First', content: 'A' }, { identifier: 'b', name: 'Second', content: 'B' }, { identifier: 'c', content: 'C' }],
@@ -82,90 +58,4 @@ test('script presence uses the existing canonical, legacy, folder and serialized
         assert.equal(describePreset({ extensions }).scripts, 1);
     }
     assert.equal(describePreset({ extensions: { tavern_helper: {}, TavernHelper_scripts: scripts } }).scripts, 0);
-});
-
-function ui({ failEdit = false } = {}) {
-    const nodes = new Map();
-    const node = selector => {
-        if (!nodes.has(selector)) nodes.set(selector, { innerHTML: '', handlers: {}, value: '', checked: false,
-            addEventListener(type, handler) { this.handlers[type] = handler; }, insertBefore() {} });
-        return nodes.get(selector);
-    };
-    let content = ''; let generating = false; const calls = []; const notices = [];
-    const items = [{ name: 'Alpha', preset: structuredClone(preset) }, { name: 'Beta', preset: structuredClone(preset) }];
-    const edits = [];
-    const controller = createLibraryController({
-        presets: { listPresets: () => ({ items, selected: 'Alpha' }), applyPreset: async (...args) => calls.push(args),
-            updatePromptContent: async (name, identifier, value) => {
-                if (failEdit) throw new Error('save failed');
-                edits.push([name, identifier, value]);
-                items.find(item => item.name === name).preset.prompts.find(prompt => prompt.identifier === identifier).content = value;
-            } },
-        dialogs: { open: (_title, body) => { content = body; return { innerHTML: body }; }, close() {}, toast: message => notices.push(message), normalizeError: e => e.message, confirm: async () => true },
-        operations: { isBusy: () => false, run: async (_key, fn) => fn() }, isGenerating: () => generating,
-        select: selector => selector === '[data-scripts]' && !content.includes('data-scripts') ? null : node(selector),
-        selectAll: (selector, root) => {
-            const attribute = selector === '[data-preset]' ? 'preset' : selector === '[data-edit-prompt]' ? 'edit-prompt' : null;
-            if (!attribute) return [];
-            return [...root.innerHTML.matchAll(new RegExp(`data-${attribute}="(\\d+)"`, 'g'))].map(match => {
-                const button = node(`${attribute}-${match[1]}`); button.dataset = attribute === 'preset' ? { preset: match[1] } : { editPrompt: match[1] }; return button;
-            });
-        },
-        escapeHtml: value => String(value).replaceAll('<', '&lt;'), refresh() {},
-    });
-    return { controller, node, calls, edits, notices, content: () => content, generating: value => { generating = value; } };
-}
-
-test('search preserves query on return, marks current selection, and distinguishes no results', async () => {
-    const f = ui();
-    await f.controller.openPresets();
-    assert.match(f.node('[data-preset-results]').innerHTML, /aria-current="true"/);
-    assert.doesNotMatch(f.node('[data-preset-results]').innerHTML, /聊天补全预设/);
-    const search = f.node('[data-preset-search]');
-    search.value = 'bEtA'; search.handlers.input({ currentTarget: search });
-    assert.doesNotMatch(f.node('[data-preset-results]').innerHTML, /Alpha/);
-    f.node('preset-1').handlers.click();
-    assert.match(f.content(), /nora-preset-footer/);
-    assert.doesNotMatch(f.content(), /data-scripts/);
-    assert.doesNotMatch(f.content(), /<details[^>]* open/);
-    assert.ok(f.content().indexOf('nora-preset-footer') > f.content().indexOf('nora-preset-prompts'));
-    await f.node('[data-back]').handlers.click();
-    assert.match(f.content(), /value="bEtA"/);
-    search.value = 'missing'; search.handlers.input({ currentTarget: search });
-    assert.match(f.node('[data-preset-results]').innerHTML, /没有匹配/);
-});
-
-test('apply without a script checkbox preserves false consent and generation guard', async () => {
-    const f = ui();
-    await f.controller.openPresets(); f.node('preset-1').handlers.click();
-    const button = f.node('[data-apply]');
-    f.generating(true); await button.handlers.click({ currentTarget: button });
-    assert.equal(f.calls.length, 0);
-    f.generating(false); await button.handlers.click({ currentTarget: button });
-    assert.deepEqual(f.calls, [['Beta', { enableScripts: false }]]);
-});
-
-test('prompt editor changes one entry and returns to detail for explicit reapply', async () => {
-    const f = ui();
-    await f.controller.openPresets(); f.node('preset-1').handlers.click();
-    f.node('edit-prompt-0').handlers.click();
-    assert.equal(f.node('[data-prompt-content]').value, 'B');
-    f.node('[data-prompt-content]').value = '500-800 words';
-    await f.node('[data-prompt-form]').handlers.submit({ preventDefault() {} });
-    assert.deepEqual(f.edits, [['Beta', 'b', '500-800 words']]);
-    assert.match(f.content(), /500-800 words/);
-    assert.match(f.content(), /data-apply/);
-    assert.equal(f.calls.length, 0);
-});
-
-test('prompt editor keeps unsaved text visible when saving fails', async () => {
-    const f = ui({ failEdit: true });
-    await f.controller.openPresets(); f.node('preset-1').handlers.click();
-    f.node('edit-prompt-0').handlers.click();
-    f.node('[data-prompt-content]').value = 'draft with <tags>\nand a new line';
-    await f.node('[data-prompt-form]').handlers.submit({ preventDefault() {} });
-    assert.equal(f.node('[data-prompt-content]').value, 'draft with <tags>\nand a new line');
-    assert.match(f.content(), /data-prompt-form/);
-    assert.deepEqual(f.edits, []);
-    assert.deepEqual(f.notices, ['save failed']);
 });

@@ -184,7 +184,7 @@ if (cliArgs.listen) {
 }
 
 app.use(cookieSession({
-    name: getCookieSessionName(),
+    name: getCookieSessionName(globalThis.DATA_ROOT),
     sameSite: 'lax',
     httpOnly: true,
     maxAge: getSessionCookieAge(),

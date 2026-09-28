@@ -13,11 +13,12 @@ function buttonsFrom(body, attribute, datasetKey) {
         });
 }
 
-function groupedLibrary(characters, usedAvatars = []) {
+function groupedLibrary(characters, usedAvatars = [], catalog) {
     const opened = [];
     const deleted = [];
     const state = { characters };
     const controller = createCharacterController({
+        listLibraryCards: catalog ? async () => ({ items: catalog }) : undefined,
         cards: {
             refreshCharacters: async () => {},
             deleteCharacterCards: async request => {
@@ -40,6 +41,7 @@ function groupedLibrary(characters, usedAvatars = []) {
         settings: () => ({}),
         characterField: (card, field) => card.data?.[field] || card[field] || '',
         resolveCharacter: () => assert.fail('library grouping must not expand cards'),
+        select: () => null,
         selectAll: (selector, modal) => selector === '[data-library-delete]' ? modal.deletes : [],
         escapeHtml: String,
         icons: { trash: 'delete' },
@@ -66,27 +68,23 @@ test('library keeps shallow copies and edited contents separate even with the sa
         libraryCard('edited.png', 'edited contents'),
     ]);
     await app.controller.openLibrary();
-    assert.equal(app.opened[0].deletes.length, 4);
+    assert.equal(buttonsFrom(app.opened[0].body, 'data-library-character', 'libraryCharacter').length, 4);
+    assert.equal(app.opened[0].deletes.length, 0, 'Deletion is in the detail view, not each library tile');
     assert.doesNotMatch(app.opened[0].body, /nora-card-duplicate/);
     assert.equal('findDuplicate' in app.controller, false);
     assert.equal('identity' in app.controller, false, 'group identity is internal to the library');
 });
 
-test('library cleanup groups full content, ignores import provenance and preserves cards used by Worlds', async () => {
+test('library uses backend membership instead of grouping runtime cards by a client hash', async () => {
     const app = groupedLibrary([
         libraryCard('unused-copy.png', 'same contents', 'first-file'),
         libraryCard('in-use.png', 'same contents', 'other-file'),
         libraryCard('edited.png', 'different contents'),
-    ], ['in-use.png']);
+    ], ['in-use.png'], [{ avatar: 'unused-copy.png' }, { avatar: 'edited.png' }]);
     await app.controller.openLibrary();
-    assert.equal(app.opened[0].deletes.length, 2);
-    assert.match(app.opened[0].body, /nora-card-duplicate">2份/);
-    assert.match(app.opened[0].body, /data-library-character="1"/);
-    await app.opened[0].deletes[0].listener();
-    assert.deepEqual(app.deleted, [{ avatars: ['unused-copy.png'], deleteChats: false }]);
-    assert.match(app.opened[1].body, /title="正在被世界使用" disabled/);
-    await app.opened[1].deletes[0].listener();
-    assert.equal(app.deleted.length, 1, 'even a programmatic click cannot delete the in-use card');
+    assert.equal(buttonsFrom(app.opened[0].body, 'data-library-character', 'libraryCharacter').length, 2);
+    assert.doesNotMatch(app.opened[0].body, /nora-card-duplicate|data-library-character="1"/);
+    assert.deepEqual(app.deleted, [], 'Rendering the catalog cannot delete runtime cards');
 });
 
 test('character library renders at most eight cards per page', async () => {
@@ -148,7 +146,7 @@ test('character library renders at most eight cards per page', async () => {
     await controller.openLibrary();
     assert.deepEqual(expanded, [], 'opening a paged library must not fetch every full card');
     assert.equal(opened[0].characters.length, 8);
-    assert.match(opened[0].body, /第 1 \/ 2 页/);
+    assert.match(opened[0].body, /1 (?:\/|of) 2/);
     assert.match(opened[0].body, /--nora-library-columns:4;--nora-library-mobile-columns:2/);
 
     const next = opened[0].pages.find((button) => button.dataset.libraryPage === '1');
@@ -157,7 +155,7 @@ test('character library renders at most eight cards per page', async () => {
 
     assert.deepEqual(expanded, [], 'changing pages must remain shallow');
     assert.equal(opened[1].characters.length, 2);
-    assert.match(opened[1].body, /第 2 \/ 2 页/);
+    assert.match(opened[1].body, /2 (?:\/|of) 2/);
     assert.match(opened[1].body, /--nora-library-columns:2;--nora-library-mobile-columns:2/);
 
     const originalMatchMedia = globalThis.matchMedia;
@@ -166,7 +164,7 @@ test('character library renders at most eight cards per page', async () => {
         await controller.openLibrary(0);
         assert.deepEqual(expanded, [], 'mobile pagination must remain shallow');
         assert.equal(opened[2].characters.length, 4);
-        assert.match(opened[2].body, /第 1 \/ 3 页/);
+        assert.match(opened[2].body, /1 (?:\/|of) 3/);
         assert.match(opened[2].body, /--nora-library-columns:4;--nora-library-mobile-columns:2/);
     } finally {
         if (originalMatchMedia) globalThis.matchMedia = originalMatchMedia;

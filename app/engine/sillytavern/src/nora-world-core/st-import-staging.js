@@ -21,7 +21,7 @@ function cardFormat(fileName) {
     return format;
 }
 
-async function persistImmutable(filePath, buffer) {
+export async function persistImmutable(filePath, buffer) {
     try {
         const stat = await fs.lstat(filePath);
         if (!stat.isFile() || stat.isSymbolicLink()) {
@@ -58,7 +58,7 @@ async function persistImmutable(filePath, buffer) {
     }
 }
 
-async function stageCardBuffer({
+export async function stageCardBuffer({
     buffer,
     originalName,
     sourceType,
@@ -128,7 +128,7 @@ export async function stageStCardImport({
 }
 
 // Read only a regular card in the authenticated user's library. Preserve all card bytes.
-export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey, stagingRoot }) {
+export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey, stagingRoot, resolveSource }) {
     if (typeof avatar !== 'string' || !avatar || /[\\/\0]/.test(avatar)
         || path.basename(avatar) !== avatar || path.extname(avatar).toLowerCase() !== '.png'
         || !path.isAbsolute(String(charactersRoot || ''))) {
@@ -136,6 +136,11 @@ export async function stageLibraryCard({ avatar, charactersRoot, idempotencyKey,
     }
     let handle;
     try {
+        if (resolveSource) {
+            const source = await resolveSource(avatar);
+            return await stageCardBuffer({ buffer: source.buffer, originalName: `${path.parse(avatar).name}.${source.format}`,
+                sourceType: 'character-card', idempotencyKey, stagingRoot, payload: { library_avatar: avatar } });
+        }
         handle = await fs.open(path.join(charactersRoot, avatar), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
         const stat = await handle.stat();
         if (!stat.isFile() || stat.size < 1 || stat.size > MAX_CARD_BYTES) throw new Error('Invalid library file');
@@ -182,5 +187,44 @@ export async function stageBlankWorld({ idempotencyKey, persona = {}, worldName,
         worldName: name,
         stagingRoot,
         payload: { runtime_card_kind: 'nora-internal-blank' },
+    });
+}
+
+export async function stageWelcomeWorld({ idempotencyKey, stagingRoot, locale = 'en' }) {
+    const isChinese = locale === 'zh-cn';
+    const language = isChinese ? 'zh' : 'en';
+    const name = isChinese ? '新手引导' : 'Getting started';
+    const opening = (await fs.readFile(new URL(`./builtin/welcome-${language}.md`, import.meta.url), 'utf8')).trim();
+    if (!opening) throw new NoraWorldCoreError('NORA_CARD_INVALID', 'Tavern welcome text is missing.');
+    const card = {
+        spec: 'chara_card_v3',
+        spec_version: '3.0',
+        data: {
+            name,
+            description: isChinese
+                ? '你是酒馆的主理人，帮助来访者了解酒馆并准备自己的故事。用中文交流。'
+                : 'You are the curator of Tavern. Help visitors get to know Tavern and prepare their own stories. Speak English.',
+            personality: '',
+            scenario: '',
+            first_mes: opening,
+            mes_example: '',
+            creator_notes: '',
+            system_prompt: '',
+            post_history_instructions: '',
+            alternate_greetings: [],
+            tags: [],
+            creator: 'Nora',
+            character_version: '1',
+            extensions: {},
+        },
+    };
+    return stageCardBuffer({
+        buffer: Buffer.from(JSON.stringify(card)),
+        originalName: `nora-welcome-${language}.json`,
+        sourceType: 'character-card',
+        idempotencyKey,
+        persona: { name: isChinese ? '我' : 'Me', description: '' },
+        worldName: name,
+        stagingRoot,
     });
 }

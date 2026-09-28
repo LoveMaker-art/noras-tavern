@@ -12,7 +12,7 @@ const bundle = fs.readFileSync(path.join(mvuRoot, 'vendor/bundle.js'), 'utf8');
 
 assert.match(runtime, /NORA_MVU_SETTINGS_VERSION = 5;/,
     'MVU settings migration must carry the bounded-context defaults');
-assert.match(runtime, /'最大上下文token数': 64000/,
+assert.match(runtime, /'最大上下文token数': 30000/,
     'managed MVU must not default to an unbounded 128k request');
 assert.match(runnerPatch, /\+\s+custom_api,\n\s+processedImageArray,/,
     'the independent model budget must reach prompt construction, not only the final HTTP request');

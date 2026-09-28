@@ -6,7 +6,7 @@ import { sync as writeFileAtomicSync } from 'write-file-atomic';
 export const NORA_MVU_MODEL_FILE = 'nora-mvu-model.json';
 export const NORA_MVU_MODEL_PROXY_URL = 'https://nora-mvu.invalid/v1';
 const NORA_MVU_MODEL_SCHEMA = 'nora-mvu-model/v3';
-const DEFAULT_MVU_CONTEXT = 64000;
+const DEFAULT_MVU_CONTEXT = 30000;
 
 export class NoraMvuModelConfigError extends Error {
     constructor(code, message) {
@@ -33,6 +33,9 @@ export function normalizeMvuModelBaseUrl(value) {
     if (!['http:', 'https:'].includes(parsed.protocol)) {
         throw new NoraMvuModelConfigError('invalid_mvu_model_config', 'base_url must use HTTP or HTTPS.');
     }
+    if (parsed.hostname === 'nora-mvu.invalid') {
+        throw new NoraMvuModelConfigError('invalid_mvu_model_config', 'Please enter the real model API URL, not the internal MVU routing address.');
+    }
     parsed.hash = '';
     parsed.search = '';
     parsed.pathname = parsed.pathname.replace(/\/(?:chat\/completions)?\/*$/i, '') || '/';
@@ -54,13 +57,13 @@ export class NoraMvuModelConfig {
             const value = JSON.parse(fs.readFileSync(this.filePath, 'utf8'));
             const context = value?.schema === NORA_MVU_MODEL_SCHEMA
                 ? value?.context
-                : value?.context === 128000 ? DEFAULT_MVU_CONTEXT : value?.context;
+                : value?.context === 128000 ? 64000 : value?.context;
             return Object.freeze({
                 schema: NORA_MVU_MODEL_SCHEMA,
                 base_url: normalizeMvuModelBaseUrl(value?.base_url),
                 model: requiredText(value?.model, 'model'),
                 context: boundedInteger(context, DEFAULT_MVU_CONTEXT, 512, 1000000),
-                max_tokens: boundedInteger(value?.max_tokens, 20000, 1, 128000),
+                max_tokens: boundedInteger(value?.max_tokens, 4000, 1, 128000),
             });
         } catch (error) {
             if (error instanceof NoraMvuModelConfigError) throw error;
@@ -74,7 +77,7 @@ export class NoraMvuModelConfig {
             base_url: normalizeMvuModelBaseUrl(value?.base_url),
             model: requiredText(value?.model, 'model'),
             context: boundedInteger(value?.context, DEFAULT_MVU_CONTEXT, 512, 1000000),
-            max_tokens: boundedInteger(value?.max_tokens, 20000, 1, 128000),
+            max_tokens: boundedInteger(value?.max_tokens, 4000, 1, 128000),
         };
         writeFileAtomicSync(this.filePath, JSON.stringify(config, null, 4), 'utf8');
         return Object.freeze(config);

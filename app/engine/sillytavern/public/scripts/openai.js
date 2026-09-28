@@ -79,7 +79,7 @@ import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { t } from './i18n.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { COMETAPI_IGNORE_PATTERNS, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
+import { COMETAPI_IGNORE_PATTERNS, DEFAULT_STORY_PROMPT, IGNORE_SYMBOL, MEDIA_DISPLAY, MEDIA_TYPE } from './constants.js';
 import { syncNanoGptProvidersForModel, syncOpenRouterProvidersForModel, updateNanoGptProvidersWarning, updateOpenRouterProvidersWarning } from './textgen-models.js';
 
 export function hasCustomChatCompletionApiKey() {
@@ -104,7 +104,7 @@ export {
 
 let openai_messages_count = 0;
 
-const default_main_prompt = 'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.';
+const default_main_prompt = DEFAULT_STORY_PROMPT;
 const default_nsfw_prompt = '';
 const default_jailbreak_prompt = '';
 const default_impersonation_prompt = '[Write your next reply from the point of view of {{user}}, using the chat history so far as a guideline for the writing style of {{user}}. Don\'t write as {{char}} or system. Don\'t describe actions of {{char}}.]';
@@ -413,8 +413,8 @@ const default_settings = {
     top_a_openai: 0,
     repetition_penalty_openai: 1,
     stream_openai: false,
-    openai_max_context: max_4k,
-    openai_max_tokens: 300,
+    openai_max_context: 30000,
+    openai_max_tokens: 4000,
     ...chatCompletionDefaultPrompts,
     ...promptManagerDefaultPromptOrders,
     send_if_empty: '',
@@ -1714,6 +1714,16 @@ function checkModerationError(data, { quiet = false } = {}) {
         const flaggedText = data?.error?.metadata?.flagged_input ?? '(N/A)';
         toastr.info(flaggedText, moderationReason, { timeOut: 10000 });
     }
+}
+
+/** Capacity metadata from the active provider response; absent values stay unknown. */
+export function getChatCompletionModelLimits() {
+    const metadata = model_list.find(item => item.id === getChatCompletionModel());
+    const positiveInteger = value => Number.isSafeInteger(value) && value > 0 ? value : null;
+    return {
+        context: positiveInteger(metadata?.context_length),
+        tokens: positiveInteger(metadata?.top_provider?.max_completion_tokens),
+    };
 }
 
 /**
@@ -6004,15 +6014,15 @@ async function onConnectButtonClick(e) {
  * @param {string} options.url Custom endpoint base URL.
  * @param {string} options.model Custom model identifier.
  * @param {string} [options.apiKey] API key to persist. An empty value keeps the saved key.
- * @param {number} options.context Maximum context size.
- * @param {number} options.maxTokens Maximum response size.
+ * @param {number} [options.context] Explicit legacy context override. Omit to preserve generation settings.
+ * @param {number} [options.maxTokens] Explicit legacy response override. Omit to preserve generation settings.
  * @returns {Promise<void>}
  */
 export async function configureCustomChatCompletion({ url, model, apiKey = '', context, maxTokens }) {
     const customUrl = String(url || '').trim();
     const customModel = String(model || '').trim();
-    const maxContext = Number(context);
-    const maxResponse = Number(maxTokens);
+    const maxContext = Number(context ?? oai_settings.openai_max_context);
+    const maxResponse = Number(maxTokens ?? oai_settings.openai_max_tokens);
 
     if (!customUrl || !customModel) {
         throw new Error('Custom endpoint URL and model are required.');
@@ -6033,8 +6043,8 @@ export async function configureCustomChatCompletion({ url, model, apiKey = '', c
     oai_settings.chat_completion_source = chat_completion_sources.CUSTOM;
     oai_settings.custom_url = customUrl;
     oai_settings.custom_model = customModel;
-    oai_settings.openai_max_context = maxContext;
-    oai_settings.openai_max_tokens = maxResponse;
+    if (context !== undefined) oai_settings.openai_max_context = maxContext;
+    if (maxTokens !== undefined) oai_settings.openai_max_tokens = maxResponse;
     oai_settings.stream_openai = true;
     changeMainAPI('openai');
 
@@ -6049,6 +6059,34 @@ export async function configureCustomChatCompletion({ url, model, apiKey = '', c
         await eventSource.emit(event_types.CHATCOMPLETION_SOURCE_CHANGED, chat_completion_sources.CUSTOM);
     }
 
+    startStatusLoading();
+    await getStatusOpen();
+}
+
+/** Connects a managed Hermes model using ST's native provider protocol. */
+export async function configureProviderChatCompletion({ source, model, context, maxTokens }) {
+    const modelField = { claude: 'claude_model', makersuite: 'google_model' }[source];
+    if (!modelField || !String(model || '').trim()) throw new Error('Native provider and model are required.');
+    const maxContext = Number(context ?? oai_settings.openai_max_context), maxResponse = Number(maxTokens ?? oai_settings.openai_max_tokens);
+    if (!Number.isFinite(maxContext) || maxContext < 1 || !Number.isFinite(maxResponse) || maxResponse < 1) {
+        throw new Error('Context and maximum response sizes must be positive numbers.');
+    }
+    const mainApiChanged = main_api !== 'openai';
+    const sourceChanged = oai_settings.chat_completion_source !== source;
+    cancelStatusCheck('Managed provider profile changed');
+    model_list = [];
+    oai_settings.chat_completion_source = source;
+    oai_settings[modelField] = String(model).trim();
+    oai_settings.reverse_proxy = '';
+    if (context !== undefined) oai_settings.openai_max_context = maxContext;
+    if (maxTokens !== undefined) oai_settings.openai_max_tokens = maxResponse;
+    oai_settings.stream_openai = true;
+    changeMainAPI('openai');
+    forceCharacterEditorTokenize();
+    updateFeatureSupportFlags();
+    saveSettingsDebounced();
+    if (mainApiChanged) await eventSource.emit(event_types.MAIN_API_CHANGED, { apiId: 'openai' });
+    if (sourceChanged) await eventSource.emit(event_types.CHATCOMPLETION_SOURCE_CHANGED, source);
     startStatusLoading();
     await getStatusOpen();
 }

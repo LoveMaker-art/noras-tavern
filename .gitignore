@@ -7,7 +7,10 @@
 **/node_modules/
 **/.cache/
 **/coverage/
-release/
+/release/
+/launcher/desktop/dist/
+/.build/
+/artifacts/
 
 # Private production-state snapshot. Keep only its documentation in Git.
 local-state/**

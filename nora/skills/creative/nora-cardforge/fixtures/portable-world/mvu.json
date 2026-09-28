@@ -1,0 +1,10 @@
+{
+  "format": "nora-mvu-fields/v1",
+  "variables": [
+    {"group":"玩家","field":"姓名","type":"string","default":"旅行者","description":"玩家明确自报姓名后更新，保留完整字符串。"},
+    {"group":"玩家","field":"能量","type":"number","default":100,"min":0,"max":100,"description":"前往车站消耗10点；休息恢复至100。"},
+    {"group":"玩家","field":"位置","type":"enum","enumValues":["驿站","车站"],"default":"驿站","description":"实际到达新地点后更新。"},
+    {"group":"玩家","field":"背包","type":"array","items":{"type":"object","properties":{"名称":{"type":"string"},"数量":{"type":"number","integer":true,"min":1}}},"default":[],"description":"领取物品时新增，数量必须为正整数；耗尽时移除该项。"},
+    {"group":"世界","field":"人物档案","type":"record","values":{"type":"object","properties":{"姓名":{"type":"string"},"关系":{"type":"enum","enumValues":["陌生","熟悉"]}}},"default":{},"description":"确认身份并登记后，以稳定ID新增完整档案。"}
+  ]
+}

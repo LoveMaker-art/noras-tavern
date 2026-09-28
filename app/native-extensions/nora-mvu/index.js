@@ -5,13 +5,15 @@ import {
     ensureMvuZodRuntime,
     hasInitializedMvuData,
     initializeHeadlessMvuSettings,
-    isMvuVariableModelEnabled,
-    NORA_MVU_MODEL_PROXY_URL,
-    setMvuVariableModelEnabled,
 } from './runtime.js';
-import { inspectMvuCompatibility } from 'nora-module/scripts/nora-compat/mvu-compatibility.js';
-import { createMvuUpdateObserver } from './update-observer.js';
+import { createMvuSettingsControls, isMvuVariableModelEnabled } from 'nora-module/scripts/nora-compat/mvu-settings.js';
+import { inspectMvuCompatibility, isMvuUpdateInstructionEntry, normalizeTavernHelperScripts } from 'nora-module/scripts/nora-compat/mvu-compatibility.js';
+import * as protocol from 'nora-module/scripts/nora-compat/mvu-protocol.js';
+import { createEmptyMvuUpdateStatus, createMvuUpdateObserver } from 'nora-module/scripts/nora-compat/mvu-update-observer.js';
 import { reportMvuDiagnostic } from './diagnostics-reporter.js';
+import { createMvuTraceClient } from './trace-client.js';
+
+const diagnosticTrace = createMvuTraceClient({ getContext: context });
 
 const state = {
     phase: 'idle',
@@ -49,20 +51,7 @@ function runtimeDataInitialized() {
 function statusSnapshot() {
     const settings = context().extensionSettings.mvu_settings ?? {};
     const model = settings['额外模型解析配置'] ?? {};
-    const updateStatus = state.updateObserver?.status?.() ?? {
-        updateOperational: null,
-        updatePhase: 'unobserved',
-        lastUpdateAt: null,
-        lastUpdateCode: null,
-        lastUpdateStage: null,
-        lastUpdateError: null,
-        lastUpdateCommandCount: null,
-        lastUpdateValidationErrors: [],
-        stateChanged: null,
-        transactionDurationMs: null,
-        transactionAttempt: null,
-        hasPreviousSnapshot: false,
-    };
+    const updateStatus = state.updateObserver?.status?.() ?? createEmptyMvuUpdateStatus();
     const initialized = runtimeDataInitialized() || updateStatus.hasPreviousSnapshot;
     return {
         ...state,
@@ -139,6 +128,23 @@ async function inspectCurrentCard() {
 
 function exposeApi() {
     globalThis.NoraMvu = Object.freeze({
+        protocol: diagnosticTrace.wrapProtocol(protocol),
+        trace: diagnosticTrace,
+        schemaExpected: () => {
+            const c = context();
+            const card = c.characters?.[c.characterId];
+            const scripts = normalizeTavernHelperScripts(card);
+            const expected = scripts.some(script => script.enabled !== false && /registerMvuSchema\s*\(|mvu[_-]zod\.js/.test(script.content || ''));
+            diagnosticTrace.record('schema-check', {
+                expected, characterId: c.characterId, cardName: card?.name,
+                scripts: scripts.map(s => ({ id: s.id, name: s.name, enabled: s.enabled !== false })),
+                characterScriptsAllowed: c.extensionSettings.tavern_helper?.script?.enabled?.characters?.includes(card?.name) === true,
+                runtimePhase: state.phase,
+            });
+            return expected;
+        },
+        inspectEntries: entries => inspectMvuCompatibility({ books: [entries] }),
+        isUpdateEntry: isMvuUpdateInstructionEntry,
         status() {
             return statusSnapshot();
         },
@@ -151,28 +157,7 @@ function exposeApi() {
         configure(patch) {
             return applyMvuSettings(context(), patch);
         },
-        setEnabled(enabled) {
-            return setMvuVariableModelEnabled(context(), enabled);
-        },
-        useStoryModel() {
-            return applyMvuSettings(context(), {
-                '更新方式': '额外模型解析',
-                '额外模型解析配置': { '模型来源': '与插头相同' },
-            });
-        },
-        useIndependentModel({ model, contextLimit = 64000, maxTokens = 20000 }) {
-            return applyMvuSettings(context(), {
-                '更新方式': '额外模型解析',
-                '额外模型解析配置': {
-                    '模型来源': '自定义',
-                    'api地址': NORA_MVU_MODEL_PROXY_URL,
-                    '密钥': '',
-                    '模型名称': String(model || '').trim(),
-                    '最大上下文token数': Math.min(1000000, Math.max(512, Number(contextLimit) || 64000)),
-                    '最大回复token数': Math.min(128000, Math.max(1, Number(maxTokens) || 20000)),
-                },
-            });
-        },
+        ...createMvuSettingsControls(patch => applyMvuSettings(context(), patch)),
         async retryLastUpdate() {
             if (typeof globalThis.Mvu?.retryLastUpdate !== 'function') {
                 throw new Error('MVU runtime is not ready.');
@@ -227,6 +212,7 @@ export async function activateNoraMvu() {
         state.registration = ensureHeadlessMvuScriptInSettings(runtimeContext);
         exposeApi();
         globalThis.__NORA_ENSURE_MVU_READY__ = ensureNoraMvuReady;
+        void diagnosticTrace.start();
         if (runtimeContext.extensionSettings.nora_mvu?.managedRuntimeEnabled === false) { state.phase = 'disabled'; return; }
         startMvuRuntime();
     } catch (error) {

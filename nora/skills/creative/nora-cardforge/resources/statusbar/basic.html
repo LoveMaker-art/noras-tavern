@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>__NORA_TITLE__</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --panel-bg: #f8f6f0;
+      --panel-text: #242a30;
+      --panel-muted: #535d67;
+      --panel-border: #c9ced2;
+      --panel-accent: #315f67;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --panel-bg: #1b2228;
+        --panel-text: #edf1f4;
+        --panel-muted: #b4c0c9;
+        --panel-border: #485762;
+        --panel-accent: #97cdd3;
+      }
+    }
+    body { margin: 0; padding: 8px; background: transparent; }
+    .nora-status {
+      box-sizing: border-box;
+      padding: 18px;
+      border: 1px solid var(--panel-border);
+      border-radius: 12px;
+      background: var(--panel-bg);
+      color: var(--panel-text);
+      font: 14px/1.65 system-ui, sans-serif;
+      overflow-wrap: anywhere;
+    }
+    .nora-status h1 { margin: 0 0 16px; font-size: 18px; }
+    .nora-status h2 { margin: 16px 0 8px; font-size: 14px; color: var(--panel-accent); }
+    .nora-status dl { margin: 0; }
+    .nora-status .field {
+      display: grid;
+      grid-template-columns: minmax(5em, 28%) minmax(0, 1fr);
+      gap: 6px 14px;
+      padding: 9px 0;
+      border-top: 1px solid var(--panel-border);
+    }
+    .nora-status dt { color: var(--panel-muted); }
+    .nora-status dd { margin: 0; min-width: 0; white-space: pre-wrap; }
+    @media (max-width: 360px) {
+      .nora-status { padding: 12px; }
+      .nora-status .field { grid-template-columns: minmax(0, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <main class="nora-status" aria-label="__NORA_TITLE__">
+    <h1>__NORA_TITLE__</h1>
+__NORA_GROUPS__
+  </main>
+</body>
+</html>

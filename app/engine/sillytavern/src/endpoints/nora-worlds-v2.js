@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import path from 'node:path';
 import express from 'express';
 
 import { NoraWorldCoreError } from '../nora-world-core/index.js';
@@ -7,6 +8,7 @@ import { resolveNoraWorldCore, worldCorePaths } from '../nora-world-core/runtime
 import { normalizeIdempotencyKey, operationIdForKey } from '../nora-world-core/domain.js';
 import { stageBlankWorld, stageLibraryCard, stageStCardImport } from '../nora-world-core/st-import-staging.js';
 import { validateThemeAssets, importThemeBackground } from '../nora-world-core/theme-assets.js';
+import { readGlobalTheme, saveGlobalTheme } from '../nora-world-core/global-theme.js';
 
 function defaultResolveCore(request) {
     return resolveNoraWorldCore(request.user.directories);
@@ -80,6 +82,74 @@ export function createNoraWorldsV2Router({
 } = {}) {
     const router = express.Router();
 
+    router.get('/library/cards', async (request, response) => {
+        try {
+            response.setHeader('Cache-Control', 'no-store');
+            return response.json(await resolveCore(request).listLibraryCards());
+        } catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/cards/import', async (request, response) => {
+        try {
+            if (!request.file?.path) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'One uploaded card is required.');
+            const format = path.extname(request.file.originalname || '').slice(1).toLowerCase();
+            const buffer = await fs.readFile(request.file.path);
+            return response.json(await resolveCore(request).saveLibraryCard({ buffer, format }));
+        } catch (error) { return sendError(response, error); }
+        finally { await cleanupUpload(request.file); }
+    });
+
+    router.get('/library/profiles', async (request, response) => {
+        try {
+            response.setHeader('Cache-Control', 'no-store');
+            return response.json(await resolveCore(request).listLibraryProfiles(request.query.kind));
+        } catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/profiles/read', async (request, response) => {
+        try { return response.json(await resolveCore(request).readLibraryProfile(request.body?.id)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/profiles/save', async (request, response) => {
+        try { return response.json(await resolveCore(request).saveLibraryProfile(request.body)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/profiles/delete', async (request, response) => {
+        try { return response.json(await resolveCore(request).deleteLibraryProfile(request.body?.id, request.body?.revision)); }
+        catch (error) { return sendError(response, error); }
+    });
+
+    router.get('/library/worldbooks', async (request, response) => {
+        try {
+            response.setHeader('Cache-Control', 'no-store');
+            return response.json(await resolveCore(request).listLibraryWorldbooks());
+        } catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/worldbooks/delete', async (request, response) => {
+        try { return response.json(await resolveCore(request).deleteLibraryWorldbook(request.body?.source, request.body?.revision)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/worldbooks/read', async (request, response) => {
+        try { return response.json(await resolveCore(request).readLibraryWorldbook(request.body?.source)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/library/worldbooks/import', async (request, response) => {
+        try { return response.json(await resolveCore(request).saveLibraryWorldbook(request.body?.name, request.body?.book)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/worlds/:worldId/library', async (request, response) => {
+        try { return response.json(await resolveCore(request).importLibraryItem(request.params.worldId, request.body)); }
+        catch (error) { return sendError(response, error); }
+    });
+
+    router.get('/theme', (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try { return response.json(readGlobalTheme(request.user.directories)); }
+        catch (error) { return sendError(response, error); }
+    });
+    router.post('/theme', async (request, response) => {
+        response.setHeader('Cache-Control', 'no-store');
+        try { return response.json(await saveGlobalTheme(request.user.directories, request.body)); }
+        catch (error) { return sendError(response, error); }
+    });
     router.post('/backgrounds/import', async (request, response) => {
         try {
             if (!request.file?.path) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'One uploaded background image is required.');
@@ -152,10 +222,23 @@ export function createNoraWorldsV2Router({
                 throw new NoraWorldCoreError('NORA_OPERATION_CONFLICT', '此创建请求已用于另一张角色卡。');
             }
             const command = existing?.command || await stageLibrary({ avatar, idempotencyKey, stagingRoot,
-                charactersRoot: request.user.directories.characters });
+                charactersRoot: request.user.directories.characters,
+                resolveSource: core.readLibraryCardSource ? name => core.readLibraryCardSource(name) : undefined });
             const result = existing?.status === 'FAILED' && existing.error?.retryable
                 ? await core.retryOperation(existing.operation_id)
                 : await core.submitWorld(command, { idempotencyKey });
+            return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
+                operation: publicOperation(result.operation), world: result.world, reused: result.reused,
+            });
+        } catch (error) { return sendError(response, error); }
+    });
+
+    router.post('/worlds/:worldId/restarts', async (request, response) => {
+        try {
+            const result = await resolveCore(request).restartWorld(request.params.worldId, {
+                name: request.body?.name, idempotencyKey: request.body?.idempotency_key,
+                expectedRevision: request.body?.expected_revision,
+            });
             return response.status(result.operation.status === 'COMPLETED' ? 200 : 202).json({
                 operation: publicOperation(result.operation), world: result.world, reused: result.reused,
             });

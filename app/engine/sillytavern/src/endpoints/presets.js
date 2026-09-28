@@ -6,6 +6,8 @@ import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 
 import { getDefaultPresetFile, getDefaultPresets } from './content-manager.js';
+import { listPresetTemplates, readPresetTemplate, savePresetTemplate, importPresetTemplate } from '../nora-preset-library.js';
+import { encodePresetFile } from '../../public/scripts/nora-worlds/preset-file.js';
 
 /**
  * Gets the folder and extension for the preset settings based on the API source ID.
@@ -39,6 +41,22 @@ function getPresetSettingsByAPI(apiId, directories) {
 
 export const router = express.Router();
 
+for (const [route, operation] of Object.entries({
+    'nora-list': directory => ({ names: listPresetTemplates(directory) }),
+    'nora-read': (directory, input) => readPresetTemplate(directory, input.name),
+    'nora-save': savePresetTemplate,
+    'nora-import': importPresetTemplate,
+})) {
+    router.post(`/${route}`, (request, response) => {
+        try {
+            return response.json(operation(request.user.directories.openAI_Settings, request.body));
+        } catch (error) {
+            const code = /^NORA_PRESET_/.test(error.code || '') ? error.code : 'NORA_PRESET_INVALID';
+            return response.status(code === 'NORA_PRESET_TOO_LARGE' ? 413 : /STALE|CONFLICT/.test(code) ? 409 : 400).json({ error: { code, message: 'Preset operation rejected; inspect the target before retrying.' } });
+        }
+    });
+}
+
 router.post('/save', function (request, response) {
     const name = sanitize(request.body.name);
     if (!request.body.preset || !name) {
@@ -53,7 +71,11 @@ router.post('/save', function (request, response) {
     }
 
     const fullpath = path.join(settings.folder, filename);
-    writeFileAtomicSync(fullpath, JSON.stringify(request.body.preset, null, 4), 'utf-8');
+    let encoded;
+    try {
+        encoded = request.body.apiId === 'openai' ? encodePresetFile(request.body.preset) : JSON.stringify(request.body.preset, null, 4);
+    } catch { return response.status(413).json({ error: { code: 'NORA_PRESET_TOO_LARGE' } }); }
+    writeFileAtomicSync(fullpath, encoded, 'utf-8');
     return response.send({ name });
 });
 

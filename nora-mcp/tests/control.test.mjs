@@ -10,6 +10,22 @@ import { loadConfig } from '../dist/config.js';
 import { assertInstance, allowedTool } from '../dist/tool-policy.js';
 import { StInspectionPlane } from '../dist/st/inspection-plane.js';
 
+test('library tools share UI storage endpoints without creating or applying worlds', async () => {
+    const calls = [];
+    const plane = new NoraControlPlane({}, { get: async (...args) => calls.push(['GET', ...args]), post: async (...args) => calls.push(['POST', ...args]) });
+    const profile = { kind: 'character', name: 'Reusable', data: { name: 'Alice', description: 'Profile' } };
+    await plane.libraryList('character');
+    await plane.librarySave(profile);
+    await plane.libraryRead({ id: 'a'.repeat(64) });
+    await plane.librarySave({ kind: 'worldbook', name: 'Lore', data: { entries: {} } });
+    assert.deepEqual(calls.map(call => call[1]), ['/api/nora-worlds-v2/library/profiles?kind=character', '/api/nora-worlds-v2/library/profiles/save',
+        '/api/nora-worlds-v2/library/profiles/read', '/api/nora-worlds-v2/library/worldbooks/import']);
+    assert.deepEqual(calls[1][2], profile);
+    assert.equal(allowedTool('nora.library.save', 'read-only'), false);
+    assert.equal(allowedTool('nora.library.save', 'operator'), true);
+    assert.equal(allowedTool('nora.library.read', 'read-only'), true);
+});
+
 test('configuration fails closed without data root or with a remote URL; operator is explicit', () => {
     const before = { ...process.env };
     try {

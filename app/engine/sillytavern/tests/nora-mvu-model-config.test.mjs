@@ -32,8 +32,8 @@ test('MVU model config persists only non-secret endpoint, model and generation l
         schema: 'nora-mvu-model/v3',
         base_url: 'https://api.example.com/v1',
         model: 'mvu-fast',
-        context: 64000,
-        max_tokens: 20000,
+        context: 30000,
+        max_tokens: 4000,
     });
     assert.doesNotMatch(fs.readFileSync(path.join(root, NORA_MVU_MODEL_FILE), 'utf8'), /must-not-be-written|api_key/);
     assert.deepEqual(store.read(), saved);
@@ -76,6 +76,12 @@ test('MVU model config migrates only the old 128k default and preserves an expli
 
 test('MVU model config rejects unsupported URL schemes', () => {
     assert.throws(() => normalizeMvuModelBaseUrl('file:///tmp/model'), NoraMvuModelConfigError);
+});
+
+test('the internal routing marker cannot be saved as a real model endpoint', (t) => {
+    const { root, store } = createStore(t);
+    assert.throws(() => store.save({ base_url: NORA_MVU_MODEL_PROXY_URL, model: 'fixture' }), NoraMvuModelConfigError);
+    assert.equal(fs.existsSync(path.join(root, NORA_MVU_MODEL_FILE)), false);
 });
 
 test('reserved MVU model address resolves the independent backend configuration only', (t) => {

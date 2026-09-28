@@ -164,10 +164,16 @@ export function createStMessageAdapter(runtime, { ensureBackendReady, reportStag
 
     return Object.freeze({
         prepareMutation: () => hydrateHistory(),
-        runSlash: async (text, { signal } = {}) => {
+        runSlash: async (text, { signal, onGenerationStart } = {}) => {
             await hydrateHistory();
             const controller = new SlashCommandAbortController();
-            controller.noraPrepareGeneration = ensureBackendReady;
+            controller.noraPrepareGeneration = async () => {
+                assertActive(signal);
+                // Only a command that actually requests generation owns visible progress.
+                onGenerationStart?.();
+                await ensureBackendReady();
+                assertActive(signal);
+            };
             controller.noraAwaitGeneration = true;
             const stop = () => { controller.abort('操作已取消。', true); runtime().stopGeneration(); };
             if (signal?.aborted) throw Object.assign(new Error('操作已取消。'), { name: 'AbortError' });

@@ -6,6 +6,7 @@ import { createDialogController } from './dialog-controller.js';
 import { createMessageController } from './message-controller.js';
 import { createPanelController } from './panel-controller.js';
 import { createWorldThemeController } from './world-theme-controller.js';
+import { createAppearanceController } from './appearance-controller.js';
 import { createPerformanceReporter } from './performance-reporter.js';
 import { createSmartReplyController } from './smart-reply-controller.js';
 import { createShellController } from './shell-controller.js';
@@ -52,6 +53,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     let modelController;
     let panelController;
     let worldThemeController;
+    let appearanceController;
     let smartReplyController;
     let storyScroller;
     let characterController;
@@ -63,7 +65,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     let ensureWorldCreationController;
     let mounted = false;
     let started = false;
-    let hydrated = false;
     const extensionStartedAt = Date.now();
 
     const performanceReporter = createPerformanceReporter({
@@ -78,19 +79,6 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         if (log.length > 100) log.splice(0, log.length - 100);
         console.info('[Nora Action]', event);
     };
-
-    function finishBootScreen() {
-        if (hydrated) return;
-        hydrated = true;
-        document.documentElement.dataset.noraReadyMs = String(Date.now() - extensionStartedAt);
-        const timing = performanceReporter.hydrateShell({ alreadyVisible: document.body.classList.contains('nora-shell-visible') });
-        if (timing) {
-            document.documentElement.dataset.noraShellReadyMs = String(timing.shellReadyAt);
-            document.documentElement.dataset.noraInteractiveMs = String(timing.hydratedAt);
-        }
-        document.body.classList.add('nora-ui-ready');
-        document.body.classList.remove('nora-booting');
-    }
 
     function escapeHtml(value) {
         const node = document.createElement('span');
@@ -210,7 +198,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
     const openCharacterSheet = async (characterId, backToLibrary = false) => (await ensureCharacterController()).openSheet(characterId, backToLibrary);
     const openCharacterEditor = async characterId => (await ensureCharacterController()).openEditor(characterId);
 
-    const openModelSheet = async () => (await ensureModelController()).open();
+    const openModelSheet = async onBack => (await ensureModelController()).open(onBack);
 
     function mount({ story }) {
         if (mounted) return;
@@ -220,7 +208,10 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         }
         mounted = true;
         uiStore = createUiStore(state, settingsDomain, worlds);
-        worldThemeController = createWorldThemeController(selector => $(selector));
+        appearanceController = createAppearanceController({ root: document.documentElement,
+            media: window.matchMedia('(prefers-color-scheme: dark)'), hostname: window.location.hostname,
+            settings: () => settingsDomain.uiSettings(), persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
+        worldThemeController = createWorldThemeController(selector => $(selector), () => settingsDomain.uiSettings().globalTheme ?? {});
         const notifyStoryProfileCheckpoint = (requestedWorldId = '') => {
             const worldId = String(requestedWorldId || activeWorldModel()?.id || '').trim();
             if (!worldId) return;
@@ -240,23 +231,14 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             hasWorld: () => Boolean(currentCharacter()),
             getSessionKey: () => JSON.stringify([activeWorldModel()?.id || '', readState().activeChatId || '']),
             onGenerationState: value => messageController?.setGenerating(value || messages.isGenerating()),
-            onGenerationError: (error, context = {}) => {
-                console.error('[Nora UI] Failed to generate a reply:', error);
-                if (context.type === 'story.slash' || context.type === 'sidecar.run') { showToast(t`角色卡操作失败：${normalizeNoticeMessage(error)}`, { tone: 'error', duration: 4200 }); return; }
-                if (context.scope === 'sidecar:suggest-replies') showToast(t`智能回复失败：${normalizeNoticeMessage(error)}`, { tone: 'error', duration: 4200 });
-                else if (context.scope === 'story') messageController.showSendError(error, context.persisted);
-            },
+            onGenerationError: (error, context) => messageController.handleGenerationError(error, context),
             onGenerationCompleted: notifyStoryProfileCheckpoint,
             onGenerationSettled: metric => {
                 if (metric.scope === 'story') performanceReporter.firstGeneration(metric);
             },
             onTaskEvent: recordActionEvent,
             onMissingWorld: () => showToast(tr("请先选择或开启一个世界。")),
-            restoreDraft: (text) => {
-                const input = $('#nora-input');
-                if (!input.value) input.value = text;
-                messageController.updateComposer();
-            },
+            restoreDraft: text => messageController.restoreDraft(text),
         });
         tavernHelperActions = createTavernHelperActionAdapter({ storyActions, messages });
         tavernHelperActions.start();
@@ -308,6 +290,8 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             updateComposer: messageController.updateComposer,
         });
         worldbookController = createWorldbookController({
+            openLibrary: async target => (await ensureLibraryController()).openWorldbooks(target),
+            saveLibraryBook: async (name, book) => (await ensureLibraryController()).openSaveBook(name, book),
             activeWorldModel,
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
             worldbook,
@@ -327,15 +311,16 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
         });
         let libraryControllerPromise;
         const ensureLibraryController = () => libraryControllerPromise ??= import('./library-controller.js').then(({ createLibraryController }) => createLibraryController({
-            presets, dialogs, operations,
+            worlds, presets, dialogs, operations, activeWorldModel, characterField,
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
-            refresh, select: $, selectAll: $$, escapeHtml,
+            openCards: openCharacterLibrary, refresh, select: $, selectAll: $$, escapeHtml,
         }));
         let characterControllerPromise;
         ensureCharacterController = () => {
             if (characterController) return Promise.resolve(characterController);
             characterControllerPromise ??= import('./character-controller.js').then(({ createCharacterController }) => {
                 characterController = createCharacterController({
+                    listLibraryCards: () => worlds.listLibraryCards(),
                     cards,
                     operations,
                     dialogs,
@@ -354,6 +339,12 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
                     refresh,
                     isCharacterInWorld: character => worlds.usesRuntimeCard?.(character) || false,
                     createWorldFromCard: async (character, control) => (await ensureWorldCreationController()).createFromLibrary(character, control),
+                    openWorldbookLibrary: async () => (await ensureLibraryController()).openWorldbooks(),
+                    openCardWorldbook: async (source, onBack) => (await ensureLibraryController()).openBook(source, null, onBack),
+                    openCardRegex: (avatar, onBack) => openCardRegex(avatar, onBack),
+                    openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
+                    saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
+                    addRoleFromCard: async character => (await ensureLibraryController()).openRoleImport(character),
                     activeWorldModel,
                     updateWorld: (...args) => worlds.updateActive(...args),
                     isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
@@ -362,6 +353,24 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             });
             return characterControllerPromise;
         };
+
+        let regexControllerPromise;
+        const withRegexController = async action => {
+            const worldId = activeWorldModel()?.id;
+            try {
+                regexControllerPromise ??= import('./regex-controller.js').then(({ createRegexController }) => createRegexController({
+                    cards, dialogs, operations, select: $, selectAll: $$, escapeHtml, activeWorldModel, refresh,
+                    isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
+                }));
+                const controller = await regexControllerPromise;
+                if (activeWorldModel()?.id !== worldId) return;
+                await action(controller);
+            } catch (error) {
+                regexControllerPromise = null;
+                dialogs.toast(normalizeNoticeMessage(error), { tone: 'error' });
+            }
+        };
+        const openCardRegex = (avatar, onBack, options) => withRegexController(controller => controller.open(avatar, onBack, options));
 
         let modelControllerPromise;
         ensureModelController = () => {
@@ -440,8 +449,13 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             updateComposer: messageController.updateComposer,
             isGenerating: messageController.isGenerating,
             onWorldLeaving: notifyStoryProfileCheckpoint,
+            openModal,
+            closeModal,
+            openRestartWorldSheet: async world => (await ensureWorldCreationController()).openRestartWorldSheet(world),
         });
         panelController = createPanelController({
+            openCardRegex,
+            characterCapabilities,
             settingsDomain,
             worldRuntime: worlds,
             dialogs,
@@ -459,6 +473,9 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             worldbookController,
             openCharacterLibrary,
             openPresetLibrary: async () => (await ensureLibraryController()).openPresets(),
+            openWorldPreset: async () => (await ensureLibraryController()).openWorldPreset(),
+            openProfileLibrary: async (kind, target) => (await ensureLibraryController()).openProfiles(kind, target),
+            saveProfile: async (kind, data) => (await ensureLibraryController()).openSaveProfile(kind, data),
             openCharacterSheet,
             openCharacterEditor,
             toggleCharacterInjection: async (id, control) => (await ensureCharacterController()).toggleInjection(id, control),
@@ -490,7 +507,7 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
             openNewWorldSheet,
             runPanelAction,
             updateActiveWorldSummary,
-            finishBootScreen,
+            extensionStartedAt,
             recordBootMilestone,
             performanceReporter,
             onStarted: () => { started = true; },
@@ -501,5 +518,12 @@ import { createTavernHelperActionAdapter } from '../../engine/sillytavern/public
 
     const prepareShell = () => shellController.prepareShell();
 
-    window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions, themeState: () => worldThemeController?.inspect() || { ready: false } });
+    window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions,
+        appearanceState: () => appearanceController?.inspect() || { ready: false },
+        setAppearance: params => {
+            if (!appearanceController) throw Object.assign(new Error('Page appearance is not ready.'), { code: 'NORA_APPEARANCE_NOT_READY' });
+            return appearanceController.set(params);
+        },
+        refreshTheme: () => worldThemeController?.render(activeWorldModel()) || { ready: false },
+        themeState: () => worldThemeController?.inspect() || { ready: false } });
 })();

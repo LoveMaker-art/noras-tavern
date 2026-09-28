@@ -235,6 +235,7 @@ import { loader } from './scripts/action-loader.js';
 import { initTextGenModels } from './scripts/textgen-models.js';
 import { appendFileContent, hasPendingFileAttachment, populateFileAttachment, decodeStyleTags, encodeStyleTags, isExternalMediaAllowed, preserveNeutralChat, restoreNeutralChat, formatCreatorNotes, initChatUtilities, addDOMPurifyHooks } from './scripts/chats.js';
 import { getPresetManager, initPresetManager } from './scripts/preset-manager.js';
+import { worldPresetProjection } from './scripts/nora-worlds/world-preset-projection.js';
 import { evaluateMacros, getLastMessageId, initMacros } from './scripts/macros.js';
 import { currentUser, setUserControls } from './scripts/workspace-user.js';
 import { POPUP_RESULT, POPUP_TYPE, Popup, callGenericPopup, fixToastrForDialogs } from './scripts/popup.js';
@@ -268,6 +269,8 @@ import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
 import { compressRequest, setRequestCompressionConfig } from './scripts/request-compression.js';
+import { createChatWriteQueue, requestChatWrite } from './scripts/nora-story-ledger/chat-persistence.js';
+import { normalizeWorldPersona } from './scripts/nora-worlds/story-context.js';
 import { canJumpToSwipeForMessage, canOpenSwipePickerForMessage, initSwipePicker } from './scripts/swipe-picker.js';
 
 export {
@@ -741,10 +744,16 @@ async function requestNoraChatWindow({ full = false } = {}) {
         method: 'POST',
         headers: getRequestHeaders(),
         cache: 'no-cache',
+        signal: AbortSignal.timeout(60000),
         body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error('Chat could not be loaded');
-    return response.json();
+    const data = await response.json();
+    if (full && Array.isArray(data)) {
+        // Keep ST's array response; its revision is transport metadata, not card data.
+        Object.defineProperty(data, 'noraRevision', { value: response.headers.get('X-Nora-Chat-Revision') });
+    }
+    return data;
 }
 
 export function getNoraAbsoluteMessageId(messageId) {
@@ -823,6 +832,7 @@ export async function ensureNoraFullChatLoaded({ revealHistory = false } = {}) {
                 state.start = 0;
                 state.total = chat.length;
                 state.serverTotal = chat.length;
+                state.serverRevision = data.noraRevision || '';
                 state.fullHistoryLoaded = true;
                 state.renderStart = renderedHistoryStart;
                 return chat;
@@ -4679,6 +4689,7 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     if (isNoraProductMode()) {
         await ensureNoraFullChatLoaded();
         await globalThis.__NORA_GENERATION_PREREQUISITES_PROMISE__;
+        if (!dryRun) worldPresetProjection.restore(chat_metadata?.nora_world?.id);
     }
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
@@ -5066,7 +5077,8 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
     };
 
     // Render the story string and combine with injections
-    const storyString = renderStoryString(storyStringParams);
+    // Chat completion assembles these fields as separate prompt blocks, not via this template.
+    const storyString = renderStoryString(storyStringParams, { validateTemplate: main_api !== 'openai' });
     let combinedStoryString = isInstruct ? formatInstructModeStoryString(storyString) : storyString;
 
     // Inject the story string as in-chat prompt (if needed)
@@ -6983,6 +6995,28 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         [type, getMessage, fromStreaming, title, swipes, reasoning, imageUrls, reasoningSignature] = arguments;
     }
 
+    async function renderReceivedReply(messageId, options = {}) {
+        const message = chat[messageId];
+        const currentChat = chat;
+        const currentChatId = getCurrentChatId();
+        const renderBeforeHooks = !fromStreaming && isNoraProductMode();
+        // Non-streaming replies are already complete. Show them before awaiting
+        // MESSAGE_RECEIVED listeners (including the separate MVU request).
+        if (renderBeforeHooks) addOneMessage(message, options);
+        const renderedState = renderBeforeHooks ? JSON.stringify(message) : null;
+        if (!fromStreaming) await eventSource.emit(event_types.MESSAGE_RECEIVED, messageId, type);
+        if (chat !== currentChat || getCurrentChatId() !== currentChatId || chat[messageId] !== message) return false;
+        if (!renderBeforeHooks) {
+            addOneMessage(message, options);
+        } else if (JSON.stringify(message) !== renderedState) {
+            // Keep hook edits, without appending a duplicate or re-rendering an
+            // unchanged body. Preserve the existing node and scroll position.
+            addOneMessage(message, { type: 'swipe', forceId: messageId, scroll: false });
+        }
+        if (!fromStreaming) await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, messageId, type);
+        return chat === currentChat && getCurrentChatId() === currentChatId && chat[messageId] === message;
+    }
+
     const lastMessage = chat[chat.length - 1];
 
     if (type != 'append' && type != 'continue' && type != 'appendFinal' && chat.length && (lastMessage.swipe_id === undefined ||
@@ -7023,9 +7057,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
                 lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
             }
             const chat_id = (chat.length - 1);
-            !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
-            addOneMessage(chat[chat_id], { type: 'swipe' });
-            !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
+            if (!await renderReceivedReply(chat_id, { type: 'swipe' })) return { type, getMessage };
         } else {
             lastMessage.mes = getMessage;
         }
@@ -7047,9 +7079,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
         }
         const chat_id = (chat.length - 1);
-        !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
-        addOneMessage(chat[chat_id], { type: 'swipe' });
-        !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
+        if (!await renderReceivedReply(chat_id, { type: 'swipe' })) return { type, getMessage };
     } else if (type === 'appendFinal') {
         console.debug('Trying to appendFinal.');
         lastMessage.title = title;
@@ -7068,9 +7098,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
             lastMessage.extra.token_count = await getTokenCountAsync(tokenCountText, 0);
         }
         const chat_id = (chat.length - 1);
-        !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
-        addOneMessage(chat[chat_id], { type: 'swipe' });
-        !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
+        if (!await renderReceivedReply(chat_id, { type: 'swipe' })) return { type, getMessage };
     } else {
         console.debug('entering chat update routine for non-swipe post');
         const newMessage = {};
@@ -7100,9 +7128,7 @@ export async function saveReply({ type, getMessage, fromStreaming = false, title
         await processImageAttachment(newMessage, { imageUrls });
         const chat_id = (chat.length - 1);
 
-        !fromStreaming && await eventSource.emit(event_types.MESSAGE_RECEIVED, chat_id, type);
-        addOneMessage(chat[chat_id]);
-        !fromStreaming && await eventSource.emit(event_types.CHARACTER_MESSAGE_RENDERED, chat_id, type);
+        if (!await renderReceivedReply(chat_id)) return { type, getMessage };
     }
 
     const item = chat[chat.length - 1];
@@ -7711,12 +7737,35 @@ export function saveChatDebounced() {
  */
 let noraChatBackupTransactionDepth = 0;
 
-export async function saveChat({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false } = {}) {
+const enqueueChatWrite = createChatWriteQueue(busy => { isChatSaving = busy; });
+
+function queueChatWrite(operation) {
+    const identity = () => JSON.stringify([createChatSaveTarget(), getCurrentChatId(), characters[this_chid]?.avatar]);
+    const target = identity();
+    const assertCurrent = () => {
+        if (identity() !== target) throw Object.assign(new Error('The active chat changed before the save completed.'), {
+            code: 'NORA_CHAT_SAVE_STALE', phase: 'save',
+        });
+    };
+    return enqueueChatWrite(() => { assertCurrent(); return operation(assertCurrent); });
+}
+
+export async function saveChat(options = {}) {
     if (arguments.length > 0 && typeof arguments[0] !== 'object') {
         console.trace('saveChat called with positional arguments. Please use an object instead.');
-        [chatName, withMetadata, mesId, force] = arguments;
+        const [chatName, withMetadata, mesId, force] = arguments;
+        options = { chatName, withMetadata, mesId, force };
     }
+    try {
+        return await queueChatWrite(assertCurrent => saveChatNow(options, assertCurrent));
+    } catch (error) {
+        if (isNoraProductMode() || options.requireConfirmation) error.phase = 'save';
+        throw error;
+    }
+}
 
+async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false, requireConfirmation = false } = {}, assertCurrent = () => {}) {
+    const saveIdentity = getCurrentChatId();
     const activeChatName = characters[this_chid]?.chat;
     const isCurrentNoraChatSave = isNoraProductMode()
         && chatData === undefined
@@ -7724,16 +7773,22 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
     if (isCurrentNoraChatSave) {
         await ensureNoraFullChatLoaded();
     }
+    assertCurrent();
+    if (requireConfirmation && saveIdentity !== getCurrentChatId()) {
+        throw new Error('The active chat or message changed while MVU was updating.');
+    }
 
     const metadata = { ...chat_metadata, ...(withMetadata || {}) };
     const fileName = chatName ?? activeChatName;
 
     if (!fileName && name2 === neutralCharacterName) {
+        if (requireConfirmation || isNoraProductMode()) throw new Error('No active chat file to save.');
         // TODO: Do something for a temporary chat with no character.
         return;
     }
 
     if (!fileName) {
+        if (requireConfirmation || isNoraProductMode()) throw new Error('No active chat file to save.');
         console.warn('saveChat called without chat_name and no chat file found');
         return;
     }
@@ -7759,7 +7814,9 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
         character_name: 'unused',
     };
 
+    let retrySave;
     try {
+        const retrySnapshot = JSON.stringify({ chat, metadata: chat_metadata });
         const saveChatRequest = await compressRequest({
             method: 'POST',
             cache: 'no-cache',
@@ -7775,10 +7832,21 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
                 nora_base_revision: noraBaseRevision,
             }),
         });
-        const result = await fetch('/api/chats/save', saveChatRequest);
-
-        if (result.ok) {
-            const saved = await result.json();
+        assertCurrent();
+        const send = async () => {
+            assertCurrent();
+            const headers = new Headers(saveChatRequest.headers);
+            for (const [key, value] of Object.entries(getRequestHeaders())) headers.set(key, value);
+            const result = await requestChatWrite('/api/chats/save', { ...saveChatRequest, headers });
+            assertCurrent();
+            if (!result.ok) throw Object.assign(new Error(result.data?.error || result.statusText), {
+                code: result.data?.error || 'NORA_CHAT_SAVE_FAILED', status: result.status, phase: 'save',
+            });
+            const saved = result.data;
+            if ((isCurrentNoraChatSave || requireConfirmation)
+                && (saved?.ok !== true || typeof saved.revision !== 'string' || !saved.revision)) {
+                throw Object.assign(new Error('服务器未返回有效的聊天保存确认，不能标记为已保存。'), { code: 'NORA_CHAT_SAVE_UNCONFIRMED', phase: 'save' });
+            }
             if (saved.ledger) {
                 adoptLedgerStatus(saved.ledger);
                 if (saved.ledger.running) void refreshLedger();
@@ -7786,16 +7854,38 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             if (activeWindowState && matchesNoraChatWindow(activeWindowState)) {
                 activeWindowState.serverTotal = trimmedChat.length;
                 activeWindowState.serverRevision = saved.revision || activeWindowState.serverRevision;
+            } else if (isCurrentNoraChatSave && saved.revision) {
+                const binding = currentNoraChatBinding();
+                if (binding) noraChatWindowState = {
+                    avatar: binding.avatar, chatId: binding.chatId, identity: binding.identity,
+                    start: 0, total: trimmedChat.length, serverTotal: trimmedChat.length,
+                    serverRevision: saved.revision, fullHistoryLoaded: true, fullPromise: null,
+                    renderStart: Math.max(0, trimmedChat.length - NORA_CHAT_WINDOW_SIZE), showFullHistory: false,
+                };
             }
+            return { confirmed: true };
+        };
+        if (isCurrentNoraChatSave) {
+            retrySave = () => queueChatWrite(async () => {
+                assertCurrent();
+                if (JSON.stringify({ chat, metadata: chat_metadata }) !== retrySnapshot) throw Object.assign(new Error('聊天内容已改变，不能重试覆盖先前的保存。当前内容仍保留在页面中。'), { code: 'NORA_CHAT_SAVE_STALE', phase: 'save' });
+                try { return await send(); }
+                catch (error) { error.retrySave = retrySave; throw error; }
+            });
+        }
+        return await send();
+    } catch (error) {
+        if (isNoraProductMode() || requireConfirmation) {
+            error.phase = 'save';
+            error.retrySave = retrySave;
+            throw error;
+        }
+        if (error.code !== 'integrity' || force) {
+            console.error(error);
+            toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
+            if (error?.code?.startsWith('NORA_LEDGER_')) throw error;
             return;
         }
-
-        const errorData = await result.json();
-        const isIntegrityError = errorData?.error === 'integrity' && !force;
-        if (!isIntegrityError) {
-            throw Object.assign(new Error(errorData?.error || result.statusText), { code: errorData?.error });
-        }
-
         const popupResult = await Popup.show.input(
             t`ERROR: Chat integrity check failed while saving the file.`,
             t`<p>After you click OK, the page will be reloaded to prevent data corruption.</p>
@@ -7812,11 +7902,7 @@ export async function saveChat({ chatName, withMetadata, mesId, force = false, c
             return;
         }
 
-        await saveChat({ chatName, withMetadata, mesId, force: true, skipBackup });
-    } catch (error) {
-        console.error(error);
-        toastr.error(t`Check the server connection and reload the page to prevent data loss.`, t`Chat could not be saved`);
-        if (error?.code?.startsWith('NORA_LEDGER_')) throw error;
+        await saveChatNow({ chatName, withMetadata, mesId, force: true, skipBackup }, assertCurrent);
     }
 }
 
@@ -8189,6 +8275,11 @@ export async function activateNoraWorldSnapshot(characterId, snapshot) {
         characters[characterId] = character;
         setCharacterId(characterId);
         chat_metadata = {};
+        // Install World-owned identity before getChat renders macros or emits
+        // first-message events. Do not edit the global persona library here.
+        const persona = normalizeWorldPersona(plan.persona);
+        name1 = persona.name;
+        power_user.persona_description = persona.description;
     });
     await getChat({ preloadedData: snapshot.chat, strict: true });
 }
@@ -8707,9 +8798,16 @@ export async function commitNoraStoryEdit(messageId, text) {
     // Preserve ST's edit-time regex/macros/bias behavior without mutating the
     // live message before the server accepts the atomic branch edit.
     const edited = applyMessageEdit(structuredClone(chat[absoluteId]), String(text ?? ''), { markTainted: false });
-    const data = await editStoryMessage({ chat, chatMetadata: chat_metadata }, absoluteId, edited.text, edited.mes.extra.bias);
-    chat_metadata = data[0].chat_metadata;
-    chat.splice(0, chat.length, ...data.slice(1));
+    await queueChatWrite(async assertCurrent => {
+        const { chat: data, revision } = await editStoryMessage({ chat, chatMetadata: chat_metadata }, absoluteId, edited.text, edited.mes.extra.bias);
+        assertCurrent();
+        chat_metadata = data[0].chat_metadata;
+        chat.splice(0, chat.length, ...data.slice(1));
+        if (matchesNoraChatWindow()) {
+            noraChatWindowState.serverRevision = revision || '';
+            noraChatWindowState.serverTotal = chat.length;
+        }
+    }).catch(error => { error.phase = 'save'; throw error; });
     this_edit_mes_id = -1;
     const messageElement = chatElement.children(`.mes[mesid="${absoluteId}"]`);
     if (messageElement.length === 1 && chat[absoluteId]) {
@@ -9959,38 +10057,30 @@ const recoverLedgerSaveFailure = createLedgerSaveRecovery({
     reload: () => reloadCurrentChat(),
 });
 
-export async function saveChatConditional() {
-    try {
-        await waitUntilCondition(() => !isChatSaving, DEFAULT_SAVE_EDIT_TIMEOUT, 100);
-    } catch {
-        console.warn('Timeout waiting for chat to save');
-        if (isNoraProductMode()) throw new Error('聊天保存仍在处理中，请稍后重试。');
-        return;
-    }
-
+export async function saveChatConditional(options = {}) {
+    const requireConfirmation = options?.requireConfirmation === true;
     const chatSaveTarget = createChatSaveTarget();
     let failure = null;
-    const shouldRethrow = isNoraProductMode();
+    const shouldRethrow = requireConfirmation || isNoraProductMode();
 
     try {
         cancelDebouncedChatSave();
 
-        isChatSaving = true;
-
-        await saveChat();
+        await saveChat({ requireConfirmation });
 
         // Save token and prompts cache to IndexedDB storage
-        saveTokenCache();
-        saveItemizedPrompts(getCurrentChatId());
+        try {
+            saveTokenCache();
+            saveItemizedPrompts(getCurrentChatId());
+        } catch (error) { console.warn('Chat saved, but local prompt cache could not be updated', error); }
     } catch (error) {
         console.error('Error saving chat', error);
         failure = error;
-    } finally {
-        isChatSaving = false;
     }
 
     if (failure) {
-        if (failure?.code?.startsWith('NORA_LEDGER_')) {
+        // Nora keeps the unsaved page content on a conflict; never reload it away.
+        if (!isNoraProductMode() && failure?.code?.startsWith('NORA_LEDGER_')) {
             noraLedgerRecoveryTarget = chatSaveTarget;
             try {
                 await recoverLedgerSaveFailure(failure, chatSaveTarget);
@@ -10002,6 +10092,7 @@ export async function saveChatConditional() {
         }
         if (shouldRethrow) throw failure;
     }
+    if (requireConfirmation) return { confirmed: true };
 }
 
 /**

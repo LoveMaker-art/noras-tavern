@@ -31,11 +31,11 @@ The character-card resource used by the compatibility engine to execute a World.
 _Avoid_: World, character ID, avatar
 
 **Blank World Runtime**:
-A shared internal Runtime Card Resource that lets a World exist without an imported character card. It is compatibility infrastructure, not a Participating Character.
+An internal Runtime Card Resource that lets a World exist without an imported character card. New Worlds own independent copies. It is compatibility infrastructure, not a Participating Character.
 _Avoid_: Blank character, default character, empty card
 
 **Knowledge Resource**:
-A referenced body of story knowledge, such as a Worldbook, that may be owned by one World, shared by several Worlds, or external to Nora.
+A body of story knowledge, such as a Worldbook. Each newly created World owns independent copies, separate from reusable library originals. Legacy shared or external resources remain readable without automatic migration.
 _Avoid_: Worldbook name, World
 
 **ST Binding**:

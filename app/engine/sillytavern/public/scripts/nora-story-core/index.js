@@ -7,13 +7,13 @@ import { createWorldCoreRuntime } from '../nora-worlds/world-core-runtime.js';
 const DOMAIN_METHODS = Object.freeze({
     state: ['snapshot', 'subscribe', 'whenReady'],
     messages: ['runSlash', 'prepareMutation', 'sendText', 'stop', 'regenerate', 'editAndRegenerate', 'suggestReplies', 'isGenerating', 'swipe', 'editMessage', 'restoreMessage'],
-    cards: ['isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'patchCharacter', 'deleteCharacterCards', 'savePersona'],
+    cards: ['isSystemCharacter', 'resolveCharacter', 'characterCapabilities', 'ensureCharacterCapability', 'markCharacterCapabilitiesPrompted', 'enableCharacterCapabilities', 'rerenderCharacterChat', 'refreshCharacters', 'updateCharacter', 'patchCharacter', 'readCharacterRegex', 'saveCharacterRegex', 'deleteCharacterCards', 'importLibraryCard', 'savePersona'],
     worldbook: ['loadWorldbook', 'saveWorldbook', 'saveWorldbookEntry', 'saveWorldScenario', 'updateEmbeddedWorldbook'],
     model: ['assertModelConfigured', 'configureModel', 'clearModelConfiguration', 'deleteModelSecret'],
     mvu: ['status', 'setEnabled', 'useStoryModel', 'useIndependentModel'],
     settings: ['uiSettings', 'saveUiSettings', 'setHostPersonality'],
     transport: ['requestHeaders'],
-    presets: ['listPresets', 'importPreset', 'updatePromptContent', 'applyPreset'],
+    presets: ['listPresets', 'importPreset', 'applyPreset', 'readPreset', 'savePresetEntries', 'toggleablePresetEntries', 'deletePreset'],
 });
 
 function createDomain(runtime, name, methods) {

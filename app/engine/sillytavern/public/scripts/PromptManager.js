@@ -6,7 +6,7 @@ import { event_types, eventSource, is_send_press, main_api, substituteParams } f
 import { Message, MessageCollection, TokenHandler } from './openai.js';
 import { power_user } from './power-user.js';
 import { debounce, waitUntilCondition, escapeHtml, uuidv4 } from './utils.js';
-import { debounce_timeout } from './constants.js';
+import { debounce_timeout, DEFAULT_STORY_PROMPT } from './constants.js';
 import { renderTemplateAsync } from './templates.js';
 import { Popup } from './popup.js';
 import { t } from './i18n.js';
@@ -2007,7 +2007,7 @@ const chatCompletionDefaultPrompts = {
             'name': 'Main Prompt',
             'system_prompt': true,
             'role': 'system',
-            'content': 'Write {{char}}\'s next reply in a fictional chat between {{charIfNotGroup}} and {{user}}.',
+            'content': DEFAULT_STORY_PROMPT,
             'identifier': 'main',
         },
         {

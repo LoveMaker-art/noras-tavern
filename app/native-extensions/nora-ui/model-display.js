@@ -40,11 +40,13 @@ export function projectTextModelChoices(uiSettings = {}) {
 }
 
 export function projectTextModelDisplay({ nativeModel = {}, uiSettings = {} } = {}) {
-    const nativeId = normalized(nativeModel.custom_model);
-    const nativeReady = Boolean(normalized(nativeModel.custom_url) && nativeId);
+    const source = nativeModel.chat_completion_source || 'custom';
+    const field = { custom: 'custom_model', claude: 'claude_model', makersuite: 'google_model' }[source];
+    const nativeId = normalized(nativeModel[field]);
+    const nativeReady = Boolean(nativeId && (source !== 'custom' || normalized(nativeModel.custom_url)));
     const profiles = Array.isArray(uiSettings.modelProfiles) ? uiSettings.modelProfiles : [];
     const activeProfile = profiles.find(profile => profile.id === uiSettings.activeModel);
-    if (nativeReady && activeProfile && normalized(activeProfile.model) === nativeId) {
+    if (nativeReady && source === (activeProfile?.source || 'custom') && activeProfile && normalized(activeProfile.model) === nativeId) {
         return Object.freeze({
             configured: true,
             source: 'profile',
@@ -54,7 +56,7 @@ export function projectTextModelDisplay({ nativeModel = {}, uiSettings = {} } = 
     }
 
     const hermes = uiSettings.hermesModel;
-    if (nativeReady && normalized(hermes?.provider) && normalized(hermes?.model) === nativeId) {
+    if (nativeReady && source === (hermes?.source || 'custom') && normalized(hermes?.provider) && normalized(hermes?.model) === nativeId) {
         return Object.freeze({
             configured: true,
             source: 'hermes',

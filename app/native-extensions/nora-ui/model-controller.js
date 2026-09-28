@@ -3,21 +3,19 @@ import { HERMES_MODEL_ID, projectTextModelChoices, projectTextModelDisplay } fro
 import { createModelProfiles } from '../../engine/sillytavern/public/scripts/nora-adapters/model-profiles.js';
 export { planModelRemoval } from '../../engine/sillytavern/public/scripts/nora-adapters/model-profiles.js';
 
-function clamp(value, fallback, minimum, maximum) {
-    const number = Number(value);
-    return Math.min(maximum, Math.max(minimum, Number.isFinite(number) ? number : fallback));
-}
-
 export function renderMvuModelSection(status, escapeHtml, config = {}) {
     if (!status?.supported) return '';
     const enabled = status.enabled !== false;
+    // Partial results remain diagnostics, not a model-health warning or success claim.
+    const updateOperational = status.updatePhase === 'partial' && status.lastUpdatePersisted === true
+        ? null : status.updateOperational;
     const stateLabel = !enabled
         ? tr("已关闭")
         : status.phase === 'failed'
         ? tr("运行异常")
-        : status.updateOperational === true
+        : updateOperational === true
         ? tr("更新正常")
-        : status.updateOperational === false
+        : updateOperational === false
         ? tr("更新未生效")
         : status.initialized && status.updateProtocol === 'initialization-only'
         ? tr("仅初始化")
@@ -29,13 +27,14 @@ export function renderMvuModelSection(status, escapeHtml, config = {}) {
     const modelLabel = followsStory
         ? tr("跟随文本模型")
         : config.model || status.variableModelName || tr("尚未配置");
-    const stateTone = status.phase === 'failed' || status.updateOperational === false
+    const stateTone = status.phase === 'failed' || updateOperational === false
         ? 'error'
-        : enabled && status.updateOperational === true ? 'ready' : 'pending';
-    return `<section class="nora-model-group nora-mvu-model-group"><div class="nora-model-group-head"><span>${tr("MVU 变量模型")}</span><label class="nora-mvu-toggle"><input data-mvu-enabled type="checkbox" ${enabled ? 'checked' : ''}><span aria-hidden="true"></span><b>${stateLabel}</b></label></div><div class="nora-mode-switch nora-mvu-source"><button class="${followsStory ? 'active' : ''}" data-mvu-source="story" type="button">${tr("跟随文本模型")}</button><button class="${followsStory ? '' : 'active'}" data-mvu-source="independent" type="button">${tr("独立模型")}</button></div><div class="nora-mvu-model-summary"><span class="nora-mvu-status is-${stateTone}">${stateLabel}</span><strong>${escapeHtml(modelLabel)}</strong><button data-mvu-config type="button">${tr("配置")}</button></div></section>`;
+        : enabled && updateOperational === true ? 'ready' : 'pending';
+    return `<section class="nora-model-group nora-mvu-model-group"><div class="nora-model-group-head"><span>${tr("MVU 变量模型")}</span><label class="nora-mvu-toggle"><input data-mvu-enabled type="checkbox" ${enabled ? 'checked' : ''}><span aria-hidden="true"></span><b>${stateLabel}</b></label></div><div class="nora-mode-switch nora-mvu-source"><button class="${followsStory ? 'active' : ''}" data-mvu-source="story" type="button">${tr("跟随文本模型")}</button><button class="${followsStory ? '' : 'active'}" data-mvu-source="independent" type="button">${tr("独立模型")}</button></div><div class="nora-mvu-model-summary"><span class="nora-mvu-status is-${stateTone}">${stateLabel}</span><strong>${escapeHtml(modelLabel)}</strong><button data-mvu-config type="button">${tr("配置独立模型")}</button></div></section>`;
 }
 
 export function createModelController({ model, settingsDomain, operations, readState, activeWorldModel, settings, dialogs, select, selectAll, escapeHtml, icons, mvu, onChanged }) {
+    let onBack = null;
     const profileActions = createModelProfiles({ model, settings, persist: () => settingsDomain.saveUiSettings({ immediate: true }) });
     const profiles = () => settings().modelProfiles || [];
     const activeWorldCapabilities = () => activeWorldModel()?.capabilities || null;
@@ -47,9 +46,9 @@ export function createModelController({ model, settingsDomain, operations, readS
             name: hermes.provider,
             base: hermes.base,
             model: hermes.model,
-            context: hermes.context,
-            tokens: hermes.tokens,
             secretId: hermes.secretId,
+            source: hermes.source || 'custom',
+            secretKey: hermes.secretKey || 'api_key_custom',
         };
     };
 
@@ -105,11 +104,14 @@ export function createModelController({ model, settingsDomain, operations, readS
         const native = readState().model;
         const available = projectTextModelChoices(settings());
         const display = projectTextModelDisplay({ nativeModel: native, uiSettings: settings() });
-        const contextValue = clamp(native.openai_max_context, 32768, 512, 1000000);
-        const tokenValue = clamp(native.openai_max_tokens, 2048, 1, 128000);
         const rows = available.map((choice) => `<div class="nora-model-item ${choice.active ? 'active' : ''}" data-model-choice="${escapeHtml(choice.id)}" role="button" tabindex="0"><div class="nora-model-info"><strong>${escapeHtml(choice.name)}</strong><span>${escapeHtml(choice.model)}</span></div><span class="nora-model-check" aria-hidden="true">✓</span>${choice.deletable ? `<button class="nora-delete-button nora-model-delete" data-model-delete="${escapeHtml(choice.id)}" type="button" aria-label="${t`删除模型 ${escapeHtml(choice.name)}`}" title="${tr("删除模型")}">${icons.trash}</button>` : ''}</div>`).join('');
         const initialMvuStatus = mvu?.status?.(activeWorldCapabilities());
         const modal = dialogs.open(tr("模型"), `<section class="nora-model-group"><div class="nora-model-group-head"><span>${tr("文本模型")}</span><button data-model-add type="button">${icons.plus}<span>${tr("添加")}</span></button></div><p class="nora-model-hint">${t`当前使用：${escapeHtml(display.label)}`}</p><div class="nora-model-list">${rows || `<p class="nora-model-empty">${tr("还没有保存自定义模型。")}</p>`}</div></section><div data-mvu-model-slot>${renderMvuModelSection(initialMvuStatus, escapeHtml)}</div>`, 'nora-model-modal nora-plain-sheet');
+        if (onBack) {
+            const back = onBack;
+            select('.nora-sheet-body', modal)?.insertAdjacentHTML('afterbegin', `<button class="nora-sheet-back" data-model-back type="button">${tr('‹ 返回增强能力')}</button>`);
+            select('[data-model-back]', modal)?.addEventListener('click', back);
+        }
         void refreshMvuSection(modal);
         selectAll('[data-model-choice]', modal).forEach((row) => {
             row.addEventListener('click', () => apply(row.dataset.modelChoice));
@@ -125,17 +127,18 @@ export function createModelController({ model, settingsDomain, operations, readS
             event.stopPropagation();
             void remove(button.dataset.modelDelete);
         }));
-        select('[data-model-add]', modal).addEventListener('click', () => openConfig({ contextValue, tokenValue }));
+        select('[data-model-add]', modal).addEventListener('click', openConfig);
     }
 
     function openMvuConfigForm(config = {}, status = {}) {
-        const modal = dialogs.open(tr("配置 MVU 变量模型"), `<form id="nora-mvu-model-form" class="nora-form nora-model-config-form"><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(config.base_url || '')}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(config.model || status.variableModelName || '')}" placeholder="${tr("填写变量模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${config.has_api_key ? tr("留空沿用已保存密钥") : tr("填写变量模型密钥")}"></label><div class="nora-form-grid"><label>${tr("上下文")}<input name="context" type="number" min="512" max="1000000" value="${Number(config.context) || 64000}"></label><label>${tr("最大回复")}<input name="tokens" type="number" min="1" max="128000" value="${Number(config.max_tokens) || 20000}"></label></div><p class="nora-model-note">${tr("密钥保存在后端，不会写入角色卡、聊天记录或前端设置。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-mvu-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
-        select('[data-mvu-cancel]', modal).addEventListener('click', open);
-        select('#nora-mvu-model-form', modal).addEventListener('submit', saveMvuConfig);
+        const modal = dialogs.open(tr("配置 MVU 独立模型"), `<form id="nora-mvu-model-form" class="nora-form nora-model-config-form"><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(config.base_url || '')}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(config.model || status.variableModelName || '')}" placeholder="${tr("填写变量模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${config.has_api_key ? tr("留空沿用已保存密钥") : tr("填写变量模型密钥")}"></label><div class="nora-form-grid"><label>${tr("上下文")}<input name="context" type="number" min="512" max="1000000" value="${Number(config.context) || 30000}"></label><label>${tr("最大回复")}<input name="tokens" type="number" min="1" max="128000" value="${Number(config.max_tokens) || 4000}"></label></div><p class="nora-model-note">${tr("密钥保存在后端，不会写入角色卡、聊天记录或前端设置。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-mvu-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
+        const draft = dialogs.protectForm(select('#nora-mvu-model-form', modal), { isBusy: () => operations.isBusy('mvu-model') });
+        select('[data-mvu-cancel]', modal).addEventListener('click', () => draft.leave(open));
+        select('#nora-mvu-model-form', modal).addEventListener('submit', event => saveMvuConfig(event, draft));
         select('#nora-mvu-model-form input[name="base"]', modal)?.focus();
     }
 
-    async function saveMvuConfig(event) {
+    async function saveMvuConfig(event, draft) {
         event.preventDefault();
         if (operations.isBusy('mvu-model')) {
             dialogs.toast(tr("MVU 模型设置正在保存，请稍候。"));
@@ -152,6 +155,7 @@ export function createModelController({ model, settingsDomain, operations, readS
                 maxTokens: data.get('tokens'),
                 apiKey: data.get('key'),
             }));
+            draft.release();
             open();
         } catch (error) {
             submit.disabled = false;
@@ -159,7 +163,7 @@ export function createModelController({ model, settingsDomain, operations, readS
         }
     }
 
-    function openConfig({ contextValue, tokenValue } = {}) {
+    function openConfig() {
         const providers = [
             { id: 'deepseek', name: 'DeepSeek', base: 'https://api.deepseek.com/v1', model: 'deepseek-chat' },
             { id: 'openai', name: 'OpenAI', base: 'https://api.openai.com/v1', model: '' },
@@ -170,25 +174,24 @@ export function createModelController({ model, settingsDomain, operations, readS
         const modal = dialogs.open(tr("添加模型"), `<div class="nora-choice-list nora-provider-list">${choices}</div>`, 'nora-model-modal nora-plain-sheet');
         selectAll('[data-model-provider]', modal).forEach(button => button.addEventListener('click', () => {
             const provider = providers.find(item => item.id === button.dataset.modelProvider);
-            openConfigForm(provider, { contextValue, tokenValue });
+            openConfigForm(provider);
         }));
     }
 
-    function openConfigForm(provider, { contextValue, tokenValue } = {}) {
+    function openConfigForm(provider) {
         const native = readState().model;
-        const normalizedContext = contextValue ?? clamp(native.openai_max_context, 32768, 512, 1000000);
-        const normalizedTokens = tokenValue ?? clamp(native.openai_max_tokens, 2048, 1, 128000);
         const custom = provider?.id === 'custom';
         const name = custom ? '自定义模型' : provider?.name || '自定义模型';
         const base = custom ? native.custom_url || '' : provider?.base || '';
         const model = custom ? native.custom_model || '' : provider?.model || '';
-        const modal = dialogs.open(t`配置 ${name}`, `<form id="nora-model-form" class="nora-form nora-model-config-form"><label>${tr("配置名称")}<input name="name" required maxlength="60" autocomplete="off" value="${escapeHtml(name)}"></label><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(base)}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(model)}" placeholder="${tr("填写供应商提供的模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${tr("留空则沿用已保存密钥")}"></label><div class="nora-form-grid"><label>${tr("上下文")}<input name="context" type="number" min="512" max="1000000" value="${normalizedContext}"></label><label>${tr("最大回复")}<input name="tokens" type="number" min="1" max="128000" value="${normalizedTokens}"></label></div><p class="nora-model-note">${tr("保存时会先测试连接；完整密钥不会显示在模型列表中。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-model-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("测试并保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
-        select('[data-model-cancel]', modal).addEventListener('click', () => openConfig({ contextValue: normalizedContext, tokenValue: normalizedTokens }));
-        select('#nora-model-form', modal).addEventListener('submit', save);
+        const modal = dialogs.open(t`配置 ${name}`, `<form id="nora-model-form" class="nora-form nora-model-config-form"><label>${tr("配置名称")}<input name="name" required maxlength="60" autocomplete="off" value="${escapeHtml(name)}"></label><label>${tr("API 地址")}<input name="base" type="url" required inputmode="url" value="${escapeHtml(base)}" placeholder="https://api.example.com/v1"></label><label>${tr("模型 ID")}<input name="model" required autocomplete="off" value="${escapeHtml(model)}" placeholder="${tr("填写供应商提供的模型 ID")}"></label><label>API Key<input name="key" type="password" autocomplete="new-password" placeholder="${tr("留空则沿用已保存密钥")}"></label><p class="nora-model-note">${tr("保存时会先测试连接；完整密钥不会显示在模型列表中。")}</p><div class="nora-sheet-actions"><button class="nora-secondary" data-model-cancel type="button">${tr("返回")}</button><button class="nora-primary" type="submit">${tr("测试并保存")}</button></div></form>`, 'nora-model-modal nora-plain-sheet');
+        const draft = dialogs.protectForm(select('#nora-model-form', modal), { isBusy: () => operations.isBusy('model') });
+        select('[data-model-cancel]', modal).addEventListener('click', () => draft.leave(openConfig));
+        select('#nora-model-form', modal).addEventListener('submit', event => save(event, draft));
         select('#nora-model-form input[name="name"]', modal)?.focus();
     }
 
-    async function save(event) {
+    async function save(event, draft) {
         event.preventDefault();
         if (operations.isBusy('model')) {
             dialogs.toast(tr("模型配置正在保存，请稍候。"));
@@ -200,8 +203,6 @@ export function createModelController({ model, settingsDomain, operations, readS
             name: String(data.get('name') || '').trim(),
             base: String(data.get('base') || '').trim(),
             model: String(data.get('model') || '').trim(),
-            context: Number(data.get('context') || 32768),
-            tokens: Number(data.get('tokens') || 2048),
         };
         const submit = event.currentTarget.querySelector('[type="submit"]');
         const previousActive = settings().activeModel;
@@ -214,6 +215,7 @@ export function createModelController({ model, settingsDomain, operations, readS
                 configured = true;
                 persisted = true;
                 onChanged();
+                draft.release();
                 open();
             });
         } catch (error) {
@@ -292,5 +294,5 @@ export function createModelController({ model, settingsDomain, operations, readS
         }
     }
 
-    return Object.freeze({ open });
+    return Object.freeze({ open: (back = null) => { onBack = typeof back === 'function' ? back : null; open(); } });
 }

@@ -2,6 +2,7 @@ import { CONTROL_ACTIONS, validateControl, controlError } from './contract.js';
 import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { createThemeActions } from './theme-actions.js';
 import { createPanelActions } from './panel-actions.js';
+import { createPresetActions } from './preset-actions.js';
 
 const denied = ['assets', 'attachments', 'connection-manager', 'gallery', 'memory', 'token-counter'];
 const managedScriptId = 'nora-mvu-headless-runtime';
@@ -66,7 +67,11 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
     }
     async function request(route, body) {
         const response = await fetcher(route, { method: body === undefined ? 'GET' : 'POST', headers: getContext().getRequestHeaders(), body: JSON.stringify(body), signal: AbortSignal.timeout(30000) });
-        if (!response.ok) throw controlError('NORA_CONTROL_BACKEND_FAILED', 'Backend rejected control change.');
+        if (!response.ok) {
+            const payload = await response.json().catch(() => null);
+            const code = /^NORA_[A-Z_]+$/.test(payload?.error?.code) ? payload.error.code : 'NORA_CONTROL_BACKEND_FAILED';
+            throw controlError(code, 'Backend rejected control change; inspect current state before retrying.');
+        }
         return response.json();
     }
     async function assertOwnedCard() {
@@ -90,8 +95,11 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             effect: name === 'third-party/nora-mvu' ? 'use-mvu.runtime' : 'reload-required' }));
     }
     let mutating = false;
-    const themeAction = createThemeActions({ getContext, request, story, readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false } });
+    const themeAction = createThemeActions({ getContext, request, story,
+        readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false },
+        renderTheme: () => globalRef.NoraUI?.refreshTheme?.() || { ready: false } });
     const panelAction = createPanelActions({ getContext, story, request, character, assertOwnedCard, save });
+    const presetAction = createPresetActions({ getContext, story, request });
     async function execute(command) {
         const definition = validateControl(command);
         const currentScope = scope();
@@ -103,24 +111,31 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             if (globalRef.Mvu?.isDuringExtraAnalysis?.()) throw controlError('NORA_CONTROL_BUSY', 'MVU is still updating variables.');
         }
         const params = command.params ?? {};
-        if (params.scope && params.scope !== 'global') character();
+        if (params.scope && params.scope !== 'global' && !(command.action.startsWith('preset.') && params.scope === 'library')) character();
         if (!definition.readOnly && !isStop) mutating = true;
         try {
             // Use the existing task registry: World changes already consult this registry.
             // Do not nest story generation inside another generation action.
             if (!definition.readOnly && !isStop && !command.action.startsWith('story.') && currentScope.worldId) {
                 const result = await dispatch().execute({ type: 'sidecar.run', key: 'runtime-controls',
-                    run: () => apply(command.action, params) });
+                    run: () => apply(command.action, params, command) });
                 if (result.status !== 'completed') throw result.error || controlError('NORA_CONTROL_BUSY', 'Control action was not completed.');
                 return result.value;
             }
-            return await apply(command.action, params);
+            return await apply(command.action, params, command);
         } finally { if (!definition.readOnly && !isStop) mutating = false; }
     }
-    async function apply(action, params) {
+    async function apply(action, params, command) {
+        if (scope().worldId !== command.worldId || scope().sessionId !== command.sessionId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World/Session changed before execution.');
+        if (action.startsWith('preset.')) return presetAction(action, params);
+        if (action.startsWith('appearance.')) {
+            const ui = globalRef.NoraUI;
+            if (!ui?.appearanceState?.().ready) throw controlError('NORA_APPEARANCE_NOT_READY', 'Page appearance is not ready.');
+            return action === 'appearance.inspect' ? ui.appearanceState() : ui.setAppearance(params);
+        }
         if (action.startsWith('theme.')) return themeAction(action, params);
         const context = getContext();
-        if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params);
+        if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params, command);
         if (params.scope === 'character' && !CONTROL_ACTIONS[action].readOnly && action !== 'helper.permissions' && action !== 'regex.permission') await assertOwnedCard();
         if (action === 'plugins.list') return { plugins: await plugins(), quickReply: { available: false, reason: 'frontend-module-not-installed' }, backend: ['nora.ledger.*', 'nora.story.*'] };
         if (action.startsWith('plugins.')) {

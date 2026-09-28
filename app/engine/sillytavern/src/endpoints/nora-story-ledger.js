@@ -1,5 +1,6 @@
 import express from 'express';
 import { resolveStoryLedger } from '../nora-story-ledger/runtime.js';
+import { getChatRevision } from '../chat-revision.js';
 
 export const router = express.Router();
 // Separate read contract: no model scheduling, state repair or memory projection.
@@ -22,7 +23,10 @@ for (const action of ['status', 'configure', 'compress', 'edit']) {
             const scope = { worldId: request.body?.worldId, sessionId: request.body?.sessionId };
             const runtime = resolveStoryLedger(request.user.directories);
             await runtime.resolve(scope);
-            if (action === 'edit') return response.json({ chat: await runtime.edit(scope, request.body), ledger: await runtime.plugin.status(scope) });
+            if (action === 'edit') {
+                const chat = await runtime.edit(scope, request.body);
+                return response.json({ chat, revision: getChatRevision(chat), ledger: await runtime.plugin.status(scope) });
+            }
             if (action === 'configure') {
                 return response.json(await runtime.plugin.configure(scope, { enabled: request.body.enabled }));
             }

@@ -136,5 +136,5 @@ export async function editStoryMessage(context, id, text, bias = null) {
         expectedSignature: await digestHistory(context.chat) });
     if (scopeKey(scope) !== scopeKey(ledgerScope())) throw new Error('World changed during editing.');
     adoptLedgerStatus(result.ledger);
-    return result.chat;
+    return { chat: result.chat, revision: result.revision };
 }

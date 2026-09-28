@@ -1,4 +1,7 @@
 import crypto from 'node:crypto';
+import { normalizeWorldPreset, validateWorldPresetParameters } from '../../public/scripts/nora-worlds/world-preset.js';
+import { createProfileLibrary } from './library-profiles.js';
+import { resolveCharacterReferences } from '../../public/scripts/nora-worlds/character-references.js';
 import { createStoryContext, editStoryCharacter, normalizeStoryContext } from '../../public/scripts/nora-worlds/story-context.js';
 
 import { createActivationPlan } from './activation-plan.js';
@@ -56,6 +59,7 @@ function normalizeWorldSetting(value, expectedRevision) {
 
 export class NoraWorldCore {
     #store;
+    #profiles;
     #journal;
     #mutations;
     #locks;
@@ -65,8 +69,9 @@ export class NoraWorldCore {
     #initialized = null;
     #tasks = new Map();
 
-    constructor({ store, journal, mutations, locks, materializer, createId, now }) {
+    constructor({ store, journal, mutations, locks, materializer, createId, now, profiles }) {
         this.#store = store;
+        this.#profiles = profiles;
         this.#journal = journal;
         this.#mutations = mutations;
         this.#locks = locks;
@@ -245,6 +250,7 @@ export class NoraWorldCore {
                         worldId: operation.world_id,
                         sessionId: operation.session_id,
                         runtimeCardResourceId: operation.runtime_card_resource_id,
+                        worlds: await this.#store.list(),
                     }));
                 } catch (error) {
                     throw asWorldCoreError(
@@ -308,11 +314,46 @@ export class NoraWorldCore {
         return this.#store.list();
     }
 
+    async restartWorld(worldId, { name, idempotencyKey, expectedRevision } = {}) {
+        await this.#initialize();
+        const key = normalizeIdempotencyKey(idempotencyKey);
+        if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) {
+            throw new NoraWorldCoreError('NORA_WORLD_INVALID', '请填写不超过 80 字的世界名称。');
+        }
+        return this.#locks.run(`restart-intent:${operationIdForKey(key)}`, async () => {
+            const existing = await this.#journal.get(operationIdForKey(key));
+            if (existing) {
+                if (existing.command?.payload?.restart?.source_world_id !== worldId || existing.command.name !== name.trim()) {
+                    throw new NoraWorldCoreError('NORA_OPERATION_CONFLICT', '该开局请求已用于另一个世界，请重新打开操作。');
+                }
+                if (existing.status === 'FAILED' && existing.error?.retryable) return this.retryOperation(existing.operation_id);
+                return this.submitWorld(existing.command, { idempotencyKey: key });
+            }
+            const command = await this.#locks.run(`mutation-world:${worldId}`, async () => {
+                const world = await this.getWorld(worldId);
+                if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', '原世界不存在。');
+                if (world.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', '请先修复原世界，再重新开局。');
+                if (world.revision !== expectedRevision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', '原世界已更新，请重新打开开局设置。');
+                const staged = await this.#materializer.stageRestart(world, { name: name.trim(), idempotencyKey: key });
+                if ((await this.getWorld(worldId))?.revision !== world.revision) {
+                    await this.#materializer.releaseStagedInput(staged);
+                    throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', '原世界已更新，请重新打开开局设置。');
+                }
+                return staged;
+            });
+            return this.submitWorld(command, { idempotencyKey: key });
+        });
+    }
+
     async updateWorld(worldId, patch, { expectedRevision } = {}) {
         await this.#initialize();
         const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
         if (!patch || Array.isArray(patch) || typeof patch !== 'object'
-            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled', 'removeSetting'].includes(key))) invalid('Unsupported World edit.');
+            || !Object.keys(patch).length || Object.keys(patch).some(key => !['name', 'persona', 'character', 'relationships', 'cardProfileEnabled', 'removeSetting', 'preset'].includes(key))) invalid('Unsupported World edit.');
+        let preset;
+        if ('preset' in patch) {
+            try { preset = normalizeWorldPreset(patch.preset); validateWorldPresetParameters(preset.preset); } catch (error) { invalid(error.message); }
+        }
         if ('cardProfileEnabled' in patch && typeof patch.cardProfileEnabled !== 'boolean') invalid('Invalid card profile injection state.');
         if ('removeSetting' in patch && !['card-profile', 'scenario'].includes(patch.removeSetting)) invalid('Invalid World setting removal.');
         if ('name' in patch && (typeof patch.name !== 'string' || !patch.name.trim() || patch.name.length > 500)) invalid('Invalid World name.');
@@ -338,11 +379,92 @@ export class NoraWorldCore {
                 }
             } catch (error) { invalid(error.message); }
             return { ...current, ...(patch.name === undefined ? {} : { name: patch.name.trim() }),
+                ...(preset ? { preset } : {}),
                 ...(context ? { story_context: context } : {}),
                 persona: { ...current.persona, ...patch.persona }, updated_at: this.#now() };
         });
         if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
         return world;
+    }
+
+    async listLibraryWorldbooks() {
+        await this.#initialize();
+        return this.#materializer.listLibraryWorldbooks(await this.#store.list());
+    }
+
+    async listLibraryCards() {
+        await this.#initialize();
+        return this.#materializer.listLibraryCards(await this.#store.list());
+    }
+    async saveLibraryCard(input) {
+        await this.#initialize();
+        return this.#materializer.saveLibraryCard(input, await this.#store.list());
+    }
+    readLibraryCardSource(avatar) { return this.#materializer.readLibraryCardSource(avatar); }
+
+    listLibraryProfiles(kind) { return this.#profiles.list(kind); }
+    readLibraryProfile(id) { return this.#profiles.read(id); }
+    saveLibraryProfile(input) { return this.#profiles.save(input); }
+    deleteLibraryProfile(id, revision) { return this.#profiles.remove(id, revision); }
+
+    async readLibraryWorldbook(source) {
+        await this.#initialize();
+        return this.#materializer.readLibraryWorldbook(source);
+    }
+
+    async saveLibraryWorldbook(name, book) {
+        await this.#initialize();
+        return this.#locks.run('library:worldbooks', () => this.#materializer.saveLibraryWorldbook(name, book));
+    }
+
+    async deleteLibraryWorldbook(source, revision) {
+        await this.#initialize();
+        return this.#locks.run('library:worldbooks', async () => this.#materializer.deleteLibraryWorldbook(source, revision, await this.#store.list()));
+    }
+
+    async importLibraryItem(worldId, input) {
+        await this.#initialize();
+        if (!input || (!input.character && !input.source)) throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'Choose a character or Worldbook.');
+        return this.#locks.run(`mutation-world:${worldId}`, async () => {
+            const current = await this.#store.get(worldId);
+            if (!current) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
+            if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
+            if (!Number.isInteger(input.expected_revision) || input.expected_revision !== current.revision) throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the import preview.');
+            let context = current.story_context;
+            if (input.character) {
+                if (input.character.operation !== 'create') throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'Library import can only add characters.');
+                try {
+                    context = editStoryCharacter(context ?? createStoryContext(current.persona), input.character);
+                    resolveCharacterReferences(input.character.patch, context.characters, { strict: true });
+                }
+                catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+            }
+            const prepared = input.source ? await this.#materializer.prepareLibraryWorldbook(current, input) : null;
+            try {
+                if (prepared?.book) {
+                    try { resolveCharacterReferences(prepared.book.entries, context?.characters || [], { strict: true }); }
+                    catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+                }
+                const world = await this.#store.update(worldId, latest => {
+                    if (latest.revision !== current.revision || latest.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the import preview.');
+                    const capabilities = cloneJson(latest.capabilities);
+                    for (const capability of prepared?.declared || []) {
+                        if (capabilities.declared.includes(capability)) continue;
+                        capabilities.declared.push(capability);
+                        capabilities.items[capability] = { status: 'PENDING', attempts: 0 };
+                    }
+                    capabilities.status = Object.values(capabilities.items).some(item => item.status === 'DEGRADED') ? 'DEGRADED'
+                        : Object.values(capabilities.items).some(item => item.status === 'PENDING') ? 'PENDING' : 'READY';
+                    return { ...latest, ...(context ? { story_context: context } : {}),
+                        knowledge: prepared && !prepared.reused ? [...latest.knowledge, prepared.resource] : latest.knowledge,
+                        capabilities, updated_at: this.#now() };
+                });
+                return { world, reused: prepared?.reused || false };
+            } catch (error) {
+                await prepared?.abort().catch(() => {});
+                throw error;
+            }
+        });
     }
 
     async editWorldbookEntry(worldId, input) {
@@ -519,10 +641,12 @@ export class NoraWorldCore {
                 }
                 const materialization = await this.#materializer.addWorldSetting(world, operation.command.setting, {
                     operationId: operation.operation_id,
+                    worlds: await this.#store.list(),
                 });
                 operation = await this.#mutations.advance(operation.operation_id, 'RESOURCE_WRITTEN', {
                     result: {
                         resource: cloneJson(materialization.resource),
+                        source_resource_id: materialization.source_resource_id || null,
                         entry_id: String(materialization.entry_id),
                         operation_id: operation.operation_id,
                     },
@@ -532,9 +656,9 @@ export class NoraWorldCore {
                 const resource = operation.result?.resource;
                 world = await this.#store.update(operation.world_id, current => {
                     if (current.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is not ready for editing.');
-                    const existing = current.knowledge.find(item => item.source_key === 'nora:user-settings');
+                    const existing = current.knowledge.find(item => item.resource_id === resource?.resource_id);
                     if (existing) {
-                        if (existing.resource_id !== resource?.resource_id) {
+                        if (existing.binding.name !== resource?.binding?.name) {
                             throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'World settings resource binding changed unexpectedly.');
                         }
                         return current;
@@ -542,7 +666,14 @@ export class NoraWorldCore {
                     if (current.revision !== operation.command.expected_revision) {
                         throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; read it again before adding a setting.');
                     }
-                    return { ...current, knowledge: [resource, ...current.knowledge], updated_at: this.#now() };
+                    const sourceId = operation.result?.source_resource_id;
+                    if (sourceId && !current.knowledge.some(item => item.resource_id === sourceId)) {
+                        throw new NoraWorldCoreError('NORA_ST_RESOURCE_CONFLICT', 'World settings resource binding changed unexpectedly.');
+                    }
+                    const knowledge = sourceId
+                        ? current.knowledge.map(item => item.resource_id === sourceId ? resource : item)
+                        : [...current.knowledge, resource];
+                    return { ...current, knowledge, updated_at: this.#now() };
                 });
                 operation = await this.#mutations.advance(operation.operation_id, 'WORLD_COMMITTED');
             }
@@ -691,5 +822,6 @@ export function composeNoraWorldCore({
     const store = new WorldStore({ root, locks });
     const journal = new OperationJournal({ root, locks, now });
     const mutations = new MutationJournal({ root, locks, now });
-    return new NoraWorldCore({ store, journal, mutations, locks, materializer, createId, now });
+    const profiles = createProfileLibrary({ root, locks });
+    return new NoraWorldCore({ store, journal, mutations, locks, materializer, createId, now, profiles });
 }

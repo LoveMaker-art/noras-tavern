@@ -104,7 +104,7 @@ import { addLocaleData, getCurrentLocale, t, translate } from './i18n.js';
 import { hideLoader, showLoader } from './loader.js';
 import { loader } from './action-loader.js';
 import { MacrosParser } from './macros.js';
-import { clearCustomChatCompletion, configureCustomChatCompletion, getChatCompletionModel, hasCustomChatCompletionApiKey, oai_settings } from './openai.js';
+import { clearCustomChatCompletion, configureCustomChatCompletion, configureProviderChatCompletion, getChatCompletionModel, getChatCompletionModelLimits, hasCustomChatCompletionApiKey, oai_settings, setupChatCompletionPromptManager, settingsToUpdate } from './openai.js';
 import { callGenericPopup, Popup, POPUP_RESULT, POPUP_TYPE } from './popup.js';
 import { power_user, registerDebugFunction } from './power-user.js';
 import { getPresetManager } from './preset-manager.js';
@@ -120,7 +120,7 @@ import { getTextGenServer, textgenerationwebui_settings } from './textgen-settin
 import { tokenizers, getTextTokens, getTokenCount, getTokenCountAsync, getTokenizerModel } from './tokenizers.js';
 import { ToolManager } from './tool-calling.js';
 import { accountStorage } from './util/AccountStorage.js';
-import { timestampToMoment, uuidv4, importFromExternalUrl } from './utils.js';
+import { timestampToMoment, uuidv4, importFromExternalUrl, regexFromString } from './utils.js';
 import { addGlobalVariable, addLocalVariable, decrementGlobalVariable, decrementLocalVariable, deleteGlobalVariable, deleteLocalVariable, existsGlobalVariable, existsLocalVariable, getGlobalVariable, getLocalVariable, incrementGlobalVariable, incrementLocalVariable, setGlobalVariable, setLocalVariable } from './variables.js';
 import { convertCharacterBook, getWorldInfoPrompt, loadWorldInfo, primeWorldInfoSnapshot, reloadEditor, saveWorldInfo, updateWorldInfoList, world_names } from './world-info.js';
 import { ChatCompletionService, TextCompletionService } from './custom-request.js';
@@ -253,8 +253,11 @@ export function getContext() {
         POPUP_TYPE,
         POPUP_RESULT,
         chatCompletionSettings: oai_settings,
+        getChatCompletionPromptManager: () => setupChatCompletionPromptManager(oai_settings),
+        chatCompletionPresetFields: settingsToUpdate,
         hasCustomChatCompletionApiKey,
         configureCustomChatCompletion,
+        configureProviderChatCompletion,
         clearCustomChatCompletion,
         textCompletionSettings: textgenerationwebui_settings,
         powerUserSettings: power_user,
@@ -322,6 +325,7 @@ export function getContext() {
         extractMessageFromData,
         getPresetManager,
         getChatCompletionModel,
+        getChatCompletionModelLimits,
         printMessages,
         clearChat,
         closeCurrentChat,
@@ -336,6 +340,7 @@ export function getContext() {
         getExtensionManifest,
         openThirdPartyExtensionMenu,
         regex: {
+            parse: regexFromString,
             allowCharacter: allowScopedScripts,
             disallowCharacter: disallowScopedScripts,
             isCharacterAllowed: isScopedScriptsAllowed,

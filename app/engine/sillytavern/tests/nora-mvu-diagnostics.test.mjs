@@ -42,7 +42,7 @@ test('MVU diagnostics preserve actionable evidence while redacting credentials a
 test('MVU diagnostic store persists bounded NDJSON and returns newest events first', async (t) => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-mvu-diagnostics-'));
     t.after(() => fs.rm(root, { recursive: true, force: true }));
-    const store = createMvuDiagnosticStore({ maxFileBytes: 700 });
+    const store = createMvuDiagnosticStore({ maxFileBytes: 1400 });
     const directories = { root };
     const base = normalizeMvuDiagnostic({
         kind: 'mvu-update-failed', identity: 'session:a', code: 'MVU_NO_UPDATE_COMMAND',
@@ -57,6 +57,28 @@ test('MVU diagnostic store persists bounded NDJSON and returns newest events fir
     assert.equal(recent[1].identity, 'session:a');
     const text = await fs.readFile(path.join(root, 'nora-telemetry', 'mvu-diagnostics.ndjson'), 'utf8');
     assert.equal(text.trim().split('\n').length, 2);
+});
+
+test('diagnostics distinguish persisted partial changes from rejected updates', () => {
+    const payload = { kind: 'mvu-update-partial', persisted: true, commandCount: 3, acceptedCount: 2,
+        protocol: 'legacy', mode: 'extra-model', fallbackReason: 'token=private', code: 'MVU_COMMAND_VALIDATION_FAILED' };
+    const result = normalizeMvuDiagnostic(payload);
+    assert.equal(result.kind, 'mvu-update-partial');
+    assert.equal(result.persisted, true);
+    assert.equal(result.acceptedCount, 2);
+    assert.equal(result.protocol, 'legacy');
+    assert.equal(result.mode, 'extra-model');
+    assert.equal(result.fallbackReason, 'token=[redacted]');
+    assert.equal(normalizeMvuDiagnostic({ ...payload, persisted: false }).kind, 'mvu-update-failed');
+});
+
+test('legacy script-owned updates preserve unknown acceptance separately from failure', () => {
+    const payload = { kind: 'mvu-update-unverified', persisted: true, protocol: 'legacy', code: 'MVU_EXECUTION_UNVERIFIED', commandCount: 1, acceptedCount: 0 };
+    const event = normalizeMvuDiagnostic(payload);
+    assert.equal(event.kind, 'mvu-update-unverified');
+    assert.equal(event.acceptedCount, 0);
+    assert.equal(normalizeMvuDiagnostic({ ...payload, protocol: 'nora-mvu/1' }).kind, 'mvu-update-failed');
+    assert.equal(normalizeMvuDiagnostic({ ...payload, persisted: false }).kind, 'mvu-update-failed');
 });
 
 test('browser reporter posts the current chat identity without exposing unrelated settings', async () => {

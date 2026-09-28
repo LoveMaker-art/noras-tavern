@@ -16,13 +16,27 @@ export function createStartupController({
     openNewWorldSheet,
     runPanelAction,
     updateActiveWorldSummary,
-    finishBootScreen,
+    extensionStartedAt = Date.now(),
     recordBootMilestone,
     performanceReporter,
     onStarted,
     onWorldbookChanged = () => {},
 }) {
     let runtimeReady = false;
+    let hydrated = false;
+
+    function finishBootScreen() {
+        if (hydrated) return;
+        hydrated = true;
+        document.documentElement.dataset.noraReadyMs = String(Date.now() - extensionStartedAt);
+        const timing = performanceReporter.hydrateShell({ alreadyVisible: document.body.classList.contains('nora-shell-visible') });
+        if (timing) {
+            document.documentElement.dataset.noraShellReadyMs = String(timing.shellReadyAt);
+            document.documentElement.dataset.noraInteractiveMs = String(timing.hydratedAt);
+        }
+        document.body.classList.add('nora-ui-ready');
+        document.body.classList.remove('nora-booting');
+    }
 
     async function consumeEarlyIntent() {
         const early = window.__NORA_EARLY__;
