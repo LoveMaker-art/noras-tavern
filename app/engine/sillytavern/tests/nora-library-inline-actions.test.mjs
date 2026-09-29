@@ -112,6 +112,24 @@ test('sidebar retains capability status without a standalone regex section', () 
     assert.equal(f.query('[data-action="extensions"]').length, 1, 'Ordinary worlds retain the script import entry');
 });
 
+test('sidebar opens chat backups through its own data entry without replacing library or extension controls', () => {
+    const f = fixture(), opened = [];
+    f.common.dialogs.open('panel', '<div id="nora-panel-body"></div>');
+    f.world.storyContext = { characters: [] };
+    const panel = createPanelController({ ...f.common,
+        currentCharacter: () => ({}), readState: () => ({}), settings: () => ({}),
+        currentWorldPersona: () => ({}), worldbookSummary: () => '', closeDrawers() {},
+        openBackups: () => opened.push('backups'),
+        worldbookController: { open() {} },
+    });
+    panel.render();
+    assert.equal(f.query('[data-action="backups"]').length, 1);
+    assert.equal(f.query('[data-action="library"]').length, 1);
+    assert.equal(f.query('[data-action="extensions"]').length, 1);
+    f.select('[data-action="backups"]').handlers.click({ stopPropagation() {} });
+    assert.deepEqual(opened, ['backups']);
+});
+
 test('world menu retains restart and delete without a duplicate tools entry', async t => {
     const originalElement = globalThis.Element;
     class Element { closest() { return { dataset: { worldOptions: this.worldId } }; } }

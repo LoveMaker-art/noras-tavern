@@ -1,5 +1,6 @@
 // native node modules
 import fs from 'node:fs';
+import { startChatBackupMaintenance } from './chat-backup-runtime.js';
 import path from 'node:path';
 import util from 'node:util';
 import net from 'node:net';
@@ -361,11 +362,13 @@ async function preSetupTasks() {
     const pluginsDirectory = path.join(serverDirectory, 'plugins');
     const cleanupPlugins = await loadPlugins(app, pluginsDirectory);
     const consoleTitle = process.title;
+    const stopChatBackups = startChatBackupMaintenance(directories);
 
     let isExiting = false;
     const exitProcess = async () => {
         if (isExiting) return;
         isExiting = true;
+        await stopChatBackups();
         if (typeof cleanupPlugins === 'function') {
             await cleanupPlugins();
         }

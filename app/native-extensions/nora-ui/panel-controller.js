@@ -23,6 +23,7 @@ export function createPanelController({
     openCharacterLibrary,
     openPresetLibrary = () => {},
     openPluginLibrary = () => {},
+    openBackups = () => {},
     plugins,
     ledgerRequest,
     isGenerating,
@@ -168,6 +169,7 @@ export function createPanelController({
             ${world ? `<div class="pSection pFold nora-world-preset-section"><div class="pHead pHeadFold${presetFoldClass}" data-fold="preset"><span>${tr('预设')}</span><span class="headRight"><button class="sectionEdit" data-action="world-preset" type="button">${tr('编辑')}</button><span class="arr">▼</span></span></div><div class="pFoldBody${presetFoldClass}" id="nora-preset-body"><p class="pname">${escapeHtml(world.preset?.name || tr('当前配置'))}${world.preset?.modified ? ` <small class="pmuted">${tr('已调整')}</small>` : ''}</p></div></div>` : ''}
             ${world ? capabilitySection(world) : ''}
             ${librarySection}
+            <div class="pSection"><div class="pHead">${tr('数据')}</div><button class="actorMore" data-action="backups" type="button"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>${tr('聊天备份')}</button></div>
             <footer class="lwFoot"><span class="mark">✦</span>tavern</footer>`;
         if (renderedBody === body && renderedWorldKey === nextWorldKey && renderedMarkup === markup) return;
         body.innerHTML = markup;
@@ -250,7 +252,7 @@ export function createPanelController({
 
     function runAction(action) {
         closeDrawers();
-        const actions = { extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'plugin-library': openPluginLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
+        const actions = { backups: openBackups, extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'plugin-library': openPluginLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
         actions[action]?.();
     }
 

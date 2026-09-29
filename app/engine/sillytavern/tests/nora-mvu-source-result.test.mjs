@@ -136,11 +136,22 @@ function fixture({ inline = false, response = '', zod = false, nora = false, sch
         switchWorld: () => { chatId = 'world-b'; },
         failSave: value => { failSave = value; },
         transportError: error => { transportError = error; },
+        activity: runner => { context.SillyTavern.runNoraChatActivity = runner; },
         terminal: () => emitted.filter(([name]) => /nora_mvu_transaction_(committed|failed)/.test(name)).at(-1)?.[1],
     };
 }
 
 test('pinned MVU execution / persistence / observation result contract', { skip: !source && 'Set NORA_MVU_SOURCE_DIR to a pinned patched checkout' }, async t => {
+    for (const direct of [false, true]) {
+        await t.test(`host ownership rejects before model/parser/storage: direct=${direct}`, async () => {
+            const f = fixture({ response: '<UpdateVariable>_.set("score",51);</UpdateVariable>' });
+            const denied = Object.assign(new Error('Another page is restoring.'), { code: 'NORA_CHAT_OPERATION_BUSY' });
+            f.activity(async () => { throw denied; });
+            await assert.rejects(direct ? f.runInlineDirect() : f.run(), error => error === denied);
+            assert.equal(f.requests.length, 0);
+            assert.equal(f.writes.length, 0);
+        });
+    }
     for (const nora of [false, true]) {
         for (const extra of [false, true]) {
             await t.test(`external unmarked lore follows protocol policy: nora=${nora} extra=${extra}`, async () => {

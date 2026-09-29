@@ -169,11 +169,16 @@ server.tool("nora.world.repair", "Run Nora's non-destructive World repair flow. 
   confirm: z.boolean().optional(),
 }, async ({ worldId, idempotencyKey, confirm }) => textResult(await nora.repairWorld(worldId, idempotencyKey, confirm)));
 
-server.tool("nora.world.delete", "Delete a Nora World through the durable Nora World Core mutation flow. Requires confirm: true.", {
+server.tool("nora.world.delete_preview", "Read the authoritative deletion plan, including protected backups and retained shared/unknown resources. Present its scope to the user before confirmation. No files are deleted. Pass the returned token as expectedPlan to nora.world.delete.", {
+  worldId: z.string(),
+}, async ({ worldId }) => textResult(await nora.previewWorldDeletion(worldId)));
+
+server.tool("nora.world.delete", "Permanently delete one World, its exclusive chats/resources and all confidently owned chat backups, including protected backups. Shared resources, library originals and unknown-owner files remain. Update rollback packages are managed separately and may still contain historical data. First read nora.world.delete_preview, explain its scope and obtain confirmation; requires confirm: true and its token. A changed plan requires new confirmation, not a blind retry. UI and MCP use the same durable backend operation.", {
   worldId: z.string(),
   idempotencyKey: z.string().trim().min(1).max(200),
+  expectedPlan: z.string().regex(/^[a-f0-9]{64}$/),
   confirm: z.boolean().optional(),
-}, async ({ worldId, idempotencyKey, confirm }) => textResult(await nora.deleteWorld(worldId, idempotencyKey, confirm)));
+}, async ({ worldId, idempotencyKey, confirm, expectedPlan }) => textResult(await nora.deleteWorld(worldId, idempotencyKey, confirm, expectedPlan)));
 
 server.tool("nora.operation.get", "Read a Nora World operation by operation id.", {
   operationId: z.string(),

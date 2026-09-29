@@ -16,6 +16,7 @@ import {
     operationIdForKey,
     OPERATION_STAGES,
     settleWorldCapabilityAttempt,
+    stableStringify,
 } from './domain.js';
 import { asWorldCoreError, NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
@@ -26,6 +27,15 @@ import { normalizeWorldTheme } from '../../public/scripts/nora-worlds/world-them
 
 function stageAtLeast(operation, stage) {
     return OPERATION_STAGES.indexOf(operation.stage) >= OPERATION_STAGES.indexOf(stage);
+}
+
+function deletionScope(plan) {
+    const { world, ...decisions } = plan;
+    return { ...decisions, bindings: { runtime_card: world.runtime_card, knowledge: world.knowledge, sessions: world.sessions } };
+}
+
+function deletionToken(world, prepared) {
+    return crypto.createHash('sha256').update(stableStringify({ worldId: world.world_id, revision: world.revision, prepared })).digest('hex');
 }
 
 function failedOperationError(operation) {
@@ -195,7 +205,10 @@ export class NoraWorldCore {
         if (!createOperation) {
             let mutation = await this.#mutations.get(operationId);
             if (!mutation) throw new NoraWorldCoreError('NORA_OPERATION_NOT_FOUND', 'World operation was not found.');
-            if (mutation.status === 'FAILED') mutation = await this.#mutations.resume(mutation.operation_id);
+            if (mutation.status === 'FAILED') {
+                if (!mutation.error?.retryable) throw failedOperationError(mutation);
+                mutation = await this.#mutations.resume(mutation.operation_id);
+            }
             if (mutation.status === 'COMPLETED') {
                 return { ...await this.#mutationResult(mutation), world: await this.#store.get(mutation.world_id), operation: mutation, reused: true };
             }
@@ -323,10 +336,12 @@ export class NoraWorldCore {
         return this.#locks.run(`restart-intent:${operationIdForKey(key)}`, async () => {
             const existing = await this.#journal.get(operationIdForKey(key));
             if (existing) {
-                if (existing.command?.payload?.restart?.source_world_id !== worldId || existing.command.name !== name.trim()) {
+                if ((existing.command?.payload?.restart?.source_world_id ?? existing.request?.restart_source_world_id) !== worldId
+                    || (existing.command?.name ?? existing.request?.name) !== name.trim()) {
                     throw new NoraWorldCoreError('NORA_OPERATION_CONFLICT', '该开局请求已用于另一个世界，请重新打开操作。');
                 }
                 if (existing.status === 'FAILED' && existing.error?.retryable) return this.retryOperation(existing.operation_id);
+                if (existing.status === 'COMPLETED') return this.retryOperation(existing.operation_id);
                 return this.submitWorld(existing.command, { idempotencyKey: key });
             }
             const command = await this.#locks.run(`mutation-world:${worldId}`, async () => {
@@ -405,6 +420,11 @@ export class NoraWorldCore {
         return this.#materializer.saveLibraryCard(input, await this.#store.list());
     }
     readLibraryCardSource(avatar) { return this.#materializer.readLibraryCardSource(avatar); }
+    async deleteLibraryCard(avatar, { idempotencyKey = null } = {}) {
+        await this.#initialize();
+        const key = idempotencyKey === null ? null : normalizeIdempotencyKey(idempotencyKey);
+        return this.#materializer.deleteLibraryCard(avatar, await this.#store.list(), { idempotencyKey: key });
+    }
 
     listLibraryProfiles(kind) { return this.#profiles.list(kind); }
     readLibraryProfile(id) { return this.#profiles.read(id); }
@@ -589,7 +609,10 @@ export class NoraWorldCore {
         if (!existingWorld) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.', { details: { worldId } });
         const receipt = await this.#mutations.begin({ type, worldId, idempotencyKey, command });
         let operation = receipt.operation;
-        if (operation.status === 'FAILED') operation = await this.#mutations.resume(operation.operation_id);
+        if (operation.status === 'FAILED') {
+            if (!operation.error?.retryable) throw failedOperationError(operation);
+            operation = await this.#mutations.resume(operation.operation_id);
+        }
         if (operation.status === 'COMPLETED') {
             return { ...await this.#mutationResult(operation), world: await this.#store.get(worldId), operation, reused: true };
         }
@@ -597,7 +620,37 @@ export class NoraWorldCore {
     }
 
     async deleteWorld(worldId, options = {}) {
-        return this.#mutateWorld('DELETE_WORLD', worldId, options);
+        const { expectedPlan, idempotencyKey } = options;
+        if (expectedPlan !== undefined && !/^[a-f0-9]{64}$/.test(expectedPlan)) {
+            throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '请先重新查看删除范围。');
+        }
+        return this.#mutateWorld('DELETE_WORLD', worldId, { idempotencyKey, command: expectedPlan ? { expected_plan: expectedPlan } : null });
+    }
+
+    async #prepareDeletion(world) {
+        const plan = await this.#store.deletionPlan(world.world_id);
+        return { ...await this.#materializer.prepareDeletion?.(world, plan), resources: deletionScope(plan) };
+    }
+
+    async previewWorldDeletion(worldId) {
+        await this.#initialize();
+        return this.#locks.run(`mutation-world:${worldId}`, async () => {
+            const world = await this.#store.get(worldId);
+            if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
+            if (world.lifecycle.status === 'DELETED') throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'World is already deleted.');
+            const prepared = await this.#prepareDeletion(world);
+            const scopes = prepared.resources;
+            const resources = [
+                { kind: 'runtime_card', id: world.runtime_card.resource_id, ...scopes.runtime_card },
+                ...scopes.sessions.map(item => ({ kind: 'session', id: item.session_id, delete: item.delete })),
+                ...scopes.knowledge.map(item => ({ kind: 'knowledge', id: item.resource_id, delete: item.delete })),
+                ...(prepared.files || []).filter(item => item.kind === 'ledger' && item.snapshot).map(item => ({ kind: 'ledger', id: item.id, delete: true })),
+            ].map(item => ({ kind: item.kind, id: item.id, action: item.delete ? 'delete' : 'retain',
+                bytes: prepared.files?.find(file => file.kind === item.kind && file.id === item.id)?.snapshot?.bytes ?? null }));
+            return { worldId, revision: world.revision, token: deletionToken(world, prepared), resources,
+                backups: (prepared.backups?.candidates || []).map(item => ({ name: item.name, bytes: item.bytes, protected: item.metadata?.protected === true, action: 'delete' })),
+                retained: prepared.backups?.retained || [], rollbackPackages: 'managed-separately' };
+        });
     }
 
     async repairWorld(worldId, options = {}) {
@@ -622,8 +675,20 @@ export class NoraWorldCore {
     async #runMutation(operation, { reused }) {
         // Operation IDs deduplicate retries, but different commands can still
         // target one World. Their inspect/delete/commit lifecycle must not overlap.
-        return this.#locks.run(`mutation-world:${operation.world_id}`, () => {
-            if (operation.type === 'DELETE_WORLD') return this.#runDelete(operation, { reused });
+        return this.#locks.run(`mutation-world:${operation.world_id}`, async () => {
+            if (operation.type === 'DELETE_WORLD') {
+                if (!this.#materializer.withWorldDeletion) return this.#runDelete(operation, { reused });
+                try {
+                    return await this.#materializer.withWorldDeletion(await this.#store.get(operation.world_id), () => this.#runDelete(operation, { reused }));
+                } catch (error) {
+                    if (error.details?.operationId === operation.operation_id) throw error;
+                    const failure = error instanceof NoraWorldCoreError ? error : new NoraWorldCoreError(error.code || 'NORA_WORLD_DELETE_FAILED',
+                        error.code === 'NORA_CHAT_OPERATION_BUSY' ? '当前世界仍在生成、更新变量或保存，请完成后再删除。' : error.message, { retryable: true });
+                    await this.#mutations.fail(operation.operation_id, failure);
+                    failure.details = { ...failure.details, operationId: operation.operation_id, worldId: operation.world_id };
+                    throw failure;
+                }
+            }
             if (operation.type === 'REPAIR_WORLD') return this.#runRepair(operation, { reused });
             if (operation.type === 'ADD_WORLD_SETTING') return this.#runAddWorldSetting(operation, { reused });
             throw new NoraWorldCoreError('NORA_OPERATION_TYPE', 'Unsupported World mutation operation.');
@@ -700,25 +765,39 @@ export class NoraWorldCore {
             let world = await this.#store.get(operation.world_id);
             if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
             if (operation.stage === 'RECEIVED') {
-                if (world.lifecycle.status !== 'DELETED') {
-                    world = await this.#store.update(world.world_id, current => ({
-                        ...current,
-                        lifecycle: { status: 'DELETING', error: null },
-                        updated_at: this.#now(),
-                    }));
+                const prepared = world.lifecycle.status === 'DELETED' ? null : await this.#prepareDeletion(world);
+                if (operation.command?.expected_plan && world.lifecycle.status !== 'DELETED'
+                    && operation.command.expected_plan !== deletionToken(world, prepared)) {
+                    throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '删除范围或内容已变化，请重新查看并确认，不能重试旧操作。');
                 }
-                operation = await this.#mutations.advance(operation.operation_id, 'WORLD_MARKED_DELETING');
+                if (world.lifecycle.status !== 'DELETED') {
+                    world = await this.#store.update(world.world_id, current => {
+                        if (current.revision !== world.revision) throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '世界已变化，请重新确认删除。');
+                        return { ...current, lifecycle: { status: 'DELETING', error: null }, updated_at: this.#now() };
+                    });
+                }
+                operation = await this.#mutations.advance(operation.operation_id, 'WORLD_MARKED_DELETING', { result: { prepared } });
             }
             if (operation.stage === 'WORLD_MARKED_DELETING') {
                 world = await this.#store.get(operation.world_id);
+                let released = null;
                 if (world.lifecycle.status !== 'DELETED') {
                     if (typeof this.#materializer.deleteResources !== 'function') {
                         throw new NoraWorldCoreError('NORA_WORLD_DELETE_UNSUPPORTED', 'The compatibility adapter cannot delete World resources.');
                     }
+                    // A retry after partial failure must re-enter DELETING;
+                    // late saves/backup tasks may never revive this World.
+                    if (world.lifecycle.status !== 'DELETING') world = await this.#store.update(world.world_id, current => ({ ...current,
+                        lifecycle: { status: 'DELETING', error: null }, updated_at: this.#now() }));
                     const plan = await this.#store.deletionPlan(world.world_id);
-                    await this.#materializer.deleteResources(world, plan);
+                    if (!operation.result?.prepared?.resources
+                        || stableStringify(deletionScope(plan)) !== stableStringify(operation.result.prepared.resources)) {
+                        throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED',
+                            'Deletion targets or references changed. Review and confirm a new deletion instead of retrying this operation.');
+                    }
+                    released = await this.#materializer.deleteResources(world, plan, operation.result?.prepared);
                 }
-                operation = await this.#mutations.advance(operation.operation_id, 'RESOURCES_RELEASED');
+                operation = await this.#mutations.advance(operation.operation_id, 'RESOURCES_RELEASED', { result: released });
             }
             if (operation.stage === 'RESOURCES_RELEASED') {
                 world = await this.#store.update(operation.world_id, current => ({
@@ -727,20 +806,26 @@ export class NoraWorldCore {
                     updated_at: this.#now(),
                 }));
                 operation = await this.#mutations.advance(operation.operation_id, 'COMPLETED', {
-                    result: { deleted: true },
+                    result: { ...operation.result, resources: operation.result?.deleted || [], deleted: true },
                 });
             }
             return { world, operation, reused };
         } catch (error) {
-            const coreError = asWorldCoreError(error, 'NORA_WORLD_DELETE_FAILED', 'World deletion failed.', { retryable: true });
-            await this.#store.update(operation.world_id, current => current.lifecycle.status === 'DELETED' ? current : ({
-                ...current,
-                lifecycle: {
-                    status: 'FAILED',
-                    error: { code: coreError.code, message: coreError.message, retryable: coreError.retryable },
-                },
-                updated_at: this.#now(),
-            })).catch(() => {});
+            const coreError = error.code === 'NORA_BACKUP_DELETE_PLAN_CHANGED'
+                ? new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '备份内容或删除范围已变化，请重新确认删除，不能重试旧操作。')
+                : asWorldCoreError(error, 'NORA_WORLD_DELETE_FAILED', 'World deletion failed.', { retryable: true });
+            const failedWorld = await this.#store.get(operation.world_id).catch(() => null);
+            if (failedWorld && failedWorld.lifecycle.status !== 'DELETED'
+                && (operation.stage !== 'RECEIVED' || failedWorld.lifecycle.status === 'DELETING')) {
+                await this.#store.update(operation.world_id, current => ({
+                    ...current,
+                    lifecycle: {
+                        status: 'FAILED',
+                        error: { code: coreError.code, message: coreError.message, retryable: coreError.retryable, deletion_pending: true },
+                    },
+                    updated_at: this.#now(),
+                })).catch(() => {});
+            }
             await this.#mutations.fail(operation.operation_id, coreError).catch(() => {});
             coreError.details = { ...coreError.details, operationId: operation.operation_id, worldId: operation.world_id };
             throw coreError;
@@ -752,7 +837,7 @@ export class NoraWorldCore {
         try {
             let world = await this.#store.get(operation.world_id);
             if (!world) throw new NoraWorldCoreError('NORA_WORLD_NOT_FOUND', 'World was not found.');
-            if (['DELETING', 'DELETED'].includes(world.lifecycle.status)) {
+            if (['DELETING', 'DELETED'].includes(world.lifecycle.status) || world.lifecycle.error?.deletion_pending) {
                 throw new NoraWorldCoreError('NORA_WORLD_NOT_READY', 'A deleting or deleted World cannot be repaired.');
             }
             if (operation.stage === 'RECEIVED') {

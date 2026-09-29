@@ -16,13 +16,14 @@ router.post('/inspect', async (request, response) => {
     }
 });
 // Auth/CSRF are supplied by the same authenticated /api stack as World Core.
-for (const action of ['status', 'configure', 'compress', 'edit']) {
+for (const action of ['status', 'configure', 'compress', 'edit', 'checkpoint']) {
     router.post(`/${action}`, async (request, response) => {
         response.set('Cache-Control', 'no-store');
         try {
             const scope = { worldId: request.body?.worldId, sessionId: request.body?.sessionId };
             const runtime = resolveStoryLedger(request.user.directories);
             await runtime.resolve(scope);
+            if (action === 'checkpoint') return response.json(await runtime.checkpoint(scope, request.body));
             if (action === 'edit') {
                 const chat = await runtime.edit(scope, request.body);
                 return response.json({ chat, revision: getChatRevision(chat), ledger: await runtime.plugin.status(scope) });
@@ -35,6 +36,7 @@ for (const action of ['status', 'configure', 'compress', 'edit']) {
             void runtime.plugin.schedule(scope, { retry: action === 'compress' });
             return response.json(await runtime.plugin.status(scope));
         } catch (error) {
+            if (error.code === 'NORA_BACKUP_REQUIRED') return response.status(409).json({ code: error.code, backupCode: error.backupCode, error: error.message });
             return response.status(error.status || 400).json({ code: error.code || 'NORA_LEDGER_REQUEST_FAILED', error: 'Story ledger request could not be completed.' });
         }
     });

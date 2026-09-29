@@ -375,6 +375,41 @@ test('materialized snapshots keep the previous generation byte-for-byte addressa
     }
 });
 
+test('asset cache rebuilds missing bytes but retains unknown hash-shaped folders during generation pruning', () => {
+    const { fixture, files, options } = makeBrowserManifestFixture();
+    const cacheDirectory = path.join(fixture, 'cache');
+    try {
+        const first = computeBrowserAssetManifest(options);
+        materializeBrowserAssetManifest({ manifest: first, cacheDirectory });
+        const parent = path.join(cacheDirectory, 'namespaces', NORA_ASSET_NAMESPACE.noraEntry);
+        const release = first.namespaces[NORA_ASSET_NAMESPACE.noraEntry].release;
+        const cached = path.join(parent, release, 'dist/nora/entry.js');
+        fs.unlinkSync(cached);
+        materializeBrowserAssetManifest({ manifest: first, cacheDirectory });
+        assert.equal(fs.readFileSync(cached, 'utf8'), 'entry-v1');
+        const manual = path.join(parent, 'a'.repeat(32));
+        fs.mkdirSync(manual);
+        fs.writeFileSync(path.join(manual, 'notes.txt'), 'User file');
+        fs.utimesSync(manual, new Date(0), new Date(0));
+        for (const version of [2, 3]) {
+            fs.writeFileSync(files.entry, `entry-v${version}`);
+            materializeBrowserAssetManifest({ manifest: computeBrowserAssetManifest(options), cacheDirectory });
+        }
+        assert.equal(fs.readFileSync(path.join(manual, 'notes.txt'), 'utf8'), 'User file');
+        assert.equal(fs.readdirSync(parent).length, 3, 'two owned generations plus the unowned folder');
+        assert.equal(fs.readFileSync(files.entry, 'utf8'), 'entry-v3');
+        const current = computeBrowserAssetManifest(options);
+        const currentDirectory = path.join(parent, current.namespaces[NORA_ASSET_NAMESPACE.noraEntry].release);
+        const userFile = path.join(currentDirectory, 'user-notes.txt');
+        fs.writeFileSync(userFile, 'Do not erase during rebuild');
+        fs.unlinkSync(path.join(currentDirectory, 'dist/nora/entry.js'));
+        assert.throws(() => materializeBrowserAssetManifest({ manifest: current, cacheDirectory }), /unowned/i);
+        assert.equal(fs.readFileSync(userFile, 'utf8'), 'Do not erase during rebuild');
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
 test('versioned assets prefer a precompressed representation', () => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-precompressed-assets-'));
     const sourcePath = path.join(fixture, 'runtime.js');

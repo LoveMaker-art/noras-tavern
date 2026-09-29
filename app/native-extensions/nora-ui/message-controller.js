@@ -85,6 +85,10 @@ export function createMessageController({
     }
 
     function showSendError(error, persisted = Boolean(error?.noraMessagePersisted)) {
+        if (error?.code === 'NORA_BACKUP_REQUIRED') {
+            dialogs.notice({ title: tr('改写已暂停'), message: normalizeError(error), actions: [] });
+            return;
+        }
         if (error?.phase === 'save') {
             const conflict = error?.status === 409 || error?.code === 'integrity';
             dialogs.notice({
@@ -96,6 +100,10 @@ export function createMessageController({
                     ? [{ label: tr("重试保存"), run: retryGeneration }]
                     : [],
             });
+            return;
+        }
+        if (error?.code?.startsWith('NORA_CHAT_OPERATION_') || error?.code === 'NORA_CHAT_SAVE_STALE') {
+            dialogs.notice({ title: tr('操作已暂停'), message: normalizeError(error), actions: [] });
             return;
         }
         if (isModelConfigurationError(error)) {

@@ -23,10 +23,11 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
     const locks = new KeyedLock();
     const jobs = new Map();
     const reservations = new Map();
+    const exclusive = new Set();
     // One background model call per user, independent of foreground generation.
     let queue = Promise.resolve();
     const initial = () => ({ version: 1, enabled: true, active: null, pending: null, lastError: null });
-    const load = scope => ({ ...initial(), ...readState(scope) });
+    const load = (scope, chat = readChat(scope)) => ({ ...initial(), ...readState(scope, chat) });
     const run = (scope, operation) => locks.run(scopeKey(scope), operation);
     function discardStaleCandidates(state, messages) {
         let changed = false;
@@ -37,8 +38,8 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
         return changed;
     }
     function checked(scope) {
-        const state = load(scope);
         const chat = readChat(scope);
+        const state = load(scope, chat);
         if (state.active && !valid(state.active, chat.messages)) {
             throw new LedgerConflict('Active story ledger no longer matches stored history.', 'NORA_LEDGER_STORAGE_CONFLICT');
         }
@@ -46,7 +47,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
         return { state, chat };
     }
     function projection(scope, state, chat) {
-        return { ...scope, enabled: state.enabled, batchTurns: BATCH_TURNS,
+        return { ...scope, restoreId: state.restoreId || null, enabled: state.enabled, batchTurns: BATCH_TURNS,
             totalTurns: countTurns(chat.messages), active: state.active, pending: state.pending,
             running: jobs.has(scopeKey(scope)), lastError: state.lastError };
     }
@@ -58,8 +59,8 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
     // Agent reads must neither schedule model work nor repair persisted state.
     const inspect = (scope, { offset = 0, limit = 0 } = {}) => run(scope, () => {
         if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 0 || limit > 100) throw new TypeError('Invalid history window.');
-        const state = load(scope);
         const chat = readChat(scope);
+        const state = load(scope, chat);
         if (state.active && !valid(state.active, chat.messages)) throw new LedgerConflict('Active ledger no longer matches history.', 'NORA_LEDGER_STORAGE_CONFLICT');
         const held = [...(reservations.get(scopeKey(scope))?.values() || [])];
         const lockedCount = Math.max(0, ...[state.active, ...held].filter(Boolean).map(record => record.messageCount));
@@ -79,7 +80,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
         for (;;) {
             const input = await run(scope, () => {
                 const { state, chat } = checked(scope);
-                if (!state.enabled) return null;
+                if (!state.enabled || (state.waitForHistory && state.waitForHistory === signature(chat.messages, chat.messages.length))) return null;
                 const previous = state.pending || state.active;
                 const covered = previous?.coveredTurns || 0;
                 const end = covered + BATCH_TURNS;
@@ -117,10 +118,13 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
 
     function schedule(scope, { retry = false } = {}) {
         const key = scopeKey(scope);
+        if (exclusive.has(key)) return Promise.resolve();
         if (jobs.has(key)) return jobs.get(key);
-        const state = load(scope);
+        const chat = readChat(scope);
+        const state = load(scope, chat);
         if (!state.enabled || (!retry && state.lastError && now() - state.lastError.at < 60000)) return Promise.resolve();
-        const { messages } = readChat(scope);
+        const { messages } = chat;
+        if (state.waitForHistory && state.waitForHistory === signature(messages, messages.length)) return Promise.resolve();
         const covered = (state.pending || state.active)?.coveredTurns || 0;
         const last = messages.findLast(message => !message.is_system);
         if (covered + BATCH_TURNS > countTurns(messages) - 1 || !last || last.is_user || !String(last.mes || '').trim()) return Promise.resolve();
@@ -159,9 +163,31 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
         }
     }
 
-    async function edit(scope, { messageId, text, bias = null, expectedSignature }, writer) {
-        await run(scope, () => {
-            const { state, chat } = checked(scope);
+    async function checkpoint(scope, expectedSignature, prepare) {
+        return run(scope, async () => {
+            const verify = () => {
+                const { chat } = checked(scope);
+                if (signature(chat.messages, chat.messages.length) !== expectedSignature) throw new LedgerConflict('Chat changed before backup.', 'NORA_LEDGER_EDIT_STALE');
+            };
+            verify();
+            const result = await prepare();
+            verify();
+            return result;
+        });
+    }
+
+    // Restoration must hold the same lock as edits and ledger activation.
+    // Model I/O runs outside that lock, so inspect jobs and reservations too.
+    const withIdleSession = (scope, operation) => run(scope, async () => {
+        const key = scopeKey(scope);
+        if (jobs.has(key) || reservations.get(key)?.size) throw new LedgerConflict('当前会话的压缩或账本请求仍在处理中，请稍后重试。', 'NORA_LEDGER_BUSY');
+        exclusive.add(key);
+        try { return await operation(); } finally { exclusive.delete(key); }
+    });
+
+    async function edit(scope, { messageId, text, bias = null, expectedSignature }, writer, { beforeWrite } = {}) {
+        await run(scope, async () => {
+            let { state, chat } = checked(scope);
             if (signature(chat.messages, chat.messages.length) !== expectedSignature) {
                 throw new LedgerConflict('Chat changed before editing. Reload before retrying.', 'NORA_LEDGER_EDIT_STALE');
             }
@@ -172,6 +198,14 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
             messages[messageId].extra = { ...messages[messageId].extra, bias };
             if (Array.isArray(messages[messageId].swipes)) messages[messageId].swipes[messages[messageId].swipe_id || 0] = text;
             assertWritable(scope, state, messages);
+            if (beforeWrite) {
+                await beforeWrite();
+                // The session lock covers preparation. External file changes
+                // must still invalidate the edit before the synchronous commit.
+                ({ state, chat } = checked(scope));
+                if (signature(chat.messages, chat.messages.length) !== expectedSignature) throw new LedgerConflict('Chat changed while preparing the edit.', 'NORA_LEDGER_EDIT_STALE');
+                assertWritable(scope, state, messages);
+            }
             writer(messages);
             discardStaleCandidates(state, messages);
             state.lastError = null;
@@ -228,5 +262,5 @@ export function createStoryLedger({ readChat, readState, writeState, merge, now 
         if (enabled) void schedule(scope, { retry: true });
         return status(scope);
     }
-    return Object.freeze({ status, inspect, schedule, writeChat, edit, reserve, configure });
+    return Object.freeze({ status, inspect, schedule, writeChat, edit, checkpoint, reserve, configure, withIdleSession });
 }

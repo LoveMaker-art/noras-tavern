@@ -86,6 +86,42 @@ test('legacy character mutation rejects an avatar referenced by a Nora World run
     );
 });
 
+test('native card deletion cleans library records and replays safely while preserving chats unless requested', async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-library-native-delete-'));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const directories = { root };
+    for (const name of ['characters', 'chats', 'worlds', 'thumbnailsAvatar']) {
+        directories[name] = path.join(root, name);
+        fs.mkdirSync(directories[name]);
+    }
+    const { resolveNoraWorldCore } = await import('../src/nora-world-core/runtime.js');
+    const core = resolveNoraWorldCore(directories);
+    const card = await core.saveLibraryCard({ format: 'json', buffer: Buffer.from(JSON.stringify({
+        spec: 'chara_card_v3', spec_version: '3.0', data: { name: 'Native fixture', description: 'fixture', first_mes: '', extensions: {} },
+    })) });
+    const chats = path.join(directories.chats, path.parse(card.avatar).name);
+    fs.mkdirSync(chats);
+    fs.writeFileSync(path.join(chats, 'plain.jsonl'), 'keep');
+    const { router } = await import('../src/endpoints/characters.js');
+    const handler = router.stack.find(layer => layer.route?.path === '/delete').route.stack.at(-1).handle;
+    async function remove(deleteChats) {
+        const result = { status: 200, body: null };
+        const response = { status(code) { result.status = code; return this; },
+            sendStatus(code) { result.status = code; return this; }, json(body) { result.body = body; return this; } };
+        await handler({ user: { directories }, body: { avatar_url: card.avatar, delete_chats: deleteChats } }, response);
+        return result;
+    }
+    const first = await remove(false);
+    assert.equal(first.status, 200);
+    assert.equal(first.body.archive, 'deleted');
+    assert.deepEqual((await core.listLibraryCards()).items, []);
+    assert.equal(fs.readFileSync(path.join(chats, 'plain.jsonl'), 'utf8'), 'keep');
+    const repeated = await remove(true);
+    assert.equal(repeated.status, 200);
+    assert.equal(repeated.body.alreadyAbsent, true);
+    assert.equal(fs.existsSync(chats), false);
+});
+
 test('legacy character mutation also protects a session binding and allows an unreferenced card', async () => {
     const { assertLegacyCharacterMutationAllowed } = await import('../src/nora-world-core/legacy-resource-guard.js');
     const worlds = [{
@@ -114,5 +150,5 @@ test('legacy character rename and delete routes guard before touching files', ()
     const deletion = source.slice(deleteStart, deleteEnd);
 
     assert.ok(rename.indexOf('assertLegacyCharacterMutationAllowed') < rename.indexOf('writeCharacterData'));
-    assert.ok(deletion.indexOf('assertLegacyCharacterMutationAllowed') < deletion.indexOf('fs.unlinkSync'));
+    assert.ok(deletion.indexOf('assertLegacyCharacterMutationAllowed') < deletion.indexOf('.deleteLibraryCard('));
 });

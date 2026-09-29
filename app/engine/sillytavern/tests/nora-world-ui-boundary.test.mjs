@@ -114,11 +114,11 @@ test('repair and delete stay behind the World Runtime interface and refresh the 
     await runtime.refresh();
     const repaired = await runtime.repair('world:one', { idempotencyKey: 'repair:one' });
     assert.equal(repaired.available, true);
-    await runtime.remove('world:one', { idempotencyKey: 'delete:one' });
+    await runtime.remove('world:one', { idempotencyKey: 'delete:one', expectedPlan: 'a'.repeat(64) });
     assert.deepEqual(runtime.list(), []);
     assert.deepEqual(calls, [
         { kind: 'repair', worldId: 'world:one', options: { idempotencyKey: 'repair:one' } },
-        { kind: 'delete', worldId: 'world:one', options: { idempotencyKey: 'delete:one' } },
+        { kind: 'delete', worldId: 'world:one', options: { idempotencyKey: 'delete:one', expectedPlan: 'a'.repeat(64) } },
     ]);
 });
 
@@ -214,7 +214,7 @@ test('Nora World UI carries only worldId and has one open/capability owner', () 
     assert.match(worldController, /worldRuntime\.activate\(current\.id\)/);
     assert.doesNotMatch(worldController, /beforeRender|prepareWorldCapabilities/);
     assert.match(worldController, /loadWorldCapabilities\(world\.id\)/);
-    assert.match(worldController, /worldRuntime\.remove\(worldId\)/);
+    assert.match(worldController, /worldRuntime\.remove\(worldId, \{ expectedPlan: preview\.token \}\)/);
     assert.match(worldController, /confirmAction\(\{/);
     assert.doesNotMatch(startupController, /loadWorldCapabilities|promptCharacterCapabilities|primeActiveWorldbook/);
     assert.match(creationController, /const completed = await runWorldOperation/);

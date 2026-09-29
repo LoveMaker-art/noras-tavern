@@ -64,5 +64,9 @@ test('detects a bounded Nora tail before it can overwrite complete history', () 
     assert.equal(isNoraPartialChatOverwrite(complete, [header], { completeHistory: true, baseRevision: revision }), false);
     assert.equal(isNoraPartialChatOverwrite(complete, complete), false);
     assert.equal(isNoraPartialChatOverwrite(complete, [...complete, { ...messages[119], mes: 'safe-append' }]), false);
+    assert.equal(isNoraPartialChatOverwrite(complete, [...complete, { ...messages[119], mes: 'stale-append' }], { completeHistory: true, baseRevision: 'stale' }), true,
+        'versioned pages must not bypass a stale revision by presenting an append-only message list');
+    assert.equal(isNoraPartialChatOverwrite(complete, complete, { completeHistory: true, baseRevision: 'stale' }), false,
+        'an acknowledgement lost after an identical commit is safe to retry');
     assert.equal(isNoraPartialChatOverwrite(complete, [{ chat_metadata: { integrity: 'same-chat' } }, ...messages.slice(80)]), false);
 });

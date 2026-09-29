@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -64,6 +65,96 @@ test('concurrent standalone import and World creation reuse one immutable origin
     assert.equal((await fs.readdir(f.directories.characters)).length, 2);
     assert.deepEqual(await fs.readFile(path.join(f.directories.characters, first.avatar)), f.bytes);
     assert.notEqual(first.avatar, world.runtime_card.binding.avatar);
+});
+
+test('deleting a library original removes its index and unreferenced archive, not a same-name card', async t => {
+    const f = await fixture(t);
+    const first = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const changed = structuredClone(f.card); changed.data.description = 'Different card with the same name';
+    const other = await f.core.saveLibraryCard({ buffer: Buffer.from(JSON.stringify(changed)), format: 'png' });
+    const result = await f.core.deleteLibraryCard(first.avatar);
+    assert.equal(result.deleted, true);
+    assert.equal(result.archive, 'deleted');
+    assert.deepEqual((await f.core.listLibraryCards()).items.map(item => item.avatar), [other.avatar]);
+    assert.deepEqual((await fs.readdir(path.join(f.root, 'core', 'library-cards'))).filter(name => name.endsWith('.json')), [`${other.id}.json`]);
+    assert.equal((await fs.readdir(path.join(f.root, 'core', 'library-cards', 'sources'))).length, 1);
+    assert.deepEqual((await f.core.readLibraryCardSource(other.avatar)).buffer, Buffer.from(JSON.stringify(changed)));
+});
+
+test('library deletion preserves a World and its still-referenced source archive', async t => {
+    const f = await fixture(t);
+    const world = await f.create('archive-owner');
+    const original = (await f.core.listLibraryCards()).items[0];
+    const runtimePath = path.join(f.directories.characters, world.runtime_card.binding.avatar);
+    const runtime = await fs.readFile(runtimePath);
+    await assert.rejects(f.core.deleteLibraryCard(world.runtime_card.binding.avatar), { code: 'NORA_WORLD_RESOURCE_IN_USE' });
+    const result = await f.core.deleteLibraryCard(original.avatar);
+    assert.equal(result.archive, 'retained-referenced');
+    assert.equal((await fs.readdir(path.join(f.root, 'core', 'library-cards', 'sources'))).length, 1);
+    assert.deepEqual(await fs.readFile(runtimePath), runtime);
+    assert.equal((await f.core.getWorld(world.world_id)).lifecycle.status, 'READY');
+    assert.deepEqual((await f.core.listLibraryCards()).items, [], 'explicitly deleted originals must not reappear as legacy runtime snapshots');
+});
+
+test('interrupted library deletion resumes its recorded targets without allowing stale source import', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const archiveRoot = path.join(f.root, 'core', 'library-cards', 'sources');
+    const unlink = fsSync.unlinkSync;
+    fsSync.unlinkSync = target => {
+        if (path.dirname(target) === archiveRoot) throw Object.assign(new Error('fixture archive busy'), { code: 'EBUSY' });
+        return unlink(target);
+    };
+    try { await assert.rejects(f.core.deleteLibraryCard(original.avatar), { code: 'EBUSY' }); }
+    finally { fsSync.unlinkSync = unlink; }
+    await assert.rejects(f.core.readLibraryCardSource(original.avatar), { code: 'NORA_WORLD_RESOURCE_DELETING' });
+    await assert.rejects(f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' }), { code: 'NORA_WORLD_RESOURCE_DELETING' });
+    const result = await f.core.deleteLibraryCard(original.avatar);
+    assert.equal(result.alreadyAbsent, true);
+    assert.equal(result.archive, 'deleted');
+    assert.deepEqual(await fs.readdir(archiveRoot), []);
+    assert.deepEqual((await f.core.listLibraryCards()).items, []);
+});
+
+test('library deletion retains changed archives instead of deleting by their indexed filename', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const archiveRoot = path.join(f.root, 'core', 'library-cards', 'sources');
+    const archive = path.join(archiveRoot, (await fs.readdir(archiveRoot))[0]);
+    await fs.writeFile(archive, 'user replaced this archive');
+    assert.equal((await f.core.deleteLibraryCard(original.avatar)).archive, 'retained-changed');
+    assert.equal(await fs.readFile(archive, 'utf8'), 'user replaced this archive');
+    await assert.rejects(fs.stat(path.join(f.root, 'core', 'library-cards', `${original.id}.json`)), { code: 'ENOENT' });
+});
+
+test('an old library deletion refuses changed remaining bytes; a newly confirmed operation replans them', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const cardPath = path.join(f.directories.characters, original.avatar);
+    const unlink = fsSync.unlinkSync;
+    fsSync.unlinkSync = target => {
+        if (target === cardPath) throw Object.assign(new Error('fixture card busy'), { code: 'EBUSY' });
+        return unlink(target);
+    };
+    try { await assert.rejects(f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-delete' }), { code: 'EBUSY' }); }
+    finally { fsSync.unlinkSync = unlink; }
+    await fs.writeFile(cardPath, 'new user content');
+    await assert.rejects(f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-delete' }), { code: 'NORA_WORLD_DELETE_PLAN_CHANGED' });
+    assert.equal(await fs.readFile(cardPath, 'utf8'), 'new user content');
+    assert.equal((await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'new-confirmation' })).deleted, true);
+});
+
+test('replaying a completed library deletion cannot remove a later re-import of the same original', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-user-action' });
+    const replacement = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    assert.equal(replacement.avatar, original.avatar);
+    await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-user-action' });
+    assert.deepEqual((await f.core.listLibraryCards()).items.map(item => item.avatar), [replacement.avatar]);
+    assert.deepEqual((await f.core.readLibraryCardSource(replacement.avatar)).buffer, f.bytes);
+    await f.core.deleteLibraryCard(replacement.avatar, { idempotencyKey: 'new-user-confirmation' });
+    assert.deepEqual((await f.core.listLibraryCards()).items, []);
 });
 
 test('cleans only identical unreferenced originals and preserves chat, group, settings and World bindings', async t => {

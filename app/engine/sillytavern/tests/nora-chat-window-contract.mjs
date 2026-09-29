@@ -48,7 +48,8 @@ assert.match(messageAdapter, /editMessage:\s*async \(id, text\) => \{\s*const \{
 assert.match(source, /if \(!isNoraProduct\)\s*\{\s*await criticalExtensionActivation;/, 'ordinary ST may still block on critical extensions');
 assert.doesNotMatch(source, /messageElement\.find\('\.avatar img'\)\.attr\('src', avatarImg\);/, 'hidden Nora message avatars must not start thumbnail requests');
 assert.match(source, /export async function runNoraChatBackupTransaction\(operation\)/, 'the ST compatibility boundary must expose one chat-backup transaction');
-assert.match(source, /skip_backup:\s*skipBackup \|\| noraChatBackupTransactionDepth > 0/, 'intermediate transaction saves must skip redundant recovery snapshots');
+// Transaction suppression, failure and World isolation are exercised through
+// the actual save functions in nora-mvu-save-confirmation.test.mjs.
 assert.match(tokenizers, /export async function prefetchTokenCountsOpenAI\(messages\)/, 'OpenAI prompt preparation must expose batched token-cache warming');
 assert.match(tokenizers, /\/api\/tokenizers\/openai\/count-batch/, 'batched token warming must use one Nora/ST server request');
 assert.match(tokenizerEndpoint, /router\.post\('\/openai\/count-batch'/, 'the server must expose the batched OpenAI tokenizer route');

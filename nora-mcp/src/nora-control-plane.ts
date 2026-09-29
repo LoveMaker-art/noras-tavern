@@ -259,9 +259,13 @@ export class NoraControlPlane {
     return this.worldMutation("POST", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/repair`, {}, idempotencyKey);
   }
 
-  async deleteWorld(worldId: string, idempotencyKey: string, confirm?: boolean): Promise<unknown> {
+  async previewWorldDeletion(worldId: string): Promise<unknown> {
+    return this.http.get(`/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/delete-preview`);
+  }
+
+  async deleteWorld(worldId: string, idempotencyKey: string, confirm?: boolean, expectedPlan?: string): Promise<unknown> {
     if (!confirm) throw new NoraConfirmationRequiredError("Nora world delete");
-    return this.worldMutation("DELETE", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}`, {}, idempotencyKey);
+    return this.worldMutation("DELETE", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}`, { expected_plan: expectedPlan }, idempotencyKey);
   }
 
   async getOperation(operationId: string): Promise<unknown> {

@@ -42,6 +42,53 @@ def archive(path, members):
 
 
 class IncrementalUpdateTests(unittest.TestCase):
+    def test_backup_cleanup_preserves_unowned_and_failed_recovery_directories(self):
+        with tempfile.TemporaryDirectory(prefix="nora-owned-retention-") as temporary:
+            home = Path(temporary)
+            current = home / "tavern-backups/current"
+            manual = home / "tavern-backups/my-manual-copy"
+            failed = home / "tavern-backups/failed-update"
+            for directory in (current, manual, failed):
+                directory.mkdir(parents=True)
+                (directory / "user-file").write_text("must survive")
+            result = UPDATER.prune_backup_history(home, current)
+            self.assertTrue(manual.is_dir())
+            self.assertTrue(failed.is_dir())
+            self.assertEqual(result["removed"], [])
+            UPDATER.record_backup(home, current, "committed")
+            UPDATER.record_backup(home, failed, "prepared")
+            result = UPDATER.prune_backup_history(home, current)
+            self.assertEqual(result["removed"], [])
+            self.assertEqual(len(result["retained"]), 2)
+            for state in ("restored", "recovery-failed"):
+                UPDATER.record_backup(home, failed, state)
+                self.assertEqual(UPDATER.prune_backup_history(home, current)["removed"], [])
+                self.assertTrue(failed.joinpath("user-file").is_file())
+
+    def test_backup_cleanup_rejects_foreign_receipts_and_linked_directories(self):
+        with tempfile.TemporaryDirectory(prefix="nora-backup-safety-") as temporary:
+            home = Path(temporary) / "install"
+            current, old = home / "tavern-backups/current", home / "tavern-backups/old"
+            for directory in (current, old):
+                directory.mkdir(parents=True)
+                UPDATER.record_backup(home, directory, "committed")
+            marker = old / UPDATER.BACKUP_RECEIPT
+            receipt = json.loads(marker.read_text())
+            marker.write_text(json.dumps({**receipt, "installRoot": "/another-install"}))
+            outside = Path(temporary) / "manual"
+            outside.mkdir()
+            (outside / "keep").write_text("user data")
+            (home / "tavern-backups/linked").symlink_to(outside, target_is_directory=True)
+            (home / "tavern-updates").symlink_to(outside, target_is_directory=True)
+            result = UPDATER.prune_backup_history(home, current)
+            self.assertEqual(result["removed"], [])
+            self.assertTrue(marker.is_file())
+            self.assertEqual((outside / "keep").read_text(), "user data")
+            marker.unlink()
+            marker.symlink_to(current / UPDATER.BACKUP_RECEIPT)
+            self.assertEqual(UPDATER.prune_backup_history(home, current)["removed"], [])
+            self.assertTrue(old.is_dir())
+
     def test_install_prunes_backups_under_tavern_not_hermes(self):
         with tempfile.TemporaryDirectory(prefix="nora-install-retention-") as temporary, ExitStack() as stack:
             root = Path(temporary).resolve()
@@ -53,6 +100,7 @@ class IncrementalUpdateTests(unittest.TestCase):
             old = tavern / "tavern-backups/old"
             unrelated = hermes / "tavern-backups/preserve"
             old.mkdir(parents=True)
+            UPDATER.record_backup(tavern, old, "committed")
             unrelated.mkdir(parents=True)
             manifest = {"versions": {"tavern": "2.2.9"}, "commit": "a" * 40, "artifacts": {}}
 
@@ -100,6 +148,7 @@ class IncrementalUpdateTests(unittest.TestCase):
             for path in (current, old, legacy):
                 path.mkdir(parents=True)
                 path.joinpath("marker").write_text(path.name, encoding="utf-8")
+                UPDATER.record_backup(home, path, "committed")
             unrelated.parent.mkdir(parents=True)
             unrelated.write_text("preserve", encoding="utf-8")
 

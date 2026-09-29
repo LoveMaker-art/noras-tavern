@@ -271,13 +271,14 @@ export function createWorldCoreRuntime(runtime, {
         }
     }
 
-    async function remove(worldOrId, { idempotencyKey = null } = {}) {
+    async function remove(worldOrId, { idempotencyKey = null, expectedPlan } = {}) {
         const worldId = worldIdOf(worldOrId);
         manifestById(worldId);
         setOperation({ status: 'RUNNING', kind: 'DELETE', operationId: null, error: null });
         try {
             const result = await client.deleteWorld(worldId, {
                 idempotencyKey: idempotencyKey || mutationKey('delete', worldId),
+                expectedPlan,
             });
             manifests = await client.list();
             setOperation({ status: 'COMPLETED', operationId: result.operation?.operation_id || null, error: null });
@@ -432,5 +433,6 @@ export function createWorldCoreRuntime(runtime, {
         addSetting,
         updateActive,
         remove,
+        previewWorldDeletion: worldId => client.previewWorldDeletion(worldId),
     });
 }

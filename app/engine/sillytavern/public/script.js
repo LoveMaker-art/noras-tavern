@@ -1,5 +1,5 @@
 import { tagHistory, scopeOf } from './scripts/nora-story-ledger/history.js';
-import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage } from './scripts/nora-story-ledger/client.js';
+import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage, protectStoryRegeneration } from './scripts/nora-story-ledger/client.js';
 import { createLedgerSaveRecovery } from './scripts/nora-story-ledger/save-recovery.js';
 import {
     createChatIdentity,
@@ -4678,7 +4678,27 @@ function removeLastMessage() {
  * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null } = {}, dryRun = false) {
+export async function runNoraChatActivity(kind, operation) {
+    if (!isNoraProductMode() || !scopeOf(chat_metadata)) return operation();
+    const identity = chatWriteIdentity();
+    await ensureNoraFullChatLoaded();
+    const { pageChatActivity } = await import('./scripts/nora-story-ledger/chat-activity.js');
+    if (chatWriteIdentity() !== identity) throw Object.assign(new Error('聊天已切换，请重试。'), { code: 'NORA_CHAT_OPERATION_STALE' });
+    return pageChatActivity(() => ({ scope: scopeOf(chat_metadata),
+        revision: matchesNoraChatWindow() ? noraChatWindowState.serverRevision : null }), getRequestHeaders).run(kind, operation);
+}
+
+export async function Generate(type, options = {}, dryRun = false) {
+    try {
+        const generate = () => generateCore(type, options, dryRun);
+        return await (dryRun ? generate() : runNoraChatActivity('generation', generate));
+    } catch (error) {
+        unblockGeneration(type);
+        throw error;
+    }
+}
+
+async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -4691,6 +4711,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         await globalThis.__NORA_GENERATION_PREREQUISITES_PROMISE__;
         if (!dryRun) worldPresetProjection.restore(chat_metadata?.nora_world?.id);
     }
+
+    // Protect the persisted branch before extension events or regeneration can
+    // remove its last reply. Ordinary sends and dry-run prompt previews skip it.
+    await protectStoryRegeneration({ chat, chatMetadata: chat_metadata }, { type, dryRun, depth });
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
@@ -7735,15 +7759,18 @@ export function saveChatDebounced() {
  *
  * @returns {Promise<void>}
  */
-let noraChatBackupTransactionDepth = 0;
+const noraChatBackupTransactions = new Map();
 
 const enqueueChatWrite = createChatWriteQueue(busy => { isChatSaving = busy; });
 
+function chatWriteIdentity() {
+    return JSON.stringify([createChatSaveTarget(), getCurrentChatId(), characters[this_chid]?.avatar]);
+}
+
 function queueChatWrite(operation) {
-    const identity = () => JSON.stringify([createChatSaveTarget(), getCurrentChatId(), characters[this_chid]?.avatar]);
-    const target = identity();
+    const target = chatWriteIdentity();
     const assertCurrent = () => {
-        if (identity() !== target) throw Object.assign(new Error('The active chat changed before the save completed.'), {
+        if (chatWriteIdentity() !== target) throw Object.assign(new Error('The active chat changed before the save completed.'), {
             code: 'NORA_CHAT_SAVE_STALE', phase: 'save',
         });
     };
@@ -7757,14 +7784,19 @@ export async function saveChat(options = {}) {
         options = { chatName, withMetadata, mesId, force };
     }
     try {
-        return await queueChatWrite(assertCurrent => saveChatNow(options, assertCurrent));
+        // Capture ownership before queueing. A delayed save must not borrow a
+        // newer operation's token or become an unowned save after release.
+        const activityToken = options.chatData === undefined
+            && (options.chatName === undefined || options.chatName === characters[this_chid]?.chat)
+            ? globalThis[Symbol.for('nora.chat.activity')]?.tokenFor(scopeOf(chat_metadata)) : null;
+        return await queueChatWrite(assertCurrent => saveChatNow({ ...options, activityToken }, assertCurrent));
     } catch (error) {
         if (isNoraProductMode() || options.requireConfirmation) error.phase = 'save';
         throw error;
     }
 }
 
-async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false, requireConfirmation = false } = {}, assertCurrent = () => {}) {
+async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false, requireConfirmation = false, activityToken = null } = {}, assertCurrent = () => {}) {
     const saveIdentity = getCurrentChatId();
     const activeChatName = characters[this_chid]?.chat;
     const isCurrentNoraChatSave = isNoraProductMode()
@@ -7806,6 +7838,10 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
     const noraCompleteHistory = Boolean(isCurrentNoraChatSave
         && (!activeWindowState || activeWindowState.fullHistoryLoaded));
     const noraBaseRevision = activeWindowState?.serverRevision ?? null;
+    let backupMvuState = 'unverified';
+    if (isCurrentNoraChatSave && trimmedChat.length === chat.length) {
+        try { backupMvuState = globalThis.NoraMvu?.backupState?.() ?? 'unverified'; } catch { /* Backup observations must never prevent a canonical save. */ }
+    }
 
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -7817,23 +7853,24 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
     let retrySave;
     try {
         const retrySnapshot = JSON.stringify({ chat, metadata: chat_metadata });
-        const saveChatRequest = await compressRequest({
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: characters[this_chid].name,
-                file_name: fileName,
-                chat: [chatHeader, ...trimmedChat],
-                avatar_url: characters[this_chid].avatar,
-                force: force,
-                skip_backup: skipBackup || noraChatBackupTransactionDepth > 0,
-                nora_complete_history: noraCompleteHistory,
-                nora_base_revision: noraBaseRevision,
-            }),
+        const payload = JSON.stringify({
+            ch_name: characters[this_chid].name,
+            file_name: fileName,
+            chat: [chatHeader, ...trimmedChat],
+            avatar_url: characters[this_chid].avatar,
+            force: force,
+            skip_backup: skipBackup || noraChatBackupTransactions.has(chatWriteIdentity()),
+            nora_complete_history: noraCompleteHistory,
+            nora_base_revision: noraBaseRevision,
+            nora_backup_mvu_state: backupMvuState,
+            nora_activity_token: activityToken,
         });
         assertCurrent();
-        const send = async () => {
+        const send = async (retry = false) => {
+            // An explicit save-only retry retains its original revision and
+            // exact chat, but cannot reuse a generation lease already released.
+            const saveChatRequest = await compressRequest({ method: 'POST', cache: 'no-cache', headers: getRequestHeaders(),
+                body: retry && activityToken ? JSON.stringify({ ...JSON.parse(payload), nora_activity_token: null }) : payload });
             assertCurrent();
             const headers = new Headers(saveChatRequest.headers);
             for (const [key, value] of Object.entries(getRequestHeaders())) headers.set(key, value);
@@ -7869,8 +7906,7 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
             retrySave = () => queueChatWrite(async () => {
                 assertCurrent();
                 if (JSON.stringify({ chat, metadata: chat_metadata }) !== retrySnapshot) throw Object.assign(new Error('聊天内容已改变，不能重试覆盖先前的保存。当前内容仍保留在页面中。'), { code: 'NORA_CHAT_SAVE_STALE', phase: 'save' });
-                try { return await send(); }
-                catch (error) { error.retrySave = retrySave; throw error; }
+                try { return await send(true); } catch (error) { error.retrySave = retrySave; throw error; }
             });
         }
         return await send();
@@ -7915,15 +7951,37 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
  */
 export async function runNoraChatBackupTransaction(operation) {
     if (typeof operation !== 'function') throw new TypeError('Chat backup transaction requires an operation.');
-    noraChatBackupTransactionDepth += 1;
+    const identity = chatWriteIdentity();
+    const transaction = noraChatBackupTransactions.get(identity) || { depth: 0, failed: false };
+    noraChatBackupTransactions.set(identity, transaction);
+    transaction.depth++;
+    let operationError, result;
+    let operationFailed = false;
     try {
-        return await operation();
+        result = await operation();
+    } catch (error) {
+        operationError = error;
+        operationFailed = true;
+        transaction.failed = true;
     } finally {
-        noraChatBackupTransactionDepth = Math.max(0, noraChatBackupTransactionDepth - 1);
-        if (noraChatBackupTransactionDepth === 0) {
-            await saveChat();
+        transaction.depth--;
+    }
+    if (transaction.depth === 0) {
+        noraChatBackupTransactions.delete(identity);
+        try {
+            if (identity !== chatWriteIdentity()) {
+                throw Object.assign(new Error('聊天已切换，已取消旧操作的最终保存。'), { code: 'NORA_CHAT_SAVE_STALE', phase: 'save' });
+            }
+            await saveChat({ skipBackup: transaction.failed });
+        } catch (error) {
+            if (!operationFailed) throw error;
+            // Keep the original failure and expose a separate save failure.
+            if (operationError instanceof Error && Object.isExtensible(operationError)) operationError.saveError = error;
+            else console.error('[Chat save] Final save also failed:', error);
         }
     }
+    if (operationFailed) throw operationError;
+    return result;
 }
 
 /**
@@ -11503,7 +11561,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         const chid = characters.indexOf(character);
         const pastChats = await getPastCharacterChats(chid);
 
-        const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
+        const msg = { avatar_url: character.avatar, delete_chats: deleteChats, idempotency_key: crypto.randomUUID() };
 
         const response = await fetch('/api/characters/delete', {
             method: 'POST',
@@ -11516,6 +11574,10 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete character`);
             continue;
         }
+
+        const removal = await response.json();
+        if (removal.archive === 'retained-referenced') toastr.info(t`库卡已删除；仍有引用的原始存档已保留。`);
+        if (removal.archive === 'retained-changed') toastr.warning(t`库卡已删除；原始存档内容已变化，未自动删除。`);
 
         accountStorage.removeItem(`AlertWI_${character.avatar}`);
         accountStorage.removeItem(`AlertRegex_${character.avatar}`);

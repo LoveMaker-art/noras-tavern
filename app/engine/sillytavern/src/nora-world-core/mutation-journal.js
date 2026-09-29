@@ -21,13 +21,14 @@ function operationIdentity(type, idempotencyKey) {
 
 function commandDigest(type, worldId, command = null) {
     const value = { type, world_id: worldId };
-    if (type === 'ADD_WORLD_SETTING') value.command = command;
+    if (type === 'ADD_WORLD_SETTING' || (type === 'DELETE_WORLD' && command)) value.command = command;
     return sha256(stableStringify(value));
 }
 
 function validateOperation(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Mutation operation must be an object.');
-    if (value.schema !== 'nora-world-operation/v1') throw new Error('Unsupported mutation operation schema.');
+    const receipt = value.schema === 'nora-world-operation/v2';
+    if (!receipt && value.schema !== 'nora-world-operation/v1') throw new Error('Unsupported mutation operation schema.');
     const stages = DEFINITIONS[value.type];
     if (!stages) throw new Error('Unsupported mutation operation type.');
     if (!stages.includes(value.stage) || !STATUSES.includes(value.status)) throw new Error('Invalid mutation operation state.');
@@ -35,13 +36,15 @@ function validateOperation(value) {
     if (!/^[a-f0-9]{64}$/.test(value.idempotency_hash || '')) throw new Error('Invalid mutation idempotency digest.');
     if (value.operation_id !== `operation:${value.idempotency_hash.slice(0, 32)}`) throw new Error('Mutation identity does not match its idempotency digest.');
     if (!ID_PATTERN.test(value.world_id || '')) throw new Error('Invalid mutation World identity.');
-    if (value.type === 'ADD_WORLD_SETTING' && (!value.command || typeof value.command !== 'object' || Array.isArray(value.command))) {
+    if (!receipt && value.type === 'ADD_WORLD_SETTING' && (!value.command || typeof value.command !== 'object' || Array.isArray(value.command))) {
         throw new Error('Add-setting mutation must preserve its command.');
     }
-    if (value.command_digest !== commandDigest(value.type, value.world_id, value.command ?? null)) throw new Error('Mutation command digest does not match its command.');
+    if (receipt ? !/^[a-f0-9]{64}$/.test(value.command_digest || '')
+        : value.command_digest !== commandDigest(value.type, value.world_id, value.command ?? null)) throw new Error('Mutation command digest does not match its command.');
     if (!Number.isInteger(value.attempts) || value.attempts < 1) throw new Error('Invalid mutation attempts.');
     const completed = value.stage === 'COMPLETED';
     if ((value.status === 'COMPLETED') !== completed) throw new Error('Mutation completion status contradicts its stage.');
+    if (receipt && (!completed || Object.hasOwn(value, 'command'))) throw new Error('Only completed mutations can be compact receipts.');
     if (value.status === 'FAILED' && !value.error) throw new Error('Failed mutation must preserve an error.');
     if (value.status !== 'FAILED' && value.error) throw new Error('Non-failed mutation cannot preserve an active error.');
     if (!Number.isFinite(Date.parse(value.created_at)) || !Number.isFinite(Date.parse(value.updated_at))) {
@@ -96,7 +99,12 @@ export class MutationJournal {
     }
 
     async #save(operation) {
-        const validated = validateOperation(operation);
+        let validated = validateOperation(operation);
+        if (validated.status === 'COMPLETED' && validated.schema === 'nora-world-operation/v1') {
+            const receipt = { ...validated };
+            delete receipt.command;
+            validated = validateOperation({ ...receipt, schema: 'nora-world-operation/v2' });
+        }
         await writeJsonAtomic(
             path.join(this.operationsDirectory, documentFileName(validated.operation_id)),
             validated,
@@ -121,7 +129,7 @@ export class MutationJournal {
             throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'World mutation identity or idempotency key is invalid.');
         }
         const { idempotencyHash, operationId } = operationIdentity(type, normalizedKey);
-        const normalizedCommand = type === 'ADD_WORLD_SETTING' ? cloneJson(command) : null;
+        const normalizedCommand = ['ADD_WORLD_SETTING', 'DELETE_WORLD'].includes(type) ? cloneJson(command) : null;
         const digest = commandDigest(type, normalizedWorldId, normalizedCommand);
         return this.#locks.run(`mutation-idempotency:${idempotencyHash}`, async () => {
             const existingId = this.#byIdempotency.get(idempotencyHash);

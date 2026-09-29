@@ -27,6 +27,7 @@ import { CharXParser, persistCharXAssets } from '../charx.js';
 import cacheBuster from '../middleware/cacheBuster.js';
 import { attachCharacterSource, characterSourceMetadata, sourceFingerprint } from '../nora-character-source.js';
 import { assertLegacyCharacterMutationAllowed } from '../nora-world-core/legacy-resource-guard.js';
+import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
 
 // With 100 MB limit it would take roughly 3000 characters to reach this limit
 const memoryCacheCapacity = getConfigValue('performance.memoryCacheCapacity', '100mb');
@@ -1442,11 +1443,6 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
         return response.sendStatus(403);
     }
 
-    const avatarPath = path.join(request.user.directories.characters, request.body.avatar_url);
-    if (!fs.existsSync(avatarPath)) {
-        return response.sendStatus(400);
-    }
-
     const dir_name = request.body.avatar_url.replace('.png', '');
 
     if (!dir_name.length) {
@@ -1456,19 +1452,19 @@ router.post('/delete', validateAvatarUrlMiddleware, async function (request, res
 
     try {
         await assertLegacyCharacterMutationAllowed(request.user.directories, request.body.avatar_url);
-        fs.unlinkSync(avatarPath);
+        const result = await resolveNoraWorldCore(request.user.directories).deleteLibraryCard(request.body.avatar_url, { idempotencyKey: request.body.idempotency_key ?? null });
         invalidateThumbnail(request.user.directories, 'avatar', request.body.avatar_url);
 
         if (request.body.delete_chats == true) {
             await fs.promises.rm(path.join(request.user.directories.chats, sanitize(dir_name)), { recursive: true, force: true });
         }
+        return response.json(result);
     } catch (err) {
         if (sendWorldOwnedCharacterConflict(response, err)) return;
         console.error(err);
         return response.sendStatus(500);
     }
 
-    return response.sendStatus(200);
 });
 
 /**

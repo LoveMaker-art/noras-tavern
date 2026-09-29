@@ -10,7 +10,7 @@ export const READ_TOOLS = new Set([
   "nora.library.list", "nora.library.read",
   "nora.control.catalog", "nora.control.clients", "nora.control.read", "nora.control.operation",
   "nora.status", "nora.control_map", "nora.config_locations", "nora.local_index",
-  "nora.world.list", "nora.world.inspect", "nora.world.open_plan", "nora.world.snapshot", "nora.operation.get",
+  "nora.world.list", "nora.world.inspect", "nora.world.open_plan", "nora.world.snapshot", "nora.world.delete_preview", "nora.operation.get",
   "nora.story.card", "nora.story.checkpoint.status", "nora.mvu_model.get", "nora.ledger.status", "nora.session.read",
   "st.character.list", "st.character.inspect", "st.character.chats", "st.worldbook.list", "st.worldbook.inspect", "st.worldbook.entries",
   "st.mvu.settings.get", "st.mvu.entries", "st.extension.registry", "st.plugin.registry", "st.regex.registry", "st.quick_reply.registry",

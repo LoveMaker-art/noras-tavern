@@ -1057,6 +1057,19 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-library-management { margin-top:18px; color:var(--nora-muted); font-size:12px; overflow-wrap:anywhere; }
 .nora-library-management > summary { cursor:pointer; padding:8px 0; }
 .nora-library-actions { display:flex; flex-wrap:wrap; gap:8px; padding:4px 0; }
+.nora-backup-manager { min-width:0; }
+.nora-backup-toolbar, .nora-backup-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.nora-backup-toolbar { justify-content:space-between; margin:14px 0; font-size:13px; color:var(--nora-muted); }
+.nora-backup-manager .nora-secondary { padding:7px 12px; font-family:inherit; }
+.nora-backup-row { display:flex; align-items:flex-start; gap:12px; padding:16px 0; border-bottom:1px solid var(--nora-line); flex-wrap:wrap; }
+.nora-backup-row > input { margin-top:5px; accent-color:var(--nora-brand-ink); }
+.nora-backup-info { display:flex; flex-direction:column; gap:5px; flex:1 1 220px; min-width:0; overflow-wrap:anywhere; font-size:13px; }
+.nora-backup-info small { color:var(--nora-muted); line-height:1.6; }
+.nora-backup-info details { font-size:12px; color:var(--nora-muted); }
+.nora-backup-row .nora-backup-actions { margin-left:auto; }
+.nora-backup-manager [data-backup-error]:not(:empty) { color:var(--nora-danger); font-size:13px; overflow-wrap:anywhere; }
+.nora-backup-legacy { border-top:1px solid var(--nora-line); margin-top:18px; padding-top:16px; }
+.nora-backup-legacy .nora-backup-info { padding:10px 0; border-bottom:1px solid var(--nora-line); }
 .nora-library-action { display:inline-flex; align-items:center; justify-content:center; gap:8px; min-height:40px; max-width:100%; padding:8px 12px; border:1px solid var(--nora-line); border-radius:6px; background:transparent; color:var(--nora-ink); font:inherit; font-size:13px; line-height:1.4; text-align:start; cursor:pointer; }
 .nora-library-action > :is(i, svg) { flex:none; width:14px; height:14px; }
 .nora-library-action > span { min-width:0; overflow-wrap:anywhere; }

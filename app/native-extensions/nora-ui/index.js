@@ -417,6 +417,13 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
             isGenerating: () => messageController.isGenerating() });
         panelController = createPanelController({
             openPluginLibrary: pluginLibrary.open,
+            openBackups: async () => {
+                try {
+                    const { createBackupController } = await import('./backup-controller.js');
+                    await createBackupController({ dialogs, select: $, selectAll: $$, escapeHtml,
+                        headers: transport.requestHeaders, worlds: () => uiStore.read().worldModels }).open();
+                } catch (error) { showToast(normalizeNoticeMessage(error), { tone: 'danger' }); }
+            },
             plugins: pluginLibrary,
             isGenerating: () => messageController.isGenerating(),
             ledgerRequest: createLedgerRequest({ requestHeaders: transport.requestHeaders }),

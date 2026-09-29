@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import process from 'node:process';
 import { getChatRevision } from '../chat-revision.js';
+import { queueChatBackup } from '../chat-backup-runtime.js';
+import { chatSessionOperations } from '../chat-session-operations.js';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -16,8 +17,6 @@ import {
     getConfigValue,
     humanizedDateTime,
     tryParse,
-    generateTimestamp,
-    removeOldBackups,
     formatBytes,
     tryWriteFileSync,
     tryReadFileSync,
@@ -26,61 +25,9 @@ import {
     isPathUnderParent,
 } from '../util.js';
 
-const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
-const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
-const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000, 'number'));
 const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'boolean');
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
-
-/**
- * Saves a chat to the backups directory.
- * @param {string} directory The user's backup directory.
- * @param {string} name The name of the chat.
- * @param {string} data The serialized chat to save.
- * @param {string} backupPrefix The file prefix. Typically CHAT_BACKUPS_PREFIX.
- * @returns
- */
-function backupChat(directory, name, data, backupPrefix = CHAT_BACKUPS_PREFIX) {
-    try {
-        if (!isBackupEnabled) { return; }
-        if (!fs.existsSync(directory)) {
-            console.error(`The chat couldn't be backed up because no directory exists at ${directory}!`);
-        }
-        // replace non-alphanumeric characters with underscores
-        name = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
-
-        const backupFile = path.join(directory, `${backupPrefix}${name}_${generateTimestamp()}.jsonl`);
-
-        tryWriteFileSync(backupFile, data);
-        removeOldBackups(directory, `${backupPrefix}${name}_`);
-        if (isNaN(maxTotalChatBackups) || maxTotalChatBackups < 0) {
-            return;
-        }
-        removeOldBackups(directory, backupPrefix, maxTotalChatBackups);
-    } catch (err) {
-        console.error(`Could not backup chat for ${name}`, err);
-    }
-}
-
-/**
- * @type {Map<string, import('lodash').DebouncedFunc<typeof backupChat>>}
- */
-const backupFunctions = new Map();
-
-/**
- * Gets a backup function for one chat.
- * @param {string} handle User handle
- * @param {string} filePath Chat file path
- * @returns {typeof backupChat} Backup function
- */
-function getBackupFunction(handle, filePath) {
-    const key = `${handle}\0${filePath}`;
-    if (!backupFunctions.has(key)) {
-        backupFunctions.set(key, _.debounce(backupChat, throttleInterval, { leading: false, trailing: true }));
-    }
-    return backupFunctions.get(key) || (() => { });
-}
 
 /**
  * Gets a preview message from a chat message string.
@@ -98,12 +45,6 @@ function getPreviewMessage(lastMessage) {
         ? '...' + lastMessage.substring(lastMessage.length - strlen)
         : lastMessage;
 }
-
-process.on('exit', () => {
-    for (const func of backupFunctions.values()) {
-        func.flush();
-    }
-});
 
 /**
  * Imports a chat from Ooba's format.
@@ -437,6 +378,27 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
 
 export const router = express.Router();
 
+router.post('/operation/:action', async (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    try {
+        const { worldId, sessionId, token, kind, baseRevision } = request.body || {};
+        const scope = { worldId, sessionId }, directories = request.user.directories;
+        const operations = chatSessionOperations(directories);
+        if (request.params.action === 'renew') return response.json(operations.renew(scope, token));
+        if (request.params.action === 'end') return response.json({ released: operations.end(scope, token) });
+        if (request.params.action !== 'begin') return response.sendStatus(404);
+        const { filePath } = await resolveStoryLedger(directories, { recoverProjection: false }).resolve(scope);
+        const data = getChatData(filePath);
+        if (scopeOf(data[0]?.chat_metadata)?.worldId !== worldId || scopeOf(data[0]?.chat_metadata)?.sessionId !== sessionId
+            || typeof baseRevision !== 'string' || getChatRevision(data) !== baseRevision) {
+            return response.status(409).json({ code: 'NORA_CHAT_SAVE_STALE' });
+        }
+        return response.json(operations.begin(scope, kind));
+    } catch (error) {
+        return response.status(error.status || 400).json({ code: error.code || 'NORA_CHAT_OPERATION_INVALID' });
+    }
+});
+
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
 class IntegrityMismatchError extends Error {
     constructor(...params) {
@@ -469,7 +431,7 @@ class NoraPartialChatSaveError extends Error {
  */
 export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {}) {
     if (!Array.isArray(existingChat) || !Array.isArray(incomingChat)) return false;
-    if (existingChat.length < 2 || incomingChat.length < 1) return false;
+    if (existingChat.length < 1 || incomingChat.length < 1) return false;
 
     const incomingMetadata = incomingChat[0]?.chat_metadata;
     if (!incomingMetadata?.nora_world?.id && !incomingMetadata?.nora_session?.id) return false;
@@ -482,6 +444,9 @@ export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {
         && typeof proof.baseRevision === 'string'
         && proof.baseRevision === getChatRevision(existingChat);
     if (completeHistoryProved) return false;
+    // A versioned page cannot evade CAS by appending to an old restored
+    // prefix. Identical retries remain safe after an acknowledgement loss.
+    if (proof.completeHistory === true) return getChatRevision(incomingChat) !== getChatRevision(existingChat);
 
     const existingMessages = existingChat.slice(1);
     const incomingMessages = incomingChat.slice(1);
@@ -495,12 +460,12 @@ export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {
  * @param {Array} chatData The chat array to save.
  * @param {string} filePath Target file path for the data.
  * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
- * @param {string} handle The users handle, passed to getBackupFunction.
- * @param {string} cardName Passed to backupChat.
- * @param {string} backupDirectory Passed to backupChat.
+ * @param {string} handle Legacy caller argument (not a backup identity).
+ * @param {string} cardName Legacy caller argument (not a backup identity).
+ * @param {string} backupDirectory Legacy caller argument.
  * @param {boolean} skipBackup Skip the automatic recovery snapshot for an intermediate transaction save.
  */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null, noraHistoryProof = {}) {
+export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null, noraSaveContext = {}) {
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
 
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
@@ -511,7 +476,10 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     }
     const verifyWriteBase = () => {
         const existingChat = fs.existsSync(filePath) ? getChatData(filePath) : [];
-        if (isNoraPartialChatOverwrite(existingChat, chatData, noraHistoryProof)) {
+        if (JSON.stringify(existingChat[0]?.chat_metadata?.nora_restore || null) !== JSON.stringify(chatData[0]?.chat_metadata?.nora_restore || null)) {
+            throw new NoraPartialChatSaveError('The server-owned restoration receipt cannot be replaced by a chat save.');
+        }
+        if (isNoraPartialChatOverwrite(existingChat, chatData, noraSaveContext)) {
             throw new NoraPartialChatSaveError(`Refusing to replace complete Nora history without its current revision: ${filePath}`);
         }
     };
@@ -520,15 +488,14 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
             filePath,
             chatData,
             () => writeFileAtomicSync(filePath, jsonlData, 'utf8'),
-            { beforeWrite: verifyWriteBase },
+            { beforeWrite: verifyWriteBase, activityToken: noraSaveContext.activityToken },
         );
     } else {
         verifyWriteBase();
         tryWriteFileSync(filePath, jsonlData);
     }
-    if (!skipBackup) {
-        getBackupFunction(handle, filePath)(backupDirectory, cardName, jsonlData);
-    }
+    if (!directories) return { status: 'skipped', reason: 'missing-user-directories' };
+    return queueChatBackup({ directories, filePath, data: jsonlData, skip: skipBackup, mvuState: noraSaveContext.mvuState });
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
@@ -543,7 +510,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(
+            const backup = await trySaveChat(
                 chatData,
                 chatFilePath,
                 request.body.force,
@@ -555,16 +522,19 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
                 {
                     completeHistory: request.body.nora_complete_history,
                     baseRevision: request.body.nora_base_revision,
+                    mvuState: request.body.nora_backup_mvu_state,
+                    activityToken: request.body.nora_activity_token,
                 },
             );
             const scope = scopeOf(chatData[0]?.chat_metadata);
             const ledger = scope ? await resolveStoryLedger(request.user.directories).plugin.status(scope) : null;
-            return response.send({ ok: true, ledger, revision: getChatRevision(chatData) });
+            return response.send({ ok: true, ledger, revision: getChatRevision(chatData), backup });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
     } catch (error) {
         if (error?.code === 'NORA_PARTIAL_CHAT_SAVE') return response.status(error.status).send({ error: error.code });
+        if (error?.code?.startsWith('NORA_CHAT_OPERATION_')) return response.status(409).send({ error: error.code });
         if (error?.code?.startsWith('NORA_LEDGER_')) return response.status(error.status || 409).send({ error: error.code });
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);

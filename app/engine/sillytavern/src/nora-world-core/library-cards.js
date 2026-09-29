@@ -8,6 +8,7 @@ import { stableStringify } from './domain.js';
 import { writeJsonAtomic } from './atomic-json.js';
 import { NoraWorldCoreError } from './errors.js';
 import { persistImmutable } from './st-import-staging.js';
+import { snapshotRemovalFile, assertRemovalSnapshot } from './file-removal.js';
 
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const invalid = message => { throw new NoraWorldCoreError('NORA_WORLD_INVALID', message); };
@@ -48,6 +49,20 @@ function fingerprint(decoded) {
 export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
     const directory = path.join(path.dirname(stagingRoot), 'library-cards');
     const archives = path.join(directory, 'sources');
+    const deletions = path.join(directory, 'deletions');
+    const deletionName = (avatar, key) => `${digest(`${avatar}\0${key || ''}`)}.json`;
+    async function deletionReceipts() {
+        let names;
+        try { names = await fs.readdir(deletions); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
+        const result = [];
+        for (const name of names.filter(name => /^[a-f0-9]{64}\.json$/.test(name))) {
+            const item = JSON.parse((await readSafe(deletions, name)).toString());
+            if (item.schema !== 'nora-library-deletion/1' || deletionName(item.avatar, item.key) !== name
+                || !Array.isArray(item.sources) || item.sources.some(value => !/^[a-f0-9]{64}$/.test(value))) invalid('Invalid library deletion receipt.');
+            result.push(item);
+        }
+        return result;
+    }
     async function records() {
         let files;
         try { files = await fs.readdir(directory); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
@@ -119,6 +134,9 @@ export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
             const canonical = await cardCodec.decode({ buffer: decoded.runtimeCardBuffer, format: 'png' });
             const complete = { ...decoded, ...canonical };
             const id = fingerprint(complete);
+            if ((await records()).some(item => item.id === id && item.removal)) {
+                throw new NoraWorldCoreError('NORA_WORLD_RESOURCE_DELETING', '这张库卡的删除尚未完成，请先重试删除。');
+            }
             const scanned = await scan(worlds);
             const matches = scanned.items.filter(item => item.id === id);
             const keeper = matches.find(item => item.record) || matches[0];
@@ -160,6 +178,7 @@ export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
         }
         const catalog = [...groups.values()].map(item => ({ id: item.id, avatar: item.avatar, name: item.name }));
         const sources = new Set(items.flatMap(item => item.record ? [item.record.source_digest, ...(item.record.source_digests || [])] : []));
+        for (const receipt of await deletionReceipts()) for (const source of receipt.sources) sources.add(source);
         // Pre-library installs may have ONLY runtime cards. Keep one explicitly labelled
         // snapshot accessible until its source is enrolled; never delete or rewrite it.
         const legacySources = new Set();
@@ -179,6 +198,9 @@ export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
     }
     async function source(avatar) {
         const indexed = await records();
+        if (indexed.some(item => item.removal && (item.avatar === avatar || item.aliases.includes(avatar)))) {
+            throw new NoraWorldCoreError('NORA_WORLD_RESOURCE_DELETING', '这张库卡正在删除，暂不能导入。');
+        }
         let buffer;
         try { buffer = await readSafe(roots.characters, avatar); }
         catch (error) {
@@ -193,5 +215,74 @@ export function createCardLibrary({ roots, stagingRoot, cardCodec, locks }) {
         if (digest(original) !== record.source_digest) invalid('Library source checksum mismatch.');
         return { buffer: original, format: record.format };
     }
-    return { save, list, source };
+    async function remove(avatar, worlds = [], { idempotencyKey = null } = {}) {
+        if (typeof avatar !== 'string' || !avatar.endsWith('.png') || /[/\\\0]/.test(avatar) || path.basename(avatar) !== avatar) invalid('Invalid card filename.');
+        return locks.run('library:cards', async () => {
+            if (runtimeName(avatar) || worlds.some(world => world.runtime_card?.binding?.avatar === avatar
+                || world.sessions?.items?.some(session => session.binding?.avatar === avatar))) {
+                throw new NoraWorldCoreError('NORA_WORLD_RESOURCE_IN_USE', '世界运行卡不能通过库删除，请从世界入口操作。');
+            }
+            const indexed = await records();
+            let record = indexed.find(item => item.avatar === avatar);
+            const receipt = (await deletionReceipts()).find(item => item.avatar === avatar && item.key === idempotencyKey);
+            if (receipt) {
+                // A crash after writing the receipt may leave its pending index.
+                // A subsequently re-imported card has no matching pending marker.
+                if (record?.removal?.key === idempotencyKey) {
+                    const index = await snapshotRemovalFile(path.dirname(stagingRoot), `library-cards/${record.id}.json`);
+                    assertRemovalSnapshot(index.snapshot, receipt.index);
+                    index.remove();
+                }
+                return { ...receipt.result, alreadyAbsent: true };
+            }
+            const card = await snapshotRemovalFile(roots.characters, avatar);
+            const coreRoot = path.dirname(stagingRoot);
+            let archive = null, archiveState = 'none';
+            if (record) {
+                // The archive must agree with both the managed filename and its bytes.
+                if (!/^[a-f0-9]{64}\.(png|json|yaml|yml|charx|byaf)$/.test(record.source_file || '')
+                    || !record.source_file.startsWith(`${record.source_digest}.`)) invalid('Invalid library source identity.');
+                archive = await snapshotRemovalFile(coreRoot, `library-cards/sources/${record.source_file}`);
+                const shared = indexed.some(item => item.id !== record.id && item.source_file === record.source_file)
+                    || worlds.some(world => world.source?.sha256 === record.source_digest);
+                archiveState = shared ? 'retained-referenced'
+                    : archive.snapshot && archive.snapshot.sha256 !== record.source_digest ? 'retained-changed'
+                        : 'deleted';
+                if (record.removal && record.removal.key === idempotencyKey) {
+                    assertRemovalSnapshot(card.snapshot, record.removal.card);
+                    if (record.removal.archiveState !== archiveState) {
+                        throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '库卡原始存档的引用或内容已变化，已保留文件。');
+                    }
+                    if (archiveState === 'deleted') assertRemovalSnapshot(archive.snapshot, record.removal.archive);
+                } else {
+                    record = { ...record, removal: { key: idempotencyKey, card: card.snapshot, archive: archive.snapshot, archiveState } };
+                    await writeJsonAtomic(path.join(directory, `${record.id}.json`), record);
+                }
+            }
+            // Clear aliases explicitly deleted by the user. Otherwise an old
+            // preview could resolve that deleted name back to another original.
+            for (const alias of indexed.filter(item => item.id !== record?.id && item.aliases.includes(avatar))) {
+                await writeJsonAtomic(path.join(directory, `${alias.id}.json`), { ...alias, aliases: alias.aliases.filter(name => name !== avatar) });
+            }
+            const index = record ? await snapshotRemovalFile(coreRoot, `library-cards/${record.id}.json`) : null;
+            if (record) {
+                const bytes = await readSafe(directory, `${record.id}.json`);
+                if (digest(bytes) !== index.snapshot?.sha256 || stableStringify(JSON.parse(bytes)) !== stableStringify(record)) {
+                    throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '库卡索引已变化，请重新确认删除。');
+                }
+            }
+            const existed = card.remove();
+            if (archiveState === 'deleted') archive.remove();
+            const result = { deleted: true, alreadyAbsent: !existed, archive: archiveState };
+            await fs.mkdir(deletions, { recursive: true });
+            await writeJsonAtomic(path.join(deletions, deletionName(avatar, idempotencyKey)), {
+                schema: 'nora-library-deletion/1', avatar, key: idempotencyKey,
+                index: index?.snapshot || null, created_at: new Date().toISOString(),
+                sources: [...new Set([record?.source_digest, ...(record?.source_digests || [])].filter(Boolean))], result,
+            });
+            index?.remove();
+            return result;
+        });
+    }
+    return { save, list, source: avatar => locks.run('library:cards', () => source(avatar)), remove };
 }

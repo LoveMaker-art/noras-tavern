@@ -5,6 +5,45 @@ import { z } from 'zod';
 import { registerMvuSchema } from '../../../native-extensions/nora-mvu/mvu-zod.js';
 import { createEmptyMvuUpdateStatus, createMvuUpdateObserver, projectMvuTransaction } from '../public/scripts/nora-compat/mvu-update-observer.js';
 
+test('backup evidence requires a matching persisted MVU result and is invalidated by changed message bytes', () => {
+    const handlers = new Map();
+    let chatId = 'world-a';
+    let message = { mes: 'A quiet walk', stat_data: { hp: 10 } };
+    const observer = createMvuUpdateObserver({
+        eventSource: { on: (event, fn) => handlers.set(event, fn) },
+        events: { VARIABLE_UPDATE_STARTED: 'start', COMMAND_PARSED: 'commands', VARIABLE_UPDATE_ENDED: 'end',
+            TRANSACTION_STARTED: 'tx-start', TRANSACTION_COMMITTED: 'tx-commit', TRANSACTION_FAILED: 'tx-fail' },
+        identity: () => chatId,
+        readMessage: id => id === 1 ? message : null,
+    });
+    const transaction = { chat_id: 'world-a', message_id: 1 };
+    const completed = { ...transaction, outcome: 'updated', persisted: true, diagnostics: { command_count: 1, accepted_count: 1, modified: true } };
+    assert.equal(observer.backupState(), 'unverified');
+    handlers.get('tx-start')(transaction);
+    assert.equal(observer.backupState(), 'pending');
+    handlers.get('end')({ stat_data: { hp: 9 } }, { stat_data: { hp: 10 } });
+    assert.equal(observer.backupState(), 'pending', 'upstream end is not a persistence acknowledgement');
+    handlers.get('tx-commit')({ ...completed, persisted: false });
+    assert.equal(observer.backupState(), 'incomplete');
+    handlers.get('tx-start')(transaction);
+    handlers.get('tx-commit')(completed);
+    assert.equal(observer.backupState(), 'confirmed');
+    message.stat_data.hp = 8;
+    assert.equal(observer.backupState(), 'unverified');
+    handlers.get('tx-start')(transaction);
+    handlers.get('tx-commit')({ ...completed, outcome: 'partial' });
+    assert.equal(observer.backupState(), 'incomplete');
+    chatId = 'world-b';
+    assert.equal(observer.backupState(), 'unverified');
+    handlers.get('tx-commit')(completed);
+    assert.equal(observer.backupState(), 'unverified');
+    chatId = 'world-a';
+    handlers.get('tx-start')(transaction);
+    message = null;
+    handlers.get('tx-commit')(completed);
+    assert.equal(observer.backupState(), 'unverified', 'a removed message is not a recovery point');
+});
+
 test('unobserved status matches the observer and never shares mutable validation errors', () => {
     const observer = createMvuUpdateObserver({
         eventSource: { on() {} },

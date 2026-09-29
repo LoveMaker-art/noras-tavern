@@ -82,23 +82,80 @@ def remove(path):
         path.unlink(missing_ok=True)
 
 
+BACKUP_RECEIPT = "nora-update-backup.json"
+
+
+def backup_root_safe(home, root):
+    if root not in (home / "tavern-backups", home / "tavern-updates/backups"):
+        return False
+    current = home
+    for part in root.relative_to(home).parts:
+        current = current / part
+        if current.is_symlink():
+            return False
+    return True
+
+
+def record_backup(home, backup, status):
+    home, backup = Path(home).absolute(), Path(backup).absolute()
+    if not backup_root_safe(home, backup.parent) or backup.is_symlink() or not backup.is_dir():
+        raise RuntimeError("invalid owned backup path")
+    if status not in ("prepared", "committed", "restored", "recovery-failed"):
+        raise RuntimeError("invalid backup lifecycle status")
+    json_write(backup / BACKUP_RECEIPT, {
+        "schema": "nora-update-backup/1", "owner": "nora-tavern-updater",
+        "installRoot": str(home.resolve()), "backupId": backup.name,
+        "status": status, "updatedAt": int(time.time()), "mayContainUserData": True,
+    })
+
+
+def backup_receipt(home, backup):
+    marker = backup / BACKUP_RECEIPT
+    if backup.is_symlink() or not backup.is_dir() or marker.is_symlink():
+        return None
+    try:
+        before = marker.stat()
+        if not marker.is_file() or before.st_size > 65536:
+            return None
+        value = json.loads(marker.read_text(encoding="utf-8"))
+        after = marker.stat()
+        if (before.st_dev, before.st_ino, before.st_mtime_ns, before.st_size) != (after.st_dev, after.st_ino, after.st_mtime_ns, after.st_size):
+            return None
+        if value.get("schema") != "nora-update-backup/1" or value.get("owner") != "nora-tavern-updater" \
+                or value.get("installRoot") != str(home.resolve()) or value.get("backupId") != backup.name:
+            return None
+        return value
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+
+
 def prune_backup_history(home, keep):
     home = Path(home).absolute()
     primary = home / "tavern-backups"
     keep = Path(keep).absolute()
-    if keep.parent != primary or not keep.is_dir():
+    if keep.parent != primary or not keep.is_dir() or keep.is_symlink() or primary.is_symlink():
         raise RuntimeError(f"refusing to prune backups with invalid keep path: {keep}")
 
-    removed = []
+    removed, retained = [], []
+    if (backup_receipt(home, keep) or {}).get("status") != "committed":
+        return {"status": "retained", "kept": str(keep), "removed": [], "reason": "current-backup-unverified"}
     for root in (primary, home / "tavern-updates" / "backups"):
-        if not root.is_dir():
+        if not backup_root_safe(home, root) or not root.is_dir():
             continue
         for candidate in sorted(root.iterdir()):
             if candidate.absolute() == keep:
                 continue
+            receipt = backup_receipt(home, candidate)
+            if not receipt or receipt.get("status") != "committed":
+                retained.append({"path": str(candidate), "reason": "unowned-or-recovery-protected"})
+                continue
+            before = candidate.stat()
+            if backup_receipt(home, candidate) != receipt or candidate.is_symlink() or candidate.stat() != before:
+                retained.append({"path": str(candidate), "reason": "changed-during-check"})
+                continue
             remove(candidate)
             removed.append(str(candidate))
-    return {"status": "pruned", "kept": str(keep), "removed": removed}
+    return {"status": "pruned", "kept": str(keep), "removed": removed, "retained": retained}
 
 
 def port_open(port=8799):
@@ -948,6 +1005,7 @@ def install(args):
                 managed_lifecycle("preflight", hermes_home, install_root, version)
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             Path(filesystem_path(backup)).mkdir(parents=True)
+            record_backup(install_root, backup, "prepared")
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
             agents_backup = Path(filesystem_path(backup / "agents-rollback"))
             snapshot_agents(hermes_home, agents_backup)
@@ -1090,8 +1148,9 @@ def install(args):
                 json_write(transaction_file, {**transaction, "status": "committed"})
                 committed = True
                 try:
+                    record_backup(install_root, backup, "committed")
                     backup_retention = prune_backup_history(install_root, backup)
-                    log(f"备份保留策略：保留最新 1 份，已清理 {len(backup_retention['removed'])} 份旧备份")
+                    log(f"受管回退包保留最新 1 份，清理 {len(backup_retention['removed'])} 份；未归属或恢复现场继续保留。")
                 except Exception as retention_error:
                     backup_retention = {
                         "status": "pending",
@@ -1176,6 +1235,10 @@ def install(args):
                         recovery = "files-restored-start-failed: " + str(recovery_error)
                 json_write(transaction_file, {**transaction, "status": "restored" if recovery == "restored" else "recovery-failed",
                                               "recovery": recovery, "error": str(error)})
+                try:
+                    record_backup(install_root, backup, "restored" if recovery == "restored" else "recovery-failed")
+                except Exception as receipt_error:
+                    log(f"回退包状态记录未更新，保留恢复现场：{receipt_error}")
                 raise RuntimeError(f"{error}; recovery={recovery}; backup={backup}") from error
 
 

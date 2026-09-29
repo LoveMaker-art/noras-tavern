@@ -76,6 +76,23 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     };
 }
 
+test('required backup failure pauses the rewrite without offering model settings or calling it generation failure', t => {
+    t.mock.method(console, 'error', () => {});
+    const h = createHarness();
+    h.controller.handleGenerationError(Object.assign(new Error('保护备份失败，原聊天未改动'), { code: 'NORA_BACKUP_REQUIRED', phase: 'save' }), { scope: 'story', persisted: true });
+    assert.equal(h.notices[0].title, '改写已暂停');
+    assert.match(h.notices[0].message, /原聊天未改动/);
+    assert.ok(!h.notices[0].actions.some(action => action.label === '模型设置'));
+});
+
+test('cross-page ownership failures do not suggest changing model configuration', t => {
+    t.mock.method(console, 'error', () => {});
+    const h = createHarness();
+    h.controller.handleGenerationError(Object.assign(new Error('其他页面仍在操作当前聊天。'), { code: 'NORA_CHAT_OPERATION_BUSY' }), { scope: 'story' });
+    assert.equal(h.notices[0].message, '其他页面仍在操作当前聊天。');
+    assert.deepEqual(h.notices[0].actions, []);
+});
+
 test('generation errors preserve story notices, card-action precedence and sidecar-only toasts', t => {
     t.mock.method(console, 'error', () => {});
     for (const type of ['story.slash', 'sidecar.run']) {

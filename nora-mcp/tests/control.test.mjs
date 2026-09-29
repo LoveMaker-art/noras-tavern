@@ -50,6 +50,23 @@ test('world mutation keeps caller idempotency and uncertain outcomes carry the q
     await assert.rejects(plane.importLibrary('fixture.png', key), error => error.details.operationId === 'operation:' + createHash('sha256').update(key).digest('hex').slice(0, 32) && error.details.nextTool === 'nora.operation.get');
 });
 
+test('World deletion forwards the confirmed preview token through the shared HTTP operation', async () => {
+    const calls = [], token = 'a'.repeat(64);
+    const plane = new NoraControlPlane({}, {
+        get: async route => { calls.push(['GET', route]); return { token }; },
+        delete: async (route, body) => { calls.push(['DELETE', route, body]); return { operation: { status: 'COMPLETED' } }; },
+    });
+    assert.equal(allowedTool('nora.world.delete_preview', 'read-only'), true);
+    assert.equal(allowedTool('nora.world.delete', 'read-only'), false);
+    assert.equal((await plane.previewWorldDeletion('world:test')).token, token);
+    await assert.rejects(plane.deleteWorld('world:test', 'delete-one', false, token));
+    await plane.deleteWorld('world:test', 'delete-one', true, token);
+    assert.deepEqual(calls, [
+        ['GET', '/api/nora-worlds-v2/worlds/world%3Atest/delete-preview'],
+        ['DELETE', '/api/nora-worlds-v2/worlds/world%3Atest', { expected_plan: token, idempotency_key: 'delete-one' }],
+    ]);
+});
+
 test('ledger reads use inspect; edits use the Nora atomic endpoint and do not return whole chat', async () => {
     const calls = [];
     const plane = new NoraControlPlane({}, { post: async (...args) => { calls.push(args); return { chat: ['private-whole-chat'], ledger: {} }; } });
