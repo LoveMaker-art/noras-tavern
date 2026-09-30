@@ -140,6 +140,7 @@ test('the Helper capability activates only JS-Slash-Runner for an EJS helper car
     };
     const card = {
         name: 'EJS Card',
+        avatar: 'ejs-card.png',
         data: {
             extensions: {
                 tavern_helper: { scripts: [{ type: 'script', name: 'render' }] },
@@ -147,7 +148,7 @@ test('the Helper capability activates only JS-Slash-Runner for an EJS helper car
         },
     };
 
-    runtime.extensionSettings = { tavern_helper: { script: { enabled: { characters: [card.name] } } } };
+    runtime.extensionSettings = { tavern_helper: { script: { enabled: { characters: [card.avatar] } } } };
     const evidence = await createStRuntimeAdapter(() => runtime).ensureCharacterCapability(card, 'tavern_helper');
 
     assert.equal(evidence.extension_active, true);
@@ -390,7 +391,7 @@ test('enableCharacterCapabilities delegates embedded regex and helper-script aut
     await adapter.enableCharacterCapabilities(character, { refresh: true });
 
     assert.deepEqual(allowedRegex, ['complex.png']);
-    assert.deepEqual(runtime.extensionSettings.tavern_helper.script.enabled.characters, ['Complex Card']);
+    assert.deepEqual(runtime.extensionSettings.tavern_helper.script.enabled.characters, ['complex.png']);
     assert.equal(accountStorage.get('AlertRegex_complex.png'), 'true');
     assert.equal(refreshed, 1);
 });

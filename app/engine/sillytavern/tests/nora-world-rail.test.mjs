@@ -99,6 +99,19 @@ test('reload restores collapse and unavailable storage never blocks toggling', (
     assert.equal(blocked.select('#nora-rail').inert, false);
 });
 
+test('Helper confirmation targets the requested avatar among same-name Worlds and never falls back after deletion', async () => {
+    const h = harness();
+    const calls = [];
+    const characters = [{ name: 'Same', avatar: 'a.png' }, { name: 'Same', avatar: 'b.png' }];
+    h.shell.installMessageApi({
+        readState: () => ({ characters, activeCharacterId: 0 }),
+        promptCharacterCapabilities: character => { calls.push(character.avatar); return true; },
+    });
+    assert.equal(await h.window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__({ characterAvatar: 'b.png' }), true);
+    assert.equal(await h.window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__({ characterAvatar: 'deleted.png' }), false);
+    assert.deepEqual(calls, ['b.png']);
+});
+
 test('mobile drawers and breakpoint changes do not overwrite desktop preference', () => {
     const h = harness({ stored: 'true', mobile: true });
     h.toggle();

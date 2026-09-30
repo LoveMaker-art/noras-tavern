@@ -131,6 +131,7 @@ import { IGNORE_SYMBOL } from './constants.js';
 import { macros } from './macros/macro-system.js';
 import { updatePersonaDescription } from './personas.js';
 import { allowScopedScripts, disallowScopedScripts, isScopedScriptsAllowed } from './extensions/regex/engine.js';
+import { MessageFormatter } from './message-formatter.js';
 
 export function getContext() {
     return {
@@ -282,6 +283,7 @@ export function getContext() {
         scrollChatToBottom,
         scrollOnMediaLoad,
         macros,
+        messageFormatter: MessageFormatter,
         loader,
         swipe: {
             left: swipe_left,

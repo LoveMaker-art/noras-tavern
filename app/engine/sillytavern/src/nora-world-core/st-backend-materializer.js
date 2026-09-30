@@ -635,6 +635,7 @@ export function createStBackendMaterializer({
         },
         listLibraryCards: cardLibrary.list,
         saveLibraryCard: cardLibrary.save,
+        manageLibraryCard: cardLibrary.manage,
         readLibraryCardSource: cardLibrary.source,
         deleteLibraryCard: cardLibrary.remove,
         listLibraryWorldbooks: library.list,

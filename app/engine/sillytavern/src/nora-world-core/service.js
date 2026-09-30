@@ -425,6 +425,10 @@ export class NoraWorldCore {
         const key = idempotencyKey === null ? null : normalizeIdempotencyKey(idempotencyKey);
         return this.#materializer.deleteLibraryCard(avatar, await this.#store.list(), { idempotencyKey: key });
     }
+    async manageLibraryCard(input) {
+        await this.#initialize();
+        return this.#materializer.manageLibraryCard(input, await this.#store.list());
+    }
 
     listLibraryProfiles(kind) { return this.#profiles.list(kind); }
     readLibraryProfile(id) { return this.#profiles.read(id); }
@@ -460,14 +464,12 @@ export class NoraWorldCore {
                 try {
                     context = editStoryCharacter(context ?? createStoryContext(current.persona), input.character);
                     resolveCharacterReferences(input.character.patch, context.characters, { strict: true });
-                }
-                catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+                } catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
             }
             const prepared = input.source ? await this.#materializer.prepareLibraryWorldbook(current, input) : null;
             try {
                 if (prepared?.book) {
-                    try { resolveCharacterReferences(prepared.book.entries, context?.characters || [], { strict: true }); }
-                    catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
+                    try { resolveCharacterReferences(prepared.book.entries, context?.characters || [], { strict: true }); } catch (error) { throw new NoraWorldCoreError('NORA_WORLD_INVALID', error.message); }
                 }
                 const world = await this.#store.update(worldId, latest => {
                     if (latest.revision !== current.revision || latest.lifecycle.status !== 'READY') throw new NoraWorldCoreError('NORA_WORLD_REVISION_CONFLICT', 'World changed; reopen the import preview.');

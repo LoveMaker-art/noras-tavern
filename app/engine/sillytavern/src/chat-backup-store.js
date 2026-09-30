@@ -346,14 +346,14 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return { preview, ...target, restored };
     }
 
-    async function capture({ filePath, data, protect = false, mvuState = 'unverified' }, retainId = null) {
+    async function capture({ filePath, data, protect = false, mvuState = 'unverified' }, retainId = null, upgradeCredit = null) {
         if (typeof protect !== 'boolean') throw fail('NORA_BACKUP_INVALID_PROTECTION');
         if (!MVU_STATES.has(mvuState)) throw fail('NORA_BACKUP_INVALID_MVU_STATE');
         const owner = await source(filePath, data);
         const before = await inventory();
         const previous = before.snapshots.filter(item => item.sessionKey === owner.sessionKey).sort((a, b) => b.sequence - a.sequence)[0];
         const sha256 = digest(data);
-        if (previous?.sha256 === sha256) {
+        if (previous?.sha256 === sha256 && (upgradeCredit === null || previous.createdAt >= now() - policy.maxAgeDays * 86400000)) {
             const observedState = previous.mvuState === 'confirmed' || mvuState === 'unverified' ? previous.mvuState : mvuState;
             if ((protect && !previous.protected) || observedState !== previous.mvuState) {
                 const current = await record(previous.id);
@@ -369,8 +369,11 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             sequence: (previous?.sequence || 0) + 1, protected: protect, consistency: 'chat-only', mvuState };
         const candidates = obsolete([...before.snapshots.map(item => item.id === retainId ? { ...item, protected: true } : item), value]);
         if (candidates.some(item => item.id === id)) throw fail('NORA_BACKUP_PROTECTED_LIMIT');
-        const retainedBytes = before.totalBytes + value.bytes - candidates.reduce((sum, item) => sum + item.bytes, 0);
-        if (before.overBudget || value.bytes > policy.maxBytes || retainedBytes > policy.maxBytes) throw fail('NORA_BACKUP_BUDGET_EXCEEDED');
+        // Upgrade credit belongs only to the revalidated legacy deletion set.
+        // Keep every old file until ALL replacement snapshots are verified;
+        // actual disk exhaustion still fails writes without deleting old data.
+        const retainedBytes = before.totalBytes + value.bytes - (upgradeCredit ?? candidates.reduce((sum, item) => sum + item.bytes, 0));
+        if (before.totalBytes - (upgradeCredit ?? 0) > policy.maxBytes || value.bytes > policy.maxBytes || retainedBytes > policy.maxBytes) throw fail('NORA_BACKUP_BUDGET_EXCEEDED');
         const parent = await checked(backupRelative);
         await fs.mkdir(path.join(parent.file, '.nora-chat'), { recursive: true });
         await checked(recordsRelative);
@@ -400,8 +403,81 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             } catch { /* A changed or inaccessible remnant is not ours to remove. */ }
             throw error;
         }
-        const retention = await prune(candidates);
+        const retention = upgradeCredit === null ? await prune(candidates) : { deleted: [], warnings: [] };
         return { status: 'created', id, retention };
+    }
+
+    async function upgradeLegacy() {
+        const receiptRelative = path.join(recordsRelative, 'legacy-upgrade-v1.json');
+        try {
+            const receipt = JSON.parse((await read(receiptRelative, 65536)).data);
+            if (receipt.version !== 1 || receipt.status !== 'complete') throw fail('NORA_BACKUP_INVALID_UPGRADE_RECEIPT');
+            return { status: 'already-complete' };
+        } catch (error) { if (error.code !== 'ENOENT') throw error; }
+        const names = await entries(backupRelative);
+        const legacyNames = names.filter(name => name.startsWith('chat_') && name.endsWith('.jsonl') && !name.startsWith('chat_nora1_'));
+        const worldRelative = path.join('nora-world-core', 'worlds');
+        const worlds = new Map(), candidates = [], checks = [], snapshots = [];
+        let retained = 0;
+        // No migration means no need to read or touch World resources.
+        if (legacyNames.length) {
+            let worldNames;
+            try {
+                checks.push({ relative: worldRelative, stat: (await checked(worldRelative)).stat });
+                worldNames = await entries(worldRelative);
+            } catch (error) { if (error.code !== 'ENOENT') throw error; worldNames = []; }
+            for (const name of worldNames.filter(name => name.endsWith('.json'))) {
+                const relative = path.join(worldRelative, name);
+                const file = await read(relative, 16 * 1024 * 1024);
+                const world = validateWorldManifest(JSON.parse(file.data));
+                if (name !== documentFileName(world.world_id)) throw fail('NORA_BACKUP_INVALID_SCOPE');
+                worlds.set(world.world_id, world);
+                checks.push({ relative, stat: file.stat });
+            }
+            for (const name of legacyNames) {
+                const relative = path.join(backupRelative, name);
+                try {
+                    const file = await read(relative);
+                    const header = parseRestoreChat(file.data)[0].chat_metadata;
+                    const world = worlds.get(header.nora_world?.id);
+                    if (!world || !['READY', 'DELETED'].includes(world.lifecycle.status)
+                        || !world.sessions.items.some(item => item.session_id === header.nora_session?.id)) {
+                        retained++; continue;
+                    }
+                    candidates.push({ relative, stat: file.stat });
+                } catch { retained++; }
+            }
+        }
+        if (candidates.length) {
+            const credit = candidates.reduce((sum, item) => sum + item.stat.size, 0);
+            // Back up every extant World session, not just the latest active tab.
+            // Missing/unreadable chats stop the upgrade before any legacy delete.
+            for (const world of worlds.values()) {
+                if (world.lifecycle.status !== 'READY') continue;
+                for (const session of world.sessions.items) {
+                    const target = await restoreTarget({ worldId: world.world_id, sessionId: session.session_id });
+                    const saved = await capture({ filePath: path.join(configuredRoot, target.relative), data: target.current.data }, null, credit);
+                    const snapshot = await record(saved.id);
+                    if (!snapshot.snapshot.data.equals(target.current.data)) throw fail('NORA_BACKUP_CHANGED');
+                    snapshots.push(saved.id);
+                    checks.push({ relative: target.relative, stat: target.current.stat },
+                        { relative: dataRelative(saved.id), stat: snapshot.snapshot.stat },
+                        { relative: recordRelative(saved.id), stat: snapshot.metadataStat });
+                }
+            }
+            // The user-level backup lock excludes backup/restore mutations. The
+            // final synchronous checks also reject concurrent chat/World edits.
+            // A crash mid-delete leaves remaining legacy files for a safe retry;
+            // committed matching snapshots are reused, never deleted first.
+            for (const item of [...checks, ...candidates]) validateUnchanged(item.relative, item.stat);
+            for (const item of candidates) fsSync.unlinkSync(validateUnchanged(item.relative, item.stat));
+        }
+        const parent = await checked(backupRelative);
+        await fs.mkdir(path.join(parent.file, '.nora-chat'), { recursive: true });
+        await checked(recordsRelative);
+        const result = { version: 1, status: 'complete', at: now(), removed: candidates.length, retained, baselines: snapshots.length };
+        await writeJsonAtomic(path.join(root, receiptRelative), result);
+        return result;
     }
 
     // Caller must hold the session-operation AND ledger idle locks. The backup
@@ -445,6 +521,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
 
     return Object.freeze({
         list: () => run(inventory),
+        upgradeLegacy: () => run(upgradeLegacy),
         previewRestore: input => run(async () => (await inspectRestore(input)).preview),
         restore: (input, options) => run(() => restore(input, options)),
         planWorldRemoval: world => run(() => planWorldRemoval(world)),

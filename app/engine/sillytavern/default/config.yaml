@@ -221,8 +221,9 @@ backups:
     enabled: true
     # Verify integrity of chat files before saving
     checkIntegrity: true
-    # Only new managed snapshots are automatically pruned. Legacy snapshots
-    # count toward the byte budget but require explicit cleanup authorization.
+    # One-time upgrade retires confidently owned legacy chat backups only after
+    # verifying new baselines for current World sessions. Unknown files remain.
+    # Recurring retention prunes only managed snapshots; all chat backups count.
     retention:
       maxPerSession: 20
       maxAgeDays: 30

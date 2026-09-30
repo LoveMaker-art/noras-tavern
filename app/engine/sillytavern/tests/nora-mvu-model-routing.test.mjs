@@ -20,7 +20,7 @@ const { router } = await import('../src/endpoints/backends/chat-completions.js')
 // an assumed `custom` request. Recheck these bindings on a Helper upgrade.
 const helper = fs.readFileSync(new URL('../../../native-extensions/JS-Slash-Runner/dist/index.js', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('helper.js', helper, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-const names = ['CG', 'BG', 'HW'];
+const names = ['qW', 'uG', 'dW'];
 const declarations = ast.statements.filter(ts.isFunctionDeclaration).filter(node => names.includes(node.name?.text));
 assert.equal(declarations.length, names.length);
 const bridge = vm.createContext({});
@@ -28,11 +28,11 @@ vm.runInContext(declarations.map(node => node.getText(ast)).join('\n'), bridge);
 
 function helperRequest({ source, apiurl, key = '', model = 'stale-browser-model', ...options }) {
     const body = {
-        chat_completion_source: bridge.CG({ customSource: source, hasCustomApiUrl: Boolean(apiurl), defaultSource: 'openai' }),
+        chat_completion_source: bridge.qW({ customSource: source, hasCustomApiUrl: Boolean(apiurl), defaultSource: 'openai' }),
         messages: [{ role: 'system', content: 'Update variables only.' }, { role: 'user', content: 'The lamp was switched on.' }],
         stream: false, max_tokens: 1000, ...options,
     };
-    bridge.BG(body, { source, apiurl, key, model });
+    bridge.uG(body, { source, apiurl, key, model });
     return body;
 }
 

@@ -1,9 +1,9 @@
 # Managed JS-Slash-Runner assets
 
-Nora bundles JS-Slash-Runner `4.9.3` from commit
-`9403f47774962792ae6ac8c08ad9740a723ea872`.
+Nora bundles JS-Slash-Runner `4.11.2` from commit
+`519599bc68247d8e759cc844a983f8f5252941a8`.
 
-`lib/tailwindcss.min.js` is copied unchanged from that release. Its header
+`lib/tailwindcss.min.js` is retained unchanged from the prior `4.9.3` bundle. Its header
 identifies `@tailwindcss/browser` `4.1.12`; the corresponding MIT license is
 stored beside it as `lib/tailwindcss.LICENSE`.
 
@@ -53,6 +53,28 @@ explicit watcher and cancels debounced edits. Nora's other adaptations are kept.
 `node apply-character-persistence.mjs` routes the shared extension-field save
 function through the existing control adapter. It uses the actual avatar binding,
 propagates failed saves, and guards the target across asynchronous boundaries.
-All three transforms are idempotent and must coexist; do not replace the bundle
+The transforms are idempotent and must coexist; do not replace the bundle
 with one branch's copy when combining changes. Run the Helper transform and
 persistence regressions after upgrading the pinned upstream bundle.
+
+`node apply-managed-runtime.mjs` preserves module-singleton routing, the Nora
+control facade, optional headless prompt defaults, local iframe bootstrap URLs,
+and the Nora capability confirmation hook. Apply it before the other transforms
+when starting from the pinned upstream `dist/index.js`. The upstream source map
+is not distributed because transformations change its generated positions.
+
+Character scripts still load/save through the actual avatar binding. Consent in
+Nora is keyed by `nora-world:<worldId>` in Helper's existing permission arrays;
+the shared World identity resolver reads authoritative manifests, not card names,
+filename suffixes or imported card claims. Binding changes preserve consent;
+different Worlds do not inherit it even if names or avatars match. Unknown,
+ambiguous and deleting/deleted targets cannot receive consent. The native scope
+reacts to World/binding changes as well as ST chat changes. The confirmation hook
+carries the captured World ID through the asynchronous dialog.
+
+The upstream name-to-`.png` migration is removed. Legacy name/avatar permission
+records remain stored but are not treated as World consent; existing Worlds may
+require confirmation once after upgrading. No user card, chat or script content
+is migrated. Ordinary UI titles continue to use human-readable names; internal
+bindings and diagnostic data can contain IDs.
+ST core remains on the existing pinned version; this is a Helper-only upgrade.

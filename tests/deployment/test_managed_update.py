@@ -55,6 +55,7 @@ class ManagedUpdateTests(unittest.TestCase):
                 write(profile / "backups/.nora-chat/fixture.json", json.dumps({
                     "world_id": "world:story", "session_id": "session:story", "protected": True,
                 }))
+                write(profile / "backups/chat_legacy_before_upgrade.jsonl", saved_chat)
                 write(profile / "nora-world-core/operations/old.json", '{"schema":"nora-world-operation/v1","command":{"payload":{"keep":"old"}}}')
                 write(profile / "nora-world-core/operations/new.json", '{"schema":"nora-world-operation/v2","request":{"name":"new"}}')
                 write(profile / "nora-world-core/worlds/deleted.json", '{"schema":"nora-world-tombstone/1","world_id":"world:deleted"}')
@@ -73,6 +74,11 @@ class ManagedUpdateTests(unittest.TestCase):
                     else:
                         target.write_text('{"damaged":true}', encoding="utf-8")
                 write(profile / "backups/new-version-only.jsonl", "must not survive rollback")
+                # An upgraded runtime may already have retired old chat backups.
+                # Failed updates must restore those files and discard the new
+                # completion receipt, so the old runtime sees its original data.
+                (profile / "backups/chat_legacy_before_upgrade.jsonl").unlink(missing_ok=True)
+                write(profile / "backups/.nora-chat/legacy-upgrade-v1.json", '{"version":1,"status":"complete"}')
                 write(profile / "nora-world-core/worlds/new-version-only.json", '{"new":true}')
             write(home / ".env", "TEST_ONLY=keep")
             write(home / "SOUL.md", "custom persona")
@@ -248,6 +254,9 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_managed_update_uses_shared_transaction_and_preserves_user_data(self):
         self.transaction()
+
+    def test_successful_update_preserves_legacy_and_managed_storage_together(self):
+        self.transaction(storage_recovery=True)
 
     def test_failed_update_restores_chat_variables_backups_and_mixed_storage_records(self):
         for late_failure in (False, True):

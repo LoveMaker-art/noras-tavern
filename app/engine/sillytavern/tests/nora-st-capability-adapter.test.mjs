@@ -4,9 +4,56 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { createStCardAdapter } from '../public/scripts/nora-adapters/st-card-adapter.js';
+import { createWorldHelperIdentity } from '../public/scripts/nora-worlds/world-helper-identity.js';
 
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
 const PROMPT_TEMPLATE_EXTENSION = 'third-party/ST-Prompt-Template';
+
+test('World authorization survives a card binding change but is not inherited by a new World', async () => {
+    const card = characterWithCapabilities();
+    let worlds = [{ world_id: 'world-a', name: 'Same', runtime_card: { binding: { avatar: card.avatar } } }];
+    const identity = createWorldHelperIdentity();
+    identity.configure(() => worlds);
+    const context = runtimeContext(card, { helperAllowed: false });
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {}, helperIdentity: identity });
+    await adapter.enableCharacterCapabilities(card);
+    assert.deepEqual(context.extensionSettings.tavern_helper.script.enabled.characters, ['nora-world:world-a']);
+    card.avatar = 'replacement-file.png';
+    worlds[0].runtime_card.binding.avatar = card.avatar;
+    assert.equal(adapter.characterCapabilities(card).helperAllowed, true);
+    worlds = [{ ...worlds[0], world_id: 'world-b' }];
+    assert.equal(adapter.characterCapabilities(card).helperAllowed, false);
+});
+
+test('authorizing one World does not authorize another World made from the same named card', async () => {
+    const first = { ...characterWithCapabilities(), avatar: 'same--nora-first.png' };
+    const second = { ...characterWithCapabilities(), avatar: 'same--nora-second.png' };
+    const context = runtimeContext(first, { helperAllowed: false });
+    context.characters.push(second);
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {} });
+    await adapter.enableCharacterCapabilities(first);
+    context.characterId = 1;
+    assert.equal(adapter.characterCapabilities(first).helperAllowed, true);
+    assert.equal(adapter.characterCapabilities(second).helperAllowed, false);
+    assert.equal(adapter.characterCapabilities(second).helperPrompted, false);
+    first.name = 'Renamed first World';
+    assert.equal(adapter.characterCapabilities(first).helperAllowed, true);
+});
+
+test('explicit World targeting wins over the active page for consent and readiness', async () => {
+    const card = characterWithCapabilities(), context = runtimeContext(card, { helperAllowed: false });
+    const identity = createWorldHelperIdentity();
+    identity.configure(() => ['a', 'b'].map(world_id => ({ world_id, runtime_card: { binding: { avatar: card.avatar } } })));
+    context.chatMetadata = { nora_world: { id: 'b' } };
+    const adapter = createStCardAdapter(() => context, { saveUiSettings() {}, helperIdentity: identity });
+    await adapter.enableCharacterCapabilities(card, { worldId: 'a' });
+    assert.equal(adapter.characterCapabilities(card).helperAllowed, false);
+    assert.equal(adapter.characterCapabilities(card, { worldId: 'a' }).helperAllowed, true);
+    await adapter.ensureCharacterCapability(card, 'tavern_helper', { worldId: 'a' });
+    await assert.rejects(adapter.ensureCharacterCapability(card, 'tavern_helper'), { code: 'NORA_TAVERN_HELPER_NOT_AUTHORIZED' });
+    await assert.rejects(adapter.enableCharacterCapabilities(card, { worldId: 'deleted' }), { code: 'NORA_HELPER_WORLD_UNRESOLVED' });
+    assert.deepEqual(context.extensionSettings.tavern_helper.script.enabled.characters, ['nora-world:a']);
+});
 
 function runtimeContext(character, { active = ['regex', HELPER_EXTENSION], regexAllowed = true, helperAllowed = true } = {}) {
     return {
@@ -15,7 +62,7 @@ function runtimeContext(character, { active = ['regex', HELPER_EXTENSION], regex
         extensionSettings: {
             tavern_helper: {
                 script: {
-                    enabled: { global: true, presets: [], characters: helperAllowed ? [character.name] : [] },
+                    enabled: { global: true, presets: [], characters: helperAllowed ? [character.avatar] : [] },
                     popuped: { presets: [], characters: [] },
                 },
             },

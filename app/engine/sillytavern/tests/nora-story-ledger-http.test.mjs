@@ -215,7 +215,8 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     await until(() => readProfile()?.shared_story_memory?.[0]?.covered_turns === 30);
     assert.equal(fs.existsSync(ledgerStatePath(root, scope)), true);
     const deleter = createStBackendMaterializer({ directories, stagingRoot: path.join(root, 'staging') });
-    await deleter.deleteResources(world, { sessions: [{ session_id: scope.sessionId, delete: true }], runtime_card: { delete: false }, knowledge: [] });
+    const deletionCore = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: deleter });
+    await deletionCore.deleteWorld(world.world_id, { idempotencyKey: 'ledger-test-delete' });
     assert.equal(fs.existsSync(chatFile), false);
     assert.equal(fs.existsSync(ledgerStatePath(root, scope)), false, 'World deletion also removes its private ledger');
     await until(() => readProfile()?.shared_story_memory?.length === 0);

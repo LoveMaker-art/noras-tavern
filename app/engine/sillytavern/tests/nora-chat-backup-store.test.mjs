@@ -21,6 +21,109 @@ async function savedChat(f, world, hp = 10) {
     return { filePath, data };
 }
 
+test('legacy upgrade rejects changed World inventory before deleting any old snapshot', async t => {
+    const f = await storageFixture(t), world = await f.create('upgrade-world-race');
+    const input = await savedChat(f, world);
+    await f.backup('chat_old.jsonl', input.data);
+    const store = createChatBackupStore({ directories: f.directories });
+    const open = fs.open;
+    let changed = false;
+    const fault = t.mock.method(fs, 'open', async (file, flags, ...args) => {
+        if (!changed && flags === 'wx' && String(file).endsWith('.jsonl')) {
+            changed = true;
+            await fs.writeFile(path.join(f.root, 'nora-world-core/worlds/new-world-pending.json'), '{}');
+        }
+        return open(file, flags, ...args);
+    });
+    await assert.rejects(store.upgradeLegacy(), { code: 'NORA_BACKUP_CHANGED' });
+    fault.mock.restore();
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_old.jsonl'), 'utf8'), input.data);
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
+});
+
+test('legacy upgrade retains unknown, broken and protected files, cleans deleted-World history, and runs only once', async t => {
+    const f = await storageFixture(t), world = await f.create('upgrade-retain'), removedWorld = await f.create('upgrade-deleted');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world), removedChat = await savedChat(f, removedWorld);
+    const protectedSnapshot = await store.capture({ ...input, protect: true });
+    await f.core.deleteWorld(removedWorld.world_id, { idempotencyKey: 'upgrade-deleted' });
+    await f.backup('chat_deleted_world.jsonl', removedChat.data);
+    await f.backup('chat_owned.jsonl', input.data);
+    const unknown = await f.backup('chat_same_name.jsonl', [{ chat_metadata: {}, character_name: world.name }, { mes: 'not proven ownership' }]);
+    await f.backup('chat_broken.jsonl', '{broken');
+    await f.backup('settings_manual.json', '{"keep":true}');
+    assert.equal((await store.upgradeLegacy()).removed, 2);
+    const list = await store.list();
+    assert.equal(list.snapshots.length, 1, 'matching protected snapshot is reused');
+    assert.equal(list.snapshots[0].protected, true);
+    assert.equal((await store.download(protectedSnapshot.id)).toString(), input.data);
+    assert.equal(list.legacyFiles, 2);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_same_name.jsonl'), 'utf8'), unknown);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_broken.jsonl'), 'utf8'), '{broken');
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'settings_manual.json'), 'utf8'), '{"keep":true}');
+    await f.backup('chat_user_added_after_upgrade.jsonl', input.data);
+    const restarted = createChatBackupStore({ directories: f.directories });
+    assert.equal((await restarted.upgradeLegacy()).status, 'already-complete');
+    assert.equal((await restarted.list()).legacyFiles, 3, 'future manually added files are not silently cleaned');
+});
+
+test('legacy upgrade preserves every old backup on ENOSPC and succeeds after a retry without duplicating baselines', async t => {
+    const f = await storageFixture(t), a = await f.create('upgrade-disk-a'), b = await f.create('upgrade-disk-b');
+    const first = await savedChat(f, a), second = await savedChat(f, b);
+    await f.backup('chat_old_a.jsonl', first.data);
+    await f.backup('chat_old_b.jsonl', second.data);
+    const store = createChatBackupStore({ directories: f.directories });
+    const open = fs.open;
+    let writes = 0;
+    const fault = t.mock.method(fs, 'open', async (file, flags, ...args) => {
+        if (flags === 'wx' && String(file).endsWith('.jsonl') && ++writes === 2) throw Object.assign(new Error('Synthetic disk full'), { code: 'ENOSPC' });
+        return open(file, flags, ...args);
+    });
+    await assert.rejects(store.upgradeLegacy(), { code: 'ENOSPC' });
+    fault.mock.restore();
+    assert.equal((await store.list()).legacyFiles, 2);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_old_a.jsonl'), 'utf8'), first.data);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_old_b.jsonl'), 'utf8'), second.data);
+    assert.equal((await store.upgradeLegacy()).removed, 2);
+    assert.equal((await store.list()).snapshots.length, 2);
+    assert.equal((await store.list()).legacyFiles, 0);
+});
+
+test('legacy upgrade can retry an interrupted deletion using the verified new baselines', async t => {
+    const f = await storageFixture(t), world = await f.create('upgrade-unlink');
+    const input = await savedChat(f, world);
+    await f.backup('chat_old_one.jsonl', input.data);
+    await f.backup('chat_old_two.jsonl', input.data);
+    const store = createChatBackupStore({ directories: f.directories });
+    const unlink = fsSync.unlinkSync;
+    let calls = 0;
+    const fault = t.mock.method(fsSync, 'unlinkSync', file => {
+        if (path.basename(file).startsWith('chat_old_') && ++calls === 2) throw Object.assign(new Error('Synthetic interrupted cleanup'), { code: 'EIO' });
+        return unlink(file);
+    });
+    await assert.rejects(store.upgradeLegacy(), { code: 'EIO' });
+    fault.mock.restore();
+    const partial = await store.list();
+    assert.equal(partial.legacyFiles, 1);
+    assert.equal((await store.download(partial.snapshots[0].id)).toString(), input.data);
+    assert.equal((await store.upgradeLegacy()).removed, 1);
+    assert.equal((await store.list()).snapshots.length, 1);
+    assert.equal((await store.list()).legacyFiles, 0);
+});
+
+test('legacy upgrade does not delete old files when current chats or the remaining quota cannot support new baselines', async t => {
+    const f = await storageFixture(t), world = await f.create('upgrade-insufficient');
+    const input = await savedChat(f, world);
+    await f.backup('chat_old.jsonl', input.data);
+    const small = createChatBackupStore({ directories: f.directories, policy: { maxBytes: 1 } });
+    await assert.rejects(small.upgradeLegacy(), { code: 'NORA_BACKUP_BUDGET_EXCEEDED' });
+    assert.equal((await small.list()).legacyFiles, 1);
+    assert.equal((await small.list()).snapshots.length, 0);
+    await fs.writeFile(input.filePath, '{broken');
+    await assert.rejects(createChatBackupStore({ directories: f.directories }).upgradeLegacy());
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_old.jsonl'), 'utf8'), input.data);
+});
+
 test('explicit World deletion removes owned protected and legacy backups but retains other Worlds and unknown files', async t => {
     const f = await storageFixture(t), world = await f.create('delete-backups'), other = await f.create('delete-other');
     const store = createChatBackupStore({ directories: f.directories });

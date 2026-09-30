@@ -53,11 +53,13 @@ export function createBackupController({ dialogs, select, selectAll, escapeHtml:
                 <details><summary>${tr('归属标识')}</summary><small>${esc(item.worldId || item.sessionKey || '')}<br>${esc(item.sessionId || '')}</small></details></div>
                 <div class="nora-backup-actions"><button type="button" class="nora-secondary" data-backup-download="${esc(item.id)}">${tr('下载')}</button><button type="button" class="nora-secondary" data-backup-protect="${esc(item.id)}">${tr(item.protected ? '取消保护' : '保护')}</button>${names.has(item.worldId) && item.sessionId ? `<button type="button" class="nora-secondary" data-backup-restore="${esc(item.id)}">${tr('恢复聊天')}</button>` : ''}</div></div>`;
             const failures = [...new Set((data?.status?.recent || []).filter(item => item.status === 'failed').map(item => item.code))];
+            const failureText = failures.map(code => code === 'NORA_BACKUP_UPGRADE_PENDING'
+                ? tr('备份整理暂未完成，当前聊天不受影响，系统稍后重试。') : code).join('、');
             host.innerHTML = `<p class="nora-model-note">${tr('所有世界的聊天备份。不是完整世界存档；仅可恢复仍存在的世界聊天，不替换卡片、世界书或库原件。')}</p>
                 <div class="nora-backup-toolbar"><span>${data ? `${bytes(data.totalBytes)} / ${bytes(data.policy.maxBytes)}` : tr('正在读取备份…')}</span><button type="button" class="nora-secondary" data-backup-refresh>${tr('刷新')}</button></div>
                 ${data ? `<p class="nora-model-note">${esc(t`每会话最多 ${data.policy.maxPerSession} 份，保留 ${data.policy.maxAgeDays} 天。保护的备份不自动删除。`)}${data.status?.enabled === false ? ` ${tr('自动备份已关闭。')}` : ''}${data.status?.pending ? ` ${esc(t`等待备份：${data.status.pending}`)}` : ''}</p>` : ''}
                 ${data?.overBudget ? `<p role="status">${tr('已超出备份预算，暂停新增。聊天保存不受影响。')}</p>` : ''}
-                ${failures.length ? `<p role="status">${tr('近期备份异常，不代表聊天保存失败：')}${esc(failures.join('、'))}</p>` : ''}
+                ${failures.length ? `<p role="status">${tr('近期备份异常，不代表聊天保存失败：')}${esc(failureText)}</p>` : ''}
                 ${data?.warnings?.length ? `<p role="status">${tr('部分备份无法验证，已保留，不参与自动清理。')}</p>` : ''}
                 <p role="alert" data-backup-error></p>
                 <p role="status" class="nora-model-note" data-backup-result></p>

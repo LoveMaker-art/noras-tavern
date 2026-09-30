@@ -25,14 +25,29 @@ export function createPanelActions({ getContext, story, request, character, asse
         if (action.startsWith('models.')) {
             if (action === 'models.list') return { models: models.list(), revision: await modelRevision(), scope: 'global' };
             if (await modelRevision() !== params.expectedRevision) throw stale();
-            const result = action === 'models.select' ? await models.select(params.id) : await models.remove(params.id);
-            return { ...result, revision: await modelRevision(), generationRequested: false };
+            if (action === 'models.create') {
+                const fields = ['id', 'name', 'base', 'model'];
+                if (Object.keys(params.profile).some(key => !fields.includes(key)) || fields.some(key => typeof params.profile[key] !== 'string' || !params.profile[key].trim())
+                    || params.profile.name.length > 60 || params.profile.id.length > 200) throw invalid();
+                let url;
+                try { url = new URL(params.profile.base); } catch { throw invalid(); }
+                if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash || url.search) throw invalid();
+            }
+            const result = action === 'models.select' ? await models.select(params.id)
+                : action === 'models.create' ? await models.create(params.profile, params.apiKey) : await models.remove(params.id);
+            return { ...result, revision: await modelRevision(), generationRequested: false, connectionTestRequested: action === 'models.create' };
         }
         if (action === 'world.inspect') {
             const current = await plan();
             return { worldId: current.world_id, name: current.name, persona: current.persona,
                 characters: current.story_context?.characters ?? [], relationships: current.story_context?.relationships ?? [],
                 cardProfileEnabled: current.story_context?.card_profile_enabled !== false, revision: String(current.world_revision) };
+        }
+        if (action === 'world.capability-retry') {
+            const current = await plan();
+            if (String(current.world_revision) !== params.expectedRevision) throw stale();
+            const result = await story.worlds.retryCapability(current.world_id, params.capability, { authorize: async () => false });
+            return { worldId: current.world_id, results: result.results, permissionsUnchanged: true };
         }
         if (action === 'world.update') {
             // This control edits World content, not preset/script execution permissions.

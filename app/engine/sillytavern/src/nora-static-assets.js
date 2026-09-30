@@ -666,6 +666,8 @@ export function renderNoraIndex(template, manifest) {
         '/lib.js': `${vendorBase}/dist/nora/lib-core.js`,
         '/lib/': `${stStaticBase}/lib/`,
         '/scripts/': `${stStaticBase}/scripts/`,
+        // User-installed modules are mutable and are absent from the ST snapshot.
+        '/scripts/extensions/third-party/': '/scripts/extensions/third-party/',
         [`${stStaticBase}/lib.js`]: `${vendorBase}/dist/nora/lib-core.js`,
     };
     for (const modulePath of manifest.runtimeModules?.modules || []) {

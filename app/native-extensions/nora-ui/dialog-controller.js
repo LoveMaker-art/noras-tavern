@@ -238,5 +238,6 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     }
 
     return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm, protectForm,
-        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; } });
+        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; },
+        get protected() { return Boolean(closeGuard || cancelConfirmation || checkingClose); }, get viewKey() { return viewKey; } });
 }

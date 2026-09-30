@@ -34,7 +34,8 @@ function fixture({ mvuFails = true } = {}) {
             calls.push('resolve');
             return { avatar: 'target.png', name: 'Target' };
         },
-        async ensureCharacterCapability(_character, capability) {
+        async ensureCharacterCapability(_character, capability, options) {
+            assert.equal(options.worldId, 'world:one', 'readiness must check the same World as authorization');
             calls.push(`ensure:${capability}`);
             if (capability === 'mvu' && mvuFails) {
                 const error = new Error('internal ST polling exception must not be persisted');
@@ -55,6 +56,7 @@ test('is the single owner that authorizes once and settles each capability in de
     const world = { id: 'world:one', characterId: 0, manifest: manifest() };
     const result = await controller.ensure(world, {
         async authorize(_character, options) {
+            assert.equal(options.worldId, world.id);
             calls.push(`authorize:${options.force}`);
         },
     });

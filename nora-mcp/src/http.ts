@@ -1,6 +1,6 @@
 import { NoraRequestError } from "./errors.js";
 
-export interface RequestOptions { timeoutMs?: number; }
+export interface RequestOptions { timeoutMs?: number; binary?: boolean; }
 
 /** One cookie session and single-flight CSRF handshake for Nora and ST adapters. */
 export class NoraHttpClient {
@@ -12,6 +12,7 @@ export class NoraHttpClient {
   post(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("POST", path, body, options); }
   put(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("PUT", path, body, options); }
   delete(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("DELETE", path, body, options); }
+  async download(path: string, body: unknown): Promise<Buffer> { return await this.send("POST", path, body, { binary: true }) as Buffer; }
   csrf(): Promise<string> {
     if (this.csrfToken) return Promise.resolve(this.csrfToken);
     if (!this.csrfFlight) {
@@ -40,6 +41,22 @@ export class NoraHttpClient {
       for (const value of response.headers.getSetCookie()) {
         const pair = value.split(";", 1)[0]; const i = pair.indexOf("=");
         if (i > 0) this.cookies.set(pair.slice(0, i), pair.slice(i + 1));
+      }
+      if (options.binary && response.ok) {
+        if (!/^(?:image\/png|application\/json)\b/i.test(response.headers.get('content-type') || '')) throw new NoraRequestError("Unexpected export response type.", "NORA_INVALID_RESPONSE");
+        const chunks: Uint8Array[] = []; let size = 0;
+        const reader = response.body?.getReader();
+        if (!reader) throw new NoraRequestError("Export has no body.", "NORA_INVALID_RESPONSE");
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            size += value.length;
+            if (size > 64 * 1024 * 1024) throw new NoraRequestError("Export exceeds 64 MiB.", "NORA_EXPORT_TOO_LARGE");
+            chunks.push(value);
+          }
+        } finally { await reader.cancel(); }
+        return Buffer.concat(chunks);
       }
       const text = await response.text();
       if (response.status === 403 && writes && !retried && text.includes("Invalid CSRF token")) {

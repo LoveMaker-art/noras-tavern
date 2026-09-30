@@ -9,7 +9,7 @@ creating a substitute World or restarting services.
 
 | UI category | Meaning and tool kind |
 | --- | --- |
-| 世界卡 | Complete card; not a kind accepted by `nora.library.save` |
+| 世界卡 | Complete card: list kind `card`, file import via `nora.library.import_card` |
 | 角色 / 我的角色 | Player identity: `persona` |
 | 角色 / 其他角色 | Reusable character profile: `character` |
 | 世界书 | Lore entries: `worldbook` |
@@ -50,8 +50,28 @@ creating a substitute World or restarting services.
 ### Reuse boundaries
 
 Complete-card creation/import follows Create or import below. The current
-`library.save` tool does not store complete cards; a request to store only a
-complete card must not silently become a request to create a World.
+`library.save` tool does not store complete cards; use `nora.library.import_card`
+for storage only. This does not create or switch a World. Inspect `legacy:true`
+catalog items as compatibility snapshots, not proven original source cards.
+For an explicitly requested profile or independent-book deletion, read its revision
+then use `nora.library.delete`. This is not deletion of a World or an embedded book.
+
+Complete cards use `nora.library.manage_card` with the avatar/revision from a fresh
+`library.list(kind:"card")`. `delete` removes that original and its index;
+`deduplicate` keeps it and removes content-equivalent unreferenced copies. Read
+removed/retained: referenced files are kept, and deleted=false is not success.
+World copies/chats are preserved. Unreferenced, unchanged source archives can be
+removed with the original; the receipt reports retained references or changed
+archives. If another
+duplicate remains referenced, it may still appear in the catalog. Legacy runtime
+snapshots are not deletable library originals.
+
+For an authorized file export, use `nora.export`: card target is its avatar and
+supports PNG/JSON; preset target is its name; worldbook target is its returned
+`source.name`, not its display label; profile target is its ID.
+The latter three export JSON, with profiles retaining the Nora profile envelope.
+The result is a new local file under the configured exports directory, not an
+external upload. Return its actual path; do not paste sensitive raw contents.
 
 Discover `world.library.apply` through `nora.control.catalog`; application requires
 the intended live World/Session. Read the selected library item and `world.inspect`
@@ -79,15 +99,20 @@ still await activation. Inspect the World and books afterward.
 - `nora.world.list` finds authoritative worlds. `nora.world.inspect` supplies
   the selected world's details and activation plan; `nora.world.snapshot`
   supplies activation state. Use returned identifiers, not guessed paths.
-- `st.character.list` / `st.character.inspect` inspect ST card records, which may
-  include World runtime cards. They are not an authoritative library-only
-  catalog. Confirm the selected card's provenance and World bindings before
-  presenting it as a library original; disclose unknown provenance.
+- For library cards, use `nora.library.list` with kind `card`. ST character
+  list/inspect tools also include runtime records; use them for ST inspection,
+  not as the library catalog. Treat legacy snapshots separately from originals.
   `st.worldbook.list` / `inspect` / `entries` inspect worldbooks. A readable
   worldbook is not evidence that it belongs exclusively to the selected World.
 - `nora.world.open_plan` reads a plan: it neither opens a page nor executes MVU.
-  The present controls have no general world-switch action. If asked to open a
-  world automatically, explain that limit rather than claiming an inspection opened it.
+  To switch a connected page, read `page.inspect`, then use `page.world` with its
+  revision and targetWorldId. Open editors or an unsent draft block switching.
+  `page.open` opens supported panels; `page.draft` changes unsent text only.
+  `page.library` selects cards/character/persona/worldbooks; `page.sidebar` sets
+  the rail/settings drawer state. `page.close` uses the same editor confirmation
+  as the UI; the user may need to confirm locally. Inspect applied and page state
+  instead of claiming a declined close succeeded. Navigation preserves protected
+  editors and does not provide arbitrary DOM control.
 
 ## Create or import
 
@@ -98,6 +123,8 @@ Choose the single matching operation:
 | New blank world | `nora.world.create` | name, optional approved Persona fields |
 | New world from an existing library card | `nora.world.import_library` | actual library avatar |
 | Import a supplied card as a world | `nora.world.import` | real filePath in this instance's configured allowed upload directory |
+| Save a supplied complete card only | `nora.library.import_card` | permitted filePath; no World creation |
+| Restart from current World settings | `nora.world.restart` | worldId, new name, inspected expectedRevision and idempotencyKey; preserves source World |
 
 These tools own parsing, bindings and persistence. Pass the original supported
 card, not a model-normalized rewrite of its scripts or unknown metadata. If the
@@ -137,7 +164,8 @@ If “change the opening” means editing the first saved message, resolve that 
 and use the history-edit workflow instead; it may delete subsequent messages.
 Ownership rejection is a real constraint, not permission to edit the source card
 through another path. These writes target the World runtime card, not the library
-original. Library-original writes are not exposed by this daily MCP.
+original. Only the dedicated `library.card-regex`/`library.card-regex-update` actions
+edit Regex in an inspected non-legacy library card; they do not synchronize Worlds.
 
 ## Right-panel settings
 
@@ -155,6 +183,7 @@ edit files to bypass it. All operations below use the live-page protocol in SKIL
 | A Worldbook entry | `worldbook.list`, then `worldbook.inspect` with name | `worldbook.update-entry`: name, entryId, patch, expectedRevision |
 | Delete one Worldbook entry | `worldbook.inspect` | `worldbook.delete-entry`: name, entryId, expectedRevision |
 | Switch text model | `models.list` | `models.select`: id, expectedRevision |
+| Add text model | `models.list` | `models.create`: profile, apiKey, expectedRevision; shared UI connection test and save |
 | Delete saved custom text model | `models.list` | `models.delete`: id, expectedRevision |
 
 For an additional World rule, use `world.setting.add` and verify the original
@@ -196,14 +225,18 @@ disable, selective. Preserve insertion depth/order, extensions, MVU metadata and
 other entries. Only owned runtime resources are writable by these actions. Shared
 or external books require a separately authorized design, not an ownership bypass.
 Do not edit the imported embedded original when the prompt uses a materialized book.
-Deleting an entry is distinct from deleting the entire book (not exposed).
+Deleting an entry is distinct from deleting an independent library book via
+`nora.library.delete`; the latter must not be used to remove runtime World resources.
 
 Models: this is the GLOBAL text model configuration, not per-world MVU settings.
 Select a returned model ID. Hermes remains available and cannot be deleted; deleting
 the active custom model selects the same fallback as the UI. No text generation is
 requested by switching, although the existing backend may perform a status check.
-New-provider/key entry remains in the existing model form; do not ask for keys in
-chat or pretend models.select creates a new model configuration.
+`models.create` requires `profile: {id, name, base, model}`: all four are nonempty
+strings; generate a unique custom `id`. Its connection test requires model-call
+authorization. `models.list` omits `base`; obtain it from the user's approved
+configuration, never guess it. Use approved credentials without echoing them.
+`models.select` only selects an existing profile.
 
 Verify by repeating the corresponding read. For World edits, inspect the saved
 manifest too; saved=true with runtimeApplied=false means reopen before claiming
@@ -225,6 +258,11 @@ visual options have dedicated theme controls, not model/plugin settings.
 ## Repair or delete
 
 Inspect the exact world before `nora.world.repair` or `nora.world.delete`.
+For deletion, call `nora.world.delete_preview` and explain its current scope:
+exclusive resources and all confidently owned chat backups, including protected
+ones, will be deleted; shared/unknown files and separately managed update rollback
+packages remain. After confirmation, pass the preview token as `expectedPlan`
+to `nora.world.delete`. A changed plan requires a fresh preview and confirmation.
 Use the supported operation, its idempotencyKey and returned receipt. Repair is
 not a general story rewrite. Delete only the world the user selected; do not infer
 permission to delete its library source, sibling worlds or persistent instance data.

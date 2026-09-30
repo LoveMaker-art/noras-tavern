@@ -34,7 +34,15 @@ export function setExtensionLibraryState(directory, name, patch) {
 
 export function discoverInstalledExtensions(userDirectory, systemDirectory, globalDirectory) {
     const names = directory => fs.existsSync(directory) ? fs.readdirSync(directory, { withFileTypes: true })
-        .filter(entry => !entry.name.startsWith('.') && (entry.isDirectory() || entry.isSymbolicLink() && fs.statSync(path.join(directory, entry.name)).isDirectory())).map(entry => entry.name) : [];
+        .filter(entry => {
+            if (entry.name.startsWith('.') || !(entry.isDirectory() || entry.isSymbolicLink())) return false;
+            try {
+                return fs.statSync(path.join(directory, entry.name, 'manifest.json')).isFile();
+            } catch (error) {
+                if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return false;
+                throw error;
+            }
+        }).map(entry => entry.name) : [];
     const state = readExtensionLibraryState(userDirectory);
     const local = names(userDirectory).map(folder => ({ type: 'local', name: `third-party/${folder}`,
         ...(Object.hasOwn(state, folder) ? { libraryEnabled: state[folder]?.enabled === true } : {}) }));

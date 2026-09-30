@@ -113,6 +113,10 @@ export function createNoraWorldsV2Router({
         } catch (error) { return sendError(response, error); }
         finally { await cleanupUpload(request.file); }
     });
+    router.post('/library/cards/manage', async (request, response) => {
+        try { return response.json(await resolveCore(request).manageLibraryCard(request.body || {})); }
+        catch (error) { return sendError(response, error); }
+    });
 
     router.get('/library/profiles', async (request, response) => {
         try {

@@ -1,4 +1,5 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { createPageControls } from './page-controls.js';
 import { createCardCapabilityController } from './card-capability-controller.js';
 import { registerWorldRenderReadiness } from '../../engine/sillytavern/public/scripts/nora-worlds/world-render-readiness.js';
 import { createCardActionGateway } from './card-action-gateway.js';
@@ -166,6 +167,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
     const refreshWorldsAfterCommit = async label => (await ensureWorldCreationController()).refreshWorldsAfterCommit(label);
 
     const openCharacterLibrary = async () => (await ensureCharacterController()).openLibrary();
+    let openLibraryCategory;
     const openCharacterSheet = async (characterId, backToLibrary = false) => (await ensureCharacterController()).openSheet(characterId, backToLibrary);
     const openCharacterEditor = async characterId => (await ensureCharacterController()).openEditor(characterId);
 
@@ -274,6 +276,11 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
             isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
             openCards: openCharacterLibrary, openExtensions: () => panelController.openExtensions(), refresh, select: $, selectAll: $$, escapeHtml,
         }));
+        openLibraryCategory = async kind => {
+            if (kind === 'cards') return openCharacterLibrary();
+            const library = await ensureLibraryController();
+            return kind === 'worldbooks' ? library.openWorldbooks() : library.openProfiles(kind);
+        };
         let characterControllerPromise;
         ensureCharacterController = () => {
             if (characterController) return Promise.resolve(characterController);
@@ -494,7 +501,20 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
 
     const prepareShell = () => shellController.prepareShell();
 
+    const { state: pageControlState, execute: controlPage } = createPageControls({
+        ready: () => started, dialogs, shell: shellController,
+        modalOpen: () => Boolean($('#nora-modal')?.classList.contains('open')),
+        draft: () => $('#nora-input')?.value ?? '', setDraft: text => {
+            const input = $('#nora-input');
+            if (!input) throw new Error('Composer is unavailable.');
+            input.value = text;
+            messageController.updateComposer();
+        }, loadWorlds, openWorld: openWorldById, openPanel: runPanelAction,
+        openLibrary: kind => openLibraryCategory(kind),
+    });
+
     window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions,
+        pageControlState, controlPage,
         setRuntimeControls: controls => { runtimeControls = controls; },
         appearanceState: () => appearanceController?.inspect() || { ready: false },
         setAppearance: params => {

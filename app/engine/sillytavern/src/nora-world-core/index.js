@@ -7,6 +7,7 @@ export function createNoraWorldCore(options) {
     return Object.freeze({
         listLibraryCards: core.listLibraryCards.bind(core),
         saveLibraryCard: core.saveLibraryCard.bind(core),
+        manageLibraryCard: core.manageLibraryCard.bind(core),
         readLibraryCardSource: core.readLibraryCardSource.bind(core),
         deleteLibraryCard: core.deleteLibraryCard.bind(core),
         listLibraryProfiles: core.listLibraryProfiles.bind(core),

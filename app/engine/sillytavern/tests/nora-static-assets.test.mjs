@@ -253,6 +253,15 @@ test('index rendering injects independently addressable asset namespaces', () =>
     assert.match(rendered, /^\/asset-files\/compat-runtime\/1{32}\/dist\/nora\/inline-modules\.js/m);
     assert.match(rendered, /"nora-module\/script\.js":"\/asset-files\/st-static\/1{32}\/script\.js"/);
     assert.match(rendered, /"\/lib\.js":"\/asset-files\/vendor-core\/3{32}\/dist\/nora\/lib-core\.js"/);
+    const { imports } = JSON.parse(rendered.split('\n')[0]);
+    const resolvePrefix = specifier => {
+        if (imports[specifier]) return imports[specifier];
+        const prefix = Object.keys(imports).filter(key => key.endsWith('/') && specifier.startsWith(key)).sort((a, b) => b.length - a.length)[0];
+        return prefix ? imports[prefix] + specifier.slice(prefix.length) : specifier;
+    };
+    assert.equal(resolvePrefix('/scripts/extensions/third-party/user-plugin/index.js'), '/scripts/extensions/third-party/user-plugin/index.js');
+    assert.equal(resolvePrefix('/scripts/extensions/third-party/user-plugin/lib/helper.js'), '/scripts/extensions/third-party/user-plugin/lib/helper.js');
+    assert.equal(resolvePrefix('/scripts/extensions.js'), `/asset-files/st-static/${'1'.repeat(32)}/scripts/extensions.js`);
     assert.match(rendered, /\/asset-files\/nora-shell\/2{32}/);
     assert.match(rendered, /\/extension-assets\/5{32}/);
     assert.match(rendered, /\/asset-files\/vendor-core\/3{32}/);

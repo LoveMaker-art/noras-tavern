@@ -33,7 +33,7 @@ assert.match(endpoint, /capabilities\/:capability\/attempts[\s\S]*attempts\/:att
 assert.match(client, /beginCapabilityAttempt[\s\S]*settleCapabilityAttempt/);
 
 assert.match(controller, /CAPABILITY_ORDER\s*=\s*Object\.freeze\(\['prompt_template', 'regex', 'tavern_helper', 'mvu'\]\)/);
-assert.match(controller, /runtime\.ensureCharacterCapability\(character, capability\)/);
+assert.match(controller, /runtime\.ensureCharacterCapability\(character, capability, \{ worldId \}\)/);
 assert.match(controller, /status:\s*'DEGRADED'[\s\S]*client\.settleCapabilityAttempt/);
 assert.match(controller, /const runtimeVerified = new Set\(\)/, 'page runtime readiness must not reuse persisted READY evidence');
 assert.match(controller, /return Object\.freeze\(\{\s*prepare,\s*ensure,\s*retry:/, 'the controller must expose one pre-render preparation owner, one persistence owner and an explicit retry path');

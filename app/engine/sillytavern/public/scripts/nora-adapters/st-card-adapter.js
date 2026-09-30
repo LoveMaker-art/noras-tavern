@@ -3,6 +3,7 @@ import {
     normalizeTavernHelperScripts,
 } from '../nora-compat/mvu-compatibility.js';
 import { inspectPromptTemplateCompatibility } from '../nora-compat/prompt-template-compatibility.js';
+import { worldHelperIdentity } from '../nora-worlds/world-helper-identity.js';
 
 const HELPER_EXTENSION = 'third-party/JS-Slash-Runner';
 const MVU_EXTENSION = 'third-party/nora-mvu';
@@ -91,7 +92,13 @@ function capabilityError(code, message, { retryable = true, cause } = {}) {
     return error;
 }
 
-export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
+export function createStCardAdapter(runtime, { saveUiSettings, helperIdentity = worldHelperIdentity } = {}) {
+    function helperKey(character, worldId) {
+        const current = runtime();
+        const active = current.characters?.[Number(current.characterId)];
+        const selectedWorld = active?.avatar === character?.avatar ? current.chatMetadata?.nora_world?.id : null;
+        return helperIdentity.key(character?.avatar, worldId || selectedWorld);
+    }
     function isSystemCharacter(character) {
         return character?.avatar === 'default_Seraphina.png'
             || character?.avatar === 'Nora_Blank_World--nora-internal.png'
@@ -111,19 +118,21 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         return script;
     }
 
-    function characterCapabilities(character) {
+    function characterCapabilities(character, { worldId } = {}) {
         const current = runtime();
         const inspection = inspectCharacterRuntime(character);
         const { regexScripts, helperScripts } = inspection;
         const helper = helperScriptSettings();
+        const identity = helperKey(character, worldId);
         return {
             ...inspection,
             regexScripts,
             helperScripts,
+            helperWorldId: identity?.startsWith('nora-world:') ? identity.slice('nora-world:'.length) : null,
             regexAllowed: regexScripts.length === 0 || Boolean(current.regex?.isCharacterAllowed?.(character)),
-            helperAllowed: helperScripts.length === 0 || helper.enabled.characters.includes(character?.name),
+            helperAllowed: helperScripts.length === 0 || Boolean(identity && helper.enabled.characters.includes(identity)),
             regexPrompted: regexScripts.length > 0 && Boolean(current.accountStorage?.getItem?.(`AlertRegex_${character?.avatar}`)),
-            helperPrompted: helperScripts.length > 0 && helper.popuped.characters.includes(character?.name),
+            helperPrompted: helperScripts.length > 0 && Boolean(identity && helper.popuped.characters.includes(identity)),
         };
     }
 
@@ -175,7 +184,7 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         });
     }
 
-    async function ensureCharacterCapability(character, capability) {
+    async function ensureCharacterCapability(character, capability, { worldId } = {}) {
         const normalized = String(capability || '').trim();
         if (!['prompt_template', 'regex', 'tavern_helper', 'mvu'].includes(normalized)) {
             throw capabilityError('NORA_CAPABILITY_UNSUPPORTED', `Unsupported character capability: ${normalized}`, { retryable: false });
@@ -197,7 +206,7 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         }
         const current = runtime();
         const activeExtensions = new Set(current.getActiveExtensionNames());
-        const permissions = characterCapabilities(character);
+        const permissions = characterCapabilities(character, { worldId });
         if (normalized === 'regex') {
             if (!inspection.regexScripts.length) {
                 throw capabilityError('NORA_REGEX_DECLARATION_MISSING', 'The World declares Regex but the Runtime Card has no Regex scripts.', { retryable: false });
@@ -291,24 +300,27 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         });
     }
 
-    function markCharacterCapabilitiesPrompted(character, capabilities = characterCapabilities(character)) {
+    function markCharacterCapabilitiesPrompted(character, capabilities = characterCapabilities(character), { worldId } = {}) {
         const current = runtime();
         if (capabilities.regexScripts.length) current.accountStorage?.setItem?.(`AlertRegex_${character.avatar}`, 'true');
-        if (capabilities.helperScripts.length) {
+        const identity = helperKey(character, worldId);
+        if (capabilities.helperScripts.length && identity) {
             const helper = helperScriptSettings();
-            helper.popuped.characters = [...new Set([...helper.popuped.characters, character.name])];
+            helper.popuped.characters = [...new Set([...helper.popuped.characters, identity])];
         }
         saveUiSettings();
     }
 
-    async function enableCharacterCapabilities(character, { refresh = false } = {}) {
+    async function enableCharacterCapabilities(character, { refresh = false, worldId } = {}) {
         const current = runtime();
-        const capabilities = characterCapabilities(character);
-        markCharacterCapabilitiesPrompted(character, capabilities);
+        const capabilities = characterCapabilities(character, { worldId });
+        const identity = helperKey(character, worldId);
+        if (capabilities.helperScripts.length && !identity) throw capabilityError('NORA_HELPER_WORLD_UNRESOLVED', 'Cannot identify the World owning these scripts.');
+        markCharacterCapabilitiesPrompted(character, capabilities, { worldId });
         if (capabilities.regexScripts.length && !capabilities.regexAllowed) current.regex?.allowCharacter?.(character);
         if (capabilities.helperScripts.length && !capabilities.helperAllowed) {
             const helper = helperScriptSettings();
-            helper.enabled.characters = [...new Set([...helper.enabled.characters, character.name])];
+            helper.enabled.characters = [...new Set([...helper.enabled.characters, identity])];
         }
         saveUiSettings();
         const activeId = Number(current.characterId);
@@ -354,22 +366,12 @@ export function createStCardAdapter(runtime, { saveUiSettings } = {}) {
         }
         if ('name' in patch && !patch.name.trim()) throw new Error('Character name is required.');
         const normalized = { ...patch, ...('name' in patch ? { name: patch.name.trim() } : {}) };
-        const previousName = current.characters?.find(item => item.avatar === normalizedAvatar)?.name;
         const response = await fetch('/api/characters/merge-attributes', {
             method: 'POST',
             headers: current.getRequestHeaders(),
             body: JSON.stringify({ avatar: normalizedAvatar, ...normalized, data: normalized }),
         });
         if (!response.ok) throw new Error((await response.text()) || `Character update failed (${response.status}).`);
-        if (previousName && normalized.name && previousName !== normalized.name) {
-            // Helper permissions are keyed by name. Preserve this card's existing consent;
-            // keep the old entry because another card can still use the old name.
-            const script = current.extensionSettings?.tavern_helper?.script;
-            for (const group of [script?.enabled, script?.popuped]) {
-                if (group?.characters?.includes(previousName) && !group.characters.includes(normalized.name)) group.characters.push(normalized.name);
-            }
-            await current.saveSettingsStrict();
-        }
         await current.getCharacters();
     }
 

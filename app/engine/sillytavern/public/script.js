@@ -265,6 +265,7 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
+import { MessageFormatter } from './scripts/message-formatter.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
@@ -597,6 +598,7 @@ export let is_send_press = false; //Send generation
 export const isGenerating = () => is_send_press;
 
 let this_del_mes = -1;
+let deleteToolCallsInDeleteMode = true;
 
 /** @type {string} */
 let this_edit_mes_chname = '';
@@ -1684,6 +1686,10 @@ export async function getOneCharacter(avatarUrl) {
         const indexOf = characters.findIndex(x => x.avatar === avatarUrl);
 
         if (indexOf !== -1) {
+            // Nora selects sessions independently of the card's legacy chat field.
+            if (isNoraProductMode() && String(indexOf) === String(this_chid) && characters[indexOf].chat) {
+                getData.chat = characters[indexOf].chat;
+            }
             characters[indexOf] = getData;
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
@@ -1745,12 +1751,16 @@ export async function getCharacters() {
         body: JSON.stringify({}),
     });
     if (response.ok) {
-        const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
-        characters.splice(0, characters.length);
         const getData = await response.json();
+        const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
+        const previousChat = isNoraProductMode() ? characters[this_chid]?.chat : null;
+        characters.splice(0, characters.length);
         for (let i = 0; i < getData.length; i++) {
             characters[i] = getData[i];
             characters[i].name = DOMPurify.sanitize(characters[i].name);
+            if (previousChat && characters[i].avatar === previousAvatar) {
+                characters[i].chat = previousChat;
+            }
 
             // For dropped-in cards
             if (!characters[i].chat) {
@@ -2119,13 +2129,32 @@ export async function deleteLastMessage() {
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
 }
 
+function getMessageDeletionStartId(id, deleteToolCalls = true) {
+    const message = chat[id];
+    if (!deleteToolCalls || message?.is_user || message?.is_system) {
+        return id;
+    }
+
+    let startId = id;
+    while (startId > 0) {
+        const previousMessage = chat[startId - 1];
+        if (!previousMessage?.is_system || !Array.isArray(previousMessage.extra?.tool_invocations)) {
+            break;
+        }
+        startId--;
+    }
+
+    return startId;
+}
+
 /**
  * Deletes a message from the chat by its ID, optionally asking for confirmation.
  * @param {number} id The ID of the message to delete.
  * @param {number} [swipeDeletionIndex] Deletes the swipe with that index.
  * @param {boolean} [askConfirmation=false] Whether to ask for confirmation before deleting.
+ * @param {boolean} [deleteToolCalls=true] Whether to delete preceding tool-call messages.
  */
-export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false) {
+export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false, deleteToolCalls = true) {
     const canDeleteSwipe = swipeDeletionIndex !== undefined && swipeDeletionIndex !== null;
     if (canDeleteSwipe) {
         if (swipeDeletionIndex < 0) {
@@ -2163,13 +2192,19 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         return;
     }
 
-    chat.splice(id, 1);
-    messageElement.remove();
+    const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
+    const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
+
+    // Delete from the end so earlier indices remain stable.
+    for (const messageId of messageIds) {
+        chat.splice(messageId, 1);
+        chatElement.find(`.mes[mesid="${messageId}"]`).remove();
+        deleteItemizedPromptForMessage(messageId);
+    }
 
     chat_metadata.tainted = true;
 
-    const startIndex = [0, minId].includes(id) ? id : null;
-    deleteItemizedPromptForMessage(id);
+    const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
     saveChatDebounced();
 
@@ -2243,9 +2278,18 @@ export async function sendTextareaMessage(inputText = null) {
         await newAssistantChat({ temporary: false });
     }
 
-    let generation = await Generate(generateType, { inputText: hasDirectInput ? textareaText : null });
-    showSwipeButtons();
-    return generation;
+    let userMessagePersisted = false;
+    try {
+        return await Generate(generateType, {
+            inputText: hasDirectInput ? textareaText : null,
+            onUserMessagePersisted: () => { userMessagePersisted = true; },
+        });
+    } catch (error) {
+        if (userMessagePersisted) error.noraMessagePersisted = true;
+        throw error;
+    } finally {
+        showSwipeButtons();
+    }
 }
 
 /**
@@ -2328,12 +2372,20 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         const indexOf = usableMessages.findIndex(x => x.index === Number(messageId));
         const depth = messageId >= 0 && indexOf !== -1 ? (usableMessages.length - indexOf - 1) : undefined;
 
+        mes = MessageFormatter.runStage(MessageFormatter.stage.BEFORE_REGEX, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
+
         // Always override the character name
         mes = getRegexedString(mes, regexPlacement, {
             characterOverride: ch_name,
             isMarkdown: true,
             depth: depth,
         });
+
+        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_REGEX, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
     }
 
     if (power_user.auto_fix_generated_markdown) {
@@ -2412,6 +2464,10 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = mes.replace(/<code(.*)>[\s\S]*?<\/code>/g, function (match) {
             return match.replace(/&amp;/g, '&');
         });
+
+        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_MARKDOWN, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
     }
 
     if (!power_user.allow_name2_display && ch_name && !isUser && !isSystem) {
@@ -4667,6 +4723,7 @@ function removeLastMessage() {
  * @property {string} [quietImage] Image URL to use for the quiet prompt (defaults to empty string)
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
+ * @property {function(): void} [onUserMessagePersisted] Notify the caller after the user message save succeeds.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  */
 
@@ -4698,7 +4755,7 @@ export async function Generate(type, options = {}, dryRun = false) {
     }
 }
 
-async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null } = {}, dryRun = false) {
+async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null, onUserMessagePersisted } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -4846,10 +4903,12 @@ async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt
             sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
         } else {
             await sendMessageAsUser(textareaText, messageBias);
+            onUserMessagePersisted?.();
         }
     } else if (textareaText == '' && !automatic_trigger && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
         // Use send_if_empty if set and the user message is empty. Only when sending messages normally
         await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias);
+        onUserMessagePersisted?.();
     }
 
     let {
@@ -8892,7 +8951,7 @@ export async function commitNoraStoryEdit(messageId, text) {
     return chat[absoluteId];
 }
 
-function openMessageDelete(fromSlashCommand) {
+function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     closeMessageEditor();
     hideSwipeButtons();
     if (fromSlashCommand || !is_send_press) {
@@ -8906,6 +8965,7 @@ function openMessageDelete(fromSlashCommand) {
         console.debug(`ERR -- could not enter del mode; this_chid: ${this_chid}; is_send_press: ${is_send_press}`);
     }
     this_del_mes = -1;
+    deleteToolCallsInDeleteMode = deleteToolCalls;
     is_delete_mode = true;
 }
 
@@ -11881,6 +11941,7 @@ jQuery(async function () {
         });
         $(this).addClass('selected'); //sets the bg of the mes selected for deletion
         var i = Number($(this).attr('mesid')); //checks the message ID in the chat
+        i = getMessageDeletionStartId(i, deleteToolCallsInDeleteMode);
         this_del_mes = i;
         //as long as the current message ID is less than the total chat length
         while (i < chat.length) {
@@ -12201,6 +12262,7 @@ jQuery(async function () {
     ///////////// OPTIMIZED LISTENERS FOR LEFT SIDE OPTIONS POPUP MENU //////////////////////
     $('#options [id]').on('click', async function (event, customData) {
         const fromSlashCommand = customData?.fromSlashCommand || false;
+        const deleteToolCalls = customData?.deleteToolCalls ?? true;
         var id = $(this).attr('id');
 
         // Check whether a custom prompt was provided via custom data (for example through a slash command)
@@ -12264,7 +12326,7 @@ jQuery(async function () {
                 Generate('continue', buildOrFillAdditionalArgs());
             }
         } else if (id == 'option_delete_mes') {
-            setTimeout(() => openMessageDelete(fromSlashCommand), animation_duration);
+            setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
         } else if (id == 'option_close_chat') {
             await closeCurrentChat();
         }

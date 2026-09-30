@@ -95,6 +95,13 @@ router.post('/delete', function (request, response) {
     const fullpath = path.join(settings.folder, filename);
 
     if (fs.existsSync(fullpath)) {
+        if (request.body.expectedRevision !== undefined) {
+            try {
+                if (request.body.apiId !== 'openai' || readPresetTemplate(settings.folder, request.body.name).revision !== request.body.expectedRevision) {
+                    return response.status(409).json({ error: { code: 'NORA_PRESET_STALE' } });
+                }
+            } catch { return response.status(409).json({ error: { code: 'NORA_PRESET_STALE' } }); }
+        }
         fs.unlinkSync(fullpath);
         return response.sendStatus(200);
     } else {

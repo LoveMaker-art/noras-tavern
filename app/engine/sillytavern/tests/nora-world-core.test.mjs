@@ -114,7 +114,7 @@ test('presents one small World Core interface and hides persistence mechanics', 
 
     assert.deepEqual(Object.keys(core).sort(), [
         'importLibraryItem', 'listLibraryWorldbooks', 'readLibraryWorldbook', 'saveLibraryWorldbook', 'deleteLibraryWorldbook',
-        'listLibraryCards', 'saveLibraryCard', 'readLibraryCardSource', 'deleteLibraryCard',
+        'listLibraryCards', 'saveLibraryCard', 'readLibraryCardSource', 'deleteLibraryCard', 'manageLibraryCard',
         'listLibraryProfiles', 'readLibraryProfile', 'saveLibraryProfile', 'deleteLibraryProfile',
         'addWorldSetting',
         'beginCapabilityAttempt',

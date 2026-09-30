@@ -89,8 +89,8 @@ export async function flushChatBackups() {
     await Promise.all([...running]);
 }
 
-/** Startup + hourly maintenance, including inactive sessions. Old unmanaged
- * snapshots are never candidates. The caller owns shutdown and awaits flushing. */
+/** One-time legacy upgrade, then startup/hourly managed retention. Unidentified
+ * files remain untouched. The caller owns shutdown and awaits flushing. */
 export function startChatBackupMaintenance(directoriesList) {
     for (const directories of directoriesList) closing.delete(path.resolve(directories.root));
     let stopped = false, active = Promise.resolve();
@@ -98,7 +98,17 @@ export function startChatBackupMaintenance(directoriesList) {
         active = active.then(async () => {
             if (stopped || !enabled()) return;
             for (const directories of directoriesList) {
-                try { report(directories, { status: 'maintenance', retention: await chatBackupStore(directories).maintain() }); } catch (error) { report(directories, { status: 'failed', code: error.code || 'NORA_BACKUP_MAINTENANCE_FAILED' }); }
+                try {
+                    const store = chatBackupStore(directories);
+                    try {
+                        const upgrade = await store.upgradeLegacy();
+                        if (upgrade.removed) console.info('[Chat backup] Legacy upgrade completed:', { removed: upgrade.removed, baselines: upgrade.baselines, retained: upgrade.retained });
+                    } catch (cause) {
+                        console.warn('[Chat backup] Legacy upgrade postponed; current chats unchanged:', cause.code || 'NORA_BACKUP_UPGRADE_FAILED');
+                        throw Object.assign(new Error('Legacy upgrade postponed'), { code: 'NORA_BACKUP_UPGRADE_PENDING' });
+                    }
+                    report(directories, { status: 'maintenance', retention: await store.maintain() });
+                } catch (error) { report(directories, { status: 'failed', code: error.code || 'NORA_BACKUP_MAINTENANCE_FAILED' }); }
             }
         });
     };

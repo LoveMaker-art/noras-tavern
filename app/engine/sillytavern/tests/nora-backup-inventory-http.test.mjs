@@ -12,11 +12,193 @@ setConfigFilePath(path.resolve('default/config.yaml'));
 const { router } = await import('../src/endpoints/backups.js');
 const { router: chatRouter } = await import('../src/endpoints/chats.js');
 const { createNoraWorldsV2Router } = await import('../src/endpoints/nora-worlds-v2.js');
-const { flushChatBackups, chatBackupStore } = await import('../src/chat-backup-runtime.js');
+const { flushChatBackups, chatBackupStore, startChatBackupMaintenance } = await import('../src/chat-backup-runtime.js');
 const { router: ledgerRouter } = await import('../src/endpoints/nora-story-ledger.js');
 const { resolveStoryLedger } = await import('../src/nora-story-ledger/runtime.js');
 const { chatSessionOperations } = await import('../src/chat-session-operations.js');
 const { ledgerStatePath } = await import('../src/nora-story-ledger/state-file.js');
+
+test('upgrade replaces owned legacy backups above quota with verified current-session snapshots without changing chats', async t => {
+    const quotaKey = 'SILLYTAVERN_BACKUPS_CHAT_RETENTION_MAXBYTES';
+    const previousQuota = process.env[quotaKey];
+    process.env[quotaKey] = '65536';
+    t.after(() => { if (previousQuota === undefined) delete process.env[quotaKey]; else process.env[quotaKey] = previousQuota; });
+    const f = await storageFixture(t);
+    const world = await f.create('automatic-upgrade'), other = await f.create('upgrade-other-session');
+    const original = await f.chat(world), otherOriginal = await f.chat(other);
+    await f.backup('chat_before_upgrade.jsonl', [...original, { mes: 'x'.repeat(80 * 1024) }]);
+    await fs.writeFile(path.join(f.directories.backups, 'settings_before_upgrade.json'), '{"theme":"light"}');
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { directories: f.directories, profile: { handle: 'test' } }; next(); });
+    app.use('/api/chats', chatRouter);
+    app.use('/api/backups', router);
+    const server = http.createServer(app);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    const post = (route, body = {}) => fetch(`http://127.0.0.1:${server.address().port}/api${route}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    async function startup() {
+        const stop = startChatBackupMaintenance([f.directories]);
+        t.after(stop);
+        for (let attempt = 0; attempt < 200; attempt++) {
+            const response = await post('/backups/chat/managed');
+            const list = await response.json();
+            if (list.status.recent.some(item => item.status === 'maintenance')) { await stop(); return list; }
+            await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        assert.fail('Startup backup maintenance did not finish');
+    }
+    const list = await startup();
+    assert.equal(list.legacyFiles, 0, 'confirmed old snapshots are removed after current chats are secured');
+    assert.equal(list.snapshots.length, 2, 'all current sessions have a new baseline, including sessions without an old backup');
+    assert.equal(list.overBudget, false);
+    for (const [value, chat] of [[world, original], [other, otherOriginal]]) {
+        const snapshot = list.snapshots.find(item => item.worldId === value.world_id);
+        const download = await post('/backups/chat/snapshot', { id: snapshot.id });
+        assert.deepEqual((await download.text()).split('\n').filter(Boolean).map(JSON.parse), chat);
+        const scope = { id: snapshot.id, worldId: value.world_id, sessionId: value.sessions.default_session_id };
+        assert.equal((await post('/backups/chat/restore-preview', scope)).status, 200);
+        const current = await post('/chats/get', { avatar_url: value.runtime_card.binding.avatar, file_name: value.sessions.items[0].binding.chat_id });
+        assert.deepEqual(await current.json(), chat);
+    }
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'settings_before_upgrade.json'), 'utf8'), '{"theme":"light"}');
+    // Resume normal maintenance after the first simulated startup was stopped.
+    const stopAgain = startChatBackupMaintenance([f.directories]);
+    t.after(stopAgain);
+    const continued = [...original, { is_user: true, mes: 'continue after automatic cleanup' }];
+    const saved = await post('/chats/save', { avatar_url: world.runtime_card.binding.avatar,
+        file_name: world.sessions.items[0].binding.chat_id, chat: continued,
+        nora_complete_history: true, nora_base_revision: getChatRevision(original) });
+    assert.equal(saved.status, 200);
+    await flushChatBackups();
+    const after = await (await post('/backups/chat/managed')).json();
+    assert.equal(after.snapshots.length, 3, 'next chat save creates a snapshot without raising the original quota');
+    assert.equal(after.legacyFiles, 0);
+    assert.equal(after.policy.maxBytes, 65536);
+});
+
+test('unidentified legacy files above quota keep HTTP chat saves usable and gate restoration until protection fits', async t => {
+    // Only this isolated test process sees the small quota; production config is untouched.
+    const quotaKey = 'SILLYTAVERN_BACKUPS_CHAT_RETENTION_MAXBYTES';
+    const previousQuota = process.env[quotaKey];
+    process.env[quotaKey] = '65536';
+    t.after(() => {
+        if (previousQuota === undefined) delete process.env[quotaKey];
+        else process.env[quotaKey] = previousQuota;
+    });
+    const f = await storageFixture(t);
+    const world = await f.create('upgrade-quota'), other = await f.create('upgrade-control');
+    const scope = { worldId: world.world_id, sessionId: world.sessions.default_session_id };
+    const binding = value => ({ avatar_url: value.runtime_card.binding.avatar, file_name: value.sessions.items[0].binding.chat_id });
+    const original = [...await f.chat(world), { is_user: false, mes: 'old reply', swipe_id: 1,
+        swipes: ['first candidate', 'old reply'], swipe_info: [{ extra: { stat_data: { hp: 80 } } }, { extra: { stat_data: { hp: 70 } } }],
+        extra: { stat_data: { hp: 70 } } }];
+    const filePath = path.join(f.directories.chats, path.basename(binding(world).avatar_url, '.png'), `${binding(world).file_name}.jsonl`);
+    await fs.writeFile(filePath, original.map(item => JSON.stringify(item)).join('\n'));
+    const unidentified = structuredClone(original);
+    unidentified[0].chat_metadata = {};
+    const legacy = await f.backup('chat_pre_upgrade.jsonl', [...unidentified, { mes: 'x'.repeat(80 * 1024) }]);
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { directories: f.directories, profile: { handle: 'test' } }; next(); });
+    app.use('/api/chats', chatRouter);
+    app.use('/api/backups', router);
+    const server = http.createServer(app);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const stopMaintenance = startChatBackupMaintenance([f.directories]);
+    t.after(async () => { await stopMaintenance(); await new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }); });
+    const post = (route, body = {}) => fetch(`http://127.0.0.1:${server.address().port}/api${route}`, {
+        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const readChat = async value => {
+        const response = await post('/chats/get', binding(value));
+        assert.equal(response.status, 200);
+        return response.json();
+    };
+    const list = async () => {
+        const response = await post('/backups/chat/managed');
+        assert.equal(response.status, 200);
+        return response.json();
+    };
+    const save = async (chat, base) => {
+        const response = await post('/chats/save', { ...binding(world), chat, nora_complete_history: true,
+            nora_base_revision: getChatRevision(base), nora_backup_mvu_state: 'confirmed' });
+        assert.equal(response.status, 200);
+        assert.equal((await response.json()).ok, true);
+        await flushChatBackups();
+    };
+    const unchangedOther = await readChat(other);
+    let inventory;
+    for (let attempt = 0; attempt < 100; attempt++) {
+        inventory = await list();
+        if (inventory.status.recent.some(item => item.status === 'maintenance')) break;
+        await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    assert.ok(inventory.status.recent.some(item => item.status === 'maintenance'));
+    assert.equal(inventory.overBudget, true);
+    assert.equal(inventory.legacyFiles, 1);
+    assert.equal(inventory.snapshots.length, 0);
+    assert.deepEqual(await readChat(world), original, 'new maintenance must not rewrite old chat');
+    const continued = [...original, { is_user: true, mes: 'continue after upgrade' },
+        { is_user: false, mes: 'synthetic model reply', extra: { stat_data: { hp: 60 } } }];
+    await save(continued, original);
+    inventory = await list();
+    assert.equal(inventory.status.recent.at(-1).code, 'NORA_BACKUP_BUDGET_EXCEEDED');
+    assert.equal(inventory.snapshots.length, 0);
+    assert.deepEqual(await readChat(world), continued);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_pre_upgrade.jsonl'), 'utf8'), legacy);
+
+    // Simulate sufficient headroom, without deleting any legacy data.
+    process.env[quotaKey] = '262144';
+    await save(continued, continued);
+    inventory = await list();
+    assert.equal(inventory.overBudget, false);
+    assert.equal(inventory.snapshots.length, 1);
+    const snapshot = inventory.snapshots[0];
+    assert.equal(snapshot.mvuState, 'confirmed');
+    const later = [...continued, { is_user: true, mes: 'later action' }];
+    await save(later, continued);
+    const previewResponse = await post('/backups/chat/restore-preview', { ...scope, id: snapshot.id });
+    assert.equal(previewResponse.status, 200);
+    const preview = await previewResponse.json();
+    const restoreInput = { ...scope, id: snapshot.id, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 };
+    const beforeBlocked = await list();
+    process.env[quotaKey] = '65536';
+    // Make current data different from every existing snapshot: restoring now requires a new protection point.
+    const latest = [...later, { is_user: false, mes: 'latest synthetic reply', extra: { stat_data: { hp: 50 } } }];
+    await save(latest, later);
+    restoreInput.expectedRevision = getChatRevision(latest);
+    const blocked = await post('/backups/chat/restore', restoreInput);
+    assert.equal(blocked.status, 409);
+    assert.equal((await blocked.json()).error, 'NORA_BACKUP_REQUIRED');
+    assert.deepEqual(await readChat(world), latest);
+    assert.equal((await list()).snapshots.length, beforeBlocked.snapshots.length);
+
+    process.env[quotaKey] = '262144';
+    const restoredResponse = await post('/backups/chat/restore', restoreInput);
+    assert.equal(restoredResponse.status, 200);
+    const restoredResult = await restoredResponse.json();
+    assert.equal(restoredResult.status, 'restored');
+    const restored = await readChat(world);
+    assert.deepEqual(restored.slice(1), continued.slice(1), 'restore retains message variables and selected candidate');
+    const protectedPoint = (await list()).snapshots.find(item => item.id === restoredResult.protectedBackupId);
+    assert.equal(protectedPoint.protected, true);
+    const download = await post('/backups/chat/snapshot', { id: protectedPoint.id });
+    assert.equal(download.status, 200);
+    assert.deepEqual((await download.text()).split('\n').map(JSON.parse), latest);
+    const next = [...restored, { is_user: true, mes: 'continue after restore' }];
+    await save(next, restored);
+    assert.deepEqual(await readChat(world), next);
+    const stale = await post('/chats/save', { ...binding(world), chat: latest, nora_complete_history: true,
+        nora_base_revision: getChatRevision(latest) });
+    assert.equal(stale.status, 409);
+    assert.deepEqual(await readChat(world), next);
+    assert.deepEqual(await readChat(other), unchangedOther);
+    assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_pre_upgrade.jsonl'), 'utf8'), legacy);
+    t.diagnostic('64 KiB quota / 80 KiB legacy: saves=200, protection-required restore=409; 256 KiB: restore=200, next save=200, stale save=409; legacy and other World preserved.');
+});
 
 test('World deletion HTTP returns a conflict for active generation and one durable backup result on replay', async t => {
     const f = await storageFixture(t), world = await f.create('delete-http');

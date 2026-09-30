@@ -5,6 +5,26 @@ import { createCardCapabilityController } from '../../../native-extensions/nora-
 import { createStorySurface } from '../public/scripts/nora-story-core/index.js';
 import { createStRuntimeAdapter } from '../public/scripts/nora-adapters/st-runtime-adapter.js';
 
+test('an approval pending across a World switch grants only the captured World and shows the human title', async () => {
+    let current = 'world-a', answer;
+    const grants = [], prompts = [];
+    const controller = createCardCapabilityController({
+        cards: {
+            characterCapabilities: () => ({ helperWorldId: current, helperScripts: [{ name: '脚本' }], regexScripts: [], helperAllowed: false }),
+            markCharacterCapabilitiesPrompted() {},
+            enableCharacterCapabilities: async (_character, options) => grants.push(options.worldId),
+        },
+        confirmAction: options => { prompts.push(options); return new Promise(resolve => { answer = resolve; }); },
+        showToast() {},
+    });
+    const pending = controller.prompt({ name: '同名世界', avatar: 'internal--nora-id.png' });
+    current = 'world-b'; answer(true);
+    await pending;
+    assert.deepEqual(grants, ['world-a']);
+    assert.ok(prompts[0].title.includes('同名世界'));
+    assert.ok(!prompts[0].title.includes('internal--nora-id'));
+});
+
 function readyResult(results = [{ capability: 'regex', result: { status: 'READY' } }]) {
     return {
         world: {

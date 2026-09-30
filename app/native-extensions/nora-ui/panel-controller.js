@@ -253,7 +253,7 @@ export function createPanelController({
     function runAction(action) {
         closeDrawers();
         const actions = { backups: openBackups, extensions: openExtensions, 'add-character': () => openCharacterEditor('new-world-character'), profile: openPersona, character: openCharacterSheet, worldbook: worldbookController.open, library: openCharacterLibrary, 'preset-library': openPresetLibrary, 'plugin-library': openPluginLibrary, 'world-preset': openWorldPreset, model: openModelSheet };
-        actions[action]?.();
+        return actions[action]?.();
     }
 
     function refreshHeader() {

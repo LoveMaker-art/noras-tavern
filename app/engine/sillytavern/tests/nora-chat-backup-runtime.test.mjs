@@ -27,14 +27,14 @@ test('intermediate transaction saves cancel an older pending snapshot; shutdown 
     assert.equal(chatBackupStatus(f.directories).pending, 0);
 });
 
-test('startup maintenance expires inactive managed snapshots without touching legacy or protected ones', async t => {
+test('startup maintenance expires inactive managed snapshots without touching unidentified legacy files', async t => {
     const f = await storageFixture(t);
     const world = await f.create('startup');
     const filePath = path.join(f.directories.chats, path.basename(world.runtime_card.binding.avatar, '.png'), `${world.sessions.items[0].binding.chat_id}.jsonl`);
     const data = await fs.readFile(filePath, 'utf8');
     const old = createChatBackupStore({ directories: f.directories, now: () => Date.now() - 31 * 86400000 });
     await old.capture({ filePath, data });
-    await f.backup('chat_old_manual.jsonl', data);
+    await f.backup('chat_old_manual.jsonl', [{ chat_metadata: {}, character_name: world.name }]);
     const stop = startChatBackupMaintenance([f.directories]);
     t.after(stop);
     const deadline = Date.now() + 3000;

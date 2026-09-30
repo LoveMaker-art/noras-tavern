@@ -92,8 +92,8 @@ assert.match(slashRunnerPatch, /config\.custom_api\?\.max_context[\s\S]{0,160}co
 assert.match(slashRunnerPatch, /chatCompletion\.setTokenBudget\(maxContext, maxOutput\)/, 'the pinned Slash Runner must apply independent MVU token limits');
 assert.match(slashRunnerPatch, /authorNoteOverride[\s\S]{0,160}\?\? ''/, 'the pinned Slash Runner must normalize a missing headless author note to an empty string');
 assert.match(bundle, /["']persona_description["'][\s\S]*["']char_description["'][\s\S]*["']world_info_before["'][\s\S]*["']world_info_after["'][\s\S]*["']chat_history["']/, 'the built request retains ST context sources; actual order is exercised by source request tests');
-assert.doesNotMatch(helperBundle, /p=wt\.new_chat_prompt,m=await yt\.createAsync\(`system`,Re\(p\),`newMainChat`\);n\.reserveBudget\(m\),f\.add\(m\)/, 'the shipped Helper runtime must not inject a missing new-chat prompt');
-assert.match(helperBundle, /typeof wt\.new_chat_prompt==`string`[\s\S]{0,180}newMainChat[\s\S]{0,100}m&&\(n\.reserveBudget\(m\),f\.add\(m\)\)/, 'the shipped Helper runtime must guard its optional new-chat prompt');
+assert.doesNotMatch(helperBundle, /p=Ct\.new_chat_prompt,m=await vt\.createAsync\(`system`,Re\(p\),`newMainChat`\);n\.reserveBudget\(m\),f\.add\(m\)/, 'the shipped Helper runtime must not inject a missing new-chat prompt');
+assert.match(helperBundle, /typeof Ct\.new_chat_prompt==`string`[\s\S]{0,180}newMainChat[\s\S]{0,100}m&&\(n\.reserveBudget\(m\),f\.add\(m\)\)/, 'the shipped Helper runtime must guard its optional new-chat prompt');
 assert.doesNotMatch(helperBundle, /e\?\.overrides\?\.author_note\?\?\$\(`#extension_floating_prompt`\)\.val\(\);/, 'the shipped Helper runtime must not pass an absent author note into ST prompt aggregation');
 assert.match(vendorBuilder, /bundle\.js\.LICENSE\.txt/, 'the reproducible build must preserve the generated third-party license companion');
 assert.doesNotMatch(bundle, /sourceMappingURL=bundle\.js\.map/, 'the release bundle must not reference an omitted source map');
@@ -129,13 +129,13 @@ assert.equal(fs.existsSync(helperTailwind), true, 'the managed card runtime must
 assert.equal(
     createHash('sha256').update(fs.readFileSync(helperTailwind)).digest('hex'),
     '3573a896869009f2ab0ea9870ba0279cb8bda0dd45d710a83950367d19ee7ea9',
-    'the Tailwind browser asset must match JS-Slash-Runner 4.9.3',
+    'the locally retained Tailwind browser asset must match the audited 4.9.3 asset',
 );
 assert.equal(fs.existsSync(path.join(helperRoot, 'lib/tailwindcss.LICENSE')), true, 'the Tailwind browser license must ship with the asset');
 assert.equal(helperManifest.auto_update, false, 'the managed helper must not overwrite Nora local dependency redirects');
 assert.match(
     helperBundle,
-    /synchronizeHelperRuntimeReadiness\(MF\(\)\)/,
+    /synchronizeHelperRuntimeReadiness\(uF\(\)\)/,
     'late-loaded TavernHelper must initialize its script host from Nora application readiness',
 );
 assert.doesNotMatch(

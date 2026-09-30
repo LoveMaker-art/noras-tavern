@@ -13,10 +13,12 @@ The following are action families, not standalone MCP tool names:
 
 | Need | Live actions | Important distinction |
 | --- | --- | --- |
-| Installed frontend extensions | plugins.list/config/enabled/configure | Existing supported settings, often reload required; not an arbitrary installer |
+| Installed frontend extensions | plugins.list/config/enabled/configure | Library inventory and supported settings; often reload required |
+| Plugin lifecycle | plugins.install/update/uninstall | Explicit repository or inspected local plugin; install starts disabled, protected components are excluded |
 | Helper script trees | scripts.list/inspect/create/enabled/update/delete | global/character/preset scope, stable ID and current revision |
 | Script buttons | scripts.buttons/button | Only buttons actually exposed; callback completion may not mean work completed |
 | Regex | regex.list/create/permission/enabled/update/delete | Scope permission and individual enabled state differ |
+| Library-original Regex | library.card-regex/card-regex-update | Explicit non-legacy library avatar; does not edit existing World copies |
 | Helper settings/permissions | helper.settings/configure/permissions | Permission may affect an entire scope; not a single-script toggle |
 | MVU | mvu.status/settings/data/configure/enabled/model/runtime/retry | See the distinct switches below |
 
@@ -24,8 +26,16 @@ Use actual action IDs from the catalog when invoking read/execute. Creation of
 a script/regex starts disabled; enabling is a separate authorized action.
 Use the revision returned by the matching scope read, and preserve unrelated
 items. A preset/character ownership change invalidates the old target/revision.
-Generic configure accepts only existing supported fields, not arbitrary plugin
-objects. Report unsupported nested configuration instead of replacing it wholesale.
+For `plugins.configure`, first read `plugins.config` and pass its revision.
+Updates may address existing nested objects or array fields (for example
+`groups.0.enabled`). Types and array lengths must stay unchanged; secret fields,
+new keys and prototype paths are rejected. Partial objects preserve siblings.
+This is the agreed generic configuration boundary, not a plugin-specific schema
+editor or support for every third-party page/button. New fields require a dedicated
+supported adapter. A reload-required receipt is not proof of runtime adoption.
+For update/uninstall, read `plugins.list` and pass its revision. Installation requires
+the user's selected trusted repository and script authorization; do not automatically
+enable it. Report reloadRequired separately from installation success.
 
 ## Resolve “enable MVU” correctly
 
@@ -50,6 +60,14 @@ a paid model. Diagnose the reported error before retrying.
 
 Read `nora.mvu_model.get`; use `nora.mvu_model.configure` only to change the
 requested connection fields. Configure secrets without echoing them in answers.
+The optional context/maxTokens fields update only the supplied limits; omitted fields
+remain unchanged. Use `nora.mvu.diagnostics` for recent error metadata. It reuses the
+per-user rotating history and excludes raw error prose/model output; empty history
+does not establish that MVU succeeded. It is not an unlimited audit archive.
+Report these as recorded errors, not an overall failure rate: the history does
+not provide all attempts as a denominator. Shared model configuration alone
+does not establish resource contention or a failure cause; separate observed
+error codes from hypotheses that still need request-level evidence.
 Then use live `mvu.model` with source story/independent to select the intended
 mode. Connection saved, mode selected and a successful real model call are
 three different claims. A paid test/retry requires authorization.
@@ -68,4 +86,5 @@ to inject JavaScript, rewrite card scripts or automatically regenerate a reply.
 Story ledger controls use `nora.ledger.*`: read chat-ledger.md for compression
 and edit-lock semantics. Story Profile uses `nora.story.*`, not generic plugin
 configuration. Quick Reply inventory alone does not establish frontend execution
-support. Installation of arbitrary new plugins is not exposed by this MCP.
+support. Use only installed catalog actions for plugin lifecycle; infrastructure
+components remain protected from uninstall/disable.

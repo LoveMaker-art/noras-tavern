@@ -125,13 +125,18 @@ export function createShellController({ select, selectAll, icons, messageView, e
     }
 
     function openDrawer(which) {
+        setDrawer(which, which === 'rail' && !railMedia.matches ? railCollapsed : !document.body.classList.contains(`nora-${which}-open`));
+    }
+
+    function setDrawer(which, expanded) {
+        if (!['rail', 'panel'].includes(which)) throw new Error('Unknown drawer.');
         if (which === 'rail' && !railMedia.matches) {
-            railCollapsed = !railCollapsed;
+            railCollapsed = !expanded;
             try { window.localStorage.setItem(railPreference, String(railCollapsed)); } catch { /* Keep the control usable without persistence. */ }
             renderRail();
             return;
         }
-        document.body.classList.toggle(`nora-${which}-open`);
+        document.body.classList.toggle(`nora-${which}-open`, expanded);
         document.body.classList.remove(which === 'rail' ? 'nora-panel-open' : 'nora-rail-open');
         renderRail();
     }
@@ -163,17 +168,20 @@ export function createShellController({ select, selectAll, icons, messageView, e
             dialog.classList.add('nora-popup-adapted');
             dialog.dataset.noraPopupType = String(popup.type || '');
         };
-        const confirmCharacterCapabilities = ({ characterName, refresh = false } = {}) => {
+        const confirmCharacterCapabilities = ({ characterAvatar, characterName, worldId, refresh = false } = {}) => {
             const current = readState();
             const characters = current.characters;
-            const character = characters.find((item) => item?.name === characterName)
-                || characters[current.activeCharacterId]
-                || null;
-            return promptCharacterCapabilities(character, { refresh, force: true });
+            const character = characterAvatar
+                ? characters.find((item) => item?.avatar === characterAvatar)
+                : characters.find((item) => item?.name === characterName) || characters[current.activeCharacterId];
+            if (!character) return Promise.resolve(false);
+            return promptCharacterCapabilities(character, { refresh, force: true, worldId });
         };
         window.__NORA_CONFIRM_CHARACTER_CAPABILITIES__ = confirmCharacterCapabilities;
         window.__NORA_CONFIRM_CHARACTER_REGEX__ = confirmCharacterCapabilities;
     }
 
-    return Object.freeze({ installMessageApi, removeNestedLayoutCopies, buildLayout, bindLayoutEvents, openDrawer, closeDrawers, prepareShell });
+    return Object.freeze({ installMessageApi, removeNestedLayoutCopies, buildLayout, bindLayoutEvents, openDrawer, setDrawer, closeDrawers, prepareShell,
+        drawerState: () => ({ rail: railMedia.matches ? document.body.classList.contains('nora-rail-open') : !railCollapsed,
+            panel: document.body.classList.contains('nora-panel-open') }) });
 }

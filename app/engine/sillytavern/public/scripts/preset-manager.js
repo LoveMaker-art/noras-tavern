@@ -431,7 +431,11 @@ class PresetManager {
 
     /**
      * Selects a preset by option value.
+     * The returned promise resolves when the preset is fully applied. Chat Completion presets
+     * apply asynchronously after the change event, so callers that run follow-up commands
+     * (e.g. /preset followed by /api) must await it to avoid overriding their own changes.
      * @param {string} value Preset option value
+     * @returns {Promise<void>}
      */
     async selectPreset(value) {
         const { preset_names } = this.getPresetList();
@@ -822,7 +826,7 @@ class PresetManager {
      * @param {string} [name] Name of the preset to delete.
      * @param {{skipSwitch?: boolean}} [options] Keep the current runtime configuration when deleting a library template.
      */
-    async deletePreset(name, { skipSwitch = false } = {}) {
+    async deletePreset(name, { skipSwitch = false, expectedRevision } = {}) {
         const { preset_names, presets } = this.getPresetList();
         const value = name ? (this.isKeyedApi() ? this.findPreset(name) : name) : this.getSelectedPreset();
         const nameToDelete = name || this.getSelectedPresetName();
@@ -837,7 +841,7 @@ class PresetManager {
         const response = await fetch('/api/presets/delete', {
             method: 'POST',
             headers: getRequestHeaders(),
-            body: JSON.stringify({ name: nameToDelete, apiId: this.apiId }),
+            body: JSON.stringify({ name: nameToDelete, apiId: this.apiId, expectedRevision }),
         });
         if (!response.ok) return false;
 
@@ -986,7 +990,7 @@ async function presetCommandCallback(_, name) {
             const presetValue = presetManager.findPreset(exactMatch);
 
             if (presetValue) {
-                presetManager.selectPreset(presetValue);
+                await presetManager.selectPreset(presetValue);
                 shouldReconnect && await waitForConnection();
             }
         }
@@ -1009,7 +1013,7 @@ async function presetCommandCallback(_, name) {
             console.log('Found fuzzy preset match', fuzzyPresetName);
 
             if (currentPreset !== fuzzyPresetName) {
-                presetManager.selectPreset(fuzzyPresetValue);
+                await presetManager.selectPreset(fuzzyPresetValue);
                 shouldReconnect && await waitForConnection();
             }
         }

@@ -798,6 +798,13 @@ export async function loadExtensionSettings(settings, _versionChanged, _enableAu
         libraryExtensionStates = new Map(extensions.filter(item => typeof item.libraryEnabled === 'boolean').map(item => [item.name, item.libraryEnabled]));
         const eligibleExtensionNames = extensionNames.filter(name => !isExtensionDisabled(name));
         manifests = await getManifests(eligibleExtensionNames);
+        // Disabled extensions were intentionally not loaded; only discard failed eligible manifests.
+        const missing = new Set(eligibleExtensionNames.filter(name => !Object.hasOwn(manifests, name)));
+        if (missing.size) {
+            console.warn('Ignoring extensions without a loadable manifest.json:', [...missing]);
+            extensionNames = extensionNames.filter(name => !missing.has(name));
+            for (const name of missing) { delete extensionTypes[name]; libraryExtensionStates.delete(name); }
+        }
         const noraProduct = globalThis.__NORA_ENTRY_ACTIVE__ || document.body.classList.contains('nora-product');
         if (globalThis.__NORA_BOOT_METRICS__) {
             globalThis.__NORA_BOOT_METRICS__.extensionPolicy = {
