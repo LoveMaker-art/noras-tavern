@@ -1,4 +1,5 @@
-// Run after the full desktop build. The update archive contains the shell, not Hermes.
+// Runs from staged launcher sources; no full desktop build is required.
+// The update archive contains the shell, not Hermes or the Tavern payload.
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');

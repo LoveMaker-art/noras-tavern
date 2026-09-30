@@ -14,6 +14,10 @@ on:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
         default: ''
+      launcher_baseline_tag:
+        description: Launcher-only build using verified unchanged components from a stable tag (otherwise full build)
+        type: string
+        default: ''
       production_mode:
         description: Use real installation paths for replacement testing (branch artifacts only)
         type: boolean
@@ -61,6 +65,13 @@ jobs:
         shell: bash
         run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
 
+      - name: Reject conflicting baseline modes
+        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
+        shell: bash
+        run: |
+          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
+          exit 1
+
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -75,6 +86,17 @@ jobs:
       - name: Verify source ownership and compatible delivery layout
         run: node --test tests/repository-layout.test.mjs
 
+      - name: Verify launcher build reuse boundaries
+        run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs
+
+      - name: Download and verify unchanged published components
+        if: inputs.launcher_baseline_tag != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
+        shell: bash
+        run: node tooling/release/launcher-build-baseline.mjs "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
+
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
         with:
@@ -88,7 +110,7 @@ jobs:
         run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
 
       - name: Install Hermes core without browser components (macOS)
-        if: runner.os == 'macOS' && inputs.runtime_source_run == ''
+        if: runner.os == 'macOS' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: bash
         run: |
           set -euo pipefail
@@ -106,7 +128,7 @@ jobs:
             --non-interactive
 
       - name: Install Hermes core without browser components (Windows)
-        if: runner.os == 'Windows' && inputs.runtime_source_run == ''
+        if: runner.os == 'Windows' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -125,7 +147,7 @@ jobs:
           }
 
       - name: Build integrated runtime
-        if: inputs.runtime_source_run == ''
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: bash
         run: |
           node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
@@ -148,6 +170,11 @@ jobs:
         if: inputs.runtime_source_run != ''
         shell: bash
         run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+
+      - name: Restore published runtime for existing installation gates
+        if: inputs.launcher_baseline_tag != ''
+        shell: bash
+        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
 
       - name: Reseal baseline with current ClawChat integration
         if: inputs.runtime_source_run != ''
@@ -205,11 +232,16 @@ jobs:
         shell: bash
         env:
           PRODUCTION_MODE: ${{ inputs.production_mode }}
+          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
         run: |
           mode=--candidate
           if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
-          node tooling/release/package-release.mjs $mode \
-            --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+          if [[ -n "$LAUNCHER_BASELINE" ]]; then
+            node tooling/release/package-release.mjs $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+          else
+            node tooling/release/package-release.mjs $mode \
+              --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+          fi
 
       - name: Test real fresh installation and managed update before desktop packaging
         if: runner.os != 'Windows'
@@ -255,19 +287,12 @@ jobs:
             }
           }
 
-      - name: Build desktop package
+      - name: Install desktop packaging dependencies
         shell: bash
         run: |
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm ci --no-audit --no-fund
-          npm run "${{ matrix.package_script }}"
-
-      - name: Verify packaged Nora images and instructions
-        shell: bash
-        run: |
-          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          node tooling/run.mjs node tests/deployment/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
 
       - name: Build lightweight launcher replacement
         shell: bash
@@ -285,6 +310,19 @@ jobs:
           export NORA_TEST_LAUNCHER_ARCHIVE="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$archive")"
           export NORA_TEST_LAUNCHER_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher/desktop")"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+
+      - name: Assemble full installers from the same verified payload
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm run "${{ matrix.package_script }}"
+
+      - name: Verify packaged Nora images and instructions
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/run.mjs node tests/deployment/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
 
       - name: Upload launcher
         uses: actions/upload-artifact@v4

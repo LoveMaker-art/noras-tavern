@@ -1,19 +1,24 @@
 import fs from 'node:fs';
-import { configureCandidateLauncher, writeSystemRelease } from './system-release.mjs';
+import { configureCandidateLauncher, fileDigest, writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { buildCommand } from './build-commands.mjs';
 import { assertNoraSystemArtifacts, collectRuntimeFiles, createReleaseSource, digest, groupRuntimeModules } from './release-source.mjs';
+import { assertLauncherVersion, readBaseline, restoreBuiltPayload, reuseArchive } from './launcher-build-baseline.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
 const componentsOnly = process.argv.includes('--components-only');
+const baselineIndex = process.argv.indexOf('--launcher-baseline');
+const baselineDirectory = baselineIndex >= 0 ? process.argv[baselineIndex + 1] : null;
+if (baselineIndex >= 0 && (!baselineDirectory || baselineDirectory.startsWith('--'))) throw new Error('Missing launcher baseline directory');
 const runtimeManifestIndex = process.argv.indexOf('--hermes-runtime-manifest');
 const runtimeManifestPath = runtimeManifestIndex >= 0
     ? path.resolve(process.argv[runtimeManifestIndex + 1] || '')
     : null;
 if (componentsOnly && runtimeManifestPath) throw new Error('Component builds reuse published environments; do not supply --hermes-runtime-manifest');
+if (baselineDirectory && (componentsOnly || runtimeManifestPath)) throw new Error('Launcher baseline cannot be combined with another packaging mode');
 const { stage, files, identity } = createReleaseSource(root, { candidate });
 const engine = path.join(stage, 'app/engine/sillytavern');
 function run(command, args, cwd = engine, extraEnv = {}) {
@@ -42,14 +47,26 @@ function copyPackageTree(source, target) {
 }
 
 try {
-    run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
+    const baseline = baselineDirectory ? readBaseline(path.resolve(baselineDirectory), identity) : null;
     const mcp = path.join(stage, 'nora-mcp');
-    const mcpInstall = fs.existsSync(path.join(mcp, 'package-lock.json')) ? 'ci' : 'install';
-    run('npm', [mcpInstall, '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
-    run('npm', ['run', 'build'], mcp);
-    run('npm', ['run', 'build:nora']);
+    if (baseline) {
+        if (!candidate) assertLauncherVersion(JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'))).version,
+            baseline.identity.launcherVersion);
+        restoreBuiltPayload(baseline, stage);
+        identity.launcherBuildReuse = {
+            schema: 1, baselineCommit: baseline.identity.commit, baselineVersion: baseline.identity.versions.tavern,
+            runtimeSha256: baseline.runtime.sha256, dependenciesSha256: baseline.dependencies.sha256,
+            archives: {}, modules: {},
+        };
+    } else {
+        run('npm', ['ci', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])]);
+        const mcpInstall = fs.existsSync(path.join(mcp, 'package-lock.json')) ? 'ci' : 'install';
+        run('npm', [mcpInstall, '--ignore-scripts', '--no-audit', '--no-fund', ...(process.argv.includes('--offline') ? ['--offline'] : [])], mcp);
+        run('npm', ['run', 'build'], mcp);
+        run('npm', ['run', 'build:nora']);
+    }
     const members = collectRuntimeFiles(stage, files);
-    if (runtimeManifestPath || componentsOnly) assertNoraSystemArtifacts(members);
+    if (runtimeManifestPath || componentsOnly || baseline) assertNoraSystemArtifacts(members);
     const release = path.join(root, 'release', `${candidate ? 'candidate' : 'stable'}-${identity.commit.slice(0, 12)}-${Date.now()}`);
     fs.mkdirSync(release, { recursive: true });
     const checksums = [];
@@ -58,7 +75,9 @@ try {
         const list = path.join(stage, `${part}-members.txt`);
         fs.writeFileSync(list, members.filter(file => file.startsWith(`${part}/`)).join('\n') + '\n');
         const name = `nora-tavern-${part}.tar.gz`;
-        run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
+        if (baseline && reuseArchive(baseline, { ...baseline.identity.archives[part], part }, members.filter(file => file.startsWith(`${part}/`)), stage, path.join(release, name))) {
+            identity.launcherBuildReuse.archives[part] = baseline.identity.archives[part].sha256;
+        } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
         identity.archives[part] = { name, sha256 };
         checksums.push(`${sha256}  ${name}`);
@@ -73,7 +92,9 @@ try {
         const list = path.join(stage, `module-${module}-members.txt`);
         fs.writeFileSync(list, moduleMembers.join('\n') + '\n');
         const name = `nora-tavern-module-${module}.tar.gz`;
-        run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
+        if (baseline && reuseArchive(baseline, baseline.identity.modules[module], moduleMembers, stage, path.join(release, name))) {
+            identity.launcherBuildReuse.modules[module] = baseline.identity.modules[module].sha256;
+        } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
         identity.modules[module] = { name, sha256, artifacts: moduleMembers };
         checksums.push(`${sha256}  ${name}`);
@@ -126,6 +147,15 @@ try {
         powershellInstallerSha256: digest(firstPowerShellInstaller),
     };
     const runtimePayloadNames = [];
+    if (baseline) {
+        for (const name of ['nora-hermes-runtime.json', 'nora-tavern-dependencies.json', baseline.runtime.archive, baseline.dependencies.archive]) {
+            copyPackageFile(path.join(baseline.directory, name), path.join(release, name));
+            checksums.push(`${fileDigest(path.join(release, name))}  ${name}`);
+            runtimePayloadNames.push(name);
+        }
+        identity.hermesRuntime = baseline.identity.hermesRuntime;
+        identity.dependencies = baseline.identity.dependencies;
+    }
     if (runtimeManifestPath) {
         const runtimeManifest = JSON.parse(fs.readFileSync(runtimeManifestPath, 'utf8'));
         if (runtimeManifest.schema !== 1 || !runtimeManifest.archive || !runtimeManifest.sha256) {

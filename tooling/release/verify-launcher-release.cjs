@@ -52,6 +52,19 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   assert.equal(payload.commit, commit);
   assert.equal(payload.candidate, false);
   assert.equal(payload.versions.tavern, tag.slice(1));
+  if (shared.launcherBuildReuse) {
+    const provenance = payload.launcherBuildReuse;
+    assert.equal(provenance?.schema, 1, 'Missing launcher build provenance');
+    assert.match(provenance.baselineCommit, /^[a-f0-9]{40}$/);
+    assert.match(provenance.baselineVersion, /^\d+\.\d+\.\d+$/);
+    assert.equal(provenance.baselineCommit, shared.launcherBuildReuse.baselineCommit);
+    assert.equal(provenance.baselineVersion, shared.launcherBuildReuse.baselineVersion);
+    for (const kind of ['archives', 'modules']) {
+      for (const [name, checksum] of Object.entries(provenance[kind])) {
+        assert.equal(payload[kind][name]?.sha256, checksum, `Reused ${kind} changed: ${name}`);
+      }
+    }
+  } else assert.ok(!payload.launcherBuildReuse, 'Mixed full and reused platform builds');
   assert.equal(payload.launcherVersion, shared.launcherVersion);
   assert.equal(manifest.launcherVersion, shared.launcherVersion);
   assert.equal(payload.bootstrap?.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
@@ -61,6 +74,7 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     assert.equal(`${component.platform}-${component.arch}`, platform);
     assert.equal(component.sha256, manifest.files[component.archive]?.sha256);
     if (reuse) assert.equal(component.sha256, reuse.reused.find(item => item.platform === platform)[fingerprint]);
+    if (shared.launcherBuildReuse) assert.equal(component.sha256, payload.launcherBuildReuse[fingerprint], 'Reused environment changed');
   }
   if (mode === 'full') {
   const report = JSON.parse(fs.readFileSync(byName.get(`Nora-Tavern-package-verification-${platform}.json`)));
