@@ -28,6 +28,7 @@ if (contextBridge && ipcRenderer) {
     status() {
       return ipcRenderer.invoke('nora:status');
     },
+    telemetry(value) { return ipcRenderer.invoke('nora:telemetry', value); },
     install(options) {
       return runAction('install', options);
     },

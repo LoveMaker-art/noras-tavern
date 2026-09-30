@@ -134,6 +134,9 @@
     .daily.editing .management { display:none; }
     .settings-row { display:flex; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
     .settings-row span { color:#a9b9ac; }
+    #telemetryNotice { flex-shrink:0; margin-top:12px; font-size:11px; line-height:1.5; color:#a9b9ac; }
+    #telemetryNotice label { display:flex; align-items:center; gap:6px; min-height:28px; cursor:pointer; }
+    #telemetryNotice p { margin:2px 0 0; }
     @keyframes arrive { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
     @keyframes scan { from { transform:translateX(-100%); opacity:.1; } 50% { opacity:.5; } to { transform:translateX(100%); opacity:.1; } }
     @media(prefers-reduced-motion:reduce) { *,*:after { animation:none!important; transition:none!important; } }
@@ -205,6 +208,10 @@
       <div class="launchbar" id="launchbar" hidden>
         <div class="runtime-state" id="runtimeState" role="status" data-phase="idle">未运行</div>
         <div class="runtime-actions"><button class="button primary launch" id="launch"><span>打开酒馆</span><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></button><button class="stop" id="stop" title="停止 Nora 与酒馆" aria-label="停止 Nora 与酒馆" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i></button></div>
+      </div>
+      <div id="telemetryNotice" hidden>
+        <label class="more-note"><input type="checkbox" id="telemetryEnabled" disabled>匿名安装与运行诊断</label>
+        <p class="more-note" id="telemetryExplanation">默认开启，仅发送阶段、耗时、版本和错误分类，不发送密钥、聊天或原始日志。关闭会清除待报记录，已发送记录不会自动删除。</p>
       </div>
     </main>
   </div>

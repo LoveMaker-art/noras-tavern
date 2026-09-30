@@ -44,6 +44,8 @@
       "uninstall.js",
       "runtime-worker.js",
       "diagnostics.js",
+      "telemetry.js",
+      "telemetry-contract.json",
       "release-network.js",
       "process-output.js"
     ],

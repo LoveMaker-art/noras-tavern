@@ -8,6 +8,21 @@
   }
   if (!api || scenario) return;
 
+  if (api.telemetry) {
+    const checkbox = $('telemetryEnabled');
+    api.telemetry().then(settings => {
+      if (!settings?.available) return;
+      $('telemetryNotice').hidden = false;
+      checkbox.checked = Boolean(settings.enabled); checkbox.disabled = false;
+    }).catch(() => {});
+    checkbox.onchange = async () => {
+      const previous = !checkbox.checked; checkbox.disabled = true;
+      try { checkbox.checked = Boolean((await api.telemetry(checkbox.checked))?.enabled); }
+      catch { checkbox.checked = previous; $('telemetryExplanation').textContent = '设置未保存，请重试。'; }
+      finally { checkbox.disabled = false; }
+    };
+  }
+
   let snapshot = {}, view = 'loading', refreshing = false, activeAction = '', lastFailure = null;
   let alive = true, pollTimer, taskTimer, startedAt = 0, lastEvent = 0;
   let milestoneStates = [], currentTask = '', operationCancelled = false;

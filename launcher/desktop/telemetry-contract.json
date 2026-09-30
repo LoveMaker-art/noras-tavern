@@ -1,0 +1,108 @@
+{
+  "schema_version": 1,
+  "events": [
+    "launcher_first_seen",
+    "operation_started",
+    "stage_started",
+    "stage_finished",
+    "heartbeat",
+    "operation_finished",
+    "runtime_first_ready",
+    "setup_waiting"
+  ],
+  "actions": [
+    "none",
+    "install",
+    "update",
+    "repair",
+    "start",
+    "stop",
+    "restart",
+    "pair",
+    "model"
+  ],
+  "stages": [
+    "idle",
+    "prepare",
+    "release_check",
+    "download",
+    "verify",
+    "runtime_extract",
+    "runtime_init",
+    "runtime_verify",
+    "install_components",
+    "install_verify",
+    "model_test",
+    "model_save",
+    "profile_sync",
+    "pair",
+    "start_tavern",
+    "start_nora",
+    "connect",
+    "health_check",
+    "update_apply",
+    "update_handoff",
+    "rollback",
+    "stop",
+    "wait_model",
+    "wait_pair",
+    "wait_start"
+  ],
+  "statuses": [
+    "running",
+    "waiting",
+    "succeeded",
+    "failed",
+    "cancelled",
+    "interrupted",
+    "handoff"
+  ],
+  "errors": [
+    "none",
+    "unknown",
+    "permission_denied",
+    "missing_dependency",
+    "disk_full",
+    "timeout",
+    "network",
+    "rate_limited",
+    "model_rejected",
+    "process_failed",
+    "verification_failed"
+  ],
+  "cohorts": [
+    "new",
+    "existing",
+    "unknown"
+  ],
+  "platforms": [
+    "win32",
+    "darwin",
+    "linux"
+  ],
+  "arches": [
+    "x64",
+    "arm64"
+  ],
+  "fields": [
+    "schema_version",
+    "event_id",
+    "installation_id",
+    "operation_id",
+    "sequence",
+    "event",
+    "occurred_at",
+    "platform",
+    "arch",
+    "launcher_version",
+    "product_version",
+    "cohort",
+    "action",
+    "stage",
+    "status",
+    "error_code",
+    "elapsed_ms",
+    "stage_elapsed_ms",
+    "progress_age_ms"
+  ]
+}

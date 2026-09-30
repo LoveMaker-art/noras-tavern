@@ -225,7 +225,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
   let replaced = false;
   let failure;
   try {
-    onEvent({ event: 'task', milestone: 0, task: '释放 Nora 核心', current: 1, total: 3 });
+    onEvent({ event: 'task', stage_id: 'runtime_extract', milestone: 0, task: '释放 Nora 核心', current: 1, total: 3 });
     extractArchive(bundle, work);
     if (!fs.existsSync(extracted)) throw new Error('Hermes 运行时目录结构不正确。');
 
@@ -237,12 +237,12 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
     fs.renameSync(extracted, hermesHome);
     replaced = true;
 
-    onEvent({ event: 'task', milestone: 0, task: '初始化 Nora', current: 2, total: 3 });
+    onEvent({ event: 'task', stage_id: 'runtime_init', milestone: 0, task: '初始化 Nora', current: 2, total: 3 });
     relocateFiles(hermesHome, bundle.manifest);
     initializeHome(hermesHome, bundle.manifest);
     const restored = previous && restoreRetained(noraHome, backup, hermesHome);
 
-    onEvent({ event: 'task', milestone: 0, task: '检查 Nora', current: 3, total: 3 });
+    onEvent({ event: 'task', stage_id: 'runtime_verify', milestone: 0, task: '检查 Nora', current: 3, total: 3 });
     const version = validateRuntime(hermesHome, bundle.manifest);
     fs.writeFileSync(path.join(hermesHome, 'hermes-agent', '.hermes-bootstrap-complete'), `${JSON.stringify({
       schema: 1,

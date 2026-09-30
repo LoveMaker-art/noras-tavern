@@ -134,6 +134,7 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
 }
 async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, signal, onEvent = () => {},
   channel = 'stable', tag, plan }) {
+  onEvent({ event: 'task', stage_id: 'release_check', task: '检查更新清单' });
   const release = await latest(fetcher, signal, channel, tag);
   const manifest = validateUpdate(await requestJson(assetUrl(release, 'release-manifest.json'), fetcher, signal), release, launcherVersion);
   const root = path.join(cacheRoot, `components-${release.tag_name}-${manifest.commit.slice(0, 12)}`);
@@ -142,14 +143,27 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
     fileName(name);
     signal?.throwIfAborted();
     const target = path.join(root, name);
+    onEvent({ event: 'task', stage_id: 'verify', task: `校验缓存：${name}` });
     if (expected && await matches(target, expected)) return;
     const partial = `${target}.partial`;
-    onEvent({ event: 'task', task: `准备 ${release.tag_name}：${name}` });
+    onEvent({ event: 'task', stage_id: 'download', task: `准备 ${release.tag_name}：${name}` });
     try {
       const downloadSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30 * 60 * 1000)]);
       const response = await fetcher(assetUrl(release, name), { signal: downloadSignal });
       if (!response.ok || !response.body) throw new Error(`下载失败：${name}（HTTP ${response.status}）`);
-      await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partial, { mode: 0o600 }), { signal: downloadSignal });
+      let current = 0, lastProgress = Date.now();
+      const input = Readable.fromWeb(response.body);
+      const total = Number(response.headers.get('content-length')) || 0;
+      onEvent({ event: 'progress', current, total });
+      input.on('data', chunk => {
+        current += chunk.length;
+        if (Date.now() - lastProgress >= 250) {
+          lastProgress = Date.now(); onEvent({ event: 'progress', current, total });
+        }
+      });
+      await pipeline(input, fs.createWriteStream(partial, { mode: 0o600 }), { signal: downloadSignal });
+      onEvent({ event: 'progress', current, total });
+      onEvent({ event: 'task', stage_id: 'verify', task: `校验下载：${name}` });
       if (expected && !await matches(partial, expected)) throw new Error(`组件校验失败：${name}`);
       fs.renameSync(partial, target);
     } finally { fs.rmSync(partial, { force: true }); }
@@ -181,7 +195,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
 }
 async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = process.platform, arch = process.arch,
   fetcher = fetch, signal, onEvent = () => {}, channel = 'stable', tag }) {
-  onEvent({ event: 'task', task: `确认 GitHub ${channel === 'beta' ? 'Beta 测试' : '正式'}完整版本` });
+  onEvent({ event: 'task', stage_id: 'release_check', task: `确认 GitHub ${channel === 'beta' ? 'Beta 测试' : '正式'}完整版本` });
   const release = await latest(fetcher, signal, channel, tag);
   const system = await systemFor(release, { platform, arch, launcherVersion, fetcher, signal, channel });
   const root = path.join(cacheRoot, `${release.tag_name}-${platform}-${arch}-${system.commit.slice(0, 12)}`);
@@ -189,13 +203,15 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
   for (const [name, item] of Object.entries(system.files)) {
     signal?.throwIfAborted();
     const target = path.join(root, name);
-    onEvent({ event: 'task', task: `准备 ${release.tag_name}：${name}` });
+    onEvent({ event: 'task', stage_id: 'verify', task: `准备 ${release.tag_name}：${name}` });
     if (await matches(target, item.sha256)) continue;
     const partial = `${target}.partial`;
     try {
       const local = path.join(bundledRoot, name);
       if (await matches(local, item.sha256)) fs.copyFileSync(local, partial);
       else {
+        onEvent({ event: 'task', stage_id: 'download', task: `下载：${name}` });
+        onEvent({ event: 'progress', current: 0, total: item.size, ratio: 0 });
         const downloadSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30 * 60 * 1000)]);
         const response = await fetcher(assetUrl(release, item.asset), { signal: downloadSignal });
         if (!response.ok || !response.body) throw new Error(`组件下载失败：${name}（HTTP ${response.status}）。`);
@@ -208,6 +224,7 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
         });
         await pipeline(input, fs.createWriteStream(partial, { mode: 0o600 }), { signal: downloadSignal });
       }
+      onEvent({ event: 'task', stage_id: 'verify', task: `校验下载：${name}` });
       if (fs.statSync(partial).size !== item.size || !await matches(partial, item.sha256)) throw new Error(`组件校验失败：${name}`);
       fs.renameSync(partial, target);
     } finally { fs.rmSync(partial, { force: true }); }
@@ -242,7 +259,7 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validateSystem(system, null, platform, arch, launcherVersion, channel);
   for (const [name, item] of Object.entries(system.files)) {
     signal?.throwIfAborted();
-    onEvent({ event: 'task', task: `校验包内 ${system.version}：${name}` });
+    onEvent({ event: 'task', stage_id: 'verify', task: `校验包内 ${system.version}：${name}` });
     const file = path.join(bundledRoot, name);
     const stat = await fs.promises.lstat(file).catch(error => {
       if (error.code === 'ENOENT') throw new Error(`安装包缺少组件：${name}，请重新下载完整安装包。`);

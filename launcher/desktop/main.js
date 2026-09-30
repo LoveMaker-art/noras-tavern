@@ -4,6 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { createDiagnostics } = require('./diagnostics');
+const { createTelemetry } = require('./telemetry');
+let telemetry;
 const diagnostics = createDiagnostics({
   primary: () => path.join(installerDirectory(), 'install.log'),
   fallback: path.join(app.getPath('appData'), 'NoraTavern', 'diagnostics', 'install.log'),
@@ -277,6 +279,7 @@ function sanitizeLine(value) {
 }
 
 function recordEvent(message) {
+  telemetry?.observe(message);
   diagnostics.event(message);
   if (!['milestone', 'task', 'progress', 'log'].includes(message.event)) return;
   const state = readInstallerState();
@@ -394,7 +397,7 @@ function runProcess(command, args, webContents, runId) {
     activeProcess = proc;
     diagnostics.write('process.spawned', { pid: proc.pid });
     proc.cancelSafe = !args.includes(path.join(__dirname, 'runtime-worker.js'));
-    let errorMessage = '';
+    let errorMessage = '', structuredCode;
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
@@ -406,7 +409,11 @@ function runProcess(command, args, webContents, runId) {
     }, 30 * 60 * 1000);
     consumeLines(proc.stdout, (line) => {
         const clean = sanitizeLine(line);
-        if (clean) sendBridgeEvent(webContents, runId, parseJsonLine(clean));
+        if (clean) {
+          const message = parseJsonLine(clean);
+          if (message.event === 'error') structuredCode = message.code;
+          sendBridgeEvent(webContents, runId, message);
+        }
     });
     consumeLines(proc.stderr, (line) => {
         const clean = diagnostics.clean(sanitizeLine(line));
@@ -420,7 +427,7 @@ function runProcess(command, args, webContents, runId) {
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) resolve();
-      else reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
+      else reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode }));
     });
   });
 }
@@ -486,7 +493,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       return;
     }
     let result = null;
-    let errorMessage = '';
+    let errorMessage = '', structuredCode;
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
@@ -508,6 +515,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
           delete result.event;
         } else if (message.event === 'error') {
           errorMessage = diagnostics.clean(message.message || line);
+          structuredCode = message.code;
         }
         if (command !== 'status') sendBridgeEvent(webContents, runId, message);
     });
@@ -530,7 +538,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
         resolve(result);
         return;
       }
-      reject(Object.assign(new Error(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal }));
+      reject(Object.assign(new Error(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode }));
     });
   });
 }
@@ -584,7 +592,7 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
   updatingSystem = true;
   const onEvent = message => sendBridgeEvent(webContents, payload.runId, message);
   try {
-    onEvent({ event: 'task', task: '由更新器备份、替换并验证服务；失败时恢复旧版本' });
+    onEvent({ event: 'task', stage_id: 'update_apply', task: '由更新器备份、替换并验证服务；失败时恢复旧版本' });
     // Stop, validate and restore services inside the shared transaction. Nothing
     // after this call may start/stop a service or change the installed files.
     const verified = await runBridge('update', { port: payload.port, releaseDir: selectedPayload }, webContents, payload.runId);
@@ -810,6 +818,14 @@ if (app && BrowserWindow && ipcMain && shell) {
   fs.mkdirSync(path.join(noraHome(), 'cache', 'tmp'), { recursive: true });
   uninstall.own(noraHome());
   app.setPath('userData', path.join(noraHome(), 'launcher'));
+  try {
+    const existing = fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json'));
+    telemetry = createTelemetry({ file: path.join(installerDirectory(), 'telemetry.json'), launcherVersion: app.getVersion(),
+      enabled: Boolean(app.isPackaged && !ISOLATED_TEST && !localReleaseDirectory),
+      cohort: existing ? 'existing' : fs.existsSync(installRoot()) || fs.existsSync(hermesHome()) ? 'unknown' : 'new',
+      fetcher: (url, options) => net.fetch(url, options), diagnostic: code => diagnostics.write('telemetry.diagnostic', { code }) });
+    app.on('will-quit', () => telemetry?.close());
+  } catch { diagnostics.write('telemetry.diagnostic', { code: 'initialization_failed' }); }
   const handle = (channel, fn) => ipcMain.handle(channel, (event, ...args) => {
     const expected = require('node:url').pathToFileURL(path.join(installerRoot(), 'launcher-conversation-prototype.html')).href;
     if (event.senderFrame !== event.sender.mainFrame || event.senderFrame.url.split('?')[0] !== expected || MOCK_SCENARIO) {
@@ -836,6 +852,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       }
       if (!findPython()) return nodeStatus();
       const runtime = await runBridge('status');
+      if (!activeRun && !modelBusy) telemetry?.status({ ...runtime, installer: readInstallerState() });
       const bundledUpgradeTarget = !LOCAL_TEST && runtime.installed ? releases.bundledUpgradeTarget({
         bundledRoot: payloadDirectory(), currentVersion: runtime.version, launcherVersion: app.getVersion(), channel: CHANNEL,
       }) : null;
@@ -860,6 +877,7 @@ if (app && BrowserWindow && ipcMain && shell) {
         currentHome: noraHome(), defaultHome: defaultNoraHome(), scope: LOCATION_SCOPE,
         appPath: app.isPackaged ? (process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : path.dirname(process.execPath)) : __dirname,
       });
+      telemetry?.relocate(path.join(installerDirectory(), 'telemetry.json'));
       fs.mkdirSync(path.join(noraHome(), 'cache', 'tmp'), { recursive: true });
       return { cancelled: false, noraHome: noraHome() };
     } finally { selectingLocation = false; }
@@ -878,6 +896,9 @@ if (app && BrowserWindow && ipcMain && shell) {
     diagnostics.begin(payload.runId, { action: payload.action, version: app.getVersion(), channel: CHANNEL,
       platform: process.platform, arch: process.arch, osRelease: os.release(),
       node: process.versions.node, electron: process.versions.electron });
+    const telemetryAction = payload.action === 'install' && fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json')) ? 'repair' : payload.action;
+    const operationId = telemetry?.begin(telemetryAction);
+    if (operationId) diagnostics.write('telemetry.operation', { operationId });
     try {
       diagnostics.write('install.paths', { noraHome: noraHome(), hermesHome: hermesHome(),
         installRoot: installRoot(), payloadRoot: payloadDirectory() });
@@ -896,6 +917,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       });
       let selectedPayload;
       if (payload.action === 'update') {
+        telemetry?.stage('release_check');
         if (LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用正式模式包。');
         const current = await runBridge('status', { port: payload.port }, event.sender, payload.runId);
         if (current.updateRecovery) throw new Error('上次更新尚未恢复完成，请保留日志和备份，暂勿再次更新。');
@@ -912,6 +934,7 @@ if (app && BrowserWindow && ipcMain && shell) {
         diagnostics.write('update.target.resolved', { currentVersion: current.version, target: prepared.tag });
         if (cancelled) throw new Error('更新已取消。');
         if (prepared.launcher) {
+          telemetry?.stage('update_handoff');
           if (!app.isPackaged || !findPython()) throw new Error('需要已安装的完整系统才能自动替换启动器。');
           const job = await launcherUpdate.handoff({ prepared, home: noraHome(), executable: process.execPath,
             python: findPython().command, helper: path.join(installerRoot(), 'replace-launcher.py'),
@@ -920,6 +943,7 @@ if (app && BrowserWindow && ipcMain && shell) {
           if (cancelled) { fs.writeFileSync(path.join(job, 'cancel'), 'cancel'); throw new Error('更新已取消。'); }
           diagnostics.write('update.handoff', { job, target: payload.tag });
           diagnostics.finish('restarting');
+          telemetry?.finish('handoff');
           // Leave the managed services running; only the desktop process is replaced.
           activeRun = false; quitReady = true;
           setImmediate(() => app.quit());
@@ -933,6 +957,7 @@ if (app && BrowserWindow && ipcMain && shell) {
         if (comparison >= 0 && current.systemReady !== false) {
           writeInstallerState({ ...readInstallerState(), phase: current.systemReady ? 'ready' : 'idle', error: '', task: '', resumeTarget: null });
           diagnostics.finish('success');
+          telemetry?.finish('succeeded');
           return current;
         }
       }
@@ -972,9 +997,14 @@ if (app && BrowserWindow && ipcMain && shell) {
       const finalState = readInstallerState();
       writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '', resumeTarget: null });
       diagnostics.finish('success');
+      const installationFailed = payload.action === 'install' && !result.systemReady;
+      telemetry?.status({ ...result, installer: { phase: installationFailed ? 'error' : 'ready' } });
+      telemetry?.finish(installationFailed ? 'failed' : 'succeeded', { code: 'VERIFICATION_FAILED' });
+      telemetry?.status({ ...result, installer: { phase: installationFailed ? 'error' : 'ready' } });
       return result;
     } catch (error) {
       diagnostics.error('run.failed', error, { cancelled });
+      telemetry?.finish(cancelled ? 'cancelled' : 'failed', error);
       try {
         const failed = readInstallerState();
         const milestones = failed.milestones.map((item) => item.state === 'running'
@@ -1028,6 +1058,10 @@ if (app && BrowserWindow && ipcMain && shell) {
     if (openError) return { ok: false, warning: openError };
     return { ok: true };
   });
+  handle('nora:telemetry', async (_event, value) => {
+    if (value !== undefined && typeof value !== 'boolean') throw new Error('统计设置无效。');
+    return value === undefined ? telemetry?.settings() : telemetry?.setEnabled(value);
+  });
   handle('nora:model-providers', async () => {
     if (!findHermes()) return { ok: false, warning: '请先安装 Nora。', providers: [] };
     return { ok: true, providers: publicProviders(), current: readVerifiedModel(noraHome()) };
@@ -1039,10 +1073,14 @@ if (app && BrowserWindow && ipcMain && shell) {
   handle('nora:model-resume', async () => {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
     modelBusy = true;
+    telemetry?.begin('model'); telemetry?.stage('model_save');
     try {
       if (statusRequest) await statusRequest.catch(() => {});
-      return await finishModelSetup();
+      const result = await finishModelSetup();
+      telemetry?.finish('succeeded');
+      return result;
     } catch (error) {
+      telemetry?.finish('failed', error);
       diagnostics.error('model.resume-failed', error);
       recordEvent({ event: 'milestone', index: 2, state: 'error', task: '酒馆模型同步未完成' });
       throw error;
@@ -1057,6 +1095,9 @@ if (app && BrowserWindow && ipcMain && shell) {
     const baseUrl = provider.id === 'custom' ? normalizeCustomBaseUrl(payload?.baseUrl) : '';
     if (!model || model.length > 240 || /[\r\n]/.test(model)) throw new Error('请选择模型。');
     modelBusy = true;
+    const operationId = telemetry?.begin('model');
+    if (operationId) diagnostics.write('telemetry.operation', { operationId });
+    telemetry?.stage('model_test');
     recordEvent({ event: 'milestone', index: 2, state: 'running', task: '正在测试 Nora' });
     try {
       if (statusRequest) await statusRequest.catch(() => {});
@@ -1072,6 +1113,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       } else {
         await testProviderModel(normalized.provider, key, normalized.model);
       }
+      telemetry?.stage('model_save');
       const saved = await runModelConfigHelper({
         action: 'save',
         provider: provider.id,
@@ -1083,8 +1125,11 @@ if (app && BrowserWindow && ipcMain && shell) {
       writeVerifiedModel(noraHome(), { ...saved, key,
         authMode: provider.custom && payload.authMode === 'none' ? 'none' : 'key',
         tavernSyncPending: !readInstallerState().setupCompleted });
-      return await finishModelSetup();
+      const result = await finishModelSetup();
+      telemetry?.finish('succeeded');
+      return result;
     } catch (error) {
+      telemetry?.finish('failed', error);
       diagnostics.error('model.failed', error);
       recordEvent({ event: 'milestone', index: 2, state: 'error', task: '模型配置未完成' });
       error.message = diagnostics.clean(error.message || String(error));

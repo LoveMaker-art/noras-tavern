@@ -37,8 +37,8 @@ def emit(event: str, **payload) -> None:
     print(json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
 
 
-def fail(message: str) -> None:
-    emit("error", message=message)
+def fail(message: str, code: str | None = None) -> None:
+    emit("error", message=message, code=code)
     raise SystemExit(1)
 
 
@@ -492,9 +492,10 @@ def command_start(args) -> None:
         emit("task", task="正在启动酒馆" if service == "tavern" else "正在启动诺拉")
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
     if service != "nora":
+        emit("task", stage_id="start_tavern", task="正在启动酒馆")
         run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env)
     if service != "tavern":
-        emit("task", task="正在连接 ClawChat")
+        emit("task", stage_id="start_nora", task="正在连接 ClawChat")
         start_gateway(args.nora_home, args.hermes_home,
                       [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
     if service == "nora":
@@ -504,12 +505,13 @@ def command_start(args) -> None:
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
     if first_setup:
-        emit("task", task="正在准备 ClawChat 连接组件")
+        emit("task", stage_id="connect", task="正在准备 ClawChat 连接组件")
         require_bundled_clawchat(args.hermes_home)
         # Initial setup explicitly verifies registration. Subsequent starts use
         # the user's gateway hooks, including their choice to disable a hook.
         run_stream([python_command(args.hermes_home), "-B",
                     str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
+    emit("task", stage_id="health_check", task="正在检查服务连接")
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if not (status["running"] and status["clawchatConnected"]):
         fail("启动检查未通过，请检查服务连接后重试。")
@@ -523,7 +525,7 @@ def command_start(args) -> None:
 
 def command_stop(args) -> None:
     service = getattr(args, "service", "all")
-    emit("task", task="正在停止" + {"nora": "诺拉", "tavern": "酒馆", "all": "诺拉与酒馆"}[service])
+    emit("task", stage_id="stop", task="正在停止" + {"nora": "诺拉", "tavern": "酒馆", "all": "诺拉与酒馆"}[service])
     errors = []
     if service != "tavern":
         try:
@@ -573,7 +575,7 @@ def require_bundled_clawchat(home: Path) -> None:
 def sync_nora_profile(args) -> None:
     if nora_profile.ready(args.hermes_home):
         return
-    emit("task", task="正在设置诺拉的名字和头像")
+    emit("task", stage_id="profile_sync", task="正在设置诺拉的名字和头像")
     try:
         result = run_json([python_command(args.hermes_home), "-B", str(HERE / "nora_profile.py"),
                            str(args.hermes_home)],
@@ -596,7 +598,7 @@ def command_pair(args) -> None:
     plugin = args.hermes_home / "plugins/clawchat"
     require_bundled_clawchat(args.hermes_home)
     run_stream([hermes, "plugins", "enable", "clawchat"], env=env)
-    emit("task", task="正在激活 ClawChat")
+    emit("task", stage_id="pair", task="正在激活 ClawChat")
     # Activation code travels over stdin, never in argv or launcher logs.
     # Scope the connect attribution to this child; plugin files and local
     # credential storage keep their Hermes identity.
@@ -872,4 +874,8 @@ if __name__ == "__main__":
         main()
     except Exception as error:
         traceback.print_exc(file=sys.stderr)
-        fail(str(error))
+        import errno
+        code = errno.errorcode.get(error.errno) if isinstance(error, OSError) else None
+        if isinstance(error, subprocess.TimeoutExpired):
+            code = "TIMEOUT"
+        fail(str(error), code)

@@ -441,7 +441,7 @@ def install(args) -> dict:
     assert_first_install_targets(install_root, force=args.force_first_install)
     with install_workspace(nora_home) as temporary:
         work = Path(temporary)
-        event("task", milestone=0, task="正在解压诺拉与酒馆文件")
+        event("task", stage_id="install_components", milestone=0, task="正在解压诺拉与酒馆文件")
         source, manifest = source_from_release(args, work)
         version = manifest.get("versions", {}).get("tavern", "unknown")
         backup = install_root / "tavern-first-install-backups" / f"{time.strftime('%Y%m%d-%H%M%S')}-{version}-{time.time_ns()}"
@@ -489,7 +489,7 @@ def install(args) -> dict:
         context.snapshot_agents(hermes_home, agents_backup)
         runtime_attempted = False
         try:
-            event("task", milestone=0, task="配置诺拉")
+            event("task", stage_id="runtime_init", milestone=0, task="配置诺拉")
             for _, prepared, target in gateway_swaps:
                 atomic(target, prepared.read_bytes(), mode=prepared.stat().st_mode & 0o777)
             for _, prepared, target in context_swaps:
@@ -515,13 +515,13 @@ def install(args) -> dict:
                     raise RuntimeError("；".join(problems))
                 system.record_files_ready(hermes_home)
             event("milestone", index=0, state="done", task="诺拉文件安装完成")
-            event("milestone", index=1, state="running", task="安装酒馆本体")
+            event("milestone", stage_id="install_components", index=1, state="running", task="安装酒馆本体")
             copy_tree(source / "app", install_root / "apps/tavern-runtime")
             copy_tree(source / "ops", install_root / "apps/tavern-ops")
             copy_tree(source / "nora-mcp", install_root / "apps/nora-mcp")
             retained_config = restore_retained_config(install_root)
             mark_bundled_dependencies(source, install_root, manifest)
-            event("task", milestone=1, task="启动并检查酒馆")
+            event("task", stage_id="install_verify", milestone=1, task="启动并检查酒馆")
             log("准备并启动本地 Tavern")
             runtime_attempted = True
             runtime = start_tavern(hermes_home, install_root, args.port)
