@@ -28,8 +28,18 @@ The file-import tool below is server-side and does not require an online page.
 Large `preset.inspect` replies may return contentOmitted with revision and count
 instead of full text. This omits only the tool response, never file content.
 Use the source JSON for complete authoring; do not reconstruct from that summary.
+To inspect omitted content without a source file, use `preset.read-chunk` with
+the same scope/name and expectedRevision, following nextOffset until null. Offsets
+count UTF-16 code units, not UTF-8 bytes. A stale revision requires a fresh inspect
+and restart; never combine chunks from different revisions.
 The 256,000-character control-parameter limit still applies to incremental edits,
 not file import. Splitting edits is not equivalent to preserving a complete file.
+For a larger individual field, stage a JSON file containing the same `edits` object
+used by `preset.edit`, and call `nora.preset.edit_file` with the existing library
+name and revision. Maximum file size is 10 MiB. It edits in place through the same
+protected-marker/field validation, preserving unrelated extensions. It does not
+apply to a World; inspect and apply separately if requested. Refresh an open editor
+before further changes. A conflict requires rereading, not overwriting or renaming.
 
 ## Select the scope
 
@@ -60,6 +70,12 @@ not file import. Splitting edits is not equivalent to preserving a complete file
 5. Query the operation receipt and re-inspect the same scope. For World changes,
    check both saved and runtimeApplied. A saved-but-unapplied result needs recovery
    by reopening the World, not another template creation. Re-read stale revisions.
+
+To delete a library template, inspect it and call `preset.delete` with name and
+expectedRevision after explicit authorization. This does not delete World copies
+or revoke their script permissions. It uses the shared UI deletion adapter with
+preset switching suppressed, preserving the runtime configuration even when the
+deleted item was the selected template. Verify that the library item is absent.
 
 Preset authoring changes instructions and their order, not model connections,
 credentials, character-card fields or Worldbook entries. It makes no story model

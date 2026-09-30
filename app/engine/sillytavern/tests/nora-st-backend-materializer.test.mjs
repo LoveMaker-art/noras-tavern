@@ -717,6 +717,73 @@ test('repairs from filesystem evidence and deletes only owned World resources', 
     assert.deepEqual(await core.listWorlds(), []);
 });
 
+test('a deletion retry preserves resources edited after the original deletion was prepared', async t => {
+    const current = await harness(t);
+    const core = createNoraWorldCore({ root: path.join(current.root, 'world-core'), materializer: current.materializer });
+    const { world } = await core.createWorld(current.command, { idempotencyKey: 'delete-edited:create' });
+    const cardPath = path.join(current.directories.characters, world.runtime_card.binding.avatar);
+    const bookPath = path.join(current.directories.worlds, `${world.knowledge[0].binding.name}.json`);
+    const bookBefore = await fs.readFile(bookPath);
+    // Filesystem failure after preparation leaves a durable deletion to retry.
+    const originalRmdir = fs.rmdir;
+    fs.rmdir = async target => {
+        if (target === path.join(current.directories.chats, path.parse(world.runtime_card.binding.avatar).name)) {
+            throw Object.assign(new Error('fixture deletion interrupted'), { code: 'EIO' });
+        }
+        return originalRmdir(target);
+    };
+    try {
+        await assert.rejects(core.deleteWorld(world.world_id, { idempotencyKey: 'delete-edited:remove' }));
+    } finally { fs.rmdir = originalRmdir; }
+    const editedCard = Buffer.from('user edited this file after the failed delete');
+    await fs.writeFile(cardPath, editedCard);
+    await assert.rejects(core.deleteWorld(world.world_id, { idempotencyKey: 'delete-edited:remove' }),
+        error => error.code === 'NORA_WORLD_DELETE_PLAN_CHANGED');
+    assert.deepEqual(await fs.readFile(cardPath), editedCard);
+    assert.deepEqual(await fs.readFile(bookPath), bookBefore);
+    assert.equal((await core.getWorld(world.world_id)).lifecycle.status, 'FAILED');
+});
+
+test('World deletion refuses a chat directory symlink before removing any owned files', async t => {
+    const current = await harness(t);
+    const core = createNoraWorldCore({ root: path.join(current.root, 'world-core'), materializer: current.materializer });
+    const { world } = await core.createWorld(current.command, { idempotencyKey: 'delete-link:create' });
+    const cardPath = path.join(current.directories.characters, world.runtime_card.binding.avatar);
+    const cardBefore = await fs.readFile(cardPath);
+    const chatDirectory = path.join(current.directories.chats, path.parse(world.runtime_card.binding.avatar).name);
+    const moved = path.join(current.root, 'unrelated-directory');
+    await fs.rename(chatDirectory, moved);
+    await fs.symlink(moved, chatDirectory, 'dir');
+    await assert.rejects(core.deleteWorld(world.world_id, { idempotencyKey: 'delete-link:remove' }),
+        error => error.code === 'NORA_WORLD_DELETE_PLAN_CHANGED');
+    assert.deepEqual(await fs.readFile(cardPath), cardBefore);
+    assert.equal((await fs.readdir(moved)).length, 1);
+    assert.equal((await core.getWorld(world.world_id)).lifecycle.status, 'READY');
+});
+
+test('deletion preview binds confirmation to the resources actually inspected', async t => {
+    const current = await harness(t);
+    const core = createNoraWorldCore({ root: path.join(current.root, 'world-core'), materializer: current.materializer });
+    const { world } = await core.createWorld(current.command, { idempotencyKey: 'preview:create' });
+    const preview = await core.previewWorldDeletion(world.world_id);
+    assert.equal(preview.worldId, world.world_id);
+    assert.deepEqual(preview.resources.map(item => item.kind).sort(), ['knowledge', 'runtime_card', 'session']);
+    assert.equal(preview.resources.every(item => item.action === 'delete'), true);
+    assert.equal(JSON.stringify(preview).includes(current.root), false);
+    const cardPath = path.join(current.directories.characters, world.runtime_card.binding.avatar);
+    const changed = Buffer.from('changed while confirmation was open');
+    await fs.writeFile(cardPath, changed);
+    await assert.rejects(core.deleteWorld(world.world_id, { idempotencyKey: 'preview:old', expectedPlan: preview.token }),
+        error => error.code === 'NORA_WORLD_DELETE_PLAN_CHANGED');
+    assert.equal((await core.getWorld(world.world_id)).revision, world.revision);
+    assert.deepEqual(await fs.readFile(cardPath), changed);
+    const fresh = await core.previewWorldDeletion(world.world_id);
+    const deleted = await core.deleteWorld(world.world_id, { idempotencyKey: 'preview:new', expectedPlan: fresh.token });
+    assert.equal(deleted.operation.result.resources.length, 3);
+    const replay = await core.deleteWorld(world.world_id, { idempotencyKey: 'preview:new', expectedPlan: fresh.token });
+    assert.deepEqual(replay.operation.result, deleted.operation.result);
+});
+
 test('rejects a migrated legacy Session without its v2 Session projection or with a conflicting projection', async (t) => {
     const current = await harness(t);
     const core = createNoraWorldCore({
@@ -848,6 +915,25 @@ test('removes only the newly created private Worldbook during compensation', asy
     assert.equal(remaining.length, 1);
     assert.match(remaining[0], /^nora-card-[a-f0-9]{64}\.png$/, 'Compensate runtime resources, not the successfully imported library original');
     assert.deepEqual(await fs.readdir(current.directories.chats), []);
+});
+
+test('releasing an import preserves a replaced staging file and rejects symlink parents', async t => {
+    const current = await harness(t);
+    await fs.writeFile(current.stagedPath, 'user replacement');
+    await assert.rejects(current.materializer.releaseStagedInput(current.command), { code: 'NORA_CARD_SOURCE_MISMATCH' });
+    assert.equal(await fs.readFile(current.stagedPath, 'utf8'), 'user replacement');
+    const outside = path.join(current.root, 'user-owned');
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, 'card'), current.sourceBuffer);
+    await fs.symlink(outside, path.join(current.stagingRoot, 'linked'));
+    const linked = structuredClone(current.command);
+    linked.payload.staged_card.path = path.join(current.stagingRoot, 'linked', 'card');
+    await assert.rejects(current.materializer.releaseStagedInput(linked));
+    assert.deepEqual(await fs.readFile(path.join(outside, 'card')), current.sourceBuffer);
+    await fs.writeFile(current.stagedPath, current.sourceBuffer);
+    await current.materializer.releaseStagedInput(current.command);
+    await current.materializer.releaseStagedInput(current.command);
+    await assert.rejects(fs.stat(current.stagedPath), { code: 'ENOENT' });
 });
 
 test('rejects staged files outside the configured staging root before decoding', async (t) => {

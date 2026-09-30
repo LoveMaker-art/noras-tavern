@@ -275,6 +275,13 @@ index 0000000..4001339
 +    return (window.parent as any).NoraMvu;
 +}
 +
++export function runMvuChatActivity<T>(operation: () => Promise<T>): Promise<T> {
++    const host = SillyTavern as typeof SillyTavern & {
++        runNoraChatActivity?: (kind: string, operation: () => Promise<T>) => Promise<T>;
++    };
++    return host.runNoraChatActivity ? host.runNoraChatActivity('mvu', operation) : operation();
++}
++
 +async function readAccess() {
 +    const book = getCurrentCharPrimaryLorebook();
 +    const entries = book ? await getLorebookEntries(book) : [];
@@ -875,7 +882,7 @@ index 2f7a0bf..14a78e7 100644
  import { useDataStore } from '@/store';
 +import { getLastValidVariable } from '@/util';
 +import { isMvuData, variable_events } from '@/variable_def';
-+import { accessForMessage, MvuAccess } from './access';
++import { accessForMessage, MvuAccess, runMvuChatActivity } from './access';
 +import {
 +    emptyDiagnostics,
 +    executionAccepted,
@@ -1209,7 +1216,7 @@ index 2f7a0bf..14a78e7 100644
 +        });
 +    }
 +    if (!options.force && lastHandled === before) return;
-+    const promise = processMessage(message_id, options);
++    const promise = runMvuChatActivity(() => processMessage(message_id, options));
 +    pending = { key: before, promise };
 +    try {
 +        await promise;
@@ -1357,7 +1364,7 @@ index e803b3d..6f3ae27 100644
 +    publishUpdateResult,
 +    VariableUpdateDiagnostics,
 +} from '@/function/update/result';
-+import { captureMvuAccess, MvuAccess, noraBridge } from '@/function/update/access';
++import { captureMvuAccess, MvuAccess, noraBridge, runMvuChatActivity } from '@/function/update/access';
 +
 +let last_update_diagnostics: VariableUpdateDiagnostics = emptyDiagnostics();
 +
@@ -1701,6 +1708,10 @@ index e803b3d..6f3ae27 100644
 +}
 +
 +export async function handleVariablesInMessage(message_id: number, access?: MvuAccess) {
++    return runMvuChatActivity(() => handleVariablesInMessageOwned(message_id, access));
++}
++
++async function handleVariablesInMessageOwned(message_id: number, access?: MvuAccess) {
 +    const chat_message = getChatMessages(message_id).at(-1);
 +    if (!chat_message) return;
 +    if (chat_message.role === 'assistant' && chat_message.message.length < 5) return;

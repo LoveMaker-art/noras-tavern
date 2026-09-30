@@ -3,13 +3,13 @@ import { createHash } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 
 // Pin the upstream save function, not the whole bundle: other Nora transforms coexist.
-const delegate = "async function oA(e,t,n,r=!0){return persistCharacterExtension(e,t,n,r,{getCharacter:id=>b[Number(id)],hydrate:Ue,currentId:()=>He,clone:Wk,paths:_,headers:pe,serialize:Uk.serialize,fetcher:(...args)=>fetch(...args),updateJson:value=>$(\"#character_json_data\").val(value)})}";
-const originalHash = 'd10ac11b71ffa6c0662e0bb07ee381959fe977cb9e51d4e91763395d5710a5d9';
+const delegate = "async function Rk(e,t,n,r=!0){return persistCharacterExtension(e,t,n,r,{getCharacter:id=>b[Number(id)],hydrate:Ue,currentId:()=>He,clone:Sk,paths:_,headers:fe,serialize:xk.serialize,fetcher:(...args)=>fetch(...args),updateJson:value=>$(\"#character_json_data\").val(value)})}";
+const originalHash = '853050abbb670a61bc1b6cff98920f9f429131b2c3c3f62bb960fb6e9fd358a4';
 
 export function transformCharacterPersistence(source) {
-    const start = source.indexOf('async function oA(');
-    const end = source.indexOf('var sA=', start);
-    if (start < 0 || end < 0 || source.indexOf('async function oA(', start + 1) !== -1) {
+    const start = source.indexOf('async function Rk(');
+    const end = source.indexOf('var zk=', start);
+    if (start < 0 || end < 0 || source.indexOf('async function Rk(', start + 1) !== -1) {
         throw new Error('Managed runner changed: review character persistence anchors');
     }
     const current = source.slice(start, end);

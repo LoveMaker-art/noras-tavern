@@ -253,6 +253,15 @@ test('index rendering injects independently addressable asset namespaces', () =>
     assert.match(rendered, /^\/asset-files\/compat-runtime\/1{32}\/dist\/nora\/inline-modules\.js/m);
     assert.match(rendered, /"nora-module\/script\.js":"\/asset-files\/st-static\/1{32}\/script\.js"/);
     assert.match(rendered, /"\/lib\.js":"\/asset-files\/vendor-core\/3{32}\/dist\/nora\/lib-core\.js"/);
+    const { imports } = JSON.parse(rendered.split('\n')[0]);
+    const resolvePrefix = specifier => {
+        if (imports[specifier]) return imports[specifier];
+        const prefix = Object.keys(imports).filter(key => key.endsWith('/') && specifier.startsWith(key)).sort((a, b) => b.length - a.length)[0];
+        return prefix ? imports[prefix] + specifier.slice(prefix.length) : specifier;
+    };
+    assert.equal(resolvePrefix('/scripts/extensions/third-party/user-plugin/index.js'), '/scripts/extensions/third-party/user-plugin/index.js');
+    assert.equal(resolvePrefix('/scripts/extensions/third-party/user-plugin/lib/helper.js'), '/scripts/extensions/third-party/user-plugin/lib/helper.js');
+    assert.equal(resolvePrefix('/scripts/extensions.js'), `/asset-files/st-static/${'1'.repeat(32)}/scripts/extensions.js`);
     assert.match(rendered, /\/asset-files\/nora-shell\/2{32}/);
     assert.match(rendered, /\/extension-assets\/5{32}/);
     assert.match(rendered, /\/asset-files\/vendor-core\/3{32}/);
@@ -370,6 +379,41 @@ test('materialized snapshots keep the previous generation byte-for-byte addressa
         assert.equal(sent[0].bytes, 'entry-v1');
         assert.equal(sent[1].bytes, 'entry-v2');
         assert.equal(sent[2].status, 404);
+    } finally {
+        fs.rmSync(fixture, { recursive: true, force: true });
+    }
+});
+
+test('asset cache rebuilds missing bytes but retains unknown hash-shaped folders during generation pruning', () => {
+    const { fixture, files, options } = makeBrowserManifestFixture();
+    const cacheDirectory = path.join(fixture, 'cache');
+    try {
+        const first = computeBrowserAssetManifest(options);
+        materializeBrowserAssetManifest({ manifest: first, cacheDirectory });
+        const parent = path.join(cacheDirectory, 'namespaces', NORA_ASSET_NAMESPACE.noraEntry);
+        const release = first.namespaces[NORA_ASSET_NAMESPACE.noraEntry].release;
+        const cached = path.join(parent, release, 'dist/nora/entry.js');
+        fs.unlinkSync(cached);
+        materializeBrowserAssetManifest({ manifest: first, cacheDirectory });
+        assert.equal(fs.readFileSync(cached, 'utf8'), 'entry-v1');
+        const manual = path.join(parent, 'a'.repeat(32));
+        fs.mkdirSync(manual);
+        fs.writeFileSync(path.join(manual, 'notes.txt'), 'User file');
+        fs.utimesSync(manual, new Date(0), new Date(0));
+        for (const version of [2, 3]) {
+            fs.writeFileSync(files.entry, `entry-v${version}`);
+            materializeBrowserAssetManifest({ manifest: computeBrowserAssetManifest(options), cacheDirectory });
+        }
+        assert.equal(fs.readFileSync(path.join(manual, 'notes.txt'), 'utf8'), 'User file');
+        assert.equal(fs.readdirSync(parent).length, 3, 'two owned generations plus the unowned folder');
+        assert.equal(fs.readFileSync(files.entry, 'utf8'), 'entry-v3');
+        const current = computeBrowserAssetManifest(options);
+        const currentDirectory = path.join(parent, current.namespaces[NORA_ASSET_NAMESPACE.noraEntry].release);
+        const userFile = path.join(currentDirectory, 'user-notes.txt');
+        fs.writeFileSync(userFile, 'Do not erase during rebuild');
+        fs.unlinkSync(path.join(currentDirectory, 'dist/nora/entry.js'));
+        assert.throws(() => materializeBrowserAssetManifest({ manifest: current, cacheDirectory }), /unowned/i);
+        assert.equal(fs.readFileSync(userFile, 'utf8'), 'Do not erase during rebuild');
     } finally {
         fs.rmSync(fixture, { recursive: true, force: true });
     }

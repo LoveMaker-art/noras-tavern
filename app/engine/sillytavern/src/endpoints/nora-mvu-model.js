@@ -45,7 +45,7 @@ router.post('/configure', (request, response) => {
                 detail: 'An API key is required for the independent MVU model.',
             });
         }
-        const config = store(request).save(request.body);
+        const config = store(request).patch(request.body);
         if (apiKey) writeSecret(request.user.directories, SECRET_KEYS.NORA_MVU, apiKey);
         return response.send(publicConfig(request, config));
     } catch (error) {

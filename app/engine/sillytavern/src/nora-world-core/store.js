@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 import { documentFileName, quarantineFile, readJsonFile, writeJsonAtomic } from './atomic-json.js';
-import { cloneJson, stableStringify, validateWorldManifest } from './domain.js';
+import { cloneJson, stableStringify, validateWorldManifest, worldStorageRecord } from './domain.js';
 import { NoraWorldCoreError } from './errors.js';
 import { KeyedLock } from './locks.js';
 import { ResourceCatalog } from './resource-catalog.js';
@@ -16,6 +16,13 @@ function bindingKeys(world) {
 
 function isActive(world) {
     return world.lifecycle.status !== 'DELETED';
+}
+
+function resourceBindings(world, ownedOnly = false) {
+    if (!world) return [];
+    return [world.runtime_card, ...world.knowledge, ...world.sessions.items]
+        .filter(resource => !ownedOnly || !resource.ownership || resource.ownership === 'owned')
+        .map(resource => stableStringify({ engine: resource.engine, binding: resource.binding }));
 }
 
 export class WorldStore {
@@ -81,10 +88,11 @@ export class WorldStore {
         this.#sourceIndex = new Map();
         this.#bindingIndex = new Map();
         this.#operationIndex = new Map();
-        for (const world of [...this.#worlds.values()].filter(isActive)) {
+        for (const world of this.#worlds.values()) {
             if (world.source.import_operation_id) {
                 this.#operationIndex.set(world.source.import_operation_id, world.world_id);
             }
+            if (!isActive(world)) continue;
             if (world.source.sha256) {
                 if (!this.#sourceIndex.has(world.source.sha256)) this.#sourceIndex.set(world.source.sha256, new Set());
                 this.#sourceIndex.get(world.source.sha256).add(world.world_id);
@@ -130,6 +138,15 @@ export class WorldStore {
             throw new NoraWorldCoreError('NORA_WORLD_INVALID', 'A World update cannot change its identity.');
         }
         const candidateWorlds = [...this.#worlds.values()].filter(world => world.world_id !== worldId);
+        // Once deletion is durable, another page cannot acquire references to
+        // files being removed. Check under the same lock as manifest commits.
+        const previousBindings = new Set(resourceBindings(current));
+        const addedBindings = resourceBindings(candidate).filter(key => !previousBindings.has(key));
+        if (isActive(candidate) && candidateWorlds.some(world =>
+            (['DELETING', 'DELETED'].includes(world.lifecycle.status) || world.lifecycle.error?.deletion_pending)
+            && resourceBindings(world, true).some(key => addedBindings.includes(key)))) {
+            throw new NoraWorldCoreError('NORA_WORLD_RESOURCE_DELETING', '资源所属世界正在删除或已删除，不能建立新的引用。');
+        }
         candidateWorlds.push(candidate);
         const importOperations = candidateWorlds
             .map(world => world.source.import_operation_id)
@@ -143,11 +160,13 @@ export class WorldStore {
         }
         const resources = new ResourceCatalog(candidateWorlds.filter(isActive));
         const filePath = path.join(this.worldsDirectory, documentFileName(worldId));
-        await writeJsonAtomic(filePath, candidate, { fileSystem: this.#fileSystem });
-        this.#worlds.set(worldId, candidate);
+        const record = worldStorageRecord(candidate);
+        const stored = validateWorldManifest(record);
+        await writeJsonAtomic(filePath, record, { fileSystem: this.#fileSystem });
+        this.#worlds.set(worldId, stored);
         this.#resources = resources;
         this.#rebuildIndexes();
-        return cloneJson(candidate);
+        return cloneJson(stored);
     }
 
     async put(manifest, { expectedRevision }) {
@@ -229,12 +248,15 @@ export class WorldStore {
             world: cloneJson(world),
             runtime_card: {
                 delete: world.runtime_card.ownership === 'owned'
-                    && references.runtime_card?.world_ids.length === 1,
+                    && references.runtime_card?.world_ids.length === 1
+                    && this.#bindingWorlds(world.runtime_card.engine, world.runtime_card.binding).length === 1,
             },
             knowledge: world.knowledge.map((resource, index) => ({
                 resource_id: resource.resource_id,
                 delete: resource.ownership === 'owned'
-                    && references.knowledge[index]?.world_ids.length === 1,
+                    && references.knowledge[index]?.world_ids.length === 1
+                    && ![...this.#worlds.values()].some(other => isActive(other) && other.world_id !== world.world_id
+                        && other.knowledge.some(item => item.engine === resource.engine && stableStringify(item.binding) === stableStringify(resource.binding))),
             })),
             sessions: world.sessions.items.map(session => ({
                 session_id: session.session_id,

@@ -20,6 +20,21 @@ function createStore(t) {
     return { root, store: new NoraMvuModelConfig(root) };
 }
 
+test('partial configuration retains limits and endpoint, invalid patches never overwrite', t => {
+    const { store } = createStore(t);
+    assert.throws(() => store.patch({ model: 'missing-endpoint' }));
+    store.patch({ base_url: 'https://example.com/v1', model: 'old', context: 90000, max_tokens: 9000 });
+    store.patch({ model: 'new' });
+    assert.equal(store.read().context, 90000);
+    assert.equal(store.read().max_tokens, 9000);
+    assert.equal(store.read().base_url, 'https://example.com/v1');
+    const before = store.read();
+    for (const value of [null, 0, -1, 1.5, '90000', NaN, 1000001]) assert.throws(() => store.patch({ context: value }));
+    assert.deepEqual(store.read(), before);
+    store.patch({ api_key: 'never-written' });
+    assert.deepEqual(store.read(), before);
+});
+
 test('MVU model config persists only non-secret endpoint, model and generation limits', (t) => {
     const { root, store } = createStore(t);
     const saved = store.save({

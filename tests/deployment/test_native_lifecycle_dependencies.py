@@ -23,6 +23,16 @@ def load_lifecycle():
 
 
 class NativeLifecycleDependencyTests(unittest.TestCase):
+    def test_shipped_source_matches_runtime_version_contract(self):
+        lifecycle = load_lifecycle()
+        app = ROOT / "app"
+        contract = json.loads(
+            (app / "native-runtime.json").read_text(encoding="utf-8")
+        )
+        with tempfile.TemporaryDirectory(prefix="nora-source-contract-") as temporary:
+            runtime = lifecycle.NativeRuntime.for_test(temporary, app, contract)
+            runtime.verify_source()
+
     def test_ready_marker_does_not_hide_a_missing_direct_dependency(self):
         lifecycle = load_lifecycle()
         with tempfile.TemporaryDirectory(prefix="nora-native-dependencies-") as temporary:

@@ -61,6 +61,17 @@ test('native discovery preserves legacy entries, local overrides shared, corrupt
     assert.throws(f.discover);
 });
 
+test('discovery ignores removed-extension folders and dangling links without hiding valid disabled plugins', t => {
+    const f = fixture(t);
+    f.write(f.user, 'Disabled');
+    setExtensionLibraryState(f.user, 'Disabled', { enabled: false });
+    for (const directory of [f.user, f.system, f.global]) {
+        fs.mkdirSync(path.join(directory, 'Leftover'));
+        fs.symlinkSync(path.join(f.root, 'missing'), path.join(directory, 'Dangling'));
+    }
+    assert.deepEqual(f.discover(), [{ type: 'local', name: 'third-party/Disabled', libraryEnabled: false }]);
+});
+
 test('only managed extensions enter startup immutable assets; mutable plugins use revalidated routes', t => {
     const f = fixture(t); f.write(f.user, 'UserPlugin'); f.write(f.user, 'nora-mvu');
     const manifest = computeExtensionAssetManifest({ userDirectory: f.user, globalDirectory: f.global, managedOnly: true });

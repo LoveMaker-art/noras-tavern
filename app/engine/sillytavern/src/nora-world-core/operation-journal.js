@@ -18,7 +18,8 @@ import { KeyedLock } from './locks.js';
 
 function validateOperation(value) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Operation must be an object.');
-    if (value.schema !== 'nora-world-operation/v1') throw new Error('Unsupported operation schema.');
+    const receipt = value.schema === 'nora-world-operation/v2';
+    if (!receipt && value.schema !== 'nora-world-operation/v1') throw new Error('Unsupported operation schema.');
     if (!OPERATION_STAGES.includes(value.stage) || !OPERATION_STATUSES.includes(value.status)) throw new Error('Invalid operation state.');
     if (value.type !== 'CREATE_WORLD') throw new Error('Unsupported operation type.');
     if (!/^operation:[a-f0-9]{32}$/.test(value.operation_id || '')) throw new Error('Invalid operation identity.');
@@ -33,13 +34,25 @@ function validateOperation(value) {
         if (!/^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(identity || '')) throw new Error(`Invalid ${field}.`);
     }
     if (!Number.isInteger(value.attempts) || value.attempts < 1) throw new Error('Invalid operation attempts.');
-    const command = normalizeCreateCommand(value.command);
-    if (commandDigest(command) !== value.command_digest) throw new Error('Operation command digest does not match its command.');
+    const command = receipt ? null : normalizeCreateCommand(value.command);
+    if (!receipt && commandDigest(command) !== value.command_digest) throw new Error('Operation command digest does not match its command.');
     const stageIndex = OPERATION_STAGES.indexOf(value.stage);
     const completed = value.stage === 'COMPLETED';
     if ((value.status === 'COMPLETED') !== completed) throw new Error('Operation completion status contradicts its stage.');
     if (value.status === 'FAILED' && !value.error) throw new Error('Failed operation must preserve an error.');
     if (value.status !== 'FAILED' && value.error) throw new Error('Non-failed operation cannot preserve an active error.');
+    if (receipt) {
+        if (!completed || !value.input_released_at || Object.hasOwn(value, 'command') || Object.hasOwn(value, 'materialization')) {
+            throw new Error('Only a completed operation with released input can be a compact receipt.');
+        }
+        if (!value.request || typeof value.request !== 'object' || Array.isArray(value.request)
+            || Object.keys(value.request).some(key => !['library_avatar', 'restart_source_world_id', 'name'].includes(key))
+            || Object.values(value.request).some(item => typeof item !== 'string' || item.length > 512)) throw new Error('Invalid compact request identity.');
+        for (const date of [value.created_at, value.updated_at, value.input_released_at]) {
+            if (!Number.isFinite(Date.parse(date))) throw new Error('Invalid receipt timestamp.');
+        }
+        return cloneJson(value);
+    }
     const needsMaterialization = stageIndex >= OPERATION_STAGES.indexOf('MATERIALIZED');
     const materialization = value.materialization === null
         ? null
@@ -57,6 +70,20 @@ function validateOperation(value) {
         throw new Error('Operation timestamps must be ISO dates.');
     }
     return cloneJson({ ...value, command, materialization, input_released_at: inputReleasedAt });
+}
+
+function compactOperation(operation) {
+    if (operation.schema !== 'nora-world-operation/v1' || operation.status !== 'COMPLETED' || !operation.input_released_at) return operation;
+    const request = {};
+    if (operation.command.payload?.library_avatar) request.library_avatar = operation.command.payload.library_avatar;
+    if (operation.command.payload?.restart) {
+        request.restart_source_world_id = operation.command.payload.restart.source_world_id;
+        request.name = operation.command.name;
+    }
+    const receipt = { ...operation };
+    delete receipt.command;
+    delete receipt.materialization;
+    return { ...receipt, schema: 'nora-world-operation/v2', request };
 }
 
 export class OperationJournal {
@@ -105,7 +132,7 @@ export class OperationJournal {
     }
 
     async #save(operation) {
-        const validated = validateOperation(operation);
+        const validated = validateOperation(compactOperation(validateOperation(operation)));
         await writeJsonAtomic(
             path.join(this.operationsDirectory, documentFileName(validated.operation_id)),
             validated,

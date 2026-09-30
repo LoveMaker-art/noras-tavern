@@ -82,12 +82,12 @@ test('shipped Helper preset scope reacts to permission and World changes without
     const settings = V.reactive({ script: { enabled: { presets: [] } } });
     const store = V.reactive({ name: f.projection.source, settings: f.projection.snapshot().preset.extensions.tavern_helper });
     f.projection.subscribe(() => { store.name = f.projection.source; store.settings = f.projection.snapshot()?.preset.extensions.tavern_helper || { scripts: [] }; });
-    Object.assign(context, { MF: () => ({ settings }), LF: () => store, G: V.computed,
-        wF: (_id, create) => () => V.proxyRefs(create()), _k: item => item.type !== 'folder',
+    Object.assign(context, { uF: () => ({ settings }), hF: () => store, G: V.computed,
+        nF: (_id, create) => () => V.proxyRefs(create()), JO: item => item.type !== 'folder',
         _: items => ({ filter(fn) { items = items.filter(fn); return this; }, flatMap(fn) { items = items.flatMap(fn); return this; }, value: () => items }) });
-    const start = helper.indexOf('function qI('), end = helper.indexOf('var JI=', start);
+    const start = helper.indexOf('function TI('), end = helper.indexOf('var EI=', start);
     vm.runInContext(helper.slice(start, end), context);
-    const scope = context.qI('preset')();
+    const scope = context.TI('preset')();
     assert.equal(scope.enabled_scripts.length, 0);
     await f.projection.permission('scripts', true);
     assert.equal(scope.enabled_scripts[0].id, 's');

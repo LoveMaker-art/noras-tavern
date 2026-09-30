@@ -9,6 +9,7 @@ import { normalizeIdempotencyKey, operationIdForKey } from '../nora-world-core/d
 import { stageBlankWorld, stageLibraryCard, stageStCardImport } from '../nora-world-core/st-import-staging.js';
 import { validateThemeAssets, importThemeBackground } from '../nora-world-core/theme-assets.js';
 import { readGlobalTheme, saveGlobalTheme } from '../nora-world-core/global-theme.js';
+import { inspectUserStorage } from '../nora-world-core/storage-inventory.js';
 
 function defaultResolveCore(request) {
     return resolveNoraWorldCore(request.user.directories);
@@ -21,7 +22,7 @@ function publicOperation(operation) {
             resource_id: operation.result?.resource?.resource_id || null,
             entry_id: operation.result?.entry_id || null,
         }
-        : operation.result ?? null;
+        : operation.result?.prepared ? null : operation.result ?? null;
     return {
         schema: operation.schema,
         operation_id: operation.operation_id,
@@ -41,7 +42,9 @@ function errorStatus(error) {
     if (error?.code === 'NORA_OPERATION_NOT_FOUND' || error?.code === 'NORA_WORLD_NOT_FOUND') return 404;
     if (error?.code === 'NORA_OPERATION_CONFLICT' || error?.code === 'NORA_WORLD_REVISION_CONFLICT'
         || error?.code === 'NORA_CAPABILITY_ATTEMPT_CONFLICT' || error?.code === 'NORA_WORLD_NEEDS_REPAIR'
-        || error?.code === 'NORA_ST_RESOURCE_CONFLICT') return 409;
+        || error?.code === 'NORA_ST_RESOURCE_CONFLICT' || error?.code === 'NORA_WORLD_DELETE_PLAN_CHANGED'
+        || error?.code === 'NORA_CHAT_OPERATION_BUSY' || error?.code === 'NORA_CHAT_OPERATION_LIMIT'
+        || error?.code === 'NORA_LEDGER_BUSY') return 409;
     if (error?.code === 'NORA_CARD_STAGING_INVALID' || error?.code === 'NORA_CARD_INVALID'
         || error?.code === 'NORA_CARD_FORMAT_UNSUPPORTED' || error?.code === 'NORA_CARD_UNSUPPORTED_ASSETS'
         || error?.code === 'NORA_WORLD_INVALID' || error?.code === 'NORA_WORLD_NOT_READY'
@@ -81,6 +84,19 @@ export function createNoraWorldsV2Router({
     readSnapshot = readActivationSnapshot,
 } = {}) {
     const router = express.Router();
+    const inventoryRequests = new Map();
+
+    router.get('/storage/inventory', async (request, response) => {
+        const directories = request.user.directories;
+        const key = path.resolve(directories.root);
+        try {
+            response.setHeader('Cache-Control', 'no-store');
+            if (!inventoryRequests.has(key)) {
+                inventoryRequests.set(key, inspectUserStorage(directories).finally(() => inventoryRequests.delete(key)));
+            }
+            return response.json(await inventoryRequests.get(key));
+        } catch (error) { return sendError(response, error); }
+    });
 
     router.get('/library/cards', async (request, response) => {
         try {
@@ -96,6 +112,10 @@ export function createNoraWorldsV2Router({
             return response.json(await resolveCore(request).saveLibraryCard({ buffer, format }));
         } catch (error) { return sendError(response, error); }
         finally { await cleanupUpload(request.file); }
+    });
+    router.post('/library/cards/manage', async (request, response) => {
+        try { return response.json(await resolveCore(request).manageLibraryCard(request.body || {})); }
+        catch (error) { return sendError(response, error); }
     });
 
     router.get('/library/profiles', async (request, response) => {
@@ -218,8 +238,12 @@ export function createNoraWorldsV2Router({
             const { stagingRoot } = worldCorePaths(request.user.directories);
             // Replay the immutable original command, even after the source card is edited/deleted.
             const existing = await core.getOperation(operationIdForKey(idempotencyKey));
-            if (existing && (existing.type !== 'CREATE_WORLD' || existing.command?.payload?.library_avatar !== avatar)) {
+            if (existing && (existing.type !== 'CREATE_WORLD' || (existing.command?.payload?.library_avatar ?? existing.request?.library_avatar) !== avatar)) {
                 throw new NoraWorldCoreError('NORA_OPERATION_CONFLICT', '此创建请求已用于另一张角色卡。');
+            }
+            if (existing?.status === 'COMPLETED') {
+                const result = await core.retryOperation(existing.operation_id);
+                return response.json({ operation: publicOperation(result.operation), world: result.world, reused: true });
             }
             const command = existing?.command || await stageLibrary({ avatar, idempotencyKey, stagingRoot,
                 charactersRoot: request.user.directories.characters,
@@ -406,10 +430,21 @@ export function createNoraWorldsV2Router({
         }
     });
 
+    router.get('/worlds/:worldId/delete-preview', async (request, response) => {
+        try {
+            response.setHeader('Cache-Control', 'no-store');
+            return response.json(await resolveCore(request).previewWorldDeletion(request.params.worldId));
+        } catch (error) { return sendError(response, error); }
+    });
+
     router.delete('/worlds/:worldId', async (request, response) => {
         try {
+            if (!/^[a-f0-9]{64}$/.test(request.body?.expected_plan || '')) {
+                throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '请先查看删除范围并确认后再删除。');
+            }
             const result = await resolveCore(request).deleteWorld(request.params.worldId, {
                 idempotencyKey: request.body?.idempotency_key,
+                expectedPlan: request.body.expected_plan,
             });
             return response.json({ operation: publicOperation(result.operation), world: result.world, reused: result.reused });
         } catch (error) {

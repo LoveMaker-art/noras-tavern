@@ -421,6 +421,10 @@ function materializeNamespace(namespace, parentDirectory) {
         fs.utimesSync(targetDirectory, now, now);
         return targetDirectory;
     }
+    if (fs.existsSync(targetDirectory) && (!fs.lstatSync(targetDirectory).isDirectory()
+        || !isOwnedAssetGeneration(targetDirectory, namespace.release))) {
+        throw new Error(`Refusing to replace an unowned asset cache directory: ${targetDirectory}`);
+    }
 
     const stagingDirectory = `${targetDirectory}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
     fs.rmSync(stagingDirectory, { recursive: true, force: true });
@@ -448,10 +452,50 @@ function materializeNamespace(namespace, parentDirectory) {
     return targetDirectory;
 }
 
+function isOwnedAssetGeneration(directory, release) {
+    try {
+        const marker = path.join(directory, MANIFEST_FILE_NAME);
+        const stat = fs.lstatSync(marker);
+        if (!stat.isFile() || stat.size > 16 * 1024 * 1024) return false;
+        const descriptor = JSON.parse(fs.readFileSync(marker, 'utf8'));
+        if (descriptor.schemaVersion !== NORA_ASSET_SCHEMA_VERSION || descriptor.release !== release
+            || !/^[a-f0-9]{64}$/.test(descriptor.fullDigest || '') || !descriptor.fullDigest.startsWith(release)
+            || !descriptor.files || typeof descriptor.files !== 'object' || Array.isArray(descriptor.files)) return false;
+        const allowed = new Set([MANIFEST_FILE_NAME]);
+        const allowedDirectories = new Set();
+        for (const [name, record] of Object.entries(descriptor.files)) {
+            if (!name || path.isAbsolute(name) || name.split(/[\\/]/).some(part => !part || part === '.' || part === '..')
+                || !/^[a-f0-9]{64}$/.test(record?.sha256 || '') || !Array.isArray(record.encodings)) return false;
+            allowed.add(name);
+            const parts = name.split('/');
+            for (let i = 1; i < parts.length; i++) allowedDirectories.add(parts.slice(0, i).join('/'));
+            for (const encoding of record.encodings) {
+                if (!['br', 'gzip'].includes(encoding)) return false;
+                allowed.add(`${name}${encoding === 'br' ? '.br' : '.gz'}`);
+            }
+        }
+        const pending = [''];
+        let count = 0;
+        while (pending.length) {
+            const relative = pending.pop();
+            for (const entry of fs.readdirSync(path.join(directory, relative), { withFileTypes: true })) {
+                if (++count > 20000) return false;
+                const name = relative ? `${relative}/${entry.name}` : entry.name;
+                if (entry.isDirectory()) {
+                    if (!allowedDirectories.has(name)) return false;
+                    pending.push(name);
+                } else if (!entry.isFile() || !allowed.has(name)) return false;
+            }
+        }
+        return true;
+    } catch { return false; }
+}
+
 function pruneGenerations(parentDirectory, currentRelease, retain) {
     if (!fs.existsSync(parentDirectory)) return;
     const generations = fs.readdirSync(parentDirectory, { withFileTypes: true })
-        .filter(entry => entry.isDirectory() && HASH_PATTERN.test(entry.name))
+        .filter(entry => entry.isDirectory() && HASH_PATTERN.test(entry.name)
+            && isOwnedAssetGeneration(path.join(parentDirectory, entry.name), entry.name))
         .map(entry => ({ name: entry.name, mtimeMs: fs.statSync(path.join(parentDirectory, entry.name)).mtimeMs }))
         .sort((left, right) => right.mtimeMs - left.mtimeMs);
     const keep = new Set([currentRelease]);
@@ -622,6 +666,8 @@ export function renderNoraIndex(template, manifest) {
         '/lib.js': `${vendorBase}/dist/nora/lib-core.js`,
         '/lib/': `${stStaticBase}/lib/`,
         '/scripts/': `${stStaticBase}/scripts/`,
+        // User-installed modules are mutable and are absent from the ST snapshot.
+        '/scripts/extensions/third-party/': '/scripts/extensions/third-party/',
         [`${stStaticBase}/lib.js`]: `${vendorBase}/dist/nora/lib-core.js`,
     };
     for (const modulePath of manifest.runtimeModules?.modules || []) {

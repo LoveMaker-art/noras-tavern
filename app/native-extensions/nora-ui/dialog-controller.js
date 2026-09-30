@@ -9,6 +9,7 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     let checkingClose = false;
 
     function normalizeError(error) {
+        if (error?.code === 'NORA_BACKUP_REQUIRED') return tr("无法建立改写前的保护备份，本次操作已暂停，原聊天未改动。请在“数据 → 聊天备份”检查容量或查看日志后重试。");
         if (error?.code === 'NORA_LEDGER_HISTORY_LOCKED') return tr("这段历史已被剧情账本保护，无法编辑。若正在发送，请等发送结束后重试。");
         if (error?.code === 'NORA_LEDGER_EDIT_STALE') return tr("对话已发生变化，请重新加载后再编辑，原记录未被修改。");
         const message = String(error?.message || error || '').trim();
@@ -237,5 +238,6 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
     }
 
     return Object.freeze({ normalizeError, toast, clearNotice, notice, open, close, confirm, protectForm,
-        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; } });
+        setCloseGuard: guard => { closeGuard = guard; }, get version() { return version; },
+        get protected() { return Boolean(closeGuard || cancelConfirmation || checkingClose); }, get viewKey() { return viewKey; } });
 }

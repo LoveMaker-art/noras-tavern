@@ -67,7 +67,7 @@ export function createEmptyMvuUpdateStatus() {
     };
 }
 
-export function createMvuUpdateObserver({ eventSource, events, identity = () => '', now = () => Date.now(), report = () => {} } = {}) {
+export function createMvuUpdateObserver({ eventSource, events, identity = () => '', readMessage = () => null, now = () => Date.now(), report = () => {} } = {}) {
     if (typeof eventSource?.on !== 'function') throw new TypeError('MVU update observer requires an event source.');
     const startedEvent = events?.VARIABLE_UPDATE_STARTED;
     const commandEvent = events?.COMMAND_PARSED;
@@ -78,6 +78,13 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
     let observedIdentity = '';
     let commandCount = 0;
     let transactionActive = false;
+    let backup = null;
+    const messageBytes = id => {
+        try {
+            const message = readMessage(id);
+            return message ? JSON.stringify(message) : null;
+        } catch { return null; }
+    };
     const bindings = [];
     const on = (event, handler) => {
         eventSource.on(event, handler);
@@ -116,6 +123,9 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
 
     if (transactionStartedEvent && transactionCommittedEvent && transactionFailedEvent) {
         on(transactionStartedEvent, (detail = {}) => {
+            backup = String(detail.chat_id || '') === String(identity() || '') && Number.isSafeInteger(detail.message_id)
+                && messageBytes(detail.message_id) !== null
+                ? { identity: String(identity()), id: detail.message_id, phase: 'pending', bytes: null } : null;
             observedIdentity = String(identity() || '');
             transactionActive = true;
             commandCount = 0;
@@ -128,6 +138,14 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
         });
         for (const [event, terminal] of [[transactionCommittedEvent, 'committed'], [transactionFailedEvent, 'failed']]) {
             on(event, (detail = {}) => {
+                if (backup?.identity === String(identity()) && backup.identity === String(detail.chat_id || '') && backup.id === detail.message_id) {
+                    const confirmed = terminal === 'committed' && detail.persisted === true
+                        && ['updated', 'unchanged'].includes(detail.outcome)
+                        && Number.isSafeInteger(detail.diagnostics?.command_count)
+                        && detail.diagnostics.command_count === detail.diagnostics.accepted_count
+                        && !detail.diagnostics.errors?.length;
+                    backup = { ...backup, phase: confirmed ? 'confirmed' : 'incomplete', bytes: messageBytes(backup.id) };
+                } else backup = null;
                 transactionActive = false;
                 if (observedIdentity !== String(identity() || '')) return;
                 const { status, ...observation } = projectMvuTransaction(detail, terminal, commandCount);
@@ -139,6 +157,7 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
 
     on(startedEvent, () => {
         if (transactionActive) return;
+        backup = null;
         observedIdentity = String(identity() || '');
         commandCount = 0;
         current = {
@@ -170,6 +189,12 @@ export function createMvuUpdateObserver({ eventSource, events, identity = () => 
     });
 
     return Object.freeze({
+        backupState() {
+            if (!backup || backup.identity !== String(identity())) return 'unverified';
+            const bytes = messageBytes(backup.id);
+            if (bytes === null || (backup.phase !== 'pending' && bytes !== backup.bytes)) return 'unverified';
+            return backup.phase;
+        },
         status() {
             return observedIdentity && observedIdentity === String(identity() || '')
                 ? { ...current }

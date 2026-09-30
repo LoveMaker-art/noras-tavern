@@ -1,4 +1,12 @@
-import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { addLocaleData, translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+
+// Deletion-only copy belongs to this interaction, not the startup dictionary.
+const deletionMessages = {
+    '无法检查删除范围：{0}': 'Unable to inspect deletion scope: {0}',
+    '本次删除 {0} 项专属资源、{1} 份聊天备份（其中 {2} 份受保护）；保留 {3} 项共享或归属不明对象。': 'Delete {0} dedicated resources and {1} chat backups ({2} protected); retain {3} shared or unclassified items.',
+    '将永久删除本世界、专属会话和资源，以及归属明确的全部聊天备份（包括受保护备份）。共享资源、库原件和归属不明文件保留。更新回退包独立管理，可能仍含历史数据。此操作无法撤销。': 'Permanently delete this world, its dedicated chats and resources, and all backups with confirmed ownership, including protected backups. Shared resources, library originals and unclassified files remain. Update rollback packages are managed separately and may still contain historical data. This cannot be undone.',
+    '世界已删除；归属不明的备份已保留，可在备份清单中查看。': 'World deleted. Unclassified backups remain and can be reviewed in the backup list.',
+};
 
 // The creation journal can resume only these creation operations, not mutations.
 const operationLabels = new Map([
@@ -318,11 +326,22 @@ export function createWorldController({
     }
 
     async function deleteWorld(worldId) {
+        addLocaleData('en', deletionMessages);
         const target = models().find(item => item.id === worldId);
         if (!target) return;
+        let preview;
+        try { preview = await worldRuntime.previewWorldDeletion(worldId); }
+        catch (error) {
+            showToast(t`无法检查删除范围：${normalizeError(error)}`, { tone: 'error', duration: 4200 });
+            return;
+        }
+        const resourceCount = preview.resources.filter(item => item.action === 'delete').length;
+        const protectedCount = preview.backups.filter(item => item.protected).length;
+        const retainedCount = preview.retained.length + preview.resources.filter(item => item.action === 'retain').length;
         const accepted = await confirmAction({
             title: t`删除“${target.name || tr("未命名世界")}”？`,
-            body: tr("将删除这个世界及其专属会话和资源；共享世界书与外部资源会保留。此操作无法撤销。"),
+            body: t`本次删除 ${resourceCount} 项专属资源、${preview.backups.length} 份聊天备份（其中 ${protectedCount} 份受保护）；保留 ${retainedCount} 项共享或归属不明对象。` + '\n\n'
+                + tr("将永久删除本世界、专属会话和资源，以及归属明确的全部聊天备份（包括受保护备份）。共享资源、库原件和归属不明文件保留。更新回退包独立管理，可能仍含历史数据。此操作无法撤销。"),
             confirmLabel: tr("删除世界"),
             cancelLabel: tr("取消"),
             tone: 'danger',
@@ -334,11 +353,12 @@ export function createWorldController({
         }
         try {
             await operations.run('world-delete', async () => {
-                await worldRuntime.remove(worldId);
+                const result = await worldRuntime.remove(worldId, { expectedPlan: preview.token });
                 if (target.active) onWorldLeaving({ reason: 'world-delete', worldId });
                 await load();
                 refresh();
-                showToast(tr("世界已删除。"));
+                showToast(result?.operation?.result?.backups?.retained?.length
+                    ? tr("世界已删除；归属不明的备份已保留，可在备份清单中查看。") : tr("世界已删除。"));
             });
         } catch (error) {
             showToast(t`世界删除失败：${normalizeError(error)}`, { tone: 'error', duration: 4200 });

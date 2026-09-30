@@ -269,7 +269,7 @@ test('exposes the authoritative v2 import, operation, list and open-plan contrac
 
     const deleted = await invoke(handler(router, '/worlds/:worldId', 'delete'), {
         ...baseRequest,
-        body: { idempotency_key: 'delete:one' },
+        body: { idempotency_key: 'delete:one', expected_plan: 'a'.repeat(64) },
         params: { worldId: world.world_id },
     });
     assert.equal(deleted.payload.operation.type, 'DELETE_WORLD');

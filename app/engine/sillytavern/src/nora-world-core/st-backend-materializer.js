@@ -5,8 +5,11 @@ import { normalizeStoryContext } from '../../public/scripts/nora-worlds/story-co
 import { prepareWorldbookEntryEdit } from './worldbook-entry-edit.js';
 import { isExclusiveWorldbook } from './worldbook-references.js';
 import { withWorldbookLock } from '../worldbook-lock.js';
-import { removeSessionLedger } from '../nora-story-ledger/state-file.js';
+import { ledgerStatePath } from '../nora-story-ledger/state-file.js';
 import { requestStoryProjection } from '../nora-story-ledger/profile-projection.js';
+import { chatSessionOperations } from '../chat-session-operations.js';
+import { createChatBackupStore } from '../chat-backup-store.js';
+import { snapshotRemovalFile, assertRemovalSnapshot } from './file-removal.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -556,18 +559,19 @@ async function inspectRegularFile(filePath, issue, issues) {
     }
 }
 
-async function unlinkRegularFile(filePath) {
-    try {
-        const stat = await fs.lstat(filePath);
-        if (!stat.isFile() || stat.isSymbolicLink()) {
-            throw new NoraWorldCoreError('NORA_ST_RESOURCE_UNSAFE', `Refusing to delete non-regular ST resource ${path.basename(filePath)}.`);
-        }
-        await fs.unlink(filePath);
-        return true;
-    } catch (error) {
-        if (error?.code === 'ENOENT') return false;
-        throw error;
-    }
+function removalTargets(world, roots, plan, userRoot) {
+    const paths = stPaths(world, roots);
+    return [
+        ...paths.sessions.filter(({ session }) => plan.sessions.some(item => item.session_id === session.session_id && item.delete))
+            .map(({ session, filePath }) => ({ kind: 'session', id: session.session_id, root: roots.chats, name: path.relative(roots.chats, filePath) })),
+        ...(userRoot ? paths.sessions.filter(({ session }) => plan.sessions.some(item => item.session_id === session.session_id && item.delete))
+            .map(({ session }) => ({ kind: 'ledger', id: session.session_id, root: userRoot,
+                name: path.relative(userRoot, ledgerStatePath(userRoot, { worldId: world.world_id, sessionId: session.session_id })) })) : []),
+        ...(plan.runtime_card.delete && world.runtime_card.ownership === 'owned'
+            ? [{ kind: 'runtime_card', id: world.runtime_card.resource_id, root: roots.characters, name: paths.avatar }] : []),
+        ...paths.knowledge.filter(({ resource }) => resource.ownership === 'owned' && plan.knowledge.some(item => item.resource_id === resource.resource_id && item.delete))
+            .map(({ resource, filePath }) => ({ kind: 'knowledge', id: resource.resource_id, root: roots.worlds, name: path.relative(roots.worlds, filePath) })),
+    ];
 }
 
 export function createStBackendMaterializer({
@@ -631,7 +635,9 @@ export function createStBackendMaterializer({
         },
         listLibraryCards: cardLibrary.list,
         saveLibraryCard: cardLibrary.save,
+        manageLibraryCard: cardLibrary.manage,
         readLibraryCardSource: cardLibrary.source,
+        deleteLibraryCard: cardLibrary.remove,
         listLibraryWorldbooks: library.list,
         readLibraryWorldbook: library.read,
         saveLibraryWorldbook: library.save,
@@ -727,29 +733,54 @@ export function createStBackendMaterializer({
             }
             return { ready: issues.length === 0, issues };
         },
-        async deleteResources(world, plan) {
+        async withWorldDeletion(world, operation) {
+            if (!directories.root) return operation();
+            const { resolveStoryLedger } = await import('../nora-story-ledger/runtime.js');
+            const { plugin } = resolveStoryLedger(directories, { recoverProjection: false });
+            const sessions = world.sessions.items;
+            const idle = index => index === sessions.length ? operation()
+                : plugin.withIdleSession({ worldId: world.world_id, sessionId: sessions[index].session_id }, () => idle(index + 1));
+            return chatSessionOperations(directories).removeWorld(world, () => idle(0));
+        },
+        async prepareDeletion(world, plan) {
+            const files = [];
+            for (const target of removalTargets(world, roots, plan, directories.root)) {
+                const { snapshot } = await snapshotRemovalFile(target.root, target.name);
+                files.push({ kind: target.kind, id: target.id, name: target.name, snapshot });
+            }
+            return { files, backups: directories.root && directories.backups
+                ? await createChatBackupStore({ directories }).planWorldRemoval(world) : null };
+        },
+        async deleteResources(world, plan, prepared = null) {
             const paths = stPaths(world, roots);
             const deleted = [];
-            const sessionPlan = new Map((plan?.sessions || []).map(item => [item.session_id, Boolean(item.delete)]));
-            const knowledgePlan = new Map((plan?.knowledge || []).map(item => [item.resource_id, Boolean(item.delete)]));
-            for (const { session, filePath } of paths.sessions) {
-                if (!sessionPlan.get(session.session_id)) continue;
-                if (await unlinkRegularFile(filePath)) deleted.push({ kind: 'session', id: session.session_id });
-                if (directories.root && removeSessionLedger(directories.root, { worldId: world.world_id, sessionId: session.session_id })) {
-                    void requestStoryProjection(directories);
-                }
+            const removals = [];
+            const targets = removalTargets(world, roots, plan, directories.root);
+            if (!Array.isArray(prepared?.files) || targets.length !== prepared.files.length) {
+                throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '删除计划不完整，请重新确认。');
+            }
+            for (const target of targets) {
+                const expected = prepared.files.find(item => item.kind === target.kind && item.id === target.id && item.name === target.name);
+                if (!expected) throw new NoraWorldCoreError('NORA_WORLD_DELETE_PLAN_CHANGED', '删除范围已变化，请重新确认。');
+                const file = await snapshotRemovalFile(target.root, target.name);
+                assertRemovalSnapshot(file.snapshot, expected.snapshot);
+                removals.push({ ...target, ...file, planned: expected.snapshot !== null });
+            }
+            const backups = directories.root && directories.backups
+                ? await createChatBackupStore({ directories }).removeWorld(world, prepared?.backups) : { deleted: [], retained: [] };
+            const remove = file => {
+                const removed = file.remove();
+                if (file.kind !== 'ledger' || file.planned) deleted.push({ kind: file.kind, id: file.id });
+                if (file.kind === 'ledger' && removed) void requestStoryProjection(directories);
+            };
+            for (const file of removals.filter(item => item.kind === 'session')) {
+                remove(file);
             }
             await fs.rmdir(paths.chatDirectory).catch(error => {
                 if (!['ENOENT', 'ENOTEMPTY'].includes(error?.code)) throw error;
             });
-            if (plan?.runtime_card?.delete && world.runtime_card.ownership === 'owned') {
-                if (await unlinkRegularFile(paths.runtimeCard)) deleted.push({ kind: 'runtime_card', id: world.runtime_card.resource_id });
-            }
-            for (const { resource, filePath } of paths.knowledge) {
-                if (!knowledgePlan.get(resource.resource_id) || resource.ownership !== 'owned') continue;
-                if (await unlinkRegularFile(filePath)) deleted.push({ kind: 'knowledge', id: resource.resource_id });
-            }
-            return { deleted };
+            for (const file of removals.filter(item => item.kind !== 'session')) remove(file);
+            return { deleted, backups };
         },
         async releaseStagedInput(command) {
             const sourcePath = path.resolve(String(command?.payload?.staged_card?.path || ''));
@@ -757,15 +788,11 @@ export function createStBackendMaterializer({
             if (!sourcePath || !relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
                 throw new NoraWorldCoreError('NORA_CARD_STAGING_INVALID', 'The staged card release target is outside the configured root.');
             }
-            try {
-                const stat = await fs.lstat(sourcePath);
-                if (!stat.isFile() || stat.isSymbolicLink()) {
-                    throw new NoraWorldCoreError('NORA_CARD_STAGING_INVALID', 'The staged card release target is not a regular file.');
-                }
-                await fs.unlink(sourcePath);
-            } catch (error) {
-                if (error?.code !== 'ENOENT') throw error;
+            const file = await snapshotRemovalFile(staging, relative);
+            if (file.snapshot && file.snapshot.sha256 !== command?.source?.sha256) {
+                throw new NoraWorldCoreError('NORA_CARD_SOURCE_MISMATCH', 'The staged card changed before release; it has been preserved.');
             }
+            file.remove();
         },
         async materialize(command, identities) {
             const operationId = assertIdentity(identities?.operationId, 'operationId');

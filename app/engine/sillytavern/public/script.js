@@ -1,5 +1,5 @@
 import { tagHistory, scopeOf } from './scripts/nora-story-ledger/history.js';
-import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage } from './scripts/nora-story-ledger/client.js';
+import { adoptLedgerStatus, refreshLedger, ledgerAllowsEdit, editStoryMessage, protectStoryRegeneration } from './scripts/nora-story-ledger/client.js';
 import { createLedgerSaveRecovery } from './scripts/nora-story-ledger/save-recovery.js';
 import {
     createChatIdentity,
@@ -265,6 +265,7 @@ import { initDomHandlers } from './scripts/dom-handlers.js';
 import { SimpleMutex } from './scripts/util/SimpleMutex.js';
 import { AudioPlayer } from './scripts/audio-player.js';
 import { MacroEnvBuilder } from './scripts/macros/engine/MacroEnvBuilder.js';
+import { MessageFormatter } from './scripts/message-formatter.js';
 import { MacroEngine } from './scripts/macros/engine/MacroEngine.js';
 import { addChatBackupsBrowser } from './scripts/chat-backups.js';
 import { onboardingExperimentalMacroEngine } from './scripts/macros/engine/MacroDiagnostics.js';
@@ -597,6 +598,7 @@ export let is_send_press = false; //Send generation
 export const isGenerating = () => is_send_press;
 
 let this_del_mes = -1;
+let deleteToolCallsInDeleteMode = true;
 
 /** @type {string} */
 let this_edit_mes_chname = '';
@@ -1684,6 +1686,10 @@ export async function getOneCharacter(avatarUrl) {
         const indexOf = characters.findIndex(x => x.avatar === avatarUrl);
 
         if (indexOf !== -1) {
+            // Nora selects sessions independently of the card's legacy chat field.
+            if (isNoraProductMode() && String(indexOf) === String(this_chid) && characters[indexOf].chat) {
+                getData.chat = characters[indexOf].chat;
+            }
             characters[indexOf] = getData;
         } else {
             toastr.error(t`Character ${avatarUrl} not found in the list`, t`Error`, { timeOut: 5000, preventDuplicates: true });
@@ -1745,12 +1751,16 @@ export async function getCharacters() {
         body: JSON.stringify({}),
     });
     if (response.ok) {
-        const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
-        characters.splice(0, characters.length);
         const getData = await response.json();
+        const previousAvatar = this_chid !== undefined ? characters[this_chid]?.avatar : null;
+        const previousChat = isNoraProductMode() ? characters[this_chid]?.chat : null;
+        characters.splice(0, characters.length);
         for (let i = 0; i < getData.length; i++) {
             characters[i] = getData[i];
             characters[i].name = DOMPurify.sanitize(characters[i].name);
+            if (previousChat && characters[i].avatar === previousAvatar) {
+                characters[i].chat = previousChat;
+            }
 
             // For dropped-in cards
             if (!characters[i].chat) {
@@ -2119,13 +2129,32 @@ export async function deleteLastMessage() {
     await eventSource.emit(event_types.MESSAGE_DELETED, chat.length);
 }
 
+function getMessageDeletionStartId(id, deleteToolCalls = true) {
+    const message = chat[id];
+    if (!deleteToolCalls || message?.is_user || message?.is_system) {
+        return id;
+    }
+
+    let startId = id;
+    while (startId > 0) {
+        const previousMessage = chat[startId - 1];
+        if (!previousMessage?.is_system || !Array.isArray(previousMessage.extra?.tool_invocations)) {
+            break;
+        }
+        startId--;
+    }
+
+    return startId;
+}
+
 /**
  * Deletes a message from the chat by its ID, optionally asking for confirmation.
  * @param {number} id The ID of the message to delete.
  * @param {number} [swipeDeletionIndex] Deletes the swipe with that index.
  * @param {boolean} [askConfirmation=false] Whether to ask for confirmation before deleting.
+ * @param {boolean} [deleteToolCalls=true] Whether to delete preceding tool-call messages.
  */
-export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false) {
+export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfirmation = false, deleteToolCalls = true) {
     const canDeleteSwipe = swipeDeletionIndex !== undefined && swipeDeletionIndex !== null;
     if (canDeleteSwipe) {
         if (swipeDeletionIndex < 0) {
@@ -2163,13 +2192,19 @@ export async function deleteMessage(id, swipeDeletionIndex = undefined, askConfi
         return;
     }
 
-    chat.splice(id, 1);
-    messageElement.remove();
+    const firstMessageId = getMessageDeletionStartId(id, deleteToolCalls);
+    const messageIds = Array.from({ length: id - firstMessageId + 1 }, (_, index) => id - index);
+
+    // Delete from the end so earlier indices remain stable.
+    for (const messageId of messageIds) {
+        chat.splice(messageId, 1);
+        chatElement.find(`.mes[mesid="${messageId}"]`).remove();
+        deleteItemizedPromptForMessage(messageId);
+    }
 
     chat_metadata.tainted = true;
 
-    const startIndex = [0, minId].includes(id) ? id : null;
-    deleteItemizedPromptForMessage(id);
+    const startIndex = firstMessageId <= minId ? firstMessageId : null;
     updateViewMessageIds(startIndex);
     saveChatDebounced();
 
@@ -2243,9 +2278,18 @@ export async function sendTextareaMessage(inputText = null) {
         await newAssistantChat({ temporary: false });
     }
 
-    let generation = await Generate(generateType, { inputText: hasDirectInput ? textareaText : null });
-    showSwipeButtons();
-    return generation;
+    let userMessagePersisted = false;
+    try {
+        return await Generate(generateType, {
+            inputText: hasDirectInput ? textareaText : null,
+            onUserMessagePersisted: () => { userMessagePersisted = true; },
+        });
+    } catch (error) {
+        if (userMessagePersisted) error.noraMessagePersisted = true;
+        throw error;
+    } finally {
+        showSwipeButtons();
+    }
 }
 
 /**
@@ -2328,12 +2372,20 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         const indexOf = usableMessages.findIndex(x => x.index === Number(messageId));
         const depth = messageId >= 0 && indexOf !== -1 ? (usableMessages.length - indexOf - 1) : undefined;
 
+        mes = MessageFormatter.runStage(MessageFormatter.stage.BEFORE_REGEX, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
+
         // Always override the character name
         mes = getRegexedString(mes, regexPlacement, {
             characterOverride: ch_name,
             isMarkdown: true,
             depth: depth,
         });
+
+        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_REGEX, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
     }
 
     if (power_user.auto_fix_generated_markdown) {
@@ -2412,6 +2464,10 @@ export function messageFormatting(mes, ch_name, isSystem, isUser, messageId, san
         mes = mes.replace(/<code(.*)>[\s\S]*?<\/code>/g, function (match) {
             return match.replace(/&amp;/g, '&');
         });
+
+        mes = MessageFormatter.runStage(MessageFormatter.stage.AFTER_MARKDOWN, mes,
+            { characterName: ch_name, ch_name, isSystem, isUser, messageId, isReasoning },
+        );
     }
 
     if (!power_user.allow_name2_display && ch_name && !isUser && !isSystem) {
@@ -4667,6 +4723,7 @@ function removeLastMessage() {
  * @property {string} [quietImage] Image URL to use for the quiet prompt (defaults to empty string)
  * @property {string} [quietName] Name to use for the quiet prompt (defaults to "System:")
  * @property {number} [depth] Recursion depth for the generation. Used to prevent infinite loops in tool calls.
+ * @property {function(): void} [onUserMessagePersisted] Notify the caller after the user message save succeeds.
  * @property {JsonSchema} [jsonSchema] JSON schema to use for the structured generation. Usually requires a special instruction.
  */
 
@@ -4678,7 +4735,27 @@ function removeLastMessage() {
  * @param {boolean} dryRun Whether to actually generate a message or just assemble the prompt
  * @returns {Promise<any>} Returns a promise that resolves when the text is done generating.
  */
-export async function Generate(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null } = {}, dryRun = false) {
+export async function runNoraChatActivity(kind, operation) {
+    if (!isNoraProductMode() || !scopeOf(chat_metadata)) return operation();
+    const identity = chatWriteIdentity();
+    await ensureNoraFullChatLoaded();
+    const { pageChatActivity } = await import('./scripts/nora-story-ledger/chat-activity.js');
+    if (chatWriteIdentity() !== identity) throw Object.assign(new Error('聊天已切换，请重试。'), { code: 'NORA_CHAT_OPERATION_STALE' });
+    return pageChatActivity(() => ({ scope: scopeOf(chat_metadata),
+        revision: matchesNoraChatWindow() ? noraChatWindowState.serverRevision : null }), getRequestHeaders).run(kind, operation);
+}
+
+export async function Generate(type, options = {}, dryRun = false) {
+    try {
+        const generate = () => generateCore(type, options, dryRun);
+        return await (dryRun ? generate() : runNoraChatActivity('generation', generate));
+    } catch (error) {
+        unblockGeneration(type);
+        throw error;
+    }
+}
+
+async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage, quietName, jsonSchema = null, depth = 0, inputText = null, onUserMessagePersisted } = {}, dryRun = false) {
     console.log('Generate entered');
     setGenerationProgress(0);
     generation_started = new Date();
@@ -4691,6 +4768,10 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
         await globalThis.__NORA_GENERATION_PREREQUISITES_PROMISE__;
         if (!dryRun) worldPresetProjection.restore(chat_metadata?.nora_world?.id);
     }
+
+    // Protect the persisted branch before extension events or regeneration can
+    // remove its last reply. Ordinary sends and dry-run prompt previews skip it.
+    await protectStoryRegeneration({ chat, chatMetadata: chat_metadata }, { type, dryRun, depth });
 
     // Occurs every time, even if the generation is aborted due to slash commands execution
     await eventSource.emit(event_types.GENERATION_STARTED, type, { automatic_trigger, force_name2, quiet_prompt, quietToLoud, skipWIAN, force_chid, signal, quietImage }, dryRun);
@@ -4822,10 +4903,12 @@ export async function Generate(type, { automatic_trigger, force_name2, quiet_pro
             sendSystemMessage(system_message_types.GENERIC, ' ', { bias: messageBias });
         } else {
             await sendMessageAsUser(textareaText, messageBias);
+            onUserMessagePersisted?.();
         }
     } else if (textareaText == '' && !automatic_trigger && !dryRun && [undefined, 'normal'].includes(type) && main_api == 'openai' && oai_settings.send_if_empty.trim().length > 0 && !depth) {
         // Use send_if_empty if set and the user message is empty. Only when sending messages normally
         await sendMessageAsUser(oai_settings.send_if_empty.trim(), messageBias);
+        onUserMessagePersisted?.();
     }
 
     let {
@@ -7735,15 +7818,18 @@ export function saveChatDebounced() {
  *
  * @returns {Promise<void>}
  */
-let noraChatBackupTransactionDepth = 0;
+const noraChatBackupTransactions = new Map();
 
 const enqueueChatWrite = createChatWriteQueue(busy => { isChatSaving = busy; });
 
+function chatWriteIdentity() {
+    return JSON.stringify([createChatSaveTarget(), getCurrentChatId(), characters[this_chid]?.avatar]);
+}
+
 function queueChatWrite(operation) {
-    const identity = () => JSON.stringify([createChatSaveTarget(), getCurrentChatId(), characters[this_chid]?.avatar]);
-    const target = identity();
+    const target = chatWriteIdentity();
     const assertCurrent = () => {
-        if (identity() !== target) throw Object.assign(new Error('The active chat changed before the save completed.'), {
+        if (chatWriteIdentity() !== target) throw Object.assign(new Error('The active chat changed before the save completed.'), {
             code: 'NORA_CHAT_SAVE_STALE', phase: 'save',
         });
     };
@@ -7757,14 +7843,19 @@ export async function saveChat(options = {}) {
         options = { chatName, withMetadata, mesId, force };
     }
     try {
-        return await queueChatWrite(assertCurrent => saveChatNow(options, assertCurrent));
+        // Capture ownership before queueing. A delayed save must not borrow a
+        // newer operation's token or become an unowned save after release.
+        const activityToken = options.chatData === undefined
+            && (options.chatName === undefined || options.chatName === characters[this_chid]?.chat)
+            ? globalThis[Symbol.for('nora.chat.activity')]?.tokenFor(scopeOf(chat_metadata)) : null;
+        return await queueChatWrite(assertCurrent => saveChatNow({ ...options, activityToken }, assertCurrent));
     } catch (error) {
         if (isNoraProductMode() || options.requireConfirmation) error.phase = 'save';
         throw error;
     }
 }
 
-async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false, requireConfirmation = false } = {}, assertCurrent = () => {}) {
+async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatData = undefined, skipBackup = false, requireConfirmation = false, activityToken = null } = {}, assertCurrent = () => {}) {
     const saveIdentity = getCurrentChatId();
     const activeChatName = characters[this_chid]?.chat;
     const isCurrentNoraChatSave = isNoraProductMode()
@@ -7806,6 +7897,10 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
     const noraCompleteHistory = Boolean(isCurrentNoraChatSave
         && (!activeWindowState || activeWindowState.fullHistoryLoaded));
     const noraBaseRevision = activeWindowState?.serverRevision ?? null;
+    let backupMvuState = 'unverified';
+    if (isCurrentNoraChatSave && trimmedChat.length === chat.length) {
+        try { backupMvuState = globalThis.NoraMvu?.backupState?.() ?? 'unverified'; } catch { /* Backup observations must never prevent a canonical save. */ }
+    }
 
     /** @type {ChatHeader} */
     const chatHeader = {
@@ -7817,23 +7912,24 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
     let retrySave;
     try {
         const retrySnapshot = JSON.stringify({ chat, metadata: chat_metadata });
-        const saveChatRequest = await compressRequest({
-            method: 'POST',
-            cache: 'no-cache',
-            headers: getRequestHeaders(),
-            body: JSON.stringify({
-                ch_name: characters[this_chid].name,
-                file_name: fileName,
-                chat: [chatHeader, ...trimmedChat],
-                avatar_url: characters[this_chid].avatar,
-                force: force,
-                skip_backup: skipBackup || noraChatBackupTransactionDepth > 0,
-                nora_complete_history: noraCompleteHistory,
-                nora_base_revision: noraBaseRevision,
-            }),
+        const payload = JSON.stringify({
+            ch_name: characters[this_chid].name,
+            file_name: fileName,
+            chat: [chatHeader, ...trimmedChat],
+            avatar_url: characters[this_chid].avatar,
+            force: force,
+            skip_backup: skipBackup || noraChatBackupTransactions.has(chatWriteIdentity()),
+            nora_complete_history: noraCompleteHistory,
+            nora_base_revision: noraBaseRevision,
+            nora_backup_mvu_state: backupMvuState,
+            nora_activity_token: activityToken,
         });
         assertCurrent();
-        const send = async () => {
+        const send = async (retry = false) => {
+            // An explicit save-only retry retains its original revision and
+            // exact chat, but cannot reuse a generation lease already released.
+            const saveChatRequest = await compressRequest({ method: 'POST', cache: 'no-cache', headers: getRequestHeaders(),
+                body: retry && activityToken ? JSON.stringify({ ...JSON.parse(payload), nora_activity_token: null }) : payload });
             assertCurrent();
             const headers = new Headers(saveChatRequest.headers);
             for (const [key, value] of Object.entries(getRequestHeaders())) headers.set(key, value);
@@ -7869,8 +7965,7 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
             retrySave = () => queueChatWrite(async () => {
                 assertCurrent();
                 if (JSON.stringify({ chat, metadata: chat_metadata }) !== retrySnapshot) throw Object.assign(new Error('聊天内容已改变，不能重试覆盖先前的保存。当前内容仍保留在页面中。'), { code: 'NORA_CHAT_SAVE_STALE', phase: 'save' });
-                try { return await send(); }
-                catch (error) { error.retrySave = retrySave; throw error; }
+                try { return await send(true); } catch (error) { error.retrySave = retrySave; throw error; }
             });
         }
         return await send();
@@ -7915,15 +8010,37 @@ async function saveChatNow({ chatName, withMetadata, mesId, force = false, chatD
  */
 export async function runNoraChatBackupTransaction(operation) {
     if (typeof operation !== 'function') throw new TypeError('Chat backup transaction requires an operation.');
-    noraChatBackupTransactionDepth += 1;
+    const identity = chatWriteIdentity();
+    const transaction = noraChatBackupTransactions.get(identity) || { depth: 0, failed: false };
+    noraChatBackupTransactions.set(identity, transaction);
+    transaction.depth++;
+    let operationError, result;
+    let operationFailed = false;
     try {
-        return await operation();
+        result = await operation();
+    } catch (error) {
+        operationError = error;
+        operationFailed = true;
+        transaction.failed = true;
     } finally {
-        noraChatBackupTransactionDepth = Math.max(0, noraChatBackupTransactionDepth - 1);
-        if (noraChatBackupTransactionDepth === 0) {
-            await saveChat();
+        transaction.depth--;
+    }
+    if (transaction.depth === 0) {
+        noraChatBackupTransactions.delete(identity);
+        try {
+            if (identity !== chatWriteIdentity()) {
+                throw Object.assign(new Error('聊天已切换，已取消旧操作的最终保存。'), { code: 'NORA_CHAT_SAVE_STALE', phase: 'save' });
+            }
+            await saveChat({ skipBackup: transaction.failed });
+        } catch (error) {
+            if (!operationFailed) throw error;
+            // Keep the original failure and expose a separate save failure.
+            if (operationError instanceof Error && Object.isExtensible(operationError)) operationError.saveError = error;
+            else console.error('[Chat save] Final save also failed:', error);
         }
     }
+    if (operationFailed) throw operationError;
+    return result;
 }
 
 /**
@@ -8834,7 +8951,7 @@ export async function commitNoraStoryEdit(messageId, text) {
     return chat[absoluteId];
 }
 
-function openMessageDelete(fromSlashCommand) {
+function openMessageDelete(fromSlashCommand, deleteToolCalls = true) {
     closeMessageEditor();
     hideSwipeButtons();
     if (fromSlashCommand || !is_send_press) {
@@ -8848,6 +8965,7 @@ function openMessageDelete(fromSlashCommand) {
         console.debug(`ERR -- could not enter del mode; this_chid: ${this_chid}; is_send_press: ${is_send_press}`);
     }
     this_del_mes = -1;
+    deleteToolCallsInDeleteMode = deleteToolCalls;
     is_delete_mode = true;
 }
 
@@ -11503,7 +11621,7 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
         const chid = characters.indexOf(character);
         const pastChats = await getPastCharacterChats(chid);
 
-        const msg = { avatar_url: character.avatar, delete_chats: deleteChats };
+        const msg = { avatar_url: character.avatar, delete_chats: deleteChats, idempotency_key: crypto.randomUUID() };
 
         const response = await fetch('/api/characters/delete', {
             method: 'POST',
@@ -11516,6 +11634,10 @@ export async function deleteCharacter(characterKey, { deleteChats = true } = {})
             toastr.error(`${response.status} ${response.statusText}`, t`Failed to delete character`);
             continue;
         }
+
+        const removal = await response.json();
+        if (removal.archive === 'retained-referenced') toastr.info(t`库卡已删除；仍有引用的原始存档已保留。`);
+        if (removal.archive === 'retained-changed') toastr.warning(t`库卡已删除；原始存档内容已变化，未自动删除。`);
 
         accountStorage.removeItem(`AlertWI_${character.avatar}`);
         accountStorage.removeItem(`AlertRegex_${character.avatar}`);
@@ -11819,6 +11941,7 @@ jQuery(async function () {
         });
         $(this).addClass('selected'); //sets the bg of the mes selected for deletion
         var i = Number($(this).attr('mesid')); //checks the message ID in the chat
+        i = getMessageDeletionStartId(i, deleteToolCallsInDeleteMode);
         this_del_mes = i;
         //as long as the current message ID is less than the total chat length
         while (i < chat.length) {
@@ -12139,6 +12262,7 @@ jQuery(async function () {
     ///////////// OPTIMIZED LISTENERS FOR LEFT SIDE OPTIONS POPUP MENU //////////////////////
     $('#options [id]').on('click', async function (event, customData) {
         const fromSlashCommand = customData?.fromSlashCommand || false;
+        const deleteToolCalls = customData?.deleteToolCalls ?? true;
         var id = $(this).attr('id');
 
         // Check whether a custom prompt was provided via custom data (for example through a slash command)
@@ -12202,7 +12326,7 @@ jQuery(async function () {
                 Generate('continue', buildOrFillAdditionalArgs());
             }
         } else if (id == 'option_delete_mes') {
-            setTimeout(() => openMessageDelete(fromSlashCommand), animation_duration);
+            setTimeout(() => openMessageDelete(fromSlashCommand, deleteToolCalls), animation_duration);
         } else if (id == 'option_close_chat') {
             await closeCurrentChat();
         }

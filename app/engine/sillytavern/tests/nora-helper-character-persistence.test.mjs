@@ -8,22 +8,60 @@ import { createRuntimeControls } from '../public/scripts/nora-controls/runtime.j
 import { transformCharacterPersistence } from '../../../native-extensions/JS-Slash-Runner/apply-character-persistence.mjs';
 import { transformDeferredEditor } from '../../../native-extensions/JS-Slash-Runner/apply-deferred-json-editor.mjs';
 import { transformWorldPreset } from '../../../native-extensions/JS-Slash-Runner/apply-world-preset.mjs';
+import { transformManagedRuntime } from '../../../native-extensions/JS-Slash-Runner/apply-managed-runtime.mjs';
 
 const require = createRequire(import.meta.url);
 const lodash = require('lodash');
 const bundle = fs.readFileSync(new URL('../../../native-extensions/JS-Slash-Runner/dist/index.js', import.meta.url), 'utf8');
-const start = bundle.indexOf('async function oA(');
-const end = bundle.indexOf('var sA=', start);
+const start = bundle.indexOf('async function Rk(');
+const end = bundle.indexOf('var zk=', start);
 assert.ok(start >= 0 && end > start);
 
 test('Helper transforms coexist, are repeatable and reject an unknown save function', () => {
-    const transforms = [transformCharacterPersistence, transformDeferredEditor, transformWorldPreset];
+    const transforms = [transformManagedRuntime, transformCharacterPersistence, transformDeferredEditor, transformWorldPreset];
     for (const order of [transforms, [...transforms].reverse()]) {
         assert.equal(order.reduce((source, transform) => transform(source), bundle), bundle);
     }
     assert.throws(() => transformCharacterPersistence('unknown bundle'), /anchors/);
-    assert.throws(() => transformCharacterPersistence(bundle.replace('async function oA(e,t,n,r=!0){', 'async function oA(e,t,n,r=!0){unknown();')), /function/);
+    assert.throws(() => transformCharacterPersistence(bundle.replace('async function Rk(e,t,n,r=!0){', 'async function Rk(e,t,n,r=!0){unknown();')), /function/);
     assert.throws(() => transformCharacterPersistence(bundle.replace('persistCharacterExtension } from', 'missingDependency } from')), /import/);
+});
+
+test('shipped character scope switches same-name Worlds and reloads the matching scripts', async () => {
+    const vue = fs.readFileSync(new URL('../../../native-extensions/JS-Slash-Runner/vendor/iframe/vue.runtime.global.prod.min.js', import.meta.url), 'utf8');
+    const context = vm.createContext({ console });
+    vm.runInContext(vue, context);
+    const V = context.Vue;
+    const cards = [
+        { name: 'Same', avatar: 'a--nora-owned.png', scripts: [{ id: 'script-a', enabled: true }] },
+        { name: 'Same', avatar: 'b--nora-owned.png', scripts: [{ id: 'script-b', enabled: false }] },
+    ];
+    const events = new Map();
+    Object.assign(context, {
+        b: cards, He: 0, M: V.ref, Gi: V.readonly, I: V.watch,
+        nF: (_id, setup) => () => V.proxyRefs(setup()),
+        iF: id => ({ scripts: structuredClone(cards[id].scripts) }),
+        k: { makeFirst: (event, callback) => events.set(event, callback), on() {} },
+        A: { CHAT_CHANGED: 'chat-changed' }, $: () => ({ on() {} }),
+        window: { fetch() { throw new Error('World switching must not write or run scripts'); } },
+        _d: () => ({ ignoreUpdates: callback => callback() }),
+    });
+    const from = bundle.indexOf('var oF='), to = bundle.indexOf('function sF(', from);
+    assert.ok(from >= 0 && to > from, 'Review character-store bindings on upstream upgrades');
+    vm.runInContext(bundle.slice(from, to), context);
+    const store = context.oF();
+    assert.equal(store.settings.scripts[0].id, 'script-a');
+    context.He = 1;
+    events.get('chat-changed')();
+    await V.nextTick();
+    assert.equal(store.id, 1);
+    assert.equal(store.avatar, 'b--nora-owned.png');
+    assert.equal(store.settings.scripts[0].id, 'script-b');
+    assert.equal(store.settings.scripts[0].enabled, false);
+    context.He = 0;
+    events.get('chat-changed')();
+    await V.nextTick();
+    assert.equal(store.settings.scripts[0].id, 'script-a');
 });
 
 function fixture() {
@@ -31,13 +69,13 @@ function fixture() {
     const writes = [];
     let fail = false;
     const context = vm.createContext({
-        ...adapter, b: [card], He: 0, _: lodash, Wk: structuredClone,
-        Ue: async () => {}, pe: () => ({}), Uk: { serialize: x => x },
+        ...adapter, b: [card], He: 0, _: lodash, Sk: structuredClone,
+        Ue: async () => {}, fe: () => ({}), xk: { serialize: x => x },
         $: () => ({ val() {} }), console,
         fetch: async (route, options) => { writes.push(options.body); return { ok: !fail, status: fail ? 500 : 200, text: async () => 'failed' }; },
     });
     vm.runInContext(bundle.slice(start, end), context);
-    return { card, writes, context, set fail(value) { fail = value; }, write: (...args) => context.oA(0, ...args) };
+    return { card, writes, context, set fail(value) { fail = value; }, write: (...args) => context.Rk(0, ...args) };
 }
 
 test('shipped Helper writes the actual avatar, not the display name', async () => {
@@ -104,7 +142,7 @@ test('same-name worlds use separate files and a renamed display name is harmless
     const f = fixture();
     const other = { ...f.card, avatar: 'other.png', data: { extensions: {} } };
     f.context.b.push(other);
-    await f.context.oA(1, 'tavern_helper', { scripts: [{ id: 'other' }] });
+    await f.context.Rk(1, 'tavern_helper', { scripts: [{ id: 'other' }] });
     f.card.name = 'Renamed';
     await f.write('tavern_helper', { scripts: [] });
     assert.deepEqual(f.writes.map(x => x.avatar_url), ['other.png', 'world-a-owned.png']);

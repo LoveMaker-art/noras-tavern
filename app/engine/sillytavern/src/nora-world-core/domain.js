@@ -315,6 +315,12 @@ export function createWorldManifest({ operation, command, materialization, now }
 }
 
 export function validateWorldManifest(value) {
+    if (value?.schema === 'nora-world-tombstone/1') {
+        if (value.lifecycle?.status !== 'DELETED') invalid('A tombstone cannot represent an active World.');
+        return validateWorldManifest({ ...value, schema: undefined, schema_version: WORLD_SCHEMA_VERSION,
+            persona: { name: '', description: '' }, capabilities: { declared: [], status: 'READY', items: {} },
+            story_context: undefined, preset: undefined, ui: undefined });
+    }
     const manifest = requireRecord(value, 'manifest');
     if (manifest.schema_version !== WORLD_SCHEMA_VERSION) invalid('Unsupported World manifest schema version.');
     const lifecycle = requireRecord(manifest.lifecycle, 'manifest.lifecycle');
@@ -417,6 +423,17 @@ export function validateWorldManifest(value) {
         },
         created_at: createdAt,
         updated_at: updatedAt,
+    };
+}
+
+export function worldStorageRecord(world) {
+    if (world.lifecycle.status !== 'DELETED') return world;
+    return {
+        schema: 'nora-world-tombstone/1', world_id: world.world_id, revision: world.revision,
+        name: world.name, lifecycle: { status: 'DELETED', error: null },
+        source: { ...world.source, original_name: '', format: '' },
+        runtime_card: world.runtime_card, sessions: world.sessions, knowledge: world.knowledge,
+        created_at: world.created_at, updated_at: world.updated_at,
     };
 }
 

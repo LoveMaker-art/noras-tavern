@@ -66,6 +66,16 @@ test('foreign Session headers and modified covered history cannot become shared 
     await assert.rejects(f.collect(), SyntaxError);
 });
 
+test('a restored chat invalidates the old ledger even when its narrative prefix is identical', async t => {
+    const f = fixture(t), item = f.session('world-a', 'a', 'Old ledger');
+    item.header.chat_metadata.nora_restore = { id: 'restore-a' };
+    item.writeChat();
+    assert.deepEqual(await f.collect(), []);
+    const state = JSON.parse(fs.readFileSync(item.statePath, 'utf8'));
+    fs.writeFileSync(item.statePath, JSON.stringify({ ...state, restoreId: 'restore-a' }));
+    assert.equal((await f.collect()).length, 1);
+});
+
 test('queued activation/deletion while a projection is running converges to the latest snapshot', async () => {
     let snapshot = ['world-a'];
     let release;

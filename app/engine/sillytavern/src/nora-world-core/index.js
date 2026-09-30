@@ -7,7 +7,9 @@ export function createNoraWorldCore(options) {
     return Object.freeze({
         listLibraryCards: core.listLibraryCards.bind(core),
         saveLibraryCard: core.saveLibraryCard.bind(core),
+        manageLibraryCard: core.manageLibraryCard.bind(core),
         readLibraryCardSource: core.readLibraryCardSource.bind(core),
+        deleteLibraryCard: core.deleteLibraryCard.bind(core),
         listLibraryProfiles: core.listLibraryProfiles.bind(core),
         readLibraryProfile: core.readLibraryProfile.bind(core),
         saveLibraryProfile: core.saveLibraryProfile.bind(core),
@@ -30,6 +32,7 @@ export function createNoraWorldCore(options) {
         updateWorld: core.updateWorld.bind(core),
         prepareOpen: core.prepareOpen.bind(core),
         deleteWorld: core.deleteWorld.bind(core),
+        previewWorldDeletion: core.previewWorldDeletion.bind(core),
         repairWorld: core.repairWorld.bind(core),
         beginCapabilityAttempt: core.beginCapabilityAttempt.bind(core),
         settleCapabilityAttempt: core.settleCapabilityAttempt.bind(core),

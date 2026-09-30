@@ -7,7 +7,7 @@ import ts from 'typescript';
 const source = await fs.readFile(new URL('../../../native-extensions/JS-Slash-Runner/dist/index.js', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('runner.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 // Execute the shipped dispatcher, prompt collector and HTTP override function together.
-const names = ['EK', 'uG', 'BG'];
+const names = ['ZG', 'PW', 'uG'];
 const declarations = ast.statements.filter(ts.isFunctionDeclaration).filter(node => names.includes(node.name?.text));
 assert.equal(declarations.length, names.length, 'Recheck the managed runner bindings on vendor upgrades');
 
@@ -16,25 +16,25 @@ function runtime() {
     const requests = [];
     const settings = { openai_max_context: 32768, openai_max_tokens: 2048, temp_openai: 0.4, top_p_openai: 0.8 };
     const context = vm.createContext({
-        wt: settings, pK: new Map(), mK: new Set(), AbortController,
-        k: { emit: async () => {} }, A: {}, yK() {}, RW() {},
-        fG: async input => ({ processedUserInput: input, processedImageArray: [] }),
-        GW: async () => ({}),
-        vt: class {
+        Ct: settings, RG: new Map(), zG: new Set(), AbortController,
+        k: { emit: async () => {} }, A: {}, WG() {}, sW() {},
+        IW: async input => ({ processedUserInput: input, processedImageArray: [] }),
+        mW: async () => ({}),
+        _t: class {
             setTokenBudget(context, output) { budgets.push({ context, output }); }
             reserveBudget() {} freeBudget() {} getChat() { return []; }
         },
-        oG: async () => ({ systemPrompts: new Map(), dialogue_examples: [] }),
-        yt: { createAsync: async () => ({}) }, sG: async () => {},
-        GG: async (_prompt, _stream, _id, _image, _abort, custom) => {
+        AW: async () => ({ systemPrompts: new Map(), dialogue_examples: [] }),
+        vt: { createAsync: async () => ({}) }, jW: async () => {},
+        gG: async (_prompt, _stream, _id, _image, _abort, custom) => {
             const request = { max_tokens: settings.openai_max_tokens, temperature: settings.temp_openai, top_p: settings.top_p_openai };
-            if (custom) context.BG(request, custom);
+            if (custom) context.uG(request, custom);
             requests.push(request);
             return 'ok';
         },
     });
     vm.runInContext(declarations.map(node => node.getText(ast)).join('\n'), context);
-    return { budgets, requests, settings, generate: custom => context.EK({
+    return { budgets, requests, settings, generate: custom => context.ZG({
         generation_id: 'budget-test', user_input: 'update variables', use_preset: false,
         bindToStopButton: false, order: [], custom_api: custom,
     }) };

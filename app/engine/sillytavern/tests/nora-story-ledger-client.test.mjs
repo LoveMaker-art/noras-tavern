@@ -4,8 +4,41 @@ import { EventEmitter } from 'node:events';
 import {
     connectLedger, refreshLedger, adoptLedgerStatus, ledgerAllowsEdit, tagCurrentLedgerHistory,
     digestHistory, prepareLedgerHistory, rememberLedgerPrompt, ledgerPromptPlan, ledgerPromptValid, acknowledgeLedger,
+    protectStoryRegeneration,
 } from '../public/scripts/nora-story-ledger/client.js';
 import { LEDGER_SOURCE, renderLedger } from '../public/scripts/nora-story-ledger/history.js';
+
+test('regeneration requires a protected checkpoint; normal sends and prompt previews never request one', async t => {
+    const context = { chat: [{ is_user: false, mes: 'original', extra: { stat_data: { hp: 10 } } }],
+        chatMetadata: { nora_world: { id: 'protection-world' }, nora_session: { id: 'protection-session' } },
+        getRequestHeaders: () => ({}), eventSource: new EventEmitter(), eventTypes: {} };
+    let fail = false, mutate = false, offline = false;
+    const requests = [];
+    t.mock.method(globalThis, 'fetch', async (url, options) => {
+        if (!url.endsWith('/checkpoint')) return { ok: true, json: async () => ({}) };
+        if (offline) throw new TypeError('Failed to fetch');
+        requests.push(JSON.parse(options.body));
+        if (mutate) context.chat[0].extra.stat_data.hp = 8;
+        return { ok: !fail, json: async () => fail ? { code: 'NORA_BACKUP_REQUIRED', error: 'checkpoint failed' } : { status: 'created', id: 'snapshot' } };
+    });
+    const disconnect = connectLedger(() => context);
+    t.after(disconnect);
+    await protectStoryRegeneration(context, { type: 'normal' });
+    await protectStoryRegeneration(context, { type: 'regenerate', dryRun: true });
+    await protectStoryRegeneration(context, { type: 'regenerate', depth: 1 });
+    assert.equal(requests.length, 0);
+    fail = true;
+    await assert.rejects(protectStoryRegeneration(context, { type: 'regenerate' }), { code: 'NORA_BACKUP_REQUIRED' });
+    assert.equal(context.chat[0].mes, 'original');
+    fail = false;
+    await protectStoryRegeneration(context, { type: 'regenerate' });
+    assert.equal(requests.at(-1).expectedSignature, await digestHistory(context.chat));
+    offline = true;
+    await assert.rejects(protectStoryRegeneration(context, { type: 'regenerate' }), { code: 'NORA_BACKUP_REQUIRED' });
+    offline = false;
+    mutate = true;
+    await assert.rejects(protectStoryRegeneration(context, { type: 'regenerate' }), { code: 'NORA_LEDGER_EDIT_STALE' });
+});
 
 test('canonical ST and default helper clones share history policy; custom/raw histories remain untouched', async t => {
     const scope = { worldId: 'client-world', sessionId: 'client-session' };
@@ -67,4 +100,10 @@ test('canonical ST and default helper clones share history policy; custom/raw hi
     assert.equal(await prepareLedgerHistory(converted, options), null, 'prefix fingerprint must match canonical raw history');
     context.chatMetadata = { nora_world: { id: 'other' }, nora_session: { id: 'other' } };
     assert.equal(ledgerPromptValid([{ content: renderLedger(record) }], plan), false);
+    context.chatMetadata = { ...metadata, nora_restore: { id: 'restore-new' } };
+    adoptLedgerStatus({ ...status, restoreId: 'restore-new' });
+    assert.equal(ledgerAllowsEdit(0), true, 'restoration explicitly clears the old active prefix');
+    adoptLedgerStatus({ ...status, active: record });
+    assert.equal(ledgerAllowsEdit(0), true, 'a delayed pre-restoration response cannot resurrect the old prefix');
+    assert.equal(ledgerPromptValid(prompt, plan), false);
 });

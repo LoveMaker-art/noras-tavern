@@ -25,6 +25,15 @@ a model directly to substitute for the ST/Helper/MVU generation lifecycle.
 
 ## Edit and truncate
 
+For the connected page, inspect `story.message` with an index in the currently
+loaded chat window (not an absolute full-history offset). Use its revision for
+`story.edit` to edit an assistant message without truncating later messages.
+`story.edit-and-regenerate` edits a user message and regenerates, with downstream
+history effects; explain those effects before execution. `story.swipe` selects an
+existing candidate only and rejects an unavailable direction; `story.retry` may
+generate a reply. Observe model-consent requirements, including background ledger
+work. The offline workflow below is a different, truncating operation.
+
 1. Read the target message, history signature and ledger state. Resolve exactly
    which message the user means, not just a displayed round number.
 2. Check whether the target is locked by activated/reserved compressed history.

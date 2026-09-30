@@ -721,7 +721,6 @@ export const english = Object.freeze({
     '世界资源已重新检查。': 'World resources checked.',
     '世界仍需修复：${0}': 'World still needs repair: ${0}',
     '这个世界仍需修复，请先点击“重新检查”查看结果。': 'This world needs repair. Select “Check again” to see the result.',
-    '将删除这个世界及其专属会话和资源；共享世界书与外部资源会保留。此操作无法撤销。': 'This will delete the world and its dedicated chats and resources. Shared lorebooks and external resources will remain. This cannot be undone.',
     '世界正在删除，请稍候。': 'Deleting world. Please wait.',
     '世界已删除。': 'World deleted.',
     '世界删除失败：${0}': 'Could not delete world: ${0}',

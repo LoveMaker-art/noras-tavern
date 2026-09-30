@@ -76,6 +76,7 @@ function runtimeFixture() {
         extensionSettings: { disabledExtensions: [], nora_mvu: {}, mvu_settings: { '更新方式': '额外模型解析', '额外模型解析配置': { '启用自动请求': true, '最大回复token数': 4096, '密钥': 'fixture-secret' } },
             tavern_helper: { script: { enabled: { global: true, characters: [], presets: [] }, scripts: [] } }, example: { color: 'red' } },
         getActiveExtensionNames: () => ['regex', 'third-party/JS-Slash-Runner'],
+        getRequestHeaders: () => ({}),
         saveSettingsStrict: async () => { if (failSave) throw new Error('save rejected'); saved++; },
     };
     const mv = { getMvuData: () => ({ stat_data: { hp: 10 }, schema: {} }), reloadSettings() {}, retryLastUpdate: async () => {} };
@@ -90,6 +91,14 @@ function runtimeFixture() {
     });
     let stopped = '';
     const controls = createRuntimeControls({ getContext: () => context, story: { mvu, messages: { isGenerating: () => false } },
+        fetcher: async url => {
+            assert.equal(url, '/api/extensions/library');
+            return { ok: true, json: async () => ({ items: [
+                { name: 'third-party/JS-Slash-Runner', builtin: { key: 'tavern_helper' } },
+                { name: 'third-party/nora-mvu', builtin: { key: 'mvu' } },
+                { name: 'example', editable: true, libraryEnabled: false },
+            ] }) };
+        },
         dispatch: () => ({ cancel: async scope => { stopped = scope; }, execute: async command => ({ status: 'completed', value: await command.run?.() }) }),
         assertIdle: () => {}, globalRef: { Mvu: mv, TavernHelper: { noraControls: helperControl, getScriptTrees: () => structuredClone(trees), replaceScriptTrees: async next => { trees = structuredClone(next); }, getAllEnabledScriptButtons: () => ({}) } },
         loadExtensions: async () => ({ extensionNames: ['regex', 'memory', 'third-party/JS-Slash-Runner', 'third-party/nora-mvu', 'example'],
@@ -227,13 +236,16 @@ test('script management uses helper API, preserves siblings, rejects stale edits
 test('product exclusions, dependency protection, strict configuration fields and stale World guard are enforced', async () => {
     const f = runtimeFixture();
     const list = await f.controls.execute(command('plugins.list'));
-    assert.equal(list.plugins.find(item => item.name === 'memory').controllable, false);
+    assert.equal(list.plugins.some(item => item.name === 'memory'), false);
+    assert.equal(list.plugins.find(item => item.name === 'example').enabled, false);
     assert.equal(list.quickReply.available, false);
     await assert.rejects(f.controls.execute(command('plugins.enabled', { name: 'memory', enabled: true })), { code: 'NORA_CONTROL_PROTECTED' });
     await assert.rejects(f.controls.execute(command('plugins.enabled', { name: 'third-party/JS-Slash-Runner', enabled: false })), { code: 'NORA_CONTROL_DEPENDENCY' });
-    const changed = await f.controls.execute(command('plugins.configure', { name: 'example', updates: { color: 'blue' } }));
+    let config = await f.controls.execute(command('plugins.config', { name: 'example' }));
+    const changed = await f.controls.execute(command('plugins.configure', { name: 'example', updates: { color: 'blue' }, expectedRevision: config.revision }));
     assert.equal(changed.runtimeApplied, false); assert.equal(changed.reloadRequired, true);
-    await assert.rejects(f.controls.execute(command('plugins.configure', { name: 'example', updates: { '__proto__.pollution': true } })), { code: 'NORA_CONTROL_FIELD_DENIED' });
+    config = await f.controls.execute(command('plugins.config', { name: 'example' }));
+    await assert.rejects(f.controls.execute(command('plugins.configure', { name: 'example', updates: { '__proto__.pollution': true }, expectedRevision: config.revision })), { code: 'NORA_CONTROL_FIELD_DENIED' });
     await f.controls.execute(command('story.stop')); assert.equal(f.stopped, 'visible');
     f.context.chatMetadata.nora_world.id = 'another';
     await assert.rejects(f.controls.execute(command('mvu.status')), { code: 'NORA_CONTROL_SCOPE_CHANGED' });

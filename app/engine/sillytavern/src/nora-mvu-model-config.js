@@ -82,6 +82,24 @@ export class NoraMvuModelConfig {
         writeFileAtomicSync(this.filePath, JSON.stringify(config, null, 4), 'utf8');
         return Object.freeze(config);
     }
+
+    patch(value) {
+        const changes = {};
+        for (const field of ['base_url', 'model', 'context', 'max_tokens']) {
+            if (value?.[field] === undefined) continue;
+            const item = value[field];
+            if (field === 'context' || field === 'max_tokens') {
+                const [min, max] = field === 'context' ? [512, 1000000] : [1, 128000];
+                if (!Number.isInteger(item) || item < min || item > max) {
+                    throw new NoraMvuModelConfigError('invalid_mvu_model_config', `${field} must be an integer between ${min} and ${max}.`);
+                }
+            } else if (typeof item !== 'string' || !item.trim()) {
+                throw new NoraMvuModelConfigError('invalid_mvu_model_config', `${field} must be non-empty text.`);
+            }
+            changes[field] = item;
+        }
+        return this.save({ ...this.read(), ...changes });
+    }
 }
 
 export function resolveNoraMvuModelRequest(directories, customUrl) {

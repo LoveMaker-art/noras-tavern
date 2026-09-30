@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import { createStoryLedger } from '../src/nora-story-ledger/core.js';
+import { ledgerAfterRestore } from '../src/nora-story-ledger/state-file.js';
 import { batchSegments, normalizeLedger } from '../src/nora-story-ledger/schema.js';
 import { countTurns, coveredMessageCount, prefixText, renderLedger } from '../public/scripts/nora-story-ledger/history.js';
 
@@ -58,6 +59,76 @@ async function activate(f, record = f.state.pending) {
     await dispatch.accept();
     dispatch.release();
 }
+
+test('restoration refuses compression and dispatched ledger work, and suppresses scheduling during its critical section', async () => {
+    let release, entered;
+    const reached = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const f = fixture(16, async () => { entered(); await gate; return memory(); });
+    const compression = f.plugin.schedule(scope);
+    await reached;
+    await assert.rejects(f.plugin.withIdleSession(scope, () => assert.fail('compression still running')), { code: 'NORA_LEDGER_BUSY' });
+    release(); await compression;
+    const record = f.state.pending;
+    const dispatch = await f.plugin.reserve(scope, record.id, [{ content: renderLedger(record) }]);
+    await assert.rejects(f.plugin.withIdleSession(scope, () => assert.fail('dispatch still running')), { code: 'NORA_LEDGER_BUSY' });
+    dispatch.release();
+    const calls = f.calls.length;
+    await assert.rejects(f.plugin.withIdleSession(scope, async () => {
+        await f.plugin.schedule(scope, { retry: true });
+        assert.equal(f.calls.length, calls);
+        throw new Error('synthetic restoration failure');
+    }), /synthetic restoration failure/);
+    assert.equal(await f.plugin.withIdleSession(scope, () => 'unlocked'), 'unlocked');
+});
+
+test('atomic chat receipt invalidates every old ledger after restart and waits for new narrative before compression', async () => {
+    const f = fixture(16);
+    await f.plugin.schedule(scope); await activate(f);
+    let messages = f.messages;
+    const metadata = { nora_restore: { id: 'restored', ledgerEnabled: true, historySignature: fingerprint(messages) } };
+    const restarted = createStoryLedger({ ...f.options, readChat: () => ({ messages }),
+        readState: () => ledgerAfterRestore(f.state, metadata) });
+    const result = await restarted.status(scope);
+    assert.equal(result.restoreId, 'restored');
+    assert.equal(result.active, null);
+    assert.equal(result.pending, null);
+    const before = f.calls.length;
+    await restarted.schedule(scope, { retry: true });
+    messages.at(-1).extra.stat_data.turn = 90;
+    await restarted.schedule(scope, { retry: true });
+    assert.equal(f.calls.length, before, 'restoration and variable-only changes do not start a model call');
+    messages.push({ is_user: true, mes: 'new action' }, { is_user: false, mes: 'new reply' });
+    await restarted.schedule(scope);
+    assert.equal(f.calls.length, before + 1);
+    assert.equal(f.state.restoreId, 'restored');
+    assert.equal(f.state.active, null);
+    assert.equal(f.state.pending.coveredTurns, 15);
+    assert.equal(ledgerAfterRestore(f.state, { nora_restore: { id: 'next', ledgerEnabled: false } }).enabled, false);
+});
+
+test('edit preparation holds the session lock and a failed checkpoint releases it without writing the edit', async () => {
+    const f = fixture(2);
+    let entered, release, wroteEdit = false, wroteSave = false;
+    const reached = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const editing = f.plugin.edit(scope, { messageId: 1, text: 'replacement', expectedSignature: fingerprint(f.messages) },
+        () => { wroteEdit = true; }, { beforeWrite: async () => {
+            entered(); await gate;
+            throw Object.assign(new Error('backup unavailable'), { code: 'NORA_BACKUP_REQUIRED' });
+        } });
+    const rejection = assert.rejects(editing, { code: 'NORA_BACKUP_REQUIRED' });
+    await reached;
+    const saved = [...f.messages, { is_user: true, mes: 'later ordinary save' }];
+    const saving = f.write(saved).then(() => { wroteSave = true; });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(wroteSave, false);
+    release();
+    await rejection;
+    await saving;
+    assert.equal(wroteEdit, false);
+    assert.deepEqual(f.messages, saved);
+});
 
 test('agent inspect is pure even with stale candidates, and reports active/reserved edit locks', async () => {
     const f = fixture();

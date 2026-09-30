@@ -169,11 +169,16 @@ server.tool("nora.world.repair", "Run Nora's non-destructive World repair flow. 
   confirm: z.boolean().optional(),
 }, async ({ worldId, idempotencyKey, confirm }) => textResult(await nora.repairWorld(worldId, idempotencyKey, confirm)));
 
-server.tool("nora.world.delete", "Delete a Nora World through the durable Nora World Core mutation flow. Requires confirm: true.", {
+server.tool("nora.world.delete_preview", "Read the authoritative deletion plan, including protected backups and retained shared/unknown resources. Present its scope to the user before confirmation. No files are deleted. Pass the returned token as expectedPlan to nora.world.delete.", {
+  worldId: z.string(),
+}, async ({ worldId }) => textResult(await nora.previewWorldDeletion(worldId)));
+
+server.tool("nora.world.delete", "Permanently delete one World, its exclusive chats/resources and all confidently owned chat backups, including protected backups. Shared resources, library originals and unknown-owner files remain. Update rollback packages are managed separately and may still contain historical data. First read nora.world.delete_preview, explain its scope and obtain confirmation; requires confirm: true and its token. A changed plan requires new confirmation, not a blind retry. UI and MCP use the same durable backend operation.", {
   worldId: z.string(),
   idempotencyKey: z.string().trim().min(1).max(200),
+  expectedPlan: z.string().regex(/^[a-f0-9]{64}$/),
   confirm: z.boolean().optional(),
-}, async ({ worldId, idempotencyKey, confirm }) => textResult(await nora.deleteWorld(worldId, idempotencyKey, confirm)));
+}, async ({ worldId, idempotencyKey, confirm, expectedPlan }) => textResult(await nora.deleteWorld(worldId, idempotencyKey, confirm, expectedPlan)));
 
 server.tool("nora.operation.get", "Read a Nora World operation by operation id.", {
   operationId: z.string(),
@@ -218,17 +223,22 @@ server.tool("nora.story.refresh", "Refresh Story Profile taste/personality state
 server.tool("nora.mvu_model.get", "Read Nora's independent MVU parser model configuration.", {}, async () => {
   return textResult(await nora.mvuModelConfig());
 });
+server.tool("nora.mvu.diagnostics", "Read recent retained MVU diagnostic metadata, newest first. Excludes raw errors, prompts and model output. Limited rotating history, not a complete audit; no events does not imply success.", {
+  limit: z.number().int().min(1).max(100).default(20),
+}, async ({ limit }) => textResult(await nora.mvuDiagnostics(limit)));
 
-server.tool("nora.mvu_model.configure", "Configure Nora's independent MVU parser model. Requires confirm: true.", {
+server.tool("nora.mvu_model.configure", "Patch Nora's independent MVU model; omitted fields retain saved values. First creation requires baseUrl, model and a key. No model test or generation.", {
   baseUrl: z.string().optional(),
   model: z.string().optional(),
   apiKey: z.string().optional(),
+  context: z.number().int().min(512).max(1000000).optional(),
+  maxTokens: z.number().int().min(1).max(128000).optional(),
   confirm: z.boolean().optional(),
 }, async (request) => textResult(await nora.configureMvuModel(request)));
 
 const transport = new StdioServerTransport();
-server.tool("nora.library.list", "List independently reusable character profiles, player personas or worldbooks. Does not apply them to a World.", {
-  kind: z.enum(["character", "persona", "worldbook"]),
+server.tool("nora.library.list", "List Nora library original cards, independent character profiles, player personas or worldbooks. card uses the authoritative library, not ST's runtime character list. Does not apply to a World.", {
+  kind: z.enum(["card", "character", "persona", "worldbook"]),
 }, async ({ kind }) => textResult(await nora.libraryList(kind)));
 server.tool("nora.library.read", "Read a listed profile by id, or a worldbook by source. Inspect before reusing. No model call.", {
   id: z.string().regex(/^[a-f0-9]{64}$/).optional(), source: z.object({ kind: z.enum(["book", "card"]), name: z.string().min(1) }).optional(),
@@ -236,14 +246,33 @@ server.tool("nora.library.read", "Read a listed profile by id, or a worldbook by
 server.tool("nora.library.save", "Save a reusable template ONLY to the library, never to the current World. Character data: name, description, personality, optional activation. Persona: name, description. Worldbook: full entries. Same name/content reuses; conflicting content requires another name. Does not extract people or run scripts/models.", {
   kind: z.enum(["character", "persona", "worldbook"]), name: z.string().trim().min(1).max(200), data: z.record(z.unknown()), confirm: z.literal(true),
 }, async request => textResult(await nora.librarySave(request)));
+server.tool("nora.library.delete", "Delete one independent profile or whole library worldbook using its read revision. Does not delete a World or a card-embedded book. Referenced resources retain backend protections.", {
+  id: z.string().regex(/^[a-f0-9]{64}$/).optional(), source: z.object({ kind: z.literal("book"), name: z.string().min(1) }).optional(),
+  revision: z.string().min(1), confirm: z.literal(true),
+}, async request => textResult(await nora.libraryDelete(request)));
+server.tool("nora.library.import_card", "Store a complete card ONLY in the library through the same import/deduplication service as UI. Does not create/open a World, run scripts or call models. File must be in upload directory, maximum 64 MiB.", {
+  filePath: z.string().min(1), confirm: z.literal(true),
+}, async request => textResult(await nora.importLibraryCard(request.filePath)));
+server.tool("nora.library.manage_card", "Delete the selected independent card file, or clean exact duplicates while keeping it. Requires revision from library.list(card). Referenced files are retained, never deletes chats or World copies. Inspect removed/retained, not just HTTP success.", {
+  action: z.enum(["delete", "deduplicate"]), avatar: z.string().min(1), revision: z.string().min(1), confirm: z.literal(true),
+}, async ({ confirm: _confirm, ...request }) => textResult(await nora.manageLibraryCard(request)));
 server.tool("nora.background.import", "Import a PNG/JPEG/WebP within the configured upload directory, at most 12 MiB. Returns a persistent content-addressed background URL; does NOT change any World. Applying it uses theme.apply.", {
   filePath: z.string().min(1), confirm: z.literal(true),
 }, async request => textResult(await nora.importBackground(request.filePath)));
 server.tool("nora.preset.import", "Import an authored or uploaded ST preset JSON file from the configured upload directory (maximum 10 MB = 10485760 bytes). Preserves all library fields. Same name/content reuses; different content conflicts. Does not apply to Worlds, select a global preset, execute scripts or call models. Read warnings before applying; refresh an already-open library to see the import.", {
   filePath: z.string().min(1), name: z.string().trim().min(1).max(150), confirm: z.literal(true),
 }, async request => textResult(await nora.importPreset(request)));
+server.tool("nora.preset.edit_file", "Apply preset.edit edits from a UTF-8 JSON file (max 10 MiB) in upload directory to an EXISTING library template, including large prompt fields. Uses the same protected-marker and revision checks; does not select or apply to Worlds. JSON contains the edits object, not a replacement preset. Refresh any open editor before editing again.", {
+  filePath: z.string().min(1), name: z.string().min(1).max(150), expectedRevision: z.string().min(1), confirm: z.literal(true),
+}, async request => textResult(await nora.editPresetFile(request)));
+server.tool("nora.export", "Export a native card (PNG/JSON), preset/worldbook (JSON), or Nora reusable profile (JSON) to a unique private file in this instance's exports directory. target: card avatar, preset name, worldbook source.name returned by library list/read (NOT its display name), or profile ID. Returns path, bytes and checksum; does not alter source or upload externally. Exported authored scripts/content may be sensitive: share only as authorized.", {
+  kind: z.enum(["card", "preset", "worldbook", "profile"]), target: z.string().min(1), format: z.enum(["json", "png"]).default("json"), confirm: z.literal(true),
+}, async request => textResult(await nora.exportFile(request)));
 const scopeSchema = { worldId: z.string().min(1), sessionId: z.string().min(1) };
 const operationSchema = { idempotencyKey: z.string().trim().min(1).max(200), confirm: z.literal(true) };
+server.tool("nora.world.restart", "Create a new World from the current saved World configuration, preserving the source World and its chat. Read its revision first. Does not open a page; reuse idempotencyKey on uncertain outcomes.", {
+  ...operationSchema, worldId: z.string().min(1), expectedRevision: z.number().int().min(0), name: z.string().trim().min(1).max(80),
+}, async request => textResult(await nora.restartWorld(request)));
 server.tool("nora.world.create", "Create a blank World through World Core. Reuse idempotencyKey on uncertain outcomes; does not open a browser.", {
   ...operationSchema, name: z.string().trim().min(1).max(200), personaName: z.string().max(200).optional(), personaDescription: z.string().max(10000).optional(),
 }, async request => textResult(await nora.createWorld(request)));

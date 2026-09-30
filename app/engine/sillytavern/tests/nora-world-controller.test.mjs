@@ -4,7 +4,9 @@ import { createWorldController } from '../../../native-extensions/nora-ui/world-
 import { translate as tr } from '../public/scripts/nora-i18n/core.js';
 import { english } from '../public/scripts/nora-i18n/strings.js';
 
-function fixture(operation) {
+const previewWorldDeletion = async () => ({ token: 'a'.repeat(64), resources: [{ kind: 'session', action: 'delete' }], backups: [{ protected: true }], retained: [] });
+
+function fixture(operation, overrides = {}) {
     const list = { innerHTML: '' };
     const state = { worldModels: [], worldStatus: { operation } };
     const calls = [];
@@ -12,9 +14,43 @@ function fixture(operation) {
         store: { read: () => state }, readState() {}, select: () => list,
         worldRuntime: { retryPendingCreation: async () => calls.push('create'), refresh: async () => {} },
         timedUiStep: (_name, action) => action(), recordBootMilestone() {}, showToast() {},
+        ...overrides,
     });
     return { controller, list, state, calls };
 }
+
+test('permanent deletion explains protected backups and separate rollback packages before confirmation', async () => {
+    let confirmation, removed = false;
+    const f = fixture(null, {
+        confirmAction: async value => { confirmation = value; return false; },
+        worldRuntime: { previewWorldDeletion, remove: async () => { removed = true; } },
+    });
+    f.state.worldModels = [{ id: 'world:test', name: 'Test' }];
+    await f.controller.deleteWorld('world:test');
+    assert.ok(confirmation.body.includes(tr('将永久删除本世界、专属会话和资源，以及归属明确的全部聊天备份（包括受保护备份）。共享资源、库原件和归属不明文件保留。更新回退包独立管理，可能仍含历史数据。此操作无法撤销。')));
+    assert.match(confirmation.body, /1/);
+    assert.equal(confirmation.tone, 'danger');
+    assert.equal(removed, false);
+});
+
+test('partial deletion is reported as failure, never as complete removal', async () => {
+    const notices = [];
+    const f = fixture(null, {
+        confirmAction: async () => true,
+        operations: { isBusy: () => false, run: (_name, action) => action() },
+        worldRuntime: { previewWorldDeletion, remove: async (_id, options) => {
+            assert.equal(options.expectedPlan, 'a'.repeat(64));
+            throw new Error('incomplete deletion');
+        } },
+        normalizeError: error => error.message,
+        showToast: message => notices.push(message),
+    });
+    f.state.worldModels = [{ id: 'world:test', name: 'Test' }];
+    await f.controller.deleteWorld('world:test');
+    assert.equal(notices.length, 1);
+    assert.match(notices[0], /incomplete deletion/);
+    assert.notEqual(notices[0], tr('世界已删除。'));
+});
 
 test('unchanged World list keeps its nodes while changed operation updates once', () => {
     const f = fixture({ kind: 'IMPORT', status: 'RUNNING' });

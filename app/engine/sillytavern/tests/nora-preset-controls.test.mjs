@@ -67,6 +67,17 @@ test('real library files use conditional writes, preserve extensions, reject dup
     assert.deepEqual(listPresetTemplates(dir).sort(), ['Base', 'New']);
 });
 
+test('large single-field edits persist in place without changing extensions or weakening revision checks', t => {
+    const dir = fixture(t);
+    const source = readPresetTemplate(dir, 'Base');
+    const text = 'long prompt '.repeat(30000);
+    const saved = savePresetTemplate(dir, { mode: 'edit', name: 'Base', expectedRevision: source.revision, edits: change(text) });
+    assert.equal(readPresetTemplate(dir, 'Base').storedPreset.prompts[0].content, text);
+    assert.deepEqual(saved.storedPreset.extensions, source.storedPreset.extensions);
+    assert.deepEqual(listPresetTemplates(dir), ['Base']);
+    assert.throws(() => savePresetTemplate(dir, { mode: 'edit', name: 'Base', expectedRevision: source.revision, edits: change('old') }), { code: 'NORA_PRESET_STALE' });
+});
+
 function live(t, opened = true) {
     const directory = fixture(t);
     let plan = { world_id: 'world-a', world_revision: 1, preset: createWorldPreset('Base', base()) };
@@ -142,6 +153,24 @@ test('stale and busy operations fail before writes; reads remain allowed', async
     assert.deepEqual(f.calls, []);
 });
 
+test('medium presets retain usable revision metadata instead of overflowing agent results', async t => {
+    const f = live(t), value = base();
+    value.prompts[0].content = 'x'.repeat(76000);
+    importPresetTemplate(f.directory, { name: 'Medium', json: JSON.stringify(value) });
+    const source = await f.execute('preset.inspect', { scope: 'library', name: 'Medium' });
+    assert.equal(source.contentOmitted, true);
+    assert.equal(typeof source.revision, 'string');
+    assert.ok(JSON.stringify(source).length < 12000);
+    const applied = await f.execute('preset.apply', { name: 'Medium', sourceRevision: source.revision, expectedRevision: '1' });
+    assert.equal(applied.contentOmitted, true);
+    assert.ok(JSON.stringify(applied).length < 12000);
+    const world = await f.execute('preset.inspect', { scope: 'world', name: '' });
+    assert.equal(world.contentOmitted, true);
+    const chunk = await f.execute('preset.read-chunk', { scope: 'world', name: '', expectedRevision: world.revision, offset: 0, limit: 1000 });
+    assert.equal(chunk.text.length, 1000);
+    assert.equal(chunk.nextOffset, 1000);
+});
+
 test('large imports inspect and apply without overflowing receipts; incompatible parameters fail before a World write', async t => {
     const f = live(t), value = base();
     value.prompts[0].content = 'x'.repeat(2200000);
@@ -150,6 +179,12 @@ test('large imports inspect and apply without overflowing receipts; incompatible
     assert.equal(source.contentOmitted, true);
     assert.equal(source.promptCount, 2);
     assert.equal(source.preset, undefined);
+    const first = await f.execute('preset.read-chunk', { scope: 'library', name: 'Large', expectedRevision: source.revision, offset: 0, limit: 16000 });
+    assert.equal(first.text, JSON.stringify(readPresetTemplate(f.directory, 'Large').preset).slice(0, 16000));
+    assert.equal(first.nextOffset, 16000);
+    await assert.rejects(f.execute('preset.read-chunk', { scope: 'library', name: 'Large', expectedRevision: 'stale', offset: 0, limit: 16000 }));
+    await assert.rejects(f.execute('preset.read-chunk', { scope: 'library', name: 'Large', expectedRevision: source.revision, offset: -1, limit: 16000 }));
+    await assert.rejects(f.execute('preset.read-chunk', { scope: 'library', name: 'Large', expectedRevision: source.revision, offset: 0, limit: 16001 }));
     assert.equal(JSON.stringify(source).length < 512000, true);
     const result = await f.execute('preset.apply', { name: 'Large', sourceRevision: source.revision, expectedRevision: '1' });
     assert.equal(result.saved, true);
@@ -220,6 +255,15 @@ test('HTTP preset routes persist, read back, reject stale overwrites and preserv
     assert.equal((await post('nora-read', { name: 'Large' })).data.storedPreset.prompts[0].content, large.prompts[0].content);
     assert.equal((await post('nora-import', { name: 'Large', json: JSON.stringify(base()) })).status, 409);
     assert.equal((await post('nora-import', { name: 'Over', json: ' '.repeat(PRESET_MAX_BYTES + 1) })).status, 413);
+    assert.equal((await post('delete', { name: 'Base', apiId: 'openai', expectedRevision: source.revision })).status, 409);
+    assert.equal(readPresetTemplate(directory, 'Base').preset.prompts[0].content, 'HTTP edit');
+    const response = await fetch(`http://127.0.0.1:${server.address().port}/api/presets/delete`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Base', apiId: 'openai', expectedRevision: result.data.revision }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(fs.existsSync(path.join(directory, 'Base.json')), false);
+    assert.equal(readPresetTemplate(other, 'Base').preset.prompts[0].content, 'Original');
 });
 
 test('JSON import preserves all fields and raw bytes, reuses identical retries, and only warns on model parameter limits', t => {

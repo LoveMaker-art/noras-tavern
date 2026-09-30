@@ -17,10 +17,10 @@ async function fixture(t, { fail = () => {}, authoredWorld = false } = {}) {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nora-restart-test-'));
     t.after(() => fs.rm(root, { force: true, recursive: true }));
     const directories = Object.fromEntries(['characters', 'chats', 'worlds', 'userImages'].map(key => [key, path.join(root, key)]));
-    const stagingRoot = path.join(root, 'staging');
+    const stagingRoot = path.join(root, 'nora-world-core', 'staging');
     await Promise.all([...Object.values(directories), stagingRoot].map(p => fs.mkdir(p, { recursive: true })));
     const materializer = createStBackendMaterializer({ directories, stagingRoot, checkpoint: fail });
-    const core = createNoraWorldCore({ root: path.join(root, 'core'), materializer });
+    const core = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer });
     let context = editStoryCharacter(createStoryContext({ name: 'Player', description: 'Author persona' }), { id: 'actor:a', operation: 'create',
         patch: { name: 'Actor', description: 'Original profile', persistent_status: { hp: 4 }, activation: { mode: 'constant', enabled: false } } });
     context.player.persistent_status = { gold: 999 };
@@ -125,6 +125,39 @@ test('restart copies independent settings and authored opening, not chat or prog
     assert.equal(replay.world.world_id, next.world_id);
     assert.equal((await core.listWorlds()).length, 2);
     await assert.rejects(core.restartWorld(world.world_id, { ...args, name: 'Different intent' }), { code: 'NORA_OPERATION_CONFLICT' });
+});
+
+test('library HTTP replay uses a compact receipt after its library card and created World are deleted', async t => {
+    const { core, directories } = await fixture(t);
+    directories.root = path.dirname(directories.characters);
+    const avatar = (await core.listLibraryCards()).items[0].avatar;
+    const app = express();
+    app.use(express.json());
+    app.use((request, _response, next) => { request.user = { directories }; next(); });
+    app.use('/api/nora-worlds-v2', createNoraWorldsV2Router({ resolveCore: () => core }));
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    t.after(() => new Promise(resolve => server.close(resolve)));
+    const request = async selected => {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/api/nora-worlds-v2/library-imports`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ avatar: selected, idempotency_key: 'test:library-replay' }),
+        });
+        return { status: response.status, data: await response.json() };
+    };
+    const first = await request(avatar);
+    assert.equal(first.status, 202);
+    const world = await complete(core, first.data);
+    assert.equal((await core.getOperation(first.data.operation.operation_id)).schema, 'nora-world-operation/v2');
+    await core.deleteLibraryCard(avatar, { idempotencyKey: 'test:remove-library' });
+    await assert.rejects(core.readLibraryCardSource(avatar));
+    await core.deleteWorld(world.world_id, { idempotencyKey: 'test:remove-created-world' });
+    const replay = await request(avatar);
+    assert.equal(replay.status, 200);
+    assert.equal(replay.data.world.world_id, world.world_id);
+    assert.equal(replay.data.world.lifecycle.status, 'DELETED');
+    assert.equal((await request('another.png')).status, 409);
+    assert.equal((await core.listWorlds()).length, 1);
 });
 
 test('stale source and missing source fail before creating a new World', async t => {

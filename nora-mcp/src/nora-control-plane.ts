@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 import { NoraMcpConfig } from "./config.js";
 import { NoraConfirmationRequiredError, NoraMcpError, NoraRequestError } from "./errors.js";
@@ -129,14 +129,15 @@ export class NoraControlPlane {
         userDataRoot: this.config.userDataRoot,
         configPath: this.config.configPath,
         uploadRoot: this.config.uploadRoot,
+        exportRoot: path.join(this.config.stateRoot, "exports"),
       },
       noraDomains: [
         {
           domain: "presets",
           storage: "Native chat-completion templates; independent World Core preset snapshots",
           readTools: ["nora.control.catalog", "nora.control.clients", "nora.control.read", "nora.control.operation"],
-          writeTools: ["nora.control.execute", "nora.preset.import"],
-          actions: ["preset.list", "preset.inspect", "preset.create", "preset.edit", "preset.apply", "preset.save-as"],
+          writeTools: ["nora.control.execute", "nora.preset.import", "nora.preset.edit_file"],
+          actions: ["preset.list", "preset.inspect", "preset.read-chunk", "preset.create", "preset.edit", "preset.delete", "preset.apply", "preset.save-as"],
           requiresLivePage: true,
           fileImport: { tool: "nora.preset.import", requiresLivePage: false, maxBytes: 10 * 1024 * 1024, directory: this.config.uploadRoot },
         },
@@ -144,14 +145,14 @@ export class NoraControlPlane {
           domain: "library",
           storage: "World Core library-profiles; native worlds for worldbooks",
           location: path.join(this.config.userDataRoot, "nora-world-core", "library-profiles"),
-          readTools: ["nora.library.list", "nora.library.read"], writeTools: ["nora.library.save"],
+          readTools: ["nora.library.list", "nora.library.read"], writeTools: ["nora.library.save", "nora.library.delete", "nora.library.import_card", "nora.library.manage_card", "nora.export"],
         },
         {
           domain: "world_core",
           storage: "default-user/nora-world-core",
           location: path.join(this.config.userDataRoot, "nora-world-core"),
           readTools: ["nora.world.list", "nora.world.inspect", "nora.world.open_plan", "nora.world.snapshot"],
-          writeTools: ["nora.world.create", "nora.world.import", "nora.world.import_library", "nora.world.repair", "nora.world.delete"],
+          writeTools: ["nora.world.create", "nora.world.import", "nora.world.import_library", "nora.world.restart", "nora.world.repair", "nora.world.delete"],
         },
         {
           domain: "story_ledger",
@@ -171,7 +172,7 @@ export class NoraControlPlane {
           domain: "mvu_model",
           storage: "default-user model config and secrets",
           location: this.config.userDataRoot,
-          readTools: ["nora.mvu_model.get"],
+          readTools: ["nora.mvu_model.get", "nora.mvu.diagnostics"],
           writeTools: ["nora.mvu_model.configure"],
         },
         {
@@ -259,9 +260,13 @@ export class NoraControlPlane {
     return this.worldMutation("POST", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/repair`, {}, idempotencyKey);
   }
 
-  async deleteWorld(worldId: string, idempotencyKey: string, confirm?: boolean): Promise<unknown> {
+  async previewWorldDeletion(worldId: string): Promise<unknown> {
+    return this.http.get(`/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}/delete-preview`);
+  }
+
+  async deleteWorld(worldId: string, idempotencyKey: string, confirm?: boolean, expectedPlan?: string): Promise<unknown> {
     if (!confirm) throw new NoraConfirmationRequiredError("Nora world delete");
-    return this.worldMutation("DELETE", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}`, {}, idempotencyKey);
+    return this.worldMutation("DELETE", `/api/nora-worlds-v2/worlds/${encodeURIComponent(worldId)}`, { expected_plan: expectedPlan }, idempotencyKey);
   }
 
   async getOperation(operationId: string): Promise<unknown> {
@@ -333,12 +338,28 @@ export class NoraControlPlane {
     return this.http.post("/api/nora-mvu-model/config", {});
   }
 
-  async configureMvuModel(request: { baseUrl?: string; model?: string; apiKey?: string; confirm?: boolean }): Promise<unknown> {
+  async mvuDiagnostics(limit = 20): Promise<unknown> {
+    const count = Math.max(1, Math.min(100, Math.floor(limit)));
+    const result = await this.http.get(`/api/nora-mvu-diagnostics/recent?limit=${count}`) as { events?: JsonRecord[] };
+    // Error prose can contain model output. Expose only bounded diagnostic metadata.
+    const events = (result.events || []).map(event => ({
+      receivedAt: event.receivedAt, code: event.code, stage: event.stage,
+      identity: event.identity, chatId: event.chatId, kind: event.kind,
+      commandCount: event.commandCount, acceptedCount: event.acceptedCount,
+      persisted: event.persisted, attempt: event.attempt, durationMs: event.durationMs,
+      validationErrorCount: Array.isArray(event.validationErrors) ? event.validationErrors.length : 0,
+    }));
+    return { events, rawTextOmitted: true, retention: "Existing per-user rotating diagnostics; absence does not prove success." };
+  }
+
+  async configureMvuModel(request: { baseUrl?: string; model?: string; apiKey?: string; context?: number; maxTokens?: number; confirm?: boolean }): Promise<unknown> {
     if (!request.confirm) throw new NoraConfirmationRequiredError("Nora MVU model configure");
     return this.http.post("/api/nora-mvu-model/configure", {
       base_url: request.baseUrl,
       model: request.model,
       api_key: request.apiKey,
+      context: request.context,
+      max_tokens: request.maxTokens,
     });
   }
 
@@ -352,7 +373,8 @@ export class NoraControlPlane {
     return this.worldMutation("POST", "/api/nora-worlds-v2/library-imports", { avatar }, idempotencyKey);
   }
 
-  async libraryList(kind: "character" | "persona" | "worldbook"): Promise<unknown> {
+  async libraryList(kind: "card" | "character" | "persona" | "worldbook"): Promise<unknown> {
+    if (kind === "card") return this.http.get("/api/nora-worlds-v2/library/cards");
     return this.http.get(kind === "worldbook" ? "/api/nora-worlds-v2/library/worldbooks" : `/api/nora-worlds-v2/library/profiles?kind=${kind}`);
   }
 
@@ -360,6 +382,20 @@ export class NoraControlPlane {
     return request.source
       ? this.http.post("/api/nora-worlds-v2/library/worldbooks/read", { source: request.source })
       : this.http.post("/api/nora-worlds-v2/library/profiles/read", { id: request.id });
+  }
+
+  async libraryDelete(request: { id?: string; source?: { kind: "book"; name: string }; revision: string; confirm: boolean }): Promise<unknown> {
+    if (!request.confirm) throw new NoraConfirmationRequiredError("Library deletion");
+    if (Boolean(request.id) === Boolean(request.source)) throw new NoraRequestError("Provide exactly one profile id or independent book source.", "NORA_LIBRARY_TARGET_INVALID");
+    return request.source
+      ? this.http.post("/api/nora-worlds-v2/library/worldbooks/delete", { source: request.source, revision: request.revision })
+      : this.http.post("/api/nora-worlds-v2/library/profiles/delete", { id: request.id, revision: request.revision });
+  }
+
+  async restartWorld(request: { worldId: string; name: string; expectedRevision: number; idempotencyKey: string }): Promise<unknown> {
+    return this.worldMutation("POST", `/api/nora-worlds-v2/worlds/${encodeURIComponent(request.worldId)}/restarts`, {
+      name: request.name, expected_revision: request.expectedRevision,
+    }, request.idempotencyKey);
   }
 
   async librarySave(request: { kind: "character" | "persona" | "worldbook"; name: string; data: Record<string, unknown> }): Promise<unknown> {
@@ -380,8 +416,45 @@ export class NoraControlPlane {
   }
 
   async importPreset(request: { filePath: string; name: string }): Promise<unknown> {
+    return this.http.post("/api/presets/nora-import", { name: request.name, json: await this.readPresetFile(request.filePath) });
+  }
+
+  async editPresetFile(request: { filePath: string; name: string; expectedRevision: string }): Promise<unknown> {
+    const edits = JSON.parse(await this.readPresetFile(request.filePath));
+    const result = await this.http.post("/api/presets/nora-save", { mode: "edit", name: request.name, expectedRevision: request.expectedRevision, edits }) as JsonRecord;
+    return { name: result.name, revision: result.revision, saved: result.saved, runtimeApplied: false, reloadRequired: true, worldUnchanged: true };
+  }
+
+  async manageLibraryCard(request: { action: "delete" | "deduplicate"; avatar: string; revision: string }): Promise<unknown> {
+    return this.http.post("/api/nora-worlds-v2/library/cards/manage", request);
+  }
+
+  async exportFile(request: { kind: "card" | "preset" | "worldbook" | "profile"; target: string; format: "json" | "png" }): Promise<unknown> {
+    let bytes: Buffer;
+    if (request.kind === "card") {
+      bytes = await this.http.download("/api/characters/export", { avatar_url: request.target, format: request.format });
+    } else {
+      if (request.format !== "json") throw new NoraRequestError("This resource exports as JSON.", "NORA_EXPORT_FORMAT_INVALID");
+      let value: unknown;
+      if (request.kind === "preset") value = (await this.http.post("/api/presets/nora-read", { name: request.target }) as JsonRecord).storedPreset;
+      else if (request.kind === "worldbook") value = (await this.libraryRead({ source: { kind: "book", name: request.target } }) as JsonRecord).book;
+      else value = await this.libraryRead({ id: request.target });
+      if (!value) throw new NoraRequestError("Resource was not found.", "NORA_EXPORT_MISSING");
+      bytes = Buffer.from(JSON.stringify(value, null, 2));
+    }
+    if (!bytes.length || bytes.length > 64 * 1024 * 1024) throw new NoraRequestError("Invalid export size.", "NORA_EXPORT_TOO_LARGE");
+    const state = await fs.realpath(this.config.stateRoot);
+    const directory = path.join(state, "exports");
+    await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+    if ((await fs.lstat(directory)).isSymbolicLink() || await fs.realpath(directory) !== directory) throw new NoraRequestError("Unsafe export directory.", "NORA_EXPORT_PATH_DENIED");
+    const output = path.join(directory, `${request.kind}-${randomUUID()}.${request.format}`);
+    await fs.writeFile(output, bytes, { flag: "wx", mode: 0o600 });
+    return { path: output, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), format: request.format, sourceUnchanged: true };
+  }
+
+  private async readPresetFile(filePath: string): Promise<string> {
     const maxBytes = 10 * 1024 * 1024;
-    const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(request.filePath)]);
+    const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(filePath)]);
     const relative = path.relative(root, file);
     if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
       throw new NoraRequestError("Preset must be inside the configured upload directory.", "NORA_IMPORT_PATH_DENIED");
@@ -404,11 +477,11 @@ export class NoraControlPlane {
       try { json = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(0, size)); JSON.parse(json); }
       catch { throw new NoraRequestError("Preset must contain valid UTF-8 JSON.", "NORA_PRESET_INVALID"); }
     } finally { await handle.close(); }
-    return this.http.post("/api/presets/nora-import", { name: request.name, json });
+    return json;
   }
 
-  async importWorld(request: { filePath: string; name?: string; personaName?: string; personaDescription?: string; idempotencyKey: string }): Promise<unknown> {
-    const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(request.filePath)]);
+  private async cardUpload(filePath: string): Promise<FormData> {
+    const [root, file] = await Promise.all([fs.realpath(this.config.uploadRoot), fs.realpath(filePath)]);
     const relative = path.relative(root, file);
     if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new NoraRequestError("Card must be inside the configured upload directory.", "NORA_IMPORT_PATH_DENIED");
     const stat = await fs.stat(file);
@@ -416,6 +489,15 @@ export class NoraControlPlane {
     const bytes = await fs.readFile(file);
     const body = new FormData();
     body.set("avatar", new Blob([new Uint8Array(bytes)]), path.basename(file));
+    return body;
+  }
+
+  async importLibraryCard(filePath: string): Promise<unknown> {
+    return this.http.post("/api/nora-worlds-v2/library/cards/import", await this.cardUpload(filePath));
+  }
+
+  async importWorld(request: { filePath: string; name?: string; personaName?: string; personaDescription?: string; idempotencyKey: string }): Promise<unknown> {
+    const body = await this.cardUpload(request.filePath);
     if (request.name) body.set("name", request.name);
     if (request.personaName) body.set("persona_name", request.personaName);
     if (request.personaDescription) body.set("persona_description", request.personaDescription);

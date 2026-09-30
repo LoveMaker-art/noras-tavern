@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
-import process from 'node:process';
 import { getChatRevision } from '../chat-revision.js';
+import { queueChatBackup } from '../chat-backup-runtime.js';
+import { chatSessionOperations } from '../chat-session-operations.js';
 
 import express from 'express';
 import sanitize from 'sanitize-filename';
@@ -16,8 +17,6 @@ import {
     getConfigValue,
     humanizedDateTime,
     tryParse,
-    generateTimestamp,
-    removeOldBackups,
     formatBytes,
     tryWriteFileSync,
     tryReadFileSync,
@@ -26,61 +25,9 @@ import {
     isPathUnderParent,
 } from '../util.js';
 
-const isBackupEnabled = !!getConfigValue('backups.chat.enabled', true, 'boolean');
-const maxTotalChatBackups = Number(getConfigValue('backups.chat.maxTotalBackups', -1, 'number'));
-const throttleInterval = Number(getConfigValue('backups.chat.throttleInterval', 10_000, 'number'));
 const checkIntegrity = !!getConfigValue('backups.chat.checkIntegrity', true, 'boolean');
 
 export const CHAT_BACKUPS_PREFIX = 'chat_';
-
-/**
- * Saves a chat to the backups directory.
- * @param {string} directory The user's backup directory.
- * @param {string} name The name of the chat.
- * @param {string} data The serialized chat to save.
- * @param {string} backupPrefix The file prefix. Typically CHAT_BACKUPS_PREFIX.
- * @returns
- */
-function backupChat(directory, name, data, backupPrefix = CHAT_BACKUPS_PREFIX) {
-    try {
-        if (!isBackupEnabled) { return; }
-        if (!fs.existsSync(directory)) {
-            console.error(`The chat couldn't be backed up because no directory exists at ${directory}!`);
-        }
-        // replace non-alphanumeric characters with underscores
-        name = sanitize(name).replace(/[^a-z0-9]/gi, '_').toLowerCase();
-
-        const backupFile = path.join(directory, `${backupPrefix}${name}_${generateTimestamp()}.jsonl`);
-
-        tryWriteFileSync(backupFile, data);
-        removeOldBackups(directory, `${backupPrefix}${name}_`);
-        if (isNaN(maxTotalChatBackups) || maxTotalChatBackups < 0) {
-            return;
-        }
-        removeOldBackups(directory, backupPrefix, maxTotalChatBackups);
-    } catch (err) {
-        console.error(`Could not backup chat for ${name}`, err);
-    }
-}
-
-/**
- * @type {Map<string, import('lodash').DebouncedFunc<typeof backupChat>>}
- */
-const backupFunctions = new Map();
-
-/**
- * Gets a backup function for one chat.
- * @param {string} handle User handle
- * @param {string} filePath Chat file path
- * @returns {typeof backupChat} Backup function
- */
-function getBackupFunction(handle, filePath) {
-    const key = `${handle}\0${filePath}`;
-    if (!backupFunctions.has(key)) {
-        backupFunctions.set(key, _.debounce(backupChat, throttleInterval, { leading: false, trailing: true }));
-    }
-    return backupFunctions.get(key) || (() => { });
-}
 
 /**
  * Gets a preview message from a chat message string.
@@ -98,12 +45,6 @@ function getPreviewMessage(lastMessage) {
         ? '...' + lastMessage.substring(lastMessage.length - strlen)
         : lastMessage;
 }
-
-process.on('exit', () => {
-    for (const func of backupFunctions.values()) {
-        func.flush();
-    }
-});
 
 /**
  * Imports a chat from Ooba's format.
@@ -324,12 +265,25 @@ async function checkChatIntegrity(filePath, integritySlug) {
         return true;
     }
 
-    // Parse the first line of the chat file as JSON
+    // If the chat file is empty, there is nothing that could be lost by overwriting it
+    if (fs.statSync(filePath).size === 0) {
+        return true;
+    }
+
+    // Parse the first line of the chat file as JSON. Strip a UTF-8 BOM an external editor may have added.
     const firstLine = await readFirstLine(filePath);
-    const jsonData = tryParse(firstLine);
+    const jsonData = tryParse(String(firstLine ?? '').replace(/^\uFEFF/, ''));
+
+    // If the first line of a non-empty file is not a JSON object, the file may be corrupted or truncated.
+    // Fail the check so the client asks for an explicit overwrite confirmation instead of silently losing data.
+    if (typeof jsonData !== 'object' || jsonData === null || Array.isArray(jsonData)) {
+        console.warn(`File "${filePath}" is not empty, but its first line could not be parsed as a chat header. Overwriting it requires an explicit confirmation.`);
+        return false;
+    }
+
     const chatIntegrity = jsonData?.chat_metadata?.integrity;
 
-    // If the chat has no integrity metadata, assume it's intact
+    // If the chat has no integrity metadata, assume it's intact (legacy chats created before integrity checks existed)
     if (!chatIntegrity) {
         console.debug(`File "${filePath}" does not have integrity metadata matching "${integritySlug}". The integrity validation has been skipped.`);
         return true;
@@ -362,31 +316,64 @@ async function checkChatIntegrity(filePath, integritySlug) {
  * @typedef {(textArray: string[]) => boolean} ChatMatchFunction
  */
 export async function getChatInfo(pathToFile, additionalData = {}, withMetadata = false, matcher = null) {
-    return new Promise(async (res) => {
-        const parsedPath = path.parse(pathToFile);
-        const stats = await fs.promises.stat(pathToFile);
-        const hasMatcher = (typeof matcher === 'function');
+    const parsedPath = path.parse(pathToFile);
+    const hasMatcher = (typeof matcher === 'function');
 
-        const chatData = {
-            match: false,
-            file_id: parsedPath.name,
-            file_name: parsedPath.base,
-            file_size: formatBytes(stats.size),
-            chat_items: 0,
-            mes: '[The chat is empty]',
-            last_mes: stats.mtimeMs,
-            ...additionalData,
-        };
+    // A chat that is deleted while a scan is running is not an error: treat it like a corrupted chat and move on.
+    const chatVanished = () => {
+        console.warn('Chat file was deleted while it was being scanned:', pathToFile);
+        return { match: false };
+    };
 
-        if (stats.size === 0) {
-            res(chatData);
-            return;
+    let stats;
+    try {
+        stats = await fs.promises.stat(pathToFile);
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return chatVanished();
         }
+        throw error;
+    }
 
+    const chatData = {
+        match: false,
+        file_id: parsedPath.name,
+        file_name: parsedPath.base,
+        file_size: formatBytes(stats.size),
+        chat_items: 0,
+        mes: '[The chat is empty]',
+        last_mes: stats.mtimeMs,
+        ...additionalData,
+    };
+
+    if (stats.size === 0) {
+        return chatData;
+    }
+
+    return new Promise((res, rej) => {
         const fileStream = fs.createReadStream(pathToFile);
+
+        // The file can still disappear between the stat above and the stream opening
+        fileStream.on('error', (error) => {
+            if (error.code === 'ENOENT') {
+                res(chatVanished());
+                return;
+            }
+            rej(error);
+        });
+
         const rl = readline.createInterface({
             input: fileStream,
             crlfDelay: Infinity,
+        });
+
+        // readline re-emits input stream errors; without a listener the emit throws
+        rl.on('error', (error) => {
+            if (error.code === 'ENOENT') {
+                res(chatVanished());
+                return;
+            }
+            rej(error);
         });
 
         let lastLine;
@@ -415,8 +402,6 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
             lastLine = line;
         });
         rl.on('close', () => {
-            rl.close();
-
             if (lastLine) {
                 const jsonData = tryParse(lastLine);
                 if (jsonData && (jsonData.name || jsonData.character_name || jsonData.chat_metadata)) {
@@ -427,15 +412,46 @@ export async function getChatInfo(pathToFile, additionalData = {}, withMetadata 
 
                     res(chatData);
                 } else {
-                    console.warn('Found an invalid or corrupted chat file:', pathToFile);
-                    res({});
+                    // The last line is unparseable or lacks known fields (e.g. a truncated write or an external edit).
+                    // Resolve a degraded preview from the stat data instead of hiding an otherwise intact chat
+                    // from the chat list, search and recents.
+                    console.warn('Found an invalid or corrupted last line in a chat file:', pathToFile);
+                    // Exclude both the metadata line and the unreadable trailing line.
+                    chatData.chat_items = Math.max(itemCounter - 2, 0);
+                    chatData.mes = '[The message is empty]';
+                    chatData.match = hasMatcher ? hasAnyMatch : true;
+                    res(chatData);
                 }
+            } else {
+                // The file was truncated after the stat reported a non-zero size; treat it like an empty chat
+                res(chatData);
             }
         });
     });
 }
 
 export const router = express.Router();
+
+router.post('/operation/:action', async (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    try {
+        const { worldId, sessionId, token, kind, baseRevision } = request.body || {};
+        const scope = { worldId, sessionId }, directories = request.user.directories;
+        const operations = chatSessionOperations(directories);
+        if (request.params.action === 'renew') return response.json(operations.renew(scope, token));
+        if (request.params.action === 'end') return response.json({ released: operations.end(scope, token) });
+        if (request.params.action !== 'begin') return response.sendStatus(404);
+        const { filePath } = await resolveStoryLedger(directories, { recoverProjection: false }).resolve(scope);
+        const data = getChatData(filePath);
+        if (scopeOf(data[0]?.chat_metadata)?.worldId !== worldId || scopeOf(data[0]?.chat_metadata)?.sessionId !== sessionId
+            || typeof baseRevision !== 'string' || getChatRevision(data) !== baseRevision) {
+            return response.status(409).json({ code: 'NORA_CHAT_SAVE_STALE' });
+        }
+        return response.json(operations.begin(scope, kind));
+    } catch (error) {
+        return response.status(error.status || 400).json({ code: error.code || 'NORA_CHAT_OPERATION_INVALID' });
+    }
+});
 
 // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Error
 class IntegrityMismatchError extends Error {
@@ -469,7 +485,7 @@ class NoraPartialChatSaveError extends Error {
  */
 export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {}) {
     if (!Array.isArray(existingChat) || !Array.isArray(incomingChat)) return false;
-    if (existingChat.length < 2 || incomingChat.length < 1) return false;
+    if (existingChat.length < 1 || incomingChat.length < 1) return false;
 
     const incomingMetadata = incomingChat[0]?.chat_metadata;
     if (!incomingMetadata?.nora_world?.id && !incomingMetadata?.nora_session?.id) return false;
@@ -482,6 +498,9 @@ export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {
         && typeof proof.baseRevision === 'string'
         && proof.baseRevision === getChatRevision(existingChat);
     if (completeHistoryProved) return false;
+    // A versioned page cannot evade CAS by appending to an old restored
+    // prefix. Identical retries remain safe after an acknowledgement loss.
+    if (proof.completeHistory === true) return getChatRevision(incomingChat) !== getChatRevision(existingChat);
 
     const existingMessages = existingChat.slice(1);
     const incomingMessages = incomingChat.slice(1);
@@ -495,12 +514,12 @@ export function isNoraPartialChatOverwrite(existingChat, incomingChat, proof = {
  * @param {Array} chatData The chat array to save.
  * @param {string} filePath Target file path for the data.
  * @param {boolean} skipIntegrityCheck If undefined, the chat's integrity will not be checked.
- * @param {string} handle The users handle, passed to getBackupFunction.
- * @param {string} cardName Passed to backupChat.
- * @param {string} backupDirectory Passed to backupChat.
+ * @param {string} handle Legacy caller argument (not a backup identity).
+ * @param {string} cardName Legacy caller argument (not a backup identity).
+ * @param {string} backupDirectory Legacy caller argument.
  * @param {boolean} skipBackup Skip the automatic recovery snapshot for an intermediate transaction save.
  */
-export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null, noraHistoryProof = {}) {
+export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false, handle, cardName, backupDirectory, skipBackup = false, directories = null, noraSaveContext = {}) {
     const jsonlData = chatData?.map(m => JSON.stringify(m)).join('\n');
 
     const doIntegrityCheck = (checkIntegrity && !skipIntegrityCheck);
@@ -511,7 +530,10 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
     }
     const verifyWriteBase = () => {
         const existingChat = fs.existsSync(filePath) ? getChatData(filePath) : [];
-        if (isNoraPartialChatOverwrite(existingChat, chatData, noraHistoryProof)) {
+        if (JSON.stringify(existingChat[0]?.chat_metadata?.nora_restore || null) !== JSON.stringify(chatData[0]?.chat_metadata?.nora_restore || null)) {
+            throw new NoraPartialChatSaveError('The server-owned restoration receipt cannot be replaced by a chat save.');
+        }
+        if (isNoraPartialChatOverwrite(existingChat, chatData, noraSaveContext)) {
             throw new NoraPartialChatSaveError(`Refusing to replace complete Nora history without its current revision: ${filePath}`);
         }
     };
@@ -520,15 +542,14 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
             filePath,
             chatData,
             () => writeFileAtomicSync(filePath, jsonlData, 'utf8'),
-            { beforeWrite: verifyWriteBase },
+            { beforeWrite: verifyWriteBase, activityToken: noraSaveContext.activityToken },
         );
     } else {
         verifyWriteBase();
         tryWriteFileSync(filePath, jsonlData);
     }
-    if (!skipBackup) {
-        getBackupFunction(handle, filePath)(backupDirectory, cardName, jsonlData);
-    }
+    if (!directories) return { status: 'skipped', reason: 'missing-user-directories' };
+    return queueChatBackup({ directories, filePath, data: jsonlData, skip: skipBackup, mvuState: noraSaveContext.mvuState });
 }
 
 router.post('/save', validateAvatarUrlMiddleware, async function (request, response) {
@@ -543,7 +564,7 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
         }
 
         if (Array.isArray(chatData)) {
-            await trySaveChat(
+            const backup = await trySaveChat(
                 chatData,
                 chatFilePath,
                 request.body.force,
@@ -555,16 +576,19 @@ router.post('/save', validateAvatarUrlMiddleware, async function (request, respo
                 {
                     completeHistory: request.body.nora_complete_history,
                     baseRevision: request.body.nora_base_revision,
+                    mvuState: request.body.nora_backup_mvu_state,
+                    activityToken: request.body.nora_activity_token,
                 },
             );
             const scope = scopeOf(chatData[0]?.chat_metadata);
             const ledger = scope ? await resolveStoryLedger(request.user.directories).plugin.status(scope) : null;
-            return response.send({ ok: true, ledger, revision: getChatRevision(chatData) });
+            return response.send({ ok: true, ledger, revision: getChatRevision(chatData), backup });
         } else {
             return response.status(400).send({ error: 'The request\'s body.chat is not an array.' });
         }
     } catch (error) {
         if (error?.code === 'NORA_PARTIAL_CHAT_SAVE') return response.status(error.status).send({ error: error.code });
+        if (error?.code?.startsWith('NORA_CHAT_OPERATION_')) return response.status(409).send({ error: error.code });
         if (error?.code?.startsWith('NORA_LEDGER_')) return response.status(error.status || 409).send({ error: error.code });
         if (error instanceof IntegrityMismatchError) {
             console.error(error.message);

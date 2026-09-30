@@ -1,5 +1,17 @@
 # MagVarUpdate Runtime
 
+## Chat ownership boundary (revision 21)
+
+Message updates and direct inline parsing now enter the host's optional
+`runNoraChatActivity('mvu', operation)` boundary before preparation or model
+transport. The host shares a renewable session token with an enclosing story
+generation and fences canonical saves after ownership expires. It does not
+rely on ST event listeners to reject work: ST catches listener exceptions.
+Hosts without this boundary retain the previous execution path. This change
+does not alter protocol, prompts, parser, retries or schema behavior. Source
+tests reject both entry paths before model/parser/storage work when the host
+denies ownership; browser and restoration acceptance remain separate.
+
 ## Maintenance cleanup (revision 20)
 
 Removed the unused `invokeExtraModelWithStrategy` implementation, its six

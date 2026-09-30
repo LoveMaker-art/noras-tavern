@@ -1,6 +1,6 @@
 ---
 name: tavern
-description: Manage worlds, chats, visuals, plugins and story profiles; find, save and apply reusable personas, character profiles, worldbooks and prompt presets.
+description: Operate Tavern worlds, chats, models, themes and MVU; import, reuse, export or delete library cards, roles, worldbooks and presets; install/configure plugins and diagnose failures.
 version: 1.25.2
 author: ClawChat Tavern
 license: AGPL-3.0-only
@@ -21,13 +21,9 @@ changes belong to `tavern-updater`. Product source development is separate work.
 
 ## When to Use
 
-Use for requested Tavern world/card, background/font/color, Persona/worldbook/model, conversation/ledger, plugin/MVU or archive
-operations. It is an operator guide for this product, not a general roleplay
-authoring or application-development skill.
-
-Also use for finding, saving or applying reusable player personas, character profiles
-and worldbooks in the library. Library storage is separate from applying
-material to a World; read the library section of references/worlds.md.
+Use for Tavern operations listed below, including library-only requests with no
+active World. Library storage and World application are separate operations.
+This is an operator guide, not a general roleplay-authoring or development skill.
 
 ## Prerequisites
 
@@ -53,11 +49,11 @@ substituting the relevant file. Load a second reference only for a real second t
 
 | Requested outcome | Reference |
 | --- | --- |
-| Author/import preset JSON, edit/save templates or apply one to a World | [presets](references/presets.md) |
-| Find/read/save/apply library personas, character profiles or worldbooks | [worlds: library](references/worlds.md#reusable-library-material) |
-| Find/create/import/repair/delete a world; edit its Persona, background, runtime card or worldbook; switch/delete a saved text model | [worlds](references/worlds.md) |
-| Read/send/stop/regenerate/suggest replies; edit history; inspect or control story compression | [chat and ledger](references/chat-ledger.md) |
-| Inspect/control installed plugins, Helper scripts/buttons, Regex, MVU variables or MVU models; diagnose a card button | [plugins](references/plugins.md) |
+| Author/import preset JSON, edit large fields, delete/save templates or apply one to a World | [presets](references/presets.md) |
+| Find/save/apply/delete library material; export cards, profiles, worldbooks or presets; clean duplicate cards | [worlds: library](references/worlds.md#reusable-library-material) |
+| Create/import/restart/repair/delete a World; navigate panels; edit World content; create/switch/delete a text model | [worlds](references/worlds.md) |
+| Read/send/stop/retry replies; select candidates, edit history or control story compression | [chat and ledger](references/chat-ledger.md) |
+| Install/update/uninstall/configure plugins; control Helper scripts/buttons, Regex or MVU; inspect MVU error history | [plugins](references/plugins.md) |
 | Read story archives or tastes; learn a preference; request or inspect reflection | [story profile](references/story-profile.md) |
 | Switch local page light/dark/system appearance; change global or per-world backgrounds, fonts, palette or reading surface | [appearance and world visuals](references/world-visuals.md) |
 
@@ -83,7 +79,8 @@ substituting the relevant file. Load a second reference only for a real second t
    confirmed effect and any remaining requirement; distinguish stored state
    from a running plugin and from a visually verified result.
 
-If the current MCP does not expose an operation, say exactly what is missing.
+Before reporting a missing capability, check the installed tool directory and,
+for page actions, `nora.control.catalog`; distinguish absent tools from an offline page.
 Do not substitute old CLI commands, direct state-file edits, arbitrary browser
 JavaScript, guessed tools or source patches. Missing MCP connectivity may be
 diagnosed with `tavern-ops`; it does not authorize a restart.

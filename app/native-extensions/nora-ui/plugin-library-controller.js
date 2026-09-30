@@ -1,4 +1,6 @@
 import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { validatePluginRepository } from '../../engine/sillytavern/public/scripts/nora-controls/plugin-library-actions.js';
+export { validatePluginRepository };
 
 export function pluginLibraryStatus(item, runtime, pending = false) {
     if (pending) return '已更改，待刷新';
@@ -12,14 +14,6 @@ export function pluginLibraryStatus(item, runtime, pending = false) {
 
 function needsReload(item, runtime) {
     return typeof item.libraryEnabled === 'boolean' && (runtime ? item.libraryEnabled !== runtime.enabled : item.libraryEnabled);
-}
-
-export function validatePluginRepository(value) {
-    const url = new URL(value.trim());
-    if (!['https:', 'http:'].includes(url.protocol) || url.username || url.password || url.search || url.hash || !url.pathname.replace(/\/$/, '').split('/').pop()) {
-        throw new Error(tr('请输入不含密钥、参数或片段的 HTTP(S) Git 仓库链接。'));
-    }
-    return url.href.replace(/\/$/, '');
 }
 
 export function createPluginLibraryController({ dialogs, select, selectAll, escapeHtml: esc, headers,

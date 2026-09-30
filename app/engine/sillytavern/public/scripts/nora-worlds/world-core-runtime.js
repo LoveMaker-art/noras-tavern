@@ -1,5 +1,6 @@
 import { executeStActivationSnapshot } from './world-core-client.js';
 import { worldPresetExtensions } from './world-preset-extensions.js';
+import { worldHelperIdentity } from './world-helper-identity.js';
 import { translate } from '../nora-i18n/core.js';
 import { createWorldCapabilityController } from './world-capability-controller.js';
 
@@ -32,6 +33,7 @@ export function createWorldCoreRuntime(runtime, {
         ? createWorldCapabilityController({ client, runtime: capabilityRuntime })
         : null;
     let manifests = [];
+    worldHelperIdentity.configure(() => manifests);
     worldPresetExtensions.setWriter(async (worldId, preset) => {
         if (runtime.read().metadata?.nora_world?.id !== worldId) throw new Error('世界已切换，请重新打开。');
         return updateActive({ preset }, { expectedRevision: manifestById(worldId).revision });
@@ -41,6 +43,7 @@ export function createWorldCoreRuntime(runtime, {
     const subscribers = new Set();
 
     function emit() {
+        worldHelperIdentity.changed();
         const snapshot = status();
         for (const subscriber of subscribers) {
             try { subscriber(snapshot); } catch (error) { console.error('[Nora World Core] UI subscriber failed:', error); }
@@ -271,13 +274,14 @@ export function createWorldCoreRuntime(runtime, {
         }
     }
 
-    async function remove(worldOrId, { idempotencyKey = null } = {}) {
+    async function remove(worldOrId, { idempotencyKey = null, expectedPlan } = {}) {
         const worldId = worldIdOf(worldOrId);
         manifestById(worldId);
         setOperation({ status: 'RUNNING', kind: 'DELETE', operationId: null, error: null });
         try {
             const result = await client.deleteWorld(worldId, {
                 idempotencyKey: idempotencyKey || mutationKey('delete', worldId),
+                expectedPlan,
             });
             manifests = await client.list();
             setOperation({ status: 'COMPLETED', operationId: result.operation?.operation_id || null, error: null });
@@ -432,5 +436,6 @@ export function createWorldCoreRuntime(runtime, {
         addSetting,
         updateActive,
         remove,
+        previewWorldDeletion: worldId => client.previewWorldDeletion(worldId),
     });
 }

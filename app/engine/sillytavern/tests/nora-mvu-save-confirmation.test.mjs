@@ -10,7 +10,7 @@ import { createChatWriteQueue } from '../public/scripts/nora-story-ledger/chat-p
 const source = fs.readFileSync(new URL('../public/script.js', import.meta.url), 'utf8');
 const ast = ts.createSourceFile('script.js', source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
 const functions = ast.statements.filter(node => ts.isFunctionDeclaration(node) &&
-    ['saveChat', 'saveChatNow', 'queueChatWrite', 'saveChatConditional', 'commitNoraStoryEdit'].includes(node.name?.text)).map(node => node.getText(ast).replace(/^export /, '')).join('\n');
+    ['saveChat', 'saveChatNow', 'queueChatWrite', 'saveChatConditional', 'commitNoraStoryEdit', 'runNoraChatBackupTransaction', 'chatWriteIdentity'].includes(node.name?.text)).map(node => node.getText(ast).replace(/^export /, '')).join('\n');
 function fixture({ ok = true, json = ok ? { ok: true, revision: 'r1' } : { error: 'Forbidden' }, duringWait = false, duringLoad = false } = {}) {
     let target = 'world-a';
     const requests = [], errors = [];
@@ -22,7 +22,9 @@ function fixture({ ok = true, json = ok ? { ok: true, revision: 'r1' } : { error
         currentNoraChatBinding: () => null, NORA_CHAT_WINDOW_SIZE: 40,
         ensureNoraFullChatLoaded: async () => { if (duringLoad) target = 'world-b'; },
         waitUntilCondition: async () => { if (duringWait) target = 'world-b'; },
-        DEFAULT_SAVE_EDIT_TIMEOUT: 100, isChatSaving: false, noraChatBackupTransactionDepth: 0,
+        DEFAULT_SAVE_EDIT_TIMEOUT: 100, isChatSaving: false,
+        Error,
+        noraChatBackupTransactions: new Map(),
         createChatWriteQueue,
         Headers,
         compressRequest: async request => request, getRequestHeaders: () => ({}),
@@ -44,6 +46,90 @@ test('MVU opt-in save confirms a successful HTTP response', async () => {
     assert.equal(result.confirmed, true);
     assert.equal(f.requests.length, 1);
     assert.equal(f.context.isChatSaving, false);
+});
+
+test('queued saves keep their original ownership token; an explicit retry only drops the expired transport token', async () => {
+    const f = fixture({ ok: false, json: { error: 'NORA_CHAT_OPERATION_STALE' } });
+    const scope = { worldId: 'world:a', sessionId: 'session:a' };
+    f.context.scopeOf = () => scope;
+    let token = 'original-token';
+    f.context[Symbol.for('nora.chat.activity')] = { tokenFor: () => token };
+    const promise = f.context.saveChat();
+    token = 'different-token';
+    let failure;
+    await assert.rejects(promise, error => { failure = error; return true; });
+    const original = JSON.parse(f.requests.at(-1)[1].body);
+    assert.equal(original.nora_activity_token, 'original-token');
+    await assert.rejects(failure.retrySave());
+    const retry = JSON.parse(f.requests.at(-1)[1].body);
+    assert.equal(retry.nora_activity_token, null);
+    assert.deepEqual({ ...original, nora_activity_token: null }, retry, 'retry must preserve history and revision, not borrow a new owner');
+});
+
+test('canonical saves carry bounded backup evidence without changing chat metadata or trusting another snapshot', async () => {
+    const f = fixture();
+    f.context.NoraMvu = { backupState: () => 'confirmed' };
+    await f.context.saveChat();
+    const request = JSON.parse(f.requests.at(-1)[1].body);
+    assert.equal(request.nora_backup_mvu_state, 'confirmed');
+    assert.deepEqual(request.chat[0].chat_metadata, {});
+    await f.context.saveChat({ chatData: [{ mes: 'another snapshot' }] });
+    assert.equal(JSON.parse(f.requests.at(-1)[1].body).nora_backup_mvu_state, 'unverified');
+    f.context.NoraMvu.backupState = () => { throw new Error('observer unavailable'); };
+    assert.equal((await f.context.saveChat()).confirmed, true);
+    assert.equal(JSON.parse(f.requests.at(-1)[1].body).nora_backup_mvu_state, 'unverified');
+});
+
+test('an interrupted chat mutation saves its current content without scheduling a completed backup', async () => {
+    const f = fixture();
+    const failure = new Error('Generation interrupted');
+    await assert.rejects(f.context.runNoraChatBackupTransaction(async () => {
+        f.context.chat.push({ mes: 'Unfinished response' });
+        await f.context.saveChat();
+        throw failure;
+    }), error => error === failure);
+    assert.equal(f.requests.length, 2);
+    assert.ok(f.requests.every(([, request]) => JSON.parse(request.body).skip_backup));
+    await f.context.runNoraChatBackupTransaction(async () => {});
+    assert.equal(JSON.parse(f.requests.at(-1)[1].body).skip_backup, false);
+});
+
+test('switching worlds during a chat mutation never performs its final save in the new world', async () => {
+    const f = fixture();
+    await assert.rejects(f.context.runNoraChatBackupTransaction(async () => {
+        f.changeTarget();
+    }), { code: 'NORA_CHAT_SAVE_STALE' });
+    assert.equal(f.requests.length, 0);
+    assert.equal(f.context.noraChatBackupTransactions.size, 0);
+});
+
+test('an unfinished old-world mutation does not suppress ordinary backups in the newly opened world', async () => {
+    const f = fixture();
+    await assert.rejects(f.context.runNoraChatBackupTransaction(async () => {
+        f.changeTarget();
+        await f.context.saveChat();
+    }), { code: 'NORA_CHAT_SAVE_STALE' });
+    assert.equal(f.requests.length, 1);
+    assert.equal(JSON.parse(f.requests[0][1].body).skip_backup, false);
+});
+
+test('a mutation failure remains visible when its final save also fails', async () => {
+    const f = fixture({ ok: false });
+    const failure = new Error('Generation interrupted');
+    await assert.rejects(f.context.runNoraChatBackupTransaction(async () => { throw failure; }), error => {
+        assert.equal(error, failure);
+        assert.equal(error.saveError.phase, 'save');
+        return true;
+    });
+});
+
+test('a caught nested mutation failure cannot promote the outer mutation into a completed backup', async () => {
+    const f = fixture();
+    await f.context.runNoraChatBackupTransaction(async () => {
+        await assert.rejects(f.context.runNoraChatBackupTransaction(async () => { throw new Error('nested failure'); }));
+    });
+    assert.equal(f.requests.length, 1);
+    assert.equal(JSON.parse(f.requests[0][1].body).skip_backup, true);
 });
 test('MVU opt-in save propagates HTTP failure rather than resolving as saved', async () => {
     const f = fixture({ ok: false });

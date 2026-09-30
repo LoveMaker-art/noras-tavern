@@ -3,6 +3,21 @@ import assert from 'node:assert/strict';
 import { NoraHttpClient } from '../dist/http.js';
 import { StHttpClient } from '../dist/st/http.js';
 
+test('native file download retains CSRF protection and rejects a successful HTML login page', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async (url, options) => {
+        if (url.endsWith('/csrf-token')) return new Response('{"token":"t"}');
+        assert.equal(options.headers.get('X-CSRF-Token'), 't');
+        return new Response(new Uint8Array([137, 80, 78, 71]), { headers: { 'content-type': 'image/png' } });
+    };
+    try {
+        const client = new NoraHttpClient('http://127.0.0.1', 1000);
+        assert.deepEqual(await client.download('/export', {}), Buffer.from([137, 80, 78, 71]));
+        globalThis.fetch = async () => new Response('<html>login</html>', { headers: { 'content-type': 'text/html' } });
+        await assert.rejects(client.download('/export', {}), { code: 'NORA_INVALID_RESPONSE' });
+    } finally { globalThis.fetch = original; }
+});
+
 test('Nora/ST share implementation; concurrent cold POSTs send newly issued cookie on their first attempt', async () => {
     assert.equal(StHttpClient, NoraHttpClient);
     const original = globalThis.fetch; const calls = [];

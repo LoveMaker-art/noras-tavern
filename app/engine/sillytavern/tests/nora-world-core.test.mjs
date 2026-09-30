@@ -5,6 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { createNoraWorldCore, NoraWorldCoreError } from '../src/nora-world-core/index.js';
+import { normalizeCreateCommand, materializationFromWorld } from '../src/nora-world-core/domain.js';
+import { OperationJournal } from '../src/nora-world-core/operation-journal.js';
+import { documentFileName } from '../src/nora-world-core/atomic-json.js';
 
 const SOURCE_SHA = 'a'.repeat(64);
 
@@ -111,13 +114,14 @@ test('presents one small World Core interface and hides persistence mechanics', 
 
     assert.deepEqual(Object.keys(core).sort(), [
         'importLibraryItem', 'listLibraryWorldbooks', 'readLibraryWorldbook', 'saveLibraryWorldbook', 'deleteLibraryWorldbook',
-        'listLibraryCards', 'saveLibraryCard', 'readLibraryCardSource',
+        'listLibraryCards', 'saveLibraryCard', 'readLibraryCardSource', 'deleteLibraryCard', 'manageLibraryCard',
         'listLibraryProfiles', 'readLibraryProfile', 'saveLibraryProfile', 'deleteLibraryProfile',
         'addWorldSetting',
         'beginCapabilityAttempt',
         'createWorld',
         'restartWorld',
         'deleteWorld',
+        'previewWorldDeletion',
         'editWorldbookEntry',
         'getOperation',
         'getWorld',
@@ -147,6 +151,19 @@ test('presents one small World Core interface and hides persistence mechanics', 
     const inspected = await core.inspectWorld(result.world.world_id);
     assert.deepEqual(inspected.resource_references.runtime_card.world_ids, [result.world.world_id]);
     assert.deepEqual(inspected.resource_references.knowledge[0].world_ids, [result.world.world_id]);
+});
+
+test('an interrupted deletion prevents another World acquiring its resources and remains retryable', async t => {
+    const root = await temporaryRoot(t);
+    const adapter = materializer({ deleteFailOnce: true });
+    const core = createNoraWorldCore({ root, materializer: adapter });
+    const { world } = await core.createWorld(command(), { idempotencyKey: 'delete:reference-original' });
+    await assert.rejects(core.deleteWorld(world.world_id, { idempotencyKey: 'delete:reference-scope' }));
+    await assert.rejects(core.createWorld(command(), { idempotencyKey: 'delete:reference-new-sharer' }), { code: 'NORA_WORLD_RESOURCE_DELETING' });
+    await assert.rejects(core.repairWorld(world.world_id, { idempotencyKey: 'delete:cannot-repair' }), { code: 'NORA_WORLD_NOT_READY' });
+    await core.deleteWorld(world.world_id, { idempotencyKey: 'delete:reference-scope' });
+    assert.equal(adapter.deletions.at(-1).plan.runtime_card.delete, true);
+    assert.deepEqual(await core.listWorlds(), []);
 });
 
 test('character array CRUD persists across reopen with revision protection and intact legacy resources', async (t) => {
@@ -215,13 +232,23 @@ test('appends a setting without replacing the knowledge binding and deduplicates
     assert.deepEqual(added.entry.key, ['雨', '街道']);
     assert.equal(adapter.settingCalls, 1);
 
-    const repeated = await core.addWorldSetting(created.world.world_id, input, {
+    const reopened = createNoraWorldCore({ root, materializer: adapter });
+    const operationFiles = await fs.readdir(path.join(root, 'mutations'));
+    const receipt = JSON.parse(await fs.readFile(path.join(root, 'mutations', operationFiles[0]), 'utf8'));
+    assert.equal(receipt.schema, 'nora-world-operation/v2');
+    assert.equal(receipt.command, undefined);
+    const repeated = await reopened.addWorldSetting(created.world.world_id, input, {
         expectedRevision: created.world.revision,
         idempotencyKey: 'setting:add:one',
     });
     assert.equal(repeated.reused, true);
     assert.equal(repeated.entry_id, added.entry_id);
     assert.equal(adapter.settingCalls, 1);
+
+    await assert.rejects(reopened.addWorldSetting(created.world.world_id, { ...input, content: 'Changed' }, {
+        expectedRevision: created.world.revision,
+        idempotencyKey: 'setting:add:one',
+    }), { code: 'NORA_OPERATION_CONFLICT' });
 
     await assert.rejects(core.addWorldSetting(created.world.world_id, input, {
         expectedRevision: created.world.revision,
@@ -248,6 +275,54 @@ test('deletes one World through a durable idempotent backend command and leaves 
     assert.equal(repeated.operation.operation_id, deleted.operation.operation_id);
     assert.equal(repeated.reused, true);
     assert.equal(adapter.deletions.length, 1);
+    const mutationPath = path.join(root, 'mutations', (await fs.readdir(path.join(root, 'mutations')))[0]);
+    const legacy = JSON.stringify({ ...deleted.operation, schema: 'nora-world-operation/v1' });
+    await fs.writeFile(mutationPath, legacy);
+    const restarted = createNoraWorldCore({ root, materializer: adapter });
+    assert.equal((await restarted.getOperation(deleted.operation.operation_id)).status, 'COMPLETED');
+    assert.equal((await restarted.deleteWorld(created.world.world_id, { idempotencyKey: 'delete:target' })).reused, true);
+    assert.equal(await fs.readFile(mutationPath, 'utf8'), legacy);
+    assert.equal(adapter.deletions.length, 1);
+});
+
+test('completed operations and deleted Worlds retain compact replay evidence without their story content', async t => {
+    const root = await temporaryRoot(t);
+    const input = command({ persona: { name: 'Player', description: 'private-profile-'.repeat(2000) },
+        payload: { arbitrary_story: 'private-story-'.repeat(20000) } });
+    const adapter = materializer();
+    const core = createNoraWorldCore({ root, materializer: adapter });
+    const created = await core.createWorld(input, { idempotencyKey: 'compact:source' });
+    const operationPath = path.join(root, 'operations', (await fs.readdir(path.join(root, 'operations')))[0]);
+    const receipt = JSON.parse(await fs.readFile(operationPath, 'utf8'));
+    assert.equal(receipt.schema, 'nora-world-operation/v2');
+    assert.equal(receipt.command, undefined);
+    assert.equal(receipt.materialization, undefined);
+    assert.ok(Buffer.byteLength(JSON.stringify(receipt)) < 3000);
+    t.diagnostic(`creation command ${Buffer.byteLength(JSON.stringify(input))} bytes -> receipt ${Buffer.byteLength(JSON.stringify(receipt))} bytes`);
+    await core.deleteWorld(created.world.world_id, { idempotencyKey: 'compact:delete' });
+    const worldPath = path.join(root, 'worlds', (await fs.readdir(path.join(root, 'worlds')))[0]);
+    const tombstone = JSON.parse(await fs.readFile(worldPath, 'utf8'));
+    assert.equal(tombstone.schema, 'nora-world-tombstone/1');
+    assert.equal(JSON.stringify(tombstone).includes('private-profile'), false);
+    t.diagnostic(`live manifest ${Buffer.byteLength(JSON.stringify(created.world))} bytes -> tombstone ${Buffer.byteLength(JSON.stringify(tombstone))} bytes`);
+    const reopened = createNoraWorldCore({ root, materializer: adapter });
+    const replay = await reopened.createWorld(input, { idempotencyKey: 'compact:source' });
+    assert.equal(replay.world.world_id, created.world.world_id);
+    assert.equal(replay.world.lifecycle.status, 'DELETED');
+    assert.deepEqual(await reopened.listWorlds(), []);
+    assert.equal(adapter.calls, 1);
+    await assert.rejects(reopened.createWorld(command({ name: 'Different' }), { idempotencyKey: 'compact:source' }), { code: 'NORA_OPERATION_CONFLICT' });
+    const legacyDeleted = JSON.stringify({ ...created.world, revision: tombstone.revision, lifecycle: { status: 'DELETED', error: null } });
+    await fs.writeFile(worldPath, legacyDeleted);
+    const legacyReader = createNoraWorldCore({ root, materializer: adapter });
+    assert.equal((await legacyReader.getWorld(created.world.world_id)).lifecycle.status, 'DELETED');
+    assert.equal(await fs.readFile(worldPath, 'utf8'), legacyDeleted, 'legacy tombstones are read without startup conversion');
+    await fs.writeFile(worldPath, JSON.stringify(tombstone));
+    // The tombstone is a second independent anti-replay witness if a journal is lost.
+    await fs.unlink(operationPath);
+    const recovered = createNoraWorldCore({ root, materializer: adapter });
+    assert.equal((await recovered.createWorld(input, { idempotencyKey: 'compact:source' })).world.lifecycle.status, 'DELETED');
+    assert.equal(adapter.calls, 1);
 });
 
 test('never schedules shared resources for physical deletion', async (t) => {
@@ -592,6 +667,49 @@ test('does not fail a valid World when staged-input cleanup is temporarily unava
     assert.equal(created.operation.input_released_at, null);
 });
 
+for (const interruption of ['before-rename', 'after-rename']) {
+    test(`completed receipt survives ${interruption} interruption and retries without recreating its World`, async t => {
+        const root = await temporaryRoot(t);
+        const adapter = materializer();
+        adapter.releaseStagedInput = async () => { throw new Error('keep legacy pending-release record'); };
+        const input = command({ payload: { story: 'original input retained until release' } });
+        const key = `receipt-interruption:${interruption}`;
+        const created = await createNoraWorldCore({ root, materializer: adapter }).createWorld(input, { idempotencyKey: key });
+        const operationPath = path.join(root, 'operations', documentFileName(created.operation.operation_id));
+        const original = await fs.readFile(operationPath, 'utf8');
+        let intercepted = 0;
+        const journal = new OperationJournal({ root, fileSystem: {
+            ...fs,
+            async rename(from, to) {
+                if (to !== operationPath) return fs.rename(from, to);
+                intercepted += 1;
+                if (interruption === 'after-rename') await fs.rename(from, to);
+                throw Object.assign(new Error('injected receipt commit interruption'), { code: 'EIO' });
+            },
+        } });
+        await assert.rejects(journal.markInputReleased(created.operation.operation_id), /injected receipt/);
+        assert.equal(intercepted, 1);
+        const interrupted = await fs.readFile(operationPath, 'utf8');
+        if (interruption === 'before-rename') assert.equal(interrupted, original);
+        else assert.equal(JSON.parse(interrupted).schema, 'nora-world-operation/v2');
+
+        delete adapter.releaseStagedInput;
+        const reopened = createNoraWorldCore({ root, materializer: adapter });
+        const retried = await reopened.createWorld(input, { idempotencyKey: key });
+        assert.equal(retried.world.world_id, created.world.world_id);
+        assert.equal(retried.world.lifecycle.status, 'READY');
+        assert.equal(retried.operation.schema, 'nora-world-operation/v2');
+        assert.equal(adapter.calls, 1);
+        const committed = await fs.readFile(operationPath, 'utf8');
+        const again = createNoraWorldCore({ root, materializer: adapter });
+        await again.createWorld(input, { idempotencyKey: key });
+        assert.equal(await fs.readFile(operationPath, 'utf8'), committed, 'replay must not rewrite the compact receipt');
+        assert.equal((await again.listWorlds()).length, 1);
+        assert.deepEqual(await fs.readdir(path.join(root, 'quarantine', 'operations')), []);
+        assert.deepEqual(await fs.readdir(path.join(root, 'operations')), [path.basename(operationPath)]);
+    });
+}
+
 test('retries an unfinished terminal staged-input release after restart', async (t) => {
     const root = await temporaryRoot(t);
     const firstCore = createNoraWorldCore({
@@ -665,7 +783,9 @@ test('recovers after a World manifest commit when journal completion was interru
     const operationFiles = await fs.readdir(path.join(root, 'operations'));
     assert.equal(operationFiles.length, 1);
     const operationPath = path.join(root, 'operations', operationFiles[0]);
-    const interrupted = JSON.parse(await fs.readFile(operationPath, 'utf8'));
+    const interrupted = { ...JSON.parse(await fs.readFile(operationPath, 'utf8')), schema: 'nora-world-operation/v1',
+        command: normalizeCreateCommand(command()), materialization: materializationFromWorld(created.world) };
+    delete interrupted.request;
     interrupted.stage = 'MATERIALIZED';
     interrupted.status = 'RUNNING';
     await fs.writeFile(operationPath, `${JSON.stringify(interrupted, null, 2)}\n`, 'utf8');
@@ -698,13 +818,56 @@ test('quarantines invalid manifests instead of exposing partial Worlds', async (
     assert.match(quarantine[0], /broken\.json\..+\.invalid$/);
 });
 
+test('legacy completed records remain readable without startup migration, while failed operations keep retry inputs', async t => {
+    const root = await temporaryRoot(t);
+    const core = createNoraWorldCore({ root, materializer: materializer() });
+    const created = await core.createWorld(command(), { idempotencyKey: 'legacy-completed' });
+    const operationPath = path.join(root, 'operations', (await fs.readdir(path.join(root, 'operations')))[0]);
+    const legacy = { ...created.operation, schema: 'nora-world-operation/v1', command: normalizeCreateCommand(command()),
+        materialization: materializationFromWorld(created.world) };
+    delete legacy.request;
+    const oldBytes = JSON.stringify(legacy);
+    await fs.writeFile(operationPath, oldBytes);
+    const modern = await core.createWorld(command({ name: 'New format companion' }), { idempotencyKey: 'modern-companion' });
+    const retired = await core.createWorld(command({ name: 'Deleted companion' }), { idempotencyKey: 'deleted-companion' });
+    await core.deleteWorld(retired.world.world_id, { idempotencyKey: 'delete-companion' });
+    const recordsBefore = new Map();
+    for (const folder of ['operations', 'mutations', 'worlds']) {
+        for (const name of await fs.readdir(path.join(root, folder))) {
+            const file = path.join(root, folder, name);
+            recordsBefore.set(file, await fs.readFile(file, 'utf8'));
+        }
+    }
+    const reopened = createNoraWorldCore({ root, materializer: materializer() });
+    assert.equal((await reopened.getOperation(created.operation.operation_id)).schema, 'nora-world-operation/v1');
+    assert.equal((await reopened.getOperation(modern.operation.operation_id)).schema, 'nora-world-operation/v2');
+    assert.equal((await reopened.getWorld(retired.world.world_id)).lifecycle.status, 'DELETED');
+    assert.deepEqual(new Set((await reopened.listWorlds()).map(item => item.world_id)), new Set([created.world.world_id, modern.world.world_id]));
+    assert.equal(await fs.readFile(operationPath, 'utf8'), oldBytes, 'reading old files must not silently rewrite them');
+    for (const [file, bytes] of recordsBefore) assert.equal(await fs.readFile(file, 'utf8'), bytes);
+
+    const failedRoot = await temporaryRoot(t);
+    const failing = createNoraWorldCore({ root: failedRoot, materializer: materializer({ failOnce: true }) });
+    let operationId;
+    await assert.rejects(failing.createWorld(command({ payload: { retry_input: 'keep-this' } }), { idempotencyKey: 'keep-retry-input' }), error => {
+        operationId = error.details.operationId;
+        return true;
+    });
+    const failed = await failing.getOperation(operationId);
+    assert.equal(failed.schema, 'nora-world-operation/v1');
+    assert.equal(failed.command.payload.retry_input, 'keep-this');
+    assert.equal((await failing.retryOperation(operationId)).operation.schema, 'nora-world-operation/v2');
+});
+
 test('quarantines a journal whose persisted command no longer matches its digest', async (t) => {
     const root = await temporaryRoot(t);
     const firstCore = createNoraWorldCore({ root, materializer: materializer() });
     const created = await firstCore.createWorld(command(), { idempotencyKey: 'import:corrupt-journal' });
     const operationFiles = await fs.readdir(path.join(root, 'operations'));
     const operationPath = path.join(root, 'operations', operationFiles[0]);
-    const corrupted = JSON.parse(await fs.readFile(operationPath, 'utf8'));
+    const corrupted = { ...JSON.parse(await fs.readFile(operationPath, 'utf8')), schema: 'nora-world-operation/v1',
+        command: normalizeCreateCommand(command()), materialization: materializationFromWorld(created.world) };
+    delete corrupted.request;
     corrupted.command.name = 'tampered without updating the digest';
     await fs.writeFile(operationPath, `${JSON.stringify(corrupted, null, 2)}\n`, 'utf8');
 

@@ -78,15 +78,15 @@ export function createWorldCapabilityController({
             throw new Error(unavailableMessage);
         }
         if (typeof authorize === 'function') {
-            await authorize(character, { force: forceAuthorization, refresh: false });
+            await authorize(character, { force: forceAuthorization, refresh: false, worldId });
         }
         return Object.freeze({ manifest, worldId, selected: Object.freeze(selected), character });
     }
 
-    async function verifyRuntime(capability, character) {
+    async function verifyRuntime(capability, character, worldId) {
         const startedAt = clock();
         try {
-            const evidence = await runtime.ensureCharacterCapability(character, capability);
+            const evidence = await runtime.ensureCharacterCapability(character, capability, { worldId });
             return {
                 status: 'READY',
                 duration_ms: Math.max(0, clock() - startedAt),
@@ -115,7 +115,7 @@ export function createWorldCapabilityController({
         if (tasks.has(key)) return tasks.get(key);
         const task = (async () => {
             const begun = await client.beginCapabilityAttempt(worldId, capability);
-            const result = prepared.get(preparedKey) || await verifyRuntime(capability, character);
+            const result = prepared.get(preparedKey) || await verifyRuntime(capability, character, worldId);
             prepared.delete(preparedKey);
             const settled = await client.settleCapabilityAttempt(
                 worldId,
@@ -161,7 +161,7 @@ export function createWorldCapabilityController({
         const results = [];
         for (const capability of selected) {
             const key = preparedCapabilityKey(worldId, character, capability);
-            const result = prepared.get(key) || await verifyRuntime(capability, character);
+            const result = prepared.get(key) || await verifyRuntime(capability, character, worldId);
             prepared.set(key, result);
             results.push(Object.freeze({ capability, result, world: manifest }));
         }

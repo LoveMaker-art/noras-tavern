@@ -1,3 +1,5 @@
+import { contentRevision } from '../nora-controls/revision.js';
+
 export function createStPresetAdapter(runtime) {
     const manager = () => runtime().getPresetManager('openai');
     let saving = false;
@@ -153,7 +155,8 @@ export function createStPresetAdapter(runtime) {
         if (latest.revision !== snapshot.revision) throw new Error('预设已改变，请重新打开后再编辑。');
         saving = true;
         try {
-            if (!await manager().deletePreset(snapshot.name, { skipSwitch: true })) {
+            const expectedRevision = await contentRevision(JSON.parse(snapshot.revision));
+            if (!await manager().deletePreset(snapshot.name, { skipSwitch: true, expectedRevision })) {
                 throw new Error('模板删除失败，请重试。');
             }
         } finally { saving = false; }

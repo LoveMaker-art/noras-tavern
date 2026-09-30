@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ManagedUpdateTests(unittest.TestCase):
     def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False,
-                    source_version="2.3.0", target_version="2.3.2", receipt_schema=1):
+                    source_version="2.3.0", target_version="2.3.2", receipt_schema=1, storage_recovery=False):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
@@ -37,6 +37,49 @@ class ManagedUpdateTests(unittest.TestCase):
             chat = tavern / "tavern-state/native/default-user/chats/story/chat.jsonl"
             write(story, '{"worldId":"story"}')
             write(chat, '{"message":"keep"}\n')
+            state = tavern / "tavern-state"
+            profile = state / "native/default-user"
+            if storage_recovery:
+                # The transaction owns bytes, not these schemas. Runtime readers are
+                # exercised by the engine tests; no mocked filesystem restoration.
+                saved_chat = '\n'.join(json.dumps(item, ensure_ascii=False) for item in [
+                    {"chat_metadata": {"world_id": "world:story", "session_id": "session:story",
+                                       "nora_restore": {"id": "restore:fixture", "protectedBackupId": "fixture", "ledgerEnabled": False}}},
+                    {"name": "玩家", "is_user": True, "mes": "继续"},
+                    {"name": "旁白", "mes": "原来的回复", "swipe_id": 1,
+                     "swipes": ["候选一", "原来的回复"],
+                     "extra": {"stat_data": {"玩家": {"体力": 80}}}},
+                ]) + '\n'
+                write(chat, saved_chat)
+                write(profile / "backups/chat_nora1_fixture.jsonl", saved_chat)
+                write(profile / "backups/.nora-chat/fixture.json", json.dumps({
+                    "world_id": "world:story", "session_id": "session:story", "protected": True,
+                }))
+                write(profile / "backups/chat_legacy_before_upgrade.jsonl", saved_chat)
+                write(profile / "nora-world-core/operations/old.json", '{"schema":"nora-world-operation/v1","command":{"payload":{"keep":"old"}}}')
+                write(profile / "nora-world-core/operations/new.json", '{"schema":"nora-world-operation/v2","request":{"name":"new"}}')
+                write(profile / "nora-world-core/worlds/deleted.json", '{"schema":"nora-world-tombstone/1","world_id":"world:deleted"}')
+                write(profile / "nora-story-ledger/fixture.json", '{"revision":7,"summary":"原账本"}')
+            storage_before = {p.relative_to(state): p.read_bytes() for p in state.rglob("*") if p.is_file()}
+
+            def damage_storage():
+                if not storage_recovery:
+                    return
+                # Simulate a newly started version deleting, rewriting and adding
+                # state before its health check fails.
+                for index, relative in enumerate(storage_before):
+                    target = state / relative
+                    if index % 2:
+                        target.unlink()
+                    else:
+                        target.write_text('{"damaged":true}', encoding="utf-8")
+                write(profile / "backups/new-version-only.jsonl", "must not survive rollback")
+                # An upgraded runtime may already have retired old chat backups.
+                # Failed updates must restore those files and discard the new
+                # completion receipt, so the old runtime sees its original data.
+                (profile / "backups/chat_legacy_before_upgrade.jsonl").unlink(missing_ok=True)
+                write(profile / "backups/.nora-chat/legacy-upgrade-v1.json", '{"version":1,"status":"complete"}')
+                write(profile / "nora-world-core/worlds/new-version-only.json", '{"new":true}')
             write(home / ".env", "TEST_ONLY=keep")
             write(home / "SOUL.md", "custom persona")
             write(home / "AGENTS.md", "old instructions")
@@ -94,6 +137,7 @@ class ManagedUpdateTests(unittest.TestCase):
                 if phase == 'preflight' and preflight_failure:
                     raise RuntimeError('injected preflight failure')
                 if phase == 'verify' and late_failure:
+                    damage_storage()
                     raise RuntimeError('injected final service failure')
                 if phase == 'rollback' and rollback_failure:
                     raise RuntimeError('old gateway cannot start')
@@ -112,8 +156,11 @@ class ManagedUpdateTests(unittest.TestCase):
 
             def verify(*_args):
                 if failure:
-                    story.unlink()
-                    chat.write_text("startup damaged data")
+                    if storage_recovery:
+                        damage_storage()
+                    else:
+                        story.unlink()
+                        chat.write_text("startup damaged data")
                     raise RuntimeError("injected MCP failure")
                 return {name: True for name in nora_system.PROOFS}
 
@@ -162,6 +209,9 @@ class ManagedUpdateTests(unittest.TestCase):
                 journal = json.loads((tavern / 'tavern-updates/transaction.json').read_text())
                 self.assertEqual(journal['status'], 'recovery-failed' if rollback_failure else 'restored')
                 self.assertTrue(Path(journal['backup']).is_dir())
+                backup_receipt = update.backup_receipt(tavern, Path(journal['backup']))
+                self.assertEqual(backup_receipt['status'], journal['status'])
+                self.assertTrue(backup_receipt['mayContainUserData'])
                 if rollback_failure:
                     with self.assertRaisesRegex(RuntimeError, '上次更新事务未完成'):
                         update.install(args)
@@ -182,7 +232,16 @@ class ManagedUpdateTests(unittest.TestCase):
                 self.assertEqual((home / ".env").read_bytes(), before[home / ".env"])
                 self.assertEqual((home / "sessions/keep.json").read_bytes(), before[home / "sessions/keep.json"])
             self.assertEqual(story.read_text(), '{"worldId":"story"}')
-            self.assertEqual(chat.read_text(), '{"message":"keep"}\n')
+            self.assertEqual(chat.read_bytes(), storage_before[chat.relative_to(state)])
+            if storage_recovery:
+                for relative, content in storage_before.items():
+                    self.assertEqual((state / relative).read_bytes(), content, str(relative))
+                self.assertFalse((profile / "backups/new-version-only.jsonl").exists())
+                self.assertFalse((profile / "nora-world-core/worlds/new-version-only.json").exists())
+                restored_chat = [json.loads(line) for line in chat.read_text().splitlines()]
+                self.assertEqual(restored_chat[0]["chat_metadata"]["nora_restore"]["protectedBackupId"], "fixture")
+                self.assertEqual(restored_chat[-1]["extra"]["stat_data"]["玩家"]["体力"], 80)
+                self.assertEqual(restored_chat[-1]["swipes"][restored_chat[-1]["swipe_id"]], "原来的回复")
             self.assertEqual(start.call_args.kwargs["port"], 18899)
             self.assertEqual(stop.call_count, 2 if failure or late_failure else 1)
             if late_failure:
@@ -195,6 +254,15 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_managed_update_uses_shared_transaction_and_preserves_user_data(self):
         self.transaction()
+
+    def test_successful_update_preserves_legacy_and_managed_storage_together(self):
+        self.transaction(storage_recovery=True)
+
+    def test_failed_update_restores_chat_variables_backups_and_mixed_storage_records(self):
+        for late_failure in (False, True):
+            with self.subTest(late_failure=late_failure):
+                self.transaction(bundled=False, storage_recovery=True,
+                                 failure=not late_failure, late_failure=late_failure)
 
     def test_historical_managed_receipts_upgrade_or_restore_without_data_loss(self):
         # Versions label representative receipt fixtures, not downloaded historical runtimes.

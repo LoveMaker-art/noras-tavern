@@ -8,31 +8,32 @@ export function createCardCapabilityController({
 }) {
     const promptPromises = new Map();
 
-    function capabilities(character) {
-        return cards.characterCapabilities(character);
+    function capabilities(character, options) {
+        return cards.characterCapabilities(character, options);
     }
 
     async function resolve(characterId) {
         return cards.resolveCharacter(characterId);
     }
 
-    function markPrompted(character, current = capabilities(character)) {
-        cards.markCharacterCapabilitiesPrompted(character, current);
+    function markPrompted(character, current = capabilities(character), options) {
+        cards.markCharacterCapabilitiesPrompted(character, current, options);
     }
 
-    async function enable(character, { refresh = false } = {}) {
-        await cards.enableCharacterCapabilities(character, { refresh });
+    async function enable(character, { refresh = false, worldId } = {}) {
+        await cards.enableCharacterCapabilities(character, { refresh, worldId });
     }
 
-    async function runPrompt(character, { refresh = false, force = false } = {}) {
+    async function runPrompt(character, { refresh = false, force = false, worldId } = {}) {
         if (!character) return false;
-        const current = capabilities(character);
+        const current = capabilities(character, { worldId });
+        const owner = worldId || current.helperWorldId;
         const missingRegex = current.regexScripts.length > 0 && !current.regexAllowed;
         const missingHelper = current.helperScripts.length > 0 && !current.helperAllowed;
         if (!missingRegex && !missingHelper) return true;
         if (!force && (!missingRegex || current.regexPrompted) && (!missingHelper || current.helperPrompted)) return false;
 
-        markPrompted(character, current);
+        markPrompted(character, current, { worldId: owner });
         const details = [
             ...current.regexScripts.map((script, index) => t`显示规则：${script?.scriptName || script?.name || t`规则 ${index + 1}`}`),
             ...current.helperScripts.map((script, index) => t`角色脚本：${script?.name || t`脚本 ${index + 1}`}`),
@@ -47,16 +48,17 @@ export function createCardCapabilityController({
             detailsLabel: tr("查看包含的功能"),
         });
         if (!confirmed) return false;
-        await enable(character, { refresh });
+        await enable(character, { refresh, worldId: owner });
         showToast(tr("角色卡增强功能已启用。"));
         return true;
     }
 
     async function prompt(character, options = {}) {
         if (!character) return false;
-        const key = String(character.avatar || character.name || 'current');
+        const owner = options.worldId || capabilities(character).helperWorldId;
+        const key = `${owner || ''}:${character.avatar || character.name || 'current'}`;
         if (promptPromises.has(key)) return promptPromises.get(key);
-        const pending = runPrompt(character, options).finally(() => promptPromises.delete(key));
+        const pending = runPrompt(character, { ...options, worldId: owner }).finally(() => promptPromises.delete(key));
         promptPromises.set(key, pending);
         return pending;
     }

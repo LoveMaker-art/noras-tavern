@@ -251,7 +251,10 @@ export class StInspectionPlane {
       extensionSettingsKeys: Object.keys(extensionSettings).sort(),
       disabledExtensions: [...disabled].sort(),
       controlTool: "nora.control.execute",
-      controlActions: ["plugins.enabled", "plugins.configure"],
+      controlActions: ["plugins.enabled", "plugins.configure", "plugins.install", "plugins.update", "plugins.uninstall"],
+      inventoryKind: "discovered-modules",
+      liveLibraryAction: "plugins.list",
+      lifecyclePolicy: "Read plugins.list for editable/protected policy and revision; discovered modules are not necessarily editable library items.",
       requiresLiveClient: true,
       settingsRoot: "extension_settings",
     };

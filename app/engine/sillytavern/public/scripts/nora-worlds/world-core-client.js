@@ -447,14 +447,14 @@ export function createWorldCoreClient(getHeaders, {
         });
     }
 
-    async function mutateWorld(worldId, idempotencyKey, { method, suffix = '' }) {
+    async function mutateWorld(worldId, idempotencyKey, { method, suffix = '', expectedPlan }) {
         const normalizedWorldId = String(worldId || '').trim();
         const normalizedKey = String(idempotencyKey || '').trim();
         if (!normalizedWorldId || !normalizedKey) throw new Error('World identity and mutation idempotency key are required.');
         return request(`/worlds/${encodeURIComponent(normalizedWorldId)}${suffix}`, {
             method,
             headers: requestHeaders(getHeaders),
-            body: JSON.stringify({ idempotency_key: normalizedKey }),
+            body: JSON.stringify({ idempotency_key: normalizedKey, expected_plan: expectedPlan }),
         });
     }
 
@@ -523,7 +523,8 @@ export function createWorldCoreClient(getHeaders, {
         pendingCreation: () => readPending(),
         resumePendingCreation,
         retryPendingCreation,
-        deleteWorld: (worldId, { idempotencyKey } = {}) => mutateWorld(worldId, idempotencyKey, { method: 'DELETE' }),
+        previewWorldDeletion: worldId => request(`/worlds/${encodeURIComponent(worldId)}/delete-preview`, { headers: requestHeaders(getHeaders) }),
+        deleteWorld: (worldId, { idempotencyKey, expectedPlan } = {}) => mutateWorld(worldId, idempotencyKey, { method: 'DELETE', expectedPlan }),
         repairWorld: (worldId, { idempotencyKey } = {}) => mutateWorld(worldId, idempotencyKey, { method: 'POST', suffix: '/repair' }),
         beginCapabilityAttempt,
         settleCapabilityAttempt,

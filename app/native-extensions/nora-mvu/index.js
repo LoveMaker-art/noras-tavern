@@ -89,6 +89,10 @@ function attachUpdateObserver(runtime) {
             TRANSACTION_FAILED: runtime.events.TRANSACTION_FAILED || 'nora_mvu_transaction_failed',
         },
         identity: () => String(context().chatId || context().getCurrentChatId?.() || ''),
+        readMessage: id => {
+            const chat = context().chat;
+            return id === chat?.length - 1 && chat[id]?.is_user === false ? chat[id] : null;
+        },
         report: reportMvuDiagnostic,
     });
 }
@@ -148,6 +152,7 @@ function exposeApi() {
         status() {
             return statusSnapshot();
         },
+        backupState: () => state.updateObserver?.backupState() ?? 'unverified',
         inspectCurrentCard() {
             return inspectCurrentCard();
         },

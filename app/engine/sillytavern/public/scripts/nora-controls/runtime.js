@@ -3,6 +3,8 @@ import { interactionBridge } from '../nora-compat/interaction-bridge.js';
 import { createThemeActions } from './theme-actions.js';
 import { createPanelActions } from './panel-actions.js';
 import { createPresetActions } from './preset-actions.js';
+import { createPluginLibraryActions } from './plugin-library-actions.js';
+import { patchExistingConfiguration } from './config-patch.js';
 import { worldPresetExtensions } from '../nora-worlds/world-preset-extensions.js';
 import { prepareScriptImport } from './script-import.js';
 import { isEmbeddedMvuRuntimeScript } from '../nora-compat/mvu-compatibility.js';
@@ -86,6 +88,7 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             const code = /^NORA_[A-Z_]+$/.test(payload?.error?.code) ? payload.error.code : 'NORA_CONTROL_BACKEND_FAILED';
             throw controlError(code, 'Backend rejected control change; inspect current state before retrying.');
         }
+        if (response.headers?.get('content-type')?.includes('text/')) { await response.text(); return { saved: true }; }
         return response.json();
     }
     async function assertOwnedCard() {
@@ -100,14 +103,8 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         if (!record(value)) throw controlError('NORA_CONTROL_CONFIG_UNAVAILABLE', 'This extension has no mapped configuration namespace.');
         return { key, value };
     }
-    async function plugins() {
-        const module = await loadExtensions();
-        return module.extensionNames.map(name => ({ name, active: getContext().getActiveExtensionNames().includes(name),
-            enabled: !getContext().extensionSettings.disabledExtensions?.includes(name),
-            controllable: !denied.includes(name) && name !== 'third-party/nora-ui',
-            reason: denied.includes(name) ? 'disabled-by-product-policy' : name === 'third-party/nora-ui' ? 'product-shell' : null,
-            effect: name === 'third-party/nora-mvu' ? 'use-mvu.runtime' : 'reload-required' }));
-    }
+    const pluginLibrary = createPluginLibraryActions({ request, loadExtensions, getContext });
+    const plugins = () => pluginLibrary.list();
     let mutating = false;
     const themeAction = createThemeActions({ getContext, request, story,
         readTheme: () => globalRef.NoraUI?.themeState?.() || { ready: false },
@@ -130,7 +127,7 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         try {
             // Use the existing task registry: World changes already consult this registry.
             // Do not nest story generation inside another generation action.
-            if (!definition.readOnly && !isStop && !command.action.startsWith('story.') && currentScope.worldId) {
+            if (!definition.readOnly && !isStop && !command.action.startsWith('story.') && !command.action.startsWith('page.') && currentScope.worldId) {
                 const result = await dispatch().execute({ type: 'sidecar.run', key: 'runtime-controls',
                     run: () => apply(command.action, params, command) });
                 if (result.status !== 'completed') throw result.error || controlError('NORA_CONTROL_BUSY', 'Control action was not completed.');
@@ -149,24 +146,49 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
         }
         if (action.startsWith('theme.')) return themeAction(action, params);
         const context = getContext();
+        if (action === 'library.card-regex' || action === 'library.card-regex-update') {
+            const catalog = await request('/api/nora-worlds-v2/library/cards');
+            if (!catalog.items?.some(item => item.avatar === params.avatar && !item.legacy)) throw controlError('NORA_CONTROL_RESOURCE_SCOPE', 'Expected a library original, not a runtime/legacy card.');
+            const value = await story.cards.readCharacterRegex(params.avatar);
+            const currentRevision = await revision([params.avatar, value.scripts]);
+            if (action === 'library.card-regex') return { ...value, revision: currentRevision };
+            if (currentRevision !== params.expectedRevision) throw controlError('NORA_CONTROL_EDIT_STALE', 'Library rules changed.');
+            await story.cards.saveCharacterRegex({ avatar: params.avatar, index: params.index, patch: params.patch, expectedScripts: value.scripts });
+            return { saved: true, avatar: params.avatar, scope: 'library', runtimeApplied: false };
+        }
         if (/^(world|scenario|worldbook|models)\./.test(action)) return panelAction(action, params, command);
         if (params.scope === 'character' && !CONTROL_ACTIONS[action].readOnly && action !== 'helper.permissions' && action !== 'regex.permission') await assertOwnedCard();
-        if (action === 'plugins.list') return { plugins: await plugins(), quickReply: { available: false, reason: 'frontend-module-not-installed' }, backend: ['nora.ledger.*', 'nora.story.*'] };
+        if (action === 'plugins.list') {
+            const items = await plugins();
+            return { plugins: items, revision: await revision(items), quickReply: { available: false, reason: 'frontend-module-not-installed' }, backend: ['nora.ledger.*', 'nora.story.*'] };
+        }
+        if (['plugins.install', 'plugins.update', 'plugins.uninstall'].includes(action)) return pluginLibrary.execute(action, params);
         if (action.startsWith('plugins.')) {
+            if (denied.includes(params.name) || params.name === 'third-party/nora-ui') throw controlError('NORA_CONTROL_PROTECTED', 'Product-managed module.');
             const items = await plugins(); const item = items.find(item => item.name === params.name);
             if (!item) throw controlError('NORA_CONTROL_PLUGIN_MISSING', 'Extension is not installed.');
-            if (action === 'plugins.config') return redact(pluginConfig(params.name));
+            if (action === 'plugins.config') {
+                const current = structuredClone(pluginConfig(params.name));
+                return { ...redact(current), revision: await revision(current) };
+            }
             if (!item.controllable) throw controlError('NORA_CONTROL_PROTECTED', item.reason);
             if (params.name === 'third-party/nora-mvu') throw controlError('NORA_CONTROL_USE_MVU', 'Use the explicit MVU operations.');
             if (action === 'plugins.enabled') {
                 if (!params.enabled && params.name === 'third-party/JS-Slash-Runner' && context.extensionSettings.nora_mvu?.managedRuntimeEnabled !== false) throw controlError('NORA_CONTROL_DEPENDENCY', 'Disable managed MVU and dependent card scripts before disabling Tavern Helper.');
-                const module = await loadExtensions();
-                await (params.enabled ? module.enableExtension : module.disableExtension)(params.name, false);
-                await save();
+                if (item.editable) await request('/api/extensions/library/state', { extensionName: params.name.replace(/^third-party\//, ''), global: false, enabled: params.enabled });
+                else {
+                    const module = await loadExtensions();
+                    await (params.enabled ? module.enableExtension : module.disableExtension)(params.name, false);
+                    await save();
+                }
             } else {
                 if (params.name === 'third-party/JS-Slash-Runner') throw controlError('NORA_CONTROL_USE_SCRIPTS', 'Use scripts/helper operations for script execution settings.');
-                const { key, value } = pluginConfig(params.name); const next = structuredClone(value);
-                primitivePatch(next, params.updates); context.extensionSettings[key] = next; await save();
+                const current = structuredClone(pluginConfig(params.name));
+                if (await revision(current) !== params.expectedRevision || JSON.stringify(current) !== JSON.stringify(pluginConfig(params.name))) throw controlError('NORA_CONTROL_EDIT_STALE', 'Plugin configuration changed; inspect again.');
+                const next = patchExistingConfiguration(current.value, params.updates);
+                context.extensionSettings[current.key] = next;
+                try { await save(); }
+                catch (error) { if (context.extensionSettings[current.key] === next) context.extensionSettings[current.key] = current.value; throw error; }
             }
             return { saved: true, runtimeApplied: false, reloadRequired: true };
         }
@@ -429,10 +451,39 @@ export function createRuntimeControls({ getContext, story, dispatch, globalRef =
             return { saved: true, existingChatUnchanged: true, target: 'world-runtime-card', librarySourceUnchanged: true };
         }
         if (action === 'page.reload') return { reloadRequested: true, runtimeApplied: false };
+        if (action.startsWith('page.')) {
+            const ui = globalRef.NoraUI;
+            const state = ui?.pageControlState?.();
+            if (!state?.ready) throw controlError('NORA_CONTROL_OFFLINE', 'Page controls are unavailable.');
+            const serialized = JSON.stringify(state);
+            const currentRevision = await revision(state);
+            if (action === 'page.inspect') return { ...state, revision: currentRevision };
+            if (currentRevision !== params.expectedRevision || serialized !== JSON.stringify(ui.pageControlState())) throw controlError('NORA_CONTROL_EDIT_STALE', 'Page changed; inspect again.');
+            return ui.controlPage(action, params);
+        }
         if (action.startsWith('story.')) {
             character();
             if (action === 'story.stop') { await dispatch().cancel('visible'); return { stopRequested: true }; }
-            const result = await dispatch().execute({ type: { 'story.send': 'story.send', 'story.regenerate': 'story.regenerate', 'story.suggest': 'sidecar.suggest-replies' }[action], text: params.text });
+            if (['story.message', 'story.edit', 'story.edit-and-regenerate', 'story.swipe'].includes(action)) {
+                const chat = context.chat;
+                if (!Number.isInteger(params.id) || params.id < 0 || !chat?.[params.id]) throw controlError('NORA_CONTROL_INVALID', 'Message index does not exist.');
+                const snapshot = JSON.stringify(chat);
+                const snapshotChat = JSON.parse(snapshot);
+                const message = snapshotChat[params.id];
+                const currentRevision = await revision(snapshotChat);
+                if (scope().worldId !== command.worldId || scope().sessionId !== command.sessionId) throw controlError('NORA_CONTROL_SCOPE_CHANGED', 'World changed during message inspection.');
+                if (action === 'story.message') return { id: params.id, message: redact(message), revision: currentRevision };
+                if (currentRevision !== params.expectedRevision || snapshot !== JSON.stringify(getContext().chat)) throw controlError('NORA_CONTROL_EDIT_STALE', 'Chat changed; read the message again.');
+                if (message.is_system || (action === 'story.edit-and-regenerate' ? !message.is_user : message.is_user)) {
+                    throw controlError('NORA_CONTROL_INVALID', 'Message role does not match the requested action.');
+                }
+                if (action === 'story.swipe') {
+                    const next = Number(message.swipe_id || 0) + (params.direction === 'left' ? -1 : 1);
+                    if (!Array.isArray(message.swipes) || next < 0 || next >= message.swipes.length) throw controlError('NORA_CONTROL_INVALID', 'No existing candidate in that direction.');
+                }
+            }
+            const result = await dispatch().execute({ type: action === 'story.suggest' ? 'sidecar.suggest-replies' : action,
+                text: params.text, id: params.id, direction: params.direction });
             if (result.status !== 'completed') throw controlError('NORA_CONTROL_STORY_FAILED', `Story operation: ${result.status}`);
             return { completed: true, value: action === 'story.suggest' ? result.value : null };
         }

@@ -34,7 +34,8 @@ export async function collectStoryProductions(directories, listWorlds, notify = 
             const chatPath = path.join(directories.chats, avatar.replace(/\.png$/i, ''), sanitize(`${chatId}.jsonl`));
             let data;
             try { data = (await fs.readFile(chatPath, 'utf8')).split('\n').filter(line => line.trim()).map(line => JSON.parse(line)); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
-            if (scopeKey(scopeOf(data[0]?.chat_metadata)) !== scopeKey(scope) || !matchesLedgerHistory(active, data.slice(1))) {
+            if ((data[0]?.chat_metadata?.nora_restore?.id || null) !== (state.restoreId || null)
+                || scopeKey(scopeOf(data[0]?.chat_metadata)) !== scopeKey(scope) || !matchesLedgerHistory(active, data.slice(1))) {
                 notify('invalid-history-skipped', scope);
                 continue;
             }

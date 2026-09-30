@@ -214,16 +214,21 @@ backups:
   allowFullDataBackup: true
   # Common settings for all backup types
   common:
-    # Number of backups to keep for each chat and settings file
+    # Number of settings backups to keep (chat retention is configured below)
     numberOfBackups: 50
   chat:
     # Enable automatic chat backups
     enabled: true
     # Verify integrity of chat files before saving
     checkIntegrity: true
-    # Maximum number of chat backups to keep per user (starting from the most recent). Set to -1 to keep all backups.
-    maxTotalBackups: -1
-    # Interval in milliseconds to throttle chat backups per user
+    # One-time upgrade retires confidently owned legacy chat backups only after
+    # verifying new baselines for current World sessions. Unknown files remain.
+    # Recurring retention prunes only managed snapshots; all chat backups count.
+    retention:
+      maxPerSession: 20
+      maxAgeDays: 30
+      maxBytes: 536870912
+    # Trailing debounce interval in milliseconds per chat
     throttleInterval: 10000
 
 # THUMBNAILING CONFIGURATION

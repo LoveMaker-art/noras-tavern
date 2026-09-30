@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -53,6 +54,29 @@ test('creating two worlds automatically stores exactly one library original and 
     assert.equal(catalog.items.some(item => runtime.has(item.avatar)), false);
 });
 
+test('explicit library cleanup uses current revision and preserves referenced cards and World data', async t => {
+    const f = await fixture(t, true);
+    const world = await f.create('playing');
+    const original = (await f.core.listLibraryCards()).items[0];
+    const runtimeBefore = await fs.readFile(path.join(f.directories.characters, world.runtime_card.binding.avatar));
+    for (const name of ['duplicate.png', 'referenced.png']) await fs.writeFile(path.join(f.directories.characters, name), f.bytes);
+    await fs.mkdir(path.join(f.directories.chats, 'referenced'));
+    await fs.writeFile(path.join(f.directories.chats, 'referenced', 'chat.jsonl'), 'keep');
+    await assert.rejects(f.core.manageLibraryCard({ action: 'delete', avatar: original.avatar, revision: 'stale' }), { code: 'NORA_ST_RESOURCE_CONFLICT' });
+    const cleaned = await f.core.manageLibraryCard({ action: 'deduplicate', avatar: original.avatar, revision: original.revision });
+    assert.deepEqual(cleaned.removed, ['duplicate.png']);
+    assert.deepEqual(cleaned.retained, [{ avatar: 'referenced.png', reason: 'referenced' }]);
+    await assert.rejects(f.core.manageLibraryCard({ action: 'delete', avatar: world.runtime_card.binding.avatar, revision: original.revision }));
+    const deleted = await f.core.manageLibraryCard({ action: 'delete', avatar: original.avatar, revision: original.revision });
+    assert.equal(deleted.deleted, true);
+    assert.equal(deleted.archive, 'retained-referenced');
+    await assert.rejects(fs.stat(path.join(f.root, 'core', 'library-cards', `${original.id}.json`)), { code: 'ENOENT' });
+    assert.deepEqual(await fs.readFile(path.join(f.directories.characters, world.runtime_card.binding.avatar)), runtimeBefore);
+    assert.equal(await fs.readFile(path.join(f.directories.chats, 'referenced', 'chat.jsonl'), 'utf8'), 'keep');
+    const referenced = (await f.core.listLibraryCards()).items.find(item => item.avatar === 'referenced.png');
+    assert.equal((await f.core.manageLibraryCard({ action: 'delete', avatar: referenced.avatar, revision: referenced.revision })).deleted, false);
+});
+
 test('concurrent standalone import and World creation reuse one immutable original', async t => {
     const f = await fixture(t, true);
     const [first, second, world] = await Promise.all([
@@ -64,6 +88,108 @@ test('concurrent standalone import and World creation reuse one immutable origin
     assert.equal((await fs.readdir(f.directories.characters)).length, 2);
     assert.deepEqual(await fs.readFile(path.join(f.directories.characters, first.avatar)), f.bytes);
     assert.notEqual(first.avatar, world.runtime_card.binding.avatar);
+});
+
+test('a freshly confirmed MCP deletion can remove an identical re-import without reusing the old deletion receipt', async t => {
+    const f = await fixture(t);
+    for (let attempt = 0; attempt < 2; attempt++) {
+        await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+        const original = (await f.core.listLibraryCards()).items[0];
+        const result = await f.core.manageLibraryCard({ action: 'delete', avatar: original.avatar, revision: original.revision });
+        assert.equal(result.deleted, true);
+        assert.equal(result.alreadyAbsent, false);
+        await assert.rejects(fs.stat(path.join(f.directories.characters, original.avatar)), { code: 'ENOENT' });
+    }
+});
+
+test('deleting a library original removes its index and unreferenced archive, not a same-name card', async t => {
+    const f = await fixture(t);
+    const first = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const changed = structuredClone(f.card); changed.data.description = 'Different card with the same name';
+    const other = await f.core.saveLibraryCard({ buffer: Buffer.from(JSON.stringify(changed)), format: 'png' });
+    const result = await f.core.deleteLibraryCard(first.avatar);
+    assert.equal(result.deleted, true);
+    assert.equal(result.archive, 'deleted');
+    assert.deepEqual((await f.core.listLibraryCards()).items.map(item => item.avatar), [other.avatar]);
+    assert.deepEqual((await fs.readdir(path.join(f.root, 'core', 'library-cards'))).filter(name => name.endsWith('.json')), [`${other.id}.json`]);
+    assert.equal((await fs.readdir(path.join(f.root, 'core', 'library-cards', 'sources'))).length, 1);
+    assert.deepEqual((await f.core.readLibraryCardSource(other.avatar)).buffer, Buffer.from(JSON.stringify(changed)));
+});
+
+test('library deletion preserves a World and its still-referenced source archive', async t => {
+    const f = await fixture(t);
+    const world = await f.create('archive-owner');
+    const original = (await f.core.listLibraryCards()).items[0];
+    const runtimePath = path.join(f.directories.characters, world.runtime_card.binding.avatar);
+    const runtime = await fs.readFile(runtimePath);
+    await assert.rejects(f.core.deleteLibraryCard(world.runtime_card.binding.avatar), { code: 'NORA_WORLD_RESOURCE_IN_USE' });
+    const result = await f.core.deleteLibraryCard(original.avatar);
+    assert.equal(result.archive, 'retained-referenced');
+    assert.equal((await fs.readdir(path.join(f.root, 'core', 'library-cards', 'sources'))).length, 1);
+    assert.deepEqual(await fs.readFile(runtimePath), runtime);
+    assert.equal((await f.core.getWorld(world.world_id)).lifecycle.status, 'READY');
+    assert.deepEqual((await f.core.listLibraryCards()).items, [], 'explicitly deleted originals must not reappear as legacy runtime snapshots');
+});
+
+test('interrupted library deletion resumes its recorded targets without allowing stale source import', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const archiveRoot = path.join(f.root, 'core', 'library-cards', 'sources');
+    const unlink = fsSync.unlinkSync;
+    fsSync.unlinkSync = target => {
+        if (path.dirname(target) === archiveRoot) throw Object.assign(new Error('fixture archive busy'), { code: 'EBUSY' });
+        return unlink(target);
+    };
+    try { await assert.rejects(f.core.deleteLibraryCard(original.avatar), { code: 'EBUSY' }); }
+    finally { fsSync.unlinkSync = unlink; }
+    await assert.rejects(f.core.readLibraryCardSource(original.avatar), { code: 'NORA_WORLD_RESOURCE_DELETING' });
+    await assert.rejects(f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' }), { code: 'NORA_WORLD_RESOURCE_DELETING' });
+    const result = await f.core.deleteLibraryCard(original.avatar);
+    assert.equal(result.alreadyAbsent, true);
+    assert.equal(result.archive, 'deleted');
+    assert.deepEqual(await fs.readdir(archiveRoot), []);
+    assert.deepEqual((await f.core.listLibraryCards()).items, []);
+});
+
+test('library deletion retains changed archives instead of deleting by their indexed filename', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const archiveRoot = path.join(f.root, 'core', 'library-cards', 'sources');
+    const archive = path.join(archiveRoot, (await fs.readdir(archiveRoot))[0]);
+    await fs.writeFile(archive, 'user replaced this archive');
+    assert.equal((await f.core.deleteLibraryCard(original.avatar)).archive, 'retained-changed');
+    assert.equal(await fs.readFile(archive, 'utf8'), 'user replaced this archive');
+    await assert.rejects(fs.stat(path.join(f.root, 'core', 'library-cards', `${original.id}.json`)), { code: 'ENOENT' });
+});
+
+test('an old library deletion refuses changed remaining bytes; a newly confirmed operation replans them', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    const cardPath = path.join(f.directories.characters, original.avatar);
+    const unlink = fsSync.unlinkSync;
+    fsSync.unlinkSync = target => {
+        if (target === cardPath) throw Object.assign(new Error('fixture card busy'), { code: 'EBUSY' });
+        return unlink(target);
+    };
+    try { await assert.rejects(f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-delete' }), { code: 'EBUSY' }); }
+    finally { fsSync.unlinkSync = unlink; }
+    await fs.writeFile(cardPath, 'new user content');
+    await assert.rejects(f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-delete' }), { code: 'NORA_WORLD_DELETE_PLAN_CHANGED' });
+    assert.equal(await fs.readFile(cardPath, 'utf8'), 'new user content');
+    assert.equal((await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'new-confirmation' })).deleted, true);
+});
+
+test('replaying a completed library deletion cannot remove a later re-import of the same original', async t => {
+    const f = await fixture(t);
+    const original = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-user-action' });
+    const replacement = await f.core.saveLibraryCard({ buffer: f.bytes, format: 'png' });
+    assert.equal(replacement.avatar, original.avatar);
+    await f.core.deleteLibraryCard(original.avatar, { idempotencyKey: 'old-user-action' });
+    assert.deepEqual((await f.core.listLibraryCards()).items.map(item => item.avatar), [replacement.avatar]);
+    assert.deepEqual((await f.core.readLibraryCardSource(replacement.avatar)).buffer, f.bytes);
+    await f.core.deleteLibraryCard(replacement.avatar, { idempotencyKey: 'new-user-confirmation' });
+    assert.deepEqual((await f.core.listLibraryCards()).items, []);
 });
 
 test('cleans only identical unreferenced originals and preserves chat, group, settings and World bindings', async t => {
@@ -169,6 +295,7 @@ test('multipart uploads under different filenames deduplicate through the real l
     const f = await fixture(t, true);
     const uploads = path.join(f.root, 'uploads');
     const app = express();
+    app.use(express.json());
     app.use(multer({ dest: uploads }).single('avatar'));
     app.use('/api', createNoraWorldsV2Router({ resolveCore: () => f.core }));
     const server = app.listen(0, '127.0.0.1');
@@ -189,4 +316,16 @@ test('multipart uploads under different filenames deduplicate through the real l
     assert.equal((await f.core.listWorlds()).length, 0, 'Store-only import must not create a World');
     for (let attempt = 0; attempt < 50 && (await fs.readdir(uploads)).length; attempt++) await new Promise(resolve => setTimeout(resolve, 5));
     assert.deepEqual(await fs.readdir(uploads), []);
+    const item = (await (await fetch(`${base}/library/cards`)).json()).items[0];
+    const manage = revision => fetch(`${base}/library/cards/manage`, { method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ action: 'delete', avatar: item.avatar, revision }) });
+    assert.equal((await manage('stale')).status, 409);
+    const deleted = await manage(item.revision);
+    assert.equal(deleted.status, 200);
+    const receipt = await deleted.json();
+    assert.equal(receipt.deleted, true);
+    assert.equal(receipt.archive, 'deleted');
+    assert.deepEqual(await fs.readdir(path.join(f.root, 'core', 'library-cards', 'sources')), []);
+    await assert.rejects(fs.stat(path.join(f.root, 'core', 'library-cards', `${item.id}.json`)), { code: 'ENOENT' });
+    assert.deepEqual((await f.core.listLibraryCards()).items, []);
 });

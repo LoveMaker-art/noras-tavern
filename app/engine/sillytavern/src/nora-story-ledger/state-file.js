@@ -1,5 +1,4 @@
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { scopeKey } from '../../public/scripts/nora-story-ledger/history.js';
 
@@ -8,8 +7,11 @@ export function ledgerStatePath(userRoot, scope) {
     return path.join(userRoot, 'nora-story-ledger', filename);
 }
 
-// Invoked only by the existing World-owned Session deletion operation.
-export function removeSessionLedger(userRoot, scope) {
-    const filePath = ledgerStatePath(userRoot, scope);
-    try { fs.unlinkSync(filePath); return true; } catch (error) { if (error.code !== 'ENOENT') throw error; return false; }
+/** The chat's atomic restore receipt is authoritative. A crash before any
+ * later ledger write still invalidates active, pending and imported memories. */
+export function ledgerAfterRestore(state, metadata) {
+    const receipt = metadata?.nora_restore;
+    if (!receipt?.id || receipt.id === state?.restoreId) return state;
+    return { version: 1, enabled: receipt.ledgerEnabled !== false, restoreId: receipt.id,
+        waitForHistory: receipt.historySignature, active: null, pending: null, imported: null, lastError: null };
 }
