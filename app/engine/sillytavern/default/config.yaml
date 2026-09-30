@@ -224,6 +224,8 @@ backups:
     # One-time upgrade retires confidently owned legacy chat backups only after
     # verifying new baselines for current World sessions. Unknown files remain.
     # Recurring retention prunes only managed snapshots; all chat backups count.
+    # Legacy maxTotalChatBackups/backups.chat.maxTotalBackups are ignored.
+    # Their values are preserved; configure the retention policy explicitly.
     retention:
       maxPerSession: 20
       maxAgeDays: 30

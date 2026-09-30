@@ -127,7 +127,7 @@ export function createWorldController({
     }
 
     function listKeydown(event) {
-        if (event.target.closest('[data-world-options], [data-delete-world], [data-repair-world], [data-retry-world-import]')) return;
+        if (event.target.closest('[data-world-options], [data-repair-world], [data-retry-world-import]')) return;
         const world = event.target.closest('.nora-world[data-world]');
         if (!world || !['Enter', ' '].includes(event.key)) return;
         event.preventDefault();
@@ -290,12 +290,6 @@ export function createWorldController({
                 repairButton.disabled = false;
             }
             return;
-        }
-        const deleteButton = event.target instanceof Element ? event.target.closest('[data-delete-world]') : null;
-        if (deleteButton) {
-            event.preventDefault();
-            event.stopPropagation();
-            return deleteWorld(deleteButton.dataset.deleteWorld);
         }
         const button = event.target instanceof Element ? event.target.closest('.nora-world[data-world]') : null;
         if (!button) return;

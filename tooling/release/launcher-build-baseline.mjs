@@ -17,6 +17,8 @@ const allowedFiles = new Set([
     'app/.tavern-release-version', 'deployment/update/releases.js', 'deployment/update/system-update.js',
     'deployment/shared/services.py', 'deployment/shared/model_config.py',
     'deployment/shared/nora_profile.py', 'deployment/shared/nora_system.py',
+    'tooling/release/package-launcher-update.cjs', 'tooling/release/package-local-launcher.mjs',
+    'tooling/release/verify-launcher-release.cjs', 'tooling/release/launcher-release-notes.cjs',
 ]);
 
 export function assertLauncherReuse(current, baseline) {
@@ -31,9 +33,10 @@ export function assertLauncherReuse(current, baseline) {
             assert.match(value.sourceFiles?.[required] || '', /^[a-f0-9]{64}$/, `Missing fingerprint: ${required}`);
         }
     }
+    // Shared build/projection tools can change compiled payloads without changing
+    // app source. Only reviewed launcher-specific tools may bypass compilation.
     const allowed = name => allowedFiles.has(name)
-        || ['launcher/', 'deployment/install/', 'deployment/uninstall/', 'tests/', 'docs/'].some(prefix => name.startsWith(prefix))
-        || (name.startsWith('tooling/release/') && name !== 'tooling/release/package-hermes-runtime.mjs');
+        || ['launcher/', 'deployment/install/', 'deployment/uninstall/', 'tests/', 'docs/'].some(prefix => name.startsWith(prefix));
     const changed = [...new Set([...Object.keys(current.sourceFiles), ...Object.keys(baseline.sourceFiles)])]
         .filter(name => current.sourceFiles[name] !== baseline.sourceFiles[name]);
     const blocked = changed.filter(name => !allowed(name));

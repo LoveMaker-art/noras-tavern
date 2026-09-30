@@ -33,11 +33,6 @@ const keyMigrationMap = [
         migrate: (value) => value,
     },
     {
-        oldKey: 'maxTotalChatBackups',
-        newKey: 'backups.chat.maxTotalBackups',
-        migrate: (value) => value,
-    },
-    {
         oldKey: 'chatBackupThrottleInterval',
         newKey: 'backups.chat.throttleInterval',
         migrate: (value) => value,
@@ -104,14 +99,21 @@ function getAllKeys(obj, prefix = '') {
 export function addMissingConfigValues(configPath) {
     try {
         const defaultConfig = yaml.parse(fs.readFileSync(path.join(serverDirectory, './default/config.yaml'), 'utf8'));
+        const exists = fs.existsSync(configPath);
+        let config = exists ? yaml.parse(fs.readFileSync(configPath, 'utf8')) : {};
+        const retiredLimits = ['maxTotalChatBackups', 'backups.chat.maxTotalBackups'].flatMap(key => [
+            ...(_.has(config, key) ? [key] : []),
+            ...(Object.hasOwn(process.env, keyToEnv(key)) ? [keyToEnv(key)] : []),
+        ]);
+        if (retiredLimits.length) {
+            console.warn(color.yellow(`Warning: Obsolete chat backup limits (${retiredLimits.join(', ')}) are ignored and left unchanged. Configure backups.chat.retention.maxPerSession, maxAgeDays and maxBytes instead; a total count cannot be automatically converted to the new retention policy.`));
+        }
 
-        if (!fs.existsSync(configPath)) {
+        if (!exists) {
             console.warn(color.yellow(`Warning: config.yaml not found at ${configPath}. Creating a new one with default values.`));
             fs.writeFileSync(configPath, yaml.stringify(defaultConfig));
             return;
         }
-
-        let config = yaml.parse(fs.readFileSync(configPath, 'utf8'));
 
         // Migrate old keys to new keys
         const migratedKeys = [];

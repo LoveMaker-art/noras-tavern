@@ -22,7 +22,9 @@ test('stable launcher update requires a higher launcher version', () => {
 test('launcher changes are allowed but changed, added and deleted runtime inputs require full build', () => {
     const baseline = identity();
     for (const name of ['launcher/desktop/main.js', 'deployment/shared/services.py', 'deployment/install/bootstrap.py',
-        'app/.tavern-release-version', 'tooling/release/package-release.mjs']) {
+        'app/.tavern-release-version', 'tooling/release/package-launcher-update.cjs',
+        'tooling/release/package-local-launcher.mjs', 'tooling/release/verify-launcher-release.cjs',
+        'tooling/release/launcher-release-notes.cjs']) {
         assert.deepEqual(assertLauncherReuse({ ...baseline, sourceFiles: { ...fingerprints, [name]: 'b'.repeat(64) } }, baseline), [name]);
     }
     for (const name of ['app/engine/sillytavern/src/server.js', 'nora-mcp/src/index.ts', 'nora/SOUL.md',
@@ -36,6 +38,24 @@ test('launcher changes are allowed but changed, added and deleted runtime inputs
     assert.throws(() => assertLauncherReuse(baseline, { ...baseline, sourceFiles: {} }), /Missing fingerprint/);
     assert.throws(() => assertLauncherReuse(baseline, { ...baseline, candidate: true }), /stable/);
     assert.throws(() => assertLauncherReuse(baseline, { ...baseline, dirty: true }), /clean/);
+});
+
+test('shared build tools and unknown release scripts cannot reuse compiled payloads', () => {
+    for (const name of ['release-source.mjs', 'build-commands.mjs', 'package-release.mjs', 'package-release.sh',
+        'system-release.mjs', 'package-component-update.mjs', 'package-hermes-runtime.mjs',
+        'launcher-build-baseline.mjs', 'restore-launcher-runtime.cjs', 'future-build-step.mjs']) {
+        const file = `tooling/release/${name}`;
+        const before = identity();
+        before.sourceFiles[file] = 'a'.repeat(64);
+        const changed = structuredClone(before);
+        changed.sourceFiles[file] = 'b'.repeat(64);
+        assert.throws(() => assertLauncherReuse(changed, before), /Full build/, `modified: ${file}`);
+        if (file === 'tooling/release/package-hermes-runtime.mjs') continue;
+        const absent = structuredClone(before);
+        delete absent.sourceFiles[file];
+        assert.throws(() => assertLauncherReuse(before, absent), /Full build/, `added: ${file}`);
+        assert.throws(() => assertLauncherReuse(absent, before), /Full build/, `deleted: ${file}`);
+    }
 });
 
 function fixture(t, platform = 'darwin-arm64') {

@@ -80,11 +80,7 @@ body.nora-product .nora-extension-setting .nora-setting-button:focus-visible { o
 .nora-extension-action span { min-width: 0; overflow-wrap: anywhere; text-align: start; }
 .nora-extension-action i { color: var(--nora-muted); font-size: 9px; }
 .nora-extension-action:hover { border-color: var(--nora-brand-ink); color: var(--nora-brand-ink); }
-.nora-extension-action:focus-visible, .nora-extension-script summary:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
-.nora-extension-script { min-width: 0; padding: 8px 10px; border: 1px solid var(--nora-line); border-radius: 6px; color: var(--nora-ink-2); font-size: 12px; }
-.nora-extension-script summary { line-height: 1.7; }
-.nora-extension-script[open] summary { margin-bottom: 10px; }
-.nora-extension-script textarea { max-height: 240px; }
+.nora-extension-action:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
 .nora-extension-menu { display: grid; margin-top: 4px; }
 .nora-extension-entry { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 12px 0; border: 0; border-bottom: 1px solid var(--nora-line); background: transparent; color: var(--nora-ink); text-align: start; font: inherit; cursor: pointer; }
 .nora-extension-entry:last-child { border-bottom: 0; }
@@ -104,7 +100,7 @@ body.nora-product .nora-extension-setting .nora-setting-button:focus-visible { o
 .nora-script-row-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
 .nora-extension-action:disabled { opacity: .45; cursor: not-allowed; }
 .nora-script-view { padding: 6px 0; border: 0; background: transparent; color: var(--nora-muted); font: inherit; font-size: 12px; cursor: pointer; }
-.nora-script-state, .nora-script-managed { color: var(--nora-muted); font-size: 11px; }
+.nora-script-state { color: var(--nora-muted); font-size: 11px; }
 .nora-script-title { overflow-wrap: anywhere; }
 .nora-script-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding-top: 16px; }
 .nora-script-footer > [data-script-import] { margin-inline-start: auto; }
@@ -279,11 +275,7 @@ body.nora-product > .drawer-content { visibility: hidden !important; pointer-eve
 .nora-world-more { width: 36px; height: 36px; color: var(--nora-muted); }
 .nora-world-more:hover, .nora-world-more:focus-visible { color: var(--nora-ink); background: var(--nora-surface); }
 .nora-world-modal .nora-field-help { margin: 0; color: var(--nora-muted); font-size: 13px; line-height: 1.6; }
-.nora-world-delete { background: transparent; color: var(--nora-muted); opacity: 0; transition: opacity .12s, color .12s, background .12s; }
-.nora-world:hover .nora-world-delete, .nora-world-delete:focus-visible { opacity: .5; }
-.nora-world-delete:hover { background: var(--nora-surface); color: var(--nora-danger); opacity: 1; }
 body.nora-world-deleting .nora-world-list { pointer-events: none; opacity: .62; }
-@media (hover: none) { .nora-world-delete { opacity: .42; } .nora-world-delete:active { color: var(--nora-danger); opacity: 1; } }
 .nora-rail-empty { margin: auto 8px; color: var(--nora-muted); text-align: center; }
 .nora-rail-empty span { color: var(--nora-brand); font-size: 24px; }
 .nora-rail-empty p { margin: 7px 0 1px; color: var(--nora-ink-2); font-size: 13px; }

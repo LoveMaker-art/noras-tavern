@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import test from 'node:test';
 import { createWorldController } from '../../../native-extensions/nora-ui/world-controller.js';
 import { translate as tr } from '../public/scripts/nora-i18n/core.js';
@@ -31,6 +32,46 @@ test('permanent deletion explains protected backups and separate rollback packag
     assert.match(confirmation.body, /1/);
     assert.equal(confirmation.tone, 'danger');
     assert.equal(removed, false);
+});
+
+test('World options remain the deletion entry and still require confirmation', async t => {
+    const previous = globalThis.Element;
+    class Button {
+        dataset = { worldOptions: 'world:test' };
+        closest(selector) { return selector === '[data-world-options]' ? this : null; }
+    }
+    globalThis.Element = Button;
+    t.after(() => { if (previous === undefined) delete globalThis.Element; else globalThis.Element = previous; });
+    const handlers = new Map();
+    let markup, confirmation, removed = false, closed = false;
+    const f = fixture(null, {
+        escapeHtml: value => value,
+        openModal: (_title, html) => { markup = html; return {}; },
+        closeModal: () => { closed = true; },
+        select: selector => ({ addEventListener: (event, handler) => handlers.set(`${selector}:${event}`, handler) }),
+        confirmAction: async value => { confirmation = value; return false; },
+        worldRuntime: { previewWorldDeletion, remove: async () => { removed = true; } },
+    });
+    f.state.worldModels = [{ id: 'world:test', name: 'Test', available: true }];
+    await f.controller.selectWorld({ target: new Button(), preventDefault() {}, stopPropagation() {} });
+    assert.match(markup, /data-world-remove/);
+    assert.match(markup, /data-world-restart/);
+    handlers.get('[data-world-remove]:click')();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(closed, true);
+    assert.equal(confirmation.tone, 'danger');
+    assert.equal(removed, false, 'cancelling confirmation must preserve the World');
+});
+
+test('retired UI hooks are absent while shared live styles and deletion busy state remain', () => {
+    const ui = new URL('../../../native-extensions/nora-ui/', import.meta.url);
+    const controller = fs.readFileSync(new URL('world-controller.js', ui), 'utf8');
+    const css = fs.readFileSync(new URL('style.css', ui), 'utf8');
+    assert.doesNotMatch(controller, /data-delete-world/);
+    assert.doesNotMatch(css, /\.nora-extension-script\b|\.nora-script-managed\b|\.nora-world-delete\b/);
+    assert.match(css, /\.nora-extension-action:focus-visible/);
+    assert.match(css, /\.nora-script-state\s*\{/);
+    assert.match(css, /body\.nora-world-deleting \.nora-world-list/);
 });
 
 test('partial deletion is reported as failure, never as complete removal', async () => {
