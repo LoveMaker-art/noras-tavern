@@ -1,9 +1,7 @@
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+import { createUserLogWriter } from './nora-log-writer.js';
 
 const SCHEMA_VERSION = 1;
-const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const SLOW_SERVER_SPAN_MS = 500;
 const MAX_TRACE_ID_LENGTH = 100;
 const MAX_STRING_LENGTH = 200;
@@ -127,49 +125,8 @@ export function normalizeClientMetricPayload(payload, {
     };
 }
 
-function telemetryPaths(directories) {
-    const root = directories?.root;
-    if (!root || typeof root !== 'string') throw new Error('Nora telemetry requires a user data root.');
-    const directory = path.join(root, 'nora-telemetry');
-    return {
-        directory,
-        active: path.join(directory, 'performance.ndjson'),
-        rotated: path.join(directory, 'performance.1.ndjson'),
-    };
-}
-
-export function createNoraTelemetryWriter({ maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
-    const queues = new Map();
-
-    async function write(directories, event) {
-        const paths = telemetryPaths(directories);
-        const line = `${JSON.stringify(event)}\n`;
-        await fs.mkdir(paths.directory, { recursive: true });
-        let currentSize = 0;
-        try {
-            currentSize = (await fs.stat(paths.active)).size;
-        } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-        }
-        if (currentSize > 0 && currentSize + Buffer.byteLength(line, 'utf8') > maxFileBytes) {
-            await fs.rm(paths.rotated, { force: true });
-            await fs.rename(paths.active, paths.rotated);
-        }
-        await fs.appendFile(paths.active, line, 'utf8');
-    }
-
-    return Object.freeze({
-        append(directories, event) {
-            const key = directories?.root || '';
-            const previous = queues.get(key) || Promise.resolve();
-            const pending = previous.catch(() => {}).then(() => write(directories, event));
-            queues.set(key, pending);
-            void pending.finally(() => {
-                if (queues.get(key) === pending) queues.delete(key);
-            }).catch(() => {});
-            return pending;
-        },
-    });
+export function createNoraTelemetryWriter({ maxFileBytes } = {}) {
+    return createUserLogWriter({ name: 'performance', maxFileBytes });
 }
 
 export const noraTelemetryWriter = createNoraTelemetryWriter();

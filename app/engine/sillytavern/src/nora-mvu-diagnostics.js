@@ -1,8 +1,7 @@
 import fs from 'node:fs/promises';
-import path from 'node:path';
+import { createUserLogWriter, userLogPaths } from './nora-log-writer.js';
 
 const SCHEMA_VERSION = 1;
-const DEFAULT_MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_VALIDATION_ERRORS = 12;
 const SAFE_CODE = /^[A-Z][A-Z0-9_]{0,99}$/;
 const SAFE_STAGE = /^[a-z][a-z0-9_-]{0,79}$/;
@@ -64,17 +63,6 @@ export function normalizeMvuDiagnostic(payload, {
     };
 }
 
-function pathsFor(directories) {
-    const root = directories?.root;
-    if (!root || typeof root !== 'string') throw new Error('MVU diagnostics require a user data root.');
-    const directory = path.join(root, 'nora-telemetry');
-    return {
-        directory,
-        active: path.join(directory, 'mvu-diagnostics.ndjson'),
-        rotated: path.join(directory, 'mvu-diagnostics.1.ndjson'),
-    };
-}
-
 async function readLines(filePath) {
     try {
         return (await fs.readFile(filePath, 'utf8')).split('\n').filter(Boolean);
@@ -84,39 +72,13 @@ async function readLines(filePath) {
     }
 }
 
-export function createMvuDiagnosticStore({ maxFileBytes = DEFAULT_MAX_FILE_BYTES } = {}) {
-    const queues = new Map();
-
-    async function write(directories, event) {
-        const paths = pathsFor(directories);
-        const line = `${JSON.stringify(event)}\n`;
-        await fs.mkdir(paths.directory, { recursive: true, mode: 0o700 });
-        let currentSize = 0;
-        try {
-            currentSize = (await fs.stat(paths.active)).size;
-        } catch (error) {
-            if (error?.code !== 'ENOENT') throw error;
-        }
-        if (currentSize > 0 && currentSize + Buffer.byteLength(line, 'utf8') > maxFileBytes) {
-            await fs.rm(paths.rotated, { force: true });
-            await fs.rename(paths.active, paths.rotated);
-        }
-        await fs.appendFile(paths.active, line, { encoding: 'utf8', mode: 0o600 });
-    }
+export function createMvuDiagnosticStore({ maxFileBytes } = {}) {
+    const writer = createUserLogWriter({ name: 'mvu-diagnostics', maxFileBytes });
 
     return Object.freeze({
-        append(directories, event) {
-            const key = directories?.root || '';
-            const previous = queues.get(key) || Promise.resolve();
-            const pending = previous.catch(() => {}).then(() => write(directories, event));
-            queues.set(key, pending);
-            void pending.finally(() => {
-                if (queues.get(key) === pending) queues.delete(key);
-            }).catch(() => {});
-            return pending;
-        },
+        append: writer.append,
         async recent(directories, limit = 20) {
-            const paths = pathsFor(directories);
+            const paths = userLogPaths(directories, 'mvu-diagnostics');
             const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
             const [rotated, active] = await Promise.all([readLines(paths.rotated), readLines(paths.active)]);
             return [...rotated, ...active].slice(-boundedLimit).reverse().flatMap((line) => {
