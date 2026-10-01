@@ -79,7 +79,7 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
         }
     });
     fs.writeFileSync(path.join(root, 'settings.json'), JSON.stringify({ main_api: 'openai', oai_settings: {
-        chat_completion_source: 'custom', custom_url: providerUrl, custom_model: 'fixture-only', openai_max_tokens: 1000,
+        chat_completion_source: 'custom', custom_url: providerUrl, custom_model: 'fixture-only', openai_max_tokens: 1000, openai_max_context: 8192,
     } }));
     const core = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: {
         materialize: async () => ({ runtimeCard: { engine: 'sillytavern', binding: { avatar: 'fixture.png' }, ownership: 'owned' },
@@ -106,6 +106,8 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(inspectedResponse.status, 200);
     const inspected = await inspectedResponse.json();
     assert.equal(inspected.totalTurns, 16);
+    assert.deepEqual(inspected.model, { name: 'fixture-only', contextLimit: 8192 });
+    assert.equal(JSON.stringify(inspected).includes(providerUrl), false);
     assert.equal(inspected.messages.length, 2);
     assert.equal(inspected.nextOffset, 2);
     assert.equal(inspected.messageCount, 32);
@@ -121,7 +123,7 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(status.active, null);
     assert.equal(readProfile(), null, 'a candidate does not start memory projection');
     assert.equal(providerRequests.length, 1, 'background adapter called the fixture model once');
-    assert.equal(providerRequests[0].max_tokens, 20000);
+    assert.equal(providerRequests[0].max_tokens, 2048);
     assert.equal(JSON.parse(providerRequests[0].messages[1].content).entity_bindings.__user__.name, 'Tester');
     assert.match(providerRequests[0].messages[0].content, /Do not substitute __user__ for unregistered characters/);
     assert.match(providerRequests[0].messages[1].content, /message 29/);
@@ -213,6 +215,18 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.match(await streamed.text(), /Streamed reply/);
     assert.equal((await runtime.plugin.status(scope)).active.coveredTurns, 30);
     await until(() => readProfile()?.shared_story_memory?.[0]?.covered_turns === 30);
+    const originalText = JSON.parse(fs.readFileSync(chatFile, 'utf8').split('\n')[1]).mes;
+    const beforeReset = await (await post('/ledger/inspect', scope)).json();
+    const reset = await post('/ledger/reset', { ...scope, confirm: true, expectedRevision: beforeReset.configRevision, expectedSignature: beforeReset.expectedSignature });
+    assert.equal(reset.status, 200);
+    assert.equal((await reset.json()).reloadRequired, true);
+    const afterReset = await (await post('/ledger/inspect', scope)).json();
+    assert.equal(afterReset.active, null);
+    assert.equal(afterReset.enabled, false);
+    assert.equal(JSON.parse(fs.readFileSync(chatFile, 'utf8').split('\n')[1]).mes, originalText);
+    assert.equal(afterReset.messageCount, beforeReset.messageCount);
+    const resetAgain = await post('/ledger/reset', { ...scope, confirm: true, expectedRevision: beforeReset.configRevision, expectedSignature: beforeReset.expectedSignature });
+    assert.equal(resetAgain.status, 409, 'repeating a reset cannot bypass the revision precondition');
     assert.equal(fs.existsSync(ledgerStatePath(root, scope)), true);
     const deleter = createStBackendMaterializer({ directories, stagingRoot: path.join(root, 'staging') });
     const deletionCore = createNoraWorldCore({ root: path.join(root, 'nora-world-core'), materializer: deleter });

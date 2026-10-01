@@ -159,7 +159,7 @@ export class NoraControlPlane {
           storage: "default-user/nora-story-ledger",
           location: path.join(this.config.userDataRoot, "nora-story-ledger"),
           readTools: ["nora.ledger.status", "nora.session.read"],
-          writeTools: ["nora.ledger.configure", "nora.ledger.compress", "nora.session.edit"],
+          writeTools: ["nora.ledger.configure", "nora.ledger.compress", "nora.ledger.reset", "nora.session.edit"],
         },
         {
           domain: "story_profile",
@@ -532,11 +532,14 @@ export class NoraControlPlane {
       throw error;
     }
   }
-  ledgerConfigure(request: { worldId: string; sessionId: string; enabled: boolean }): Promise<unknown> {
+  ledgerConfigure(request: { worldId: string; sessionId: string; enabled?: boolean; expectedRevision?: number; contextLimitOverride?: number | null; outputTokenLimit?: number; timeoutSeconds?: number }): Promise<unknown> {
     return this.http.post("/api/nora-story-ledger/configure", request);
   }
   ledgerCompress(request: { worldId: string; sessionId: string }): Promise<unknown> {
     return this.http.post("/api/nora-story-ledger/compress", request);
+  }
+  ledgerReset(request: { worldId: string; sessionId: string; confirm: true; expectedRevision: number; expectedSignature: string }): Promise<unknown> {
+    return this.http.post("/api/nora-story-ledger/reset", request);
   }
   async editSession(request: { worldId: string; sessionId: string; messageId: number; text: string; expectedSignature: string }): Promise<unknown> {
     const result = asRecord(await this.http.post("/api/nora-story-ledger/edit", request));

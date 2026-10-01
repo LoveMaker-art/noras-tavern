@@ -1,7 +1,6 @@
 import fetch from 'node-fetch';
-import { readSettingsPayload } from '../endpoints/settings.js';
-import { readSecret, SECRET_KEYS } from '../endpoints/secrets.js';
-import { normalizeLedger } from './schema.js';
+import { estimateTokens, normalizeLedger } from './schema.js';
+import { ledgerConfig } from './config.js';
 
 const schema = {
     timeline: ['major event'], facts: [{ id: 'stable_fact_id', content: 'canonical fact', known_by: ['__user__'] }],
@@ -37,53 +36,124 @@ ${JSON.stringify(schema)}` }, { role: 'user', content: JSON.stringify({ previous
 }
 
 export async function mergeWithActiveModel(directories, input) {
+    const { readSettingsPayload } = await import('../endpoints/settings.js');
+    const { readSecret, SECRET_KEYS } = await import('../endpoints/secrets.js');
     const payload = readSettingsPayload(directories, 'runtime');
     const settings = typeof payload.settings === 'string' ? JSON.parse(payload.settings) : payload.settings;
     const model = settings?.oai_settings;
+    const projectedWorld = settings?.extension_settings?.nora_ui?.lastWorldId;
+    if (input.scope && projectedWorld && projectedWorld !== input.scope.worldId) {
+        throw Object.assign(new Error('Open the target World before selecting its ledger model.'), { code: 'NORA_LEDGER_MODEL_SCOPE_UNAVAILABLE' });
+    }
     if ((payload.active_api || settings?.main_api) !== 'openai' || model?.chat_completion_source !== 'custom'
         || !model.custom_url || !model.custom_model) {
         throw Object.assign(new Error('Story ledger requires the active Nora text model.'), { code: 'NORA_MODEL_CONFIGURATION_REQUIRED' });
     }
-    const url = `${String(model.custom_url).replace(/\/$/, '')}/chat/completions`;
     const apiKey = readSecret(directories, SECRET_KEYS.CUSTOM) || '';
-    const messages = ledgerPrompt(input);
-    const signal = AbortSignal.timeout(120000);
-    // Original validated-model-call pattern: same selected model, schema
-    // correction on retry, no hidden model fallback and a bounded total deadline.
-    for (let attempt = 0; attempt < 6; attempt++) {
-        const startedAt = performance.now();
-        const reportAttempt = (phase, details = {}) => console.info('[Story Ledger] model-attempt', {
-            startTurn: input.segment.startTurn, endTurn: input.segment.endTurn, attempt: attempt + 1,
-            phase, elapsedMs: Math.round(performance.now() - startedAt), ...details,
-        });
-        reportAttempt('started');
-        const response = await fetch(url, {
-            method: 'POST', signal, size: 2 * 1024 * 1024,
-            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-            body: JSON.stringify({ model: model.custom_model, messages, stream: false, temperature: 0.1, max_tokens: 20000 }),
-        });
-        reportAttempt('headers', { status: response.status });
-        if (!response.ok) {
-            await response.body?.destroy();
-            if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 5) {
-                throw Object.assign(new Error('Story ledger model request failed.'), { code: `NORA_LEDGER_MODEL_HTTP_${response.status}` });
-            }
-        } else {
-            try {
-                const data = await response.json();
-                const content = String(data.choices?.[0]?.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
-                reportAttempt('body', { finishReason: data.choices?.[0]?.finish_reason || null,
-                    outputChars: content.length, completionTokens: data.usage?.completion_tokens ?? null });
-                return normalizeLedger(JSON.parse(content), input.previous, input.entities);
-            } catch (error) {
-                if (signal.aborted) signal.throwIfAborted();
-                reportAttempt('invalid-output', { error: error.name });
-                if (attempt === 5) throw new Error('Story ledger model did not return a valid ledger.');
-                if (messages.length === 2) messages.push({ role: 'user', content: 'The previous output did not match the exact JSON schema, reference rules or memory preservation rules. Correct the complete output; return only JSON.' });
-            }
-        }
-        await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 1000 : 2000));
+    return mergeLedgerModel({ model, apiKey, input, report: input.report });
+}
+
+const failure = code => Object.assign(new Error(code), { code });
+export function ledgerCapacity(model, configuration) {
+    const configured = Number(model.openai_max_context);
+    const override = configuration.contextLimitOverride;
+    const capacity = Number.isSafeInteger(configured) && configured >= 512
+        ? override === null ? configured : Math.min(configured, override) : override;
+    if (!Number.isSafeInteger(capacity) || capacity < 512) throw failure('NORA_LEDGER_CAPACITY_REQUIRED');
+    return capacity;
+}
+
+/** Conservative estimate, not a claim of provider-tokenizer equivalence. */
+export function ledgerRequestBudget(messages, capacity, outputLimit) {
+    const inputTokens = estimateTokens(JSON.stringify(messages));
+    const safetyTokens = Math.max(512, Math.ceil(capacity * 0.15));
+    if (inputTokens + outputLimit + safetyTokens > capacity) throw failure('NORA_LEDGER_CONTEXT_BUDGET_EXCEEDED');
+    return { inputTokens, outputLimit, capacity, safetyTokens, tokenCountSource: 'conservative-estimate' };
+}
+
+export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch, report = console.info }) {
+    const configuration = ledgerConfig(input.config);
+    const capacity = ledgerCapacity(model, configuration);
+    const timeout = AbortSignal.timeout(configuration.timeoutSeconds * 1000);
+    const deadline = Date.now() + configuration.timeoutSeconds * 1000;
+    const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout;
+    const url = `${String(model.custom_url).replace(/\/$/, '')}/chat/completions`;
+    // Partition only at complete turns; oversized single turns fail explicitly.
+    const turns = input.segment.parts || [input.segment];
+    let previous = input.previous;
+    for (let position = 0; position < turns.length;) {
         signal.throwIfAborted();
+        let text = '', end = position;
+        while (end < turns.length) {
+            const candidate = text ? `${text}\n${turns[end].text}` : turns[end].text;
+            try { ledgerRequestBudget(ledgerPrompt({ ...input, previous, segment: { ...input.segment, text: candidate } }), capacity, configuration.outputTokenLimit); } catch (error) { if (!text) throw error; break; }
+            text = candidate; end++;
+        }
+        previous = await requestLedgerPart({ ...input, previous, segment: { ...input.segment, text,
+            startTurn: turns[position].startTurn, endTurn: turns[end - 1].endTurn } });
+        position = end;
     }
-    throw new Error('Story ledger model retries exhausted.');
+    return previous;
+
+    async function requestLedgerPart(part) {
+        const messages = ledgerPrompt(part);
+        for (let attempt = 0; attempt < 2; attempt++) {
+            signal.throwIfAborted();
+            const budget = ledgerRequestBudget(messages, capacity, configuration.outputTokenLimit);
+            const startedAt = performance.now();
+            const reportAttempt = (phase, details = {}) => report('[Story Ledger] model-attempt', {
+                startTurn: part.segment.startTurn, endTurn: part.segment.endTurn, attempt: attempt + 1,
+                phase, elapsedMs: Math.round(performance.now() - startedAt), ...details,
+            });
+            reportAttempt('started', budget);
+            let response;
+            let retryDelay = 1000;
+            try {
+                response = await fetchImpl(url, {
+                    method: 'POST', signal, size: 2 * 1024 * 1024,
+                    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+                    body: JSON.stringify({ model: model.custom_model, messages, stream: false, temperature: 0.1, max_tokens: configuration.outputTokenLimit }),
+                });
+            } catch (error) {
+                signal.throwIfAborted();
+                throw error;
+            }
+            reportAttempt('headers', { status: response.status });
+            if (!response.ok) {
+                await response.body?.destroy();
+                if (![429, 500, 502, 503, 504].includes(response.status) || attempt === 1) {
+                    throw Object.assign(new Error('Story ledger model request failed.'), { code: `NORA_LEDGER_MODEL_HTTP_${response.status}` });
+                }
+                if (response.status === 429) {
+                    const header = response.headers?.get('retry-after');
+                    const delay = /^\d+(?:\.\d+)?$/.test(header || '') ? Number(header) * 1000 : Date.parse(header) - Date.now();
+                    if (Number.isFinite(delay)) retryDelay = Math.max(retryDelay, delay);
+                    if (Date.now() + retryDelay >= deadline) throw failure('NORA_LEDGER_RATE_LIMITED');
+                }
+            } else {
+                try {
+                    const data = await response.json();
+                    if (data.choices?.[0]?.finish_reason === 'length') throw failure('NORA_LEDGER_OUTPUT_LIMIT');
+                    const content = String(data.choices?.[0]?.message?.content || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
+                    reportAttempt('body', { finishReason: data.choices?.[0]?.finish_reason || null,
+                        outputChars: content.length, completionTokens: data.usage?.completion_tokens ?? null });
+                    return normalizeLedger(JSON.parse(content), part.previous, input.entities);
+                } catch (error) {
+                    if (signal.aborted) signal.throwIfAborted();
+                    if (error.code === 'NORA_LEDGER_OUTPUT_LIMIT') throw error;
+                    reportAttempt('invalid-output', { error: error.name });
+                    if (attempt === 1) throw failure('NORA_LEDGER_OUTPUT_INVALID');
+                    if (messages.length === 2) messages.push({ role: 'user', content: 'The previous output did not match the exact JSON schema, reference rules or memory preservation rules. Correct the complete output; return only JSON.' });
+                }
+            }
+            await new Promise((resolve, reject) => {
+                const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+                const timer = setTimeout(() => { signal.removeEventListener('abort', onAbort); resolve(); }, retryDelay);
+                signal.addEventListener('abort', onAbort, { once: true });
+                if (signal.aborted) onAbort();
+            });
+            signal.throwIfAborted();
+        }
+        throw new Error('Story ledger model retries exhausted.');
+    }
 }

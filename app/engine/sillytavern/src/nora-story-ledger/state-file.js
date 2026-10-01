@@ -13,5 +13,6 @@ export function ledgerAfterRestore(state, metadata) {
     const receipt = metadata?.nora_restore;
     if (!receipt?.id || receipt.id === state?.restoreId) return state;
     return { version: 1, enabled: receipt.ledgerEnabled !== false, restoreId: receipt.id,
+        config: state?.config, configRevision: (state?.configRevision || 0) + 1,
         waitForHistory: receipt.historySignature, active: null, pending: null, imported: null, lastError: null };
 }

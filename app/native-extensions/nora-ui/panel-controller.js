@@ -52,6 +52,14 @@ export function createPanelController({
     let renderedBody = null;
     let renderedMarkup = null;
     let renderedWorldKey = null;
+    let pluginSummary;
+    let pluginSummaryRead;
+    let pluginSummaryKey;
+    plugins?.subscribeInventory?.(items => {
+        if (!pluginSummary) return;
+        pluginSummary = { ...pluginSummary, items, error: false, at: Date.now() };
+        applyPluginSummary();
+    });
 
     function hasCharacterProfile(character) {
         if (hasWorldCardSummary(activeWorldModel()?.storyContext)) return false;
@@ -74,26 +82,26 @@ export function createPanelController({
         return cast;
     }
 
-    function capabilityRows(world) {
+    function capabilityRows(world, snapshot) {
         const capabilities = world?.capabilities;
-        if (!capabilities?.declared?.length) return '';
-        const labels = { prompt_template: tr("提示词模板"), regex: tr('正则扩展'), tavern_helper: tr("酒馆助手"), mvu: tr("MVU 变量") };
-        const statuses = { READY: tr("已就绪"), PENDING: tr("加载中"), DEGRADED: tr("未就绪") };
         const reasons = {
             NORA_MVU_TIMEOUT: tr("变量系统启动超时，可以重试。"),
             NORA_MVU_API_UNAVAILABLE: tr("变量系统未完整加载，可以重试。"),
             NORA_REGEX_NOT_AUTHORIZED: tr("显示规则尚未授权。"),
             NORA_TAVERN_HELPER_NOT_AUTHORIZED: tr("角色脚本尚未授权。"),
         };
-        const rows = capabilities.declared.map((capability) => {
-            const item = capabilities.items?.[capability] || { status: 'PENDING' };
+        const loaded = (snapshot?.items || []).filter(plugin => plugin.runtime?.loaded === true);
+        const rows = loaded.map((plugin) => {
+            const capability = plugin.builtin?.key;
+            const item = capabilities?.declared?.includes(capability) ? capabilities.items?.[capability] || {} : {};
             const error = item.status === 'DEGRADED'
                 ? (reasons[item.error?.code] || tr("增强能力暂未就绪，可以重试。"))
                 : '';
             const retry = item.status === 'DEGRADED'
                 ? `<button class="nora-capability-retry" data-retry-capability="${escapeHtml(capability)}" type="button">${tr("重试")}</button>`
                 : '';
-            return `<div class="nora-capability-row" data-capability-status="${escapeHtml(item.status)}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${escapeHtml(labels[capability] || capability)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(statuses[item.status] || item.status)}</span>${retry}</span></div>`;
+            const status = item.status === 'DEGRADED' ? tr('未就绪') : tr('已加载');
+            return `<div class="nora-capability-row" data-plugin-loaded="true" data-capability-status="${escapeHtml(item.status || '')}"${error ? ` title="${escapeHtml(error)}"` : ''}><span class="nora-capability-name">${escapeHtml(plugin.builtin ? tr(plugin.builtin.title) : plugin.displayName)}</span><span class="nora-capability-state"><span class="nora-capability-badge">${escapeHtml(status)}</span>${retry}</span></div>`;
         }).join('');
         return rows;
     }
@@ -101,7 +109,35 @@ export function createPanelController({
     function capabilitySection(world) {
         const rows = capabilityRows(world);
         if (!world) return '';
-        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('扩展')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('扩展管理')}" title="${tr('扩展管理')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div>${rows}</div>`;
+        return `<div class="pSection nora-capability-section"><div class="pHead nora-capability-heading"><span>${tr('扩展')}</span><button class="nora-capability-manage" data-action="extensions" type="button" aria-label="${tr('扩展管理')}" title="${tr('扩展管理')}"><i class="fa-solid fa-gear" aria-hidden="true"></i></button></div><div data-plugin-summary>${rows}</div></div>`;
+    }
+
+    function applyPluginSummary() {
+        const world = activeWorldModel();
+        const key = `${world?.id}:${readState().world?.metadata?.nora_session?.id || ''}`;
+        if (pluginSummaryKey !== key) return;
+        const slot = select('[data-plugin-summary]', renderedBody);
+        if (!slot) return;
+        const markup = capabilityRows(world, pluginSummary);
+        if (slot.innerHTML === markup) return;
+        slot.innerHTML = markup;
+        bindCapabilityRetries(slot, world.id, render);
+    }
+
+    function refreshPluginSummary(world) {
+        if (!world || !plugins?.inventory) return;
+        const sessionId = readState().world?.metadata?.nora_session?.id || '';
+        const key = `${world.id}:${sessionId}`;
+        if (pluginSummaryKey !== key) { pluginSummaryKey = key; pluginSummary = null; pluginSummaryRead = null; }
+        const apply = () => { if (pluginSummaryKey === key) applyPluginSummary(); };
+        if (pluginSummary) apply();
+        if (pluginSummaryRead || pluginSummary && Date.now() - pluginSummary.at < 5000) return;
+        const reading = plugins.inventory().then(items => {
+            if (pluginSummaryKey === key) { pluginSummary = { items, at: Date.now() }; apply(); }
+        }).catch(() => {
+            if (pluginSummaryKey === key) { pluginSummary = { error: true, at: Date.now() }; apply(); }
+        }).finally(() => { if (pluginSummaryRead === reading) pluginSummaryRead = null; });
+        pluginSummaryRead = reading;
     }
 
     function bindCapabilityRetries(root, worldId, afterRetry) {
@@ -171,7 +207,7 @@ export function createPanelController({
             ${librarySection}
             <div class="pSection"><div class="pHead">${tr('数据')}</div><button class="actorMore" data-action="backups" type="button"><i class="fa-solid fa-clock-rotate-left" aria-hidden="true"></i>${tr('聊天备份')}</button></div>
             <footer class="lwFoot"><span class="mark">✦</span>tavern</footer>`;
-        if (renderedBody === body && renderedWorldKey === nextWorldKey && renderedMarkup === markup) return;
+        if (renderedBody === body && renderedWorldKey === nextWorldKey && renderedMarkup === markup) { refreshPluginSummary(world); return; }
         body.innerHTML = markup;
         renderedBody = body;
         renderedWorldKey = nextWorldKey;
@@ -248,6 +284,7 @@ export function createPanelController({
             if (worldbookEditing) worldSettingsFolded = false;
             render();
         }));
+        refreshPluginSummary(world);
     }
 
     function runAction(action) {

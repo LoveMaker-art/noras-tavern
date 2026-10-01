@@ -1,15 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
 import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
 import { createStoryLedger, LedgerConflict } from './core.js';
 import { ledgerAfterRestore, ledgerStatePath } from './state-file.js';
 import { requestStoryProjection } from './profile-projection.js';
-import { scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
+import { prefixText, scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
 import { storyEntityBindings } from '../../public/scripts/nora-worlds/story-context.js';
 import { chatBackupStore, protectChatBeforeRewrite } from '../chat-backup-runtime.js';
 import { chatSessionOperations } from '../chat-session-operations.js';
+import { reportLedger } from './diagnostics.js';
 
 const runtimes = new Map();
 function jsonl(filePath) {
@@ -26,6 +28,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
     }
     const bindings = new Map();
     const root = path.join(key, 'nora-story-ledger');
+    const activity = chatSessionOperations(directories);
     const statePath = scope => ledgerStatePath(key, scope);
     const readState = (scope, chat) => {
         const state = fs.existsSync(statePath(scope)) ? JSON.parse(fs.readFileSync(statePath(scope), 'utf8')) : null;
@@ -33,6 +36,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         return ledgerAfterRestore(state, chat?.metadata ?? (binding ? jsonl(binding.filePath)[0]?.chat_metadata : null));
     };
     const plugin = createStoryLedger({
+        canRun: () => !activity.hasGeneration(),
         readChat: scope => {
             const binding = bindings.get(scopeKey(scope));
             if (!binding) throw new Error('Story ledger scope has not been resolved.');
@@ -55,8 +59,16 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             if ((state.active?.id && previous?.active?.id !== state.active.id)
                 || (previous?.imported?.id && !state.imported)) void requestStoryProjection(directories);
         },
-        merge: input => import('./model.js').then(module => module.mergeWithActiveModel(directories, input)),
-        report: (event, details) => console.info('[Story Ledger]', event, details),
+        merge: input => import('./model.js').then(module => module.mergeWithActiveModel(directories, { ...input,
+            report: (_label, details) => reportLedger(directories, 'model-attempt', { ...input.scope, taskId: input.taskId, ...details }) })),
+        report: (event, details) => reportLedger(directories, event, details),
+    });
+    activity.subscribe(() => {
+        if (activity.hasGeneration()) plugin.cancelAll();
+        else for (const bindingKey of bindings.keys()) {
+            const scope = bindings.get(bindingKey).scope;
+            void Promise.resolve().then(() => plugin.schedule(scope)).catch(() => {});
+        }
     });
     async function resolve(scope, expectedPath = null) {
         const identity = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value);
@@ -71,7 +83,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             throw new LedgerConflict('Story Session does not own this chat.', 'NORA_LEDGER_SESSION_MISMATCH');
         }
         const playerName = String(world.persona?.name || '');
-        const binding = { filePath, language: world.story_context?.language || 'zh', playerName,
+        const binding = { scope, filePath, language: world.story_context?.language || 'zh', playerName,
             entityBindings: storyEntityBindings(world.story_context, playerName) };
         bindings.set(scopeKey(scope), binding);
         return binding;
@@ -137,13 +149,31 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         // Projection failure is retried, not misreported as an uncommitted chat.
         return { ...result, projectionPending: !await requestStoryProjection(directories) };
     }
+    async function reset(scope, { expectedRevision, expectedSignature }) {
+        const { filePath } = await resolve(scope);
+        const result = await activity.restore(scope, () => plugin.reset(scope, { expectedRevision, prepare: async () => {
+            const original = fs.readFileSync(filePath, 'utf8');
+            const data = jsonl(filePath);
+            const historySignature = crypto.createHash('sha256').update(prefixText(data.slice(1), data.length - 1)).digest('hex');
+            if (expectedSignature !== historySignature) throw new LedgerConflict('Chat changed before resetting memory.', 'NORA_LEDGER_EDIT_STALE');
+            await protectChatBeforeRewrite({ directories, filePath, data: original });
+            if (fs.readFileSync(filePath, 'utf8') !== original) throw new LedgerConflict('Chat changed after backup.', 'NORA_LEDGER_EDIT_STALE');
+            const receipt = { id: crypto.randomUUID(), ledgerEnabled: false, historySignature };
+            data[0].chat_metadata.nora_restore = receipt;
+            // Canonical receipt invalidates old memory even if the process exits
+            // before the derived ledger file can be rewritten.
+            writeFileAtomicSync(filePath, data.map(item => JSON.stringify(item)).join('\n'), 'utf8');
+            return receipt;
+        } }));
+        return { ...result, projectionPending: !await requestStoryProjection(directories) };
+    }
     let projectionRecovered = false;
     function recover() {
         if (projectionRecovered) return;
         projectionRecovered = true;
         if (fs.existsSync(root)) void requestStoryProjection(directories);
     }
-    const runtime = Object.freeze({ plugin, resolve, writeChat, edit, checkpoint, restore, guardDestructive, recoverProjection: recover });
+    const runtime = Object.freeze({ plugin, resolve, writeChat, edit, checkpoint, restore, reset, guardDestructive, recoverProjection: recover });
     runtimes.set(key, runtime);
     // Once per process/user on first ledger use: recover an activation that
     // committed before a restart, or a previously interrupted memory write.

@@ -1,16 +1,7 @@
 import { translate as tr } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { validatePluginRepository } from '../../engine/sillytavern/public/scripts/nora-controls/plugin-library-actions.js';
-export { validatePluginRepository };
-
-export function pluginLibraryStatus(item, runtime, pending = false) {
-    if (pending) return '已更改，待刷新';
-    const enabled = item.libraryEnabled ?? runtime?.enabled;
-    if (enabled === false) return runtime?.loaded ? '已停用，待刷新' : '已停用';
-    if (item.manifestError) return '清单读取失败';
-    if (runtime?.error) return '加载失败';
-    if (runtime?.loaded) return '本页已加载';
-    return enabled ? '已启用，尚未加载' : '已安装';
-}
+import { pluginCatalog, pluginLibraryStatus } from '../../engine/sillytavern/public/scripts/nora-controls/plugin-catalog.js';
+export { validatePluginRepository, pluginLibraryStatus };
 
 function needsReload(item, runtime) {
     return typeof item.libraryEnabled === 'boolean' && (runtime ? item.libraryEnabled !== runtime.enabled : item.libraryEnabled);
@@ -20,6 +11,7 @@ export function createPluginLibraryController({ dialogs, select, selectAll, esca
     readRuntime, setBuiltinEnabled, activateBuiltin, openExtensions, isGenerating = () => false, reload = () => location.reload(), fetchImpl = (...args) => fetch(...args) }) {
     let busy = false;
     const pending = new Set();
+    const inventoryListeners = new Set();
     const attr = value => esc(String(value)).replaceAll('"', '&quot;');
     async function request(route, body) {
         const response = await fetchImpl(`/api/extensions/${route}`, body ? { method: 'POST', headers: headers(), body: JSON.stringify(body) } : {});
@@ -39,7 +31,16 @@ export function createPluginLibraryController({ dialogs, select, selectAll, esca
     function fail(error) { dialogs.toast(String(error?.message || error), { tone: 'error', duration: 6000 }); }
     async function catalog() {
         const library = await request('library');
-        return library.items.filter(item => item.builtin || !item.managed && item.type !== 'system');
+        return pluginCatalog(library.items);
+    }
+    async function inventory() {
+        const installed = await catalog();
+        let runtime = {}, runtimeReadFailed = false;
+        try { runtime = await readRuntime(); } catch { runtimeReadFailed = true; }
+        const items = installed.map(item => ({ ...item, runtime: runtime[item.name], runtimeReadFailed,
+            status: pluginLibraryStatus({ ...item, runtimeReadFailed }, runtime[item.name], pending.has(item.name)) }));
+        inventoryListeners.forEach(listener => listener(items));
+        return items;
     }
     function reloadButton(modal) {
         select('[data-plugin-reload]', modal)?.addEventListener('click', async () => {
@@ -56,15 +57,14 @@ export function createPluginLibraryController({ dialogs, select, selectAll, esca
         const modal = sheet('插件库', `<p role="status">${tr('加载中')}</p>`);
         const version = dialogs.version;
         try {
-            const installed = await catalog();
+            const installed = await inventory();
             if (dialogs.version !== version) return;
-            const row = item => `<button class="nora-extension-entry" data-plugin="${attr(item.name)}" type="button"><span><strong>${esc(item.builtin ? tr(item.builtin.title) : item.displayName)}</strong><small>${item.builtin ? esc(tr(item.builtin.description)) : tr('已安装')}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`;
-            select('.nora-plugin-library', modal).innerHTML = `<p class="nora-model-note">${tr('这里安装、更新和卸载插件。启停与设置请进入「扩展管理」。')}</p>
-                <div class="nora-plugin-toolbar"><button class="nora-secondary" data-plugin-install type="button">＋ ${tr('安装插件')}</button>${pending.size ? `<button class="nora-secondary" data-plugin-reload type="button">${tr('刷新应用变更')}</button>` : ''}</div>
+            const row = item => `<button class="nora-extension-entry" data-plugin="${attr(item.name)}" type="button"><span><strong>${esc(item.builtin ? tr(item.builtin.title) : item.displayName)}</strong><small>${tr(item.status)}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`;
+            select('.nora-plugin-library', modal).innerHTML = `<div class="nora-plugin-toolbar"><button class="nora-secondary" data-plugin-install type="button"><i class="fa-solid fa-plus" aria-hidden="true"></i> ${tr('安装插件')}</button>${pending.size ? `<button class="nora-secondary" data-plugin-reload type="button">${tr('刷新应用变更')}</button>` : ''}</div>
                 ${installed.some(item => item.builtin) ? `<section><h3>${tr('内置插件')}</h3>${installed.filter(item => item.builtin).map(row).join('')}</section>` : ''}
                 <section><h3>${tr('自行安装')}</h3>${installed.filter(item => !item.builtin).map(row).join('') || `<p class="nora-extension-empty">${tr('尚未安装第三方插件')}</p>`}</section>`;
             select('[data-plugin-install]', modal).addEventListener('click', install);
-            selectAll('[data-plugin]', modal).forEach(button => button.addEventListener('click', () => { if (!busy) detail(installed.find(item => item.name === button.dataset.plugin)); }));
+            selectAll('[data-plugin]', modal).forEach(button => button.addEventListener('click', () => { if (!busy) { const item = installed.find(item => item.name === button.dataset.plugin); detail(item, item.runtime); } }));
             reloadButton(modal);
         } catch (error) {
             if (dialogs.version !== version) return;
@@ -98,7 +98,7 @@ export function createPluginLibraryController({ dialogs, select, selectAll, esca
         const settingsBlocked = helper && (!enabled || pending.has(item.name));
         const button = (action, label) => `<button class="nora-secondary" data-plugin-action="${action}" type="button">${tr(label)}</button>`;
         const modal = sheet(management ? '扩展设置' : '插件详情', `<h3>${esc(item.builtin ? tr(item.builtin.title) : item.displayName)}</h3><p class="nora-model-note">${esc(item.version || '')}${item.author ? ` · ${esc(item.author)}` : ''}</p>
-            ${management ? `<p>${tr('页面加载状态')}：${tr(pluginLibraryStatus(item, runtime, pending.has(item.name)))}</p>` : ''}
+            <p>${tr('页面加载状态')}：${tr(pluginLibraryStatus(item, runtime, pending.has(item.name)))}</p>
             ${management && runtime?.error ? `<p role="alert">${esc(runtime.error)}</p>` : ''}
             <p class="nora-model-note">${tr(item.builtin ? '内置插件随诺拉更新，不能单独卸载。' : '兼容性未验证：加载成功不代表所有功能可用。')}</p>
             ${canToggle ? `<p class="nora-model-note">${tr('此开关影响所有世界，刷新后生效；不会更改单条脚本或规则的开关。')}</p>` : ''}
@@ -188,7 +188,8 @@ export function createPluginLibraryController({ dialogs, select, selectAll, esca
             if (version === dialogs.version) void open();
         });
     }
-    return { open, catalog, manage };
+    return { open, catalog, inventory, manage,
+        subscribeInventory(listener) { inventoryListeners.add(listener); return () => inventoryListeners.delete(listener); } };
 }
 
 export function createRuntimePluginLibrary({ state, loadModule = (...args) => globalThis.__NORA_LOAD_MODULE__(...args), ...options }) {
