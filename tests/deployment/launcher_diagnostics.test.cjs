@@ -4,10 +4,32 @@ const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
 const { createDiagnostics, errorDetails } = require('../installer/desktop/diagnostics');
+const { createTelemetry } = require('../installer/desktop/telemetry');
 const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
 const { parse } = require('../installer/desktop/node_modules/acorn');
+
+test('packaged code fingerprint works without build metadata and fails without blocking telemetry', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-build-fingerprint-'));
+  try {
+    const file = path.resolve(__dirname, '../installer/desktop/main.js');
+    const source = fs.readFileSync(file, 'utf8');
+    const fn = parse(source, {ecmaVersion:'latest'}).body.find(node => node.type === 'FunctionDeclaration' && node.id.name === 'launcherBuild');
+    fs.writeFileSync(path.join(root,'package.json'),JSON.stringify({name:'packaged',version:'1.1.2'}));
+    fs.writeFileSync(path.join(root,'main.js'),'shipped launcher');
+    fs.writeFileSync(path.join(root,'launcher_bridge.py'),'shipped bridge');
+    const context = vm.createContext({require,fs,path,__dirname:root,installerRoot:()=>root});
+    const fingerprint = vm.runInContext(`(${source.slice(fn.start,fn.end)})`,context);
+    const initial = fingerprint();
+    assert.match(initial,/^[a-f0-9]{64}$/);
+    assert.equal(fingerprint(),initial);
+    fs.writeFileSync(path.join(root,'launcher_bridge.py'),'changed bridge');
+    assert.notEqual(fingerprint(),initial);
+    fs.rmSync(root,{recursive:true,force:true});
+    assert.equal(fingerprint(),'');
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
+});
 
 test('a fatal startup location error is persisted even before the window exists', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-startup-diagnostics-'));
@@ -62,6 +84,10 @@ test('operation handler logs original failure even if persisting the error state
       './releases': { prepareBundled: async () => { throw original; } },
     });
     context.AbortController = AbortController;
+    const sent=[];
+    const client=createTelemetry({file:path.join(root,'telemetry.json'),launcherVersion:'1.1.2',automatic:false,
+      fetcher:async (_url,options)=>{const data=JSON.parse(options.body);sent.push(...data.events);return Response.json({accepted_event_ids:data.events.map(e=>e.event_id),rejected_event_ids:[]});}});
+    client.setEnabled(true);context.testTelemetry=client;vm.runInContext('telemetry = testTelemetry;',context);
     const source = fs.readFileSync(path.resolve(__dirname, '../installer/desktop/main.js'), 'utf8');
     let callback;
     function visit(node) {
@@ -77,6 +103,10 @@ test('operation handler logs original failure even if persisting the error state
       writeInstallerState = value => { if (value.phase === 'error') throw new Error('state write failed'); return persist(value); };`, context);
     const handler = vm.runInContext(`(${source.slice(callback.start, callback.end)})`, context);
     await assert.rejects(handler({ sender: null }, { action: 'install', runId: 'failed-attempt' }), error => error === original);
+    await client.flush();client.close();
+    assert.equal(sent.at(-1).error_code,'network');assert.equal(sent.at(-1).system_code,'ECONNRESET');
+    assert.match(JSON.stringify(sent.at(-1).fault),/release fixture failure/);
+    assert.doesNotMatch(JSON.stringify(sent),/state write failed/);
     assert.equal(vm.runInContext('activeRun', context), false);
     const records = fs.readFileSync(path.join(root, 'installer/install.log'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(records.some(item => item.event === 'run.failed' && item.error.code === 'ECONNRESET'));
@@ -131,6 +161,21 @@ test('bridge records errors without a window and does not redact functional resu
     assert.equal(result.url, 'https://example.test/?token=functional-result');
     assert.ok(!fs.readFileSync(path.join(root, 'installer/install.log'), 'utf8').includes('functional-result'));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('gateway identity explanation reaches the UI even when traceback arrives after its error event', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-gateway-identity-ui-'));
+  try {
+    const context = mainContext(root);
+    const explanation = '无法确认安装记录中的后台进程是否属于诺拉：系统拒绝读取进程信息。请重启电脑后再试。';
+    context.childScript = `console.log(JSON.stringify({event:'error',code:'EACCES',message:${JSON.stringify(explanation)}}));
+      setTimeout(() => {process.stderr.write('Traceback: psutil.AccessDenied: (pid=5560)');process.exitCode=1;},30);`;
+    vm.runInContext('bridgeArgs = () => ({command: process.execPath, args: ["-e", childScript]});', context);
+    await assert.rejects(vm.runInContext('runBridge("start")', context), error => {
+      assert.equal(error.message,explanation);assert.equal(error.code,'EACCES');return true;
+    });
+    assert.match(fs.readFileSync(path.join(root,'installer/install.log'),'utf8'),/psutil.AccessDenied/);
+  } finally { fs.rmSync(root,{recursive:true,force:true}); }
 });
 
 test('secrets are removed before the UI error summary is truncated', async () => {
@@ -289,4 +334,26 @@ test('rotation errors use the fallback and preserve the original operation error
     assert.ok(record.logWriteError.code);
     assert.equal(diagnostics.lastFile, fallback);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('actual runtime extraction failure automatically produces an authorized bounded fault packet',async()=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-real-fault-'));
+  let client;
+  try {
+    const context=mainContext(root);const sent=[];
+    client=createTelemetry({file:path.join(root,'telemetry.json'),launcherVersion:'1.1.2',automatic:false,
+      clean:value=>String(value).replaceAll('fixture-secret','[REDACTED]'),roots:()=>[root],
+      fetcher:async(_url,options)=>{const data=JSON.parse(options.body);sent.push(...data.events);return Response.json({accepted_event_ids:data.events.map(e=>e.event_id),rejected_event_ids:[]});}});
+    client.setEnabled(true);client.begin('install');client.stage('runtime_extract');context.testTelemetry=client;
+    vm.runInContext("telemetry=testTelemetry;writeInstallerState({...readInstallerState(),phase:'installing'});diagnostics.addSecret('fixture-secret');",context);
+    context.command=[process.execPath,['-e',`
+      console.log(JSON.stringify({event:'diagnostic',error:{name:'Error',message:'symlink denied',code:'EPERM',syscall:'symlink',path:'/Users/private/skills',stack:'Error: symlink denied\\n at extract (/Users/private/runtime.js:42:8)'}}));
+      process.stderr.write('installer tool: token=fixture-secret failed');process.exitCode=2;
+    `]];
+    try {await vm.runInContext('runProcess(...command)',context);assert.fail('expected child failure');}
+    catch(error){client.finish('failed',error);}
+    await client.flush();const last=sent.find(e=>e.event==='operation_finished');
+    assert.equal(last.exit_code,2);assert.equal(last.system_code,'');assert.ok(last.fault.errors.some(e=>e.relation==='child'&&e.syscall==='symlink'));
+    assert.ok(last.fault.output.some(line=>line.includes('installer tool')));assert.doesNotMatch(JSON.stringify(last.fault),/fixture-secret|Users\/private/);
+  } finally {client?.close();fs.rmSync(root,{recursive:true,force:true});}
 });

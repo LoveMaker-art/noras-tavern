@@ -47,7 +47,7 @@ function uiContext(values = {}) {
   const elements = new Map();
   const element = () => ({ hidden: false, append() {}, classList: { remove() {}, toggle() {} } });
   return vm.createContext({
-    busy: false, snapshot: {}, view: 'daily',
+    busy: false, snapshot: {}, view: 'daily', statusUnknown: false,
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     hideMenu() {}, renderServices() {}, renderConversationEntry() {}, controls() {}, showVersionNotice() {},
     firstCompletionPending: false, sawIncompleteSetup: false,

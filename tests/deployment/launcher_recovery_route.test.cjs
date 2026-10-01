@@ -14,7 +14,7 @@ function recovery(version, updateRecovery, extra = {}) {
   const context = vm.createContext({
     api: {}, snapshot: { installed: true, hermesInstalled: true, systemReady: false, version, updateRecovery,
       running: true, systemProblems: ['技能文件内容与安装记录不一致'], ...extra },
-    autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false,
+    autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false, statusUnknown: false,
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     document: { createElement: element }, clearInline() {}, controls() {},
     say: (...args) => calls.push(['say', ...args]),

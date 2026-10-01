@@ -5,13 +5,36 @@ const os = require('node:os');
 const path = require('node:path');
 const { createDiagnostics } = require('./diagnostics');
 const { createTelemetry } = require('./telemetry');
+const { launcherError } = require('./launcher-errors');
+const { formatUserError } = require('./error-presentation');
+const { createFaultPackets } = require('./fault-packet');
 let telemetry;
+const trackLauncher = (action, stage, work) => telemetry ? telemetry.track(action,stage,work) : work();
 const diagnostics = createDiagnostics({
   primary: () => path.join(installerDirectory(), 'install.log'),
   fallback: path.join(app.getPath('appData'), 'NoraTavern', 'diagnostics', 'install.log'),
 });
+const faultPackets = createFaultPackets({clean:diagnostics.clean,roots:() => [installerRoot(),noraHome(),hermesHome(),installRoot(),os.homedir()]});
+const processSite = command => ['start','stop','pair'].includes(command) ? `process.${command}` : 'process.run';
+function launcherBuild() {
+  // Packagers may remove package.json.build. Hash shipped code directly;
+  // unavailable diagnostic metadata must not disable reporting.
+  try {
+    const hash = require('node:crypto').createHash('sha256');
+    const resources = ['replace-launcher.py','nora_profile.py','nora_system.py','launcher-conversation-prototype.html',
+      'launcher-controller.js','launcher_services.py','launcher-ui-prototype.html','launcher_bridge.py','model_config.py','bootstrap.py'];
+    for (const [directory, names] of [[__dirname,fs.readdirSync(__dirname).filter(name => /\.(?:js|json)$/.test(name)).sort()],
+      [installerRoot(),resources]]) {
+      for (const name of names) {
+        const file = path.join(directory,name);
+        if (fs.existsSync(file) && fs.statSync(file).isFile()) hash.update(name).update(fs.readFileSync(file));
+      }
+    }
+    return hash.digest('hex');
+  } catch { return ''; }
+}
 const { createReleaseNetwork } = require('./release-network');
-const releaseNetwork = createReleaseNetwork({ app, net, diagnostics });
+const releaseNetwork = createReleaseNetwork({ app, net, diagnostics, onRetry: error => telemetry?.report(error) });
 const localReleaseDirectory = process.argv.find(value => value.startsWith('--nora-local-release='))?.slice('--nora-local-release='.length);
 const updateFetch = localReleaseDirectory
   ? require('./local-release').createLocalRelease(localReleaseDirectory) : releaseNetwork.fetch;
@@ -19,7 +42,10 @@ for (const [name, value] of Object.entries(process.env)) {
   if (/(?:API_KEY|TOKEN|SECRET|PASSWORD|PAIR_CODE)$/i.test(name)) diagnostics.addSecret(value);
 }
 // Observe fatal startup errors without suppressing Electron's normal exit.
-process.on('uncaughtExceptionMonitor', (error, origin) => diagnostics.error('main.uncaught', error, { origin }));
+process.on('uncaughtExceptionMonitor', (error, origin) => {
+  diagnostics.error('main.uncaught', error, { origin });
+  telemetry?.report(error, {source:'launcher',site:'launcher.main'});
+});
 const { findBundledRuntime } = require('./runtime');
 const releases = require('./releases');
 const systemUpdate = require('./system-update');
@@ -59,6 +85,7 @@ let activeProcess = null;
 let activeRun = false;
 let modelBusy = false;
 let statusRequest = null;
+let lastStatusError = '';
 let cancelled = false;
 let releaseAbort = null;
 let updatingSystem = false;
@@ -68,6 +95,13 @@ let quitting = false;
 let quitReady = false;
 let selectedHome;
 const LOCATION_SCOPE = LOCAL_TEST ? `test-${LOCAL_TEST.buildId}` : CHANNEL;
+
+function statusErrorMessage(error) {
+  const fingerprint = `${error.code || ''}:${error.message || ''}`;
+  if (fingerprint !== lastStatusError) diagnostics.error('launcher.status-failed', error);
+  lastStatusError = fingerprint;
+  return formatUserError(error, {action:'status'});
+}
 
 function installerRoot() {
   if (!app) return path.resolve(__dirname, '..');
@@ -398,6 +432,7 @@ function runProcess(command, args, webContents, runId) {
     diagnostics.write('process.spawned', { pid: proc.pid });
     proc.cancelSafe = !args.includes(path.join(__dirname, 'runtime-worker.js'));
     let errorMessage = '', structuredCode;
+    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && ['install','installing','update','repair'].includes(readInstallerState().phase));
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
@@ -412,22 +447,26 @@ function runProcess(command, args, webContents, runId) {
         if (clean) {
           const message = parseJsonLine(clean);
           if (message.event === 'error') structuredCode = message.code;
+          evidence.observe(message);
           sendBridgeEvent(webContents, runId, message);
         }
     });
     consumeLines(proc.stderr, (line) => {
         const clean = diagnostics.clean(sanitizeLine(line));
         errorMessage = (errorMessage + '\n' + clean).slice(-4000);
+        evidence.observe({event:'log',line:clean,stream:'stderr'});
         if (clean) sendBridgeEvent(webContents, runId, { event: 'log', line: clean, stream: 'stderr' });
     });
-    proc.on('error', error => { diagnostics.error('process.error', error, { pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
+    proc.on('error', error => { diagnostics.error('process.error', error, { pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout);
+      reject(evidence.attach(launcherError(error.message,{source:'launcher_process',site:'process.run'},error))); });
     proc.on('close', (code, signal) => {
       diagnostics.write('process.exit', { pid: proc.pid, exitCode: code, signal, timedOut, cancelled, durationMs: Date.now() - started });
       clearInterval(heartbeat);
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) resolve();
-      else reject(Object.assign(new Error(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode }));
+      else reject(evidence.attach(launcherError(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim()),
+        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode, source:'launcher_process',site:'process.run' })));
     });
   });
 }
@@ -493,7 +532,12 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       return;
     }
     let result = null;
-    let errorMessage = '', structuredCode;
+    let errorMessage = '', structuredMessage = '', structuredCode, structuredUserCode;
+    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && ['install','update','repair'].includes(command));
+    const childFailure = error => {
+      if (!['install','update','repair'].includes(command)) error.remoteMessage = `Launcher ${command} failed; see technical exit status.`;
+      return evidence.attach(error);
+    };
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
     }, 1000);
@@ -510,35 +554,41 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }, timeoutMs);
     consumeLines(proc.stdout, (line) => {
         const message = parseJsonLine(sanitizeLine(line));
+        evidence.observe(message);
         if (message.event === 'result') {
           result = { ...message };
           delete result.event;
         } else if (message.event === 'error') {
-          errorMessage = diagnostics.clean(message.message || line);
+          structuredUserCode = message.userCode;
+          structuredMessage = diagnostics.clean(message.message || line);
           structuredCode = message.code;
         }
         if (command !== 'status') sendBridgeEvent(webContents, runId, message);
     });
     consumeLines(proc.stderr, (line) => {
       line = diagnostics.clean(line);
+      evidence.observe({event:'log',line,stream:'stderr'});
       errorMessage = (errorMessage + '\n' + line).slice(-4000);
       if (command !== 'status') {
           const clean = sanitizeLine(line);
           if (clean) sendBridgeEvent(webContents, runId, { event: 'log', line: clean, stream: 'stderr' });
       } else diagnostics.event({ event: 'log', stream: 'stderr', line, command });
     });
-    proc.on('error', (error) => { diagnostics.error('bridge.process-error', error, { command, pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout); reject(error); });
+    proc.on('error', (error) => { diagnostics.error('bridge.process-error', error, { command, pid: proc.pid }); clearInterval(heartbeat); clearTimeout(timeout);
+      reject(childFailure(launcherError(error.message,{source:'launcher_process',site:processSite(command)},error))); });
     proc.on('close', (code, signal) => {
       if (command !== 'status' || code !== 0) diagnostics.write('process.exit', { command, pid: proc.pid, exitCode: code, signal, timedOut, cancelled, durationMs: Date.now() - started });
       clearInterval(heartbeat);
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) {
-        if (!result) { reject(new Error('后台没有返回操作结果。')); return; }
+        if (!result) { reject(launcherError('后台没有返回操作结果。',{code:'INVALID_RESPONSE',source:'launcher_process',site:'process.run'})); return; }
         resolve(result);
         return;
       }
-      reject(Object.assign(new Error(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : errorMessage || `命令执行失败，退出码 ${code}`).trim())), { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode }));
+      reject(childFailure(launcherError(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : structuredMessage || errorMessage || `命令执行失败，退出码 ${code}`).trim()),
+        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode, source:'launcher_process',
+          userCode: structuredUserCode, site:processSite(command) })));
     });
   });
 }
@@ -573,9 +623,10 @@ async function requestQuit(event) {
     app.quit();
   } catch (error) {
     diagnostics.error('shutdown.failed', error);
+    telemetry?.report(error,{source:'launcher_process',site:'process.stop'});
     await dialog.showMessageBox({ type: 'error', title: '退出未完成',
       message: '后台服务停止失败，启动器未退出',
-      detail: `${diagnostics.clean(error.message || String(error))}\n请重试退出，或打开日志检查原因。`, buttons: ['知道了'] });
+      detail: formatUserError(error, {action:'stop'}), buttons: ['知道了'] });
   } finally { quitting = false; }
 }
 
@@ -625,14 +676,14 @@ function runModelConfigHelper(payload) {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => proc.kill('SIGTERM'), 60000);
+    let stderr = '', timedOut = false;
+    const timer = setTimeout(() => {timedOut = true;proc.kill('SIGTERM');}, 60000);
     proc.stdout.setEncoding('utf8');
     proc.stderr.setEncoding('utf8');
     proc.stdout.on('data', (chunk) => { stdout += chunk; });
     proc.stderr.on('data', (chunk) => { stderr += chunk; });
-    proc.on('error', error => { clearTimeout(timer); reject(error); });
-    proc.on('close', (code) => {
+    proc.on('error', error => { clearTimeout(timer); reject(launcherError(error.message,{source:'launcher_process',site:'model.save'},error)); });
+    proc.on('close', (code,signal) => {
       clearTimeout(timer);
       const secret = String(payload.key || '');
       const clean = (value) => {
@@ -646,7 +697,11 @@ function runModelConfigHelper(payload) {
         result = null;
       }
       if (code === 0 && result?.ok) resolve(result);
-      else reject(new Error(clean(result?.error || stderr || '无法保存模型配置。')));
+      else {
+        const error = launcherError(clean(result?.error || stderr || '无法保存模型配置。'),{source:'launcher_process',site:'model.save',exitCode:code,signal,code:timedOut ? 'TIMEOUT' : undefined});
+        error.remoteMessage = 'Model configuration helper failed; see technical exit status.';
+        reject(error);
+      }
     });
     proc.stdin.end(JSON.stringify(payload));
   });
@@ -664,7 +719,7 @@ async function finishModelSetup() {
       await runModelConfigHelper({ action: 'sync-saved-tavern', port });
       writeVerifiedModel(noraHome(), { ...saved, tavernSyncPending: false });
     } catch (error) {
-      throw new Error(`模型验证已通过，但酒馆同步未完成：${error.message}。可继续同步，无需重新填写 Key。`);
+      throw launcherError(`模型验证已通过，但酒馆同步未完成：${error.message}。可继续同步，无需重新填写 Key。`,{site:'model.save',userCode:'MODEL_SYNC_PENDING'},error);
     }
   }
   const verification = await runBridge('verify-model');
@@ -697,6 +752,10 @@ function createWindow() {
     },
   });
   win.loadFile(uiPath, { query: MOCK_SCENARIO ? { mock: MOCK_SCENARIO } : { desktop: '1' } });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    if (!quitting && details.reason !== 'clean-exit') telemetry?.report(
+      launcherError('',{code:'RENDERER_GONE',exitCode:details.exitCode}),{source:'launcher',site:'launcher.window'});
+  });
   if (ISOLATED_TEST) win.on('page-title-updated', event => event.preventDefault());
   win.webContents.setWindowOpenHandler(({ url }) => {
     try { shell.openExternal(externalUrl(url)).catch(() => {}); } catch {}
@@ -823,10 +882,12 @@ if (app && BrowserWindow && ipcMain && shell) {
     telemetry = createTelemetry({ file: path.join(installerDirectory(), 'telemetry.json'), launcherVersion: app.getVersion(),
       enabled: Boolean(app.isPackaged && !ISOLATED_TEST && !localReleaseDirectory),
       cohort: existing ? 'existing' : fs.existsSync(installRoot()) || fs.existsSync(hermesHome()) ? 'unknown' : 'new',
+      clean:diagnostics.clean, roots:() => [installerRoot(),noraHome(),hermesHome(),installRoot(),os.homedir()],
+      environment:{os_release:os.release(),node:process.versions.node,electron:process.versions.electron,launcher_build:launcherBuild()},
       fetcher: (url, options) => net.fetch(url, options), diagnostic: code => diagnostics.write('telemetry.diagnostic', { code }) });
     app.on('will-quit', () => telemetry?.close());
   } catch { diagnostics.write('telemetry.diagnostic', { code: 'initialization_failed' }); }
-  const handle = (channel, fn) => ipcMain.handle(channel, (event, ...args) => {
+  const handle = (channel, fn) => ipcMain.handle(channel, async (event, ...args) => {
     const expected = require('node:url').pathToFileURL(path.join(installerRoot(), 'launcher-conversation-prototype.html')).href;
     if (event.senderFrame !== event.sender.mainFrame || event.senderFrame.url.split('?')[0] !== expected || MOCK_SCENARIO) {
       throw new Error('启动器页面来源无效。');
@@ -834,7 +895,22 @@ if (app && BrowserWindow && ipcMain && shell) {
     if (uninstalling && channel !== 'nora:status') throw new Error('正在处理卸载，请稍候。');
     if (quitting && channel !== 'nora:status') throw new Error('正在退出，请等待后台服务停止。');
     if (selectingLocation && channel !== 'nora:status') throw new Error('正在选择安装位置，请稍候。');
-    return fn(event, ...args);
+    try { return await fn(event, ...args); }
+    catch (error) {
+      diagnostics.error('launcher.ui-failed', error, {channel});
+      // Only launcher-owned UI actions. Never attach status polling or runtime logs.
+      const site = {'nora:choose-directory':'launcher.directory','nora:open-directory':'launcher.directory',
+        'nora:open-settings':'launcher.directory','nora:open-clawchat':'launcher.window','nora:open-clawchat-app':'launcher.window'}[channel];
+      if (site) telemetry?.report(error,{source:'launcher',site});
+      const action = channel === 'nora:run' ? args[0]?.action : {
+        'nora:model-options':'list_models', 'nora:model-save-test':'model', 'nora:model-resume':'model',
+        'nora:model-providers':'model', 'nora:check-update':'check_update', 'nora:uninstall':'uninstall',
+        'nora:open-external':'open', 'nora:open-directory':'settings', 'nora:choose-directory':'settings',
+      }[channel];
+      // Electron transports the message but drops custom Error fields. Format
+      // after diagnostics/telemetry, while the original evidence is available.
+      throw new Error(formatUserError(error, {action}), {cause:error});
+    }
   });
   handle('nora:status', async () => {
     if (quitting || uninstalling || selectingLocation || modelBusy) return { ...nodeStatus(), busy: true };
@@ -850,15 +926,24 @@ if (app && BrowserWindow && ipcMain && shell) {
       if (!activeRun && ['installing', 'start', 'stop', 'restart', 'pair', 'update', 'repair'].includes(installer.phase)) {
         installer = writeInstallerState({ ...installer, phase: 'error', task: '', error: '上次操作已中断，可以重新执行。' });
       }
-      if (!findPython()) return nodeStatus();
+      if (!findPython()) {
+        const fallback = nodeStatus();
+        if (!fallback.installed) return fallback;
+        throw new Error('无法查询已安装的服务状态，启动器未找到可用的 Python。请保留现有安装和数据。');
+      }
       const runtime = await runBridge('status');
+      if (runtime.warning && (runtime.warningCode || !/[\u3400-\u9fff]/.test(runtime.warning)))
+        runtime.warning = statusErrorMessage(Object.assign(new Error(runtime.warning), {code:runtime.warningCode}));
+      else lastStatusError = '';
       if (!activeRun && !modelBusy) telemetry?.status({ ...runtime, installer: readInstallerState() });
       const bundledUpgradeTarget = !LOCAL_TEST && runtime.installed ? releases.bundledUpgradeTarget({
         bundledRoot: payloadDirectory(), currentVersion: runtime.version, launcherVersion: app.getVersion(), channel: CHANNEL,
       }) : null;
       return { ...runtime, bundledUpgradeTarget, installer: readInstallerState(), busy: activeRun || modelBusy, ...locationStatus() };
     } catch (error) {
-      return nodeStatus(!findPython() ? '' : error.message);
+      // Failed inspection provides no evidence that services stopped or that
+      // the installation needs repair. Let the renderer retain known facts.
+      return {statusUnavailable:true,warning:statusErrorMessage(error)};
     }
     })().finally(() => { statusRequest = null; });
     return statusRequest;
@@ -899,6 +984,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     const telemetryAction = payload.action === 'install' && fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json')) ? 'repair' : payload.action;
     const operationId = telemetry?.begin(telemetryAction);
     if (operationId) diagnostics.write('telemetry.operation', { operationId });
+    const work = async () => {
     try {
       diagnostics.write('install.paths', { noraHome: noraHome(), hermesHome: hermesHome(),
         installRoot: installRoot(), payloadRoot: payloadDirectory() });
@@ -1010,7 +1096,7 @@ if (app && BrowserWindow && ipcMain && shell) {
         const milestones = failed.milestones.map((item) => item.state === 'running'
           ? { ...item, state: 'error', task: '失败' }
           : item);
-        writeInstallerState({ ...failed, milestones, phase: cancelled ? 'cancelled' : 'error', error: cancelled ? '' : diagnostics.clean(error.message || String(error)) });
+        writeInstallerState({ ...failed, milestones, phase: cancelled ? 'cancelled' : 'error', error: cancelled ? '' : formatUserError(error, {action:payload.action}) });
       } catch (stateError) { diagnostics.error('state.write-failed', stateError); }
       diagnostics.finish(cancelled ? 'cancelled' : 'error');
       error.message = diagnostics.clean(error.message || String(error));
@@ -1018,6 +1104,8 @@ if (app && BrowserWindow && ipcMain && shell) {
     } finally {
       activeRun = false;
     }
+    };
+    return telemetry ? telemetry.scope(work) : work();
   };
   handle('nora:run', runAction);
   const skillUpdates = createSkillUpdateReceiver({
@@ -1027,7 +1115,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     execute: async (action, id) => {
       if (systemUpdate.pending(noraHome())) throw new Error('上次更新尚待恢复，请先在启动器中检查状态。');
       if (action === 'check') {
-        const result = await releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
+        const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL }));
         if (result.error) throw new Error(result.error);
         return result;
       }
@@ -1054,12 +1142,16 @@ if (app && BrowserWindow && ipcMain && shell) {
     const target = fs.existsSync(installerLog) ? installerLog
       : path.join(installRoot(), 'tavern-state', 'native-runtime', 'runs', 'production', 'native.log');
     if (!fs.existsSync(target)) return { ok: false, warning: '日志文件还不存在。' };
-    const openError = await shell.openPath(target);
-    if (openError) return { ok: false, warning: openError };
+    try {
+      const openError = await shell.openPath(target);
+      if (openError) throw new Error(openError);
+    } catch (error) {
+      throw launcherError('日志文件无法通过系统打开。', {userCode:'LOG_OPEN_FAILED'}, error);
+    }
     return { ok: true };
   });
   handle('nora:telemetry', async (_event, value) => {
-    if (value !== undefined && typeof value !== 'boolean') throw new Error('统计设置无效。');
+    if (value !== undefined && typeof value !== 'boolean') throw new Error('诊断授权设置无效。');
     return value === undefined ? telemetry?.settings() : telemetry?.setEnabled(value);
   });
   handle('nora:model-providers', async () => {
@@ -1067,8 +1159,9 @@ if (app && BrowserWindow && ipcMain && shell) {
     return { ok: true, providers: publicProviders(), current: readVerifiedModel(noraHome()) };
   });
   handle('nora:model-options', async (_event, payload) => {
+    diagnostics.addSecret(payload?.key);
     if (!findHermes()) throw new Error('请先安装 Nora。');
-    return { ok: true, ...(await loadProviderModels(payload?.provider, payload?.key, payload?.baseUrl, payload?.authMode)) };
+    return { ok: true, ...(await trackLauncher('list_models','model_test', () => loadProviderModels(payload?.provider, payload?.key, payload?.baseUrl, payload?.authMode))) };
   });
   handle('nora:model-resume', async () => {
     if (activeRun || modelBusy) throw new Error('Nora 正在处理其他任务，请稍候。');
@@ -1163,7 +1256,13 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
   handle('nora:check-update', async () => {
     if (activeRun || modelBusy) throw new Error('请等待当前任务完成。');
-    return releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL });
+    const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL }));
+    if (result.error || result.compatibilityError) diagnostics.error('release.check-failed',
+      result.diagnosticError || new Error(result.error || result.compatibilityError));
+    if (result.error) result.error = formatUserError(result.diagnosticError || new Error(result.error), {action:'check_update',source:'release_service'});
+    if (result.compatibilityError) result.compatibilityError = formatUserError(
+      result.diagnosticError || new Error(result.compatibilityError), {action:'check_update',source:'release_service'});
+    return result;
   });
   handle('nora:uninstall', beginUninstall);
   handle('nora:open-external', async (_event, url) => {

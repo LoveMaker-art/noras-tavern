@@ -1,12 +1,25 @@
 """Own only the Hermes gateway launched inside this Nora installation."""
 
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 _launched_children = {}
+_GATEWAY_IDENTITY_MESSAGE = (
+    "无法确认安装记录中的后台进程是否属于诺拉：系统拒绝读取进程信息。"
+    "为避免启动重复服务，本次未启动新的诺拉，也未结束任何进程。"
+    "请重启电脑后再试；若仍出现此提示，请保留诊断日志联系支持。"
+)
+
+
+class GatewayIdentityError(RuntimeError):
+    """Readable explanation with a fixed technical permission classification."""
+    code = "EACCES"
+    user_code = 'GATEWAY_IDENTITY'
 
 
 def read_json(path):
@@ -17,20 +30,37 @@ def read_json(path):
         return {}
 
 
-def owned_gateway(nora_home):
+def _before_windows_boot(timestamp):
+    import psutil
+    if sys.platform != "win32":
+        return False
+    try:
+        return timestamp < psutil.boot_time() - 1
+    except (psutil.Error, OSError):
+        return False
+
+
+def owned_gateway(nora_home, *, require_readable=False):
     record = read_json(Path(nora_home) / "installer/gateway.json")
     if not record:
         return None
     import psutil
     try:
+        created = float(record["created"])
+        if not math.isfinite(created) or (require_readable and _before_windows_boot(created)):
+            return None
         process = psutil.Process(int(record["pid"]))
-        if abs(process.create_time() - float(record["created"])) > 0.01:
+        if abs(process.create_time() - created) > 0.01:
             return None
         # macOS framework Python re-execs argv[0] while retaining PID, birth time and arguments.
         command = process.cmdline()
         if process.status() == psutil.STATUS_ZOMBIE or not command or command[1:] != record["command"][1:]:
             return None
         return process
+    except psutil.AccessDenied as cause:
+        if require_readable:
+            raise GatewayIdentityError(_GATEWAY_IDENTITY_MESSAGE) from cause
+        return None
     except (KeyError, ValueError, TypeError, psutil.Error):
         return None
 
@@ -69,18 +99,50 @@ def gateway_status(nora_home, hermes_home):
     }
 
 
+def _check_gateway_hint(hermes_home):
+    """A runtime-state PID is a hint; never signal or adopt its process."""
+    import psutil
+
+    state_path = Path(hermes_home) / "gateway_state.json"
+    state = read_json(state_path)
+    try:
+        pid = int(state.get("pid", 0))
+    except (ValueError, TypeError, OverflowError):
+        return
+    if pid <= 0:
+        return
+    try:
+        modified = state_path.stat().st_mtime
+    except FileNotFoundError:
+        return
+    # A pre-reboot snapshot cannot identify a live Windows user process.
+    if _before_windows_boot(modified):
+        return
+    try:
+        candidate = psutil.Process(pid)
+        # Windows can expose creation time while denying cmdline/OpenProcess.
+        # Reject a reused PID before attempting that higher-privilege inspection.
+        try:
+            if candidate.create_time() > modified + 1:
+                return
+        except psutil.AccessDenied:
+            pass
+        if "gateway" in candidate.cmdline():
+            raise RuntimeError("此隔离目录已有其他方式启动的 Hermes，请先关闭该进程。")
+    except psutil.NoSuchProcess:
+        return
+    except psutil.AccessDenied as cause:
+        raise GatewayIdentityError(_GATEWAY_IDENTITY_MESSAGE) from cause
+
+
 def start_gateway(nora_home, hermes_home, command, env, timeout=60):
     import psutil
 
-    if not owned_gateway(nora_home):
+    if not owned_gateway(nora_home, require_readable=True):
         directory = Path(nora_home) / "installer"
         directory.mkdir(parents=True, exist_ok=True)
         # Do not adopt or stop another gateway started outside this launcher.
-        foreign = read_json(Path(hermes_home) / "gateway_state.json")
-        if foreign.get("pid") and psutil.pid_exists(int(foreign["pid"])):
-            candidate = psutil.Process(int(foreign["pid"]))
-            if "gateway" in candidate.cmdline():
-                raise RuntimeError("此隔离目录已有其他方式启动的 Hermes，请先关闭该进程。")
+        _check_gateway_hint(hermes_home)
         with (directory / "gateway.log").open("a", encoding="utf-8") as log:
             os.chmod(directory / "gateway.log", 0o600)
             options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}

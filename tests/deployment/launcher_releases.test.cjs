@@ -5,6 +5,43 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const releases = require('../installer/desktop/releases');
+const {createTelemetry} = require('../installer/desktop/telemetry');
+
+test('standalone update check retains HTTP evidence and reports failure without changing its result contract', async t => {
+  const f = fixture(t), sent = [];
+  const client = createTelemetry({file:path.join(f.root,'telemetry.json'),launcherVersion:'1.1.2',automatic:false,
+    fetcher:async (_url,opts) => { const data=JSON.parse(opts.body);sent.push(...data.events);return Response.json({accepted_event_ids:data.events.map(e=>e.event_id),rejected_event_ids:[]}); }});
+  t.after(()=>client.close());client.setEnabled(true);
+  const result = await client.track('check_update','release_check',()=>releases.check({...f.options,fetcher:async()=>new Response('PRIVATE RESPONSE',{status:403})}));
+  assert.equal(result.state,'unavailable');
+  await client.flush();
+  const failure=sent.find(e=>e.event==='operation_finished');
+  assert.equal(failure.status,'failed');assert.equal(failure.http_status,403);
+  assert.equal(failure.error_code,'http_forbidden');assert.equal(failure.error_source,'release_service');
+  assert.doesNotMatch(JSON.stringify(sent),/PRIVATE RESPONSE|github\.com/);
+});
+
+test('manifest request failures remain technical errors while version guards carry a business code', async t => {
+  const f = fixture(t);
+  for (const evidence of ['http','timeout']) {
+    const result = await releases.check({...f.options,fetcher:async url=>{
+      if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(f.release));
+      if (evidence === 'http') return new Response('private manifest reply',{status:403});
+      throw Object.assign(new Error('private timeout fixture'),{code:'TIMEOUT'});
+    }});
+    assert.equal(result.state,'blocked');
+    assert.ok(result.compatibilityError);
+    assert.equal(result.diagnosticError.userCode,undefined);
+    if (evidence === 'http') assert.equal(result.diagnosticError.status,403);
+    else assert.equal(result.diagnosticError.code,'TIMEOUT');
+  }
+  const manifest = JSON.parse(f.data['release-manifest.json']);
+  manifest.bootstrap.minimumLauncherVersion = '1.2.0';
+  f.data['release-manifest.json'] = JSON.stringify(manifest);
+  const blocked = await releases.check(f.options);
+  assert.equal(blocked.diagnosticError.userCode,'RELEASE_COMPATIBILITY');
+  assert.match(blocked.diagnosticError.cause.message,/1\.2\.0/);
+});
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-release-test-'));

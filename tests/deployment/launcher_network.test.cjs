@@ -16,6 +16,14 @@ function fixture(fetcher) {
   return { network, events };
 }
 
+test('attempt metadata cannot break a successful response', async () => {
+  const response = Object.preventExtensions(new Response('payload'));
+  const f = fixture(async () => response);
+  assert.equal(await f.network.fetch('https://github.com/example'),response);
+  assert.equal(await response.text(),'payload');
+  assert.equal(f.events.at(-1).event,'network.response');
+});
+
 test('release requests use Chromium and preserve streaming, cancellation and headers', async () => {
   let options;
   const response = new Response('payload');
@@ -139,4 +147,17 @@ test('online updates and version checks explicitly inject the desktop network tr
   assert.doesNotMatch(source, /await releaseNetwork\.compare/);
   const metadata = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
   assert.ok(metadata.build.files.includes('release-network.js'));
+});
+
+test('Chromium abort caused by a deadline is a timeout and HTTP responses retain the final attempt',async()=>{
+  const controller=new AbortController();
+  const network=createReleaseNetwork({app:{whenReady:async()=>{}},diagnostics:{write(){},error(){}},net:{fetch:async()=>{
+    controller.abort(new DOMException('deadline','TimeoutError'));throw Error('net::ERR_ABORTED');
+  }}});
+  await assert.rejects(network.fetch('https://github.com/example',{signal:controller.signal}),e=>e.code==='TIMEOUT');
+  let attempt=0;
+  const retry=createReleaseNetwork({app:{whenReady:async()=>{}},diagnostics:{write(){},error(){}},net:{fetch:async()=>{
+    if(++attempt<3)throw Error('net::ERR_NETWORK_CHANGED');return new Response('{}',{status:403});
+  }}});
+  assert.equal((await retry.fetch('https://github.com/example')).launcherAttempt,3);
 });

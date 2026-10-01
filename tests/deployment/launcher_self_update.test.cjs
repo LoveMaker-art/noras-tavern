@@ -55,12 +55,13 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
   let status;
   const context = vm.createContext({ handle: (_name, fn) => { status = fn; },
     quitting: false, uninstalling: false, selectingLocation: false, modelBusy: false,
-    statusRequest: null, activeRun: false, LOCAL_TEST: null, CHANNEL: 'stable',
+    statusRequest: null, activeRun: false, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,
     systemUpdate: { pending: () => false }, noraHome: () => f.root,
     readInstallerState: () => ({ phase: 'ready' }), findPython: () => true,
     runBridge: async () => ({ installed: true, hermesInstalled: true, version: '2.3.2', systemReady: true }),
     releases, payloadDirectory: () => f.root, app: { getVersion: () => '1.1.0' }, locationStatus: () => ({}),
     nodeStatus: warning => { throw new Error(warning || 'unexpected fallback'); },
+    statusErrorMessage: error => { throw error; },
   });
   vm.runInContext(source.slice(source.indexOf("  handle('nora:status'"), source.indexOf("  handle('nora:choose-directory'")), context);
   const snapshot = await status();
@@ -68,7 +69,7 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
   const ui = fs.readFileSync(path.join(__dirname, '../installer/launcher-controller.js'), 'utf8');
   let request;
   vm.runInNewContext(ui.slice(ui.indexOf('  function route()'), ui.indexOf('  function taskView(')) + '\nroute();', {
-    snapshot, bundledUpgradeAttempted: false, run: (action, options) => { request = { action, ...options }; },
+    snapshot, statusUnknown: false, bundledUpgradeAttempted: false, run: (action, options) => { request = { action, ...options }; },
   });
   assert.equal(request.action, 'update');
   const urls = [];

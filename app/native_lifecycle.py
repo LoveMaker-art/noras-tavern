@@ -42,7 +42,15 @@ MAX_NATIVE_LOG_BYTES = 4 * 1024 * 1024
 
 
 class NativeLifecycleError(RuntimeError):
-    pass
+    def __init__(self, message, *, code=None):
+        super().__init__(message)
+        self.code = code
+
+
+class NativeOwnershipError(NativeLifecycleError):
+    """Saved ownership conflicts with the discovered instance."""
+    def __init__(self, message):
+        super().__init__(message, code='TAVERN_OWNERSHIP')
 
 
 @dataclass(frozen=True)
@@ -250,9 +258,21 @@ class NativeRuntime:
             RuntimeContract.from_dict(contract),
         )
 
+    def node_executable(self):
+        pinned = os.environ.get('TAVERN_NODE_EXECUTABLE')
+        if pinned:
+            path = Path(pinned)
+            if not path.is_absolute() or not path.is_file() or not os.access(path, os.X_OK):
+                raise NativeLifecycleError('Nora 自带的 Node 不可用，请修复启动器运行环境。', code='NODE_UNAVAILABLE')
+            return str(path)
+        node = shutil.which('node')
+        if not node:
+            raise NativeLifecycleError('Node executable is unavailable', code='NODE_UNAVAILABLE')
+        return node
+
     def node_major(self):
         result = subprocess.run(
-            ["node", "--version"], check=True, text=True,
+            [self.node_executable(), "--version"], check=True, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
         match = re.fullmatch(r"v(\d+)(?:\.\d+){2}", result.stdout.strip())
@@ -598,11 +618,72 @@ class NativeRuntime:
         return self.service_module().ManagedService.discover(self.data_root, self.app_root)
 
     def node_command(self, port, native_data):
-        node = shutil.which('node')
-        if not node:
-            raise NativeLifecycleError('Node executable is unavailable')
-        return [node, 'server.js', '--configPath', str(self.config_path), '--port', str(port),
+        return [self.node_executable(), 'server.js', '--configPath', str(self.config_path), '--port', str(port),
                 '--dataRoot', str(native_data), '--listen', 'false', '--whitelist', 'false']
+
+    def command_matches(self, process, expected, *, check_node=True):
+        """Only normalize the executable, cwd and the known server entry path."""
+        if not isinstance(process, dict):
+            return False
+        actual = process.get('argv') or []
+        if (not isinstance(actual, list) or not all(isinstance(value, str) for value in actual)
+                or not isinstance(process.get('cwd'), str)
+                or len(actual) < 2 or len(expected) < 2 or actual[2:] != expected[2:]
+                or Path(process.get('cwd') or '').resolve() != self.engine_root.resolve()):
+            return False
+        script = Path(actual[1])
+        if not script.is_absolute():
+            script = self.engine_root / script
+        if script.resolve() != (self.engine_root / 'server.js').resolve():
+            return False
+        return not check_node or Path(actual[0]).resolve() == Path(expected[0]).resolve()
+
+    def recover_local_ownership(self, run_id, port, native_data):
+        """Refresh historical ownership only inside an explicit locked start."""
+        run_dir = self.run_dir(run_id)
+        path = run_dir / 'run.json'
+        original = path.read_bytes()
+        metadata = json.loads(original)
+        processes = self.process_module()
+        expected = self.node_command(port, native_data)
+        saved = metadata.get('process')
+        refused = '无法安全接管正在运行的酒馆：进程、配置或端口归属尚未确认，请保留日志。'
+        if (metadata.get('schema') != 1 or metadata.get('run_id') != run_id
+                or metadata.get('port') != port or metadata.get('data_root') != str(native_data)
+                or not isinstance(saved, dict)
+                or not self.command_matches(saved, expected, check_node=False)):
+            raise NativeLifecycleError(refused, code='TAVERN_OWNERSHIP')
+        # A historical receipt can describe the previous engine release. Check
+        # the active source descriptor against today's authoritative contract.
+        self.source_metadata()
+        script = self.engine_root / 'server.js'
+        found = processes.find_processes(script)
+        if len(found) != 1 or not self.command_matches(found[0], expected):
+            raise NativeLifecycleError(refused, code='TAVERN_OWNERSHIP')
+        try:
+            process = processes.verify_owned_listener(found[0], script, port)
+            health = self.health(port)
+            if not health.get('ok'):
+                raise NativeLifecycleError(refused, code='TAVERN_UNHEALTHY')
+            confirmed = processes.verify_owned_listener(process, script, port)
+        except (OSError, RuntimeError) as error:
+            raise NativeLifecycleError(refused, code=getattr(error, 'code', None) or 'TAVERN_OWNERSHIP') from error
+        found = processes.find_processes(script)
+        if (confirmed != process or len(found) != 1 or found[0]['pid'] != process['pid']
+                or not processes.same_runtime(found[0], process)
+                or path.read_bytes() != original):
+            raise NativeLifecycleError(refused, code='TAVERN_OWNERSHIP')
+        # Preserve the exact old receipt before updating either discovery hint.
+        backup = path.with_name(f'run.json.before-recovery-{time.time_ns()}.bak')
+        with backup.open('xb') as output:
+            os.chmod(backup, 0o600)
+            output.write(original)
+        metadata.update(native_pid=process['pid'], process=process,
+                        started_at=int(process['created_at']), contract_commit=self.contract.commit,
+                        ownership_recovered_at=int(time.time()))
+        _atomic_text(path, json.dumps(metadata, indent=2) + '\n')
+        _atomic_text(run_dir / 'native.pid', str(process['pid']) + '\n')
+        return {**metadata, 'already_running': True, 'ownership_recovered': True, 'health': health}
 
     def start(self, run_id="production", port=8799, data_root=None, *, assets_prepared=False):
         with self.operations_module('runtime_lock').installation_lock(self.data_root):
@@ -624,19 +705,17 @@ class NativeRuntime:
             raise NativeLifecycleError('Managed service cannot use a different data root')
         if service and service.descriptor['command'] != shlex.join(self.node_command(port, native_data)):
             raise NativeLifecycleError('Managed start command differs; migrate it through the updater first')
-        native_pid = None if service else self._read_pid(run_dir / "native.pid")
+        try:
+            native_pid = None if service else self._read_pid(run_dir / "native.pid")
+        except NativeOwnershipError:
+            return self.recover_local_ownership(run_id, port, native_data)
         processes = self.process_module()
         script = self.engine_root / 'server.js'
         if native_pid:
             process = processes.process_record(native_pid, script)
             expected = self.node_command(port, native_data)
-            actual = process['argv']
-            # Only canonicalize the executable and working directory. Script and
-            # runtime arguments must still match; never adopt another data root.
-            if (not actual or actual[1:] != expected[1:]
-                    or Path(actual[0]).resolve() != Path(expected[0]).resolve()
-                    or Path(process['cwd']).resolve() != self.engine_root.resolve()):
-                raise NativeLifecycleError('Running Tavern configuration differs; stop the reviewed instance explicitly')
+            if not self.command_matches(process, expected):
+                raise NativeLifecycleError('Running Tavern configuration differs; stop the reviewed instance explicitly', code='TAVERN_OWNERSHIP')
             processes.require_listener(process, script, port)
             current = self.health(port)
             if current["ok"]:
@@ -650,9 +729,9 @@ class NativeRuntime:
                     "health": current,
                 }
         if native_pid:
-            raise NativeLifecycleError('Existing Tavern is unhealthy; explicit recovery is required')
+            raise NativeLifecycleError('Existing Tavern is unhealthy; explicit recovery is required', code='TAVERN_UNHEALTHY')
         if not service and processes.port_open(port):
-            raise NativeLifecycleError('Tavern port is occupied; no process was started')
+            raise NativeLifecycleError('Tavern port is occupied; no process was started', code='TAVERN_PORT_OCCUPIED')
         env = os.environ.copy()
         # The descriptor is for short-lived launchers, not the running server.
         env.pop('TAVERN_MAINTENANCE_FD', None)
@@ -751,21 +830,21 @@ class NativeRuntime:
             if not found:
                 return None
             if len(found) != 1 or not metadata_path.exists():
-                raise NativeLifecycleError('Live Tavern process lacks unambiguous run ownership; review before changing it')
+                raise NativeLifecycleError('Live Tavern process lacks unambiguous run ownership; review before changing it', code='TAVERN_OWNERSHIP')
             process = found[0]
             pid = process['pid']
         if metadata_path.exists():
             metadata = json.loads(metadata_path.read_text())
             saved = metadata.get('process')
             if saved and not processes.same_runtime(process, saved):
-                raise NativeLifecycleError('Tavern runtime ownership differs from the saved configuration')
+                raise NativeOwnershipError('Tavern runtime ownership differs from the saved configuration')
             if metadata.get('data_root') and metadata.get('port'):
                 args = process['argv']
                 expected = {'--configPath': str(self.config_path), '--dataRoot': str(metadata['data_root']),
                             '--port': str(metadata['port'])}
                 for flag, value in expected.items():
                     if args.count(flag) != 1 or args.index(flag) + 1 >= len(args) or args[args.index(flag) + 1] != value:
-                        raise NativeLifecycleError('Tavern process configuration differs from the saved runtime')
+                        raise NativeLifecycleError('Tavern process configuration differs from the saved runtime', code='TAVERN_OWNERSHIP')
         return pid
 
     def stop_run(self, run_id="production"):
@@ -794,7 +873,7 @@ class NativeRuntime:
             raise NativeLifecycleError('Tavern process exited during inspection; inspect again')
         saved = metadata.get('process')
         if saved and not service and not processes.same_runtime(process, saved):
-            raise NativeLifecycleError('Tavern runtime ownership differs from the saved configuration')
+            raise NativeLifecycleError('Tavern runtime ownership differs from the saved configuration', code='TAVERN_OWNERSHIP')
         evidence = processes.stop_process(process, script, port=port,
                                           stop=service.stop if service else None)
         child = self._children.pop(pid, None)
@@ -824,7 +903,8 @@ class NativeRuntime:
             return {**metadata, 'processes': {'native': bool(process)}, 'health': health}
         except (ValueError, OSError, NativeLifecycleError) as error:
             return {**metadata, 'processes': {'native': bool(process)},
-                    'health': {'ok': False, 'checks': {}}, 'inspection_error': str(error)}
+                    'health': {'ok': False, 'checks': {}}, 'inspection_error': str(error),
+                    'inspection_error_code': getattr(error, 'code', None)}
 
     def write_ready_marker(self, health):
         if not isinstance(health, dict) or not health.get("ok"):
@@ -902,5 +982,5 @@ if __name__ == "__main__":
     try:
         main()
     except NativeLifecycleError as error:
-        print(json.dumps({"ok": False, "error": str(error)}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"ok": False, "error": str(error), "code": error.code}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)

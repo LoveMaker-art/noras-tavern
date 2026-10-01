@@ -3,6 +3,7 @@ const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
 const { createHash } = require('node:crypto');
+const { launcherError } = require('./launcher-errors');
 
 // Hermes/OpenAI SDKs require a nonempty credential even for unauthenticated
 // local servers. This public placeholder is not a user secret.
@@ -123,27 +124,27 @@ function requestJson(url, headers, secret, timeoutMs = 20000) {
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
         body += chunk;
-        if (body.length > 4 * 1024 * 1024) request.destroy(new Error('模型列表过大。'));
+        if (body.length > 4 * 1024 * 1024) request.destroy(launcherError('模型列表过大。', {code:'RESPONSE_TOO_LARGE'}));
       });
       response.on('end', () => {
         let data;
         try {
           data = body ? JSON.parse(body) : {};
         } catch {
-          reject(new Error('模型服务返回了无法识别的内容。'));
+          reject(launcherError('模型服务返回了无法识别的内容。', {code:'INVALID_RESPONSE',status:response.statusCode,source:'model_service',site:'model.list'}));
           return;
         }
         if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
           const detail = redact(data?.error?.message || data?.message || `HTTP ${response.statusCode}`, secret)
             .slice(0, 180);
-          reject(new Error(`模型服务请求失败：${detail}`));
+          reject(launcherError(`模型服务请求失败：${detail}`, {status:response.statusCode,source:'model_service',site:'model.list'}));
           return;
         }
         resolve(data);
       });
     });
-    request.on('timeout', () => request.destroy(new Error('连接模型服务超时。')));
-    request.on('error', (error) => reject(new Error(redact(error.message || error, secret))));
+    request.on('timeout', () => request.destroy(launcherError('连接模型服务超时。', {code:'TIMEOUT'})));
+    request.on('error', (error) => reject(launcherError(redact(error.message || error, secret), {source:'model_service',site:'model.list'}, error)));
   });
 }
 
@@ -180,20 +181,20 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
         responseBody += chunk;
-        if (responseBody.length > 4 * 1024 * 1024) request.destroy(new Error('模型回复过大。'));
+        if (responseBody.length > 4 * 1024 * 1024) request.destroy(launcherError('模型回复过大。', {code:'RESPONSE_TOO_LARGE'}));
       });
       response.on('end', () => {
         let payload;
         try {
           payload = responseBody ? JSON.parse(responseBody) : {};
         } catch {
-          reject(new Error('中转服务返回了无法识别的内容。'));
+          reject(launcherError('中转服务返回了无法识别的内容。', {code:'INVALID_RESPONSE',status:response.statusCode,source:'model_service',site:'model.test'}));
           return;
         }
         if ((response.statusCode || 500) < 200 || (response.statusCode || 500) >= 300) {
           const detail = redact(payload?.error?.message || payload?.message || `HTTP ${response.statusCode}`, secret)
             .slice(0, 180);
-          reject(new Error(`模型服务连接失败：${detail}`));
+          reject(launcherError(`模型服务连接失败：${detail}`, {status:response.statusCode,source:'model_service',site:'model.test'}));
           return;
         }
         const textParts = parts => Array.isArray(parts) ? parts.filter(part => part && !part.thought && typeof part.text === 'string').map(part => part.text).join('') : '';
@@ -201,16 +202,16 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
           : protocol === 'gemini' ? textParts(payload?.candidates?.[0]?.content?.parts)
           : payload?.choices?.[0]?.message?.content ?? payload?.choices?.[0]?.text;
         if (typeof content !== 'string' || !content.trim()) {
-          reject(new Error('中转服务已响应，但没有返回模型内容。'));
+          reject(launcherError('中转服务已响应，但没有返回模型内容。', {code:'EMPTY_RESPONSE',source:'model_service',site:'model.test'}));
           return;
         }
         resolve({ ok: true, toolSupport: 'unverified' });
       });
     });
-    request.on('timeout', () => request.destroy(new Error('模型响应超时；本地模型请检查是否加载完成，远端模型请检查服务状态。')));
-    request.on('error', (error) => reject(new Error(error.code === 'ECONNREFUSED'
+    request.on('timeout', () => request.destroy(launcherError('模型响应超时；本地模型请检查是否加载完成，远端模型请检查服务状态。', {code:'TIMEOUT'})));
+    request.on('error', (error) => reject(launcherError(error.code === 'ECONNREFUSED'
       ? '无法连接模型服务。若使用本地模型，请先启动 Ollama、LM Studio 等模型服务并检查端口；启动酒馆不会启动模型服务。'
-      : redact(error.message || error, secret))));
+      : redact(error.message || error, secret), {source:'model_service',site:'model.test'}, error)));
     request.end(body);
   });
 }

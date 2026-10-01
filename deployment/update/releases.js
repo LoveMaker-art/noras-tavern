@@ -1,4 +1,5 @@
 const fs = require('node:fs');
+const { launcherError } = require('./launcher-errors');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { Readable } = require('node:stream');
@@ -44,11 +45,16 @@ function assetUrl(release, name) {
   return expected;
 }
 async function requestJson(url, fetcher, signal) {
-  const response = await fetcher(url, { headers: { 'User-Agent': 'Nora-Tavern-Launcher', Accept: 'application/vnd.github+json' }, signal: AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(20000)]) });
-  if (!response.ok) throw new Error(`无法检查 GitHub 版本（HTTP ${response.status}）。`);
-  const body = await response.text();
-  if (body.length > 4 * 1024 * 1024) throw new Error('发布清单过大。');
-  return JSON.parse(body);
+  let response;
+  try { response = await fetcher(url, { headers: { 'User-Agent': 'Nora-Tavern-Launcher', Accept: 'application/vnd.github+json' }, signal: AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(20000)]) }); }
+  catch (error) { throw launcherError(error.message, {source:'release_service',site:'release.request'}, error); }
+  if (!response.ok) throw launcherError(`无法检查 GitHub 版本（HTTP ${response.status}）。`, {status:response.status,attempt:response.launcherAttempt,source:'release_service',site:'release.request'});
+  let body;
+  try { body = await response.text(); }
+  catch (error) { throw launcherError(error.message,{source:'release_service',site:'release.request'},error); }
+  if (body.length > 4 * 1024 * 1024) throw launcherError('发布清单过大。',{code:'RESPONSE_TOO_LARGE',source:'release_service',site:'release.request'});
+  try { return JSON.parse(body); }
+  catch { throw launcherError('发布服务返回了无法识别的内容。',{code:'INVALID_RESPONSE',source:'release_service',site:'release.request'}); }
 }
 function accepts(release, channel) {
   if (!['stable', 'beta'].includes(channel) || release.draft || !version(release.tag_name)) return false;
@@ -102,10 +108,13 @@ function validateUpdate(manifest, release, launcherVersion) {
   if (manifest.schema !== 'tavern-release/v2' || manifest.candidate ||
       compare(manifest.versions?.tavern, release.tag_name) !== 0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '') ||
       manifest.bootstrap?.managedComponents !== 1 || !/^[a-f0-9]{64}$/.test(manifest.bootstrap.sha256 || '')) {
-    throw new Error('目标发布尚不支持启动器组件更新，未修改当前安装。');
+    throw launcherError('目标发布尚不支持启动器组件更新，未修改当前安装。',
+      {userCode:'RELEASE_COMPATIBILITY',source:'release_service',site:'release.verify'});
   }
   const minimum = manifest.bootstrap.minimumLauncherVersion || '1.0.0';
-  if (compare(launcherVersion, minimum) === null || compare(launcherVersion, minimum) < 0) throw new Error(`请先升级启动器到 ${minimum} 或更新版本。`);
+  if (compare(launcherVersion, minimum) === null || compare(launcherVersion, minimum) < 0)
+    throw launcherError(`请先升级启动器到 ${minimum} 或更新版本。`,
+      {userCode:'RELEASE_COMPATIBILITY',source:'release_service',site:'release.verify'});
   return manifest;
 }
 async function check({ installRoot, launcherVersion, fetcher = fetch, platform, arch, channel = 'stable' }) {
@@ -114,22 +123,23 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
   try {
     const release = await latest(fetcher, undefined, channel);
     const comparison = compare(current, release.tag_name);
-    let system = null, compatibilityError = '', launcher = null;
+    let system = null, compatibilityError = '', launcher = null, diagnosticError;
     try {
       const manifest = await requestJson(assetUrl(release, 'release-manifest.json'), fetcher);
       launcher = await require('./launcher-update').inspect({ release, manifest, launcherVersion, fetcher, platform, arch });
       system = validateUpdate(manifest, release, launcher?.version || launcherVersion);
     }
-    catch (error) { compatibilityError = error.message; }
+    catch (error) { compatibilityError = error.message; diagnosticError = launcherError('', {source:'release_service',site:error.site || 'release.verify'}, error); }
     return { current, versionSource: installed.source, latest: release.tag_name, checkedAt: new Date().toISOString(), launcherVersion,
       releaseUrl: `https://github.com/${REPO}/releases/tag/${release.tag_name}`,
       updateSupported: Boolean(system), channel,
       launcherLatest: system?.launcherVersion || null, launcherUpdateAvailable: system ? compare(launcherVersion, system.launcherVersion) === -1 : false,
       state: !system ? 'blocked' : comparison === null ? 'unknown' : comparison < 0 || launcher ? 'available' : comparison > 0 ? 'ahead' : 'current',
       releaseAvailable: comparison !== null && comparison < 0,
-      available: comparison !== null && (comparison < 0 || Boolean(launcher)) && Boolean(system), installable: Boolean(system), compatibilityError };
+      available: comparison !== null && (comparison < 0 || Boolean(launcher)) && Boolean(system), installable: Boolean(system), compatibilityError, ...(diagnosticError ? {diagnosticError} : {}) };
   } catch (error) {
-    return { current, latest: null, launcherVersion, state: 'unavailable', available: false, installable: false, error: error.message };
+    return { current, latest: null, launcherVersion, state: 'unavailable', available: false, installable: false, error: error.message,
+      diagnosticError:launcherError('', {source:'release_service',site:error.site || 'release.check'}, error) };
   }
 }
 async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, signal, onEvent = () => {},
@@ -150,7 +160,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
     try {
       const downloadSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30 * 60 * 1000)]);
       const response = await fetcher(assetUrl(release, name), { signal: downloadSignal });
-      if (!response.ok || !response.body) throw new Error(`下载失败：${name}（HTTP ${response.status}）`);
+      if (!response.ok || !response.body) throw launcherError(`下载失败：${name}（HTTP ${response.status}）`, {status:response.status,attempt:response.launcherAttempt,source:'release_service',site:'release.download'});
       let current = 0, lastProgress = Date.now();
       const input = Readable.fromWeb(response.body);
       const total = Number(response.headers.get('content-length')) || 0;
@@ -164,7 +174,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
       await pipeline(input, fs.createWriteStream(partial, { mode: 0o600 }), { signal: downloadSignal });
       onEvent({ event: 'progress', current, total });
       onEvent({ event: 'task', stage_id: 'verify', task: `校验下载：${name}` });
-      if (expected && !await matches(partial, expected)) throw new Error(`组件校验失败：${name}`);
+      if (expected && !await matches(partial, expected)) throw launcherError(`组件校验失败：${name}`, {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
       fs.renameSync(partial, target);
     } finally { fs.rmSync(partial, { force: true }); }
   };
@@ -214,7 +224,7 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
         onEvent({ event: 'progress', current: 0, total: item.size, ratio: 0 });
         const downloadSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30 * 60 * 1000)]);
         const response = await fetcher(assetUrl(release, item.asset), { signal: downloadSignal });
-        if (!response.ok || !response.body) throw new Error(`组件下载失败：${name}（HTTP ${response.status}）。`);
+        if (!response.ok || !response.body) throw launcherError(`组件下载失败：${name}（HTTP ${response.status}）。`, {status:response.status,attempt:response.launcherAttempt,source:'release_service',site:'release.download'});
         let current = 0;
         const input = Readable.fromWeb(response.body);
         input.on('data', chunk => {
@@ -225,7 +235,7 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
         await pipeline(input, fs.createWriteStream(partial, { mode: 0o600 }), { signal: downloadSignal });
       }
       onEvent({ event: 'task', stage_id: 'verify', task: `校验下载：${name}` });
-      if (fs.statSync(partial).size !== item.size || !await matches(partial, item.sha256)) throw new Error(`组件校验失败：${name}`);
+      if (fs.statSync(partial).size !== item.size || !await matches(partial, item.sha256)) throw launcherError(`组件校验失败：${name}`, {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
       fs.renameSync(partial, target);
     } finally { fs.rmSync(partial, { force: true }); }
   }

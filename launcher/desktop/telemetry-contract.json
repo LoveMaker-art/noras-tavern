@@ -1,5 +1,67 @@
 {
-  "schema_version": 1,
+  "schema_version": 3,
+  "sources": [
+    "launcher",
+    "release_service",
+    "model_service",
+    "launcher_process"
+  ],
+  "sites": [
+    "launcher.operation",
+    "launcher.main",
+    "launcher.window",
+    "launcher.directory",
+    "release.check",
+    "release.request",
+    "release.download",
+    "release.verify",
+    "model.list",
+    "model.test",
+    "model.save",
+    "process.run",
+    "process.start",
+    "process.stop",
+    "process.pair"
+  ],
+  "systemCodes": [
+    "EACCES",
+    "EPERM",
+    "ENOENT",
+    "ENOSPC",
+    "ETIMEDOUT",
+    "TIMEOUT",
+    "ABORT_ERR",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ERR_NETWORK_CHANGED",
+    "CERT_HAS_EXPIRED",
+    "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+    "ERR_CERT_AUTHORITY_INVALID",
+    "VERIFICATION_FAILED",
+    "INVALID_RESPONSE",
+    "EMPTY_RESPONSE",
+    "RESPONSE_TOO_LARGE",
+    "RENDERER_GONE"
+  ],
+  "signals": [
+    "SIGTERM",
+    "SIGKILL",
+    "SIGABRT",
+    "SIGSEGV",
+    "SIGINT",
+    "SIGBUS"
+  ],
+  "kinds": [
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "TimeoutError",
+    "AbortError"
+  ],
   "events": [
     "launcher_first_seen",
     "operation_started",
@@ -8,7 +70,8 @@
     "heartbeat",
     "operation_finished",
     "runtime_first_ready",
-    "setup_waiting"
+    "setup_waiting",
+    "launcher_error"
   ],
   "actions": [
     "none",
@@ -19,7 +82,10 @@
     "stop",
     "restart",
     "pair",
-    "model"
+    "model",
+    "check_update",
+    "list_models",
+    "launcher"
   ],
   "stages": [
     "idle",
@@ -68,7 +134,19 @@
     "rate_limited",
     "model_rejected",
     "process_failed",
-    "verification_failed"
+    "verification_failed",
+    "file_not_found",
+    "cancelled",
+    "dns_failed",
+    "connection_refused",
+    "tls_failed",
+    "http_unauthorized",
+    "http_forbidden",
+    "http_error",
+    "invalid_response",
+    "empty_response",
+    "response_too_large",
+    "renderer_gone"
   ],
   "cohorts": [
     "new",
@@ -103,6 +181,45 @@
     "error_code",
     "elapsed_ms",
     "stage_elapsed_ms",
-    "progress_age_ms"
-  ]
+    "progress_age_ms",
+    "error_source",
+    "error_site",
+    "system_code",
+    "http_status",
+    "exit_code",
+    "exit_signal",
+    "error_kind",
+    "attempt",
+    "fault"
+  ],
+  "detailFields": [
+    "error_source",
+    "error_site",
+    "system_code",
+    "http_status",
+    "exit_code",
+    "exit_signal",
+    "error_kind",
+    "attempt"
+  ],
+  "faultKinds": [
+    "Error",
+    "TypeError",
+    "RangeError",
+    "SyntaxError",
+    "ReferenceError",
+    "TimeoutError",
+    "AbortError",
+    "OSError",
+    "FileNotFoundError",
+    "PermissionError",
+    "RuntimeError",
+    "ValueError",
+    "CalledProcessError",
+    "TimeoutExpired"
+  ],
+  "faultLimits": {
+    "packetBytes": 24576,
+    "batchBytes": 60000
+  }
 }

@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { restoreRetained, RETAINED } = require('./uninstall');
+const { launcherError } = require('./launcher-errors');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
 const TOKENS = {
@@ -32,14 +33,14 @@ function findBundledRuntime(payloadRoot, platform = process.platform, arch = pro
   if (!fs.existsSync(manifestPath)) return null;
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
   if (manifest.schema !== 1 || manifest.platform !== platform || manifest.arch !== arch) {
-    throw new Error('内置运行时与当前系统或架构不匹配，请下载对应的安装包。');
+    throw launcherError('内置运行时与当前系统或架构不匹配，请下载对应的安装包。',{code:'VERIFICATION_FAILED'});
   }
   if (!manifest.components?.clawchat?.revision || !manifest.components?.liveware?.sha256 ||
       !manifest.components?.files || manifest.componentProbe !== 'nora-clawchat-check.py') {
     throw new Error('安装包缺少完整 ClawChat / Liveware 组件，请使用新版完整安装包。');
   }
   const archive = contained(payloadRoot, manifest.archive);
-  if (!fs.existsSync(archive)) throw new Error('整合包缺少 Hermes 运行时文件。');
+  if (!fs.existsSync(archive)) throw launcherError('整合包缺少 Hermes 运行时文件。',{code:'ENOENT'});
   return { manifest, manifestPath, archive };
 }
 
@@ -214,7 +215,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
   const bundle = findBundledRuntime(payloadRoot);
   if (!bundle) return null;
   if (sha256File(bundle.archive) !== bundle.manifest.sha256) {
-    throw new Error('Hermes 运行时校验失败，安装包可能不完整。');
+    throw launcherError('Hermes 运行时校验失败，安装包可能不完整。',{code:'VERIFICATION_FAILED'});
   }
 
   fs.mkdirSync(noraHome, { recursive: true });

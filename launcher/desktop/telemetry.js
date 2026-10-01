@@ -1,7 +1,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { AsyncLocalStorage } = require('node:async_hooks');
 const contract = require('./telemetry-contract.json');
+const { describeError } = require('./launcher-errors');
+const { createFaultPackets, validFaultPacket } = require('./fault-packet');
+const EMPTY_DETAILS = {error_source:'',error_site:'',system_code:'',http_status:null,exit_code:null,exit_signal:'',error_kind:'',attempt:0};
 const DAY = 86400000;
 const ENDPOINT = 'https://noratavern.com/api/launcher/events';
 const VERSION = /^(?:unknown|\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]{1,40})?)$/;
@@ -11,24 +15,16 @@ const version = value => {
 };
 
 function errorCode(error) {
-  const code = error?.code || error?.cause?.code;
-  if (['EACCES', 'EPERM'].includes(code)) return 'permission_denied';
-  if (code === 'ENOENT') return 'missing_dependency';
-  if (code === 'ENOSPC') return 'disk_full';
-  if (['ETIMEDOUT', 'ABORT_ERR', 'TIMEOUT'].includes(code) || error?.name === 'TimeoutError') return 'timeout';
-  if (['ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN'].includes(code)) return 'network';
-  if (code === 'VERIFICATION_FAILED') return 'verification_failed';
-  if (error?.status === 429) return 'rate_limited';
-  if ([401, 403].includes(error?.status)) return 'model_rejected';
-  if (Number.isInteger(error?.exitCode)) return 'process_failed';
-  return 'unknown';
+  return describeError(error).error_code;
 }
 
 function createTelemetry({ file, launcherVersion, platform = process.platform, arch = process.arch,
   enabled = true, cohort = 'unknown', fetcher = globalThis.fetch, now = Date.now, random = Math.random,
-  diagnostic = () => {}, automatic = true }) {
+  diagnostic = () => {}, automatic = true, clean, roots, environment }) {
   let state, broken = false, controller, sending = false, attempts = 0, due = 0, timer;
   let productVersion = 'unknown', progressValue = null, generation = 0;
+  const operations = new AsyncLocalStorage(), reported = new WeakMap(), diagnosticTasks = new WeakMap();
+  const faults = createFaultPackets({clean,roots,environment});
   const report = code => { try { diagnostic(code); } catch {} };
   try {
     if (fs.existsSync(file)) {
@@ -37,14 +33,24 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       if (state.schema !== 1 || typeof state.enabled !== 'boolean' || !Array.isArray(state.queue) || !Number.isSafeInteger(state.sequence)
         || !/^[a-f0-9-]{36}$/.test(state.id) || !contract.cohorts.includes(state.cohort)) throw Error('invalid');
       // Never transmit arbitrary fields from a locally modified queue file.
-      state.queue = state.queue.slice(-500).map(event => Object.fromEntries(contract.fields.map(key => [key, event[key]])));
+      state.queue = state.queue.slice(-500).map(event => Object.fromEntries(contract.fields
+        .filter(key => (event.schema_version >= 2 || !contract.detailFields.includes(key)) && (event.schema_version >= 3 || key !== 'fault')).map(key => [key, event[key]])));
       if (state.active && (!/^[a-f0-9-]{36}$/.test(state.active.id)
         || !contract.actions.includes(state.active.action) || !contract.stages.includes(state.active.stage)
         || !Number.isSafeInteger(state.active.started) || !Number.isSafeInteger(state.active.stageStarted)
         || !(state.active.lastProgress === null || Number.isSafeInteger(state.active.lastProgress)))) throw Error('invalid active task');
       for (const event of state.queue) {
-        if (event.schema_version !== 1) throw Error('invalid schema');
-        if (Object.values(event).some(value => value !== null && !['string','number'].includes(typeof value))) throw Error('invalid event');
+        if (![1,2,3].includes(event.schema_version)) throw Error('invalid schema');
+        if (event.schema_version >= 2) {
+          for (const [key,list] of Object.entries({error_source:'sources',error_site:'sites',system_code:'systemCodes',exit_signal:'signals',error_kind:'kinds'})) {
+            if (event[key] !== '' && !contract[list].includes(event[key])) throw Error('invalid detail');
+          }
+          if (!(event.http_status === null || Number.isInteger(event.http_status) && event.http_status >= 400 && event.http_status <= 599)
+            || !(event.exit_code === null || Number.isInteger(event.exit_code) && event.exit_code >= 0 && event.exit_code <= 65535)
+            || !Number.isInteger(event.attempt) || event.attempt < 0 || event.attempt > 10) throw Error('invalid detail');
+        }
+        if (event.schema_version === 3 && event.fault !== null && (!validFaultPacket(event.fault) || Buffer.byteLength(JSON.stringify(event.fault)) > contract.faultLimits.packetBytes)) throw Error('invalid packet');
+        if (Object.entries(event).filter(([key]) => key !== 'fault').map(([,value]) => value).some(value => value !== null && !['string','number'].includes(typeof value))) throw Error('invalid event');
         for (const [key, list] of Object.entries({event:'events',action:'actions',stage:'stages',status:'statuses',error_code:'errors',cohort:'cohorts',platform:'platforms',arch:'arches'})) {
           if (!contract[list].includes(event[key])) throw Error('invalid enum');
         }
@@ -54,30 +60,46 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
         for (const key of ['sequence','occurred_at','elapsed_ms','stage_elapsed_ms']) if (!Number.isSafeInteger(event[key])) throw Error('invalid number');
         if (event.progress_age_ms !== null && !Number.isSafeInteger(event.progress_age_ms)) throw Error('invalid progress');
       }
-    } else state = { schema: 1, id: randomUUID(), cohort, enabled, sequence: 0, seen: false, ready: false, active: null, queue: [] };
+    } else state = { schema: 1, id: randomUUID(), cohort, enabled: false, consentVersion: 0, sequence: 0, seen: false, ready: false, active: null, queue: [] };
   } catch { broken = true; state = { enabled: false, queue: [] }; report('state_unreadable'); }
+  // Prior stage-statistics consent never authorizes richer diagnostic evidence.
+  if (state.consentVersion !== 3) state.enabled = false;
+  // Persist the consent instance so a self-update handoff cannot gain a later authorization.
+  if (!state.enabled) state.diagnosticConsentId = '';
+  else if (!/^[a-f0-9-]{36}$/.test(state.diagnosticConsentId || '')) state.diagnosticConsentId = randomUUID();
+  const stripFaults = () => { state.queue = state.queue.map(event => event.schema_version === 3 ? {...event,fault:null} : event); };
+  if (!state.enabled) stripFaults();
   function save() {
     fs.mkdirSync(path.dirname(file), { recursive: true });
     const temporary = `${file}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
     fs.renameSync(temporary, file);
   }
-  const allowed = () => enabled && state.enabled && !broken && now() >= (state.pauseUntil || 0);
+  // Basic operation statistics are independent of detailed diagnostic consent.
+  const allowed = () => enabled && !broken && now() >= (state.pauseUntil || 0);
+  const detailedAllowed = () => allowed() && state.enabled && state.consentVersion === 3;
   const protect = fn => (...args) => {
     try { return fn(...args); } catch { broken = true; controller?.abort(); report('state_write_failed'); }
   };
+  const currentScope = () => operations.getStore()?.admitted !== false;
+  const admitDiagnostics = task => diagnosticTasks.set(task,{enabled:detailedAllowed(),generation});
+  function faultFor(error, task, context) {
+    const consent = diagnosticTasks.get(task);
+    return detailedAllowed() && consent?.enabled && consent.generation === generation ? faults.packet(error,task,context) : null;
+  }
   const elapsed = start => Math.max(0, Math.min(30 * DAY, now() - start));
-  function enqueue(event, status = 'running', code = 'none', stageOverride) {
+  function enqueue(event, status = 'running', code = 'none', stageOverride, details = EMPTY_DETAILS, taskOverride, fault = null) {
     if (!allowed()) return;
-    const task = state.active;
+    const task = taskOverride || state.active;
     const global = ['launcher_first_seen', 'runtime_first_ready', 'setup_waiting'].includes(event);
     const record = {
-      schema_version: 1, event_id: randomUUID(), installation_id: state.id, operation_id: global ? '' : task.id,
+      schema_version: 3, fault: detailedAllowed() ? fault : null, event_id: randomUUID(), installation_id: state.id, operation_id: global ? '' : task.id,
       sequence: ++state.sequence, event, occurred_at: now(), platform, arch,
       launcher_version: version(launcherVersion), product_version: productVersion, cohort: state.cohort,
       action: global ? 'none' : task.action, stage: stageOverride || (global ? 'idle' : task.stage), status, error_code: code,
       elapsed_ms: global ? 0 : elapsed(task.started), stage_elapsed_ms: global ? 0 : Math.min(elapsed(task.stageStarted), elapsed(task.started)),
       progress_age_ms: global || task.lastProgress === null ? null : Math.min(elapsed(task.lastProgress), elapsed(task.stageStarted)),
+      ...details,
     };
     state.queue = state.queue.filter(e => e.occurred_at >= now() - 7 * DAY);
     // Prefer dropping old heartbeats over terminal/error evidence when the queue is full.
@@ -85,44 +107,92 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       const i = state.queue.findIndex(e => e.event === 'heartbeat'); state.queue.splice(i < 0 ? 0 : i, 1);
     }
     state.queue.push(record);
+    if (task && !global && !['heartbeat','launcher_error'].includes(event)) {
+      task.history = [...(task.history || []), {event,stage:record.stage,status,elapsed_ms:record.elapsed_ms}].slice(-16);
+    }
+    while (Buffer.byteLength(JSON.stringify(state.queue)) > 1024 * 1024) {
+      const i = state.queue.findIndex(e => e.event === 'heartbeat'); state.queue.splice(i < 0 ? 0 : i, 1);
+    }
   }
   function stage(id) {
-    if (!allowed() || !state.active || !contract.stages.includes(id) || state.active.stage === id) return;
+    if (!allowed() || !currentScope() || !state.active || !contract.stages.includes(id) || state.active.stage === id) return;
     enqueue('stage_finished', 'succeeded');
     Object.assign(state.active, { stage: id, stageStarted: now(), lastProgress: null }); progressValue = null;
     enqueue('stage_started'); save();
   }
   function finish(status, error) {
-    if (!allowed() || !state.active) return;
-    const code = status === 'failed' ? errorCode(error) : 'none';
-    enqueue('stage_finished', status, code); enqueue('operation_finished', status, code);
+    if (!allowed() || !currentScope() || !state.active) return;
+    if (status === 'failed' && errorCode(error) === 'cancelled') status = 'cancelled';
+    const details = status === 'failed' ? describeError(error) : EMPTY_DETAILS;
+    const code = status === 'failed' ? details.error_code : 'none';
+    enqueue('stage_finished', status, code, undefined, details); enqueue('operation_finished', status, code, undefined, details, undefined, status === 'failed' ? faultFor(error,state.active) : null);
     if (status === 'handoff') state.active.handoff = true;
     else state.active = null;
     save();
   }
   const api = {
-    settings: () => ({ enabled: enabled && state.enabled && !broken, available: enabled && !broken, installationId: state.id || '' }),
+    // Explicit launcher callers only. observe() intentionally ignores logs/error text
+    // from Tavern, Hermes, plugins and model output.
+    report: protect((error, context = {}) => {
+      if (!allowed()) return;
+      const scoped = operations.getStore();
+      if (scoped?.admitted === false) return;
+      const task = scoped?.task || state.active || {id:randomUUID(),action:'launcher',stage:'idle',started:now(),stageStarted:now(),lastProgress:null};
+      if (!scoped?.task && !state.active) admitDiagnostics(task);
+      const details = describeError(error, context);
+      if (error && typeof error === 'object') {
+        const key = `${scoped?.task?.id || state.active?.id || 'standalone'}:${details.attempt}`;
+        if (reported.get(error) === key) return;
+        reported.set(error,key);
+      }
+      enqueue('launcher_error','failed',details.error_code,undefined,details,task,faultFor(error,task,context)); save();
+    }),
+    scope(work) { return operations.run({task:state.active,admitted:allowed()},work); },
+    async track(action, stageId, work) {
+      // Short independent UI requests must not replace an ongoing install task.
+      const task = {id:randomUUID(),action,stage:stageId,started:now(),stageStarted:now(),lastProgress:null};
+      if (!contract.actions.includes(action) || !contract.stages.includes(stageId)) return work();
+      const admitted = allowed(); admitDiagnostics(task);
+      const emit = protect((status, error) => {
+        if (!admitted || !allowed()) return;
+        const details = error ? describeError(error) : EMPTY_DETAILS;
+        enqueue(status === 'running' ? 'operation_started' : 'operation_finished', status,
+          error ? details.error_code : 'none', undefined, details, task, error ? faultFor(error,task) : null); save();
+      });
+      emit('running');
+      try { const result = await operations.run({task,admitted},work);
+        const error = result?.diagnosticError, cancelled = error && errorCode(error) === 'cancelled';
+        emit(cancelled ? 'cancelled' : error ? 'failed' : 'succeeded',cancelled ? undefined : error); return result; }
+      catch (error) { const cancelled = errorCode(error) === 'cancelled'; emit(cancelled ? 'cancelled' : 'failed',cancelled ? undefined : error); throw error; }
+    },
+    settings: () => ({ enabled: enabled && state.enabled && state.consentVersion === 3 && !broken, available: enabled && !broken, installationId: state.id || '' }),
     setEnabled: protect(value => {
       if (typeof value !== 'boolean' || broken || !enabled) return api.settings();
-      generation++; controller?.abort(); state.enabled = value; state.queue = []; state.active = null; state.waiting = null;
-      // Do not reconstruct actions that occurred while collection was disabled.
-      if (value && !state.seen) { enqueue('launcher_first_seen'); state.seen = true; }
+      if (state.enabled === value && state.consentVersion === 3) return api.settings();
+      generation++; controller?.abort(); state.enabled = value; state.consentVersion = 3;
+      state.diagnosticConsentId = value ? randomUUID() : '';
+      if (!value) stripFaults();
+      // Preserve basic statistics and task ownership; old tasks cannot gain consent.
       save(); return api.settings();
     }),
     begin: protect(action => {
       if (!allowed() || !contract.actions.includes(action) || action === 'none') return;
       state.waiting = null;
       if (state.active?.handoff && action === 'update') {
-        state.active.handoff = false; stage('prepare'); save(); return state.active.id;
+        state.active.handoff = false;
+        if (state.active.diagnosticConsentId && state.active.diagnosticConsentId === state.diagnosticConsentId) admitDiagnostics(state.active);
+        stage('prepare'); save(); return state.active.id;
       }
       if (state.active) finish('interrupted');
-      state.active = { id: randomUUID(), action, started: now(), stage: 'prepare', stageStarted: now(), lastProgress: null };
+      state.active = { id: randomUUID(), action, started: now(), stage: 'prepare', stageStarted: now(), lastProgress: null,
+        diagnosticConsentId: detailedAllowed() ? state.diagnosticConsentId : '' };
+      admitDiagnostics(state.active);
       enqueue('operation_started'); enqueue('stage_started'); save();
       return state.active.id;
     }),
     stage: protect(stage),
     observe: protect(message => {
-      if (!allowed() || !state.active) return;
+      if (!allowed() || !currentScope() || !state.active) return;
       if (message.stage_id) stage(message.stage_id);
       if (message.event === 'progress' && Number.isFinite(message.current) && message.current >= 0 && message.current !== progressValue) {
         progressValue = message.current; state.active.lastProgress = now();
@@ -154,7 +224,12 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       const timeout = setTimeout(() => controller?.abort(), 10000); timeout.unref?.();
       try {
         state.queue = state.queue.filter(e => e.occurred_at >= now() - 7 * DAY);
-        const batch = state.queue.slice(0,20); if (!batch.length) { save(); return; }
+        const batch = [];
+        for (const event of state.queue.slice(0,20)) {
+          if (Buffer.byteLength(JSON.stringify({events:[...batch,event]})) > contract.faultLimits.batchBytes) break;
+          batch.push(event);
+        }
+        if (!batch.length) { save(); return; }
         const response = await fetcher(ENDPOINT, { method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({events:batch}), signal: controller.signal, redirect:'error', credentials:'omit' });
         if (!allowed() || sentGeneration !== generation) return;
@@ -175,8 +250,11 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
         if (!done.size) throw Error('unacknowledged');
         state.queue = state.queue.filter(e => !done.has(e.event_id)); save(); attempts = 0; due = now() + 1000;
       } catch {
-        due = Math.max(due, now() + Math.min(300000, 2000 * 2 ** Math.min(++attempts,8)) * (0.8 + random() * 0.2));
-        report('upload_deferred');
+        if (sentGeneration !== generation) { due = 0; attempts = 0; }
+        else {
+          due = Math.max(due, now() + Math.min(300000, 2000 * 2 ** Math.min(++attempts,8)) * (0.8 + random() * 0.2));
+          report('upload_deferred');
+        }
       } finally { clearTimeout(timeout); controller = null; sending = false; }
     },
     close() { clearInterval(timer); controller?.abort(); },

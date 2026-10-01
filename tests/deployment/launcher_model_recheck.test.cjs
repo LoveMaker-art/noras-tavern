@@ -22,6 +22,7 @@ visit(parse(source, { ecmaVersion: 'latest' }));
 function fixture({ setupCompleted = false, running = true, syncFails = false, recheck = true, marker = null } = {}) {
   const order = [], events = [];
   const context = vm.createContext({
+    telemetry: undefined, launcherError: require('../installer/desktop/launcher-errors').launcherError,
     diagnostics: { addSecret() {}, error() {}, clean: value => value }, modelCredential,
     activeRun: false, modelBusy: false, statusRequest: Promise.resolve(),
     requireProvider: () => ({ id: 'custom', keyEnv: '', custom: true }), normalizeCustomBaseUrl: value => value,
