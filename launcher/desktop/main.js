@@ -669,6 +669,7 @@ async function finishModelSetup() {
   }
   const verification = await runBridge('verify-model');
   if (!verification.ok) throw new Error(verification.error || '模型配置复核未通过。');
+  await runModelConfigHelper({ action: 'verify-runtime' });
   recordEvent({ event: 'milestone', index: 2, state: 'done', task: '模型配置完成（已验证文字响应，工具调用能力未验证）' });
   return { ok: true, provider: saved.provider, model: saved.model, toolSupport: 'unverified' };
 }

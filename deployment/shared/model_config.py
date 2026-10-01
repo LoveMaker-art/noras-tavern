@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import importlib.util
+import hmac
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -20,6 +21,46 @@ PROVIDER_KEYS = {
     "gemini": "GEMINI_API_KEY",
     "custom": "",
 }
+
+LAUNCHER_CUSTOM_PROVIDER = "custom:nora-launcher"
+
+
+def assign_custom_model(model: str, base_url: str, secret: str) -> dict:
+    from hermes_cli.config import load_config, save_config
+    from hermes_cli.web_server_config import _apply_model_assignment_sync
+
+    config = load_config()
+    providers = config.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        raise ValueError("现有服务配置格式无效，未替换模型。")
+    existing = providers.get(LAUNCHER_CUSTOM_PROVIDER)
+    if existing is not None and (not isinstance(existing, dict) or existing.get("nora_launcher_managed") != 1):
+        raise ValueError("启动器服务名称已被其他配置占用，未替换模型。")
+    # A stable owned identity avoids Hermes' bare-custom fallback to an old
+    # provider. Its config-seeded credential pool also follows key rotations.
+    providers[LAUNCHER_CUSTOM_PROVIDER] = {
+        "name": "Nora Launcher", "base_url": base_url, "api_key": secret,
+        "default_model": model, "transport": "openai_chat", "api_mode": "chat_completions",
+        "nora_launcher_managed": 1,
+    }
+    save_config(config)
+    return _apply_model_assignment_sync(scope="main", provider=LAUNCHER_CUSTOM_PROVIDER,
+        model=model, task="", base_url=base_url, api_key=secret)
+
+
+def verify_custom_runtime(model: str, base_url: str, secret: str) -> None:
+    from hermes_cli.runtime_provider import resolve_runtime_provider
+
+    try:
+        runtime = resolve_runtime_provider()
+    except Exception:
+        raise ValueError("实际模型服务无法解析，未确认模型切换。") from None
+    if (str(runtime.get("base_url") or "").rstrip("/") != base_url.rstrip("/")
+            or not isinstance(runtime.get("api_key"), str)
+            or not hmac.compare_digest(runtime["api_key"].encode(), secret.encode())
+            or runtime.get("model") != model
+            or runtime.get("api_mode") != "chat_completions"):
+        raise ValueError("实际模型服务与新配置不一致，未确认模型切换。")
 
 
 def local_selection_record(home: Path) -> Path:
@@ -54,6 +95,17 @@ def main() -> None:
     try:
         body = json.load(sys.stdin)
         action = str(body.get("action") or "save").strip()
+        if action == "verify-runtime":
+            home = Path(os.environ["HERMES_HOME"]).resolve()
+            sys.path.insert(0, str(home / "hermes-agent"))
+            import yaml
+            model_config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))["model"]
+            provider = str(model_config.get("provider") or "")
+            if provider == "custom" or provider.startswith("custom:"):
+                secret = str(model_config.get("api_key") or "")
+                verify_custom_runtime(model_config["default"], model_config.get("base_url", ""), secret)
+            print(json.dumps({"ok": True}))
+            return
         if action == "sync-saved-tavern":
             # Read credentials only in the local helper, never return them to the
             # renderer or logs. Verify the saved selection before resuming it.
@@ -149,10 +201,8 @@ def main() -> None:
         previous = {path: path.read_bytes() if path.exists() else None for path in paths}
         try:
             if provider == "custom":
-                result = _apply_model_assignment_sync(
-                    scope="main", provider=normalized_provider, model=normalized_model,
-                    task="", base_url=base_url, api_key=secret,
-                )
+                result = assign_custom_model(normalized_model, base_url, secret)
+                verify_custom_runtime(normalized_model, base_url, secret)
             else:
                 from hermes_cli.credential_lifecycle import save_provider_env_credential
                 save_provider_env_credential(expected_key, secret)

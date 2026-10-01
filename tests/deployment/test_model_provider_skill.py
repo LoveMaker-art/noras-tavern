@@ -7,6 +7,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import threading
 
 import yaml
 from ops.installer import launcher_bridge as bridge, first_install
@@ -107,6 +109,122 @@ class LocalModelSkillTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, reply)
         self.assertEqual(reply['model'], 'deepseek-v4-flash')
         self.assertEqual(bridge.read_verified_model(self.root, self.home)['provider'], 'deepseek')
+
+    def test_named_custom_replacement_changes_the_real_runtime_not_just_the_file(self):
+        config = yaml.safe_load(self.config.read_text())
+        config['model']['provider'] = 'custom:old-relay'
+        config['custom_providers'] = [{
+            'name': 'old-relay', 'model': 'old', 'base_url': 'https://old.example/v1',
+            'api_key': 'old-key', 'api_mode': 'anthropic_messages',
+        }]
+        self.config.write_text(yaml.safe_dump(config))
+        old_entry = config['custom_providers'][0].copy()
+        # Seed the real old credential pool without sending a model request.
+        code = 'from hermes_cli.runtime_provider import resolve_runtime_provider; resolve_runtime_provider()'
+        seeded = subprocess.run([sys.executable, '-B', '-c', code], env=self.env,
+                                cwd=self.home / 'hermes-agent', capture_output=True, text=True, timeout=30)
+        self.assertEqual(seeded.returncode, 0)
+        for action, key in [('save-local', 'test-only-not-valid'), ('save', 'rotated-fixture-only')]:
+            request = {**self.request, 'api_key': key}
+            if action == 'save-local':
+                result, reply = self.invoke(request)
+            else:
+                payload = {'action': 'save', 'provider': 'custom', 'model': request['model'],
+                           'keyEnv': '', 'key': key, 'baseUrl': request['base_url']}
+                result = subprocess.run([sys.executable, '-B', str(ROOT / 'ops/installer/model_config.py')],
+                                        env=self.env, input=json.dumps(payload), capture_output=True,
+                                        text=True, timeout=60)
+                reply = json.loads(result.stdout.strip().splitlines()[-1])
+            self.assertEqual(result.returncode, 0, reply)
+            current = yaml.safe_load(self.config.read_text())
+            self.assertEqual(current['custom_providers'][0], old_entry)
+            check = (
+                'import json; from hermes_cli.runtime_provider import resolve_runtime_provider; '
+                'r=resolve_runtime_provider(); print(json.dumps({'
+                '"endpointMatches":r.get("base_url")=='+repr(request['base_url'])+','
+                '"credentialMatches":r.get("api_key")=='+repr(key)+','
+                '"modelMatches":r.get("model")=="test-model",'
+                '"protocolMatches":r.get("api_mode")=="chat_completions"}))'
+            )
+            resolved = subprocess.run([sys.executable, '-B', '-c', check], env=self.env,
+                                      cwd=self.home / 'hermes-agent', capture_output=True, text=True, timeout=30)
+            self.assertEqual(resolved.returncode, 0)
+            checks = json.loads(resolved.stdout.strip().splitlines()[-1])
+            self.assertTrue(all(checks.values()), checks)
+            self.assertNotIn(key, result.stdout + result.stderr + resolved.stdout + resolved.stderr)
+
+    def test_runtime_mismatch_rolls_back_config_credentials_and_marker(self):
+        paths = [self.home / name for name in ['config.yaml', '.env', 'auth.json']]
+        self.marker.parent.mkdir()
+        self.marker.write_text('{"preserve":"old-verification"}')
+        paths.append(self.marker)
+        before = {p: p.read_bytes() if p.exists() else None for p in paths}
+        payload = {'action': 'save-local', 'provider': 'custom', 'model': 'test-model',
+                   'keyEnv': '', 'key': 'fixture-new-secret', 'baseUrl': 'https://example.invalid/v1'}
+        code = (
+            'import sys; from unittest.mock import patch; '
+            'sys.path.insert(0,sys.argv[1]); import model_config; '
+            'p=patch.object(model_config,"verify_custom_runtime",side_effect=ValueError("runtime mismatch")); '
+            'p.start(); model_config.main()'
+        )
+        result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'ops/installer')],
+                                env=self.env, input=json.dumps(payload), capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn(payload['key'], result.stdout + result.stderr)
+        for path, contents in before.items():
+            self.assertEqual(path.read_bytes() if path.exists() else None, contents)
+
+    def test_managed_provider_name_collision_does_not_overwrite_user_entry(self):
+        config = yaml.safe_load(self.config.read_text())
+        config['providers'] = {'custom:nora-launcher': {'base_url': 'https://user.example/v1', 'api_key': 'keep'}}
+        self.config.write_text(yaml.safe_dump(config))
+        before = self.config.read_bytes()
+        result, reply = self.invoke()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('名称已被其他配置占用', reply['error'])
+        self.assertEqual(self.config.read_bytes(), before)
+
+    def test_saved_runtime_really_sends_to_new_endpoint_with_new_key_and_model(self):
+        received = []
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(handler):
+                payload = json.loads(handler.rfile.read(int(handler.headers['Content-Length'])))
+                received.append((handler.path, handler.headers.get('Authorization'), payload.get('model')))
+                body = b'{"choices":[{"message":{"content":"NORA_OK"}}]}'
+                handler.send_response(200)
+                handler.send_header('Content-Type', 'application/json')
+                handler.send_header('Content-Length', str(len(body)))
+                handler.end_headers()
+                handler.wfile.write(body)
+            def log_message(handler, *args):
+                pass
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f'http://127.0.0.1:{server.server_port}/new/v1'
+        config = yaml.safe_load(self.config.read_text())
+        config['model']['provider'] = 'custom:old-relay'
+        config['custom_providers'] = [{'name': 'old-relay', 'base_url': f'http://127.0.0.1:{server.server_port}/old/v1',
+                                      'model': 'old', 'api_key': 'old-key'}]
+        self.config.write_text(yaml.safe_dump(config))
+        request = {**self.request, 'base_url': base}
+        result, reply = self.invoke(request)
+        self.assertEqual(result.returncode, 0, reply)
+        # Send through the real resolver's values, never the form's submitted values.
+        code = (
+            'import json,urllib.request; from hermes_cli.runtime_provider import resolve_runtime_provider; '
+            'r=resolve_runtime_provider(); data=json.dumps({"model":r["model"],'
+            '"messages":[{"role":"user","content":"NORA_OK"}]}).encode(); '
+            'q=urllib.request.Request(r["base_url"]+"/chat/completions",data=data,'
+            'headers={"Content-Type":"application/json","Authorization":"Bearer "+r["api_key"]}); '
+            'assert json.load(urllib.request.urlopen(q,timeout=5))["choices"][0]["message"]["content"]=="NORA_OK"'
+        )
+        sent = subprocess.run([sys.executable, '-B', '-c', code], env=self.env,
+                              cwd=self.home / 'hermes-agent', capture_output=True, text=True, timeout=15)
+        self.assertEqual(sent.returncode, 0, 'Resolved local fixture request failed')
+        self.assertEqual(received, [('/new/v1/chat/completions', 'Bearer '+request['api_key'], 'test-model')])
 
     def test_real_hermes_can_discover_and_load_skill(self):
         code = (

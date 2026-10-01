@@ -19,16 +19,18 @@ function visit(node) {
 }
 visit(parse(source, { ecmaVersion: 'latest' }));
 
-function fixture({ setupCompleted = false, running = true, syncFails = false, recheck = true, marker = null } = {}) {
+function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null } = {}) {
   const order = [], events = [];
   const context = vm.createContext({
     diagnostics: { addSecret() {}, error() {}, clean: value => value }, modelCredential,
+    telemetry: null,
     activeRun: false, modelBusy: false, statusRequest: Promise.resolve(),
     requireProvider: () => ({ id: 'custom', keyEnv: '', custom: true }), normalizeCustomBaseUrl: value => value,
     recordEvent: event => { events.push(event); order.push(event.state); },
     runModelConfigHelper: async value => {
       order.push(value.action);
       if (value.action === 'sync-saved-tavern' && syncFails) throw new Error('fixture sync failure');
+      if (value.action === 'verify-runtime' && runtimeFails) throw new Error('实际模型服务与新配置不一致');
       return { ok: true, provider: 'custom:local', model: 'fixture-model', baseUrl: 'http://127.0.0.1:8080/v1' };
     },
     testCustomModel: async () => { order.push('test'); },
@@ -55,6 +57,8 @@ test('model validation, saved checkpoint, Tavern readiness, sync and recheck occ
     assert.ok(f.order.indexOf(a) < f.order.indexOf(b), `${a} before ${b}`);
   }
   assert.equal(f.marker().tavernSyncPending, false);
+  assert.ok(f.order.indexOf('verify-model') < f.order.indexOf('verify-runtime'));
+  assert.ok(f.order.indexOf('verify-runtime') < f.order.indexOf('done'));
   assert.equal(f.context.modelBusy, false);
   assert.ok(!JSON.stringify(f.events).includes('fixture-only'));
 });
@@ -75,6 +79,7 @@ test('unready Tavern never receives a sync request', async () => {
   const f = fixture({ running: false });
   await assert.rejects(f.save({}, input), /接口尚未就绪/);
   assert.ok(!f.order.includes('sync-saved-tavern'));
+  assert.ok(!f.order.includes('verify-runtime'));
 });
 
 test('model recheck failure is not success and releases busy state', async () => {
@@ -89,4 +94,12 @@ test('changing Nora model after setup does not overwrite the Tavern selection', 
   await f.save({}, input);
   assert.ok(!f.order.includes('start'));
   assert.ok(!f.order.includes('sync-saved-tavern'));
+  assert.ok(f.order.includes('verify-runtime'));
+});
+
+test('runtime route mismatch never reports model setup complete', async () => {
+  const f = fixture({ setupCompleted: true, runtimeFails: true });
+  await assert.rejects(f.save({}, input), /实际模型服务与新配置不一致/);
+  assert.equal(f.events.some(e => e.state === 'done'), false);
+  assert.equal(f.context.modelBusy, false);
 });
