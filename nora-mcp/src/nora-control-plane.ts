@@ -98,6 +98,7 @@ export class NoraControlPlane {
           "Read capability state through world snapshots; no fabricated frontend acknowledgments",
           "Nora Story Profile card/checkpoint/learning surface",
           "Nora independent MVU model configuration",
+          "Managed chat backups through the shared backup and ledger runtime",
           "Nora boot/bootstrap state",
         ],
       },
@@ -132,6 +133,14 @@ export class NoraControlPlane {
         exportRoot: path.join(this.config.stateRoot, "exports"),
       },
       noraDomains: [
+        {
+          domain: "chat_backups",
+          location: "/api/backups/chat",
+          storage: "Verified JSONL snapshots and ownership metadata; not installation rollback packages",
+          readTools: ["nora.backup.list", "nora.backup.read", "nora.backup.restore_preview"],
+          writeTools: ["nora.backup.download", "nora.backup.protect", "nora.backup.delete", "nora.backup.restore"],
+          requiresLivePage: false,
+        },
         {
           domain: "presets",
           storage: "Native chat-completion templates; independent World Core preset snapshots",
@@ -442,14 +451,79 @@ export class NoraControlPlane {
       if (!value) throw new NoraRequestError("Resource was not found.", "NORA_EXPORT_MISSING");
       bytes = Buffer.from(JSON.stringify(value, null, 2));
     }
-    if (!bytes.length || bytes.length > 64 * 1024 * 1024) throw new NoraRequestError("Invalid export size.", "NORA_EXPORT_TOO_LARGE");
+    return this.saveExport(bytes, request.kind, request.format);
+  }
+
+  private async saveExport(bytes: Buffer, kind: string, format: string, maxBytes = 64 * 1024 * 1024): Promise<JsonRecord> {
+    if (!bytes.length || bytes.length > maxBytes) throw new NoraRequestError("Invalid export size.", "NORA_EXPORT_TOO_LARGE");
     const state = await fs.realpath(this.config.stateRoot);
     const directory = path.join(state, "exports");
     await fs.mkdir(directory, { recursive: true, mode: 0o700 });
     if ((await fs.lstat(directory)).isSymbolicLink() || await fs.realpath(directory) !== directory) throw new NoraRequestError("Unsafe export directory.", "NORA_EXPORT_PATH_DENIED");
-    const output = path.join(directory, `${request.kind}-${randomUUID()}.${request.format}`);
+    const output = path.join(directory, `${kind}-${randomUUID()}.${format}`);
     await fs.writeFile(output, bytes, { flag: "wx", mode: 0o600 });
-    return { path: output, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), format: request.format, sourceUnchanged: true };
+    return { path: output, bytes: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex"), format, sourceUnchanged: true };
+  }
+
+  async listBackups(request: { worldId?: string; sessionId?: string; offset: number; limit: number; includeLegacy?: boolean }): Promise<JsonRecord> {
+    if (request.sessionId && !request.worldId) throw new NoraRequestError("Session filtering requires a World.", "NORA_BACKUP_INVALID_SCOPE");
+    const data = asRecord(await this.http.post("/api/backups/chat/managed"));
+    if (!Array.isArray(data.snapshots)) throw new NoraRequestError("Invalid backup inventory.", "NORA_INVALID_RESPONSE");
+    const snapshots = data.snapshots.filter(isRecord).filter(item => (!request.worldId || item.worldId === request.worldId)
+      && (!request.sessionId || item.sessionId === request.sessionId));
+    const fields = ["id", "worldId", "sessionId", "sha256", "bytes", "createdAt", "protected", "mvuState", "messageCount", "preview"];
+    const result: JsonRecord = { snapshots: snapshots.slice(request.offset, request.offset + request.limit)
+      .map(item => Object.fromEntries(fields.filter(key => key in item).map(key => [key, item[key]]))),
+      totalMatched: snapshots.length, offset: request.offset, limit: request.limit, hasMore: request.offset + request.limit < snapshots.length,
+      totalBytes: data.totalBytes, policy: data.policy, status: data.status, overBudget: data.overBudget,
+      warnings: Array.isArray(data.warnings) ? data.warnings.slice(0, 100) : [], legacyFiles: data.legacyFiles };
+    if (request.includeLegacy) {
+      const legacy = asRecord(await this.http.post("/api/backups/chat/inventory"));
+      if (!Array.isArray(legacy.backups)) throw new NoraRequestError("Invalid legacy inventory.", "NORA_INVALID_RESPONSE");
+      const managedNames = new Set(data.snapshots.filter(isRecord).map(item => `chat_nora1_${item.id}.jsonl`));
+      const files = legacy.backups.filter(isRecord).filter(item => typeof item.name === "string" && !managedNames.has(item.name));
+      result.legacy = { previewOnly: true, complete: legacy.complete,
+        totalObserved: files.length, truncated: files.length > 50,
+        files: files.slice(0, 50).map(item => ({ name: item.name, bytes: item.bytes, modifiedAt: item.modifiedAt, owner: item.owner })) };
+    }
+    return result;
+  }
+
+  readBackup(request: { id: string; sha256: string; offset: number; limit: number }): Promise<unknown> {
+    return this.http.post("/api/backups/chat/read", request);
+  }
+
+  async downloadBackup(request: { id: string; sha256: string }): Promise<JsonRecord> {
+    const bytes = await this.http.download("/api/backups/chat/snapshot", request, "chat-backup");
+    if (createHash("sha256").update(bytes).digest("hex") !== request.sha256) throw new NoraRequestError("Downloaded backup changed.", "NORA_BACKUP_CHANGED");
+    return { ...await this.saveExport(bytes, "chat-backup", "jsonl", 256 * 1024 * 1024), id: request.id };
+  }
+
+  protectBackup(request: { id: string; sha256: string; protected: boolean }): Promise<unknown> {
+    return this.http.post("/api/backups/chat/protect", request);
+  }
+
+  deleteBackup(request: { id: string; sha256: string }): Promise<unknown> {
+    return this.http.post("/api/backups/chat/remove", request);
+  }
+
+  previewBackupRestore(request: { id: string; worldId: string; sessionId: string }): Promise<unknown> {
+    return this.http.post("/api/backups/chat/restore-preview", request);
+  }
+
+  async restoreBackup(request: { id: string; worldId: string; sessionId: string; sha256: string; expectedRevision: string }): Promise<JsonRecord> {
+    let result: JsonRecord;
+    try { result = asRecord(await this.http.post("/api/backups/chat/restore", request)); }
+    catch (error) {
+      if (error instanceof NoraRequestError && error.outcome === "unknown") throw new NoraRequestError(error.message, error.code, error.status, error.outcome,
+        { ...error.details, nextTool: "nora.backup.restore", retryWithSameProof: request });
+      throw error;
+    }
+    if (!["restored", "already-restored"].includes(String(result.status)) || result.worldId !== request.worldId || result.sessionId !== request.sessionId) {
+      throw new NoraRequestError("Restore result is unconfirmed; keep the same proof when verifying.", "NORA_BACKUP_RESTORE_UNCONFIRMED", null, "unknown",
+        { nextTool: "nora.backup.restore", retryWithSameProof: request });
+    }
+    return { ...result, frontendApplied: false, reloadRequired: true, modelCalled: false };
   }
 
   private async readPresetFile(filePath: string): Promise<string> {

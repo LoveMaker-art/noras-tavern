@@ -402,7 +402,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
                 try {
                     const { createBackupController } = await import('./backup-controller.js');
                     await createBackupController({ dialogs, select: $, selectAll: $$, escapeHtml,
-                        headers: transport.requestHeaders, worlds: () => uiStore.read().worldModels }).open();
+                        headers: transport.requestHeaders, worlds: () => uiStore.read().worldModels, activeScope: () => ({ worldId: activeWorldModel()?.id, sessionId: readState().world?.metadata?.nora_session?.id }) }).open();
                 } catch (error) { showToast(normalizeNoticeMessage(error), { tone: 'danger' }); }
             },
             plugins: pluginLibrary,

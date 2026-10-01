@@ -21,6 +21,80 @@ async function savedChat(f, world, hp = 10) {
     return { filePath, data };
 }
 
+test('list exposes bounded message summaries without changing metadata, snapshot bytes or the current chat', async t => {
+    const f = await storageFixture(t), world = await f.create('read-only-summary');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const saved = await store.capture(input);
+    const metadataPath = path.join(f.directories.backups, '.nora-chat', `${saved.id}.json`);
+    const before = await fs.readFile(metadataPath, 'utf8');
+    const list = await store.list();
+    assert.equal(list.snapshots[0].messageCount, 1);
+    assert.equal(list.snapshots[0].preview, 'Same prose');
+    assert.equal(await fs.readFile(metadataPath, 'utf8'), before);
+    assert.equal((await store.download(saved.id)).toString(), input.data);
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
+    assert.equal(JSON.parse(before).messageCount, undefined, 'summary is not a migration of old metadata');
+});
+
+test('summaries truncate long messages and do not turn unreadable content into a fabricated count', async t => {
+    const f = await storageFixture(t), world = await f.create('bounded-summary');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const header = JSON.parse(input.data.split('\n')[0]);
+    const data = [header, { mes: `  ${'long '.repeat(100)}` }].map(JSON.stringify).join('\n');
+    await fs.writeFile(input.filePath, data);
+    await store.capture({ filePath: input.filePath, data });
+    assert.equal((await store.list()).snapshots[0].preview.length, 140);
+    const broken = [header, { mes: 42 }].map(JSON.stringify).join('\n');
+    await fs.writeFile(input.filePath, broken);
+    const saved = await store.capture({ filePath: input.filePath, data: broken });
+    const item = (await store.list()).snapshots.find(item => item.id === saved.id);
+    assert.equal(item.messageCount, null);
+    assert.equal(item.preview, '');
+    assert.equal((await store.download(saved.id)).toString(), broken, 'unreadable content is preserved, not silently repaired');
+});
+
+test('bounded backup reads and optional digest guards share existing storage validation', async t => {
+    const f = await storageFixture(t), world = await f.create('mcp-window');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const header = JSON.parse(input.data.split('\n')[0]);
+    const data = [header, { name: 'NPC', mes: 'x'.repeat(5000) }, { mes: 'Next' }].map(JSON.stringify).join('\n');
+    await fs.writeFile(input.filePath, data);
+    const saved = await store.capture({ filePath: input.filePath, data });
+    const item = (await store.list()).snapshots[0];
+    const result = await store.inspect({ id: saved.id, sha256: item.sha256, limit: 1 });
+    assert.equal(result.messageCount, 2);
+    assert.equal(result.messages[0].text.length, 4000);
+    assert.equal(result.messages[0].truncated, true);
+    assert.equal(result.hasMore, true);
+    for (const limit of [0, 21, 1.5]) await assert.rejects(store.inspect({ id: saved.id, limit }), { code: 'NORA_BACKUP_INVALID_WINDOW' });
+    await assert.rejects(store.inspect({ id: '../escape' }), { code: 'NORA_BACKUP_INVALID_ID' });
+    const wrong = '0'.repeat(64);
+    for (const action of [() => store.inspect({ id: saved.id, sha256: wrong }), () => store.download(saved.id, wrong),
+        () => store.protect(saved.id, true, wrong), () => store.remove(saved.id, wrong)]) {
+        await assert.rejects(action(), { code: 'NORA_BACKUP_CHANGED' });
+    }
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), data);
+    assert.equal((await store.download(saved.id)).toString(), data);
+    assert.equal((await store.list()).snapshots[0].protected, false);
+});
+
+test('display summaries omit markup, draft comments and runtime blocks without changing backup bytes', async t => {
+    const f = await storageFixture(t), world = await f.create('readable-summary');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const header = JSON.parse(input.data.split('\n')[0]);
+    const mes = `<!-- ${'draft '.repeat(100)} --><content><p>Good &amp; readable</p><p>Next line</p></content><UpdateVariable>private update</UpdateVariable><script>bad()</script><style>body{}</style>`;
+    const data = [header, { mes }].map(JSON.stringify).join('\n');
+    await fs.writeFile(input.filePath, data);
+    const saved = await store.capture({ filePath: input.filePath, data });
+    assert.equal((await store.list()).snapshots[0].preview, 'Good & readable Next line');
+    assert.equal((await store.download(saved.id)).toString(), data);
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), data);
+});
+
 test('legacy upgrade rejects changed World inventory before deleting any old snapshot', async t => {
     const f = await storageFixture(t), world = await f.create('upgrade-world-race');
     const input = await savedChat(f, world);

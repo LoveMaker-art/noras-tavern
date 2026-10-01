@@ -26,6 +26,14 @@ router.post('/chat/managed', async (request, response) => {
     } catch (error) { return backupError(response, error); }
 });
 
+router.post('/chat/read', async (request, response) => {
+    try {
+        response.set('Cache-Control', 'no-store');
+        const { id, sha256, offset, limit } = request.body || {};
+        return response.json(await chatBackupStore(request.user.directories).inspect({ id, sha256, offset, limit }));
+    } catch (error) { return backupError(response, error); }
+});
+
 router.post('/chat/restore-preview', async (request, response) => {
     try {
         response.set('Cache-Control', 'no-store');
@@ -45,19 +53,20 @@ router.post('/chat/restore', async (request, response) => {
 
 router.post('/chat/protect', async (request, response) => {
     try {
-        return response.json(await chatBackupStore(request.user.directories).protect(request.body.id, request.body.protected));
+        return response.json(await chatBackupStore(request.user.directories).protect(request.body.id, request.body.protected, request.body.sha256));
     } catch (error) { return backupError(response, error); }
 });
 
 router.post('/chat/remove', async (request, response) => {
     try {
-        return response.json(await chatBackupStore(request.user.directories).remove(request.body.id));
+        return response.json(await chatBackupStore(request.user.directories).remove(request.body.id, request.body.sha256));
     } catch (error) { return backupError(response, error); }
 });
 
 router.post('/chat/snapshot', async (request, response) => {
     try {
-        const data = await chatBackupStore(request.user.directories).download(request.body.id);
+        const data = await chatBackupStore(request.user.directories).download(request.body.id, request.body.sha256);
+        response.set('Cache-Control', 'no-store');
         response.attachment(`chat_nora1_${request.body.id}.jsonl`);
         return response.send(data);
     } catch (error) { return backupError(response, error); }

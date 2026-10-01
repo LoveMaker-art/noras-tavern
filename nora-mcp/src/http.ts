@@ -1,6 +1,6 @@
 import { NoraRequestError } from "./errors.js";
 
-export interface RequestOptions { timeoutMs?: number; binary?: boolean; }
+export interface RequestOptions { timeoutMs?: number; binary?: boolean; binaryKind?: "chat-backup"; }
 
 /** One cookie session and single-flight CSRF handshake for Nora and ST adapters. */
 export class NoraHttpClient {
@@ -12,7 +12,10 @@ export class NoraHttpClient {
   post(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("POST", path, body, options); }
   put(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("PUT", path, body, options); }
   delete(path: string, body: unknown = {}, options?: RequestOptions): Promise<unknown> { return this.send("DELETE", path, body, options); }
-  async download(path: string, body: unknown): Promise<Buffer> { return await this.send("POST", path, body, { binary: true }) as Buffer; }
+  async download(path: string, body: unknown, binaryKind?: "chat-backup"): Promise<Buffer> {
+    if (binaryKind && path !== "/api/backups/chat/snapshot") throw new NoraRequestError("Invalid backup download route.", "NORA_INVALID_ROUTE");
+    return await this.send("POST", path, body, { binary: true, binaryKind }) as Buffer;
+  }
   csrf(): Promise<string> {
     if (this.csrfToken) return Promise.resolve(this.csrfToken);
     if (!this.csrfFlight) {
@@ -43,7 +46,11 @@ export class NoraHttpClient {
         if (i > 0) this.cookies.set(pair.slice(0, i), pair.slice(i + 1));
       }
       if (options.binary && response.ok) {
-        if (!/^(?:image\/png|application\/json)\b/i.test(response.headers.get('content-type') || '')) throw new NoraRequestError("Unexpected export response type.", "NORA_INVALID_RESPONSE");
+        const backup = options.binaryKind === "chat-backup";
+        const allowedTypes = backup ? ["application/octet-stream", "application/json", "application/x-ndjson", "application/jsonl"] : ["image/png", "application/json"];
+        const contentType = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+        if (!allowedTypes.includes(contentType)) throw new NoraRequestError("Unexpected export response type.", "NORA_INVALID_RESPONSE");
+        const maxBytes = (backup ? 256 : 64) * 1024 * 1024;
         const chunks: Uint8Array[] = []; let size = 0;
         const reader = response.body?.getReader();
         if (!reader) throw new NoraRequestError("Export has no body.", "NORA_INVALID_RESPONSE");
@@ -52,7 +59,7 @@ export class NoraHttpClient {
             const { done, value } = await reader.read();
             if (done) break;
             size += value.length;
-            if (size > 64 * 1024 * 1024) throw new NoraRequestError("Export exceeds 64 MiB.", "NORA_EXPORT_TOO_LARGE");
+            if (size > maxBytes) throw new NoraRequestError("Export exceeds its size limit.", "NORA_EXPORT_TOO_LARGE");
             chunks.push(value);
           }
         } finally { await reader.cancel(); }
@@ -69,7 +76,8 @@ export class NoraHttpClient {
       }
       if (!response.ok || (isRecord(value) && (value.ok === false || Boolean(value.error)))) {
         const error = isRecord(value) && isRecord(value.error) ? value.error : value;
-        const code = isRecord(error) && typeof error.code === "string" && /^[A-Z0-9_]{3,100}$/.test(error.code) ? error.code : "NORA_HTTP_FAILED";
+        const candidate = isRecord(error) ? typeof error.error === "string" ? error.error : error.code : undefined;
+        const code = typeof candidate === "string" && /^[A-Z0-9_]{3,100}$/.test(candidate) ? candidate : "NORA_HTTP_FAILED";
         const details = isRecord(error) ? { operationId: error.operation_id, worldId: error.world_id } : {};
         throw new NoraRequestError(`${method} ${route} failed (HTTP ${response.status})`, code, response.status,
           writes && response.status >= 500 ? "unknown" : "rejected", details);

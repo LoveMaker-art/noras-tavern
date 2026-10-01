@@ -74,3 +74,21 @@ test('deadline covers response and multipart preserves boundary; unexpected succ
         await assert.rejects(client.post('/slow', {}, { timeoutMs: 10 }), { code: 'NORA_REQUEST_TIMEOUT', outcome: 'unknown' });
     } finally { globalThis.fetch = original; }
 });
+
+test('backup binary allowance is route-specific; native string error codes survive without provider secrets', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = async url => url.endsWith('/csrf-token') ? new Response('{"token":"t"}')
+        : new Response('{"chat_metadata":{}}', { headers: { 'content-type': 'application/octet-stream' } });
+    try {
+        const client = new NoraHttpClient('http://127.0.0.1', 1000);
+        await assert.rejects(client.download('/export', {}), { code: 'NORA_INVALID_RESPONSE' });
+        assert.equal((await client.download('/api/backups/chat/snapshot', {}, 'chat-backup')).toString(), '{"chat_metadata":{}}');
+        await assert.rejects(client.download('/elsewhere', {}, 'chat-backup'), { code: 'NORA_INVALID_ROUTE' });
+        globalThis.fetch = async () => new Response('{"error":"NORA_BACKUP_PROTECTED"}', { status: 409 });
+        await assert.rejects(client.post('/remove'), { code: 'NORA_BACKUP_PROTECTED', outcome: 'rejected' });
+        globalThis.fetch = async () => new Response('{"error":{"code":"NORA_BACKUP_CHANGED"}}', { status: 409 });
+        await assert.rejects(client.post('/remove'), { code: 'NORA_BACKUP_CHANGED' });
+        globalThis.fetch = async () => new Response('login', { headers: { 'content-type': 'text/html' } });
+        await assert.rejects(client.download('/api/backups/chat/snapshot', {}, 'chat-backup'), { code: 'NORA_INVALID_RESPONSE' });
+    } finally { globalThis.fetch = original; }
+});

@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import writeFileAtomicSync from 'write-file-atomic';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { decode } from 'html-entities';
 import { KeyedLock } from './nora-world-core/locks.js';
 import { documentFileName, writeJsonAtomic } from './nora-world-core/atomic-json.js';
 import { validateWorldManifest } from './nora-world-core/domain.js';
@@ -19,6 +20,12 @@ const digest = data => crypto.createHash('sha256').update(data).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
 const equalStat = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const newest = (a, b) => b.createdAt - a.createdAt || b.sequence - a.sequence || a.id.localeCompare(b.id);
+// Display-only excerpt. Original messages, downloads and restore bytes stay intact.
+function backupExcerpt(text) {
+    return decode(text.replace(/<!--[\s\S]*?(?:-->|$)/g, '')
+        .replace(/<(script|style|think|thinking|reasoning|analysis|UpdateVariable|JSONPatch)\b[^<>]*>[\s\S]*?(?:<\/\1\s*>|$)/gi, '')
+        .replace(/<[^<>]*>/g, ' ')).replace(/\s+/g, ' ').trim().slice(0, 140);
+}
 function parseRestoreChat(data) {
     try {
         const lines = new TextDecoder('utf-8', { fatal: true }).decode(data).split('\n').filter(line => line.trim()).map(JSON.parse);
@@ -107,14 +114,26 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return { value, metadataStat: stat, metadataSha256: digest(data), snapshot };
     }
 
-    async function inventory() {
+    async function inventory(includeSummary = false) {
         const snapshots = [], warnings = [];
         let names;
         try { names = await entries(recordsRelative); } catch (error) { if (error.code !== 'ENOENT') throw error; names = []; }
         for (const name of names) {
             const id = name.endsWith('.json') ? name.slice(0, -5) : '';
             if (!ID.test(id)) continue;
-            try { snapshots.push((await record(id)).value); } catch (error) { warnings.push({ id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' }); }
+            try {
+                const { value, snapshot } = await record(id);
+                let summary = {};
+                // List summaries are read-only projections, never written into old metadata.
+                if (includeSummary && snapshot.data.length <= 16 * 1024 * 1024) {
+                    try {
+                        const messages = parseRestoreChat(snapshot.data).slice(1);
+                        summary = { messageCount: messages.length,
+                            preview: backupExcerpt(messages.at(-1)?.mes || '') };
+                    } catch { summary = { messageCount: null, preview: '' }; }
+                }
+                snapshots.push({ ...value, ...summary });
+            } catch (error) { warnings.push({ id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' }); }
         }
         const managed = new Set(snapshots.map(item => `chat_nora1_${item.id}.jsonl`));
         let totalBytes = 0, legacyFiles = 0;
@@ -187,8 +206,13 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return removed;
     }
 
-    async function remove(id) {
+    function verifyDigest(current, sha256) {
+        if (sha256 !== undefined && (!DIGEST.test(sha256) || sha256 !== current.value.sha256)) throw fail('NORA_BACKUP_CHANGED');
+    }
+
+    async function remove(id, sha256) {
         const current = await record(id);
+        verifyDigest(current, sha256);
         if (current.value.protected) throw fail('NORA_BACKUP_PROTECTED');
         const metadata = await checked(recordRelative(id));
         const snapshot = await checked(dataRelative(id));
@@ -520,17 +544,35 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
     }
 
     return Object.freeze({
-        list: () => run(inventory),
+        list: () => run(() => inventory(true)),
         upgradeLegacy: () => run(upgradeLegacy),
         previewRestore: input => run(async () => (await inspectRestore(input)).preview),
         restore: (input, options) => run(() => restore(input, options)),
         planWorldRemoval: world => run(() => planWorldRemoval(world)),
         removeWorld: (world, plan) => run(() => removeWorld(world, plan)),
-        download: id => run(async () => (await record(id)).snapshot.data),
-        remove: id => run(() => remove(id)),
-        protect: (id, protectedValue) => run(async () => {
+        download: (id, sha256) => run(async () => {
+            const current = await record(id);
+            verifyDigest(current, sha256);
+            return current.snapshot.data;
+        }),
+        inspect: ({ id, sha256, offset = 0, limit = 20 }) => run(async () => {
+            if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw fail('NORA_BACKUP_INVALID_WINDOW');
+            const current = await record(id);
+            verifyDigest(current, sha256);
+            const messages = parseRestoreChat(current.snapshot.data).slice(1);
+            return { id, worldId: current.value.worldId, sessionId: current.value.sessionId, sha256: current.value.sha256,
+                mvuState: current.value.mvuState, messageCount: messages.length, offset, limit,
+                hasMore: offset + limit < messages.length, previewOnly: true,
+                messages: messages.slice(offset, offset + limit).map((message, index) => ({ index: offset + index,
+                    name: typeof message.name === 'string' ? message.name.slice(0, 120) : '', isUser: message.is_user === true,
+                    text: message.mes.slice(0, 4000), truncated: message.mes.length > 4000,
+                    swipeCount: message.swipes?.length || 0, selectedSwipe: message.swipe_id ?? null })) };
+        }),
+        remove: (id, sha256) => run(() => remove(id, sha256)),
+        protect: (id, protectedValue, sha256) => run(async () => {
             if (typeof protectedValue !== 'boolean') throw fail('NORA_BACKUP_INVALID_PROTECTION');
             const current = await record(id);
+            verifyDigest(current, sha256);
             const target = await checked(recordRelative(id));
             if (!equalStat(target.stat, current.metadataStat)) throw fail('NORA_BACKUP_CHANGED');
             await writeJsonAtomic(target.file, { ...current.value, protected: protectedValue });

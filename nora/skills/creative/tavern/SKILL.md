@@ -1,6 +1,6 @@
 ---
 name: tavern
-description: Operate Tavern worlds, chats, models, themes and MVU; import, reuse, export or delete library cards, roles, worldbooks and presets; install/configure plugins and diagnose failures.
+description: Operate Tavern worlds, chats, backups, models, themes and MVU; import, reuse, export or delete library cards, roles, worldbooks and presets; install/configure plugins and diagnose failures.
 version: 1.25.2
 author: ClawChat Tavern
 license: AGPL-3.0-only
@@ -52,7 +52,7 @@ substituting the relevant file. Load a second reference only for a real second t
 | Author/import preset JSON, edit large fields, delete/save templates or apply one to a World | [presets](references/presets.md) |
 | Find/save/apply/delete library material; export cards, profiles, worldbooks or presets; clean duplicate cards | [worlds: library](references/worlds.md#reusable-library-material) |
 | Create/import/restart/repair/delete a World; navigate panels; edit World content; create/switch/delete a text model | [worlds](references/worlds.md) |
-| Read/send/stop/retry replies; select candidates, edit history or control story compression | [chat and ledger](references/chat-ledger.md) |
+| Read/send/stop/retry replies; select candidates, edit history, manage chat backups or control story compression | [chat and ledger](references/chat-ledger.md) |
 | Install/update/uninstall/configure plugins; control Helper scripts/buttons, Regex or MVU; inspect MVU error history | [plugins](references/plugins.md) |
 | Read story archives or tastes; learn a preference; request or inspect reflection | [story profile](references/story-profile.md) |
 | Switch local page light/dark/system appearance; change global or per-world backgrounds, fonts, palette or reading surface | [appearance and world visuals](references/world-visuals.md) |
