@@ -30,14 +30,26 @@
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
   let bundledUpgradeAttempted = false;
+  let statusUnknown = false;
   $('stop').remove(); $('runtimeState').remove();
   const launchHint = document.createElement('p'); launchHint.className = 'launch-hint'; $('launchbar').prepend(launchHint);
-  const textError = error => String(error?.message || error || '操作未完成，请重试。')
-    .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '').slice(0, 360);
+  const textError = error => {
+    const message = String(error?.message || error || '操作未完成，请重试。')
+      .replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/, '').slice(0, 360);
+    return /[\u3400-\u9fff]/.test(message) && !/Traceback|\b\w*Error:|\bat\s+\S+\s*\(|WinError|Errno/i.test(message)
+      ? message : '原因尚未确认，请在“更多”中查看日志，保留现有安装和数据。';
+  };
+  function errorCopy(error) {
+    const message = textError(error);
+    const lines = message.split('\n');
+    if (lines.length === 3 && lines.every(line => /[\u3400-\u9fff]/.test(line)))
+      return { title: lines[0], detail: lines.slice(1).join('\n') };
+    return { title:'这一步还没有完成。', detail:message };
+  }
 
   function complete() { return Boolean(snapshot.setupCompleted ?? snapshot.installer?.setupCompleted) && snapshot.systemReady !== false; }
   function serviceRunning() { return Boolean(snapshot.running || snapshot.gatewayRunning); }
-  function allRunning() { return Boolean(snapshot.running && snapshot.gatewayRunning && snapshot.clawchatConnected); }
+  function allRunning() { return !statusUnknown && Boolean(snapshot.running && snapshot.gatewayRunning && snapshot.clawchatConnected); }
   function syncState(value) {
     snapshot = { ...snapshot, ...value };
     running = Boolean(snapshot.running);
@@ -46,10 +58,13 @@
     else if (sawIncompleteSetup) { firstCompletionPending = true; sawIncompleteSetup = false; }
   }
   async function readStatus() {
-    const value = await api.status();
-    if (value.warning && !value.installed && !value.hermesInstalled) throw new Error(value.warning);
-    syncState(value);
-    return value;
+    try {
+      const value = await api.status();
+      if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled))
+        throw new Error(value.warning || '暂时无法查询后台状态。');
+      syncState(value); statusUnknown = false;
+      return value;
+    } catch (error) { statusUnknown = true; throw error; }
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
@@ -58,18 +73,26 @@
       control.hidden = !complete() && control.dataset.action !== 'uninstall';
     });
     $('launchbar').hidden = !complete();
-    $('status').hidden = complete();
-    $('launch').disabled = busy || Boolean(snapshot.busy);
+    $('status').hidden = complete() && !statusUnknown;
+    if (statusUnknown) {
+      if ($('status').dataset.unavailable !== 'true') $('status').dataset.previousLabel = $('status').textContent;
+      $('status').textContent = '状态暂时无法确认';
+    } else if ($('status').dataset.unavailable === 'true' && $('status').textContent === '状态暂时无法确认') {
+      $('status').textContent = $('status').dataset.previousLabel || '需要你参与';
+    }
+    $('status').dataset.unavailable = String(statusUnknown);
+    $('launch').disabled = busy || Boolean(snapshot.busy) || statusUnknown;
     let action = '打开酒馆';
     if (['start', 'restart'].includes(activeAction) && activeService !== 'nora') action = '正在启动';
     if (activeAction === 'open') action = '正在打开';
-    launchHint.hidden = Boolean(snapshot.running);
-    launchHint.textContent = action === '正在启动' ? '正在准备酒馆' : '点击后仅启动酒馆';
+    launchHint.hidden = Boolean(snapshot.running) && !statusUnknown;
+    launchHint.textContent = statusUnknown ? '正在重新查询服务状态' : action === '正在启动' ? '正在准备酒馆' : '点击后仅启动酒馆';
     $('launch').querySelector('span').textContent = action;
     $('stopAll').dataset.unavailable = String(!serviceRunning());
     document.querySelectorAll('[data-action], #moreButton, .services button, .conversation-entry button').forEach(item => {
       item.disabled = busy || Boolean(snapshot.busy) || item.dataset.unavailable === 'true';
     });
+    if (statusUnknown) document.querySelectorAll('.services button, .conversation-entry button, #stopAll').forEach(item => { item.disabled = true; });
   }
   function displaySteps() {
     if (complete()) { $('steps').hidden = true; return; }
@@ -101,10 +124,10 @@
     for (const id of ['nora', 'tavern']) {
       const name = id === 'nora' ? '诺拉' : '酒馆', isOn = Boolean(id === 'nora' ? snapshot.gatewayRunning : snapshot.running);
       const transitioning = busy && ['start', 'stop', 'restart'].includes(activeAction) && [id, 'all'].includes(activeService);
-      const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : isOn ? 'running' : 'stopped';
+      const state = transitioning ? activeAction === 'stop' ? 'stopping' : 'starting' : statusUnknown ? 'unknown' : isOn ? 'running' : 'stopped';
       const row = document.createElement('div'); row.className = 'service-row'; row.dataset.service = id; row.dataset.state = state;
       row.innerHTML = `<i class="service-symbol fa-solid fa-${id === 'nora' ? 'wand-magic-sparkles' : 'mug-saucer'}" aria-hidden="true"></i><div class="service-name">${name}</div><span class="service-state" role="status"></span>`;
-      row.querySelector('.service-state').textContent = { running: '运行中', stopped: '已停止', starting: '启动中', stopping: '停止中' }[state];
+      row.querySelector('.service-state').textContent = { running: '运行中', stopped: '已停止', starting: '启动中', stopping: '停止中', unknown: '状态未知' }[state];
       for (const action of ['restart', isOn ? 'stop' : 'start']) {
         const label = ({ restart: '重启', stop: '停止', start: '启动' })[action] + name;
         const control = document.createElement('button'); control.className = 'icon-action'; control.dataset.tip = label; control.setAttribute('aria-label', label);
@@ -120,11 +143,11 @@
     view = 'daily'; daily = true; running = Boolean(snapshot.running);
     $('main').className = 'daily'; $('steps').hidden = true; $('management').hidden = false; hideMenu();
     $('launchbar').classList.remove('enter');
-    const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning;
+    const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning && !statusUnknown;
     $('main').classList.toggle('completion', introduce);
-    say(message || (introduce ? '酒馆准备好了。' : allRunning() ? '欢迎回来，坐一会儿吧。'
+    say(statusUnknown ? '服务状态暂时无法确认。' : message || (introduce ? '酒馆准备好了。' : allRunning() ? '欢迎回来，坐一会儿吧。'
       : snapshot.running ? '酒馆已启动。' : snapshot.gatewayRunning ? '诺拉已启动。' : '随时可以继续。'),
-      snapshot.warning ? textError(snapshot.warning) : snapshot.gatewayRunning && !snapshot.clawchatConnected
+      statusUnknown ? '正在自动重新查询。后台是否运行尚未确认，请勿据此重复启动或强行结束进程。' : snapshot.warning ? textError(snapshot.warning) : snapshot.gatewayRunning && !snapshot.clawchatConnected
         ? 'ClawChat 暂未连通，请在更多中检查连接。' : '');
     renderServices();
     renderConversationEntry();
@@ -165,8 +188,27 @@
   }
   closeEdit = () => { if (!busy) { lastFailure = null; route(); } };
 
+  async function openLogs(event) {
+    const control = event.currentTarget;
+    let note = $('logFeedback');
+    if (!note) {
+      note = document.createElement('p'); note.id = 'logFeedback'; note.className = 'install-location';
+      note.setAttribute('role', 'status'); $('inline').append(note);
+    }
+    control.disabled = true; note.textContent = '正在打开日志…';
+    try {
+      const result = await api.openLogs();
+      note.textContent = result?.ok ? '已请求系统打开日志文件。' : `未能打开日志。${textError(result?.warning || '请稍后重试。')}`;
+    } catch (error) { note.textContent = `未能打开日志。${textError(error)}`; }
+    finally { control.disabled = false; }
+  }
+
   function route() {
     lastFailure = null;
+    if (statusUnknown) {
+      fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', () => { view = 'loading'; poll(); });
+      return;
+    }
     if (snapshot.busy) {
       view = 'monitor'; clearInline(); setupStage(stage);
       say(snapshot.installer?.phase === 'update' ? '正在完成更新。' : '后台任务仍在进行。', snapshot.installer?.task || '请稍候，完成后会自动继续。');
@@ -180,7 +222,7 @@
       const note = document.createElement('p'); note.className = 'install-location';
       note.textContent = snapshot.updateRecovery.backup || '';
       $('inline').append(note);
-      if (api.openLogs) $('inline').append(button('查看日志', () => api.openLogs()));
+      if (api.openLogs) $('inline').append(button('查看日志', openLogs));
       controls(); $('launchbar').hidden = true; $('status').hidden = false; $('status').textContent = '需要恢复';
       return;
     }
@@ -299,7 +341,8 @@
   }
   function fail(error, action, retry) {
     view = 'error'; lastFailure = { action }; clearInline();
-    say(operationCancelled ? '操作已取消。' : '这一步还没有完成。', textError(error));
+    const problem = errorCopy(error);
+    say(operationCancelled ? '操作已取消。' : problem.title, problem.detail);
     $('inline').append(button(operationCancelled ? '继续' : '重试', retry));
     if (!complete() && snapshot.running) {
       $('inline').append(button('打开已启动的酒馆', async () => {
@@ -531,13 +574,18 @@
     if (!busy && !refreshing) {
       refreshing = true;
       try {
+        const wasUnknown = statusUnknown;
         const before = JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]);
         await readStatus();
         if (view === 'loading' || (view === 'monitor' && !snapshot.busy)) route();
-        else if (view === 'daily' && before !== JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning])) dailyHome();
+        else if (view === 'daily' && (wasUnknown || before !== JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]))) dailyHome();
         controls();
         void checkVersionsInBackground();
-      } catch (error) { if (view === 'loading') fail(error, 'status', () => { view = 'loading'; poll(); }); }
+      } catch (error) {
+        if (view === 'loading') fail(error, 'status', () => { view = 'loading'; poll(); });
+        else if (view === 'daily') dailyHome();
+        controls();
+      }
       finally { refreshing = false; }
     }
     clearTimeout(pollTimer); pollTimer = setTimeout(poll, 5000);

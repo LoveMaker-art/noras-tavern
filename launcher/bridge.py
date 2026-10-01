@@ -37,8 +37,11 @@ def emit(event: str, **payload) -> None:
     print(json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
 
 
-def fail(message: str, code: str | None = None) -> None:
-    emit("error", message=message, code=code)
+def fail(message: str, code: str | None = None, user_code: str | None = None) -> None:
+    fields = {'message': message, 'code': code}
+    if user_code:
+        fields['userCode'] = user_code
+    emit("error", **fields)
     raise SystemExit(1)
 
 
@@ -89,6 +92,9 @@ def env_for(nora_home: Path, hermes_home: Path, install_root: Path) -> dict[str,
     env["PYTHONNOUSERSITE"] = "1"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
+    # The desktop runtime is installation-owned; inherited PATH may contain a
+    # Bun shim named node. Pin Tavern to the bundled executable explicitly.
+    env['TAVERN_NODE_EXECUTABLE'] = str(hermes_home / ('node/node.exe' if os.name == 'nt' else 'node/bin/node'))
     if os.name == "nt":
         env["USERPROFILE"] = str(hermes_home)
         env["APPDATA"] = str(nora_home / "appdata/roaming")
@@ -200,6 +206,8 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
     emit("diagnostic", operation="subprocess-start", pid=process.pid, command=command)
     assert process.stdout is not None
     failure = ""
+    failure_code = None
+    failure_user_code = None
     last_result = None
     for line in process.stdout:
         line = ANSI.sub("", line).rstrip()
@@ -215,6 +223,8 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
                     detail = message.get("error") or (message.get("message") if message.get("event") == "error" else "")
                     if detail:
                         failure = str(detail)[-2000:]
+                        failure_code = message.get('code')
+                        failure_user_code = message.get('userCode')
                 if isinstance(message, dict) and message.get("event"):
                     emit(message.pop("event"), **message)
                 else:
@@ -223,7 +233,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
     emit("diagnostic", operation="subprocess-exit", pid=process.pid, exitCode=code,
          durationMs=round((time.monotonic() - started) * 1000))
     if code:
-        fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。")
+        fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。", failure_code, failure_user_code)
     return last_result
 
 
@@ -388,6 +398,7 @@ def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port:
     payload.update(read_version(install_root))
     if status.get("inspection_error"):
         payload["warning"] = status["inspection_error"]
+        payload['warningCode'] = status.get('inspection_error_code')
     if status.get("error"):
         payload["warning"] = status["error"]
     if running and paired:
@@ -472,7 +483,7 @@ def command_start(args) -> None:
     service = getattr(args, "service", "all")
     if (nora_system.update_recovery(args.install_root)
             and getattr(args, 'command', '') != 'update-lifecycle'):
-        fail('上次更新尚未恢复完成，暂不启动可能混合版本的服务。请保留日志和备份。')
+        fail('上次更新尚未恢复完成，暂不启动可能混合版本的服务。请保留日志和备份。', user_code='UPDATE_RECOVERY_REQUIRED')
     if not installed(args.install_root):
         fail("还没有安装 Nora Tavern。")
     system = nora_system.installation_state(args.hermes_home, args.install_root)
@@ -615,7 +626,7 @@ def command_pair(args) -> None:
                                               "repair": clawchat_paired(args.hermes_home)}),
                             env=env, text=True, capture_output=True, timeout=120)
     if result.returncode:
-        fail("ClawChat 激活失败，请检查配对码是否过期，并重新获取。")
+        fail("ClawChat 激活失败，请检查配对码是否过期，并重新获取。", user_code='PAIR_CODE_REJECTED')
     if not clawchat_paired(args.hermes_home):
         fail("ClawChat 激活未保存完整配置。")
     stop_gateway(args.nora_home)
@@ -875,7 +886,7 @@ if __name__ == "__main__":
     except Exception as error:
         traceback.print_exc(file=sys.stderr)
         import errno
-        code = errno.errorcode.get(error.errno) if isinstance(error, OSError) else None
+        code = errno.errorcode.get(error.errno) if isinstance(error, OSError) else getattr(error, "code", None)
         if isinstance(error, subprocess.TimeoutExpired):
             code = "TIMEOUT"
-        fail(str(error), code)
+        fail(str(error), code, getattr(error, 'user_code', None))

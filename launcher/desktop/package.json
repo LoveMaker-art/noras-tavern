@@ -45,6 +45,9 @@
       "runtime-worker.js",
       "diagnostics.js",
       "telemetry.js",
+      "launcher-errors.js",
+      "error-presentation.js",
+      "fault-packet.js",
       "telemetry-contract.json",
       "release-network.js",
       "process-output.js"

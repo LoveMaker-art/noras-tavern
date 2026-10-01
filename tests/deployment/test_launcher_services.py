@@ -5,13 +5,23 @@ import subprocess
 from pathlib import Path
 import tempfile
 import sys
+import time
 import unittest
+import types
 from unittest.mock import patch, Mock
 from ops.installer import launcher_services as services
 from ops.installer import launcher_bridge as bridge
 
 
 class LauncherServicesTests(unittest.TestCase):
+    def test_launcher_pins_tavern_to_its_bundled_node_on_both_platforms(self):
+        home = Path('/fixture/hermes')
+        for platform, executable in [('posix', home / 'node/bin/node'), ('nt', home / 'node/node.exe')]:
+            with self.subTest(platform=platform), patch.object(bridge, 'os', types.SimpleNamespace(
+                name=platform, pathsep=';', environ={'PATH': '/outside/bun', 'TAVERN_NODE_EXECUTABLE': '/outside/node'})):
+                environment = bridge.env_for(Path('/fixture'), home, Path('/fixture/tavern'))
+                self.assertEqual(environment['TAVERN_NODE_EXECUTABLE'], str(executable))
+
     def test_tavern_only_does_not_require_clawchat_registration(self):
         args = Mock(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
                     install_root=Path('/fixture/tavern'), port=8799, service='tavern')
@@ -37,6 +47,17 @@ class LauncherServicesTests(unittest.TestCase):
                 bridge.run_stream(['fixture'])
         self.assertIn('fixture configuration differs', str(emit.call_args_list[-1]))
 
+    def test_subprocess_failure_preserves_ownership_code_across_python_bridge(self):
+        child = Mock(stdout=io.StringIO(json.dumps({'ok': False, 'error': 'ownership differs',
+                                                    'code': 'TAVERN_OWNERSHIP'}) + '\nlate stderr\n'))
+        child.wait.return_value = 1
+        with patch.object(bridge.subprocess, 'Popen', return_value=child), patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(SystemExit):
+                bridge.run_stream(['fixture'])
+        self.assertEqual(emit.call_args.args[0], 'error')
+        self.assertEqual(emit.call_args.kwargs['message'], 'ownership differs')
+        self.assertEqual(emit.call_args.kwargs['code'], 'TAVERN_OWNERSHIP')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -46,6 +67,113 @@ class LauncherServicesTests(unittest.TestCase):
 
     def state(self, value):
         (self.hermes / 'gateway_state.json').write_text(json.dumps(value))
+
+    def test_unreadable_gateway_hint_reports_safe_error_without_signalling_or_launching(self):
+        import psutil
+        self.state({'pid': 5560})
+        original = (self.hermes / 'gateway_state.json').read_bytes()
+        candidate = Mock(pid=5560)
+        candidate.create_time.side_effect = psutil.AccessDenied(5560)
+        candidate.cmdline.side_effect = psutil.AccessDenied(5560)
+        with patch('psutil.Process', return_value=candidate), \
+             patch.object(services.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(services.GatewayIdentityError, '无法确认.*后台进程') as failure:
+                services.start_gateway(self.root, self.hermes, ['python', '-m', 'hermes_cli.main', 'gateway', 'run'], {})
+        self.assertEqual(failure.exception.code, 'EACCES')
+        self.assertIsInstance(failure.exception.__cause__, psutil.AccessDenied)
+        launch.assert_not_called()
+        candidate.terminate.assert_not_called()
+        candidate.kill.assert_not_called()
+        self.assertEqual((self.hermes / 'gateway_state.json').read_bytes(), original)
+
+    def test_reused_protected_pid_in_old_state_does_not_block_a_new_owned_gateway(self):
+        import psutil
+        self.state({'pid': 5560})
+        old_state = self.hermes / 'gateway_state.json'
+        os.utime(old_state, (time.time() - 3600, time.time() - 3600))
+        candidate = Mock(pid=5560)
+        candidate.create_time.return_value = time.time() - 60
+        candidate.cmdline.side_effect = psutil.AccessDenied(5560)
+        class FixtureProcess(psutil.Process):
+            def __new__(cls, pid=None):
+                if pid == 5560:
+                    return candidate
+                return super().__new__(cls)
+        code = ('import os,json,time;from pathlib import Path;p=os.getpid();'
+                'Path("gateway_state.json").write_text(json.dumps({"pid":p,"start_time":1,'
+                '"platforms":{"clawchat":{"state":"connected","writer_pid":p,"writer_start_time":1}}}));'
+                'time.sleep(60)')
+        with patch('psutil.Process', FixtureProcess):
+            try:
+                result = services.start_gateway(self.root, self.hermes,
+                    [sys.executable, '-B', '-c', code, 'gateway', 'run'], os.environ.copy(), timeout=3)
+                self.assertTrue(result['gatewayRunning'])
+                self.assertTrue(result['clawchatConnected'])
+                self.assertNotEqual(services.read_json(self.root / 'installer/gateway.json')['pid'], 5560)
+                candidate.cmdline.assert_not_called()
+                candidate.terminate.assert_not_called()
+                candidate.kill.assert_not_called()
+            finally:
+                services.stop_gateway(self.root)
+
+    def test_unreadable_owned_record_cannot_be_bypassed_by_an_old_runtime_snapshot(self):
+        import psutil
+        directory = self.root / 'installer'
+        directory.mkdir()
+        created = time.time() - 60
+        (directory / 'gateway.json').write_text(json.dumps({'pid': 5560, 'created': created,
+            'command': ['python', '-m', 'hermes_cli.main', 'gateway', 'run']}))
+        self.state({'pid': 42})
+        os.utime(self.hermes / 'gateway_state.json', (1, 1))
+        candidate = Mock(pid=5560)
+        candidate.create_time.return_value = created
+        candidate.cmdline.side_effect = psutil.AccessDenied(5560)
+        with patch('psutil.Process', return_value=candidate), \
+             patch.object(services.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(RuntimeError, '无法确认.*后台进程'):
+                services.start_gateway(self.root, self.hermes, ['python', '-m', 'hermes_cli.main', 'gateway', 'run'], {})
+        launch.assert_not_called()
+        candidate.terminate.assert_not_called()
+        candidate.kill.assert_not_called()
+
+    def test_pre_reboot_owned_record_does_not_inspect_a_reused_protected_pid(self):
+        import psutil
+        directory = self.root / 'installer'
+        directory.mkdir()
+        (directory / 'gateway.json').write_text(json.dumps({'pid': 5560, 'created': 100,
+            'command': ['python', '-m', 'hermes_cli.main', 'gateway', 'run']}))
+        candidate = Mock(pid=5560)
+        candidate.create_time.side_effect = psutil.AccessDenied(5560)
+        with patch.object(services.sys, 'platform', 'win32'), \
+             patch('psutil.boot_time', return_value=200), \
+             patch('psutil.Process', return_value=candidate) as inspect:
+            self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+            inspect.assert_not_called()
+
+    def test_gateway_hint_handles_reboot_exit_race_and_foreign_gateway_without_mutating_state(self):
+        import psutil
+        self.state({'pid': 5560})
+        state_path = self.hermes / 'gateway_state.json'
+        original = state_path.read_bytes()
+        modified = state_path.stat().st_mtime
+        with patch.object(services.sys, 'platform', 'win32'), \
+             patch('psutil.boot_time', return_value=modified + 3600), \
+             patch('psutil.Process') as inspect:
+            services._check_gateway_hint(self.hermes)
+            inspect.assert_not_called()
+        with patch('psutil.Process', side_effect=psutil.NoSuchProcess(5560)):
+            services._check_gateway_hint(self.hermes)
+        candidate = Mock(pid=5560)
+        candidate.create_time.return_value = modified - 10
+        candidate.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        with patch('psutil.Process', return_value=candidate):
+            with self.assertRaisesRegex(RuntimeError, '其他方式启动'):
+                services._check_gateway_hint(self.hermes)
+            candidate.cmdline.side_effect = psutil.NoSuchProcess(5560)
+            services._check_gateway_hint(self.hermes)
+        candidate.terminate.assert_not_called()
+        candidate.kill.assert_not_called()
+        self.assertEqual(state_path.read_bytes(), original)
 
     def test_paired_is_not_online(self):
         self.state({'pid': 42, 'platforms': {'clawchat': {'state': 'connected'}}})

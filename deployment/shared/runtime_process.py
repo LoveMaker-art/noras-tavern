@@ -78,6 +78,39 @@ def require_listener(process, script, port):
     return process
 
 
+def verify_owned_listener(process, script, port):
+    """Positive local OS evidence required before replacing old ownership."""
+    if psutil is None:
+        raise RuntimeError('local ownership recovery requires psutil')
+    try:
+        candidate = psutil.Process(int(process['pid']))
+        created = candidate.create_time()
+        owner = candidate.username()
+        if hasattr(os, 'getuid'):
+            same_owner = candidate.uids().real == os.getuid()
+        else:
+            same_owner = owner.casefold() == psutil.Process(os.getpid()).username().casefold()
+        executable = str(Path(candidate.exe()).resolve())
+        if not same_owner or Path(executable) != Path(process['argv'][0]).resolve():
+            raise RuntimeError('Tavern executable or OS owner differs')
+        listeners = candidate.net_connections(kind='tcp')
+        if not any(connection.status == psutil.CONN_LISTEN and connection.laddr
+                   and connection.laddr.port == int(port)
+                   and connection.laddr.ip in ('127.0.0.1', '0.0.0.0')
+                   for connection in listeners):
+            raise RuntimeError('Tavern does not own the expected IPv4 listener')
+        current = process_record(candidate.pid, script)
+        if (not same_runtime(current, process) or psutil.Process(candidate.pid).create_time() != created
+                or candidate.status() == psutil.STATUS_ZOMBIE):
+            raise RuntimeError('Tavern changed during ownership inspection')
+        evidence = {**current, 'exe': executable, 'owner': owner, 'created_at': created}
+        if any(key in process and process[key] != evidence[key] for key in ('exe', 'owner', 'created_at')):
+            raise RuntimeError('Tavern instance changed during ownership recovery')
+        return evidence
+    except (psutil.Error, OSError, ValueError) as error:
+        raise RuntimeError('Tavern ownership inspection failed') from error
+
+
 def stop_process(process, script, *, port=None, stop=None):
     pid = int(process["pid"])
     if stop:

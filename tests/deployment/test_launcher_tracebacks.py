@@ -12,6 +12,32 @@ import ast
 
 
 class LauncherTracebackTests(unittest.TestCase):
+    def test_gateway_identity_failure_has_readable_json_and_permission_code_with_local_cause(self):
+        script = Path(__file__).resolve().parents[1] / 'installer/launcher_bridge.py'
+        tree = ast.parse(script.read_text(encoding='utf-8'))
+        replacement = ast.parse('''
+def main():
+    import psutil
+    from .launcher_services import GatewayIdentityError
+    try:
+        raise psutil.AccessDenied(5560)
+    except psutil.AccessDenied as cause:
+        raise GatewayIdentityError('无法确认安装记录中的后台进程。') from cause
+''').body[0]
+        tree.body = [replacement if isinstance(node, ast.FunctionDef) and node.name == 'main' else node
+                     for node in tree.body]
+        output, error_output = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error_output), \
+             self.assertRaises(SystemExit) as failure:
+            exec(compile(ast.fix_missing_locations(tree), str(script), 'exec'),
+                 {'__name__': '__main__', '__file__': str(script), '__package__': 'ops.installer'})
+        self.assertEqual(failure.exception.code, 1)
+        event = json.loads(output.getvalue())
+        self.assertEqual(event, {'event': 'error', 'message': '无法确认安装记录中的后台进程。',
+                                 'code': 'EACCES', 'userCode': 'GATEWAY_IDENTITY'})
+        self.assertIn('psutil.AccessDenied: (pid=5560)', error_output.getvalue())
+        self.assertIn('GatewayIdentityError', error_output.getvalue())
+
     def test_status_keeps_its_single_json_document_contract(self):
         root = Path(__file__).resolve().parent
         script = root.parent / "installer/launcher_bridge.py"

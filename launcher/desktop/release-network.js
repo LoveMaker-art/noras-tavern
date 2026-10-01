@@ -1,6 +1,6 @@
 const { setTimeout: delay } = require('node:timers/promises');
 
-function createReleaseNetwork({ app, net, diagnostics }) {
+function createReleaseNetwork({ app, net, diagnostics, onRetry = () => {} }) {
   async function fetchRelease(url, options = {}) {
     await app.whenReady();
     const parsed = new URL(url);
@@ -16,9 +16,16 @@ function createReleaseNetwork({ app, net, diagnostics }) {
       try {
         const response = await net.fetch(url, { ...options,
           credentials: 'omit', cache: 'no-store', bypassCustomProtocolHandlers: true });
+        try { Object.defineProperty(response, 'launcherAttempt', {value:attempt,configurable:true}); } catch {}
         diagnostics.write('network.response', { ...attemptFields, status: response.status, durationMs: Date.now() - started });
         return response;
       } catch (error) {
+        // Chromium's fixed transport errors are not arbitrary response text.
+        const chromium = {'net::ERR_NETWORK_CHANGED':'ERR_NETWORK_CHANGED','net::ERR_CERT_AUTHORITY_INVALID':'ERR_CERT_AUTHORITY_INVALID',
+          'net::ERR_CERT_DATE_INVALID':'CERT_HAS_EXPIRED','net::ERR_NAME_NOT_RESOLVED':'ENOTFOUND','net::ERR_CONNECTION_REFUSED':'ECONNREFUSED',
+          'net::ERR_TIMED_OUT':'TIMEOUT','net::ERR_ABORTED':'ABORT_ERR'};
+        try { Object.assign(error, {source:'release_service',site:'release.request',attempt,
+          ...(options.signal?.reason?.name === 'TimeoutError' ? {code:'TIMEOUT'} : chromium[error.message] ? {code:chromium[error.message]} : {})}); } catch {}
         // Retry only before a response is exposed; never replay a partially consumed download.
         const retry = readOnly && !options.signal?.aborted && attempt <= backoff.length
           && error.message === 'net::ERR_NETWORK_CHANGED';
@@ -28,6 +35,7 @@ function createReleaseNetwork({ app, net, diagnostics }) {
           throw error;
         }
         diagnostics.error('network.retry', error, { ...details, nextAttempt: attempt + 1, delayMs: backoff[attempt - 1] });
+        try { onRetry(error); } catch {} // Diagnostics must never change retry behavior.
         try { await delay(backoff[attempt - 1], undefined, { signal: options.signal }); }
         catch (cancelled) {
           diagnostics.error('network.cancelled', cancelled, attemptFields);

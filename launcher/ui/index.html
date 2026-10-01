@@ -30,6 +30,7 @@
     .portrait-bubble.visible { opacity:1; transform:translateY(0); }
     .status { display:flex; align-items:center; gap:8px; color:#c4c9c2; font-size:11px; }
     .status:before { content:""; width:5px; height:5px; border-radius:50%; background:var(--green); }
+    .status[data-unavailable="true"]:before { background:#d8bd8e; }
     .signature { position:absolute; left:36px; bottom:37px; display:flex; align-items:center; gap:10px; color:#b8bcb4; font-size:11px; line-height:1.8; }
     .signature .separator { color:#71776b; }
     .source-link { display:inline-flex; align-items:center; gap:7px; min-height:28px; color:#b8bcb4; text-decoration:none; font-size:11px; }
@@ -54,7 +55,7 @@
     .speaker { font-size:12px; color:var(--accent); font-weight:500; display:flex; align-items:center; gap:9px; margin-bottom:9px; }
     .speaker:after { content:""; height:1px; width:24px; background:#88636b; }
     .copy { font-size:27px; font-weight:400; line-height:1.5; margin:0; text-wrap:pretty; }
-    .subcopy { font-size:13px; line-height:1.8; color:#b2bcb3; margin:9px 0 0; }
+    .subcopy { font-size:13px; line-height:1.8; color:#b2bcb3; margin:9px 0 0; white-space:pre-line; }
     .inline { min-height:0; flex:0 1 auto; overflow:auto; scrollbar-width:thin; scrollbar-color:#475047 transparent; margin:18px 0 0 42px; animation:arrive .35s both; }
     .inline:empty { margin:0; }
     .button { display:inline-flex; justify-content:center; align-items:center; gap:12px; min-height:40px; padding:0 18px; background:#303b33; border:1px solid #59685a; border-radius:5px; font-size:13px; transition:background .2s,transform .2s; }
@@ -78,7 +79,7 @@
     .task-actions { margin-top:14px; display:flex; align-items:center; gap:16px; }
     .field-line { display:flex; align-items:center; justify-content:space-between; gap:12px; }
     .field-line .quiet { font-size:11px; padding:0 0 8px; }
-    .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; }
+    .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; white-space:pre-line; }
     .model-feedback.error { color:#e8a3af; }
     .job-note { font-size:11px; color:#8e9f93; }
     form { padding-top:4px; }
@@ -210,8 +211,8 @@
         <div class="runtime-actions"><button class="button primary launch" id="launch"><span>打开酒馆</span><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></button><button class="stop" id="stop" title="停止 Nora 与酒馆" aria-label="停止 Nora 与酒馆" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i></button></div>
       </div>
       <div id="telemetryNotice" hidden>
-        <label class="more-note"><input type="checkbox" id="telemetryEnabled" disabled>匿名安装与运行诊断</label>
-        <p class="more-note" id="telemetryExplanation">默认开启，仅发送阶段、耗时、版本和错误分类，不发送密钥、聊天或原始日志。关闭会清除待报记录，已发送记录不会自动删除。</p>
+        <label class="more-note"><input type="checkbox" id="telemetryEnabled" disabled>允许额外上报详细故障诊断</label>
+        <p class="more-note" id="telemetryExplanation">启动器会自动上报操作阶段、耗时、运行状态及固定技术错误码，使用随机标识关联操作。详细故障诊断默认关闭；勾选后，报错时会额外发送脱敏错误详情、调用栈、操作经过、运行环境及安装／更新的部分错误输出，无需逐次上传。不会发送聊天、密钥、模型回复或私人目录。取消勾选会停止详细诊断并清除待报故障包，基础运行统计继续上报；已发送记录不会自动删除。</p>
       </div>
     </main>
   </div>

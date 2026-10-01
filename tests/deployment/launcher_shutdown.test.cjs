@@ -4,6 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
+const { formatUserError } = require('../installer/desktop/error-presentation');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest' });
@@ -17,6 +18,8 @@ function fixture(overrides = {}) {
     runBridge: async (command, options) => { calls.push([command, options.service]); return { running: false, gatewayRunning: false }; },
     app: { quit: () => calls.push('quit') },
     diagnostics: { write() {}, error() {}, clean: String },
+    formatUserError,
+    telemetry: { report() {} },
     dialog: { showMessageBox: async options => { dialogs.push(options); } },
     ...overrides,
   });
