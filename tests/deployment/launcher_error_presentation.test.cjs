@@ -58,6 +58,7 @@ test('business safeguards override generic permission errors and preserve model 
   assert.match(formatUserError({userCode:'MODEL_SYNC_PENDING',cause}), /无需重新填写/);
   assert.match(formatUserError({code:'TAVERN_PORT_OCCUPIED'}), /未知程序/);
   assert.match(formatUserError({code:'TAVERN_OWNERSHIP'}), /没有接管或结束/);
+  assert.match(formatUserError({userCode:'RUNTIME_EXTRACTOR_UNAVAILABLE',code:'ENOENT'}), /Windows 解压工具不可用/);
   assert.match(formatUserError({userCode:'UPDATE_RECOVERY_REQUIRED'}), /勿清空重装/);
   assert.match(formatUserError({userCode:'PAIR_CODE_REJECTED'}), /不要反复提交/);
   assert.match(formatUserError({code:'NODE_UNAVAILABLE'}), /完整启动器安装包/);

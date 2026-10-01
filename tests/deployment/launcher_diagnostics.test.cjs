@@ -75,13 +75,32 @@ function mainContext(root, overrides = {}) {
   return context;
 }
 
+test('runtime worker business guidance survives a real child process boundary', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(),'nora-worker-guidance-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const context=mainContext(root);
+  const worker=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
+  context.command=[process.execPath,['-e',`
+    const fs=require('node:fs'),vm=require('node:vm');
+    const error=Object.assign(new Error('both extractors unavailable'),{userCode:'RUNTIME_EXTRACTOR_UNAVAILABLE',cause:Object.assign(new Error('missing'),{code:'ENOENT'})});
+    vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./runtime'?{installBundledHermes:()=>{throw error;}}:{errorDetails:()=>({message:error.message})}});
+  `]];
+  await assert.rejects(vm.runInContext('runProcess(...command)',context),error=>{
+    assert.equal(error.code,'ENOENT');
+    assert.equal(error.userCode,'RUNTIME_EXTRACTOR_UNAVAILABLE');
+    const {formatUserError}=require('../installer/desktop/error-presentation');
+    assert.match(formatUserError(error,{action:'install'}),/Windows 解压工具不可用/);
+    return true;
+  });
+});
+
 test('operation handler logs original failure even if persisting the error state fails', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-handler-diagnostics-'));
   try {
     const original = Object.assign(new Error('release fixture failure'), { code: 'ECONNRESET' });
     const context = mainContext(root, {
       './test-build': { testBuild: () => null },
-      './releases': { prepareBundled: async () => { throw original; } },
+      './releases': { prepareInstall: async () => { throw original; } },
     });
     context.AbortController = AbortController;
     const sent=[];

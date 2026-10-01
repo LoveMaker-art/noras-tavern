@@ -204,9 +204,11 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
   return root;
 }
 async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = process.platform, arch = process.arch,
-  fetcher = fetch, signal, onEvent = () => {}, channel = 'stable', tag }) {
+  fetcher = fetch, signal, onEvent = () => {}, channel = 'stable', tag, selectedRelease }) {
   onEvent({ event: 'task', stage_id: 'release_check', task: `确认 GitHub ${channel === 'beta' ? 'Beta 测试' : '正式'}完整版本` });
-  const release = await latest(fetcher, signal, channel, tag);
+  signal?.throwIfAborted();
+  const release = selectedRelease || await latest(fetcher, signal, channel, tag);
+  if (!accepts(release, channel)) throw new Error('所选发布与安装渠道不符。');
   const system = await systemFor(release, { platform, arch, launcherVersion, fetcher, signal, channel });
   const root = path.join(cacheRoot, `${release.tag_name}-${platform}-${arch}-${system.commit.slice(0, 12)}`);
   fs.mkdirSync(root, { recursive: true });
@@ -242,6 +244,29 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
   validatePayload(root, system, platform, arch);
   fs.writeFileSync(path.join(root, 'nora-system.json'), JSON.stringify(system, null, 2), { mode: 0o600 });
   return root;
+}
+
+async function prepareInstall(options) {
+  const { fetcher = fetch, signal, channel = 'stable', onEvent = () => {}, confirmBundled } = options;
+  signal?.throwIfAborted();
+  onEvent({event:'task',stage_id:'release_check',task:`查询最新${channel === 'beta' ? 'Beta 测试' : '稳定'}版本`});
+  let release;
+  try { release = await latest(fetcher, signal, channel); }
+  catch (error) {
+    signal?.throwIfAborted();
+    // Only a failed release lookup can offer the offline package. A discovered
+    // incompatible release, bad manifest or corrupt download must fail closed.
+    if (typeof confirmBundled !== 'function' || error.source !== 'release_service'
+      || ['INVALID_RESPONSE','RESPONSE_TOO_LARGE','CANCELLED'].includes(error.code)) throw error;
+    const root = await prepareBundled(options);
+    const system = readJson(path.join(root,'nora-system.json'));
+    if (!await confirmBundled({version:system.version,error})) throw error;
+    signal?.throwIfAborted();
+    onEvent({event:'task',stage_id:'verify',task:`按用户选择安装包内版本 ${system.version}，未确认其为最新版`});
+    return root;
+  }
+  // Keep one release snapshot throughout selection, downloads and verification.
+  return prepare({...options,selectedRelease:release});
 }
 function validatePayload(root, system, platform, arch) {
   const payload = readJson(path.join(root, 'release-manifest.json'));
@@ -283,4 +308,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch);
   return bundledRoot;
 }
-module.exports = { compare, check, prepare, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate, hash, latest, accepts, requestJson, assetUrl };
+module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate, hash, latest, accepts, requestJson, assetUrl };

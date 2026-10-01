@@ -18,9 +18,9 @@ function walk(node) {
 }
 walk(ast);
 
-test('actual install handler selects bundled bytes without online preparation, updates remain online', async () => {
+test('actual first-install handler selects the latest complete release; local candidates stay offline', async () => {
   assert.ok(selection);
-  for (const [action, local, expected] of [['install', false, 'bundled'], ['install', true, 'candidate'], ['update', false, 'online']]) {
+  for (const [action, local, expected] of [['install', false, 'latest'], ['install', true, 'candidate'], ['update', false, 'online']]) {
     const calls = [];
     const context = vm.createContext({
       payload: { action }, LOCAL_TEST: local, CHANNEL: 'stable', AbortController,
@@ -32,6 +32,11 @@ test('actual install handler selects bundled bytes without online preparation, u
       updateFetch() { throw new Error('network unavailable'); },
       releases: {
         prepareBundled: async () => { calls.push('bundled'); return '/payload'; },
+        prepareInstall: async options => {
+          assert.equal(options.fetcher, context.updateFetch);
+          assert.equal(typeof options.confirmBundled, 'function');
+          calls.push('latest'); return '/latest';
+        },
         prepareUpdate: async () => { calls.push('online'); return '/download'; },
       },
       prepareTestPayload: async () => { calls.push('candidate'); return '/payload'; },
@@ -39,7 +44,7 @@ test('actual install handler selects bundled bytes without online preparation, u
       ensureHermesFromNode: async (_sender, _run, root) => calls.push(root),
     });
     await vm.runInContext(`(async () => { ${source.slice(selection.start, selection.end)} })()`, context);
-    assert.deepEqual(calls, action === 'install' ? [expected, '/payload'] : [expected]);
+    assert.deepEqual(calls, action === 'install' ? [expected, local ? '/payload' : '/latest'] : [expected]);
     assert.equal(context.releaseAbort, null);
   }
 });
@@ -66,4 +71,28 @@ test('automatic version check waits for completed setup and network failure rema
   assert.equal(context.busy, false);
   await check();
   assert.equal(requests, 1);
+});
+
+test('offline installation dialog names the bundled version and defaults to cancellation', async () => {
+  let confirmation;
+  function find(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'Property' && node.key.name === 'confirmBundled') confirmation=node.value;
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(find);
+      else if (value && typeof value === 'object') find(value);
+    }
+  }
+  find(selection);
+  assert.ok(confirmation);
+  for(const response of [0,1]) {
+    let shown;
+    const context=vm.createContext({diagnostics:{error(){}},telemetry:null,
+      dialog:{showMessageBox:async options=>{shown=options;return {response};}}});
+    const confirm=vm.runInContext(`(${source.slice(confirmation.start,confirmation.end)})`,context);
+    assert.equal(await confirm({version:'2.2.4',error:new Error('offline')}),response===1);
+    assert.equal(shown.defaultId,0);assert.equal(shown.cancelId,0);
+    assert.match(shown.buttons[1],/包内版本 2\.2\.4/);
+    assert.match(shown.detail,/未确认它是最新版/);
+  }
 });

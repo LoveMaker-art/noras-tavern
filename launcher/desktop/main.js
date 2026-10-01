@@ -431,7 +431,7 @@ function runProcess(command, args, webContents, runId) {
     activeProcess = proc;
     diagnostics.write('process.spawned', { pid: proc.pid });
     proc.cancelSafe = !args.includes(path.join(__dirname, 'runtime-worker.js'));
-    let errorMessage = '', structuredCode;
+    let errorMessage = '', structuredCode, structuredUserCode;
     const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && ['install','installing','update','repair'].includes(readInstallerState().phase));
     const heartbeat = setInterval(() => {
       sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() });
@@ -446,7 +446,7 @@ function runProcess(command, args, webContents, runId) {
         const clean = sanitizeLine(line);
         if (clean) {
           const message = parseJsonLine(clean);
-          if (message.event === 'error') structuredCode = message.code;
+          if (message.event === 'error') { structuredCode = message.code; structuredUserCode = message.userCode; }
           evidence.observe(message);
           sendBridgeEvent(webContents, runId, message);
         }
@@ -466,7 +466,7 @@ function runProcess(command, args, webContents, runId) {
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) resolve();
       else reject(evidence.attach(launcherError(diagnostics.clean((errorMessage || `命令执行失败，退出码 ${code}`).trim()),
-        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode, source:'launcher_process',site:'process.run' })));
+        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode, userCode:structuredUserCode, source:'launcher_process',site:'process.run' })));
     });
   });
 }
@@ -1055,8 +1055,18 @@ if (app && BrowserWindow && ipcMain && shell) {
           selectedPayload = payload.action === 'install' ? (LOCAL_TEST
             ? await prepareTestPayload(payloadDirectory(), LOCAL_TEST, app.getVersion(),
               message => sendBridgeEvent(event.sender, payload.runId, message))
-            : await releases.prepareBundled({ bundledRoot: payloadDirectory(), launcherVersion: app.getVersion(),
+            : await releases.prepareInstall({ bundledRoot: payloadDirectory(), launcherVersion: app.getVersion(),
+              fetcher: updateFetch, cacheRoot: path.join(noraHome(), 'cache', 'releases'),
               signal: releaseAbort.signal, channel: CHANNEL,
+              confirmBundled: async ({version,error}) => {
+                diagnostics.error('release.first-install-check-failed', error);
+                telemetry?.report(error,{source:'release_service',site:'release.request'});
+                const choice = await dialog.showMessageBox({type:'warning',title:'无法获取最新版本',
+                  message:'暂时无法确认最新版本。',
+                  detail:`可以取消后检查网络再重试，或安装包内版本 ${version}。包内版本已通过完整性校验，但未确认它是最新版。`,
+                  buttons:['取消安装',`安装包内版本 ${version}`],defaultId:0,cancelId:0});
+                return choice.response === 1;
+              },
               onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) }))
             : await releases.prepareUpdate({
             fetcher: updateFetch,
