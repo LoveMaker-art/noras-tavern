@@ -91,7 +91,7 @@ function fixture() {
     return { common, select, picked, world, field, back, errors, query: selector => $(selector) };
 }
 
-test('sidebar retains capability status without a standalone regex section', () => {
+test('sidebar retains capability status without a standalone regex section', async () => {
     const f = fixture();
     f.common.dialogs.open('panel', '<div id="nora-panel-body"></div>');
     f.world.storyContext = { characters: [] };
@@ -100,9 +100,11 @@ test('sidebar retains capability status without a standalone regex section', () 
     const panel = createPanelController({ ...f.common,
         currentCharacter: () => ({ avatar: 'runtime-card.png', data: { extensions: { regex_scripts: rules } } }), readState: () => ({}), settings: () => ({}),
         currentWorldPersona: () => ({}), worldbookSummary: () => '', closeDrawers() {},
+        plugins: { inventory: async () => [{ builtin: { key: 'regex', title: '正则' }, runtime: { loaded: true } }] },
         escapeHtml: value => String(value).replaceAll('<', '&lt;').replaceAll('>', '&gt;'),
     });
     panel.render();
+    await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.query('[data-view-card-regex]').length, 0);
     assert.equal(f.query('[data-retry-capability="regex"]').length, 1, 'Existing retry is retained');
     assert.equal(f.query('#nora-regex-body, .nora-regex-section, [data-edit-section="regex"]').length, 0);

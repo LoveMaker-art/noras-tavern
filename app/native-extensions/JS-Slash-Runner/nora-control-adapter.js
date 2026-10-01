@@ -32,6 +32,12 @@ export async function persistCharacterExtension(id, field, value, updateLive, de
         const data = draft.data;
         const body = {
             ch_name: draft.name, avatar_url: avatar,
+            // ST's full-card formatter otherwise discards foreign fields and resets prompt overrides.
+            json_data: draft.json_data || JSON.stringify(draft),
+            system_prompt: data.system_prompt, post_history_instructions: data.post_history_instructions,
+            depth_prompt_prompt: data.extensions.depth_prompt?.prompt,
+            depth_prompt_depth: data.extensions.depth_prompt?.depth,
+            depth_prompt_role: data.extensions.depth_prompt?.role,
             character_version: data.character_version, creator: data.creator,
             creator_notes: data.creator_notes, description: data.description,
             first_mes: data.first_mes, alternate_greetings: data.alternate_greetings,

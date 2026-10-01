@@ -84,6 +84,36 @@ test('shipped Helper writes the actual avatar, not the display name', async () =
     assert.equal(f.writes[0].avatar_url, 'world-a-owned.png');
 });
 
+test('extension saves preserve authored card fields through the real ST formatter', async () => {
+    const characters = fs.readFileSync(new URL('../src/endpoints/characters.js', import.meta.url), 'utf8');
+    const util = fs.readFileSync(new URL('../src/util.js', import.meta.url), 'utf8');
+    const formatStart = characters.indexOf('function charaFormatData(');
+    const mergeStart = util.indexOf('function isObject(');
+    assert.ok(formatStart >= 0 && mergeStart >= 0);
+    const context = vm.createContext({ _: lodash, tryParse: value => { try { return JSON.parse(value); } catch { return null; } },
+        humanizedDateTime: () => 'fixture', console });
+    vm.runInContext(util.slice(mergeStart, util.indexOf('export const color', mergeStart)).replace('export function', 'function')
+        + characters.slice(formatStart, characters.indexOf('\n/**', formatStart)), context);
+    for (const serialized of [false, true]) {
+        const f = fixture();
+        Object.assign(f.card.data, { system_prompt: 'system-kept', post_history_instructions: 'history-kept',
+            character_book: { entries: [{ content: 'book-kept' }] }, authored_field: 'data-kept' });
+        f.card.authored_field = 'top-kept';
+        f.card.data.extensions.depth_prompt = { prompt: 'depth-kept', depth: 8, role: 'user' };
+        if (serialized) f.card.json_data = JSON.stringify(f.card);
+        await f.write('tavern_helper', { scripts: [] });
+        const stored = JSON.parse(JSON.stringify(context.charaFormatData(f.writes[0], {})));
+        assert.equal(stored.data.system_prompt, 'system-kept');
+        assert.equal(stored.data.post_history_instructions, 'history-kept');
+        assert.equal(stored.data.authored_field, 'data-kept');
+        assert.equal(stored.authored_field, 'top-kept');
+        assert.deepEqual(stored.data.character_book, f.card.data.character_book);
+        assert.deepEqual(stored.data.extensions.depth_prompt, f.card.data.extensions.depth_prompt);
+        assert.deepEqual(stored.data.extensions.tavern_helper, { scripts: [] });
+        assert.equal(stored.json_data, undefined);
+    }
+});
+
 test('failed writes reject and remain retryable without marking memory saved', async () => {
     const f = fixture(); f.fail = true;
     await assert.rejects(f.write('tavern_helper', { scripts: [] }));

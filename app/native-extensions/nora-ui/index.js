@@ -11,8 +11,7 @@ import { createWorldThemeController } from './world-theme-controller.js';
 import { createAppearanceController } from './appearance-controller.js';
 import { createPerformanceReporter } from './performance-reporter.js';
 import { createSmartReplyController } from './smart-reply-controller.js';
-import { createShellController } from './shell-controller.js';
-import { shellIcons } from './shell-controller.js';
+import { createShellController, shellIcons } from './shell-controller.js';
 import { createStMessageViewAdapter } from './st-message-view-adapter.js';
 import { createStartupController } from './startup-controller.js';
 import { createStoryActionDispatcher } from './story-action-dispatcher.js';
@@ -47,15 +46,12 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
     let capabilityController;
     let cardActionGateway;
     let messageController;
-    let modelController;
     let panelController;
     let worldThemeController;
     let appearanceController;
     let smartReplyController;
     let storyScroller;
-    let characterController;
     let worldController;
-    let worldCreationController;
     let worldbookController;
     let ensureCharacterController;
     let ensureModelController;
@@ -282,10 +278,8 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
             return kind === 'worldbooks' ? library.openWorldbooks() : library.openProfiles(kind);
         };
         let characterControllerPromise;
-        ensureCharacterController = () => {
-            if (characterController) return Promise.resolve(characterController);
-            characterControllerPromise ??= import('./character-controller.js').then(({ createCharacterController }) => {
-                characterController = createCharacterController({
+        ensureCharacterController = () => characterControllerPromise ??= import('./character-controller.js')
+            .then(({ createCharacterController }) => createCharacterController({
                     listLibraryCards: () => worlds.listLibraryCards(),
                     cards,
                     operations,
@@ -314,11 +308,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
                     activeWorldModel,
                     updateWorld: (...args) => worlds.updateActive(...args),
                     isGenerating: () => Boolean(storyActions.status('all').active || messages.isGenerating() || messageController?.isGenerating() || messageController?.isMvuSyncing()),
-                });
-                return characterController;
-            });
-            return characterControllerPromise;
-        };
+            }));
 
         let regexControllerPromise;
         const withRegexController = async action => {
@@ -339,13 +329,10 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
         const openCardRegex = (avatar, onBack, options) => withRegexController(controller => controller.open(avatar, onBack, options));
 
         let modelControllerPromise;
-        ensureModelController = () => {
-            if (modelController) return Promise.resolve(modelController);
-            modelControllerPromise ??= Promise.all([
+        ensureModelController = () => modelControllerPromise ??= Promise.all([
                 import('./model-controller.js'),
                 import('./mvu-model-adapter.js'),
-            ]).then(([{ createModelController }, { createMvuModelAdapter }]) => {
-                modelController = createModelController({
+            ]).then(([{ createModelController }, { createMvuModelAdapter }]) => createModelController({
                     model,
                     settingsDomain,
                     operations,
@@ -362,17 +349,11 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
                         requestHeaders: transport.requestHeaders,
                     }),
                     onChanged: renderPanel,
-                });
-                return modelController;
-            });
-            return modelControllerPromise;
-        };
+            }));
 
         let worldCreationControllerPromise;
-        ensureWorldCreationController = () => {
-            if (worldCreationController) return Promise.resolve(worldCreationController);
-            worldCreationControllerPromise ??= import('./world-creation-controller.js').then(({ createWorldCreationController }) => {
-                worldCreationController = createWorldCreationController({
+        ensureWorldCreationController = () => worldCreationControllerPromise ??= import('./world-creation-controller.js')
+            .then(({ createWorldCreationController }) => createWorldCreationController({
                     worldRuntime: worlds,
                     operations,
                     select: $,
@@ -384,11 +365,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
                     refresh,
                     openWorldById: (worldId, options) => worldController.openById(worldId, options),
                     isGenerating: () => messageController.isGenerating(),
-                });
-                return worldCreationController;
-            });
-            return worldCreationControllerPromise;
-        };
+            }));
         worldController = createWorldController({
             settingsDomain,
             worldRuntime: worlds,
@@ -411,9 +388,6 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
             loadWorldCapabilities,
             closeDrawers,
             refresh,
-            refreshWorldsAfterCommit,
-            updateComposer: messageController.updateComposer,
-            isGenerating: messageController.isGenerating,
             onWorldLeaving: notifyStoryProfileCheckpoint,
             openModal,
             closeModal,
@@ -499,7 +473,6 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
         startupController.start();
     }
 
-    const prepareShell = () => shellController.prepareShell();
 
     const { state: pageControlState, execute: controlPage } = createPageControls({
         ready: () => started, dialogs, shell: shellController,
@@ -513,7 +486,7 @@ import { createStoryProfileCheckpoint } from './story-profile-controller.js';
         openLibrary: kind => openLibraryCategory(kind),
     });
 
-    window.NoraUI = Object.freeze({ prepareShell, mount, controlActions: () => storyActions,
+    window.NoraUI = Object.freeze({ prepareShell: () => shellController.prepareShell(), mount, controlActions: () => storyActions,
         pageControlState, controlPage,
         setRuntimeControls: controls => { runtimeControls = controls; },
         appearanceState: () => appearanceController?.inspect() || { ready: false },

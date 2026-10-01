@@ -35,22 +35,32 @@ ${JSON.stringify(schema)}` }, { role: 'user', content: JSON.stringify({ previous
         range: { start_turn: segment.startTurn, end_turn: segment.endTurn } }) }];
 }
 
-export async function mergeWithActiveModel(directories, input) {
+export async function snapshotActiveLedgerModel(directories, scope) {
     const { readSettingsPayload } = await import('../endpoints/settings.js');
     const { readSecret, SECRET_KEYS } = await import('../endpoints/secrets.js');
-    const payload = readSettingsPayload(directories, 'runtime');
-    const settings = typeof payload.settings === 'string' ? JSON.parse(payload.settings) : payload.settings;
-    const model = settings?.oai_settings;
-    const projectedWorld = settings?.extension_settings?.nora_ui?.lastWorldId;
-    if (input.scope && projectedWorld && projectedWorld !== input.scope.worldId) {
-        throw Object.assign(new Error('Open the target World before selecting its ledger model.'), { code: 'NORA_LEDGER_MODEL_SCOPE_UNAVAILABLE' });
-    }
-    if ((payload.active_api || settings?.main_api) !== 'openai' || model?.chat_completion_source !== 'custom'
-        || !model.custom_url || !model.custom_model) {
-        throw Object.assign(new Error('Story ledger requires the active Nora text model.'), { code: 'NORA_MODEL_CONFIGURATION_REQUIRED' });
-    }
-    const apiKey = readSecret(directories, SECRET_KEYS.CUSTOM) || '';
-    return mergeLedgerModel({ model, apiKey, input, report: input.report });
+    const read = () => {
+        const payload = readSettingsPayload(directories, 'runtime');
+        const settings = typeof payload.settings === 'string' ? JSON.parse(payload.settings) : payload.settings;
+        const model = settings?.oai_settings;
+        const projectedWorld = settings?.extension_settings?.nora_ui?.lastWorldId;
+        if (scope && projectedWorld && projectedWorld !== scope.worldId) {
+            throw Object.assign(new Error('Open the target World before selecting its ledger model.'), { code: 'NORA_LEDGER_MODEL_SCOPE_UNAVAILABLE' });
+        }
+        if ((payload.active_api || settings?.main_api) !== 'openai' || model?.chat_completion_source !== 'custom'
+            || !model.custom_url || !model.custom_model) {
+            throw Object.assign(new Error('Story ledger requires the active Nora text model.'), { code: 'NORA_MODEL_CONFIGURATION_REQUIRED' });
+        }
+        const apiKey = readSecret(directories, SECRET_KEYS.CUSTOM) || '';
+        return { model: structuredClone(model), apiKey };
+    };
+    const captured = read();
+    const identity = value => JSON.stringify([value.model.custom_url, value.model.custom_model, value.model.openai_max_context, value.apiKey]);
+    const original = identity(captured);
+    const isCurrent = () => { try { return identity(read()) === original; } catch { return false; } };
+    return Object.freeze({
+        isCurrent,
+        merge: input => mergeLedgerModel({ ...captured, input, report: input.report, isCurrent }),
+    });
 }
 
 const failure = code => Object.assign(new Error(code), { code });
@@ -71,7 +81,7 @@ export function ledgerRequestBudget(messages, capacity, outputLimit) {
     return { inputTokens, outputLimit, capacity, safetyTokens, tokenCountSource: 'conservative-estimate' };
 }
 
-export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch, report = console.info }) {
+export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch, report = console.info, isCurrent = () => true }) {
     const configuration = ledgerConfig(input.config);
     const capacity = ledgerCapacity(model, configuration);
     const timeout = AbortSignal.timeout(configuration.timeoutSeconds * 1000);
@@ -99,6 +109,7 @@ export async function mergeLedgerModel({ model, apiKey, input, fetchImpl = fetch
         const messages = ledgerPrompt(part);
         for (let attempt = 0; attempt < 2; attempt++) {
             signal.throwIfAborted();
+            if (!isCurrent()) throw failure('NORA_LEDGER_MODEL_CHANGED');
             const budget = ledgerRequestBudget(messages, capacity, configuration.outputTokenLimit);
             const startedAt = performance.now();
             const reportAttempt = (phase, details = {}) => report('[Story Ledger] model-attempt', {

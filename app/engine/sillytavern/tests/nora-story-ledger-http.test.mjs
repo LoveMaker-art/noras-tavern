@@ -13,6 +13,7 @@ import { ledgerStatePath } from '../src/nora-story-ledger/state-file.js';
 import { requestStoryProjection } from '../src/nora-story-ledger/profile-projection.js';
 import { prefixText, renderLedger } from '../public/scripts/nora-story-ledger/history.js';
 import { setConfigFilePath } from '../src/util.js';
+import { chatSessionOperations } from '../src/chat-session-operations.js';
 setConfigFilePath(path.resolve('default/config.yaml'));
 const { resolveStoryLedger } = await import('../src/nora-story-ledger/runtime.js');
 const { router: ledgerRouter } = await import('../src/endpoints/nora-story-ledger.js');
@@ -117,6 +118,18 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(readProfile(), null, 'inspection must not start memory projection');
 
     const runtime = resolveStoryLedger(directories); await runtime.resolve(scope);
+    const activity = chatSessionOperations(directories);
+    const unrelated = { worldId: 'unrelated-world', sessionId: 'unrelated-session' };
+    const lease = activity.begin(unrelated, 'generation');
+    activity.end(unrelated, lease.token);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.equal(providerRequests.length, 0, 'ending unrelated generation cannot compress an inspected session');
+    assert.equal(fs.existsSync(ledgerStatePath(root, scope)), false);
+    const generating = activity.begin(scope, 'generation');
+    const blockedConfig = await post('/ledger/configure', { ...scope, timeoutSeconds: 600 });
+    assert.equal(blockedConfig.status, 409);
+    assert.equal((await blockedConfig.json()).code, 'NORA_CHAT_OPERATION_BUSY');
+    activity.end(scope, generating.token);
     await runtime.plugin.schedule(scope);
     const status = await (await post('/ledger/status', scope)).json();
     assert.equal(status.pending.coveredTurns, 15);

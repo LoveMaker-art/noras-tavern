@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import { createRequire } from 'node:module';
 import { mountJSONEditor } from '../../../native-extensions/JS-Slash-Runner/deferred-json-editor.js';
 import { transformDeferredEditor } from '../../../native-extensions/JS-Slash-Runner/apply-deferred-json-editor.mjs';
 
@@ -60,22 +61,33 @@ test('managed transform is guarded, idempotent and removes the eager dependency'
 
 test('shipped component initializes current variables and disposes its asynchronous watcher', async () => {
     const source = fs.readFileSync(new URL('../../../native-extensions/JS-Slash-Runner/dist/index.js', import.meta.url), 'utf8');
-    const start = source.indexOf('H4=L({__name:`JsonEditor`') + 3;
-    const end = source.indexOf(',U4=', start);
-    assert.ok(start > 3 && end > start);
+    const { parse } = createRequire(import.meta.url)('acorn');
+    const components = [];
+    const visit = node => {
+        if (!node || typeof node !== 'object') return;
+        if (node.type === 'VariableDeclarator' && node.init?.type === 'CallExpression'
+            && node.init.arguments[0]?.properties?.some(property => property.key?.name === '__name'
+                && property.value?.quasis?.[0]?.value?.cooked === 'JsonEditor')) components.push(node.init);
+        for (const value of Object.values(node)) {
+            if (Array.isArray(value)) value.forEach(visit);
+            else if (value && typeof value === 'object') visit(value);
+        }
+    };
+    visit(parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
+    assert.equal(components.length, 1, 'the pinned Helper must contain one JsonEditor component');
     let mounted, unmount, release;
     let watched = 0, stopped = 0, destroyed = 0, cancelled = 0;
     let options;
     const content = { value: { value: 'old' } };
     const element = target();
-    const component = vm.runInNewContext(source.slice(start, end), {
-        L: value => value, Es: Object.assign, js: () => content, Go: () => ({ value: element }),
+    const component = vm.runInNewContext(source.slice(components[0].start, components[0].end), {
+        L: value => value, Cs: Object.assign, Os: () => content, Go: () => ({ value: element }),
         _: { debounce: fn => Object.assign(fn, { cancel: () => cancelled++ }) },
         is: fn => { mounted = fn; }, as: fn => { unmount = fn; },
         I: () => { watched++; return () => stopped++; },
         noraMountJSONEditor: args => mountJSONEditor({ ...args, load: () => new Promise(resolve => { release = resolve; }) }),
         document: { documentElement: { style: { setProperty() {} } } },
-        V4: 1000, B4: JSON.parse, f: () => 'en', setTimeout,
+        p4: 1000, f4: JSON.parse, f: () => 'en', setTimeout,
     });
     component.setup({}, { expose() {} });
     const pending = mounted();

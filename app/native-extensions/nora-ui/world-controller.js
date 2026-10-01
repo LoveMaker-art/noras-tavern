@@ -2,8 +2,8 @@ import { addLocaleData, translate as tr, t } from '../../engine/sillytavern/publ
 
 // Deletion-only copy belongs to this interaction, not the startup dictionary.
 const deletionMessages = {
-    '无法检查删除范围：{0}': 'Unable to inspect deletion scope: {0}',
-    '本次删除 {0} 项专属资源、{1} 份聊天备份（其中 {2} 份受保护）；保留 {3} 项共享或归属不明对象。': 'Delete {0} dedicated resources and {1} chat backups ({2} protected); retain {3} shared or unclassified items.',
+    '无法检查删除范围：${0}': 'Unable to inspect deletion scope: ${0}',
+    '本次删除 ${0} 项专属资源、${1} 份聊天备份（其中 ${2} 份受保护）；保留 ${3} 项共享或归属不明对象。': 'Delete ${0} dedicated resources and ${1} chat backups (${2} protected); retain ${3} shared or unclassified items.',
     '将永久删除本世界、专属会话和资源，以及归属明确的全部聊天备份（包括受保护备份）。共享资源、库原件和归属不明文件保留。更新回退包独立管理，可能仍含历史数据。此操作无法撤销。': 'Permanently delete this world, its dedicated chats and resources, and all backups with confirmed ownership, including protected backups. Shared resources, library originals and unclassified files remain. Update rollback packages are managed separately and may still contain historical data. This cannot be undone.',
     '世界已删除；归属不明的备份已保留，可在备份清单中查看。': 'World deleted. Unclassified backups remain and can be reviewed in the backup list.',
 };

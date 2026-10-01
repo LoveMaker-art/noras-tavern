@@ -5,7 +5,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { init, parse } from 'es-module-lexer';
-import { buildRuntimeManifest } from '../build/generate-nora-runtime-assets.mjs';
+import { buildRuntimeManifest, collectManagedExtensionCoreBridges } from '../build/generate-nora-runtime-assets.mjs';
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url));
 const publicDirectory = path.resolve(testDirectory, '../public');
@@ -58,12 +58,17 @@ test('only product-enabled bundled ST extensions enter the canonical module regi
     }
 });
 
-test('Tavern Helper shares Nora core module singletons instead of loading a second ST runtime', () => {
+test('Tavern Helper shares Nora core module singletons instead of loading a second ST runtime', async () => {
     const imports = staticImports('JS-Slash-Runner/dist/index.js');
     const relativeImports = imports.filter(value => value.startsWith('.'));
     const coreImports = imports.filter(value => value.startsWith('nora-module/'));
 
-    assert.deepEqual(relativeImports.sort(), ['../deferred-json-editor.js', '../nora-control-adapter.js']);
+    const bridge = '../../../../../scripts/nora-worlds/world-helper-identity.js';
+    assert.deepEqual(relativeImports.sort(), [bridge, '../deferred-json-editor.js', '../nora-control-adapter.js'].sort());
+    assert.ok((await collectManagedExtensionCoreBridges()).includes('scripts/nora-worlds/world-helper-identity.js'));
+    assert.ok(inlineManifest.modules['scripts/nora-worlds/world-helper-identity.js']
+        || inlineManifest.compiled?.['scripts/nora-worlds/world-helper-identity.js']
+        || inlineManifest.network.includes('scripts/nora-worlds/world-helper-identity.js'));
     assert.equal(coreImports.length, imports.length - relativeImports.length);
     assert.ok(coreImports.includes('nora-module/script.js'));
     assert.ok(coreImports.includes('nora-module/scripts/openai.js'));

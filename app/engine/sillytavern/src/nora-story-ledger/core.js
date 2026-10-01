@@ -20,10 +20,11 @@ export const matchesLedgerHistory = (record, messages) => record && record.cover
 const valid = matchesLedgerHistory;
 
 /** Stateful headless plugin. Model I/O never holds the chat write lock. */
-export function createStoryLedger({ readChat, readState, writeState, merge, canRun = () => true, now = Date.now, report = () => {} }) {
+export function createStoryLedger({ readChat, readState, writeState, merge, prepareMerge = async () => ({ merge, isCurrent: () => true }), canRun = () => true, now = Date.now, report = () => {} }) {
     const locks = new KeyedLock();
     const jobs = new Map();
     const controllers = new Map();
+    const deferred = new Map();
     const reservations = new Map();
     const exclusive = new Set();
     // One background model call per user, independent of foreground generation.
@@ -81,6 +82,10 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
 
     async function compress(scope, signal, taskId) {
         signal = AbortSignal.any([signal, AbortSignal.timeout(ledgerConfig(load(scope).config).timeoutSeconds * 1000)]);
+        let model;
+        const assertModel = () => {
+            if (!model.isCurrent()) throw Object.assign(new Error('Ledger model changed during compression.'), { code: 'NORA_LEDGER_MODEL_CHANGED' });
+        };
         for (;;) {
             signal.throwIfAborted();
             const input = await run(scope, () => {
@@ -99,14 +104,20 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
                     playerName: chat.playerName || '', entityBindings: chat.entityBindings, language: chat.language || 'zh' };
             });
             if (!input) return;
+            model ??= await prepareMerge(scope);
+            signal.throwIfAborted();
+            assertModel();
             let ledger = input.previous?.ledger || {};
             for (const segment of input.segments) {
                 signal.throwIfAborted();
-                ledger = normalizeLedger(await merge({ scope, taskId, previous: ledger, segment, entities: input.entities, signal, config: input.config,
+                assertModel();
+                ledger = normalizeLedger(await model.merge({ scope, taskId, previous: ledger, segment, entities: input.entities, signal, config: input.config,
                     playerName: input.playerName, entityBindings: input.entityBindings, language: input.language }), ledger, input.entities);
             }
             signal.throwIfAborted();
             const published = await run(scope, () => {
+                signal.throwIfAborted();
+                assertModel();
                 const { state, chat } = checked(scope);
                 const previous = state.pending || state.active;
                 if (signal.aborted || !state.enabled || (state.configRevision || 0) !== input.revision || (previous?.id || null) !== (input.previous?.id || null)
@@ -129,38 +140,55 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
         if (jobs.has(key)) return jobs.get(key);
         const chat = readChat(scope);
         const state = load(scope, chat);
-        if (!state.enabled || !canRun() || (!retry && state.lastError)) return Promise.resolve();
+        if (!state.enabled || (!retry && state.lastError)) return Promise.resolve();
         const { messages } = chat;
         if (state.waitForHistory && state.waitForHistory === signature(messages, messages.length)) return Promise.resolve();
         const covered = (state.pending || state.active)?.coveredTurns || 0;
         const last = messages.findLast(message => !message.is_system);
         if (covered + BATCH_TURNS > countTurns(messages) - 1 || !last || last.is_user || !String(last.mes || '').trim()) return Promise.resolve();
+        if (!canRun()) { deferred.set(key, { scope, retry }); return Promise.resolve(); }
+        deferred.delete(key);
         const controller = new AbortController();
         controller.phase = 'queued';
+        controller.scope = scope;
+        controller.retry = retry;
+        const revision = state.configRevision || 0;
         const taskId = crypto.randomUUID();
         controllers.set(key, controller);
         report('queued', { ...scope, taskId });
-        const job = queue.then(() => {
+        const scheduled = queue.then(() => {
+            if (controller.signal.aborted) return;
             controller.phase = 'running';
             return compress(scope, controller.signal, taskId);
-        }).catch(async error => {
+        });
+        let cancelQueued;
+        const cancelled = new Promise(resolve => {
+            cancelQueued = () => { if (controller.phase === 'queued') resolve(); };
+            controller.signal.addEventListener('abort', cancelQueued, { once: true });
+        });
+        const job = Promise.race([scheduled, cancelled]).catch(async error => {
             if (controller.signal.aborted) {
                 report('cancelled', { ...scope, taskId, code: 'NORA_LEDGER_CANCELLED' });
                 return;
             }
             const code = error.name === 'TimeoutError' ? 'NORA_LEDGER_COMPRESSION_TIMEOUT'
                 : typeof error.code === 'string' && error.code.startsWith('NORA_') ? error.code : 'NORA_LEDGER_COMPRESSION_FAILED';
-            await run(scope, () => {
+            const recorded = await run(scope, () => {
                 const current = load(scope);
+                if (controller.signal.aborted || (current.configRevision || 0) !== revision) return false;
                 // Never persist model output, credentials or arbitrary upstream
                 // error bodies. Detailed prompts stay out of operational logs.
                 current.lastError = { code, taskId, at: now() };
                 writeState(scope, current);
+                return true;
             });
-            report('compression-failed', { ...scope, taskId, code });
-        }).finally(() => { if (controllers.get(key) === controller) { controllers.delete(key); jobs.delete(key); } });
+            report(recorded ? 'compression-failed' : 'cancelled', { ...scope, taskId, code: recorded ? code : 'NORA_LEDGER_CANCELLED' });
+        }).finally(() => {
+            controller.signal.removeEventListener('abort', cancelQueued);
+            if (controllers.get(key) === controller) { controllers.delete(key); jobs.delete(key); }
+        });
         jobs.set(key, job);
-        queue = job.catch(() => {});
+        queue = scheduled.catch(() => {});
         return job;
     }
 
@@ -227,7 +255,6 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
             }
             writer(messages);
             discardStaleCandidates(state, messages);
-            state.lastError = null;
             writeState(scope, state);
         });
     }
@@ -271,10 +298,29 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
     }
 
     function cancel(scope) {
+        deferred.delete(scopeKey(scope));
         controllers.get(scopeKey(scope))?.abort();
     }
-    function cancelAll() { for (const controller of controllers.values()) controller.abort(); }
-    async function waitForIdle(pending = [...jobs.values()]) {
+    function cancelAll({ defer = false } = {}) {
+        for (const [key, controller] of controllers) {
+            if (defer && !controller.signal.aborted) deferred.set(key, { scope: controller.scope, retry: controller.retry });
+            controller.abort();
+        }
+        if (!defer) deferred.clear();
+    }
+    async function resumeDeferred() {
+        for (const [key, pending] of deferred) {
+            if (!canRun()) return;
+            const job = jobs.get(key);
+            if (job) await job;
+            if (!canRun()) return;
+            if (deferred.get(key) !== pending) continue;
+            deferred.delete(key);
+            void schedule(pending.scope, { retry: pending.retry });
+        }
+    }
+    async function waitForIdle(scope = null) {
+        const pending = scope ? [jobs.get(scopeKey(scope))] : [...jobs.values()];
         let timer;
         try {
             await Promise.race([Promise.all(pending), new Promise((_, reject) => {
@@ -284,7 +330,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
     }
     async function reset(scope, { expectedRevision, prepare }) {
         cancel(scope);
-        await waitForIdle([jobs.get(scopeKey(scope))]);
+        await waitForIdle(scope);
         return withIdleSession(scope, async () => {
             const state = load(scope);
             if (expectedRevision !== (state.configRevision || 0)) throw new LedgerConflict('Ledger configuration changed.', 'NORA_LEDGER_CONFIGURATION_STALE');
@@ -318,5 +364,5 @@ export function createStoryLedger({ readChat, readState, writeState, merge, canR
         }
         return status(scope);
     }
-    return Object.freeze({ status, inspect, schedule, writeChat, edit, checkpoint, reserve, configure, cancel, cancelAll, waitForIdle, reset, withIdleSession });
+    return Object.freeze({ status, inspect, schedule, writeChat, edit, checkpoint, reserve, configure, cancel, cancelAll, resumeDeferred, waitForIdle, reset, withIdleSession });
 }

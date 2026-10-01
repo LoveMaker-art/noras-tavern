@@ -49,19 +49,55 @@ test('all explicit Nora translation calls and templates have English entries', (
     let calls = 0;
     for (const file of fs.readdirSync(directory).filter(f=>f.endsWith('.js'))) {
         const source = fs.readFileSync(path.join(directory,file),'utf8');
+        const tree = parse(source,{ecmaVersion:'latest',sourceType:'module'});
+        const local = {};
+        const objects = new Map();
+        const registrations = [];
+        const collect = node => {
+            if (!node || typeof node !== 'object') return;
+            if (node.type === 'VariableDeclarator' && node.init?.type === 'ObjectExpression') objects.set(node.id.name, node.init);
+            if (node.type === 'CallExpression' && node.callee.name === 'addLocaleData' && node.arguments[0]?.value === 'en') registrations.push(node.arguments[1]?.name);
+            for (const value of Object.values(node)) {
+                if (Array.isArray(value)) value.forEach(collect);
+                else if (value && typeof value === 'object') collect(value);
+            }
+        };
+        collect(tree);
+        for (const name of registrations) for (const property of objects.get(name)?.properties || []) {
+            const key = property.key.value, value = property.value.value;
+            assert.equal(typeof value, 'string', `${file}: local translation must be a string`);
+            assert.deepEqual([...value.matchAll(/\$\{\d+\}/g)].map(m => m[0]).sort(), [...key.matchAll(/\$\{\d+\}/g)].map(m => m[0]).sort(), key);
+            local[key] = value;
+        }
         const visit = (node) => {
             if (!node || typeof node !== 'object') return;
             let key;
             if (node.type === 'CallExpression' && node.callee.name === 'tr') key = node.arguments[0]?.value;
             if (node.type === 'TaggedTemplateExpression' && node.tag.name === 't') key = node.quasi.quasis.map((q,i)=>q.value.cooked+(i<node.quasi.expressions.length?'${'+i+'}':'')).join('');
-            if (key !== undefined) { calls++; assert.ok(Object.hasOwn(english,key), `${file}: ${key}`); }
+            if (key !== undefined) { calls++; assert.ok(Object.hasOwn(english,key) || Object.hasOwn(local,key), `${file}: ${key}`); }
             for (const [k,v] of Object.entries(node)) if (!['start','end'].includes(k)) {
                 if (Array.isArray(v)) v.forEach(visit); else if (v && typeof v === 'object') visit(v);
             }
         };
-        visit(parse(source,{ecmaVersion:'latest',sourceType:'module'}));
+        visit(tree);
     }
     assert.ok(calls > 300);
+});
+
+test('lazy backup and deletion dictionaries translate indexed templates at runtime', () => {
+    const result = runPage('en', `
+        const { t, translate } = await import('./public/scripts/nora-i18n/core.js');
+        const { createBackupController } = await import('../../native-extensions/nora-ui/backup-controller.js');
+        createBackupController({});
+        const { createWorldController } = await import('../../native-extensions/nora-ui/world-controller.js');
+        let notice;
+        const worlds = createWorldController({ store: { read: () => ({ worldModels: [{ id: 'fixture' }] }) },
+            worldRuntime: { previewWorldDeletion: async () => { throw new Error('fixture'); } },
+            normalizeError: e => e.message, showToast: text => { notice = text; } });
+        await worlds.deleteWorld('fixture');
+        console.log(JSON.stringify([translate('时间未知'), t(['删除所选（', '）'], 2), notice]));
+    `);
+    assert.deepEqual(result, ['Unknown time', 'Delete selected (2)', 'Unable to inspect deletion scope: fixture']);
 });
 
 test('early shell and module use the same language, no unresolved bootstrap token', () => {

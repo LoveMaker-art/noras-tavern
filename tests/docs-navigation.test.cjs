@@ -36,15 +36,15 @@ test('all local links and section anchors in user journeys resolve', () => {
   assert.ok(checked > 50);
 });
 
-test('primary download action stays on README and offers exactly three real installer links', () => {
+test('primary download action stays on README and offers exactly three platform download destinations', () => {
   const $ = parse('README.md');
   const main = $('div[align="center"] a').filter((_i, e) => $(e).text() === '下载启动器');
   assert.equal(main.attr('href'), '#下载安装包');
   assert.equal($('[id="下载安装包"]').length, 1);
-  const urls = $('a').filter((_i, e) => $(e).text() === '下载安装包').map((_i, e) => $(e).attr('href')).get();
+  const urls = $('a').filter((_i, e) => $(e).text() === '前往下载').map((_i, e) => $(e).attr('href')).get();
   assert.equal(urls.length, 3);
-  for (const suffix of ['mac-arm64.dmg', 'mac-x64.dmg', 'win-x64-setup.exe']) {
-    assert.equal(urls.filter(url => url.startsWith('https://github.com/LoveMaker-art/noras-tavern/releases/download/') && url.endsWith(suffix)).length, 1);
+  for (const platform of ['windows', 'mac-arm64', 'mac-x64']) {
+    assert.equal(urls.filter(url => url === `https://lovemaker-art.github.io/nora-landing/#download-${platform}`).length, 1);
   }
 });
 

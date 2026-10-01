@@ -1,10 +1,54 @@
-import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+import { addLocaleData, translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
+
+const backupMessages = {
+    '时间未知': 'Unknown time', '聊天备份': 'Chat backups', '删除所选（${0}）': 'Delete selected (${0})',
+    '选择备份 ${0}': 'Select backup ${0}', '未在当前列表中的世界': 'World not in the current list',
+    '旧格式聊天': 'Legacy chat', '已保护': 'Protected', '保护': 'Protect', '取消保护': 'Unprotect',
+    '范围：聊天及消息附带数据，未验证完整恢复一致性': 'Scope: chat and message metadata; complete restore consistency is not verified',
+    '变量更新已确认': 'Variable update confirmed', '变量更新中': 'Variable update pending',
+    '变量更新未完成': 'Variable update incomplete', '变量状态未确认': 'Variable state unconfirmed',
+    '归属标识': 'Ownership identifiers', '下载': 'Download', '恢复聊天': 'Restore chat', '核实恢复结果': 'Verify restore result',
+    '备份整理暂未完成，当前聊天不受影响，系统稍后重试。': 'Backup maintenance is pending. Your chat is unaffected; the system will retry.',
+    '所有世界的聊天备份。不是完整世界存档；仅可恢复仍存在的世界聊天，不替换卡片、世界书或库原件。': 'Chat backups for all worlds, not complete world saves. Restore existing chats only; cards, worldbooks and library originals are unchanged.',
+    '正在读取备份…': 'Loading backups...', '刷新': 'Refresh',
+    '每会话最多 ${0} 份，保留 ${1} 天。保护的备份不自动删除。': 'Up to ${0} backups per session, retained for ${1} days. Protected backups are not automatically deleted.',
+    '自动备份已关闭。': 'Automatic backups are disabled.', '等待备份：${0}': 'Pending backups: ${0}',
+    '已超出备份预算，暂停新增。聊天保存不受影响。': 'Backup budget exceeded; new backups are paused. Chat saving is unaffected.',
+    '近期备份异常，不代表聊天保存失败：': 'Recent backup errors do not mean chat saving failed: ',
+    '部分备份无法验证，已保留，不参与自动清理。': 'Unverifiable backups are retained and excluded from automatic cleanup.',
+    '重新加载页面': 'Reload page', '暂无可管理的新备份。': 'No managed backups yet.',
+    '保护只阻止本程序自动淘汰。取消保护后，备份会重新受数量和期限限制。': 'Protection prevents automatic cleanup by this application. Unprotected backups are subject to count and age limits.',
+    '旧备份及未受管文件（${0}）· 仅预览': 'Legacy and unmanaged backups (${0}) - preview only',
+    '恢复这份聊天备份？': 'Restore this chat backup?',
+    '先保护当前聊天，再用选定备份替换该会话。保护失败则不会覆盖。请先保留其他页面尚未保存的内容。': 'Protect the current chat before replacing this session. If protection fails, nothing is overwritten. Preserve unsaved content on other pages first.',
+    '会话：': 'Session: ', '消息：${0} → ${1}；候选回复：${2}。': 'Messages: ${0} to ${1}; alternative replies: ${2}.',
+    '恢复消息、消息附带的变量和候选回复；不替换卡片、世界书或库原件。': 'Restore messages, their variables and alternative replies; cards, worldbooks and library originals stay unchanged.',
+    '已记录变量更新成功，但不代表完整世界存档。': 'Variable update success was recorded; this is not a complete world save.',
+    '变量状态未确认或未完成，只恢复备份中实际存在的数据，不自动补齐。': 'Variable state is unconfirmed or incomplete. Only stored data is restored; missing data is not filled in.',
+    '旧压缩账本失效；本次不调用模型，继续聊天后按原文重新积累。': 'Old compressed memory is invalidated. No model is called now; memory accumulates from original history when chatting continues.',
+    '恢复后请保留未发送的输入，再主动重新加载页面；其他打开该会话的页面也需重新载入。': 'After restoring, preserve unsent input and reload this page and any other page viewing this session.',
+    '保护并恢复': 'Protect and restore',
+    '聊天已恢复。请先保留未发送的输入，再重新加载页面查看结果。': 'Chat restored. Preserve unsent input, then reload to see the result.',
+    '摘要同步待重试，聊天已保存。': 'Summary synchronization is pending; the chat is saved.',
+    '恢复结果尚未确认，请点击“核实恢复结果”；不要重复创建新的恢复请求。': 'Restore is not yet confirmed. Use Verify restore result; do not create a new restore request.',
+    '该会话仍在生成、保存或处理账本，可能来自其他页面。请等待完成后再恢复。': 'This session is generating, saving or processing memory, possibly on another page. Wait before restoring.',
+    '聊天或备份已变化，本次未恢复。请重新预览并确认。': 'Chat or backup changed; nothing was restored. Preview and confirm again.',
+    '无法保护当前聊天，本次未恢复。请检查备份空间和权限后重试。': 'Current chat could not be protected; nothing was restored. Check backup space and permissions.',
+    '目标世界或会话已不可用，不能用聊天备份重建世界。': 'The target world or session is unavailable. A chat backup cannot rebuild a world.',
+    '删除所选聊天备份？': 'Delete selected chat backups?',
+    '将永久删除 ${0} 份备份（${1}）。不删除当前聊天、世界或库原件。': 'Permanently delete ${0} backups (${1}). Current chats, worlds and library originals stay unchanged.',
+    '永久删除': 'Delete permanently', '已删除 ${0} 份备份，无法通过本页面恢复。': 'Deleted ${0} backups. This page cannot undo deletion.',
+    '另有 ${0} 份未删除：': '${0} backups were not deleted: ', '列表刷新失败，请刷新后继续管理。': 'Could not refresh the list. Refresh before continuing.',
+    '旧文件仅预览，不自动删除；时间为文件修改时间，不能视为创建时间。': 'Legacy files are preview-only and not automatically deleted. Times are modification times, not creation times.',
+    '扫描未完整完成，以下只是已读到的部分。': 'Scan incomplete; only collected results are shown.', '仅显示前 50 项。': 'Showing the first 50 items only.',
+};
 
 const bytes = value => `${(Number(value || 0) / 1048576).toFixed(2)} MiB`;
 const time = value => Number.isFinite(Number(value)) ? new Date(Number(value)).toLocaleString() : tr('时间未知');
 
 export function createBackupController({ dialogs, select, selectAll, escapeHtml: esc, headers,
     worlds = () => [], fetchImpl = globalThis.fetch, saveFile = downloadFile, reloadPage = () => globalThis.location.reload() }) {
+    addLocaleData('en', backupMessages);
     async function request(action, body = {}, binary = false) {
         const response = await fetchImpl(`/api/backups/chat/${action}`, { method: 'POST', headers: headers(), body: JSON.stringify(body) });
         if (response.ok && binary) return response.blob();

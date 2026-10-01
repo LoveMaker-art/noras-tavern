@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { parse } from 'acorn';
 
 const root = path.resolve(import.meta.dirname, '../../..');
 const uiRoot = path.join(root, 'native-extensions/nora-ui');
 const index = fs.readFileSync(path.join(uiRoot, 'index.js'), 'utf8');
+const imports = parse(index, { ecmaVersion: 'latest', sourceType: 'module' }).body.filter(node => node.type === 'ImportDeclaration');
 const gatewaySource = fs.readFileSync(path.join(uiRoot, 'card-action-gateway.js'), 'utf8');
 const messageControllerSource = fs.readFileSync(path.join(uiRoot, 'message-controller.js'), 'utf8');
 const worldControllerSource = fs.readFileSync(path.join(uiRoot, 'world-controller.js'), 'utf8');
@@ -77,13 +79,14 @@ for (const [file, factory] of modules) {
     if (!source.includes(`export function ${factory}`)) {
         throw new Error(`${file} must expose the ${factory} interface.`);
     }
-    const staticImport = `import { ${factory} } from './${file}'`;
+    const staticImport = imports.some(node => node.source.value === `./${file}`
+        && node.specifiers.some(specifier => specifier.imported?.name === factory));
     const dynamicImport = `import('./${file}')`;
     if (managementModules.has(file)) {
-        if (!index.includes(dynamicImport) || index.includes(staticImport)) {
+        if (!index.includes(dynamicImport) || staticImport) {
             throw new Error(`Nora UI management module must load on demand: ${file}`);
         }
-    } else if (!index.includes(staticImport)) {
+    } else if (!staticImport) {
         throw new Error(`Nora UI entry must compose ${factory}.`);
     }
 }

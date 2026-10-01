@@ -82,6 +82,9 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
     const desktopRequire = createRequire(path.join(root, 'launcher/desktop/package.json'));
     fs.cpSync(path.dirname(desktopRequire.resolve('semver/package.json')), path.join(f.temporary, 'node_modules/semver'), { recursive: true });
     fs.copyFileSync(path.join(root, 'deployment/update/releases.js'), path.join(f.temporary, 'releases.cjs'));
+    for (const file of ['launcher-errors.js', 'telemetry-contract.json']) {
+        fs.copyFileSync(path.join(root, 'launcher/desktop', file), path.join(f.temporary, file));
+    }
     const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.cjs'));
     assert.throws(() => client.validateSystem(system, { tag_name: 'v2.3.1' }, system.platform, system.arch, '0.3.2'), /升级启动器/);
     const tag = 'v2.3.1', base = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/`;

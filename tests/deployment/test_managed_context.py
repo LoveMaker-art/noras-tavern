@@ -185,10 +185,14 @@ class ManagedContextTests(unittest.TestCase):
                 case = Path(temporary).resolve()
                 home = case / "home"
                 home.mkdir()
+                (home / "apps/tavern-runtime").mkdir(parents=True)
+                (home / "apps/tavern-runtime/native-runtime.json").write_text("{}")
+                (home / "tavern-state").mkdir()
                 (home / "skills").mkdir()
                 (home / "AGENTS.md").write_bytes(b"old rules")
                 (home / "AGENTS.md.bak").write_bytes(b"previous rules")
                 (home / "config.yaml").write_bytes(b"unrelated: preserve\n")
+                os.environ["TAVERN_DATA_ROOT"] = str(home)
                 def extract(_release, source, _manifest, **_kwargs):
                     for name in ("ops/skills/agents-tavern.md", "ops/installer/templates/greeting.md",
                                  "ops/scripts/nora-instance.py", "ops/updater/managed_context.py",
@@ -231,5 +235,11 @@ class ManagedContextTests(unittest.TestCase):
                 self.assertEqual((home / "AGENTS.md.bak").read_bytes(), b"previous rules" if failure else b"old rules")
                 self.assertEqual((home / "config.yaml").read_bytes(), b"unrelated: preserve\n")
                 self.assertEqual((home / "clawchat/greeting.md").exists(), not failure)
-                self.assertEqual(list(home.rglob("agents-rollback")), [])
-                self.assertEqual(len(list(home.rglob("AGENTS.md.bak"))), 1)
+                snapshots = list(home.rglob("agents-rollback"))
+                if failure:
+                    self.assertEqual(len(snapshots), 1)
+                    self.assertEqual((snapshots[0] / "AGENTS.md").read_bytes(), b"old rules")
+                    self.assertEqual((snapshots[0] / "AGENTS.md.bak").read_bytes(), b"previous rules")
+                else:
+                    self.assertEqual(snapshots, [])
+                self.assertEqual(len(list(home.rglob("AGENTS.md.bak"))), 2 if failure else 1)

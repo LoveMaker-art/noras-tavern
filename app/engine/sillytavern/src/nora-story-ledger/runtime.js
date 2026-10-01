@@ -59,16 +59,18 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             if ((state.active?.id && previous?.active?.id !== state.active.id)
                 || (previous?.imported?.id && !state.imported)) void requestStoryProjection(directories);
         },
-        merge: input => import('./model.js').then(module => module.mergeWithActiveModel(directories, { ...input,
-            report: (_label, details) => reportLedger(directories, 'model-attempt', { ...input.scope, taskId: input.taskId, ...details }) })),
+        prepareMerge: async scope => {
+            const { snapshotActiveLedgerModel } = await import('./model.js');
+            const snapshot = await snapshotActiveLedgerModel(directories, scope);
+            return { isCurrent: snapshot.isCurrent, merge: input => snapshot.merge({ ...input,
+                report: (_label, details) => reportLedger(directories, 'model-attempt', { ...input.scope, taskId: input.taskId, ...details }) }) };
+        },
         report: (event, details) => reportLedger(directories, event, details),
     });
-    activity.subscribe(() => {
-        if (activity.hasGeneration()) plugin.cancelAll();
-        else for (const bindingKey of bindings.keys()) {
-            const scope = bindings.get(bindingKey).scope;
-            void Promise.resolve().then(() => plugin.schedule(scope)).catch(() => {});
-        }
+    activity.subscribe(reason => {
+        if (reason === 'expired') return;
+        if (activity.hasGeneration()) plugin.cancelAll({ defer: true });
+        else void plugin.resumeDeferred().catch(() => {});
     });
     async function resolve(scope, expectedPath = null) {
         const identity = value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value);
@@ -141,13 +143,23 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
     }
     async function restore(scope, input) {
         await resolve(scope);
-        const result = await chatSessionOperations(directories).restore(scope, () => plugin.withIdleSession(scope, async () => {
-            const enabled = readState(scope)?.enabled !== false;
-            return chatBackupStore(directories).restore({ ...input, ...scope }, { ledgerEnabled: enabled });
-        }));
+        const result = await activity.restore(scope, async () => {
+            plugin.cancel(scope);
+            await plugin.waitForIdle(scope);
+            return plugin.withIdleSession(scope, async () => {
+                const enabled = readState(scope)?.enabled !== false;
+                return chatBackupStore(directories).restore({ ...input, ...scope }, { ledgerEnabled: enabled });
+            });
+        });
         // Canonical history/ledger invalidation already committed together.
         // Projection failure is retried, not misreported as an uncommitted chat.
         return { ...result, projectionPending: !await requestStoryProjection(directories) };
+    }
+    async function configure(scope, patch) {
+        const disableOnly = patch.enabled === false && Object.keys(patch).every(key => ['enabled', 'expectedRevision'].includes(key));
+        if (disableOnly) return plugin.configure(scope, patch);
+        if (activity.hasGeneration()) throw new LedgerConflict('Foreground model work is active.', 'NORA_CHAT_OPERATION_BUSY');
+        return activity.restore(scope, () => plugin.configure(scope, patch));
     }
     async function reset(scope, { expectedRevision, expectedSignature }) {
         const { filePath } = await resolve(scope);
@@ -173,7 +185,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
         projectionRecovered = true;
         if (fs.existsSync(root)) void requestStoryProjection(directories);
     }
-    const runtime = Object.freeze({ plugin, resolve, writeChat, edit, checkpoint, restore, reset, guardDestructive, recoverProjection: recover });
+    const runtime = Object.freeze({ plugin, resolve, writeChat, edit, checkpoint, restore, reset, configure, guardDestructive, recoverProjection: recover });
     runtimes.set(key, runtime);
     // Once per process/user on first ledger use: recover an activation that
     // committed before a restart, or a previously interrupted memory write.

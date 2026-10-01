@@ -12,7 +12,7 @@ export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 }
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw new TypeError('Positive lease duration required.');
     const sessions = new Map();
     const listeners = new Set();
-    const notify = () => { for (const listener of listeners) listener(); };
+    const notify = reason => { for (const listener of listeners) listener(reason); };
     function keyOf(scope) {
         if (![scope?.worldId, scope?.sessionId].every(value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value))) throw conflict('NORA_CHAT_OPERATION_INVALID');
         return scopeKey(scope);
@@ -21,7 +21,7 @@ export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 }
         const entry = sessions.get(key);
         if (entry && !entry.writes && (entry.ended || entry.expiresAt <= now())) {
             sessions.delete(key);
-            queueMicrotask(notify);
+            queueMicrotask(() => notify(entry.ended ? 'released' : 'expired'));
             return null;
         }
         return entry;

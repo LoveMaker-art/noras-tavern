@@ -6,6 +6,7 @@ const errors = {
     NORA_LEDGER_CAPACITY_REQUIRED: '缺少模型上下文配置', NORA_LEDGER_OUTPUT_LIMIT: '整理结果超过输出上限',
     NORA_LEDGER_OUTPUT_INVALID: '模型未返回有效的剧情记忆', NORA_LEDGER_CONFIGURATION_STALE: '设置已发生变化，请保留修改后重新打开',
     NORA_LEDGER_MODEL_SCOPE_UNAVAILABLE: '请先打开目标世界', NORA_LEDGER_COMPRESSION_FAILED: '整理失败',
+    NORA_LEDGER_MODEL_CHANGED: '整理期间模型发生变化，请确认配置后重试',
 };
 
 export function createLedgerSettingsController({ dialogs, select, escapeHtml: esc, request, isGenerating = () => false }) {
@@ -109,27 +110,26 @@ export function createLedgerSettingsController({ dialogs, select, escapeHtml: es
                 } catch (error) { if (alive()) dialogs.toast(errorText(error), { tone: 'error' }); }
                 finally { busy = false; if (alive()) controls(); }
             });
-            for (const action of ['compress', 'reset']) select(`[data-ledger-${action}]`, modal).addEventListener('click', () => {
+            for (const action of ['compress', 'reset']) select(`[data-ledger-${action}]`, modal).addEventListener('click', async () => {
                 if (!alive() || busy || isGenerating()) return;
-                void draft.leave(async () => {
-                    busy = true; controls();
-                    try {
-                        const reset = action === 'reset';
-                        const approved = await dialogs.confirm({ title: tr(reset ? '重置剧情记忆？' : '重新整理？'), tone: reset ? 'danger' : 'primary',
-                            body: tr(reset ? '先备份，再清除当前会话的剧情记忆并关闭自动整理。聊天和变量保留。原始历史可能超过模型容量，完成后需要刷新。' : '将调用当前模型重新整理，可能产生费用。'), restoreSheet: true });
-                        if (!approved || !alive() || isGenerating()) return;
-                        const fresh = await request('inspect', scope);
-                        if (!alive() || isGenerating()) return;
-                        await request(action, scope, reset ? { confirm: true, expectedRevision: fresh.configRevision, expectedSignature: fresh.expectedSignature } : {});
-                        if (alive()) {
-                            state = await request('inspect', scope);
-                            if (!alive()) return;
-                            fill(); renderState();
-                            if (reset) dialogs.toast(tr('记忆已重置，请刷新页面'));
-                        }
-                    } catch (error) { if (alive()) dialogs.toast(errorText(error), { tone: 'error' }); }
-                    finally { busy = false; if (alive()) controls(); }
-                });
+                if (!await draft.check() || !alive() || busy || isGenerating()) return;
+                busy = true; controls();
+                try {
+                    const reset = action === 'reset';
+                    const approved = await dialogs.confirm({ title: tr(reset ? '重置剧情记忆？' : '重新整理？'), tone: reset ? 'danger' : 'primary',
+                        body: tr(reset ? '先备份，再清除当前会话的剧情记忆并关闭自动整理。聊天和变量保留。原始历史可能超过模型容量，完成后需要刷新。' : '将调用当前模型重新整理，可能产生费用。'), restoreSheet: true });
+                    if (!approved || !alive() || isGenerating()) return;
+                    const fresh = await request('inspect', scope);
+                    if (!alive() || isGenerating()) return;
+                    await request(action, scope, reset ? { confirm: true, expectedRevision: fresh.configRevision, expectedSignature: fresh.expectedSignature } : {});
+                    if (alive()) {
+                        state = await request('inspect', scope);
+                        if (!alive()) return;
+                        fill(); renderState();
+                        if (reset) dialogs.toast(tr('记忆已重置，请刷新页面'));
+                    }
+                } catch (error) { if (alive()) dialogs.toast(errorText(error), { tone: 'error' }); }
+                finally { busy = false; if (alive()) controls(); }
             });
             const poll = async () => {
                 if (!alive()) {

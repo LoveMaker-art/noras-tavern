@@ -7,6 +7,7 @@ import {
     resolveMvuZodUrl,
 } from '../../../native-extensions/nora-mvu/runtime.js';
 import { createStCardAdapter, inspectCharacterRuntime } from '../public/scripts/nora-adapters/st-card-adapter.js';
+import { createWorldHelperIdentity } from '../public/scripts/nora-worlds/world-helper-identity.js';
 
 function characterWithScripts(scripts, characterBook = null) {
     return {
@@ -110,11 +111,13 @@ test('an embedded MVU Runtime never calls the managed Runtime ensure path', asyn
         }]);
         const context = {
             getActiveExtensionNames: () => ['third-party/JS-Slash-Runner'],
-            extensionSettings: { tavern_helper: { script: { enabled: { characters: [character.name] } } } },
+            extensionSettings: { tavern_helper: { script: { enabled: { characters: ['nora-world:fixture'] } } } },
         };
-        const adapter = createStCardAdapter(() => context, { saveUiSettings: () => {} });
+        const identity = createWorldHelperIdentity();
+        identity.configure(() => [{ world_id: 'fixture', runtime_card: { binding: { avatar: character.avatar } } }]);
+        const adapter = createStCardAdapter(() => context, { saveUiSettings: () => {}, helperIdentity: identity });
 
-        const evidence = await adapter.ensureCharacterCapability(character, 'mvu');
+        const evidence = await adapter.ensureCharacterCapability(character, 'mvu', { worldId: 'fixture' });
 
         assert.equal(evidence.runtime_source, 'embedded');
         assert.equal(evidence.runtime_ready, true);

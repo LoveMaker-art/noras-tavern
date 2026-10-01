@@ -87,6 +87,12 @@ export function createDialogController({ select, selectAll, escapeHtml, closeIco
         closeGuard = guard;
         return Object.freeze({
             release() { if (closeGuard === guard) closeGuard = null; },
+            async check() {
+                if (leaving || checkingClose || closeGuard !== guard) return false;
+                leaving = true;
+                try { return await guard(); }
+                finally { leaving = false; }
+            },
             async leave(action) {
                 if (leaving || checkingClose || closeGuard !== guard) return;
                 leaving = true;

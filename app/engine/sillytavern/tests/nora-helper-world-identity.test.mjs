@@ -28,6 +28,10 @@ test('World consent resolves authoritative bindings, not names, filenames or imp
         worlds[0].lifecycle = { status };
         assert.equal(identity.key('renamed.png', 'a'), null);
     }
+    worlds[0].lifecycle = { status: 'FAILED', error: { deletion_pending: true } };
+    assert.equal(identity.key('renamed.png', 'a'), null, 'a failed pending deletion cannot restore execution consent');
+    worlds[0].lifecycle = { status: 'FAILED', error: { code: 'NORA_WORLD_RESOURCE_MISSING' } };
+    assert.equal(identity.key('renamed.png', 'a'), 'nora-world:a', 'unrelated repair failures do not silently reset consent');
 });
 
 async function fixture() {
@@ -90,4 +94,14 @@ test('native Helper prompt captures the original World and does not enable anoth
     finish(true); await Promise.resolve(); await Promise.resolve();
     assert.equal(f.scope.enabled, false, 'the Nora controller, not a late enabled=true, grants the captured World');
     assert.deepEqual([...f.settings.script.popuped.characters], ['nora-world:a']);
+});
+
+test('shipped Helper revokes effective consent until a failed deletion is resolved', async () => {
+    const f = await fixture();
+    f.scope.enabled = true;
+    f.worlds[0].lifecycle = { status: 'FAILED', error: { deletion_pending: true } };
+    f.identity.changed();
+    assert.equal(f.scope.enabled, false);
+    assert.equal(f.scope.enabled_scripts.length, 0);
+    assert.ok(f.settings.script.enabled.characters.includes('nora-world:a'), 'do not destroy stored consent during a retryable deletion');
 });

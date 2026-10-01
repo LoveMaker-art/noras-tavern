@@ -9,6 +9,7 @@ export function createWorldHelperIdentity() {
             if (!avatar) return null;
             if (!readWorlds) return { key: avatar, avatar, worldId: null, name: '' };
             const matches = readWorlds().filter(world => !['DELETING', 'DELETED'].includes(world.lifecycle?.status)
+                && !world.lifecycle?.error?.deletion_pending
                 && world.runtime_card?.binding?.avatar === avatar
                 && (!worldId || world.world_id === worldId));
             if (matches.length !== 1) return null;

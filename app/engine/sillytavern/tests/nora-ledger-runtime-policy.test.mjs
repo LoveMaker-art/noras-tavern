@@ -59,6 +59,93 @@ test('failure remains paused across automatic scheduling and restart; explicit r
     assert.equal(calls, 2);
 });
 
+test('ordinary history edits do not clear a model failure pause', async () => {
+    let calls = 0;
+    const f = fixture(async () => { calls++; throw Object.assign(new Error('missing capacity'), { code: 'NORA_LEDGER_CAPACITY_REQUIRED' }); });
+    await f.plugin.schedule(scope);
+    const before = await f.plugin.inspect(scope);
+    await f.plugin.edit(scope, { messageId: 31, text: 'Edited reply', expectedSignature: before.expectedSignature }, () => {});
+    await f.plugin.schedule(scope);
+    assert.equal(calls, 1);
+    assert.equal(f.state.lastError.code, 'NORA_LEDGER_CAPACITY_REQUIRED');
+});
+
+test('cancelled failure queued behind a config change cannot pause the new revision', async () => {
+    let rejectModel, entered, releaseLock, locked;
+    const reached = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { locked = resolve; });
+    const barrier = new Promise(resolve => { releaseLock = resolve; });
+    const f = fixture(() => { entered(); return new Promise((_, reject) => { rejectModel = reject; }); });
+    const job = f.plugin.schedule(scope); await reached;
+    const { expectedSignature } = await f.plugin.inspect(scope);
+    const checkpoint = f.plugin.checkpoint(scope, expectedSignature, async () => { locked(); await barrier; });
+    await held;
+    const configure = f.plugin.configure(scope, { timeoutSeconds: 600 });
+    rejectModel(new Error('old request failed'));
+    await new Promise(resolve => setImmediate(resolve));
+    releaseLock(); await checkpoint; await configure; await job;
+    assert.equal(f.state.configRevision, 1);
+    assert.equal(f.state.lastError, null);
+});
+
+test('model snapshot invalidation prevents a mixed-model candidate', async () => {
+    let current = true, snapshots = 0, calls = 0;
+    const f = fixture(async () => assert.fail('snapshot merger must own every segment'), {
+        prepareMerge: async () => { snapshots++; return { isCurrent: () => current, merge: async () => { calls++; current = false; return memory(); } }; },
+    });
+    await f.plugin.schedule(scope);
+    assert.equal(snapshots, 1);
+    assert.equal(calls, 1);
+    assert.equal(f.state.pending, null);
+    assert.equal(f.state.lastError.code, 'NORA_LEDGER_MODEL_CHANGED');
+});
+
+test('model currency is checked before provider-sized parts and correction attempts', async () => {
+    for (const invalid of [false, true]) {
+        let current = true, calls = 0;
+        const parts = Array.from({ length: 3 }, (_, i) => ({ startTurn: i + 1, endTurn: i + 1, text: '中'.repeat(2500) }));
+        await assert.rejects(mergeLedgerModel({ model, input: { ...input, segment: { ...input.segment, parts } },
+            isCurrent: () => current, report: () => {}, fetchImpl: async () => {
+                calls++; current = false;
+                return new Response(JSON.stringify({ choices: [{ message: { content: invalid ? 'not JSON' : JSON.stringify(memory()) } }] }));
+            } }), { code: 'NORA_LEDGER_MODEL_CHANGED' });
+        assert.equal(calls, 1);
+    }
+});
+
+test('cancelling a queued session releases its restore without bypassing another running task', async () => {
+    let entered, release, calls = 0;
+    const reached = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const f = fixture(async () => { calls++; entered(); await gate; return memory(); });
+    const running = f.plugin.schedule(scope); await reached;
+    const queued = { worldId: 'other-world', sessionId: 'other-session' };
+    const waiting = f.plugin.schedule(queued);
+    f.plugin.cancel(queued);
+    await f.plugin.waitForIdle(queued); await waiting;
+    await f.plugin.withIdleSession(queued, () => {});
+    assert.equal((await f.plugin.status(scope)).running, true);
+    assert.equal(calls, 1);
+    release(); await running;
+    assert.equal(calls, 1);
+});
+
+test('read-triggered lease expiry does not resume deferred compression', async () => {
+    let time = 0, calls = 0;
+    const activity = createChatSessionOperations({ now: () => time, leaseMs: 1 });
+    const f = fixture(async () => { calls++; return memory(); }, { canRun: () => !activity.hasGeneration() });
+    activity.subscribe(reason => {
+        if (reason === 'expired') return;
+        if (activity.hasGeneration()) f.plugin.cancelAll({ defer: true });
+        else void f.plugin.resumeDeferred();
+    });
+    activity.begin(scope, 'generation'); await f.plugin.schedule(scope);
+    time = 2;
+    await f.plugin.inspect(scope);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(calls, 0);
+});
+
 test('foreground ownership cancels background, blocks new work, then permits idle scheduling', async () => {
     const activity = createChatSessionOperations();
     let calls = 0, entered;
@@ -74,6 +161,20 @@ test('foreground ownership cancels background, blocks new work, then permits idl
     assert.equal((await f.plugin.status(scope)).taskPhase, 'waiting');
     activity.end(scope, lease.token);
     assert.equal(activity.hasGeneration(), false);
+});
+
+test('idle resumes only eligible work explicitly deferred behind foreground generation', async () => {
+    let idle = false, calls = 0;
+    const f = fixture(async () => { calls++; return memory(); }, { canRun: () => idle });
+    await f.plugin.inspect(scope);
+    idle = true;
+    await f.plugin.resumeDeferred(); await f.plugin.waitForIdle();
+    assert.equal(calls, 0);
+    idle = false;
+    await f.plugin.schedule(scope);
+    idle = true;
+    await f.plugin.resumeDeferred(); await f.plugin.waitForIdle();
+    assert.equal(calls, 1);
 });
 
 test('configuration patch preserves omitted fields and stale saves fail before mutation', async () => {

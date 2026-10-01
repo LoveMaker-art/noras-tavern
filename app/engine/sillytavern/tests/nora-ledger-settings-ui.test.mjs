@@ -3,6 +3,10 @@ import test from 'node:test';
 import { load } from 'cheerio';
 import { createLedgerSettingsController } from '../../../native-extensions/nora-ui/ledger-settings-controller.js';
 import { createExtensionController } from '../../../native-extensions/nora-ui/extension-controller.js';
+import { setLocaleData } from '../public/scripts/nora-i18n/core.js';
+
+globalThis[Symbol.for('tavern.i18n')].locale = 'zh-cn';
+setLocaleData({});
 
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function fixture() {
@@ -38,7 +42,7 @@ function fixture() {
             const fn = async () => !isBusy() && !dom(form.raw).find('[type="submit"][disabled]').length
                 && (snapshot() === initial || await this.confirm({ title: 'discard', restoreSheet: true }));
             guard = fn;
-            return { async leave(action) { if (await fn()) return action(); } };
+            return { check: fn, async leave(action) { if (await fn()) return action(); } };
         },
         async confirm(options) { confirmations.push(options); this.version += 2; return accepted; },
         toast(value) { toasts.push(value); }, normalizeError: error => error.message,

@@ -58,7 +58,7 @@ function draftFixture() {
     const toggle = { name: 'enabled', type: 'checkbox', checked: true };
     let busy = false, mode = 'constant';
     const submit = { disabled: false };
-    const form = { elements: [text, toggle], querySelector: () => submit.disabled ? submit : null };
+    const form = { elements: [text, toggle], isConnected: true, querySelector: () => submit.disabled ? submit : null };
     const draft = f.dialogs.protectForm(form, { isBusy: () => busy, readState: () => mode });
     return { ...f, draft, text, toggle, submit, form,
         busy: value => { busy = value; }, mode: value => { mode = value; } };
@@ -75,6 +75,25 @@ test('header back precedes title and close, uses the current callback and never 
     assert.deepEqual(visits, ['menu', 'scripts']);
     f.dialogs.open('Menu', '<p>menu</p>');
     assert.deepEqual(f.header.children, [f.title, f.close]);
+});
+
+test('in-place action checks retain draft protection after cancelling a confirmation', async () => {
+    const f = draftFixture();
+    assert.equal(await f.draft.check(), true);
+    const confirmation = f.dialogs.confirm({ title: 'Reset', restoreSheet: true });
+    f.select('.nora-confirm-cancel').click();
+    assert.equal(await confirmation, false);
+    f.text.value = 'later edit';
+    const closing = f.dialogs.close();
+    await Promise.resolve();
+    assert.match(f.modal.markup, /放弃未保存|Discard unsaved/);
+    f.select('.nora-confirm-cancel').click(); await closing;
+    assert.equal(f.text.value, 'later edit');
+    let left = false;
+    const back = f.draft.leave(() => { left = true; });
+    await Promise.resolve();
+    f.select('.nora-confirm-cancel').click(); await back;
+    assert.equal(left, false);
 });
 
 test('protected editors ignore backdrop clicks, including before any edits', () => {

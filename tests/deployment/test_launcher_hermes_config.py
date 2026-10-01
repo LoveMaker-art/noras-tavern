@@ -27,7 +27,7 @@ class HermesConfigContractTests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout.splitlines()[-1])['ok'])
             import yaml
             config = yaml.safe_load((home / 'config.yaml').read_text())
-            self.assertEqual(config['model']['provider'], 'custom')
+            self.assertEqual(config['model']['provider'], 'custom:nora-launcher')
             self.assertEqual(config['model']['default'], 'contract-model')
             self.assertEqual(config['model']['base_url'], 'https://relay.example/v1')
             self.assertEqual(config['model']['api_key'], 'test-only-not-valid')

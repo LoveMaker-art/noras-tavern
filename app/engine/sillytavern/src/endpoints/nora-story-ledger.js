@@ -47,7 +47,7 @@ for (const action of ['status', 'configure', 'compress', 'edit', 'checkpoint', '
             }
             if (action === 'configure') {
                 const { enabled, expectedRevision, contextLimitOverride, outputTokenLimit, timeoutSeconds } = request.body;
-                return response.json(await runtime.plugin.configure(scope, Object.fromEntries(Object.entries({ enabled, expectedRevision, contextLimitOverride, outputTokenLimit, timeoutSeconds }).filter(([, value]) => value !== undefined))));
+                return response.json(await runtime.configure(scope, Object.fromEntries(Object.entries({ enabled, expectedRevision, contextLimitOverride, outputTokenLimit, timeoutSeconds }).filter(([, value]) => value !== undefined))));
             }
             // Reading status must not silently start a billable model request.
             if (action === 'compress') void runtime.plugin.schedule(scope, { retry: true });

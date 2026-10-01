@@ -268,7 +268,7 @@ for (const signal of ['function toast(', 'function notice(', 'function confirm('
     if (!dialogController.includes(signal)) throw new Error(`The Nora dialog controller must implement the product message surface: ${signal}`);
 }
 
-for (const signal of ['data-delete-world', 'async function deleteWorld(', 'worldRuntime.remove(worldId)', 'confirmAction({', "tone: 'danger'"]) {
+for (const signal of ['data-world-remove', 'async function deleteWorld(', 'worldRuntime.previewWorldDeletion(worldId)', 'worldRuntime.remove(worldId, { expectedPlan: preview.token })', 'confirmAction({', "tone: 'danger'"]) {
     if (!worldController.includes(signal)) throw new Error(`World deletion must use the v2 World Runtime command: ${signal}`);
 }
 
