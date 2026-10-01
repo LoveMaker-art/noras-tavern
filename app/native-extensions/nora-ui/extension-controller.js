@@ -1,6 +1,8 @@
 import { translate as tr, t } from '../../engine/sillytavern/public/scripts/nora-i18n/core.js';
 import { prepareScriptImport } from '../../engine/sillytavern/public/scripts/nora-controls/script-import.js';
 import { scriptUsage, regexUsage } from './extension-usage.js';
+import { builtinPlugins, ledgerPhase, pluginFeatureStatus } from '../../engine/sillytavern/public/scripts/nora-controls/plugin-catalog.js';
+import { createLedgerSettingsController } from './ledger-settings-controller.js';
 
 const managedId = 'nora-mvu-headless-runtime';
 const scopes = { character: '本世界', preset: '当前预设', global: '全局' };
@@ -11,6 +13,7 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
     let target;
     let busy = false;
     let runtimeReloadPending = false;
+    const ledger = createLedgerSettingsController({ dialogs, select, escapeHtml: esc, request: ledgerRequest, isGenerating });
     const scriptScopes = () => activeWorldModel()?.preset?.preset?.extensions?.tavern_helper || activeWorldModel()?.preset?.preset?.extensions?.TavernHelper_scripts
         ? ['character', 'preset', 'global'] : ['character', 'global'];
     const attr = value => esc(value).replaceAll('"', '&quot;');
@@ -35,16 +38,9 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
     }
     function menu() {
         if (!current()) return;
-        const entries = [
-            ['regex', '正则', 'fa-code'],
-            ['tavern_helper', '酒馆助手', 'fa-scroll'],
-            ['mvu', 'MVU 变量', 'fa-sliders'],
-            ['prompt_template', '提示词模板', 'fa-file-lines'],
-        ].filter(([key]) => activeWorldModel()?.capabilities?.declared?.includes(key)
-            || key === 'regex' && activeWorldModel()?.preset?.preset?.extensions?.regex_scripts?.length);
-        const entry = ([key, label, icon], summary = tr('加载中')) => `<button class="nora-extension-entry" data-extension="${key}" type="button"><i class="fa-solid ${icon} nora-extension-icon" aria-hidden="true"></i><span><strong>${tr(label)}</strong><small data-extension-summary="${key}">${esc(summary)}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`;
-        const templateStatus = { READY: tr('模板已加载'), PENDING: tr('模板加载中'), DEGRADED: tr('模板加载失败，点击处理') };
-        const modal = sheet(tr('扩展管理'), `${plugins && target.worldId ? `<h3>${tr('当前世界相关')}</h3>` : ''}<div class="nora-extension-menu">${entries.map(item => entry(item, item[0] === 'prompt_template' ? templateStatus[activeWorldModel()?.capabilities?.items?.prompt_template?.status] || tr('模板加载中') : undefined)).join('')}</div><div data-extension-empty>${entries.length ? '' : `<p class="nora-model-note">${tr(target.worldId ? '正在检查当前世界的扩展' : '未打开世界，可管理全局插件加载。')}</p>`}</div>${plugins ? `<section data-other-plugins><h3>${tr(target.worldId ? '其他已安装插件' : '已安装插件')}</h3><div data-plugin-list>${tr('加载中')}</div></section>` : ''}`, null);
+        const entries = Object.values(builtinPlugins).map(item => [item.key, item.title, item.icon]);
+        const entry = ([key, label, icon]) => `<button class="nora-extension-entry" data-extension="${key}" type="button"><i class="fa-solid ${icon} nora-extension-icon" aria-hidden="true"></i><span><strong>${tr(label)}</strong><small data-plugin-runtime="${key}">${tr('加载状态未读取')}</small><small data-extension-summary="${key}">${tr(pluginFeatureStatus({ builtin: { key } }, activeWorldModel()) || '全局加载')}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`;
+        const modal = sheet(tr('扩展管理'), `<h3>${tr('内置插件')}</h3><div class="nora-extension-menu">${entries.map(item => entry(item)).join('')}</div><div data-extension-empty></div>${plugins ? `<section data-other-plugins><h3>${tr('自行安装')}</h3><div data-plugin-list>${tr('加载中')}</div></section>` : ''}`, null);
         const version = dialogs.version;
         const alive = () => current() && dialogs.version === version;
         let inventory = [];
@@ -71,9 +67,8 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
         };
         const renderOthers = () => {
             if (!plugins || !alive() || !inventoryReady) return;
-            const others = inventory.filter(item => !item.builtin || !select(`[data-extension="${item.builtin.key}"]`, modal));
-            const html = others.map(item => `<button class="nora-extension-entry" data-installed-plugin="${attr(item.name)}" type="button"><span><strong>${esc(item.builtin ? tr(item.builtin.title) : item.displayName)}</strong><small>${tr(item.builtin ? '内置插件' : '第三方插件 · 全局加载')}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`).join('');
-            select('[data-other-plugins]', modal).hidden = !others.length;
+            const others = inventory.filter(item => !item.builtin);
+            const html = others.map(item => `<button class="nora-extension-entry" data-installed-plugin="${attr(item.name)}" type="button"><span><strong>${esc(item.displayName)}</strong><small>${tr(item.status || '加载状态未读取')} · ${tr('全局加载')}</small></span><i class="fa-solid fa-chevron-right" aria-hidden="true"></i></button>`).join('') || `<p class="nora-extension-empty">${tr('尚未安装第三方插件')}</p>`;
             if (otherHtml === html) return;
             otherHtml = html;
             select('[data-plugin-list]', modal).innerHTML = html;
@@ -92,10 +87,14 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
         });
         selectAll('[data-extension]', modal).forEach(bind);
         if (plugins) {
-            const loadInventory = () => plugins.catalog().then(items => {
+            const loadInventory = () => (plugins.inventory ? plugins.inventory() : plugins.catalog()).then(items => {
                 if (!alive()) return;
                 inventory = items;
                 inventoryReady = true;
+                for (const item of items.filter(item => item.builtin)) {
+                    const label = select(`[data-plugin-runtime="${item.builtin.key}"]`, modal);
+                    if (label) label.textContent = tr(item.status || '加载状态未读取');
+                }
                 renderOthers();
             }).catch(error => {
                 if (!alive()) return;
@@ -111,40 +110,21 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
             const label = select(`[data-extension-summary="${key}"]`, modal);
             if (label) label.textContent = summary;
         };
-        const showEmpty = () => {
-            if (!alive() || select('[data-extension]', modal)) return;
-            select('[data-extension-empty]', modal).innerHTML = `<div class="nora-extension-empty"><p>${tr('当前世界暂无扩展')}</p><button class="nora-secondary" data-add-script type="button">＋ ${tr('导入脚本')}</button></div>`;
-            select('[data-add-script]', modal)?.addEventListener('click', () => {
-                if (!alive()) return;
-                if (!plugins) return void scripts(true);
-                const helper = inventory.find(item => item.builtin?.key === 'tavern_helper');
-                if (!helper) return dialogs.toast(tr('插件列表尚未就绪，请稍后重试。'));
-                void plugins.manage(helper, { back: () => { if (sameWorld()) menu(); }, isCurrent: sameWorld,
-                    openSettings: () => { if (sameWorld()) void scripts(true); } });
-            });
-        };
         const showScripts = summary => {
             if (!alive()) return;
-            if (!select('[data-extension="tavern_helper"]', modal)) {
-                select('.nora-extension-menu', modal).insertAdjacentHTML('beforeend', entry(['tavern_helper', '酒馆助手', 'fa-scroll'], summary));
-                bind(select('[data-extension="tavern_helper"]', modal));
-            } else update('tavern_helper', summary);
-            select('[data-extension-empty]', modal).innerHTML = '';
-            renderOthers();
+            update('tavern_helper', summary);
         };
         const sources = scriptScopes();
         void Promise.all(sources.map(scope => run('scripts.list', { scope }))).then(groups => {
             if (!alive()) return;
             const counts = groups.map(scriptUsage);
-            if (counts.some(count => count.total) || entries.some(([key]) => key === 'tavern_helper')) {
-                const summary = counts.map((count, index) => count.total
-                    ? t`${tr(scopes[sources[index]])}：${count.total} 个，启用 ${count.enabled} 个` : '').filter(Boolean).join(' · ');
-                showScripts(summary || tr('本世界声明使用，暂无独立脚本'));
-            } else showEmpty();
+            const summary = counts.map((count, index) => count.total
+                ? t`${tr(scopes[sources[index]])}：${count.total} 个，启用 ${count.enabled} 个` : '').filter(Boolean).join(' · ');
+            showScripts(summary || tr('暂无独立脚本'));
         }).catch(error => {
             // A never-loaded Helper is normal for a plain world. Merely opening
             // management must neither load it nor invent a failed capability.
-            if (error?.code === 'NORA_HELPER_NOT_READY' && !entries.some(([key]) => key === 'tavern_helper')) showEmpty();
+            if (error?.code === 'NORA_HELPER_NOT_READY') showScripts(tr('尚未加载，打开脚本管理时确认'));
             else showScripts(tr('脚本读取失败，点击重试'));
         });
         {
@@ -157,19 +137,13 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
             })).then(groups => {
                 if (!alive()) return;
                 if (groups.some(group => !Array.isArray(group.scripts))) throw new Error('Invalid regex response');
-                const rules = groups.flatMap(group => group.scripts);
-                if (rules.length && !select('[data-extension="regex"]', modal)) {
-                    select('.nora-extension-menu', modal).insertAdjacentHTML('afterbegin', entry(['regex', '正则', 'fa-code']));
-                    bind(select('[data-extension="regex"]', modal));
-                    select('[data-extension-empty]', modal).innerHTML = '';
-                }
                 const usage = regexUsage(groups);
                 const summary = t`${usage.total} 条规则 · 启用 ${usage.enabled} 条`;
                 update('regex', activeWorldModel()?.capabilities?.items?.regex?.status === 'DEGRADED' ? t`${summary} · 加载异常` : summary);
                 renderOthers();
             }).catch(() => update('regex', tr('规则读取失败，点击查看')));
         }
-        if (entries.some(([key]) => key === 'mvu')) {
+        if (activeWorldModel()?.capabilities?.declared?.includes('mvu')) {
             void run('mvu.status', {}).then(status => {
                 const summary = runtimeReloadPending ? tr('配置已更改，待刷新')
                     : status.managedRuntimeEnabled === false && !status.runtimeAvailable ? tr('内置程序已停用')
@@ -183,58 +157,19 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
             const scope = { worldId: target.worldId, sessionId: target.sessionId };
             void ledgerRequest('inspect', scope).then(status => {
                 if (!alive() || !status) return;
-                if (status.enabled || status.active || status.pending || status.lastError) {
-                    select('.nora-extension-menu', modal).insertAdjacentHTML('beforeend', entry(['ledger', '压缩账本', 'fa-book'], tr(status.lastError ? '压缩异常，点击查看' : status.enabled ? '自动压缩已开启' : '自动压缩已关闭')));
-                    bind(select('[data-extension="ledger"]', modal));
-                    select('[data-extension-empty]', modal).innerHTML = '';
-                }
-                renderOthers();
+                update('ledger', `${tr('当前会话')} · ${tr(ledgerPhase(status))}`);
             }).catch(() => {
                 if (!alive()) return;
-                select('.nora-extension-menu', modal).insertAdjacentHTML('beforeend', entry(['ledger', '压缩账本', 'fa-book'], tr('状态读取失败，点击查看')));
-                bind(select('[data-extension="ledger"]', modal));
-                select('[data-extension-empty]', modal).innerHTML = '';
-                renderOthers();
+                update('ledger', tr('状态读取失败，点击查看'));
             });
         }
     }
-    async function ledgerSettings() {
+    function ledgerSettings() {
         if (!current() || !target.worldId || busy || !ledgerRequest) return;
-        const scope = { worldId: target.worldId, sessionId: target.sessionId };
-        const modal = sheet(tr('压缩账本'), `<div data-ledger-content>${tr('加载中')}</div>`, menu);
-        const version = dialogs.version;
-        const alive = () => current() && dialogs.version === version;
-        const slot = select('[data-ledger-content]', modal);
-        try {
-            const status = await ledgerRequest('inspect', scope);
-            if (!alive()) return;
-            if (typeof status?.enabled !== 'boolean') throw new Error(tr('状态读取失败，点击查看'));
-            slot.innerHTML = `<section class="nora-extension-setting"><div class="nora-extension-setting-head">
-                <div class="nora-extension-setting-copy"><strong>${tr(status.enabled ? '自动压缩已开启' : '自动压缩已关闭')}</strong></div>
-                <div class="nora-extension-setting-actions"><button class="nora-setting-button" data-ledger-toggle type="button">${tr(status.enabled ? '关闭自动压缩' : '开启自动压缩')}</button></div>
-                </div><p class="nora-setting-description">${tr('仅影响当前会话。关闭后不再生成新的压缩；已经使用的账本仍保留，不恢复为全部原文上下文。')}</p>
-                <p class="nora-setting-metric">${t`已应用账本覆盖 ${status.active?.coveredTurns || 0} 轮`}</p>
-                ${status.running ? `<p role="status">${tr('正在压缩')}</p>` : ''}
-                ${status.lastError ? `<p role="alert">${esc(status.lastError.message || status.lastError.code || tr('压缩失败'))}</p>` : ''}
-                </section>`;
-            select('[data-ledger-toggle]', modal).addEventListener('click', async () => {
-                if (!alive() || busy) return;
-                if (isGenerating()) return dialogs.toast(tr('请等本轮生成和保存结束后再操作插件。'));
-                busy = true;
-                let completedVersion;
-                try {
-                    const approved = await dialogs.confirm({ title: tr(status.enabled ? '关闭自动压缩？' : '开启自动压缩？'),
-                        body: tr(status.enabled ? '只停止当前会话后续自动压缩，不删除已有账本和聊天。' : '开启后，满足条件的历史将自动调用模型压缩，可能产生模型费用。'), restoreSheet: true });
-                    completedVersion = dialogs.version;
-                    if (approved && current() && slot.isConnected !== false && !isGenerating()) await ledgerRequest('configure', scope, { enabled: !status.enabled });
-                } catch (error) { dialogs.toast(dialogs.normalizeError(error), { tone: 'error' }); }
-                finally { busy = false; if (current() && slot.isConnected !== false && dialogs.version === completedVersion) void ledgerSettings(); }
-            });
-        } catch (error) {
-            if (!alive()) return;
-            slot.innerHTML = `<p role="alert">${esc(dialogs.normalizeError(error))}</p><button class="nora-secondary" data-ledger-retry type="button">${tr('重试')}</button>`;
-            select('[data-ledger-retry]', modal).addEventListener('click', () => { if (alive()) void ledgerSettings(); });
-        }
+        const owner = target;
+        return ledger.open({ worldId: owner.worldId, sessionId: owner.sessionId }, {
+            name: owner.name, isCurrent: () => target === owner && current(), back: menu,
+        });
     }
     async function regexScopes() {
         if (!current() || busy) return;
@@ -435,7 +370,7 @@ export function createExtensionController({ dialogs, select, selectAll, escapeHt
 
 export function createLedgerRequest({ requestHeaders, fetchImpl = (...args) => fetch(...args) }) {
     return async (action, scope, params = {}) => {
-        if (!['inspect', 'configure'].includes(action)) throw new Error('Unsupported ledger action');
+        if (!['inspect', 'configure', 'compress', 'reset'].includes(action)) throw new Error('Unsupported ledger action');
         const response = await fetchImpl(`/api/nora-story-ledger/${action}`, {
             method: 'POST', headers: requestHeaders(), cache: 'no-store',
             body: JSON.stringify({ ...params, ...scope }), signal: AbortSignal.timeout(15000),

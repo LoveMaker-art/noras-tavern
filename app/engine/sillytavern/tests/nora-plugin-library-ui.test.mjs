@@ -76,7 +76,7 @@ function fixture({ onlyBuiltins = false, shared = false } = {}) {
 test('library lists five feature plugins, hides infrastructure, and provides install management only', async () => {
     const f = fixture(); await f.controller.open();
     assert.equal(f.selectAll('img').length, 0);
-    assert.ok(f.text().includes(tr('这里安装、更新和卸载插件。启停与设置请进入「扩展管理」。')));
+    assert.ok(f.text().includes(tr('本页已加载')));
     assert.equal(f.selectAll('[data-plugin]').length, 6);
     assert.equal(f.selectAll('.nora-plugin-builtins').length, 0);
     assert.equal(f.select('[data-plugin="third-party/nora-ui"]'), null);
@@ -84,13 +84,13 @@ test('library lists five feature plugins, hides infrastructure, and provides ins
     await f.select('[data-plugin="third-party/test"]').fire();
     assert.equal(f.selectAll('[data-plugin-action]').length, 2);
     assert.equal(f.select('[data-plugin-action="state"]'), null);
-    assert.ok(!f.text().includes(tr('页面加载状态')));
+    assert.ok(f.text().includes(tr('页面加载状态')));
     await f.select('[data-plugin-management]').fire();
     assert.equal(f.managementOpens(), 1);
     await f.back(); await tick();
     assert.ok(f.select('[data-plugin-install]'));
     assert.equal(f.requests.filter(item => item.body).length, 0);
-    assert.equal(f.runtimeReads(), 0);
+    assert.equal(f.runtimeReads(), 2);
 });
 
 test('builtins remain visible without user installs, have no uninstall or toggle actions', async () => {
@@ -102,6 +102,22 @@ test('builtins remain visible without user installs, have no uninstall or toggle
     assert.equal(f.selectAll('[data-plugin-action]').length, 0);
     assert.ok(f.text().includes(tr('内置插件随诺拉更新，不能单独卸载。')));
     assert.equal(f.requests.filter(item => item.body).length, 0);
+});
+
+test('inventory readers publish the same runtime snapshot to summaries without additional activation or writes', async () => {
+    const f = fixture(), snapshots = [];
+    const unsubscribe = f.controller.subscribeInventory(items => snapshots.push(items));
+    const first = await f.controller.inventory();
+    assert.equal(snapshots[0], first);
+    assert.equal(first.find(item => item.builtin?.key === 'mvu').status, '本页已加载');
+    f.runtime['third-party/nora-mvu'].loaded = false;
+    await f.controller.inventory();
+    assert.equal(snapshots[1].find(item => item.builtin?.key === 'mvu').runtime.loaded, false);
+    unsubscribe();
+    await f.controller.inventory();
+    assert.equal(snapshots.length, 2);
+    assert.equal(f.requests.filter(item => item.body).length, 0);
+    assert.deepEqual(f.activations, []);
 });
 
 test('shared third-party extensions remain visible without local mutation controls', async () => {
@@ -210,7 +226,6 @@ test('runtime read failure is retryable; library inventory never depends on it',
     const f = fixture(); f.runtimeError(true);
     await f.controller.open();
     assert.ok(f.select('[data-plugin-install]'));
-    assert.equal(f.runtimeReads(), 0);
     await f.controller.manage(f.items[0]);
     assert.match(f.text(), /runtime unavailable/);
     assert.equal(f.select('[data-plugin-action="state"]'), null);

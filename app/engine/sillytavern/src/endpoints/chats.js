@@ -441,13 +441,16 @@ router.post('/operation/:action', async (request, response) => {
         if (request.params.action === 'renew') return response.json(operations.renew(scope, token));
         if (request.params.action === 'end') return response.json({ released: operations.end(scope, token) });
         if (request.params.action !== 'begin') return response.sendStatus(404);
-        const { filePath } = await resolveStoryLedger(directories, { recoverProjection: false }).resolve(scope);
+        const ledgerRuntime = resolveStoryLedger(directories, { recoverProjection: false });
+        const { filePath } = await ledgerRuntime.resolve(scope);
         const data = getChatData(filePath);
         if (scopeOf(data[0]?.chat_metadata)?.worldId !== worldId || scopeOf(data[0]?.chat_metadata)?.sessionId !== sessionId
             || typeof baseRevision !== 'string' || getChatRevision(data) !== baseRevision) {
             return response.status(409).json({ code: 'NORA_CHAT_SAVE_STALE' });
         }
-        return response.json(operations.begin(scope, kind));
+        const lease = operations.begin(scope, kind);
+        try { await ledgerRuntime.plugin.waitForIdle(); } catch (error) { operations.end(scope, lease.token); throw error; }
+        return response.json(lease);
     } catch (error) {
         return response.status(error.status || 400).json({ code: error.code || 'NORA_CHAT_OPERATION_INVALID' });
     }

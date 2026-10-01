@@ -24,7 +24,7 @@ export const WRITE_TOOLS = new Set([
   "nora.control.execute",
   "nora.world.create", "nora.world.import", "nora.world.import_library", "nora.world.repair", "nora.world.delete", "nora.operation.retry",
   "nora.story.checkpoint", "nora.story.reflect_preview", "nora.story.learn", "nora.story.refresh", "nora.mvu_model.configure",
-  "nora.ledger.configure", "nora.ledger.compress", "nora.session.edit",
+  "nora.ledger.configure", "nora.ledger.compress", "nora.ledger.reset", "nora.session.edit",
 ]);
 export function allowedTool(name: string, mode: NoraMcpConfig["mode"]): boolean {
   return READ_TOOLS.has(name) || (mode === "operator" && WRITE_TOOLS.has(name));

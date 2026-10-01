@@ -56,6 +56,10 @@ compression. The skill does not manually alter round counters or ledger records.
 
 - `nora.ledger.configure`: enable/disable for the exact World and Session.
   Enabling can schedule paid compression; inspect current state before enabling.
+  Use configRevision as expectedRevision. Optional contextLimitOverride (null
+  inherits), outputTokenLimit and timeoutSeconds patch the same settings as UI;
+  omitted fields remain unchanged. Capacity is a declaration, not provider proof.
+  Disabling cancels background work but retains active memory and history locks.
 - `nora.ledger.compress`: request/retry eligible compression, not an arbitrary
   rewrite of a user-specified range. Use returned state and `nora.ledger.status`.
 - The runtime batches narrative rounds; read its eligible ranges instead of
@@ -65,6 +69,12 @@ compression. The skill does not manually alter round counters or ledger records.
   Failed compression must not be described as having replaced the full context.
 - Do not repeatedly submit compress after a timeout. Check status first. A job
   accepted by the server is not a completed model result.
+  Failure pauses automatic retries, including after refresh/restart. Foreground
+  generation takes priority; waiting/cancelling is not completion.
+- `nora.ledger.reset`: only with explicit memory-reset approval. Read configRevision
+  and expectedSignature first. Backs up, clears memory and disables compression;
+  chat/MVU remain. It releases ledger locks and requires live-page reload. Raw
+  history may exceed context capacity. Never use file deletion as a substitute.
 
 Ledger concerns what happened in a Session. Story Profile concerns archives and
 user preferences: load story-profile.md only when that additional outcome is requested.

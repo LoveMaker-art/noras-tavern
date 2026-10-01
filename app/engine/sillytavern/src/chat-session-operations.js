@@ -11,6 +11,8 @@ const conflict = code => Object.assign(new Error(code), { code, status: 409 });
 export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 } = {}) {
     if (!Number.isSafeInteger(leaseMs) || leaseMs < 1) throw new TypeError('Positive lease duration required.');
     const sessions = new Map();
+    const listeners = new Set();
+    const notify = () => { for (const listener of listeners) listener(); };
     function keyOf(scope) {
         if (![scope?.worldId, scope?.sessionId].every(value => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,191}$/.test(value))) throw conflict('NORA_CHAT_OPERATION_INVALID');
         return scopeKey(scope);
@@ -19,6 +21,7 @@ export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 }
         const entry = sessions.get(key);
         if (entry && !entry.writes && (entry.ended || entry.expiresAt <= now())) {
             sessions.delete(key);
+            queueMicrotask(notify);
             return null;
         }
         return entry;
@@ -58,6 +61,7 @@ export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 }
         begin(scope, kind) {
             if (!['generation', 'mvu'].includes(kind)) throw conflict('NORA_CHAT_OPERATION_INVALID');
             const { entry } = admit(scope, kind, now() + leaseMs);
+            notify();
             return { token: entry.token, expiresAt: entry.expiresAt };
         },
         renew(scope, token) {
@@ -73,6 +77,11 @@ export function createChatSessionOperations({ now = Date.now, leaseMs = 120000 }
             return true;
         },
         write,
+        subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        hasGeneration() {
+            for (const key of sessions.keys()) current(key);
+            return [...sessions.values()].some(entry => !entry.ended && ['generation', 'mvu'].includes(entry.kind));
+        },
         restore: (scope, operation) => exclusive(scope, 'restore', operation),
         removeWorld(world, operation) {
             const scopes = world.sessions.items.map(item => ({ worldId: world.world_id, sessionId: item.session_id }));

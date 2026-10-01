@@ -288,8 +288,14 @@ server.tool("nora.session.read", "Read a bounded narrative window and its full-h
   ...scopeSchema, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(30),
 }, async request => textResult(await nora.ledgerInspect(request)));
 server.tool("nora.ledger.configure", "Enable/disable ledger. Enabling may schedule PAID background compression. Disabling does not unlock active history.", {
-  ...scopeSchema, enabled: z.boolean(), confirm: z.literal(true), allowModelCall: z.boolean().optional(),
+  ...scopeSchema, enabled: z.boolean().optional(), expectedRevision: z.number().int().min(0).optional(),
+  contextLimitOverride: z.number().int().min(512).max(2000000).nullable().optional(),
+  outputTokenLimit: z.number().int().min(128).max(16384).optional(), timeoutSeconds: z.number().int().min(60).max(1800).optional(),
+  confirm: z.literal(true), allowModelCall: z.boolean().optional(),
 }, async request => textResult(await nora.ledgerConfigure(request)));
+server.tool("nora.ledger.reset", "Back up and reset this Session's memory, disabling automatic compression. Does not delete chat or MVU. Releases ledger history locks; live page reload required. Requires explicit reset approval.", {
+  ...scopeSchema, confirm: z.literal(true), expectedRevision: z.number().int().min(0), expectedSignature: z.string().regex(/^[a-f0-9]{64}$/),
+}, async request => textResult(await nora.ledgerReset(request)));
 server.tool("nora.ledger.compress", "Schedule/retry PAID compression; returns current state, not a completion claim. Inspect with nora.ledger.status.", {
   ...scopeSchema, confirm: z.literal(true), allowModelCall: z.literal(true),
 }, async request => textResult(await nora.ledgerCompress(request)));

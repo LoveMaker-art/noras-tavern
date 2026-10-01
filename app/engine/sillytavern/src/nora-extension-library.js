@@ -1,17 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { sync as writeAtomic } from 'write-file-atomic';
+import { builtinPlugins } from '../public/scripts/nora-controls/plugin-catalog.js';
+export { builtinPlugins };
 
 export const managedExtensions = new Set(['nora-ui', 'nora-ledger', 'nora-mvu', 'JS-Slash-Runner', 'ST-Prompt-Template']);
 export const isManagedExtension = name => [...managedExtensions].some(item => item.toLowerCase() === name.toLowerCase());
 // Product features users can manage, not every module discovered by ST.
-export const builtinPlugins = Object.freeze({
-    regex: { key: 'regex', title: '正则', description: '管理文本替换与显示规则' },
-    'third-party/JS-Slash-Runner': { key: 'tavern_helper', title: '酒馆助手', description: '管理卡片脚本与交互功能' },
-    'third-party/nora-mvu': { key: 'mvu', title: 'MVU 变量', description: '管理变量更新与模型配置' },
-    'third-party/nora-ledger': { key: 'ledger', title: '压缩账本', description: '管理当前会话的自动压缩' },
-    'third-party/ST-Prompt-Template': { key: 'prompt_template', title: '提示词模板', description: '管理动态提示词模板' },
-});
 const stateFile = directory => path.join(path.dirname(directory), 'nora-extension-library.json');
 
 export function readExtensionLibraryState(directory) {

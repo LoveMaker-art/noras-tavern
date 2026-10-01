@@ -5,6 +5,7 @@ import path from 'node:path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'node:url';
 import { createExtensionController } from '../../../native-extensions/nora-ui/extension-controller.js';
+import { builtinPlugins } from '../public/scripts/nora-controls/plugin-catalog.js';
 
 const root = fileURLToPath(new URL('../../../', import.meta.url));
 const sourceDir = process.env.NORA_PANEL_FIXTURE_DIR;
@@ -12,7 +13,7 @@ const panel = fs.readFileSync(sourceDir ? path.join(sourceDir, 'panel-controller
 const story = fs.readFileSync(sourceDir ? path.join(sourceDir, 'story-context.js') : path.join(root, 'engine/sillytavern/public/scripts/nora-worlds/story-context.js'), 'utf8');
 const executable = text => text.replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
 
-function render({ format = 'nora-world-card/2', count = 7, editing = false, disabled = false, inspect } = {}) {
+function render({ format = 'nora-world-card/2', count = 7, editing = false, disabled = false, inspect, plugins } = {}) {
     const members = Array.from({ length: count }, (_, i) => ({ id: `actor-${i}`, profile: { identity: { name: `Actor ${i}` } }, persistent_status: {}, activation: i < 5 ? { mode: 'constant' } : { mode: 'triggered', keys: [`key-${i}`] } }));
     if (disabled && members[5]) members[5].activation.enabled = false;
     const storyContext = { ...(format ? { card_format: format } : {}), characters: members, relationships: [] };
@@ -22,6 +23,7 @@ function render({ format = 'nora-world-card/2', count = 7, editing = false, disa
     let bindings = 0;
     let markup = '';
     const body = { get innerHTML() { return markup; }, set innerHTML(value) { writes++; markup = value; } };
+    const summary = { innerHTML: '' };
     let edit;
     const sandbox = {
         createExtensionController,
@@ -34,16 +36,17 @@ function render({ format = 'nora-world-card/2', count = 7, editing = false, disa
     vm.runInContext(executable(story) + '\n' + executable(panel), sandbox);
     const controller = sandbox.createPanelController({
         activeWorldModel: () => world, currentCharacter: () => card,
+        plugins,
         readState: () => ({ activeCharacterId: 0 }), settings: () => ({}),
         currentWorldPersona: () => ({ name: 'Player' }), characterField: (c, key) => c?.[key],
         escapeHtml: value => String(value ?? ''), icons: {}, worldbookSummary: () => '',
-        select: () => body,
+        select: selector => selector === '[data-plugin-summary]' ? summary : body,
         selectAll: selector => selector === '[data-edit-section="cast"]' ? [{ addEventListener: (_type, handler) => { bindings++; edit = handler; } }] : [],
         currentUrl: () => 'http://localhost/',
     });
     controller.render();
     if (editing) edit({ stopPropagation() {} });
-    inspect?.({ controller, world, card, body, counts: () => ({ writes, bindings }), edit: () => edit({ stopPropagation() {} }) });
+    inspect?.({ controller, world, card, body, summary, counts: () => ({ writes, bindings }), edit: () => edit({ stopPropagation() {} }) });
     return body.innerHTML;
 }
 
@@ -99,6 +102,62 @@ test('v2.3.5 integration keeps independent-world-preset UI', () => {
     assert.match(render(), /data-action="world-preset"/);
     assert.match(render(), /data-action="plugin-library"/);
     assert.match(render(), /Independent preset/);
+});
+
+test('sidebar does not invent loaded extensions before runtime observations arrive', () => {
+    const html = render();
+    assert.doesNotMatch(html, /nora-capability-name/);
+    assert.match(html, /data-plugin-summary/);
+});
+
+test('sidebar only displays positively loaded extensions with compact labels', async () => {
+    let f;
+    render({ plugins: { inventory: async () => [
+        { name: 'regex', builtin: builtinPlugins.regex, runtime: { loaded: true } },
+        { name: 'third-party/nora-ledger', builtin: builtinPlugins['third-party/nora-ledger'], runtime: { loaded: true } },
+        { name: 'third-party/nora-mvu', builtin: builtinPlugins['third-party/nora-mvu'], runtime: { enabled: true, loaded: false } },
+        { name: 'third-party/unknown', displayName: 'Unknown', runtimeReadFailed: true },
+        { name: 'third-party/custom', displayName: 'Custom', libraryEnabled: false, runtime: { loaded: true } },
+    ] }, inspect: value => { f = value; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal((f.summary.innerHTML.match(/nora-capability-name/g) || []).length, 3);
+    assert.match(f.summary.innerHTML, /正则/);
+    assert.match(f.summary.innerHTML, /剧情账本/);
+    assert.match(f.summary.innerHTML, /Custom/);
+    assert.doesNotMatch(f.summary.innerHTML, /MVU|Unknown|尚未加载|未声明|状态未读取/);
+    assert.equal((f.summary.innerHTML.match(/已加载/g) || []).length, 3);
+    assert.equal((f.summary.innerHTML.match(/data-plugin-loaded="true"/g) || []).length, 3);
+});
+
+test('loaded ledger uses a loaded display marker without inventing world capability readiness', async () => {
+    let f;
+    render({ plugins: { inventory: async () => [
+        { name: 'third-party/nora-ledger', builtin: builtinPlugins['third-party/nora-ledger'], runtime: { loaded: true } },
+    ] }, inspect: value => { f = value; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(f.summary.innerHTML, /data-plugin-loaded="true"/);
+    assert.match(f.summary.innerHTML, /data-capability-status=""/);
+    assert.doesNotMatch(f.summary.innerHTML, /READY/);
+    const css = fs.readFileSync(path.join(root, 'native-extensions/nora-ui/style.css'), 'utf8');
+    assert.match(css, /\[data-plugin-loaded="true"\]:not\(\[data-capability-status="DEGRADED"\]\) \.nora-capability-badge\s*\{\s*color: var\(--nora-brand-ink\)/);
+});
+
+test('loaded but degraded world extensions keep their warning and retry marker', async () => {
+    let f;
+    render({ plugins: { inventory: async () => [
+        { name: 'third-party/nora-mvu', builtin: builtinPlugins['third-party/nora-mvu'], runtime: { loaded: true } },
+    ] }, inspect: value => { f = value; f.world.capabilities = { declared: ['mvu'], items: { mvu: { status: 'DEGRADED' } } }; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.match(f.summary.innerHTML, /data-capability-status="DEGRADED"/);
+    assert.match(f.summary.innerHTML, /未就绪/);
+    assert.match(f.summary.innerHTML, /data-retry-capability="mvu"/);
+});
+
+test('runtime inspection failure leaves no fabricated builtin rows', async () => {
+    let f;
+    render({ plugins: { inventory: async () => { throw new Error('offline'); } }, inspect: value => { f = value; } });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.doesNotMatch(f.summary.innerHTML, /nora-capability-name/);
 });
 
 test('cast uses the same constant/triggered group headings and styles as world settings', () => {

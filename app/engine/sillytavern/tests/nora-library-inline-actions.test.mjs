@@ -65,6 +65,7 @@ function fixture() {
     const errors = [], picked = [], world = { id: 'world:a', revision: 1 };
     const common = {
         dialogs: { version: 0, open(_title, markup, _className, { back, backLabel = tr('返回') } = {}) { this.version++; $ = load(`${markup.includes('id="nora-panel-body"') ? '' : '<aside id="nora-panel-body"></aside>'}<main><header>${back ? '<button type="button" data-sheet-back></button>' : ''}</header><div class="nora-sheet-body">${markup}</div></main>`); if (back) { select('[data-sheet-back]').textContent = backLabel; select('[data-sheet-back]').addEventListener('click', back); } return wrap($('main')[0]); },
+            setCloseGuard() {},
             protectForm: form => { assert.ok(form); return { release() {}, leave: action => action() }; },
             toast: value => errors.push(value), close() { this.version++; }, normalizeError: error => error.message },
         select, selectAll, escapeHtml: String, icons: {}, activeWorldModel: () => world,
@@ -182,12 +183,12 @@ function extensionFixture(options = {}) {
 
 test('extension gear presents uniform navigation, with isolated read-only script details', async () => {
     const f = extensionFixture(); f.open();
-    assert.equal(f.query('[data-extension]').length, 4);
-    assert.deepEqual(f.query('[data-extension] strong').toArray().map(el => f.query(el).text().trim()), ['正则', '酒馆助手', 'MVU 变量', '提示词模板'].map(label => tr(label)));
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.deepEqual(f.query('[data-extension] strong').toArray().map(el => f.query(el).text().trim()), Object.values(builtinPlugins).map(item => tr(item.title)));
     assert.equal(f.query('.nora-extension-world').length, 1);
-    assert.equal(f.query('.nora-extension-icon, [data-extension] small').length, 8);
+    assert.equal(f.query('.nora-extension-icon, [data-extension] small').length, 15);
     assert.equal(f.query('.nora-extension-entry-state, [data-all-scripts], [data-add-script], footer').length, 0, 'No duplicate script entry, import button or disclaimer in populated overview');
-    assert.equal(f.query('[data-extension] > .fa-chevron-right').length, 4);
+    assert.equal(f.query('[data-extension] > .fa-chevron-right').length, 5);
     assert.equal(f.query('script, textarea').length, 0);
     f.select('[data-extension="mvu"]').handlers.click();
     await new Promise(resolve => setImmediate(resolve));
@@ -246,7 +247,7 @@ test('extension management separates world-related features from other installed
     assert.equal(f.query('[data-script-content]').length, 0, 'A stale feature shortcut cannot change another world');
 });
 
-test('an ordinary world can find inactive builtins in other installed plugins', async () => {
+test('an ordinary world keeps the same builtin entries and a separate third-party list', async () => {
     const plugins = pluginFixture();
     const f = extensionFixture({ plugins, ledgerRequest: async () => ({ enabled: false, active: null }) });
     f.world.capabilities = { declared: [], items: {} };
@@ -256,12 +257,12 @@ test('an ordinary world can find inactive builtins in other installed plugins', 
         throw new Error('Unexpected control');
     };
     f.open(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.query('[data-extension]').length, 0);
-    assert.equal(f.query('[data-installed-plugin]').length, 6);
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.equal(f.query('[data-installed-plugin]').length, 1);
     assert.ok(f.commands.every(command => !command.confirm));
     f.select('[data-installed-plugin="third-party/example"]').handlers.click();
     assert.equal(plugins.opened[0].item.name, 'third-party/example');
-    f.select('[data-add-script]').handlers.click();
+    f.select('[data-extension="tavern_helper"]').handlers.click();
     assert.equal(plugins.opened[1].item.builtin.key, 'tavern_helper', 'Import must use the same explicit Helper loading gate');
 });
 
@@ -269,7 +270,8 @@ test('without a world, extension management permits global management without wo
     const plugins = pluginFixture();
     const f = extensionFixture({ plugins, activeWorldModel: () => null, ledgerRequest: () => { throw new Error('No world'); } });
     f.panel.openExtensions(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.query('[data-installed-plugin]').length, 6);
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.equal(f.query('[data-installed-plugin]').length, 1);
     assert.equal(f.commands.length, 0);
     f.select('[data-installed-plugin="third-party/example"]').handlers.click();
     assert.equal(plugins.opened[0].item.name, 'third-party/example');
@@ -282,25 +284,26 @@ test('ledger settings inspect only, confirm changes scoped to the same session, 
         ledgerRequest: async (action, scope, params) => {
             calls.push({ action, scope, params });
             if (action === 'configure') enabled = params.enabled;
-            return { enabled, active: { coveredTurns: 5 } };
+            return { enabled, configRevision: 0, effectiveConfig: { contextLimitOverride: null, outputTokenLimit: 2048, timeoutSeconds: 300 }, active: { coveredTurns: 5 } };
         } });
     f.open(); await new Promise(resolve => setImmediate(resolve));
     f.select('[data-extension="ledger"]').handlers.click(); await new Promise(resolve => setImmediate(resolve));
     assert.ok(calls.every(call => call.action === 'inspect'));
     assert.equal(f.query('[data-mvu-runtime-toggle]').length, 0);
     assert.equal(f.query('[data-ledger-toggle]').length, 1);
-    assert.equal(f.query('.nora-extension-setting-head [data-ledger-toggle]').length, 1);
-    assert.equal(f.query('.nora-setting-description').length, 1);
-    assert.equal(f.query('.nora-setting-metric').length, 1);
-    assert.equal(f.query('[data-ledger-toggle]').attr('type'), 'button');
+    assert.equal(f.query('.nora-ledger-enabled [data-ledger-toggle]').length, 1);
+    assert.equal(f.query('[data-ledger-metric]').length, 1);
+    assert.equal(f.query('[data-ledger-toggle]').attr('type'), 'checkbox');
     f.common.dialogs.confirm = async () => true;
-    await f.select('[data-ledger-toggle]').handlers.click();
+    f.select('[data-ledger-toggle]').checked = false;
+    await f.select('[data-ledger-toggle]').handlers.change();
     await new Promise(resolve => setImmediate(resolve));
-    assert.deepEqual(calls.find(call => call.action === 'configure'), { action: 'configure', scope: { worldId: 'world:a', sessionId: 'session:a' }, params: { enabled: false } });
-    assert.match(f.query('[data-ledger-content]').text(), /账本|ledger/i);
+    assert.deepEqual(calls.find(call => call.action === 'configure'), { action: 'configure', scope: { worldId: 'world:a', sessionId: 'session:a' }, params: { enabled: false, expectedRevision: 0 } });
+    assert.ok(f.query('[data-ledger-content]').text().includes(tr('自动整理')));
     const before = calls.length;
     f.common.dialogs.confirm = async () => { f.world.id = 'other'; return true; };
-    await f.select('[data-ledger-toggle]').handlers.click();
+    f.select('[data-ledger-toggle]').checked = true;
+    await f.select('[data-ledger-toggle]').handlers.change();
     assert.equal(calls.length, before, 'Switching world during confirmation must not mutate either session');
 });
 
@@ -337,7 +340,7 @@ test('overview summaries use real counts and update mode without rebuilding focu
     assert.equal(f.query('[data-extension-summary="regex"]').text(), t`${3} 条规则 · 启用 ${2} 条`);
     assert.equal(f.query('[data-extension-summary="tavern_helper"]').text(), `${t`${tr('本世界')}：${2} 个，启用 ${2} 个`} · ${t`${tr('全局')}：${1} 个，启用 ${1} 个`}`);
     assert.equal(f.query('[data-extension-summary="mvu"]').text(), tr('程序已加载 · 额外模型更新'));
-    assert.equal(f.query('[data-extension]').length, 3);
+    assert.equal(f.query('[data-extension]').length, 5);
     assert.equal(f.query('footer, [data-add-script], [data-all-scripts], .nora-extension-entry-state').length, 0);
 });
 
@@ -349,21 +352,22 @@ test('failed overview reads remain actionable instead of showing zero or ready',
     assert.equal(f.query('[data-extension-summary="regex"]').text(), tr('规则读取失败，点击查看'));
     assert.equal(f.query('[data-extension-summary="tavern_helper"]').text(), tr('脚本读取失败，点击重试'));
     assert.equal(f.query('[data-extension-summary="mvu"]').text(), tr('状态读取失败，点击查看'));
-    assert.equal(f.query('[data-extension]').length, 4);
+    assert.equal(f.query('[data-extension]').length, 5);
     assert.equal(f.commands.some(command => command.confirm), false);
 });
 
-test('ordinary worlds hide unused extensions and offer a single import action in the empty state', async () => {
+test('ordinary worlds keep all builtins visible without duplicate script import actions', async () => {
     const f = extensionFixture();
     f.world.capabilities = { declared: [], items: { prompt_template: { status: 'READY' } } };
     f.execute = async () => ({ trees: [{ id: 'nora-mvu-headless-runtime', enabled: true }], enabled: true });
     f.open();
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.query('[data-extension], [data-found-scripts]').length, 0);
-    assert.equal(f.query('[data-add-script]').length, 1);
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.equal(f.query('[data-found-scripts], [data-add-script]').length, 0);
     assert.equal(f.query('[data-all-scripts]').length, 0);
-    assert.ok(f.query('[data-extension-empty]').text());
-    f.select('[data-add-script]').handlers.click();
+    f.select('[data-extension="tavern_helper"]').handlers.click();
+    await new Promise(resolve => setImmediate(resolve));
+    f.select('[data-script-import]').handlers.click();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(f.query('[data-script-destination]').val(), 'character');
 });
@@ -377,9 +381,9 @@ test('a never-loaded Helper is not a broken or enabled capability of a plain wor
     };
     f.open();
     await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.query('[data-extension]').length, 0);
-    assert.equal(f.query('[data-add-script]').length, 1);
-    assert.ok(!f.query('[data-extension-empty]').text().includes(tr('脚本读取失败，点击重试')));
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.equal(f.query('[data-add-script]').length, 0);
+    assert.ok(!f.query('[data-extension-summary="tavern_helper"]').text().includes(tr('脚本读取失败，点击重试')));
     assert.equal(f.commands.some(command => command.confirm || !command.action.endsWith('.list')), false);
 });
 
@@ -407,16 +411,17 @@ test('switching to a plain world cannot retain the previous world Helper declara
     f.execute = async command => command.action === 'regex.list' ? { scripts: [], allowed: true }
         : { trees: [{ id: 'nora-mvu-headless-runtime', enabled: true }], enabled: true };
     f.panel.openExtensions(); await new Promise(resolve => setImmediate(resolve));
-    assert.equal(f.query('[data-extension]').length, 0);
-    assert.equal(f.query('[data-add-script]').length, 1);
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.equal(f.query('[data-add-script]').length, 0);
+    assert.equal(f.query('[data-extension-summary="mvu"]').text(), tr('当前世界未声明使用'));
 });
 
-test('declared failed templates stay visible; installed but unused templates stay hidden', () => {
+test('declared failed templates stay visible with a failure state rather than hiding installed components', () => {
     const f = extensionFixture();
     f.world.capabilities = { declared: ['prompt_template'], items: { prompt_template: { status: 'DEGRADED' } } };
     f.open();
-    assert.equal(f.query('[data-extension]').length, 1);
-    assert.ok(f.query('[data-extension="prompt_template"]').text().includes(tr('模板加载失败，点击处理')));
+    assert.equal(f.query('[data-extension]').length, 5);
+    assert.ok(f.query('[data-extension="prompt_template"]').text().includes(tr('世界能力未就绪')));
     f.select('[data-extension="prompt_template"]').handlers.click();
     assert.equal(f.query('[data-template-retry]').length, 1);
 });
@@ -622,7 +627,7 @@ test('merged script list confirms group permission and routes same IDs to their 
     assert.deepEqual(writes.map(command => command.params.scope), ['character', 'global']);
     assert.ok(writes.every(command => command.worldId === 'world:a' && command.params.expectedRevision === 'r2'));
     f.select('[data-sheet-back]').handlers.click();
-    assert.equal(f.query('[data-extension]').length, 4);
+    assert.equal(f.query('[data-extension]').length, 5);
 });
 
 test('permission preview lists actual enabled siblings, excludes disabled folders and makes global impact explicit', async () => {

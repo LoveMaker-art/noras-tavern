@@ -79,11 +79,12 @@ export function batchSegments(messages, startTurn, endTurn, tokenBudget = 50000)
         const value = entries.join('\n');
         const tokens = estimateTokens(value);
         if (!current || current.tokens + tokens > tokenBudget) {
-            current = { startTurn: number, endTurn: number, text: '', tokens: 0 };
+            current = { startTurn: number, endTurn: number, text: '', tokens: 0, parts: [] };
             result.push(current);
         }
         current.text += `${current.text ? '\n' : ''}${value}`;
         current.tokens += tokens;
+        current.parts.push({ startTurn: number, endTurn: number, text: value });
         current.endTurn = number;
     }
     return result;
