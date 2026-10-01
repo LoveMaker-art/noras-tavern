@@ -55,6 +55,11 @@ function presentError(error, context = {}) {
   const userCode = chain.map(value => value.userCode || value.code).find(code => Object.hasOwn(business, code));
   const readable = chain.map(readableLocalMessage).find(Boolean) || readableLocalMessage(error);
   if (userCode) {
+    if (userCode === 'GATEWAY_IDENTITY' && context.action === 'status') return {
+      title:'诺拉后台状态暂时无法确认。',
+      detail:'系统未允许读取后台进程信息，当前运行和连接状态尚未确认。',
+      next:'启动器会自动重新查询；若持续出现，请保留日志，勿按 PID 强行结束程序。',
+    };
     const [title, fallback, next] = business[userCode];
     const detail = userCode === 'RELEASE_COMPATIBILITY' ? readable || fallback : fallback;
     return { title, detail, next };

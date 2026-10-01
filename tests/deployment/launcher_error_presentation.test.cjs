@@ -166,3 +166,10 @@ test('status polling preserves the first raw failure and avoids repeated log flo
   context.lastStatusError = ''; // A successful status resets the warning episode.
   format(original); assert.equal(reports.length,2);
 });
+
+test('gateway status permission failures describe unknown state without asserting startup or shutdown', () => {
+  const error = Object.assign(new Error('opaque permission fixture'), {code:'EACCES',userCode:'GATEWAY_IDENTITY'});
+  const message = formatUserError(error,{action:'status'});
+  assert.match(message,/状态.*无法确认/);
+  assert.doesNotMatch(message,/已停止|本次未启动|未启动第二个|读写权限|opaque/);
+});

@@ -14,6 +14,7 @@ _GATEWAY_IDENTITY_MESSAGE = (
     "为避免启动重复服务，本次未启动新的诺拉，也未结束任何进程。"
     "请重启电脑后再试；若仍出现此提示，请保留诊断日志联系支持。"
 )
+_GATEWAY_STATUS_MESSAGE = "无法查询诺拉后台状态：系统拒绝读取进程信息。"
 
 
 class GatewayIdentityError(RuntimeError):
@@ -66,37 +67,49 @@ def owned_gateway(nora_home, *, require_readable=False):
 
 
 def gateway_status(nora_home, hermes_home):
-    process = owned_gateway(nora_home)
-    state = read_json(Path(hermes_home) / "gateway_state.json")
-    platforms = state.get("platforms") or {}
-    platform = platforms.get("clawchat") or {} if isinstance(platforms, dict) else {}
-    if not isinstance(platform, dict):
-        platform = {}
-    writer = process
-    if process and state.get("pid") != process.pid:
-        # Windows venv launchers retain a parent and run Python in a child.
-        import psutil
-        writer = None
-        try:
-            command = process.cmdline()
-            for child in process.children(recursive=True):
-                if (child.pid == state.get("pid") and child.status() != psutil.STATUS_ZOMBIE
-                        and child.cmdline()[1:] == command[1:]):
-                    writer = child
-                    break
-        except psutil.Error:
+    try:
+        process = owned_gateway(nora_home, require_readable=True)
+    except GatewayIdentityError as cause:
+        raise GatewayIdentityError(_GATEWAY_STATUS_MESSAGE) from cause.__cause__
+    if process is None:
+        # First-install inspection does not require psutil before the runtime exists.
+        return {"gatewayRunning": False, "clawchatConnected": False, "clawchatState": "offline"}
+    import psutil
+    try:
+        state = read_json(Path(hermes_home) / "gateway_state.json")
+        platforms = state.get("platforms") or {}
+        platform = platforms.get("clawchat") or {} if isinstance(platforms, dict) else {}
+        if not isinstance(platform, dict):
+            platform = {}
+        writer = process
+        if process and state.get("pid") != process.pid:
+            # Windows venv launchers retain a parent and run Python in a child.
             writer = None
-    state_path = Path(hermes_home) / "gateway_state.json"
-    current = bool(writer and state.get("pid") == writer.pid
-                   and state_path.stat().st_mtime >= writer.create_time()
-                   and platform.get("writer_pid") == writer.pid
-                   and platform.get("writer_start_time") == state.get("start_time"))
-    connected = current and platform.get("state") == "connected"
-    return {
-        "gatewayRunning": bool(process),
-        "clawchatConnected": bool(connected),
-        "clawchatState": platform.get("state", "unknown") if current else "offline",
-    }
+            try:
+                command = process.cmdline()
+                for child in process.children(recursive=True):
+                    if (child.pid == state.get("pid") and child.status() != psutil.STATUS_ZOMBIE
+                            and child.cmdline()[1:] == command[1:]):
+                        writer = child
+                        break
+            except psutil.AccessDenied:
+                raise
+            except psutil.Error:
+                writer = None
+        state_path = Path(hermes_home) / "gateway_state.json"
+        current = bool(writer and state.get("pid") == writer.pid
+                       and state_path.stat().st_mtime >= writer.create_time()
+                       and platform.get("writer_pid") == writer.pid
+                       and platform.get("writer_start_time") == state.get("start_time"))
+        connected = current and platform.get("state") == "connected"
+        return {
+            "gatewayRunning": bool(process),
+            "clawchatConnected": bool(connected),
+            "clawchatState": platform.get("state", "unknown") if current else "offline",
+        }
+    except psutil.AccessDenied as cause:
+        # A denied inspection is no evidence of a stopped or disconnected service.
+        raise GatewayIdentityError(_GATEWAY_STATUS_MESSAGE) from cause
 
 
 def _check_gateway_hint(hermes_home):

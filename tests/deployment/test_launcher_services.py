@@ -68,6 +68,54 @@ class LauncherServicesTests(unittest.TestCase):
     def state(self, value):
         (self.hermes / 'gateway_state.json').write_text(json.dumps(value))
 
+    def test_uninstalled_gateway_status_does_not_require_psutil(self):
+        with patch.dict(sys.modules, {'psutil': None}):
+            self.assertEqual(services.gateway_status(self.root, self.hermes), {
+                'gatewayRunning': False, 'clawchatConnected': False, 'clawchatState': 'offline'})
+
+    def test_gateway_status_does_not_report_stopped_when_identity_is_unreadable(self):
+        import psutil
+        directory = self.root / 'installer'
+        directory.mkdir()
+        created = time.time() - 60
+        record = {'pid': 5560, 'created': created, 'command': ['python', 'gateway', 'run']}
+        (directory / 'gateway.json').write_text(json.dumps(record))
+        self.state({'pid': 5560})
+        candidate = Mock(pid=5560)
+        candidate.create_time.return_value = created
+        candidate.cmdline.side_effect = psutil.AccessDenied(5560)
+        with patch('psutil.Process', return_value=candidate):
+            with self.assertRaises(services.GatewayIdentityError) as failure:
+                services.gateway_status(self.root, self.hermes)
+        self.assertEqual(failure.exception.code, 'EACCES')
+        self.assertIn('状态', str(failure.exception))
+        self.assertIsInstance(failure.exception.__cause__, psutil.AccessDenied)
+        candidate.terminate.assert_not_called()
+        candidate.kill.assert_not_called()
+        self.assertEqual(services.read_json(directory / 'gateway.json'), record)
+
+    def test_gateway_status_does_not_report_offline_when_child_inspection_is_denied(self):
+        import psutil
+        process = Mock(pid=42)
+        process.children.side_effect = psutil.AccessDenied(42)
+        self.state({'pid': 43})
+        with patch.object(services, 'owned_gateway', return_value=process):
+            with self.assertRaises(services.GatewayIdentityError) as failure:
+                services.gateway_status(self.root, self.hermes)
+        self.assertIsInstance(failure.exception.__cause__, psutil.AccessDenied)
+        process.terminate.assert_not_called()
+
+    def test_gateway_status_does_not_report_offline_when_writer_birth_time_is_denied(self):
+        import psutil
+        process = Mock(pid=42)
+        process.create_time.side_effect = psutil.AccessDenied(42)
+        self.state({'pid': 42})
+        with patch.object(services, 'owned_gateway', return_value=process):
+            with self.assertRaises(services.GatewayIdentityError) as failure:
+                services.gateway_status(self.root, self.hermes)
+        self.assertIsInstance(failure.exception.__cause__, psutil.AccessDenied)
+        process.terminate.assert_not_called()
+
     def test_unreadable_gateway_hint_reports_safe_error_without_signalling_or_launching(self):
         import psutil
         self.state({'pid': 5560})
