@@ -82,6 +82,73 @@ test('latest is resolved once, matching packaged bytes are reused, not downloade
   assert.equal(f.requested.length, 2);
   assert.equal(JSON.parse(fs.readFileSync(path.join(target, 'nora-system.json'))).version, '2.2.8');
 });
+test('first install pins latest once and downloads only the component that differs from its old installer', async t => {
+  const f = fixture(t);
+  const oldSystem={...f.system,version:'2.2.4',commit:'b'.repeat(40),files:{...f.system.files}};
+  const oldManifest={...JSON.parse(f.data['release-manifest.json']),commit:oldSystem.commit,versions:{tavern:oldSystem.version}};
+  for(const [name,bytes] of Object.entries({'nora-tavern-app.tar.gz':'older app','release-manifest.json':JSON.stringify(oldManifest)})) {
+    fs.writeFileSync(path.join(f.bundledRoot,name),bytes);
+    oldSystem.files[name]={...oldSystem.files[name],size:Buffer.byteLength(bytes),sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+  }
+  fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(oldSystem));
+  await releases.prepareBundled(f.options); // The older installer is a valid complete package.
+  let confirmations = 0;
+  const target = await releases.prepareInstall({...f.options, confirmBundled: () => { confirmations++; return true; }});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target,'nora-system.json'))).version,'2.2.8');
+  assert.equal(fs.readFileSync(path.join(target,'nora-tavern-app.tar.gz'),'utf8'),'app');
+  assert.equal(f.requested.filter(url => url.endsWith('/releases/latest')).length,1);
+  assert.deepEqual(f.requested.filter(url => url.includes('/download/') && !url.endsWith('nora-system-darwin-arm64.json')).map(url=>url.split('/').at(-1)),
+    ['darwin-arm64-release-manifest.json','darwin-arm64-nora-tavern-app.tar.gz']);
+  assert.equal(confirmations,0);
+});
+test('offline first install uses verified bundled bytes only after explicit confirmation', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
+  let confirmations = 0;
+  const events = [];
+  const root = await releases.prepareInstall({...f.options, fetcher: async () => { throw new Error('offline'); },
+    confirmBundled: ({version,error}) => { confirmations++; assert.equal(version,'2.2.8'); assert.match(error.message,/offline/); return true; },
+    onEvent: event => events.push(event)});
+  assert.equal(root,f.bundledRoot);
+  assert.equal(confirmations,1);
+  assert.ok(events.some(event => /包内.*2\.2\.8/.test(event.task)));
+  assert.equal(fs.existsSync(f.options.cacheRoot),false);
+});
+test('declining offline installation or cancelling never selects the old package', async t => {
+  const f = fixture(t);
+  fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
+  await assert.rejects(releases.prepareInstall({...f.options,fetcher:async()=>{throw new Error('offline');},confirmBundled:()=>false}),/offline/);
+  let asked = false;
+  await assert.rejects(releases.prepareInstall({...f.options,signal:AbortSignal.abort(),confirmBundled:()=>{asked=true;return true;}}),{name:'AbortError'});
+  assert.equal(asked,false);
+  assert.equal(fs.existsSync(f.options.cacheRoot),false);
+});
+test('incompatible or corrupt online releases never offer an older bundled fallback', async t => {
+  for (const failure of ['incompatible','missing-platform','corrupt-download','invalid-response']) {
+    const f=fixture(t);let asked=false;
+    if(failure==='incompatible')f.system.minimumLauncherVersion='99.0.0';
+    if(failure==='missing-platform')f.release.assets=[];
+    if(failure==='corrupt-download'){
+      fs.unlinkSync(path.join(f.bundledRoot,'nora-tavern-app.tar.gz'));
+      f.data['nora-tavern-app.tar.gz']='corrupt';
+    }
+    const fetcher=failure==='invalid-response'?async()=>new Response('not json'):f.options.fetcher;
+    await assert.rejects(releases.prepareInstall({...f.options,fetcher,confirmBundled:()=>{asked=true;return true;}}));
+    assert.equal(asked,false,failure);
+  }
+});
+test('a lookup deadline can offer offline installation while explicit cancellation cannot', async t => {
+  const f=fixture(t);
+  fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
+  let asked=0;
+  const confirmBundled=()=>{asked++;return true;};
+  assert.equal(await releases.prepareInstall({...f.options,confirmBundled,fetcher:async()=>{throw new DOMException('lookup deadline','AbortError');}}),f.bundledRoot);
+  assert.equal(asked,1);
+  const controller=new AbortController();
+  await assert.rejects(releases.prepareInstall({...f.options,confirmBundled,signal:controller.signal,
+    fetcher:async()=>{controller.abort();throw controller.signal.reason;}}),{name:'AbortError'});
+  assert.equal(asked,1);
+});
 test('bundled upgrade selects only a newer valid platform release and never downgrades', t => {
   const f = fixture(t);
   const file = path.join(f.bundledRoot, 'nora-system.json');

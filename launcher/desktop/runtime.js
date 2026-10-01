@@ -59,12 +59,39 @@ function commandFailure(message, result, command) {
   });
 }
 
-function extractArchive(bundle, destination) {
+function extractArchive(bundle, destination, onEvent = () => {}) {
   const command = extractionCommand(bundle.archive, destination);
   const result = spawnSync(command.file, command.args, { encoding: 'utf8', windowsHide: true, timeout: 600000 });
-  if (result.status !== 0) {
-    throw commandFailure(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`, result, [command.file, ...command.args]);
-  }
+  if (!result.error && result.status === 0) return;
+  const nativeFailure = commandFailure(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`, result, [command.file, ...command.args]);
+  if (process.platform !== 'win32' || result.error?.code !== 'ENOENT' || bundle.manifest.format !== 'zip') throw nativeFailure;
+  onEvent({event:'task',stage_id:'runtime_extract',milestone:0,task:'使用 Windows 内置 ZIP 工具释放 Nora 核心',current:1,total:3});
+
+  // Supported Windows runtimes are ZIPs. PowerShell/.NET is already present
+  // on supported Windows versions; no external downloads or PATH tools needed.
+  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+    '$archive = $env:NORA_RUNTIME_ARCHIVE',
+    '$destination = [System.IO.Path]::GetFullPath($env:NORA_RUNTIME_DESTINATION)',
+    '$prefix = $destination.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar',
+    '$zip = [System.IO.Compression.ZipFile]::OpenRead($archive)',
+    'try { foreach ($entry in $zip.Entries) {',
+    '  $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destination, $entry.FullName))',
+    '  if (!$target.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "ZIP entry escapes extraction directory" }',
+    '  if ((($entry.ExternalAttributes -shr 16) -band 61440) -eq 40960) { throw "ZIP symbolic links are not supported" }',
+    '} } finally { $zip.Dispose() }',
+    '[System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $destination)',
+  ].join('\n');
+  const args = ['-NoLogo','-NoProfile','-NonInteractive','-Command',script];
+  const fallback = spawnSync(powershell,args,{encoding:'utf8',windowsHide:true,timeout:600000,
+    env:{...process.env,NORA_RUNTIME_ARCHIVE:bundle.archive,NORA_RUNTIME_DESTINATION:destination}});
+  if (!fallback.error && fallback.status === 0) return;
+  const error = commandFailure(`无法释放 Hermes 运行时：${(fallback.error?.message || fallback.stderr || fallback.stdout || '').trim()}`,fallback,[powershell,...args]);
+  error.secondaryErrors = [{operation:'native-extractor',error:nativeFailure}];
+  if (fallback.error?.code === 'ENOENT') error.userCode = 'RUNTIME_EXTRACTOR_UNAVAILABLE';
+  throw error;
 }
 
 function relocateText(text, home, manifest) {
@@ -227,7 +254,7 @@ function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () 
   let failure;
   try {
     onEvent({ event: 'task', stage_id: 'runtime_extract', milestone: 0, task: '释放 Nora 核心', current: 1, total: 3 });
-    extractArchive(bundle, work);
+    extractArchive(bundle, work, onEvent);
     if (!fs.existsSync(extracted)) throw new Error('Hermes 运行时目录结构不正确。');
 
     if (fs.existsSync(hermesHome)) {
