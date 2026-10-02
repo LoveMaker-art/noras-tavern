@@ -6,7 +6,8 @@ function testBuild(metadata) {
   const value = metadata.noraLocalTest;
   if (value === undefined) return null;
   if (value?.schema !== 1 || !/^[a-zA-Z0-9-]{1,64}$/.test(value.buildId || '') ||
-      !/^[a-f0-9]{64}$/.test(value.systemManifestSha256 || '')) {
+      !/^[a-f0-9]{64}$/.test(value.systemManifestSha256 || '') ||
+      (value.telemetryEnabled !== undefined && typeof value.telemetryEnabled !== 'boolean')) {
     throw new Error('本地测试包标识无效。');
   }
   return value;

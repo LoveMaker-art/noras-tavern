@@ -205,6 +205,9 @@ jobs:
       - name: Test installation diagnostics on the target platform
         run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
 
+      - name: Test diagnostic choices, error presentation and download waiting feedback
+        run: node tooling/run.mjs node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_telemetry_worker.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
+
       - name: Test unified update and application replacement
         shell: bash
         run: |

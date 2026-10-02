@@ -89,6 +89,7 @@ test('unpublished candidate launchers install their sealed payload instead of an
     assert.equal(result.build.appId, 'art.lovemaker.nora-tavern-launcher.local-test');
     assert.equal(result.build.icon, pkg.build.icon);
     assert.equal(result.noraLocalTest.buildId, 'candidate-38e8e898aecc', 'Beta.6 must reuse the Beta.5 installation directory');
+    assert.equal(result.noraLocalTest.telemetryEnabled, undefined, 'ordinary candidates do not upload');
     assert.equal(await prepareTestPayload(payload, testBuild(result), result.version), payload);
     const nextIdentity = { ...identity, commit: 'b'.repeat(40) };
     writeSystemRelease({ release: root, payload, identity: nextIdentity, launcherVersion: pkg.version });
@@ -99,6 +100,34 @@ test('unpublished candidate launchers install their sealed payload instead of an
     fs.writeFileSync(packageFile, JSON.stringify(pkg));
     configureCandidateLauncher({ packageFile, payload, identity: { ...identity, candidate: false } });
     assert.deepEqual(JSON.parse(fs.readFileSync(packageFile)), pkg, 'published packages keep online updates');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a reporting candidate keeps payload verification and selects a separate installation home', async () => {
+  const { writeSystemRelease, configureCandidateLauncher } = await import('../scripts/system-release.mjs');
+  const { testBuild, prepareTestPayload } = require('../installer/desktop/test-build');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-reporting-candidate-'));
+  try {
+    const payload = path.join(root, 'payload'), packageFile = path.join(root, 'package.json');
+    fs.mkdirSync(payload);
+    for (const name of ['release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz',
+      'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz', 'nora-hermes-runtime.json',
+      'nora-tavern-dependencies.json', 'nora-tavern-first-install-bootstrap.py']) {
+      fs.writeFileSync(path.join(payload, name), 'fixture');
+    }
+    const identity = { candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.3.17' },
+      hermesRuntime: { platform: process.platform, arch: process.arch } };
+    const pkg = require('../installer/desktop/package.json');
+    fs.writeFileSync(packageFile, JSON.stringify(pkg));
+    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version });
+    configureCandidateLauncher({ packageFile, payload, identity, telemetryEnabled: true });
+    const metadata = JSON.parse(fs.readFileSync(packageFile));
+    assert.equal(metadata.noraLocalTest.telemetryEnabled, true);
+    assert.equal(metadata.noraLocalTest.buildId, `candidate-${'a'.repeat(12)}-telemetry`);
+    assert.equal(await prepareTestPayload(payload, testBuild(metadata), pkg.version), payload);
+    assert.throws(() => testBuild({ ...metadata, noraLocalTest: { ...metadata.noraLocalTest, telemetryEnabled: 'true' } }), /标识无效/);
+    fs.writeFileSync(path.join(payload, 'nora-tavern-app.tar.gz'), 'corrupt');
+    await assert.rejects(prepareTestPayload(payload, testBuild(metadata), pkg.version), /校验失败/);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

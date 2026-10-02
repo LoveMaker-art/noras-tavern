@@ -38,6 +38,26 @@ test('one update remains available when only the launcher is outdated; minimum v
   assert.equal((await update.prepare({ ...f.options, launcherVersion: '1.1.0' })).launcher, null);
 });
 
+test('launcher download announces its stage before requesting headers, publishes bytes and ends in verification', async t => {
+  const f = fixture(t), events = [];
+  const prepared = await update.prepare({...f.options, onEvent:event=>events.push(event), fetcher:async (url, options)=>{
+    if (url.endsWith(f.item.asset)) {
+      assert.equal(events.at(-2).stage_id,'download');
+      assert.equal(events.at(-1).current,0);
+      assert.equal(events.at(-1).total,f.item.size);
+    }
+    return f.options.fetcher(url,options);
+  }});
+  const progress = events.filter(event=>event.event==='progress');
+  assert.equal(progress.at(-1).current,f.item.size);
+  assert.equal(progress.at(-1).ratio,1);
+  assert.equal(events.at(-1).stage_id,'verify');
+  assert.equal(fs.readFileSync(prepared.launcher.archive,'utf8'),'archive');
+  events.length = 0;
+  await update.prepare({...f.options,onEvent:event=>events.push(event)});
+  assert.equal(events.some(event=>event.stage_id==='download' || event.event==='progress'),false);
+});
+
 test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 release', async t => {
   const f = fixture(t);
   const manifestFile = path.join(f.root, 'release-manifest.json');

@@ -19,7 +19,7 @@ function errorCode(error) {
 }
 
 function createTelemetry({ file, launcherVersion, platform = process.platform, arch = process.arch,
-  enabled = true, cohort = 'unknown', fetcher = globalThis.fetch, now = Date.now, random = Math.random,
+  enabled = true, diagnosticDefault = false, cohort = 'unknown', fetcher = globalThis.fetch, now = Date.now, random = Math.random,
   diagnostic = () => {}, automatic = true, clean, roots, environment }) {
   let state, broken = false, controller, sending = false, attempts = 0, due = 0, timer;
   let productVersion = 'unknown', progressValue = null, generation = 0;
@@ -62,8 +62,13 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       }
     } else state = { schema: 1, id: randomUUID(), cohort, enabled: false, consentVersion: 0, sequence: 0, seen: false, ready: false, active: null, queue: [] };
   } catch { broken = true; state = { enabled: false, queue: [] }; report('state_unreadable'); }
-  // Prior stage-statistics consent never authorizes richer diagnostic evidence.
-  if (state.consentVersion !== 3) state.enabled = false;
+  // Apply the desktop's default only when no current diagnostic choice exists.
+  // Preserve explicit v3 opt-out and never promote queued legacy evidence.
+  if (state.consentVersion !== 3) {
+    state.queue = state.queue.map(event => event.schema_version === 3 ? {...event, fault:null} : event);
+    state.enabled = Boolean(enabled && diagnosticDefault && !broken);
+    state.consentVersion = 3;
+  }
   // Persist the consent instance so a self-update handoff cannot gain a later authorization.
   if (!state.enabled) state.diagnosticConsentId = '';
   else if (!/^[a-f0-9-]{36}$/.test(state.diagnosticConsentId || '')) state.diagnosticConsentId = randomUUID();

@@ -81,7 +81,7 @@
     .field-line .quiet { font-size:11px; padding:0 0 8px; }
     .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; white-space:pre-line; }
     .model-feedback.error { color:#e8a3af; }
-    .job-note { font-size:11px; color:#8e9f93; }
+    .job-note { font-size:11px; color:#8e9f93; line-height:1.6; white-space:pre-line; overflow-wrap:anywhere; }
     form { padding-top:4px; }
     .fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
     label { display:block; color:#b7c0b7; font-size:11px; margin-bottom:8px; }
@@ -135,9 +135,13 @@
     .daily.editing .management { display:none; }
     .settings-row { display:flex; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
     .settings-row span { color:#a9b9ac; }
-    #telemetryNotice { flex-shrink:0; margin-top:12px; font-size:11px; line-height:1.5; color:#a9b9ac; }
-    #telemetryNotice label { display:flex; align-items:center; gap:6px; min-height:28px; cursor:pointer; }
-    #telemetryNotice p { margin:2px 0 0; }
+    #telemetryNotice { flex-shrink:0; margin-top:12px; font-size:11px; line-height:1.6; color:#a9b9ac; }
+    #telemetryNotice label { display:flex; align-items:center; gap:8px; min-height:28px; margin:0; font-size:12px; cursor:pointer; }
+    #telemetryEnabled { flex:0 0 16px; width:16px; height:16px; min-width:16px; margin:0; padding:0; accent-color:var(--accent); cursor:pointer; }
+    #telemetryEnabled:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    #telemetryEnabled:disabled { cursor:wait; }
+    #telemetryNotice p { margin:2px 0 0 24px; }
+    #telemetryExplanation { color:#91a094; }
     @keyframes arrive { from { opacity:0; transform:translateY(9px); } to { opacity:1; transform:none; } }
     @keyframes scan { from { transform:translateX(-100%); opacity:.1; } 50% { opacity:.5; } to { transform:translateX(100%); opacity:.1; } }
     @media(prefers-reduced-motion:reduce) { *,*:after { animation:none!important; transition:none!important; } }
@@ -211,8 +215,9 @@
         <div class="runtime-actions"><button class="button primary launch" id="launch"><span>打开酒馆</span><i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></button><button class="stop" id="stop" title="停止 Nora 与酒馆" aria-label="停止 Nora 与酒馆" hidden><i class="fa-solid fa-stop" aria-hidden="true"></i></button></div>
       </div>
       <div id="telemetryNotice" hidden>
-        <label class="more-note"><input type="checkbox" id="telemetryEnabled" disabled>允许额外上报详细故障诊断</label>
-        <p class="more-note" id="telemetryExplanation">启动器会自动上报操作阶段、耗时、运行状态及固定技术错误码，使用随机标识关联操作。详细故障诊断默认关闭；勾选后，报错时会额外发送脱敏错误详情、调用栈、操作经过、运行环境及安装／更新的部分错误输出，无需逐次上传。不会发送聊天、密钥、模型回复或私人目录。取消勾选会停止详细诊断并清除待报故障包，基础运行统计继续上报；已发送记录不会自动删除。</p>
+        <label><input type="checkbox" id="telemetryEnabled" aria-describedby="telemetryExplanation telemetryFeedback" disabled><span>自动发送详细故障诊断</span></label>
+        <p id="telemetryExplanation">仅上报脱敏程序错误，不收集聊天内容、模型回复或密钥。</p>
+        <p id="telemetryFeedback" role="status" aria-live="polite" hidden></p>
       </div>
     </main>
   </div>

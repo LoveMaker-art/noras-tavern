@@ -7,6 +7,8 @@ const desktop = fs.existsSync(path.join(__dirname,'../../launcher/desktop/teleme
   ? path.join(__dirname,'../../launcher/desktop') : path.join(__dirname,'../installer/desktop');
 const {createTelemetry, errorCode} = require(path.join(desktop,'telemetry'));
 const contract = require(path.join(desktop,'telemetry-contract.json'));
+const vm = require('node:vm');
+const { parse } = require(path.join(desktop,'node_modules/acorn'));
 
 function fixture(t, options = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-telemetry-'));
@@ -23,6 +25,45 @@ function fixture(t, options = {}) {
   return {get client(){return client;},file,requests, read:()=>JSON.parse(fs.readFileSync(file)),
     advance:ms=>{time+=ms;}, restart:()=>{client.close();client=createTelemetry(config);return client;}};
 }
+test('the actual desktop upload gate permits explicit reporting candidates while keeping diagnostic consent separate', async t => {
+  const source = fs.readFileSync(path.join(desktop,'main.js'),'utf8');
+  let enabledNode;
+  function visit(node) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'CallExpression' && node.callee.name === 'createTelemetry') {
+      enabledNode = node.arguments[0].properties.find(item => item.key.name === 'enabled').value;
+    }
+    for (const value of Object.values(node)) {
+      if (Array.isArray(value)) value.forEach(visit);
+      else if (value && typeof value === 'object') visit(value);
+    }
+  }
+  visit(parse(source,{ecmaVersion:'latest'}));
+  assert.ok(enabledNode);
+  const expression = source.slice(enabledNode.start,enabledNode.end);
+  for (const [packaged,localTest,beta,localRelease,expected] of [
+    [true,null,false,'',true], [true,{},false,'',false],
+    [true,{telemetryEnabled:false},false,'',false], [true,{telemetryEnabled:true},false,'',true],
+    [true,null,true,'',false], [false,{telemetryEnabled:true},false,'',false],
+    [true,{telemetryEnabled:true},false,'fixture-release',false],
+  ]) {
+    const enabled = vm.runInNewContext(expression,{app:{isPackaged:packaged},LOCAL_TEST:localTest,
+      ISOLATED_TEST:localTest || beta,localReleaseDirectory:localRelease});
+    assert.equal(enabled,expected);
+    const f=fixture(t,{enabled,consent:false});
+    assert.equal(f.client.settings().available,expected);
+    assert.equal(f.client.settings().enabled,false);
+    f.client.begin('install');f.client.stage('runtime_extract');f.client.finish('failed',new Error('unconsented-install-detail'));
+    await f.client.flush();
+    if (!expected) {assert.equal(f.requests.length,0);continue;}
+    assert.ok(f.requests[0].data.events.some(e=>e.event==='operation_finished' && e.status==='failed'));
+    assert.ok(f.requests[0].data.events.every(e=>e.fault===null));
+    assert.doesNotMatch(JSON.stringify(f.requests),/unconsented-install-detail/);
+    f.client.setEnabled(true);f.client.begin('repair');f.client.finish('failed',new Error('authorized-install-detail'));
+    f.advance(1000);await f.client.flush();
+    assert.ok(f.requests.at(-1).data.events.some(e=>e.fault));
+  }
+});
 test('authorized collection records stages, errors and actual readiness, not just installed files',async t=>{
   const f=fixture(t), c=f.client; c.begin('install');c.stage('runtime_extract');f.advance(2000);c.finish('succeeded');
   c.status({version:'2.3.17',systemReady:true,installed:true,setupCompleted:false});
@@ -328,4 +369,29 @@ test('space-containing private paths and safe model-helper messages survive all 
   const helper=Object.assign(new Error('PRIVATE_MODEL_RESPONSE personal-story-text'),{source:'launcher_process',site:'model.save',remoteMessage:'Model configuration helper failed.'});
   const wrapper=launcherError(`Model setup failed: ${helper.message}`,{site:'model.save'},helper);
   assert.doesNotMatch(JSON.stringify(packets.packet(wrapper,{action:'model'})),/PRIVATE_MODEL_RESPONSE|personal-story-text/);
+});
+
+
+test('desktop default enables only new diagnostic choices and preserves explicit opt out', async t => {
+  const source=fs.readFileSync(path.join(desktop,'main.js'),'utf8');
+  let config;
+  function visit(node) {
+    if(!node || typeof node!=='object')return;
+    if(node.type==='CallExpression' && node.callee.name==='createTelemetry')config=node.arguments[0];
+    for(const value of Object.values(node))if(Array.isArray(value))value.forEach(visit);else if(value && typeof value==='object')visit(value);
+  }
+  visit(parse(source,{ecmaVersion:'latest'}));
+  const defaultNode=config.properties.find(p=>p.key.name==='diagnosticDefault');
+  assert.ok(defaultNode,'desktop must explicitly select the user-visible diagnostic default');
+  const diagnosticDefault=vm.runInNewContext(source.slice(defaultNode.value.start,defaultNode.value.end));
+  assert.equal(diagnosticDefault,true);
+  const f=fixture(t,{diagnosticDefault,consent:false});
+  assert.equal(f.client.settings().enabled,true);
+  f.client.begin('install');f.client.finish('failed',new Error('default-program-error'));
+  await f.client.flush();assert.ok(f.requests[0].data.events.some(e=>e.fault));
+  f.client.setEnabled(false);const restarted=f.restart();assert.equal(restarted.settings().enabled,false);
+  restarted.begin('repair');restarted.finish('failed',new Error('opted-out-program-error'));
+  f.advance(1100);await restarted.flush();assert.ok(f.requests.at(-1).data.events.every(e=>e.fault===null));
+  const disabled=fixture(t,{diagnosticDefault,enabled:false,consent:false});
+  assert.equal(disabled.client.settings().enabled,false);
 });

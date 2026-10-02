@@ -10,6 +10,8 @@ import { assertLauncherVersion, readBaseline, restoreBuiltPayload, reuseArchive 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const candidate = process.argv.includes('--candidate');
 const componentsOnly = process.argv.includes('--components-only');
+const candidateTelemetry = process.argv.includes('--candidate-telemetry');
+if (candidateTelemetry && (!candidate || componentsOnly)) throw new Error('Candidate telemetry requires a complete --candidate launcher build');
 const baselineIndex = process.argv.indexOf('--launcher-baseline');
 const baselineDirectory = baselineIndex >= 0 ? process.argv[baselineIndex + 1] : null;
 if (baselineIndex >= 0 && (!baselineDirectory || baselineDirectory.startsWith('--'))) throw new Error('Missing launcher baseline directory');
@@ -17,6 +19,7 @@ const runtimeManifestIndex = process.argv.indexOf('--hermes-runtime-manifest');
 const runtimeManifestPath = runtimeManifestIndex >= 0
     ? path.resolve(process.argv[runtimeManifestIndex + 1] || '')
     : null;
+if (candidateTelemetry && !runtimeManifestPath && !baselineDirectory) throw new Error('Candidate telemetry requires a verified complete runtime');
 if (componentsOnly && runtimeManifestPath) throw new Error('Component builds reuse published environments; do not supply --hermes-runtime-manifest');
 if (baselineDirectory && (componentsOnly || runtimeManifestPath)) throw new Error('Launcher baseline cannot be combined with another packaging mode');
 const { stage, files, identity } = createReleaseSource(root, { candidate });
@@ -273,6 +276,7 @@ try {
         launcherVersion: identity.launcherVersion, minimumLauncherVersion: identity.bootstrap.minimumLauncherVersion });
     if (identity.hermesRuntime) configureCandidateLauncher({
         packageFile: path.join(starterRoot, 'desktop/package.json'), payload: starterPayload, identity,
+        telemetryEnabled: candidateTelemetry,
     });
     const starterName = 'nora-tavern-launcher.zip';
     run('zip', ['-qry', starterName, 'nora-tavern-launcher'], release);

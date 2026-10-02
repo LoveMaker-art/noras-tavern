@@ -22,6 +22,7 @@ async function inspect({ release, manifest, launcherVersion, fetcher, signal, pl
 
 async function prepare(options) {
   const r = releases();
+  options.onEvent?.({ event: 'task', stage_id: 'release_check', task: '检查最新版本与更新清单' });
   const release = await r.latest(options.fetcher, options.signal, options.channel, options.tag);
   const manifest = await r.requestJson(r.assetUrl(release, 'release-manifest.json'), options.fetcher, options.signal);
   const item = await inspect({ ...options, release, manifest });
@@ -31,16 +32,26 @@ async function prepare(options) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const archive = path.join(root, item.asset);
   if (!fs.existsSync(archive) || await r.hash(archive) !== item.sha256) {
-    options.onEvent?.({ event: 'task', task: '正在下载更新' });
+    options.onEvent?.({ event: 'task', stage_id: 'download', task: '正在下载启动器更新' });
+    options.onEvent?.({ event: 'progress', current: 0, total: item.size, ratio: 0 });
     const partial = archive + '.partial';
     try {
       const signal = AbortSignal.any([options.signal || new AbortController().signal, AbortSignal.timeout(1800000)]);
       const response = await options.fetcher(r.assetUrl(release, item.asset), { signal });
       if (!response.ok || !response.body) throw new Error(`启动器下载失败（HTTP ${response.status}）`);
-      let size = 0;
+      let size = 0, lastProgress = Date.now();
       const stream = Readable.fromWeb(response.body);
-      stream.on('data', chunk => { size += chunk.length; if (size > item.size) stream.destroy(new Error('更新文件超出声明大小')); });
+      stream.on('data', chunk => {
+        size += chunk.length;
+        if (size > item.size) { stream.destroy(new Error('更新文件超出声明大小')); return; }
+        if (Date.now() - lastProgress >= 250) {
+          lastProgress = Date.now();
+          options.onEvent?.({ event: 'progress', current: size, total: item.size, ratio: size / item.size });
+        }
+      });
       await pipeline(stream, fs.createWriteStream(partial, { mode: 0o600 }), { signal });
+      options.onEvent?.({ event: 'progress', current: size, total: item.size, ratio: size / item.size });
+      options.onEvent?.({ event: 'task', stage_id: 'verify', task: '正在校验启动器更新' });
       if (size !== item.size || await r.hash(partial) !== item.sha256) throw new Error('启动器更新校验失败，当前安装未修改。');
       fs.renameSync(partial, archive);
     } finally { fs.rmSync(partial, { force: true }); }

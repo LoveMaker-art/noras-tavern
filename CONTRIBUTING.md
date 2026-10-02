@@ -88,6 +88,8 @@ node tooling/release/package-release.mjs --candidate --hermes-runtime-manifest /
 
 `--candidate` includes tracked and unignored new source, records dirty state, and creates a local candidate. `--offline` requires all locked npm packages already cached. Omitting `--candidate` requires a clean committed tree. A complete launcher system requires a verified platform-specific Hermes runtime manifest; Tavern-only archives do not establish a complete Nora installation.
 
+Candidate builds disable uploads by default. Add `--candidate-telemetry` alongside `--candidate` only for an explicitly authorized receiver test. That build uses a separate isolated installation directory and sends basic operation statistics to the production receiver. Detailed diagnostics default to enabled for a new diagnostic choice; users can turn them off in the launcher, and an existing explicit opt-out is preserved. Candidate payload verification and the online-update restriction remain in force.
+
 The packager exports source, checks Story Profile parity, builds Tavern/MCP, validates the delivery allowlist and hashes, and emits `release/`. It **does not run the test suite**; the manifest records `verification.mode=packaging-only` and `testsExecutedByPackager=false`. There is no separate guaranteed `--fast-after-test` mode.
 
 Verify the payload separately:

@@ -10,21 +10,37 @@
 
   if (api.telemetry) {
     const checkbox = $('telemetryEnabled');
+    const feedback = $('telemetryFeedback');
+    let saved = false;
+    const showFeedback = (text, failed = false) => {
+      feedback.textContent = text; feedback.hidden = !text;
+      feedback.className = failed ? 'error' : '';
+    };
     api.telemetry().then(settings => {
       if (!settings?.available) return;
       $('telemetryNotice').hidden = false;
-      checkbox.checked = Boolean(settings.enabled); checkbox.disabled = false;
-    }).catch(() => {});
+      saved = Boolean(settings.enabled); checkbox.checked = saved; checkbox.disabled = false;
+    }).catch(() => {
+      $('telemetryNotice').hidden = false;
+      showFeedback('设置读取失败，请重新打开启动器后重试。', true);
+    });
     checkbox.onchange = async () => {
-      const previous = !checkbox.checked; checkbox.disabled = true;
-      try { checkbox.checked = Boolean((await api.telemetry(checkbox.checked))?.enabled); }
-      catch { checkbox.checked = previous; $('telemetryExplanation').textContent = '设置未保存，请重试。'; }
+      const requested = checkbox.checked; checkbox.disabled = true;
+      showFeedback('正在保存…');
+      try {
+        const settings = await api.telemetry(requested);
+        if (!settings?.available || typeof settings.enabled !== 'boolean' || settings.enabled !== requested) throw new Error('setting-not-saved');
+        saved = settings.enabled; checkbox.checked = saved;
+        showFeedback('');
+      }
+      catch { checkbox.checked = saved; showFeedback('设置未保存，请重试。', true); }
       finally { checkbox.disabled = false; }
     };
   }
 
   let snapshot = {}, view = 'loading', refreshing = false, activeAction = '', lastFailure = null;
   let alive = true, pollTimer, taskTimer, startedAt = 0, lastEvent = 0;
+  let taskStage = '', stageStartedAt = 0, taskProgress = null, lastProgressAt = 0;
   let milestoneStates = [], currentTask = '', operationCancelled = false;
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
   let sawIncompleteSetup = false, firstCompletionPending = false;
@@ -303,23 +319,43 @@
     const messages = { install: '我来准备，你稍等片刻。', pair: '我来连接 ClawChat。', start: '正在准备 Nora 和酒馆。', stop: '正在停止服务。', update: '正在更新诺拉与酒馆。', repair: '正在修复安装。' };
     say(messages[action] || '我正在处理。');
     $('inline').innerHTML = '<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent"></span></div><div class="meter indeterminate"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div><div class="task-actions" id="taskActions"></div>';
-    currentTask = '准备中'; startedAt = Date.now(); lastEvent = Date.now();
+    currentTask = '准备中'; startedAt = Date.now(); lastEvent = startedAt;
+    taskStage = ''; stageStartedAt = startedAt; taskProgress = null; lastProgressAt = startedAt;
     const cancel = button('取消', async () => {
       cancel.disabled = true;
-      try { const result = await api.cancel(); if (!result.ok) throw new Error(result.warning); operationCancelled = true; }
+      try {
+        const result = await api.cancel(); if (!result.ok) throw new Error(result.warning);
+        operationCancelled = true; taskStage = 'cancel'; taskProgress = null;
+        currentTask = '正在取消，等待后台任务结束'; updateTask();
+      }
       catch (error) { currentTask = textError(error); updateTask(); cancel.disabled = false; }
     }, false);
     cancel.className = 'quiet'; $('taskActions').append(cancel);
     clearInterval(taskTimer); taskTimer = setInterval(updateTask, 1000); updateTask();
   }
+  function progressBytes(value) {
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB`;
+    return `${(value / 1024 ** 2).toFixed(1)} MB`;
+  }
   function updateTask() {
     if (!$('jobTitle')) return;
     $('jobTitle').textContent = currentTask;
-    const seconds = Math.floor((Date.now() - startedAt) / 1000);
-    $('jobNote').textContent = Date.now() - lastEvent > 20000
-      ? `仍在等待后台响应 · 已用时 ${seconds} 秒` : `已用时 ${seconds} 秒`;
+    const now = Date.now();
+    const timing = `本阶段 ${Math.floor((now - stageStartedAt) / 1000)} 秒 · 总用时 ${Math.floor((now - startedAt) / 1000)} 秒`;
+    const notes = [timing];
+    if (taskStage === 'download') {
+      if (taskProgress) notes.unshift(`已下载 ${progressBytes(taskProgress.current)}${taskProgress.total ? ` / ${progressBytes(taskProgress.total)}` : ''}`);
+      if (now - lastProgressAt >= 180000 && (!taskProgress?.total || taskProgress.current < taskProgress.total)) {
+        notes.push('下载已连续 3 分钟没有收到新数据。请检查网络；如使用代理工具（魔法），请确认启动器的下载也经过代理。可先取消，待任务结束后重试。');
+      }
+    } else if (taskStage !== 'cancel' && now - lastEvent > 20000) {
+      notes.push('暂未收到新的阶段进度，正在等待后台结果。');
+    }
+    $('jobNote').textContent = notes.join('\n');
   }
   function onEvent(event) {
+    if (operationCancelled && ['task','milestone','progress'].includes(event.event)) return;
     if (event.event !== 'heartbeat') lastEvent = Date.now();
     if (event.event === 'milestone' && event.index >= 0 && event.index < 5) {
       milestoneStates[event.index] = event.state;
@@ -327,16 +363,28 @@
       displaySteps();
     }
     if (event.event === 'task' || event.event === 'milestone') {
+      if ((event.stage_id && event.stage_id !== taskStage) || (event.task && event.task !== currentTask)) {
+        taskStage = event.stage_id || ''; stageStartedAt = Date.now();
+        taskProgress = null; lastProgressAt = stageStartedAt;
+      }
       currentTask = event.task || currentTask;
       const meter = document.querySelector('.meter');
       if (meter) { meter.classList.add('indeterminate'); $('jobPercent').textContent = ''; }
       updateTask();
     }
     if (event.event === 'progress' && $('meterFill')) {
-      const ratio = typeof event.ratio === 'number' && Number.isFinite(event.ratio) ? event.ratio : null;
+      const current = Number.isFinite(event.current) && event.current >= 0 ? event.current : null;
+      const total = Number.isFinite(event.total) && event.total > 0 ? event.total : null;
+      if (current !== null) {
+        if (!taskProgress || current > taskProgress.current) lastProgressAt = Date.now();
+        taskProgress = {current, total};
+      }
+      const ratio = typeof event.ratio === 'number' && Number.isFinite(event.ratio) ? event.ratio
+        : current !== null && total !== null ? current / total : null;
       document.querySelector('.meter').classList.toggle('indeterminate', ratio === null);
       $('jobPercent').textContent = ratio === null ? '' : `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
       if (ratio !== null) $('meterFill').style.width = `${Math.max(0, Math.min(1, ratio)) * 100}%`;
+      updateTask();
     }
   }
   function fail(error, action, retry) {

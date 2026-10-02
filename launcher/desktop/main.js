@@ -881,7 +881,8 @@ if (app && BrowserWindow && ipcMain && shell) {
   try {
     const existing = fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json'));
     telemetry = createTelemetry({ file: path.join(installerDirectory(), 'telemetry.json'), launcherVersion: app.getVersion(),
-      enabled: Boolean(app.isPackaged && !ISOLATED_TEST && !localReleaseDirectory),
+      enabled: Boolean(app.isPackaged && (!ISOLATED_TEST || LOCAL_TEST?.telemetryEnabled === true) && !localReleaseDirectory),
+      diagnosticDefault: true,
       cohort: existing ? 'existing' : fs.existsSync(installRoot()) || fs.existsSync(hermesHome()) ? 'unknown' : 'new',
       clean:diagnostics.clean, roots:() => [installerRoot(),noraHome(),hermesHome(),installRoot(),os.homedir()],
       environment:{os_release:os.release(),node:process.versions.node,electron:process.versions.electron,launcher_build:launcherBuild()},

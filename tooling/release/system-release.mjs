@@ -13,7 +13,7 @@ export function fileDigest(file) {
     return hash.digest('hex');
 }
 
-export function configureCandidateLauncher({ packageFile, payload, identity }) {
+export function configureCandidateLauncher({ packageFile, payload, identity, telemetryEnabled = false }) {
     if (!identity.candidate) return;
     const systemBytes = fs.readFileSync(path.join(payload, 'nora-system.json'));
     const system = JSON.parse(systemBytes);
@@ -21,11 +21,12 @@ export function configureCandidateLauncher({ packageFile, payload, identity }) {
         throw new Error('Candidate launcher identity does not match its payload');
     }
     const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));
-    const installationId = desktop.noraTestInstallationId || `candidate-${identity.commit.slice(0, 12)}`;
+    const installationId = desktop.noraTestInstallationId || `candidate-${identity.commit.slice(0, 12)}${telemetryEnabled ? '-telemetry' : ''}`;
     if (!/^[a-zA-Z0-9-]{1,64}$/.test(installationId)) throw new Error('Invalid candidate installation identity');
     delete desktop.noraReleaseChannel;
     desktop.noraLocalTest = { schema: 1, buildId: installationId,
-        systemManifestSha256: crypto.createHash('sha256').update(systemBytes).digest('hex') };
+        systemManifestSha256: crypto.createHash('sha256').update(systemBytes).digest('hex'),
+        ...(telemetryEnabled ? { telemetryEnabled: true } : {}) };
     desktop.build.appId = 'art.lovemaker.nora-tavern-launcher.local-test';
     desktop.build.productName = '诺拉·酒馆测试版';
     desktop.build.artifactName = `Nora-Tavern-${system.version}-test-\${os}-\${arch}.\${ext}`;

@@ -174,3 +174,36 @@ test('system log-open failure preserves raw evidence and produces guidance witho
   });
   }
 });
+
+
+function diagnosticChoice(api) {
+  const node=statements.find(n=>n.type==='IfStatement' && source.slice(n.test.start,n.test.end)==='api.telemetry');
+  const elements=new Map();
+  const $=id=>{if(!elements.has(id))elements.set(id,{checked:false,disabled:true,hidden:true,textContent:'',setAttribute(){}});return elements.get(id);};
+  $('telemetryExplanation').textContent='仅上报脱敏程序错误，不收集聊天内容、模型回复或密钥。';
+  vm.runInNewContext(source.slice(node.start,node.end),{api,$});
+  return $;
+}
+const tick=()=>new Promise(resolve=>setImmediate(resolve));
+test('diagnostic choice reflects persisted values and keeps its notice through failure and recovery',async()=>{
+  let enabled=true,fail=false,resolve;
+  const $=diagnosticChoice({telemetry:async value=>{
+    if(value===undefined)return {available:true,enabled};
+    if(fail)throw Error('failed');
+    await new Promise(r=>{resolve=r;});enabled=value;return {available:true,enabled};
+  }});
+  await tick();assert.equal($('telemetryEnabled').checked,true);assert.equal($('telemetryEnabled').disabled,false);
+  const notice=$('telemetryExplanation').textContent;
+  fail=true;$('telemetryEnabled').checked=false;await $('telemetryEnabled').onchange();
+  assert.equal($('telemetryEnabled').checked,true);assert.equal($('telemetryExplanation').textContent,notice);
+  assert.match($('telemetryFeedback').textContent,/未保存/);
+  fail=false;$('telemetryEnabled').checked=false;const save=$('telemetryEnabled').onchange();
+  assert.equal($('telemetryEnabled').disabled,true);assert.match($('telemetryFeedback').textContent,/保存/);
+  resolve();await save;assert.equal($('telemetryEnabled').disabled,false);assert.equal($('telemetryEnabled').checked,false);
+  assert.doesNotMatch($('telemetryFeedback').textContent,/未保存/);assert.equal($('telemetryExplanation').textContent,notice);
+});
+test('a failed diagnostic save cannot masquerade as successful opt out',async()=>{
+  const $=diagnosticChoice({telemetry:async value=>value===undefined?{available:true,enabled:true}:undefined});
+  await tick();$('telemetryEnabled').checked=false;await $('telemetryEnabled').onchange();
+  assert.equal($('telemetryEnabled').checked,true);assert.match($('telemetryFeedback').textContent,/未保存/);
+});

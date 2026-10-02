@@ -157,6 +157,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
     if (expected && await matches(target, expected)) return;
     const partial = `${target}.partial`;
     onEvent({ event: 'task', stage_id: 'download', task: `准备 ${release.tag_name}：${name}` });
+    onEvent({ event: 'progress', current: 0, total: 0 });
     try {
       const downloadSignal = AbortSignal.any([signal || new AbortController().signal, AbortSignal.timeout(30 * 60 * 1000)]);
       const response = await fetcher(assetUrl(release, name), { signal: downloadSignal });
