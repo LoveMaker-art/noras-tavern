@@ -4,10 +4,11 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import time
 from types import SimpleNamespace
 import unittest
 from contextlib import ExitStack
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 from ops.installer import launcher_bridge as bridge
 from ops.updater import update
@@ -58,6 +59,27 @@ class UpdateLifecycleTests(unittest.TestCase):
                 bridge.command_update_lifecycle(self.args)
             stop.assert_not_called()
             start.assert_not_called()
+
+    def test_preflight_rejects_unmanaged_live_gateway_before_false_offline_snapshot(self):
+        home = self.args.hermes_home
+        home.mkdir()
+        (home / 'gateway_state.json').write_text(json.dumps({'pid': 42}))
+        process = Mock(pid=42)
+        process.create_time.return_value = time.time() - 60
+        process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']
+        before = {'version': '2.3.7', 'running': True, 'gatewayRunning': False}
+        plan = {'phase': 'preflight', 'before': before, 'version': '2.4.0',
+                'noraHome': str(self.root), 'hermesHome': str(home),
+                'installRoot': str(self.args.install_root)}
+        with patch.object(bridge.sys, 'stdin', io.StringIO(json.dumps(plan))), \
+             patch('psutil.Process', return_value=process), \
+             patch.object(bridge, 'command_stop') as stop, \
+             patch.object(bridge, 'status_payload', return_value=before) as status:
+            with self.assertRaisesRegex(RuntimeError, '其他方式启动'):
+                bridge.command_update_lifecycle(self.args)
+        stop.assert_not_called()
+        status.assert_not_called()
+        process.terminate.assert_not_called()
 
     def test_missing_receipt_rollback_restores_only_previously_running_services(self):
         for tavern, nora in ((True, True), (True, False), (False, True), (False, False)):

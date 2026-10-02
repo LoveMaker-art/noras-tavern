@@ -272,6 +272,407 @@ class LauncherServicesTests(unittest.TestCase):
             process.cmdline.return_value = ['/other/python', '-m', 'unrelated']
             self.assertIsNone(services.owned_gateway(self.root))
 
+    def restarted_gateway_fixture(self):
+        """Hermes' detached restart inherits launcher identity, but has a new PID."""
+        import psutil
+        directory = self.root / 'installer'
+        directory.mkdir(exist_ok=True)
+        executable = str(Path(sys.executable).resolve())
+        record = {'pid': 42, 'created': 100, 'command': [executable, '-m', 'hermes_cli.main', 'gateway', 'run'],
+                  'ownerToken': 'a' * 64, 'hermesHome': str(self.hermes)}
+        record_path = directory / 'gateway.json'
+        record_path.write_text(json.dumps(record))
+        identity = {'pid': 43, 'kind': 'hermes-gateway', 'start_time': 20000,
+                    'hermes_home': str(self.hermes)}
+        pid_path = self.hermes / 'gateway.pid'
+        pid_path.write_text(json.dumps(identity))
+        state = {**identity, 'platforms': {'clawchat': {'state': 'connected',
+                'writer_pid': 43, 'writer_start_time': 20000}}}
+        self.state(state)
+        process = Mock(pid=43)
+        process.create_time.return_value = 200
+        process.status.return_value = psutil.STATUS_SLEEPING
+        process.cmdline.return_value = [*record['command'], '--replace']
+        process.exe.return_value = executable
+        process.environ.return_value = {'NORA_LAUNCHER_GATEWAY_OWNER': 'a' * 64,
+                                        'HERMES_HOME': str(self.hermes)}
+        process.children.return_value = []
+        stopped = set()
+        process.terminate.side_effect = lambda: stopped.add(43)
+        process.is_running.side_effect = lambda: 43 not in stopped
+
+        def inspect(pid):
+            if pid == 43 and pid not in stopped:
+                return process
+            raise psutil.NoSuchProcess(pid)
+
+        return types.SimpleNamespace(record=record, record_path=record_path, pid_path=pid_path,
+                                     state=state, process=process, inspect=inspect)
+
+    def test_gateway_status_follows_launcher_restart_without_rewriting_records(self):
+        fixture = self.restarted_gateway_fixture()
+        paths = [fixture.record_path, fixture.pid_path, self.hermes / 'gateway_state.json']
+        original = {path: path.read_bytes() for path in paths}
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=fixture.inspect):
+            self.assertIs(services.owned_gateway(self.root, require_readable=True), fixture.process)
+            self.assertEqual(services.gateway_status(self.root, self.hermes), {
+                'gatewayRunning': True, 'clawchatConnected': True, 'clawchatState': 'connected'})
+        self.assertEqual({path: path.read_bytes() for path in paths}, original)
+        fixture.process.terminate.assert_not_called()
+        fixture.process.kill.assert_not_called()
+
+    def test_new_gateway_launch_records_ownership_inherited_by_hermes_restart(self):
+        import psutil
+        executable = str(Path(sys.executable).resolve())
+        command = [executable, '-m', 'hermes_cli.main', 'gateway', 'run']
+        process = Mock(pid=42)
+        process.create_time.return_value = 100
+        process.cmdline.return_value = command
+        process.status.return_value = psutil.STATUS_SLEEPING
+        process.children.return_value = []
+        stopped = set()
+        process.terminate.side_effect = lambda: stopped.add(42)
+        child = Mock(pid=42)
+        child.poll.return_value = None
+
+        def launch_gateway(*args, **kwargs):
+            identity = {'pid': 42, 'kind': 'hermes-gateway', 'start_time': 10000,
+                        'hermes_home': str(self.hermes)}
+            (self.hermes / 'gateway.pid').write_text(json.dumps(identity))
+            self.state({**identity, 'platforms': {'clawchat': {'state': 'connected',
+                        'writer_pid': 42, 'writer_start_time': 10000}}})
+            process.environ.return_value = kwargs['env']
+            return child
+
+        def inspect(pid):
+            if pid == 42 and pid not in stopped:
+                return process
+            raise psutil.NoSuchProcess(pid)
+
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=inspect), \
+             patch.object(services.subprocess, 'Popen', side_effect=launch_gateway) as launch, \
+             patch('psutil.wait_procs', side_effect=lambda processes, timeout: (processes, [])):
+            try:
+                self.assertTrue(services.start_gateway(self.root, self.hermes, command,
+                                {'HERMES_HOME': str(self.hermes),
+                                 'NORA_LAUNCHER_GATEWAY_OWNER': 'b' * 64}, timeout=1)['clawchatConnected'])
+                environment = launch.call_args.kwargs['env']
+                self.assertRegex(environment.get('NORA_LAUNCHER_GATEWAY_OWNER', ''), r'^[0-9a-f]{64}$')
+                self.assertNotEqual(environment['NORA_LAUNCHER_GATEWAY_OWNER'], 'b' * 64)
+                record = services.read_json(self.root / 'installer/gateway.json')
+                self.assertEqual(record['ownerToken'], environment['NORA_LAUNCHER_GATEWAY_OWNER'])
+                self.assertEqual(record['launchCommand'], command)
+                self.assertEqual(Path(record['hermesHome']).resolve(), self.hermes.resolve())
+            finally:
+                services.stop_gateway(self.root)
+
+    def test_start_reuses_launcher_restart_and_refreshes_its_record(self):
+        fixture = self.restarted_gateway_fixture()
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=fixture.inspect), \
+             patch.object(services.subprocess, 'Popen') as launch:
+            status = services.start_gateway(self.root, self.hermes, fixture.record['command'],
+                                            {'HERMES_HOME': str(self.hermes)}, timeout=1)
+        self.assertTrue(status['clawchatConnected'])
+        launch.assert_not_called()
+        record = services.read_json(fixture.record_path)
+        self.assertEqual(record['pid'], 43)
+        self.assertEqual(record['created'], 200)
+        self.assertEqual(record['command'], fixture.process.cmdline.return_value)
+        self.assertEqual(record['ownerToken'], fixture.record['ownerToken'])
+        self.assertEqual(Path(record['hermesHome']).resolve(), self.hermes.resolve())
+        fixture.process.terminate.assert_not_called()
+
+    def test_stop_terminates_the_owned_launcher_restart_before_removing_record(self):
+        fixture = self.restarted_gateway_fixture()
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=fixture.inspect), \
+             patch('psutil.wait_procs', side_effect=lambda processes, timeout: (processes, [])):
+            services.stop_gateway(self.root)
+            self.assertFalse(services.gateway_status(self.root, self.hermes)['gatewayRunning'])
+        fixture.process.terminate.assert_called_once_with()
+        fixture.process.kill.assert_not_called()
+        self.assertFalse(fixture.record_path.exists())
+
+    def test_stop_preserves_record_if_an_unknown_gateway_appears_after_termination(self):
+        import psutil
+        fixture = self.restarted_gateway_fixture()
+        original = fixture.record_path.read_bytes()
+        foreign = Mock(pid=44)
+        foreign.create_time.return_value = 300
+        foreign.status.return_value = psutil.STATUS_SLEEPING
+        foreign.cmdline.return_value = [*fixture.record['command'], '--replace']
+        foreign.exe.return_value = fixture.process.exe.return_value
+        foreign.environ.return_value = {'NORA_LAUNCHER_GATEWAY_OWNER': 'b' * 64,
+                                         'HERMES_HOME': str(self.hermes)}
+        terminate = fixture.process.terminate.side_effect
+
+        def terminate_and_replace():
+            terminate()
+            identity = {'pid': 44, 'kind': 'hermes-gateway', 'start_time': 30000,
+                        'hermes_home': str(self.hermes)}
+            fixture.pid_path.write_text(json.dumps(identity))
+            self.state({**identity, 'platforms': {}})
+
+        fixture.process.terminate.side_effect = terminate_and_replace
+
+        def inspect(pid):
+            return foreign if pid == 44 else fixture.inspect(pid)
+
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=inspect), \
+             patch('psutil.wait_procs', side_effect=lambda processes, timeout: (processes, [])):
+            with self.assertRaises(RuntimeError):
+                services.stop_gateway(self.root)
+        fixture.process.terminate.assert_called_once_with()
+        foreign.terminate.assert_not_called()
+        foreign.kill.assert_not_called()
+        self.assertEqual(fixture.record_path.read_bytes(), original)
+
+    def test_mac_and_windows_restart_identity_uses_epoch_centiseconds(self):
+        for platform in ('darwin', 'win32'):
+            with self.subTest(platform=platform):
+                fixture = self.restarted_gateway_fixture()
+                with patch.object(services.sys, 'platform', platform), \
+                     patch('psutil.boot_time', return_value=50), \
+                     patch('psutil.Process', side_effect=fixture.inspect):
+                    self.assertTrue(services.gateway_status(self.root, self.hermes)['clawchatConnected'])
+                    fixture.state['start_time'] = 200
+                    self.state(fixture.state)
+                    self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+
+    def test_windows_venv_gateway_restart_can_use_its_bundled_base_python(self):
+        fixture = self.restarted_gateway_fixture()
+        launcher_python = str((self.hermes / 'hermes-agent/venv/Scripts/python.exe').resolve())
+        base_python = str((self.hermes / 'python/python.exe').resolve())
+        fixture.record['command'][0] = launcher_python
+        fixture.record_path.write_text(json.dumps(fixture.record))
+        fixture.process.cmdline.return_value = [base_python, '-m', 'hermes_cli.main', 'gateway', 'run', '--replace']
+        fixture.process.exe.return_value = base_python
+        with patch.object(services.sys, 'platform', 'win32'), \
+             patch('psutil.boot_time', return_value=50), \
+             patch('psutil.Process', side_effect=fixture.inspect):
+            self.assertTrue(services.gateway_status(self.root, self.hermes)['clawchatConnected'])
+            fixture.process.exe.return_value = str(self.root / 'foreign/python.exe')
+            self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+
+    def test_restart_pid_reuse_between_process_inspections_is_not_owned(self):
+        fixture = self.restarted_gateway_fixture()
+        fresh = Mock(pid=43)
+        fresh.create_time.return_value = 201
+        fresh.status.return_value = fixture.process.status.return_value
+        fresh.cmdline.return_value = fixture.process.cmdline.return_value
+        inspections = []
+
+        def inspect(pid):
+            if pid != 43:
+                return fixture.inspect(pid)
+            inspections.append(pid)
+            return fixture.process if len(inspections) == 1 else fresh
+
+        original = fixture.record_path.read_bytes()
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=inspect):
+            self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+        fixture.process.terminate.assert_not_called()
+        fresh.terminate.assert_not_called()
+        self.assertEqual(fixture.record_path.read_bytes(), original)
+
+    def test_consecutive_hermes_cli_restarts_preserve_launcher_ownership(self):
+        import psutil
+        entries = [('darwin', 'hermes-agent/venv/bin/hermes'),
+                   ('darwin', 'hermes-agent/hermes_cli/main.py'),
+                   ('win32', 'hermes-agent/venv/Scripts/hermes.exe'),
+                   ('darwin', None)]
+        for platform, relative in entries:
+            with self.subTest(platform=platform, entry=relative):
+                fixture = self.restarted_gateway_fixture()
+                launch_command = list(fixture.record['command'])
+                fixture.record['launchCommand'] = launch_command
+                fixture.record_path.write_text(json.dumps(fixture.record))
+                prefix = ([launch_command[0], str((self.hermes / relative).resolve())]
+                          if relative else launch_command[:3])
+                fixture.process.cmdline.return_value = [*prefix, 'gateway', 'restart']
+                second = Mock(pid=44)
+                second.create_time.return_value = 300
+                second.status.return_value = psutil.STATUS_SLEEPING
+                second.cmdline.return_value = [*prefix, 'gateway', 'run', '--replace']
+                second.exe.return_value = fixture.process.exe.return_value
+                second.environ.return_value = dict(fixture.process.environ.return_value)
+                current_pid = [43]
+
+                def inspect(pid):
+                    if pid == current_pid[0]:
+                        return fixture.process if pid == 43 else second
+                    raise psutil.NoSuchProcess(pid)
+
+                with patch.object(services.sys, 'platform', platform), \
+                     patch('psutil.boot_time', return_value=50), \
+                     patch('psutil.Process', side_effect=inspect), \
+                     patch.object(services.subprocess, 'Popen') as launch:
+                    self.assertTrue(services.start_gateway(self.root, self.hermes, launch_command,
+                                    {'HERMES_HOME': str(self.hermes)}, timeout=1)['clawchatConnected'])
+                    first_record = services.read_json(fixture.record_path)
+                    self.assertEqual(first_record['pid'], 43)
+                    self.assertEqual(first_record['launchCommand'], launch_command)
+                    self.assertEqual(first_record['command'], fixture.process.cmdline.return_value)
+                    identity = {'pid': 44, 'kind': 'hermes-gateway', 'start_time': 30000,
+                                'hermes_home': str(self.hermes)}
+                    fixture.pid_path.write_text(json.dumps(identity))
+                    self.state({**identity, 'platforms': {'clawchat': {'state': 'connected',
+                                'writer_pid': 44, 'writer_start_time': 30000}}})
+                    current_pid[0] = 44
+                    self.assertTrue(services.start_gateway(self.root, self.hermes, launch_command,
+                                    {'HERMES_HOME': str(self.hermes)}, timeout=1)['clawchatConnected'])
+                    second_record = services.read_json(fixture.record_path)
+                    self.assertEqual(second_record['pid'], 44)
+                    self.assertEqual(second_record['launchCommand'], launch_command)
+                    self.assertEqual(second_record['command'], second.cmdline.return_value)
+                    launch.assert_not_called()
+                fixture.process.terminate.assert_not_called()
+                second.terminate.assert_not_called()
+
+    def test_restart_does_not_follow_an_external_hermes_entry_script(self):
+        for relative in ('venv/bin/hermes', 'hermes_cli/main.py', 'venv/Scripts/hermes.exe'):
+            with self.subTest(entry=relative):
+                fixture = self.restarted_gateway_fixture()
+                fixture.record['launchCommand'] = list(fixture.record['command'])
+                fixture.record_path.write_text(json.dumps(fixture.record))
+                foreign_entry = str((self.root / 'foreign' / relative).resolve())
+                fixture.process.cmdline.return_value = [fixture.record['command'][0], foreign_entry,
+                                                       'gateway', 'run', '--replace']
+                original = fixture.record_path.read_bytes()
+                with patch.object(services.sys, 'platform', 'darwin'), \
+                     patch('psutil.Process', side_effect=fixture.inspect), \
+                     patch.object(services.subprocess, 'Popen') as launch:
+                    self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+                    with self.assertRaises(RuntimeError):
+                        services.start_gateway(self.root, self.hermes, fixture.record['launchCommand'], {}, timeout=1)
+                    with self.assertRaises(RuntimeError):
+                        services.stop_gateway(self.root)
+                launch.assert_not_called()
+                fixture.process.terminate.assert_not_called()
+                fixture.process.kill.assert_not_called()
+                self.assertEqual(fixture.record_path.read_bytes(), original)
+
+    def test_linux_restart_identity_uses_proc_start_ticks(self):
+        fixture = self.restarted_gateway_fixture()
+        identity = services.read_json(fixture.pid_path)
+        identity['start_time'] = 54321
+        fixture.pid_path.write_text(json.dumps(identity))
+        fixture.state['start_time'] = 54321
+        fixture.state['platforms']['clawchat']['writer_start_time'] = 54321
+        self.state(fixture.state)
+        real_read_text = Path.read_text
+        ticks = [54321]
+
+        def read_text(path, *args, **kwargs):
+            if str(path) == '/proc/43/stat':
+                # Field 22 is Linux's start tick count; parentheses can contain spaces.
+                return '43 (gateway python) S ' + ' '.join(['0'] * 18 + [str(ticks[0])] + ['0'] * 5)
+            return real_read_text(path, *args, **kwargs)
+
+        with patch.object(services.sys, 'platform', 'linux'), \
+             patch('psutil.Process', side_effect=fixture.inspect), \
+             patch.object(Path, 'read_text', new=read_text):
+            self.assertTrue(services.gateway_status(self.root, self.hermes)['clawchatConnected'])
+            ticks[0] = 54322
+            self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+
+    def test_restart_identity_mismatch_is_not_adopted_launched_or_stopped(self):
+        cases = ('token', 'home', 'birth', 'state_birth', 'pid_birth', 'kind',
+                 'state_home', 'pid_number', 'command', 'executable', 'missing_owner',
+                 'invalid_owner', 'pid_mtime', 'state_mtime')
+        for mismatch in cases:
+            with self.subTest(mismatch=mismatch):
+                fixture = self.restarted_gateway_fixture()
+                if mismatch == 'token':
+                    fixture.process.environ.return_value['NORA_LAUNCHER_GATEWAY_OWNER'] = 'b' * 64
+                elif mismatch == 'home':
+                    fixture.process.environ.return_value['HERMES_HOME'] = str(self.root / 'foreign')
+                elif mismatch == 'birth':
+                    fixture.process.create_time.return_value = 201
+                elif mismatch == 'state_birth':
+                    fixture.state['start_time'] = 19900
+                    self.state(fixture.state)
+                elif mismatch == 'pid_birth':
+                    identity = services.read_json(fixture.pid_path)
+                    identity['start_time'] = 19900
+                    fixture.pid_path.write_text(json.dumps(identity))
+                elif mismatch == 'kind':
+                    fixture.state['kind'] = 'foreign-worker'
+                    self.state(fixture.state)
+                elif mismatch == 'state_home':
+                    fixture.state['hermes_home'] = str(self.root / 'foreign')
+                    self.state(fixture.state)
+                elif mismatch == 'pid_number':
+                    identity = services.read_json(fixture.pid_path)
+                    identity['pid'] = 44
+                    fixture.pid_path.write_text(json.dumps(identity))
+                elif mismatch == 'command':
+                    fixture.process.cmdline.return_value.append('--help')
+                elif mismatch == 'executable':
+                    fixture.process.exe.return_value = str(self.root / 'foreign-python')
+                elif mismatch == 'missing_owner':
+                    del fixture.record['ownerToken']
+                    fixture.record_path.write_text(json.dumps(fixture.record))
+                elif mismatch == 'invalid_owner':
+                    fixture.record['ownerToken'] = 'z' * 64
+                    fixture.process.environ.return_value['NORA_LAUNCHER_GATEWAY_OWNER'] = 'z' * 64
+                    fixture.record_path.write_text(json.dumps(fixture.record))
+                elif mismatch == 'pid_mtime':
+                    os.utime(fixture.pid_path, (199, 199))
+                else:
+                    os.utime(self.hermes / 'gateway_state.json', (199, 199))
+                original = fixture.record_path.read_bytes()
+                with patch.object(services.sys, 'platform', 'darwin'), \
+                     patch('psutil.Process', side_effect=fixture.inspect), \
+                     patch.object(services.subprocess, 'Popen') as launch:
+                    self.assertIsNone(services.owned_gateway(self.root, require_readable=True))
+                    with self.assertRaises(RuntimeError):
+                        services.start_gateway(self.root, self.hermes, fixture.record['command'], {}, timeout=1)
+                    with self.assertRaises(RuntimeError):
+                        services.stop_gateway(self.root)
+                launch.assert_not_called()
+                fixture.process.terminate.assert_not_called()
+                fixture.process.kill.assert_not_called()
+                self.assertEqual(fixture.record_path.read_bytes(), original)
+
+    def test_unreadable_launcher_restart_does_not_delete_ownership_record(self):
+        import psutil
+        fixture = self.restarted_gateway_fixture()
+        original = fixture.record_path.read_bytes()
+        fixture.process.environ.side_effect = psutil.AccessDenied(43)
+        with patch.object(services.sys, 'platform', 'darwin'), \
+             patch('psutil.Process', side_effect=fixture.inspect), \
+             patch.object(services.subprocess, 'Popen') as launch:
+            with self.assertRaises(services.GatewayIdentityError):
+                services.gateway_status(self.root, self.hermes)
+            with self.assertRaises(services.GatewayIdentityError):
+                services.start_gateway(self.root, self.hermes, fixture.record['command'], {}, timeout=1)
+            with self.assertRaises(services.GatewayIdentityError):
+                services.stop_gateway(self.root)
+        launch.assert_not_called()
+        fixture.process.terminate.assert_not_called()
+        fixture.process.kill.assert_not_called()
+        self.assertEqual(fixture.record_path.read_bytes(), original)
+
+    def test_stop_with_unreadable_original_process_preserves_ownership_record(self):
+        import psutil
+        fixture = self.restarted_gateway_fixture()
+        fixture.process.pid = 42
+        fixture.process.create_time.return_value = 100
+        fixture.process.cmdline.side_effect = psutil.AccessDenied(42)
+        original = fixture.record_path.read_bytes()
+        with patch('psutil.Process', return_value=fixture.process):
+            with self.assertRaises(services.GatewayIdentityError):
+                services.stop_gateway(self.root)
+        fixture.process.terminate.assert_not_called()
+        fixture.process.kill.assert_not_called()
+        self.assertEqual(fixture.record_path.read_bytes(), original)
+
     def test_python_wrapper_child_can_report_connection_and_is_stopped(self):
         code = '''
 import os, sys, subprocess, time, json

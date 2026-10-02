@@ -23,11 +23,11 @@ import time
 
 try:
     from . import nora_system, nora_profile
-    from .launcher_services import clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
+    from .launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 except ImportError:
     import nora_system
     import nora_profile
-    from launcher_services import clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
+    from launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 
 
 HERE = Path(__file__).resolve().parent
@@ -541,9 +541,9 @@ def command_stop(args) -> None:
     if service != "tavern":
         try:
             if service == "nora":
-                stop_gateway(args.nora_home, preserve_liveware_home=args.hermes_home)
+                stop_gateway(args.nora_home, hermes_home=args.hermes_home, preserve_liveware_home=args.hermes_home)
             else:
-                stop_gateway(args.nora_home)
+                stop_gateway(args.nora_home, hermes_home=args.hermes_home)
         except Exception as error:
             errors.append(str(error))
     if service != "nora":
@@ -629,7 +629,7 @@ def command_pair(args) -> None:
         fail("ClawChat 激活失败，请检查配对码是否过期，并重新获取。", user_code='PAIR_CODE_REJECTED')
     if not clawchat_paired(args.hermes_home):
         fail("ClawChat 激活未保存完整配置。")
-    stop_gateway(args.nora_home)
+    stop_gateway(args.nora_home, hermes_home=args.hermes_home)
     sync_nora_profile(args)
     emit("milestone", index=3, state="done", task="ClawChat 已配对")
     command_status(args)
@@ -668,6 +668,7 @@ def command_update_lifecycle(args):
         if missing_receipt_snapshot(args) != receipt_recovery:
             fail('旧安装的实例、版本或配置与更新前不一致，未恢复服务。')
     if phase == 'preflight':
+        check_gateway_control(args.nora_home, args.hermes_home)
         state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
         if (not before.get('version') or str(state.get('version', '')).lstrip('v') != str(before['version']).lstrip('v')
                 or any(bool(state.get(key)) != bool(before.get(key)) for key in ('running', 'gatewayRunning'))):

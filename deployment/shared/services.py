@@ -1,11 +1,14 @@
 """Own only the Hermes gateway launched inside this Nora installation."""
 
 import json
+import hmac
 import math
 import os
 from pathlib import Path
+import secrets
 import subprocess
 import sys
+import tempfile
 import time
 
 _launched_children = {}
@@ -48,22 +51,109 @@ def owned_gateway(nora_home, *, require_readable=False):
     import psutil
     try:
         created = float(record["created"])
-        if not math.isfinite(created) or (require_readable and _before_windows_boot(created)):
+        if not math.isfinite(created):
             return None
+        if require_readable and _before_windows_boot(created):
+            return _gateway_successor(nora_home, record, require_readable=require_readable)
         process = psutil.Process(int(record["pid"]))
         if abs(process.create_time() - created) > 0.01:
-            return None
+            return _gateway_successor(nora_home, record, require_readable=require_readable)
         # macOS framework Python re-execs argv[0] while retaining PID, birth time and arguments.
         command = process.cmdline()
         if process.status() == psutil.STATUS_ZOMBIE or not command or command[1:] != record["command"][1:]:
-            return None
+            return _gateway_successor(nora_home, record, require_readable=require_readable)
         return process
     except psutil.AccessDenied as cause:
         if require_readable:
             raise GatewayIdentityError(_GATEWAY_IDENTITY_MESSAGE) from cause
         return None
     except (KeyError, ValueError, TypeError, psutil.Error):
+        return _gateway_successor(nora_home, record, require_readable=require_readable)
+
+
+def _gateway_successor(nora_home, record, *, require_readable):
+    """Follow a launcher-owned self-restart, never a process identified by PID alone."""
+    import psutil
+    token = record.get('ownerToken')
+    command = record.get('launchCommand', record.get('command'))
+    if (not isinstance(token, str) or len(token) != 64
+            or any(c not in '0123456789abcdef' for c in token)
+            or not isinstance(command, list)
+            or not command or not Path(str(command[0])).is_absolute()
+            or command[1:] not in (['-m', 'hermes_cli.main', 'gateway', 'run'],
+                                   ['-m', 'hermes_cli.main', 'gateway', 'run', '--replace'])):
         return None
+    try:
+        home = Path(record['hermesHome']).resolve()
+        if home == Path(nora_home).resolve() or not home.is_relative_to(Path(nora_home).resolve()):
+            return None
+        state_path = home / 'gateway_state.json'
+        pid_path = home / 'gateway.pid'
+        state, pid_record = read_json(state_path), read_json(pid_path)
+        candidate = psutil.Process(int(state['pid']))
+        created = candidate.create_time()
+        if (candidate.status() == psutil.STATUS_ZOMBIE or state_path.stat().st_mtime < created
+                or pid_path.stat().st_mtime < created):
+            return None
+        args = candidate.cmdline()
+        if not _gateway_restart_command(args, home):
+            return None
+        executables = {Path(command[0]).resolve()}
+        if (sys.platform == 'win32'
+                and Path(command[0]).resolve() == (home / 'hermes-agent/venv/Scripts/python.exe').resolve()):
+            # Windows venv Python is a launcher PE; its writer uses bundled base Python.
+            executables.add((home / 'python/python.exe').resolve())
+        if Path(candidate.exe()).resolve() not in executables:
+            return None
+        environment = candidate.environ()
+        actual_token = environment.get('NORA_LAUNCHER_GATEWAY_OWNER', '')
+        if (not isinstance(actual_token, str) or not hmac.compare_digest(token, actual_token)
+                or Path(environment.get('HERMES_HOME', '')).resolve() != home):
+            return None
+        fingerprint = int(round(created * 100))
+        if sys.platform.startswith('linux'):
+            # Hermes stores Linux start ticks, and epoch centiseconds on Mac/Windows.
+            try:
+                stat = Path(f'/proc/{candidate.pid}/stat').read_text()
+                fingerprint = int(stat[stat.rfind(')') + 2:].split()[19])
+            except (OSError, ValueError, IndexError):
+                pass
+        for identity in (state, pid_record):
+            if (identity.get('pid') != candidate.pid or identity.get('kind') != 'hermes-gateway'
+                    or identity.get('start_time') != fingerprint
+                    or Path(str(identity.get('hermes_home', ''))).resolve() != home):
+                return None
+        fresh = psutil.Process(candidate.pid)
+        if (fresh.create_time() != created or fresh.status() == psutil.STATUS_ZOMBIE
+                or fresh.cmdline() != args):
+            return None
+        return fresh
+    except psutil.AccessDenied as cause:
+        if require_readable:
+            raise GatewayIdentityError(_GATEWAY_IDENTITY_MESSAGE) from cause
+        return None
+    except (KeyError, TypeError, ValueError, OSError, psutil.Error):
+        return None
+
+
+def check_gateway_control(nora_home, hermes_home):
+    """An unknown live gateway must not be mistaken for an already stopped service."""
+    if not owned_gateway(nora_home, require_readable=True):
+        _check_gateway_hint(hermes_home)
+
+
+def _gateway_restart_command(command, home):
+    """Known Hermes module/CLI forms used by its own detached restart helper."""
+    if command[1:] in (['-m', 'hermes_cli.main', 'gateway', 'run'],
+                       ['-m', 'hermes_cli.main', 'gateway', 'run', '--replace'],
+                       ['-m', 'hermes_cli.main', 'gateway', 'restart']):
+        return True
+    entries = {(home / 'hermes-agent/venv/bin/hermes').resolve(),
+               (home / 'hermes-agent/hermes_cli/main.py').resolve()}
+    if sys.platform == 'win32':
+        entries.add((home / 'hermes-agent/venv/Scripts/hermes.exe').resolve())
+    return (len(command) >= 2 and Path(command[1]).is_absolute() and Path(command[1]).resolve() in entries
+            and command[2:] in (['gateway', 'run'], ['gateway', 'run', '--replace'], ['gateway', 'restart']))
 
 
 def gateway_status(nora_home, hermes_home):
@@ -151,15 +241,19 @@ def _check_gateway_hint(hermes_home):
 def start_gateway(nora_home, hermes_home, command, env, timeout=60):
     import psutil
 
-    if not owned_gateway(nora_home, require_readable=True):
-        directory = Path(nora_home) / "installer"
+    process = owned_gateway(nora_home, require_readable=True)
+    directory = Path(nora_home) / "installer"
+    if not process:
         directory.mkdir(parents=True, exist_ok=True)
         # Do not adopt or stop another gateway started outside this launcher.
         _check_gateway_hint(hermes_home)
+        owner_token = secrets.token_hex(32)
+        environment = {**env, 'HERMES_HOME': str(Path(hermes_home).resolve()),
+                       'NORA_LAUNCHER_GATEWAY_OWNER': owner_token}
         with (directory / "gateway.log").open("a", encoding="utf-8") as log:
             os.chmod(directory / "gateway.log", 0o600)
             options = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if os.name == "nt" else {"start_new_session": True}
-            child = subprocess.Popen(command, cwd=hermes_home, env=env, stdin=subprocess.DEVNULL,
+            child = subprocess.Popen(command, cwd=hermes_home, env=environment, stdin=subprocess.DEVNULL,
                                      stdout=log, stderr=log, **options)
         _launched_children[child.pid] = child
         process = psutil.Process(child.pid)
@@ -171,12 +265,18 @@ def start_gateway(nora_home, hermes_home, command, env, timeout=60):
             if "gateway" in args and "run" in args:
                 break
             time.sleep(0.1)
-        record = {"pid": child.pid, "created": process.create_time(), "command": process.cmdline()}
-        target = directory / "gateway.json"
-        temporary = target.with_suffix(".tmp")
-        temporary.write_text(json.dumps(record), encoding="utf-8")
-        os.chmod(temporary, 0o600)
-        temporary.replace(target)
+        record = {"pid": child.pid, "created": process.create_time(), "command": process.cmdline(),
+                  'launchCommand': list(command), 'ownerToken': owner_token,
+                  'hermesHome': str(Path(hermes_home).resolve())}
+        _write_gateway_record(directory, record)
+    else:
+        record = read_json(directory / 'gateway.json')
+        if record.get('pid') != process.pid or record.get('command') != process.cmdline():
+            fresh = psutil.Process(process.pid)
+            if fresh.create_time() != process.create_time() or fresh.cmdline() != process.cmdline():
+                raise RuntimeError('诺拉后台进程在检查期间发生变化，请重试。')
+            _write_gateway_record(directory, {**record, 'pid': process.pid,
+                'created': process.create_time(), 'command': process.cmdline()})
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = gateway_status(nora_home, hermes_home)
@@ -188,10 +288,25 @@ def start_gateway(nora_home, hermes_home, command, env, timeout=60):
     raise RuntimeError("Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。")
 
 
-def stop_gateway(nora_home, *, preserve_liveware_home=None):
+def _write_gateway_record(directory, record):
+    target = directory / 'gateway.json'
+    descriptor, name = tempfile.mkstemp(prefix='gateway-', suffix='.tmp', dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, 'w', encoding='utf-8') as stream:
+            stream.write(json.dumps(record))
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def stop_gateway(nora_home, *, hermes_home=None, preserve_liveware_home=None):
     import psutil
 
-    process = owned_gateway(nora_home)
+    home = Path(hermes_home) if hermes_home is not None else Path(nora_home) / 'hermes'
+    process = owned_gateway(nora_home, require_readable=True)
+    if process is None:
+        _check_gateway_hint(home)
     if process:
         child_handle = _launched_children.pop(process.pid, None)
         children = process.children(recursive=True)
@@ -218,8 +333,9 @@ def stop_gateway(nora_home, *, preserve_liveware_home=None):
         for child in remaining:
             child.kill()
         psutil.wait_procs(remaining, timeout=5)
-        if owned_gateway(nora_home):
+        if owned_gateway(nora_home, require_readable=True):
             raise RuntimeError("Nora 尚未停止，请重试。")
+        _check_gateway_hint(home)
         if child_handle:
             child_handle.wait(timeout=5)
     (Path(nora_home) / "installer/gateway.json").unlink(missing_ok=True)
