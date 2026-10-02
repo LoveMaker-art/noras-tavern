@@ -226,7 +226,7 @@ jobs:
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_lifecycle
           "$py" -B -m unittest tests.deployment.test_updater_skill_environment
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
           export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_model_provider_skill
