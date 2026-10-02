@@ -534,9 +534,11 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     let result = null;
     let errorMessage = '', structuredMessage = '', structuredCode, structuredUserCode;
     const installerCommand = ['install','update','repair','plan-update'].includes(command);
-    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && installerCommand);
+    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled), { output: installerCommand });
+    let bridgeError = null;
     const childFailure = error => {
-      if (!installerCommand) error.remoteMessage = `Launcher ${command} failed; see technical exit status.`;
+      if (!installerCommand) error.remoteMessage = bridgeError?.message
+        || (timedOut ? '后台操作超时，尚未确认完成，请重试。' : `Launcher ${command} failed; see technical exit status.`);
       return evidence.attach(error);
     };
     const heartbeat = setInterval(() => {
@@ -555,6 +557,8 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }, timeoutMs);
     consumeLines(proc.stdout, (line) => {
         const message = parseJsonLine(sanitizeLine(line));
+        if (message.event === 'diagnostic' && message.component === 'bridge'
+            && message.error && typeof message.error === 'object') bridgeError = message.error;
         evidence.observe(message);
         if (message.event === 'result') {
           result = { ...message };
@@ -583,12 +587,12 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       clearTimeout(timeout);
       if (activeProcess === proc) activeProcess = null;
       if (code === 0) {
-        if (!result) { reject(launcherError('后台没有返回操作结果。',{code:'INVALID_RESPONSE',source:'launcher_process',site:'process.run'})); return; }
+        if (!result) { reject(childFailure(launcherError('后台没有返回操作结果。',{code:'INVALID_RESPONSE',source:'launcher_process',site:'process.run'}))); return; }
         resolve(result);
         return;
       }
       reject(childFailure(launcherError(diagnostics.clean((timedOut ? '后台操作超时，尚未确认完成，请重试。' : structuredMessage || errorMessage || `命令执行失败，退出码 ${code}`).trim()),
-        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode, source:'launcher_process',
+        { exitCode: code, signal, code: timedOut ? 'TIMEOUT' : structuredCode || bridgeError?.code, source:'launcher_process',
           userCode: structuredUserCode, site:processSite(command) })));
     });
   });

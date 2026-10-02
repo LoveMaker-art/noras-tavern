@@ -25,7 +25,7 @@ function fixture(t, options = {}) {
   return {get client(){return client;},file,requests, read:()=>JSON.parse(fs.readFileSync(file)),
     advance:ms=>{time+=ms;}, restart:()=>{client.close();client=createTelemetry(config);return client;}};
 }
-test('actual update preflight uploads sanitized failures only with diagnostic consent and excludes service output', async t => {
+function actualBridge(client, {clean=value=>String(value),messages=[],stderr='',exitCode=1,beforeClose=()=>{}} = {}) {
   const {EventEmitter}=require('node:events');
   const {PassThrough}=require('node:stream');
   const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
@@ -34,25 +34,29 @@ test('actual update preflight uploads sanitized failures only with diagnostic co
   const source=fs.readFileSync(path.join(desktop,'main.js'),'utf8');
   const node=parse(source,{ecmaVersion:'latest'}).body.find(n=>n.type==='FunctionDeclaration'&&n.id.name==='runBridge');
   assert.ok(node);
+  const child=new EventEmitter();
+  child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin={end(){}};child.pid=42;
+  const context={diagnostics:{addSecret(){},write(){},error(){},event(){},clean},
+    faultPackets:createFaultPackets({clean}),telemetry:client,launcherError,consumeLines,
+    bridgeArgs:()=>({command:'fixture-python',args:[]}),launcherEnv:()=>({}),installerRoot:()=>os.tmpdir(),
+    process:{platform:'win32'},processSite:command=>['start','stop','pair'].includes(command)?`process.${command}`:'process.run',
+    sendBridgeEvent(){},terminateProcess(){},sanitizeLine:line=>line,parseJsonLine:JSON.parse,
+    setInterval,setTimeout,clearInterval,clearTimeout,activeProcess:null,cancelled:false,spawn:()=>{
+      queueMicrotask(()=>{
+        child.stdout.end(messages.map(message=>JSON.stringify(message)).join('\n')+'\n');
+        child.stderr.end(stderr);
+        setImmediate(()=>{beforeClose();child.emit('close',exitCode,null);});
+      });
+      return child;
+    }};
+  return vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
+}
+test('actual update preflight uploads sanitized failures only with diagnostic consent and excludes untrusted service output', async t => {
   for (const [command,consent] of [['plan-update',true],['plan-update',false],['status',true]]) {
     const clean=value=>String(value).replaceAll('fixture-secret','[REDACTED]');
     const f=fixture(t,{consent,clean});
-    const child=new EventEmitter();
-    child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin={end(){}};child.pid=42;
-    const context={diagnostics:{addSecret(){},write(){},error(){},event(){},clean},
-      faultPackets:createFaultPackets({clean}),telemetry:f.client,launcherError,consumeLines,
-      bridgeArgs:()=>({command:'fixture-python',args:[]}),launcherEnv:()=>({}),installerRoot:()=>os.tmpdir(),
-      process:{platform:'win32'},processSite:()=> 'process.run',sendBridgeEvent(){},terminateProcess(){},
-      sanitizeLine:line=>line,parseJsonLine:JSON.parse,setInterval,setTimeout,clearInterval,clearTimeout,
-      activeProcess:null,cancelled:false,spawn:()=>{
-        queueMicrotask(()=>{
-          child.stdout.end(JSON.stringify({event:'error',message:'缺少系统安装记录 fixture-secret'})+'\n');
-          child.stderr.end('preflight evidence fixture-secret\n');
-          setImmediate(()=>child.emit('close',1,null));
-        });
-        return child;
-      }};
-    const runBridge=vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
+    const runBridge=actualBridge(f.client,{clean,messages:[{event:'error',message:'缺少系统安装记录 fixture-secret'}],
+      stderr:'preflight evidence fixture-secret\n'});
     f.client.begin('update');f.client.stage('verify');
     let failure;
     try {await runBridge(command);} catch(error) {failure=error;}
@@ -70,6 +74,108 @@ test('actual update preflight uploads sanitized failures only with diagnostic co
       assert.doesNotMatch(JSON.stringify(event.fault),/缺少系统安装记录|preflight evidence/);
     }
   }
+});
+
+test('actual service bridge failures upload bridge diagnostics and causes without any runtime output', async t => {
+  for (const [command,options] of [['start',{service:'nora'}],['stop',{service:'all'}],['restart',{service:'tavern'}],['pair',{code:'fixture-secret'}]]) {
+    await t.test(`${command} retains sanitized program diagnostics`,async t=>{
+      const clean=value=>String(value).replaceAll('fixture-secret','[REDACTED]');
+      const f=fixture(t,{clean});
+      const runBridge=actualBridge(f.client,{clean,messages:[
+        {event:'diagnostic',component:'bridge',error:{name:'RuntimeError',message:'Hermes 网关启动失败：网关冲突；api_key=fixture-secret',
+          stack:'Traceback (most recent call last):\n  File "C:\\Users\\Private Person\\Nora\\launcher_services.py", line 314, in start_gateway',
+          cause:{name:'PermissionError',message:'AccessDenied: 拒绝访问运行进程 token=fixture-secret',code:'EACCES',
+            stack:'  File "/Users/private-person/Nora/gateway.py", line 88, in inspect_process'}}},
+        {event:'error',message:'PRIVATE_SERVICE_ERROR Hermes 服务操作前检查失败 api_key=fixture-secret',code:'EACCES'},
+        {event:'diagnostic',component:'hermes',error:{name:'RuntimeError',message:'PRIVATE_FOREIGN_DIAGNOSTIC Hermes conversation'}},
+        {event:'diagnostic',error:{name:'RuntimeError',message:'PRIVATE_UNKNOWN_DIAGNOSTIC provider response'}},
+        {event:'log',stream:'stderr',line:'PRIVATE_STDOUT_CHAT 聊天内容：private dialogue'},
+      ],stderr:'PRIVATE_STDERR_CHAT 聊天：private conversation\nPRIVATE_MODEL_REPLY 模型回复：private answer\nPRIVATE_API_KEY api_key=fixture-secret\nRAW_PROVIDER_RESPONSE provider response body\n'});
+      f.client.begin(command);
+      const failure=await runBridge(command,options).then(()=>assert.fail('bridge must fail'),error=>error);
+      f.client.finish('failed',failure);await f.client.flush();
+      const event=f.requests.flatMap(r=>r.data.events).find(e=>e.event==='operation_finished');
+      assert.equal(event.error_code,'permission_denied');assert.equal(event.exit_code,1);
+      assert.ok(event.fault);assert.equal(event.fault.output.length,0);
+      assert.ok(event.fault.errors.some(e=>e.kind==='RuntimeError'&&e.message.includes('Hermes 网关启动失败：网关冲突')));
+      assert.ok(event.fault.errors.some(e=>e.relation==='cause'&&e.kind==='PermissionError'&&e.message.includes('AccessDenied')&&e.code==='EACCES'));
+      const frames=event.fault.errors.flatMap(e=>e.frames).join('\n');
+      assert.match(frames,/<source>\/launcher_services\.py.*line 314/);
+      assert.match(frames,/<source>\/gateway\.py.*line 88/);
+      assert.doesNotMatch(JSON.stringify(f.requests),/fixture-secret|Private Person|private-person|PRIVATE_SERVICE_ERROR|Hermes 服务操作前检查失败|PRIVATE_FOREIGN_DIAGNOSTIC|PRIVATE_UNKNOWN_DIAGNOSTIC|PRIVATE_STDOUT_CHAT|PRIVATE_STDERR_CHAT|PRIVATE_MODEL_REPLY|PRIVATE_API_KEY|RAW_PROVIDER_RESPONSE|private dialogue|private conversation|private answer|provider response body/);
+    });
+  }
+});
+
+test('actual status bridge retains structured gateway identity failures in standalone reporting without stderr',async t=>{
+  const f=fixture(t);
+  const runBridge=actualBridge(f.client,{messages:[{event:'diagnostic',component:'bridge',error:{name:'RuntimeError',
+    message:'GatewayIdentityError: 无法确认 Hermes 网关归属，已保留现有进程。',
+    stack:'  File "/Users/private-person/Nora/launcher_services.py", line 207, in gateway_status'}}],
+    stderr:'PRIVATE_STATUS_LOG Hermes conversation and provider reply\n'});
+  const failure=await runBridge('status').then(()=>assert.fail('status must fail'),error=>error);
+  f.client.report(failure);await f.client.flush();
+  const event=f.requests.flatMap(r=>r.data.events).find(e=>e.event==='launcher_error');
+  assert.equal(event.action,'launcher');assert.equal(event.error_code,'process_failed');
+  assert.ok(event.fault.errors.some(e=>e.kind==='RuntimeError'&&e.message.includes('GatewayIdentityError: 无法确认 Hermes 网关归属')));
+  assert.match(event.fault.errors.flatMap(e=>e.frames).join('\n'),/<source>\/launcher_services\.py.*line 207/);
+  assert.equal(event.fault.output.length,0);
+  assert.doesNotMatch(JSON.stringify(f.requests),/PRIVATE_STATUS_LOG|Hermes conversation|provider reply|private-person/);
+});
+
+test('missing bridge result retains prior structured evidence and the deepest bounded cause',async t=>{
+  const f=fixture(t);
+  const message='启动前检查失败';
+  const runBridge=actualBridge(f.client,{exitCode:0,messages:[
+    {event:'diagnostic',component:'bridge',error:{name:'RuntimeError',message,
+      cause:{name:'ValueError',message:'安装记录冲突',cause:{name:'OSError',message:'系统调用失败',
+        cause:{name:'PermissionError',message:'底层拒绝访问',code:'EACCES',
+          stack:'File "/Users/private/Nora/services.py", line 42, in inspect_process'}}}}},
+    {event:'error',message},
+  ]});
+  f.client.begin('start');
+  const failure=await runBridge('start').then(()=>assert.fail('missing result must fail'),error=>error);
+  assert.equal(failure.code,'INVALID_RESPONSE');
+  f.client.finish('failed',failure);await f.client.flush();
+  const event=f.requests.flatMap(request=>request.data.events).find(item=>item.event==='operation_finished');
+  assert.equal(event.system_code,'INVALID_RESPONSE');
+  assert.equal(event.fault.errors.length,4);
+  assert.deepEqual(event.fault.errors.map(error=>error.kind),['RuntimeError','ValueError','OSError','PermissionError']);
+  assert.equal(event.fault.errors.at(-1).code,'EACCES');
+  assert.match(event.fault.errors.at(-1).frames[0],/services\.py.*line 42/);
+  assert.equal(event.fault.output.length,0);
+});
+
+test('actual service bridge keeps detailed packets off without consent or after consent is revoked during the command',async t=>{
+  for (const consent of [false,true]) {
+    const f=fixture(t,{consent});
+    const runBridge=actualBridge(f.client,{messages:[{event:'diagnostic',component:'bridge',error:{name:'RuntimeError',message:'PRIVATE_STRUCTURED_DETAIL'}},
+      {event:'error',message:'PRIVATE_STRUCTURED_DETAIL'}],stderr:'PRIVATE_SERVICE_OUTPUT api_key=fixture-secret\n',
+      beforeClose:()=>{if(consent)f.client.setEnabled(false);}});
+    f.client.begin('start');
+    const failure=await runBridge('start',{service:'nora'}).then(()=>assert.fail('bridge must fail'),error=>error);
+    f.client.finish('failed',failure);await f.client.flush();
+    const event=f.requests.flatMap(r=>r.data.events).find(e=>e.event==='operation_finished');
+    assert.equal(event.status,'failed');assert.equal(event.fault,null);
+    assert.doesNotMatch(JSON.stringify(f.requests),/PRIVATE_STRUCTURED_DETAIL|PRIVATE_SERVICE_OUTPUT|fixture-secret/);
+  }
+});
+
+test('actual service bridge falls back to a generic remote error when only runtime logs and stderr fail',async t=>{
+  const f=fixture(t);
+  const runBridge=actualBridge(f.client,{messages:[{event:'diagnostic',operation:'subprocess-exit',exitCode:1},
+    {event:'diagnostic',component:'hermes',error:{name:'RuntimeError',message:'PRIVATE_FOREIGN_DIAGNOSTIC AccessDenied'}},
+    {event:'diagnostic',error:{name:'RuntimeError',message:'PRIVATE_UNKNOWN_DIAGNOSTIC provider response'}},
+    {event:'error',message:'PRIVATE_SERVICE_ERROR provider response'},
+    {event:'log',stream:'stderr',line:'PRIVATE_HERMES_LOG AccessDenied: 聊天记录'}],
+    stderr:'PRIVATE_HERMES_STDERR AccessDenied in gateway\nPRIVATE_PROVIDER_REPLY 模型回复\napi_key=fixture-secret\n'});
+  f.client.begin('start');
+  const failure=await runBridge('start',{service:'nora'}).then(()=>assert.fail('bridge must fail'),error=>error);
+  f.client.finish('failed',failure);await f.client.flush();
+  const event=f.requests.flatMap(r=>r.data.events).find(e=>e.event==='operation_finished');
+  assert.equal(event.error_code,'process_failed');assert.equal(event.fault.output.length,0);
+  assert.ok(event.fault.errors.some(e=>e.message==='Launcher start failed; see technical exit status.'));
+  assert.doesNotMatch(JSON.stringify(f.requests),/PRIVATE_FOREIGN_DIAGNOSTIC|PRIVATE_UNKNOWN_DIAGNOSTIC|PRIVATE_SERVICE_ERROR|provider response|PRIVATE_HERMES_LOG|PRIVATE_HERMES_STDERR|PRIVATE_PROVIDER_REPLY|AccessDenied|fixture-secret/);
 });
 test('the actual desktop upload gate permits explicit reporting candidates while keeping diagnostic consent separate', async t => {
   const source = fs.readFileSync(path.join(desktop,'main.js'),'utf8');

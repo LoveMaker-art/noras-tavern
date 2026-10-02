@@ -110,6 +110,71 @@ test('authorized fault packets traverse the real receiver, retain cause details,
   assert.ok(fault.breadcrumbs.some(e=>e.stage==='runtime_extract'));assert.doesNotMatch(JSON.stringify(fault),/Users\/private/);
 });
 
+test('real Python bridge failure reaches Worker storage with its sanitized cause and no service stderr', {
+  skip:!process.env.NORA_LANDING_ROOT||!process.env.NORA_TEST_PYTHON||!fs.existsSync(process.env.NORA_TEST_PYTHON),timeout:15000,
+},async t=>{
+  const {spawn}=require('node:child_process');
+  const vm=require('node:vm');
+  const {parse}=require(path.join(desktop,'node_modules/acorn'));
+  const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
+  const {launcherError}=require(path.join(desktop,'launcher-errors'));
+  const {consumeLines}=require(path.join(desktop,'process-output'));
+  const f=await integratedFixture(t);
+  const fixtureRoot=fs.mkdtempSync(path.join(os.tmpdir(),'nora-python-bridge-contract-'));
+  const script=path.join(fixtureRoot,'bridge_fault_fixture.py');
+  fs.writeFileSync(script,`import errno
+import sys
+from ops.installer.launcher_bridge import fail
+
+print('PRIVATE_HERMES_CHAT 聊天正文', file=sys.stderr, flush=True)
+print('PRIVATE_MODEL_REPLY 模型回复正文 api_key=fixture-secret', file=sys.stderr, flush=True)
+
+def fixture_start():
+    try:
+        raise PermissionError(errno.EACCES, '系统拒绝读取进程信息 api_key=fixture-secret', '/Users/Private Test User/hermes/config.yaml')
+    except PermissionError as cause:
+        raise RuntimeError('此隔离目录已有其他方式启动的 Hermes，请先关闭该进程。') from cause
+
+try:
+    fixture_start()
+except RuntimeError as error:
+    fail(str(error), error=error)
+`);
+  let child;
+  t.after(()=>{if(child?.exitCode===null)child.kill();fs.rmSync(fixtureRoot,{recursive:true,force:true});});
+  const source=fs.readFileSync(path.join(desktop,'main.js'),'utf8');
+  const node=parse(source,{ecmaVersion:'latest'}).body.find(n=>n.type==='FunctionDeclaration'&&n.id.name==='runBridge');
+  assert.ok(node);
+  const projectedRoot=path.resolve(__dirname,'../..');
+  const clean=value=>String(value);
+  const context={diagnostics:{addSecret(){},write(){},error(){},event(){},clean},
+    faultPackets:createFaultPackets({clean}),telemetry:f.client,launcherError,consumeLines,
+    bridgeArgs:()=>({command:process.env.NORA_TEST_PYTHON,args:[script]}),
+    launcherEnv:()=>({...process.env,PYTHONPATH:projectedRoot,PYTHONDONTWRITEBYTECODE:'1'}),installerRoot:()=>projectedRoot,
+    process,processSite:()=> 'process.start',sendBridgeEvent(){},terminateProcess:proc=>proc.kill(),
+    sanitizeLine:line=>line,parseJsonLine:JSON.parse,setInterval,setTimeout,clearInterval,clearTimeout,
+    activeProcess:null,cancelled:false,spawn:(...args)=>{child=spawn(...args);return child;}};
+  const runBridge=vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
+  const operation=f.client.begin('start');f.client.stage('start_nora');
+  const failure=await runBridge('start',{service:'nora'}).then(()=>assert.fail('fixture bridge must fail'),error=>error);
+  assert.equal(child.exitCode,1);assert.match(failure.message,/此隔离目录已有其他方式启动的 Hermes/);
+  f.client.finish('failed',failure);await f.client.flush();
+  assert.equal(f.queue().length,0);
+  assert.ok(f.db.prepare('SELECT count(*) n FROM launcher_events WHERE operation_id = ?').get(operation).n>0);
+  const data=await f.stats();
+  assert.equal(data.summary.failed_operations,1);
+  assert.equal(data.operations.find(item=>item.operation_id===operation).status,'failed');
+  const fault=data.errors.find(item=>item.operation_id===operation).fault;
+  assert.ok(fault);assert.ok(fault.errors.length<=4);assert.equal(fault.output.length,0);
+  assert.ok(fault.errors.some(error=>error.kind==='RuntimeError'&&error.message.includes('此隔离目录已有其他方式启动的 Hermes，请先关闭该进程。')));
+  assert.ok(fault.errors.some(error=>error.relation==='cause'&&error.kind==='PermissionError'&&error.code==='EACCES'));
+  assert.match(fault.errors.flatMap(error=>error.frames).join('\n'),/File "<source>\/bridge_fault_fixture\.py", line \d+, in fixture_start/);
+  assert.ok(fault.breadcrumbs.some(item=>item.stage==='start_nora'));
+  const uploaded=JSON.stringify({requests:f.requests,stats:data});
+  assert.doesNotMatch(uploaded,/PRIVATE_HERMES_CHAT|PRIVATE_MODEL_REPLY|聊天正文|模型回复正文|fixture-secret|Private Test User|\/Users\//);
+  assert.equal(uploaded.includes(fixtureRoot),false);
+});
+
 test('independent model lookup cannot replace a running installation in the real monitor', {skip:!process.env.NORA_LANDING_ROOT},async t=>{
   const f=await integratedFixture(t);const operation=f.client.begin('install');f.client.stage('runtime_extract');
   await f.client.track('list_models','model_test',async()=>({models:[]}));await f.client.flush();

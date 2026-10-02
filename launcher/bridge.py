@@ -37,12 +37,71 @@ def emit(event: str, **payload) -> None:
     print(json.dumps({"event": event, **payload}, ensure_ascii=False), flush=True)
 
 
-def fail(message: str, code: str | None = None, user_code: str | None = None) -> None:
+def exception_diagnostic(error, *, stack=None):
+    """Bridge-owned error metadata; never source lines, locals or child streams."""
+    import errno
+    seen = set()
+
+    def project(current, frames=None):
+        if current is None or id(current) in seen or len(seen) >= 4:
+            return None
+        seen.add(id(current))
+        name = type(current).__name__
+        code = errno.errorcode.get(current.errno) if isinstance(current, OSError) else getattr(current, 'code', None)
+        if isinstance(current, subprocess.CalledProcessError):
+            message = f'子进程执行失败，退出码 {current.returncode}。'
+        elif isinstance(current, subprocess.TimeoutExpired):
+            code, message = 'TIMEOUT', '子进程操作超时。'
+        elif isinstance(current, json.JSONDecodeError):
+            message = f'JSON 解析失败，行 {current.lineno}，列 {current.colno}。'
+        elif isinstance(current, UnicodeError):
+            message = '程序文本编码处理失败。'
+        elif isinstance(current, urllib.error.HTTPError):
+            message = f'服务请求失败，HTTP 状态 {current.code}。'
+        elif isinstance(current, urllib.error.URLError):
+            message = '服务连接失败。'
+        elif name == 'AccessDenied':
+            code, message = 'EACCES', '系统拒绝读取进程信息。'
+        elif isinstance(current, (RuntimeError, OSError)):
+            message = getattr(current, '_bridge_diagnostic_message', str(current))
+        else:
+            # Parsers and SDK exceptions can embed configuration or responses.
+            message = f'程序操作失败（{name}）。'
+        frames = frames if frames is not None else (getattr(current, '_bridge_diagnostic_stack', None)
+                                                    or traceback.extract_tb(current.__traceback__))
+        detail = {'name': name, 'message': message, 'code': code,
+                  'stack': '\n'.join(f'File "{frame.filename}", line {frame.lineno}, in {frame.name}'
+                                    for frame in frames[-12:])}
+        cause = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
+        child = project(cause)
+        if child:
+            detail['cause'] = child
+        secondary = [project(item) for item in getattr(current, 'secondary_errors', [])[:2]]
+        if any(secondary):
+            detail['secondaryErrors'] = [{'error': item} for item in secondary if item]
+        return detail
+
+    return project(error, stack)
+
+
+def fail(message: str, code: str | None = None, user_code: str | None = None, *, error=None) -> None:
+    explicit = error is None
+    error = RuntimeError(message) if explicit else error
+    if explicit or error.__traceback__ is None:
+        error._bridge_diagnostic_stack = [traceback.FrameSummary(frame.filename, frame.lineno, frame.name,
+                                                               lookup_line=False)
+                                         for frame in traceback.extract_stack()[:-1][-12:]]
+    detail = exception_diagnostic(error)
+    if code:
+        detail['code'] = code
+    emit('diagnostic', component='bridge', error=detail)
     fields = {'message': message, 'code': code}
     if user_code:
         fields['userCode'] = user_code
     emit("error", **fields)
-    raise SystemExit(1)
+    stopped = SystemExit(1)
+    stopped.bridge_error = error
+    raise stopped
 
 
 def safe(path: str | Path) -> Path:
@@ -226,6 +285,9 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
                         failure_code = message.get('code')
                         failure_user_code = message.get('userCode')
                 if isinstance(message, dict) and message.get("event"):
+                    if message.get('event') == 'diagnostic' and message.get('component') == 'bridge':
+                        # Only this bridge may label its own exception projection.
+                        message['component'] = 'child'
                     emit(message.pop("event"), **message)
                 else:
                     emit("log", line=line, stream="combined")
@@ -233,7 +295,8 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
     emit("diagnostic", operation="subprocess-exit", pid=process.pid, exitCode=code,
          durationMs=round((time.monotonic() - started) * 1000))
     if code:
-        fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。", failure_code, failure_user_code)
+        fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。",
+             failure_code, failure_user_code, error=subprocess.CalledProcessError(code, command))
     return last_result
 
 
@@ -537,7 +600,7 @@ def command_start(args) -> None:
 def command_stop(args) -> None:
     service = getattr(args, "service", "all")
     emit("task", stage_id="stop", task="正在停止" + {"nora": "诺拉", "tavern": "酒馆", "all": "诺拉与酒馆"}[service])
-    errors = []
+    errors, error_messages = [], []
     if service != "tavern":
         try:
             if service == "nora":
@@ -545,7 +608,8 @@ def command_stop(args) -> None:
             else:
                 stop_gateway(args.nora_home, hermes_home=args.hermes_home)
         except Exception as error:
-            errors.append(str(error))
+            errors.append(error)
+            error_messages.append(str(error))
     if service != "nora":
         from contextlib import nullcontext
         try:
@@ -563,13 +627,18 @@ def command_stop(args) -> None:
                     run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
                                env=env_for(args.nora_home, args.hermes_home, args.install_root))
                 stop_liveware(args.hermes_home)
-        except SystemExit:
-            errors.append("酒馆停止命令未完成")
+        except SystemExit as error:
+            errors.append(getattr(error, 'bridge_error', error))
+            error_messages.append("酒馆停止命令未完成")
         except Exception as error:
-            errors.append(str(error))
-    status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+            errors.append(error)
+            error_messages.append(str(error))
     if errors:
-        raise RuntimeError("；".join(errors))
+        failure = RuntimeError("；".join(error_messages))
+        failure._bridge_diagnostic_message = '停止服务失败。'
+        failure.secondary_errors = errors[1:3]
+        raise failure from errors[0]
+    status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if (service != "nora" and status["running"]) or (service != "tavern" and status["gatewayRunning"]):
         fail("服务尚未完全停止，请重试。")
     emit("result", **status)
@@ -591,8 +660,8 @@ def sync_nora_profile(args) -> None:
         result = run_json([python_command(args.hermes_home), "-B", str(HERE / "nora_profile.py"),
                            str(args.hermes_home)],
                           env=env_for(args.nora_home, args.hermes_home, args.install_root), timeout=120)
-    except (OSError, subprocess.TimeoutExpired):
-        result = {"ok": False}
+    except (OSError, subprocess.TimeoutExpired) as error:
+        fail("ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重试。", error=error)
     if result.get("ok") is not True or not nora_profile.ready(args.hermes_home):
         fail("ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重试。")
 
@@ -929,4 +998,4 @@ if __name__ == "__main__":
         code = errno.errorcode.get(error.errno) if isinstance(error, OSError) else getattr(error, "code", None)
         if isinstance(error, subprocess.TimeoutExpired):
             code = "TIMEOUT"
-        fail(str(error), code, getattr(error, 'user_code', None))
+        fail(str(error), code, getattr(error, 'user_code', None), error=error)

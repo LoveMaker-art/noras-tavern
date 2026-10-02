@@ -47,20 +47,22 @@ function createFaultPackets({ clean = value => value, roots = () => [], environm
       if (typeof e !== 'object') e = {name:'Error',message:String(e)};
       seen.add(e);
       const kind = contract.faultKinds.includes(e.name) ? e.name : 'Error';
+      const type = kind === 'Error' && e.name !== 'Error' && /^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(e.name || '') ? `${e.name}: ` : '';
       errors.push({ relation, kind,
-        message: modelFailure || e.source === 'model_service' ? 'Model request failed; see technical status.' : text(e.remoteMessage ?? e.message),
+        message: modelFailure || e.source === 'model_service' ? 'Model request failed; see technical status.' : text(type + (e.remoteMessage ?? e.message)),
         frames: frames(e.stack), code: contract.systemCodes.includes(e.code) ? e.code : '',
         syscall: /^[a-z_]{1,32}$/.test(e.syscall || '') ? e.syscall : '',
         path: e.path ? frames(`at file (${String(e.path)})`)[0]?.match(/<source>\/[^)]+/)?.[0] || '[PATH]' : '' });
       visit(e.cause, 'cause');
       for (const secondary of (Array.isArray(e.secondaryErrors) ? e.secondaryErrors : []).slice(0, 2)) visit(secondary.error, 'secondary');
     }
-    visit(error);
     const child = error?.launcherEvidence;
-    // Only main.js attaches evidence from installer-owned processes.
-    if (output && child) {
+    // The collector accepts bridge-owned structured errors independently of
+    // installer output. Prefer these roots before the generic JS exit wrapper.
+    if (child) {
       for (const item of child.errors || []) visit(item, item.evidenceRelation || 'child');
     }
+    visit(error);
     return { errors, output: output && child ? child.output.slice(-12).map(line => text(line, 500)) : [],
       truncated: Boolean(child?.truncated) || errors.length === 4 };
   }
@@ -90,18 +92,24 @@ function createFaultPackets({ clean = value => value, roots = () => [], environm
     return result;
   }
   // Per child, bounded in memory and captured before UI summary truncation.
-  function collector(enabled) {
-    const output = [], errors = []; let truncated = false;
+  function collector(enabled, { output: captureOutput = true } = {}) {
+    const output = [], errors = []; let truncated = false, structured = false;
     return {
       observe(message) {
         if (!enabled) return;
+        if (!captureOutput && !(message.event === 'diagnostic' && message.component === 'bridge')) return;
+        if (message.event === 'error' && structured) return;
         const e = message.event === 'diagnostic' ? message.error : message.event === 'error' ? {message:message.message,code:message.code} : null;
         if (e && typeof e === 'object') {
+          if (message.event === 'diagnostic') structured = true;
           const projected = evidence(e).errors;
-          for (const item of projected) errors.push({name:item.kind,message:item.message,stack:item.frames.join('\n'),
-            code:item.code,syscall:item.syscall,path:item.path,evidenceRelation:item.relation === 'error' ? 'child' : item.relation});
+          for (const item of projected) {
+            const value = {name:item.kind,message:item.message,stack:item.frames.join('\n'),
+              code:item.code,syscall:item.syscall,path:item.path,evidenceRelation:item.relation === 'error' ? 'child' : item.relation};
+            if (!errors.some(saved => JSON.stringify(saved) === JSON.stringify(value))) errors.push(value);
+          }
         }
-        if (message.event === 'log' && ['stderr','combined'].includes(message.stream)) output.push(text(message.line, 500));
+        if (captureOutput && message.event === 'log' && ['stderr','combined'].includes(message.stream)) output.push(text(message.line, 500));
         if (output.length > 12) { output.shift(); truncated = true; }
         while (errors.length > 4) { errors.shift(); truncated = true; }
       },

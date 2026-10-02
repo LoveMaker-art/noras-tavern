@@ -32,11 +32,14 @@ def main():
             exec(compile(ast.fix_missing_locations(tree), str(script), 'exec'),
                  {'__name__': '__main__', '__file__': str(script), '__package__': 'ops.installer'})
         self.assertEqual(failure.exception.code, 1)
-        event = json.loads(output.getvalue())
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        event = events[-1]
         self.assertEqual(event, {'event': 'error', 'message': '无法确认安装记录中的后台进程。',
                                  'code': 'EACCES', 'userCode': 'GATEWAY_IDENTITY'})
         self.assertIn('psutil.AccessDenied: (pid=5560)', error_output.getvalue())
         self.assertIn('GatewayIdentityError', error_output.getvalue())
+        self.assertEqual(events[0]['component'], 'bridge')
+        self.assertEqual(events[0]['error']['cause']['name'], 'AccessDenied')
 
     def test_status_keeps_its_single_json_document_contract(self):
         root = Path(__file__).resolve().parent
