@@ -90,6 +90,7 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
   let request;
   vm.runInNewContext(ui.slice(ui.indexOf('  function route()'), ui.indexOf('  function taskView(')) + '\nroute();', {
     snapshot, statusUnknown: false, bundledUpgradeAttempted: false, run: (action, options) => { request = { action, ...options }; },
+    $: () => ({ classList: { remove() {} } }),
   });
   assert.equal(request.action, 'update');
   const urls = [];
