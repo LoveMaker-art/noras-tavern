@@ -48,23 +48,44 @@ def default_install_root():
 def managed_instance(home, root):
     """Bind the desktop adapter to its existing instance; update.py owns rollback."""
     home, root = Path(home).resolve(), Path(root).resolve()
+    record_name = "nora-instance.json"
+    detail = "nora-instance.json 不是 JSON 对象。"
     try:
         instance = json.loads((home / "nora-instance.json").read_text(encoding="utf-8"))
+        if not isinstance(instance, dict):
+            raise ValueError("invalid instance object")
         expected = {"noraHome": root, "hermesHome": root / "hermes", "installRoot": root / "tavern"}
-        if instance.get("schema") != 1 or home != expected["hermesHome"]:
-            raise ValueError("invalid instance")
+        detail = "nora-instance.json 的 schema 无效。"
+        if instance.get("schema") != 1:
+            raise ValueError("invalid instance schema")
+        detail = "Hermes 目录与启动器实例的 hermesHome 绑定不符。"
+        if home != expected["hermesHome"]:
+            raise ValueError("invalid instance home")
         for name, path in expected.items():
+            detail = f"nora-instance.json 缺少 {name} 字段。"
+            if name not in instance:
+                raise ValueError("missing instance field")
+            detail = f"nora-instance.json 的 {name} 路径格式无效。"
             value = Path(instance[name])
+            detail = f"nora-instance.json 的 {name} 路径与启动器实例不符或为符号链接。"
             if not value.is_absolute() or value.resolve() != path or path.is_symlink():
-                raise ValueError("invalid " + name)
+                raise ValueError("invalid instance path")
+        detail = "nora-instance.json 缺少 port 字段。"
         port = instance["port"]
+        detail = "nora-instance.json 的 port 无效。"
         if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
             raise ValueError("invalid port")
         system_path = expected["installRoot"] / "tavern-updates/nora-system.json"
+        record_name = "nora-system.json"
+        detail = "nora-system.json 为符号链接。"
         if system_path.is_symlink():
             raise ValueError("linked system receipt")
         if system_path.exists():
             system = json.loads(system_path.read_text(encoding="utf-8"))
+            detail = "nora-system.json 不是 JSON 对象。"
+            if not isinstance(system, dict):
+                raise ValueError("invalid system receipt object")
+            detail = "nora-system.json 的 schema 无效。"
             if system.get("schema") != 1:
                 raise ValueError("invalid system receipt")
         else:
@@ -73,17 +94,55 @@ def managed_instance(home, root):
             # must agree; the shared transaction will create NEW acceptance only
             # after real runtime checks and restore absence on failure.
             updates = expected["installRoot"] / "tavern-updates"
+            record_name = "installed.json"
             receipt = json.loads((updates / "installed.json").read_text(encoding="utf-8"))
+            record_name = "installed-manifest.json"
             manifest = json.loads((updates / "installed-manifest.json").read_text(encoding="utf-8"))
-            if (receipt.get("schema") not in (1, 2) or manifest.get("schema") != "tavern-release/v2"
-                    or not re.fullmatch(r"[a-f0-9]{40}", str(receipt.get("commit", "")))
-                    or not re.fullmatch(r"\d+\.\d+\.\d+(?:-beta\.\d+)?", str(receipt.get("version", "")))
-                    or receipt["commit"] != manifest.get("commit")
-                    or receipt["version"] != manifest.get("versions", {}).get("tavern")):
-                raise ValueError("historical release records differ")
+            detail = "installed.json 不是 JSON 对象。"
+            if not isinstance(receipt, dict):
+                raise ValueError("invalid historical receipt object")
+            detail = "installed-manifest.json 不是 JSON 对象。"
+            if not isinstance(manifest, dict):
+                raise ValueError("invalid historical manifest object")
+            detail = "installed.json 的 schema 无效。"
+            if receipt.get("schema") not in (1, 2):
+                raise ValueError("invalid historical receipt schema")
+            detail = "installed-manifest.json 的 schema 无效。"
+            if manifest.get("schema") != "tavern-release/v2":
+                raise ValueError("invalid historical manifest schema")
+            detail = "installed.json 的 commit 格式无效。"
+            if not re.fullmatch(r"[a-f0-9]{40}", str(receipt.get("commit", ""))):
+                raise ValueError("invalid historical commit")
+            detail = "installed.json 的 version 格式无效。"
+            if not re.fullmatch(r"\d+\.\d+\.\d+(?:-beta\.\d+)?", str(receipt.get("version", ""))):
+                raise ValueError("invalid historical version")
+            detail = "installed.json 与 installed-manifest.json 的 commit 不一致。"
+            if receipt["commit"] != manifest.get("commit"):
+                raise ValueError("historical commits differ")
+            detail = "installed-manifest.json 的 versions 字段格式无效。"
+            versions = manifest.get("versions", {})
+            if not isinstance(versions, dict):
+                raise ValueError("invalid historical versions")
+            detail = "installed.json 与 installed-manifest.json 的 version 不一致。"
+            if receipt["version"] != versions.get("tavern"):
+                raise ValueError("historical versions differ")
             instance = {**instance, "missingSystemReceipt": True}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
-        raise RuntimeError("无法核对启动器实例记录，已停止更新") from error
+        if isinstance(error, FileNotFoundError):
+            detail = f"缺少 {record_name}。"
+        elif isinstance(error, json.JSONDecodeError):
+            detail = f"{record_name} 的 JSON 损坏（第 {error.lineno} 行）。"
+        elif isinstance(error, UnicodeError):
+            detail = f"{record_name} 不是有效的 UTF-8 文本。"
+        elif isinstance(error, PermissionError):
+            detail = f"无法读取或核对 {record_name}，系统拒绝访问。"
+        elif isinstance(error, (IsADirectoryError, NotADirectoryError)):
+            detail = f"{record_name} 不是可读取的记录文件。"
+        elif isinstance(error, OSError):
+            detail = f"读取或核对 {record_name} 时发生文件系统错误。"
+        # Only fixed reasons and known record names cross the diagnostic boundary.
+        # Suppress raw parser/OS context, which can contain paths or record values.
+        raise RuntimeError("无法核对启动器实例记录，已停止更新：" + detail) from None
     return instance
 
 

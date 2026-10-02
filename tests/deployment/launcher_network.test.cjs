@@ -49,6 +49,27 @@ test('certificate errors are logged and propagated, never accepted or retried in
   assert.equal(f.events.at(-1).error, error);
 });
 
+test('Chromium connection resets retain network diagnostics and guidance without retrying', async () => {
+  const { describeError } = require(path.join(desktop, 'launcher-errors'));
+  const { presentError } = require(path.join(desktop, 'error-presentation'));
+  const error = new Error('net::ERR_CONNECTION_RESET');
+  let calls = 0;
+  const f = fixture(async () => { calls++; throw error; });
+  await assert.rejects(f.network.fetch('https://api.github.com/releases'), value => value === error);
+  assert.equal(calls, 1);
+  assert.equal(f.events.filter(event => event.event === 'network.retry').length, 0);
+  assert.equal(f.events.at(-1).event, 'network.failed');
+  const detail = describeError(error);
+  assert.equal(detail.error_code, 'network');
+  assert.equal(detail.system_code, 'ECONNRESET');
+  assert.equal(detail.error_source, 'release_service');
+  assert.equal(detail.error_site, 'release.request');
+  assert.equal(detail.attempt, 1);
+  assert.deepEqual(presentError(error, { action: 'check_update' }), {
+    title: '连接中断了。', detail: '检查更新尚未确认完成。', next: '请确认网络和代理可用，稍后重试。',
+  });
+});
+
 test('a transient network change retries the same read request and recovers', async () => {
   const calls = [];
   const response = new Response('release');

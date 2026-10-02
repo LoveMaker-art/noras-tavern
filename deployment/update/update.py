@@ -74,6 +74,21 @@ def module_at(name, path):
     return module
 
 
+_diagnostics_path = HERE.parent / "installer/error_diagnostics.py"
+if not _diagnostics_path.is_file():
+    _diagnostics_path = HERE.parent / "shared/error_diagnostics.py"
+_error_diagnostics = module_at("nora_update_error_diagnostics", _diagnostics_path)
+
+
+def recovery_module():
+    # The updater module carries the same standalone helper as the desktop.
+    # Load before any operations-tree swap, so recovery needs no missing ops.
+    path = HERE.parent / "installer/update_recovery.py"
+    if not path.is_file():
+        path = HERE / "recovery.py"
+    return module_at("tavern_update_recovery", path)
+
+
 def remove(path):
     path = Path(filesystem_path(path))
     if path.is_dir() and not path.is_symlink():
@@ -396,6 +411,16 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, 
             ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
             package_dependency_manifests(engine),
         )
+        # npm's Windows junctions contain staging paths. Materialize them while
+        # those paths are still valid, before stopping services or moving app.
+        native = module_at("prepared_native_lifecycle", source / "app/native_lifecycle.py")
+        contract = native.RuntimeContract.from_dict(json.loads(
+            (source / "app/native-runtime.json").read_text(encoding="utf-8"),
+        ))
+        runtime = native.NativeRuntime(source, source / "app", source / "tavern-state", contract)
+        materialized = runtime.materialize_local_dependencies()
+        if materialized:
+            log("Tavern 本地依赖已准备为独立目录：" + ", ".join(materialized))
     if mcp_changed:
         log("准备 Nora MCP 依赖")
         report["mcp"] = reuse_or_install_dependencies(
@@ -844,7 +869,13 @@ def install_update_check(home, ops_root):
         origin = Path(ops_root) / "scripts" / name
         if not origin.is_file():
             raise RuntimeError("发布包缺少更新提醒脚本：" + name)
-        atomic(scripts / name, origin.read_bytes(), mode=0o755)
+        target = scripts / name
+        # nora-instance.py may already have been installed by the durable
+        # greeting swap. Keep its recorded identity when bytes are identical.
+        if same_file(origin, target):
+            os.chmod(target, 0o755)
+        else:
+            atomic(target, origin.read_bytes(), mode=0o755)
     job = configure_update_check_job(home)
     return {
         "status": "installed",
@@ -1018,9 +1049,8 @@ def install(args):
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
             agents_backup = Path(filesystem_path(backup / "agents-rollback"))
             snapshot_agents(hermes_home, agents_backup)
-            managed_records = []
             if managed:
-                managed_records = helpers.snapshot_targets(hermes_home, [
+                helpers.snapshot_targets(hermes_home, [
                     hermes_home / name for name in ("SOUL.md", "SOUL.nora-tavern.example.md",
                     "nora-installation.json", "cron/jobs.json", "clawchat-skills")
                 ] + [hermes_home / "scripts" / name for name in UPDATE_CHECK_FILES], backup / "managed")
@@ -1033,15 +1063,30 @@ def install(args):
             runtime_stopped = False
             story_inventory, story_worlds = {}, {}
             transaction = {"schema": 1, "status": "prepared", "version": version, "backup": str(backup)}
-            json_write(transaction_file, transaction)
+            journal = None
+            if managed:
+                recovery_helper = recovery_module()
+                journal = recovery_helper.Journal.create(
+                    hermes_home, install_root, backup, swaps, version=version,
+                    before=before_state,
+                    state=install_root / "tavern-state" if runtime_changed else None,
+                    lifecycle=json.loads(os.environ["NORA_UPDATE_LIFECYCLE"]),
+                )
+                transaction = journal.record
+            else:
+                json_write(transaction_file, transaction)
             committed = False
             try:
                 if runtime_changed:
                     log("备份旧版本并停止 Tavern")
                     runtime_stopped = True
                     if managed:
+                        journal.plan["phase"] = "stopping"
+                        journal.save()
                         managed_lifecycle("stop", hermes_home, install_root, version)
                         helpers.stop_install_runtime(install_root)
+                        journal.plan["phase"] = "stopped"
+                        journal.save()
                     elif service:
                         service.stop()
                     else:
@@ -1050,10 +1095,16 @@ def install(args):
                     if prepared_state is None:
                         # Startup can quarantine incompatible manifests. Keep the
                         # entire state, not only program/configuration backups.
-                        shutil.copytree(filesystem_path(install_root / "tavern-state"), filesystem_path(backup / "state"))
+                        if journal is not None:
+                            journal.snapshot_state()
+                        else:
+                            shutil.copytree(filesystem_path(install_root / "tavern-state"), filesystem_path(backup / "state"))
                         state_snapshot = True
                         story_inventory = world_data_inventory(backup / "state")
                         story_worlds = verify_worlds(old_app, backup / "state")
+                        if journal is not None:
+                            journal.plan["worlds"] = story_worlds
+                            journal.save()
                         candidate_app = source / "app" if app_changed else old_app
                         verify_preserved_worlds(candidate_app, backup / "state", story_inventory, story_worlds)
                 else:
@@ -1062,6 +1113,9 @@ def install(args):
                     helpers.install_soul(hermes_home, source, replace=False, dedicated=True)
                 for name, prepared, target in swaps:
                     saved = backup / "trees" / name
+                    if journal is not None:
+                        journal.swap(name)
+                        continue
                     if prepared is None:
                         saved.parent.mkdir(parents=True, exist_ok=True)
                         if target.exists():
@@ -1075,13 +1129,16 @@ def install(args):
                 if prepared_state is not None:
                     active_state = install_root / "tavern-state"
                     saved_state = backup / "state"
-                    os.replace(active_state, saved_state)
-                    try:
-                        os.replace(prepared_state, active_state)
-                    except BaseException:
-                        os.replace(saved_state, active_state)
-                        raise
-                    state_swapped = True
+                    if journal is not None:
+                        journal.apply_state(prepared_state)
+                    else:
+                        os.replace(active_state, saved_state)
+                        try:
+                            os.replace(prepared_state, active_state)
+                        except BaseException:
+                            os.replace(saved_state, active_state)
+                            raise
+                        state_swapped = True
                 if agents_changed:
                     install_agents(hermes_home, desired_agents)
                 if config_changed:
@@ -1156,7 +1213,10 @@ def install(args):
                 if managed and state_snapshot:
                     verify_preserved_worlds(install_root / "apps/tavern-runtime",
                                            install_root / "tavern-state", story_inventory, story_worlds)
-                json_write(transaction_file, {**transaction, "status": "committed"})
+                if journal is not None:
+                    journal.save("committed")
+                else:
+                    json_write(transaction_file, {**transaction, "status": "committed"})
                 committed = True
                 try:
                     record_backup(install_root, backup, "committed")
@@ -1204,14 +1264,34 @@ def install(args):
                 if committed:
                     raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
                 log("更新未完成，恢复旧版本")
+                if journal is not None:
+                    def verify_restored(plan, _backup):
+                        state = managed_lifecycle("recover-verify", hermes_home, install_root, version)
+                        if plan.get("worlds") is not None:
+                            verify_preserved_worlds(install_root / "apps/tavern-runtime",
+                                                   install_root / "tavern-state", story_inventory, plan["worlds"])
+                        return state
+                    try:
+                        # install already holds tavern-installer.lock. Both the
+                        # automatic rollback and the desktop's later retry use
+                        # this exact journal/restore implementation.
+                        recovery_helper.recover(
+                            hermes_home, install_root,
+                            stop=lambda *_: managed_lifecycle("recover-stop", hermes_home, install_root, version),
+                            resume=lambda *_: managed_lifecycle("rollback", hermes_home, install_root, version),
+                            verify=verify_restored,
+                        )
+                    except BaseException as recovery_error:
+                        failure = RuntimeError(f"更新失败：{error}; 恢复未完成：{recovery_error}; recovery=incomplete; backup={backup}")
+                        failure._bridge_diagnostic_message = "更新失败，旧版本恢复未完成；请保留日志和备份。"
+                        failure.secondary_errors = [recovery_error]
+                        raise failure from error
+                    raise RuntimeError(f"{error}; recovery=restored; backup={backup}") from error
                 if runtime_stopped:
                     try:
                         active_app = install_root / "apps/tavern-runtime"
                         active_service = service_module.ManagedService.discover(install_root, active_app)
-                        if managed:
-                            managed_lifecycle("stop", hermes_home, install_root, version)
-                            helpers.stop_install_runtime(install_root)
-                        elif active_service:
+                        if active_service:
                             active_service.stop()
                         else:
                             stop_unmanaged(active_app)
@@ -1228,18 +1308,11 @@ def install(args):
                             os.replace(active_state, failed_root / "state")
                         os.replace(backup / "state", active_state)
                     restore_host(hermes_home, install_root, backup)
-                    if managed:
-                        helpers.restore_targets(hermes_home, managed_records, backup / "managed")
                     restore_agents(hermes_home, agents_backup)
                 except BaseException as restore_error:
                     raise RuntimeError(f"更新失败：{error}; 文件恢复失败：{restore_error}; recovery=incomplete; backup={backup}") from restore_error
                 recovery = "restored"
-                if runtime_stopped and managed:
-                    try:
-                        managed_lifecycle("rollback", hermes_home, install_root, version)
-                    except Exception as recovery_error:
-                        recovery = "files-restored-start-failed: " + str(recovery_error)
-                if runtime_stopped and not managed:
+                if runtime_stopped:
                     try:
                         start_old(hermes_home, install_root, service, service_snapshot)
                     except Exception as recovery_error:
@@ -1272,5 +1345,8 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
+        detail = _error_diagnostics.exception_diagnostic(error, project_root=HERE.parents[1])
+        print(json.dumps({"event": "diagnostic", "component": "updater", "error": detail}, ensure_ascii=False), flush=True)
+        print(json.dumps({"event": "error", "message": detail["message"], "code": detail["code"]}, ensure_ascii=False), flush=True)
         print(json.dumps({"status": "failed", "error": str(error)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)

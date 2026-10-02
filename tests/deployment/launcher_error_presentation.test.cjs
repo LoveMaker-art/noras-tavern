@@ -64,6 +64,13 @@ test('business safeguards override generic permission errors and preserve model 
   assert.match(formatUserError({code:'NODE_UNAVAILABLE'}), /完整启动器安装包/);
 });
 
+test('a proven Tavern process exit is explained without guessing its cause', () => {
+  const message = formatUserError({code:'TAVERN_PROCESS_EXITED',message:'opaque native traceback'}, {action:'install'});
+  assert.match(message, /酒馆进程启动后退出/);
+  assert.match(message, /保留现有安装和数据/);
+  assert.doesNotMatch(message, /opaque|traceback|网络故障|权限不足|缺少依赖|已经回滚/);
+});
+
 test('IPC boundary formats before Electron drops fields, preserving original diagnostic error', async () => {
   const source = fs.readFileSync(path.join(__dirname,'../installer/desktop/main.js'),'utf8');
   let declaration;

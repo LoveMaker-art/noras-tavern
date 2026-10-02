@@ -22,11 +22,12 @@ import traceback
 import time
 
 try:
-    from . import nora_system, nora_profile
+    from . import nora_system, nora_profile, error_diagnostics
     from .launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 except ImportError:
     import nora_system
     import nora_profile
+    import error_diagnostics
     from launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 
 
@@ -39,49 +40,7 @@ def emit(event: str, **payload) -> None:
 
 def exception_diagnostic(error, *, stack=None):
     """Bridge-owned error metadata; never source lines, locals or child streams."""
-    import errno
-    seen = set()
-
-    def project(current, frames=None):
-        if current is None or id(current) in seen or len(seen) >= 4:
-            return None
-        seen.add(id(current))
-        name = type(current).__name__
-        code = errno.errorcode.get(current.errno) if isinstance(current, OSError) else getattr(current, 'code', None)
-        if isinstance(current, subprocess.CalledProcessError):
-            message = f'子进程执行失败，退出码 {current.returncode}。'
-        elif isinstance(current, subprocess.TimeoutExpired):
-            code, message = 'TIMEOUT', '子进程操作超时。'
-        elif isinstance(current, json.JSONDecodeError):
-            message = f'JSON 解析失败，行 {current.lineno}，列 {current.colno}。'
-        elif isinstance(current, UnicodeError):
-            message = '程序文本编码处理失败。'
-        elif isinstance(current, urllib.error.HTTPError):
-            message = f'服务请求失败，HTTP 状态 {current.code}。'
-        elif isinstance(current, urllib.error.URLError):
-            message = '服务连接失败。'
-        elif name == 'AccessDenied':
-            code, message = 'EACCES', '系统拒绝读取进程信息。'
-        elif isinstance(current, (RuntimeError, OSError)):
-            message = getattr(current, '_bridge_diagnostic_message', str(current))
-        else:
-            # Parsers and SDK exceptions can embed configuration or responses.
-            message = f'程序操作失败（{name}）。'
-        frames = frames if frames is not None else (getattr(current, '_bridge_diagnostic_stack', None)
-                                                    or traceback.extract_tb(current.__traceback__))
-        detail = {'name': name, 'message': message, 'code': code,
-                  'stack': '\n'.join(f'File "{frame.filename}", line {frame.lineno}, in {frame.name}'
-                                    for frame in frames[-12:])}
-        cause = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
-        child = project(cause)
-        if child:
-            detail['cause'] = child
-        secondary = [project(item) for item in getattr(current, 'secondary_errors', [])[:2]]
-        if any(secondary):
-            detail['secondaryErrors'] = [{'error': item} for item in secondary if item]
-        return detail
-
-    return project(error, stack)
+    return error_diagnostics.exception_diagnostic(error, stack=stack, project_root=HERE.parent)
 
 
 def fail(message: str, code: str | None = None, user_code: str | None = None, *, error=None) -> None:
@@ -251,7 +210,42 @@ def installed(install_root: Path) -> bool:
 ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 
-def run_stream(command: list[str], *, env: dict[str, str] | None = None):
+def run_stream(command: list[str], *, env: dict[str, str] | None = None, native_cli=False):
+    def native_diagnostic(value):
+        # This is a process boundary, not permission for arbitrary child output.
+        # Accept only the bounded location-only native exception protocol.
+        remaining = 4
+        def valid(item, *, root=False):
+            nonlocal remaining
+            required = {'name', 'message', 'code', 'stack'}
+            optional = {'cause', 'secondaryErrors'} | ({'truncated'} if root else set())
+            if (remaining == 0 or not isinstance(item, dict)
+                    or not required.issubset(item) or not set(item).issubset(required | optional)):
+                return False
+            remaining -= 1
+            if (not isinstance(item['name'], str) or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,79}', item['name'])
+                    or not isinstance(item['message'], str) or len(item['message']) > 2000
+                    or not isinstance(item['stack'], str)):
+                return False
+            code = item['code']
+            if code is not None and not (isinstance(code, str) and re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', code)
+                                        or type(code) is int and 100 <= code <= 599):
+                return False
+            frames = item['stack'].splitlines()
+            if len(frames) > 12 or any(not re.fullmatch(
+                    r'File "[A-Za-z0-9_.-]{1,120}\.(?:py|js|cjs|mjs)", line [1-9][0-9]{0,6}, in [A-Za-z_<>][A-Za-z0-9_<>.]{0,119}',
+                    frame) for frame in frames):
+                return False
+            if 'truncated' in item and type(item['truncated']) is not bool:
+                return False
+            if 'cause' in item and not valid(item['cause']):
+                return False
+            secondary = item.get('secondaryErrors', [])
+            return (isinstance(secondary, list) and len(secondary) <= 2
+                    and all(isinstance(branch, dict) and set(branch) == {'error'} and valid(branch['error'])
+                            for branch in secondary))
+        return valid(value, root=True)
+
     started = time.monotonic()
     emit("command", command=command)
     process = subprocess.Popen(
@@ -267,6 +261,7 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
     failure = ""
     failure_code = None
     failure_user_code = None
+    native_failure = None
     last_result = None
     for line in process.stdout:
         line = ANSI.sub("", line).rstrip()
@@ -277,6 +272,21 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
                 emit("log", line=line, stream="combined")
             else:
                 if isinstance(message, dict):
+                    if (native_cli and set(message) == {'event', 'component', 'error'}
+                            and message.get('event') == 'diagnostic' and message.get('component') == 'native'
+                            and native_diagnostic(message['error'])):
+                        emit('diagnostic', component='bridge', error=message['error'])
+                        continue
+                    # Only the known native lifecycle CLI may supply this error
+                    # envelope. Other children retain generic bridge diagnostics;
+                    # never promote their streams or forged diagnostic objects.
+                    if (native_cli and message.get('ok') is False
+                            and isinstance(message.get('error'), str)
+                            and set(message).issubset({'ok', 'error', 'code'})):
+                        native_code = message.get('code')
+                        if not isinstance(native_code, str) or not re.fullmatch(r'[A-Z][A-Z0-9_]{0,79}', native_code):
+                            native_code = None
+                        native_failure = (message['error'][-2000:], native_code)
                     if message.get("event") == "result":
                         last_result = dict(message)
                     detail = message.get("error") or (message.get("message") if message.get("event") == "error" else "")
@@ -285,18 +295,26 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None):
                         failure_code = message.get('code')
                         failure_user_code = message.get('userCode')
                 if isinstance(message, dict) and message.get("event"):
-                    if message.get('event') == 'diagnostic' and message.get('component') == 'bridge':
+                    if message.get('event') == 'diagnostic' and message.get('component') in ('bridge', 'native'):
                         # Only this bridge may label its own exception projection.
                         message['component'] = 'child'
                     emit(message.pop("event"), **message)
                 else:
                     emit("log", line=line, stream="combined")
+    process.stdout.close()
     code = process.wait()
     emit("diagnostic", operation="subprocess-exit", pid=process.pid, exitCode=code,
          durationMs=round((time.monotonic() - started) * 1000))
     if code:
+        error = subprocess.CalledProcessError(code, command)
+        if native_failure:
+            detail, native_code = native_failure
+            # The remote fault contract bounds codes independently. Include the
+            # native code in its message too, without changing the wire schema.
+            error._bridge_diagnostic_message = (f'[{native_code}] ' if native_code else '') + detail
+            error.code = native_code
         fail(failure or f"命令执行失败，退出码 {code}；请查看安装日志中的具体输出。",
-             failure_code, failure_user_code, error=subprocess.CalledProcessError(code, command))
+             failure_code, failure_user_code, error=error)
     return last_result
 
 
@@ -388,7 +406,7 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
     system = nora_system.installation_state(hermes_home, install_root)
-    recovery = nora_system.update_recovery(install_root)
+    recovery = nora_system.update_recovery(install_root, hermes_home)
     hermes = hermes_command(nora_home, hermes_home, install_root)
     # Installed files and live service health are separate facts. Avoid booting
     # the entire Hermes CLI on every five-second status poll.
@@ -567,7 +585,7 @@ def command_start(args) -> None:
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
     if service != "nora":
         emit("task", stage_id="start_tavern", task="正在启动酒馆")
-        run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env)
+        run_stream([python_command(args.hermes_home), "-u", "-B", str(lifecycle), "start", "--port", str(args.port)], env=env, native_cli=True)
     if service != "tavern":
         emit("task", stage_id="start_nora", task="正在连接 ClawChat")
         start_gateway(args.nora_home, args.hermes_home,
@@ -625,7 +643,7 @@ def command_stop(args) -> None:
                 if installed(args.install_root):
                     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
                     run_stream([python_command(args.hermes_home), "-B", str(lifecycle), "stop"],
-                               env=env_for(args.nora_home, args.hermes_home, args.install_root))
+                               env=env_for(args.nora_home, args.hermes_home, args.install_root), native_cli=True)
                 stop_liveware(args.hermes_home)
         except SystemExit as error:
             errors.append(getattr(error, 'bridge_error', error))
@@ -722,16 +740,128 @@ def missing_receipt_snapshot(args):
         fail('旧安装的版本或配置记录不完整，未修改现有数据。')
 
 
-def command_update_lifecycle(args):
-    plan = json.load(sys.stdin)
+def _recovery_require_native_offline(args):
+    """An incomplete program tree cannot safely supply a stop controller."""
+    import socket
+    try:
+        import psutil
+    except ImportError as error:
+        raise RuntimeError('无法核验酒馆进程状态，未恢复文件。') from error
+    try:
+        owner = psutil.Process().username().casefold()
+        script = (args.install_root / 'apps/tavern-runtime/engine/sillytavern/server.js').resolve()
+        for process in psutil.process_iter(['name', 'username', 'cmdline', 'cwd'], ad_value=None):
+            info = process.info
+            if str(info.get('name') or '').lower() not in ('node', 'node.exe'):
+                continue
+            if not info.get('cmdline'):
+                if not info.get('username') or info['username'].casefold() == owner:
+                    raise RuntimeError('无法确认酒馆进程已停止，未恢复文件。')
+                continue
+            for value in info['cmdline']:
+                if not isinstance(value, str) or not value.endswith('server.js'):
+                    continue
+                path = Path(value)
+                if not path.is_absolute():
+                    if not info.get('cwd'):
+                        raise RuntimeError('无法确认酒馆进程目录，未恢复文件。')
+                    path = Path(info['cwd']) / path
+                if path.resolve() == script:
+                    raise RuntimeError('酒馆进程仍在运行且停止组件不完整，未恢复文件。请先正常退出酒馆。')
+    except psutil.Error as error:
+        raise RuntimeError('无法核验酒馆进程状态，未恢复文件。') from error
+    with socket.socket() as probe:
+        probe.settimeout(0.3)
+        if probe.connect_ex(('127.0.0.1', args.port)) == 0:
+            raise RuntimeError('酒馆端口仍被占用，未恢复文件。请先正常退出占用该端口的程序。')
+
+
+def recovery_stop(args):
+    required = ('apps/tavern-runtime/native_lifecycle.py', 'apps/tavern-runtime/native-runtime.json',
+                'apps/tavern-ops/updater/runtime_lock.py', 'apps/tavern-ops/updater/runtime_process.py',
+                'apps/tavern-ops/updater/service_manager.py')
+    if all((args.install_root / name).is_file() for name in required):
+        args.service = 'all'
+        command_stop(args)
+        return
+    # Renaming either app or ops may have been interrupted. Do not load a
+    # mixed controller or guess ownership from a saved PID in that state.
+    _recovery_require_native_offline(args)
+    stop_gateway(args.nora_home, hermes_home=args.hermes_home)
+    stop_liveware(args.hermes_home)
+    _recovery_require_native_offline(args)
+    emit('result', running=False, gatewayRunning=False)
+
+
+def recovery_verify(args, before):
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if str(state.get('version', '')).lstrip('v') != str(before.get('version', '')).lstrip('v'):
+        raise RuntimeError('恢复后的旧版本核验失败。')
+    if before.get('systemReady') and not state.get('systemReady'):
+        raise RuntimeError('旧版本文件已恢复，但安装完整性核验尚未通过。')
+    if any(bool(state.get(key)) != bool(before.get(key)) for key in ('running', 'gatewayRunning')):
+        raise RuntimeError('旧版本文件已恢复，但原有服务状态尚未恢复。')
+    if before.get('clawchatConnected') and not state.get('clawchatConnected'):
+        raise RuntimeError('旧版本文件已恢复，但 ClawChat 连接尚未恢复。')
+    return state
+
+
+def command_recover_update(args):
+    helper = nora_system.recovery_module()
+    emit('task', stage_id='verify', task='正在核验更新事务和旧版本备份')
+
+    def bind(plan):
+        lifecycle = plan.get('lifecycle')
+        if not isinstance(lifecycle, dict):
+            raise RuntimeError('恢复记录缺少启动器服务计划，未修改文件。')
+        for key, value in (('noraHome', args.nora_home), ('hermesHome', args.hermes_home),
+                           ('installRoot', args.install_root)):
+            if Path(lifecycle[key]).resolve() != value.resolve():
+                raise RuntimeError('恢复计划与当前启动器实例不一致，未修改文件。')
+        args.port = lifecycle['port']
+        return lifecycle
+
+    def stop(plan, _backup):
+        bind(plan)
+        emit('task', stage_id='stop', task='正在停止当前实例，保留失败现场')
+        recovery_stop(args)
+
+    def resume(plan, _backup):
+        lifecycle = bind(plan)
+        emit('task', stage_id='start_tavern', task='正在恢复更新前的服务状态')
+        original_command = args.command
+        args.command = 'update-lifecycle'
+        try:
+            command_update_lifecycle(args, {**lifecycle, 'before': plan['before'], 'phase': 'rollback'})
+        finally:
+            args.command = original_command
+
+    def verify(plan, _backup):
+        bind(plan)
+        return recovery_verify(args, plan['before'])
+
+    with helper.recovery_lock(args.install_root):
+        helper.recover(args.hermes_home, args.install_root, stop=stop, resume=resume, verify=verify)
+    emit('task', stage_id='health_check', task='旧版本和原有服务状态已恢复')
+    command_status(args)
+
+
+def command_update_lifecycle(args, plan=None):
+    plan = json.load(sys.stdin) if plan is None else plan
     before = plan["before"]
     phase = plan["phase"]
-    if phase not in ("preflight", "stop", "verify", "rollback"):
+    if phase not in ("preflight", "stop", "verify", "rollback", "recover-stop", "recover-verify"):
         fail("未知的更新事务阶段")
     for name in ("nora_home", "hermes_home", "install_root"):
         key = {"nora_home": "noraHome", "hermes_home": "hermesHome", "install_root": "installRoot"}[name]
         if Path(plan[key]).resolve() != getattr(args, name).resolve():
             fail("更新事务路径不匹配")
+    if phase == 'recover-stop':
+        recovery_stop(args)
+        return
+    if phase == 'recover-verify':
+        emit('result', **recovery_verify(args, before))
+        return
     receipt_recovery = plan.get('receiptRecovery')
     if receipt_recovery and phase in ('preflight', 'rollback'):
         if missing_receipt_snapshot(args) != receipt_recovery:
@@ -761,7 +891,7 @@ def command_update_lifecycle(args):
         env = env_for(args.nora_home, args.hermes_home, args.install_root)
         if before.get('running'):
             lifecycle = args.install_root / 'apps/tavern-runtime/native_lifecycle.py'
-            run_stream([python_command(args.hermes_home), '-u', '-B', str(lifecycle), 'start', '--port', str(args.port)], env=env)
+            run_stream([python_command(args.hermes_home), '-u', '-B', str(lifecycle), 'start', '--port', str(args.port)], env=env, native_cli=True)
         if before.get('gatewayRunning'):
             start_gateway(args.nora_home, args.hermes_home,
                           [python_command(args.hermes_home), '-m', 'hermes_cli.main', 'gateway', 'run'], env)
@@ -926,6 +1056,7 @@ def main() -> None:
         sub.add_parser(action).add_argument("--service", choices=("all", "nora", "tavern"), default="all")
     sub.add_parser("finish-update")
     sub.add_parser("update-lifecycle")
+    sub.add_parser("recover-update")
     sub.add_parser("pair")
     update = sub.add_parser("update")
     update.add_argument("--tag")
@@ -975,6 +1106,8 @@ def main() -> None:
         command_update(args)
     elif args.command == "update-lifecycle":
         command_update_lifecycle(args)
+    elif args.command == "recover-update":
+        command_recover_update(args)
     elif args.command == "plan-update":
         command_update(args, plan=True)
     elif args.command == "check-update":

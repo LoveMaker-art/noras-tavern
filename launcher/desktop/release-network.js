@@ -23,6 +23,7 @@ function createReleaseNetwork({ app, net, diagnostics, onRetry = () => {} }) {
         // Chromium's fixed transport errors are not arbitrary response text.
         const chromium = {'net::ERR_NETWORK_CHANGED':'ERR_NETWORK_CHANGED','net::ERR_CERT_AUTHORITY_INVALID':'ERR_CERT_AUTHORITY_INVALID',
           'net::ERR_CERT_DATE_INVALID':'CERT_HAS_EXPIRED','net::ERR_NAME_NOT_RESOLVED':'ENOTFOUND','net::ERR_CONNECTION_REFUSED':'ECONNREFUSED',
+          'net::ERR_CONNECTION_RESET':'ECONNRESET',
           'net::ERR_TIMED_OUT':'TIMEOUT','net::ERR_ABORTED':'ABORT_ERR'};
         try { Object.assign(error, {source:'release_service',site:'release.request',attempt,
           ...(options.signal?.reason?.name === 'TimeoutError' ? {code:'TIMEOUT'} : chromium[error.message] ? {code:chromium[error.message]} : {})}); } catch {}

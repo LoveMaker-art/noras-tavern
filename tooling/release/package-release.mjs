@@ -257,7 +257,7 @@ try {
     for (const name of starterFiles) {
         copyPackageFile(path.join(stage, 'ops/installer/package', name), path.join(starterRoot, name));
     }
-    for (const name of ['launcher-ui-prototype.html', 'launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py']) {
+    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py']) {
         copyPackageFile(path.join(stage, 'ops/installer', name), path.join(starterRoot, name));
     }
     copyPackageTree(path.join(stage, 'ops/installer/assets'), path.join(starterRoot, 'assets'));

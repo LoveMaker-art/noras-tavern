@@ -15,7 +15,7 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/installer/templates/SOUL.md', 'ops/installer/templates/greeting.md',
     'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
     'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
-    'ops/updater/managed_context.py',
+    'ops/updater/managed_context.py', 'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
@@ -148,6 +148,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         `${engineRoot}src/tokenizers/`,
     ];
     const omittedFiles = new Set([
+        'ops/installer/launcher-ui-prototype.html',
         'ops/installer/launcher-refinement-preview.html',
         'ops/installer/launcher-directory-preview.html',
         'ops/installer/launcher-directory-preview.js',
@@ -230,6 +231,9 @@ const NORA_ENGINE_FILES = new Set([
  * understand these path rules.
  */
 export function releaseModuleFor(relative) {
+    // The standalone desktop recovery resource must also travel with the
+    // verified updater runner when only changed modules are downloaded.
+    if (['ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py'].includes(relative)) return 'updater';
     if (relative.startsWith('ops/updater/')) return 'updater';
     if (relative.startsWith('ops/skills/')) return 'skills';
     if (relative.startsWith('ops/')) return 'operations';

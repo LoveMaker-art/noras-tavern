@@ -18,9 +18,11 @@ from pathlib import Path
 import re
 import shutil
 import shlex
+import stat
 import subprocess
 import sys
 import time
+import traceback
 import urllib.error
 import urllib.request
 
@@ -39,6 +41,14 @@ OBSOLETE_MANAGED_EXTENSIONS = (
     "nora-character-status",
 )
 MAX_NATIVE_LOG_BYTES = 4 * 1024 * 1024
+MAX_STARTUP_EVIDENCE_BYTES = 16 * 1024
+NODE_STARTUP_ERROR_CODES = frozenset({
+    'MODULE_NOT_FOUND', 'ERR_MODULE_NOT_FOUND', 'ERR_DLOPEN_FAILED',
+    'ERR_PACKAGE_PATH_NOT_EXPORTED', 'ERR_PACKAGE_IMPORT_NOT_DEFINED',
+    'ERR_UNKNOWN_FILE_EXTENSION', 'ERR_REQUIRE_ESM', 'ERR_INVALID_PACKAGE_CONFIG',
+    'ERR_UNSUPPORTED_DIR_IMPORT', 'ERR_UNSUPPORTED_ESM_URL_SCHEME',
+    'ENOENT', 'EACCES', 'EPERM', 'EADDRINUSE',
+})
 
 
 class NativeLifecycleError(RuntimeError):
@@ -203,6 +213,27 @@ def _atomic_text(path, text, mode=0o600):
     temporary.replace(path)
 
 
+def _is_directory_junction(path):
+    """Recognize npm's Windows links even when their staging target is gone."""
+    try:
+        entry = path.lstat()
+    except FileNotFoundError:
+        return False
+    return getattr(entry, "st_reparse_tag", 0) == getattr(
+        stat, "IO_REPARSE_TAG_MOUNT_POINT", 0xA0000003,
+    )
+
+
+def _remove_dependency_node(path):
+    """Remove the local node, never the destination of a directory link."""
+    if _is_directory_junction(path):
+        path.rmdir()
+    elif path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+
+
 class NativeRuntime:
     def __init__(self, data_root, app_root, state_root, contract):
         self.data_root = Path(data_root).expanduser().resolve()
@@ -350,19 +381,18 @@ class NativeRuntime:
                 raise NativeLifecycleError(f"bundled local dependency source is missing: {name}")
 
             target = engine_root / "node_modules" / name_path
-            if target.is_dir() and not target.is_symlink() and (target / "package.json").is_file():
+            if (
+                target.is_dir()
+                and not target.is_symlink()
+                and not _is_directory_junction(target)
+                and (target / "package.json").is_file()
+            ):
                 continue
             prepared = target.with_name(target.name + ".nora-prepared")
-            if prepared.is_symlink() or prepared.is_file():
-                prepared.unlink()
-            elif prepared.exists():
-                shutil.rmtree(prepared)
+            _remove_dependency_node(prepared)
             prepared.parent.mkdir(parents=True, exist_ok=True)
             shutil.copytree(source, prepared, symlinks=False)
-            if target.is_symlink() or target.is_file():
-                target.unlink()
-            elif target.exists():
-                shutil.rmtree(target)
+            _remove_dependency_node(target)
             os.replace(prepared, target)
             repaired.append(name)
         return repaired
@@ -525,8 +555,24 @@ class NativeRuntime:
     def spawn(self, command, env, log_path):
         log_path = prepare_runtime_log(log_path)
         log = open(log_path, "ab", buffering=0)
+        reader = None
         try:
-            return subprocess.Popen(
+            # Keep an independent read handle to this exact launch's log file.
+            # Reading must never move the child's stdout file position.
+            try:
+                entry = log_path.lstat()
+                if (stat.S_ISREG(entry.st_mode)
+                        and not getattr(entry, 'st_file_attributes', 0) & 0x400):
+                    reader = open(log_path, 'rb', buffering=0)
+                    saved = os.fstat(reader.fileno())
+                    written = os.fstat(log.fileno())
+                    if saved.st_ino <= 0 or (saved.st_dev, saved.st_ino) != (written.st_dev, written.st_ino):
+                        reader.close(); reader = None
+            except OSError:
+                if reader is not None: reader.close()
+                reader = None
+            offset = written.st_size if reader else 0
+            child = subprocess.Popen(
                 command,
                 cwd=self.engine_root,
                 env=env,
@@ -535,8 +581,60 @@ class NativeRuntime:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
+            child._nora_startup_log = (reader, offset, (saved.st_dev, saved.st_ino)) if reader else None
+            reader = None  # The start transaction now owns the read handle.
+            return child
         finally:
+            if reader is not None: reader.close()
             log.close()
+
+    def close_startup_log(self, child):
+        cursor = getattr(child, '_nora_startup_log', None)
+        if isinstance(cursor, tuple) and len(cursor) == 3:
+            try: cursor[0].close()
+            except OSError: pass
+            child._nora_startup_log = None
+
+    def startup_failure(self, error, child):
+        observed = child is not None
+        try:
+            status = child.poll() if child is not None else None
+            if status is not None and type(status) is not int:
+                status = None; observed = False
+        except (AttributeError, OSError):
+            status = None
+            observed = False
+        state = (f'started Tavern process exited with status {status}' if status is not None
+                 else 'started Tavern process was still running' if observed
+                 else 'Tavern exit status is unavailable')
+        failure = NativeLifecycleError(f'{error}; {state}',
+            code='TAVERN_PROCESS_EXITED' if status is not None else getattr(error, 'code', None))
+        failure.secondary_errors = []
+        cursor = getattr(child, '_nora_startup_log', None)
+        if isinstance(cursor, tuple) and len(cursor) == 3:
+            reader, offset, identity = cursor
+            try:
+                current = os.fstat(reader.fileno())
+                if (current.st_dev, current.st_ino) == identity and current.st_size > offset:
+                    reader.seek(max(offset, current.st_size - MAX_STARTUP_EVIDENCE_BYTES))
+                    output = reader.read(MAX_STARTUP_EVIDENCE_BYTES).decode('utf-8', errors='replace')
+                    codes, frames = set(), []
+                    for line in output.splitlines():
+                        match = re.match(r'\s*(?:\w*Error\s*\[([A-Z_]+)\]|code:\s*[\'"]([A-Z_]+)[\'"])', line)
+                        if match:
+                            code = next((value for value in match.groups() if value), None)
+                            if code in NODE_STARTUP_ERROR_CODES: codes.add(code)
+                        if re.match(r'\s*at\s', line):
+                            location = re.search(r'([A-Za-z0-9_.-]+\.(?:js|cjs|mjs)):(\d+)(?::\d+)?', line)
+                            if location and len(frames) < 8:
+                                frames.append(traceback.FrameSummary(location[1], int(location[2]), 'node', lookup_line=False))
+                    detail = RuntimeError('Node startup program evidence: ' + ', '.join(sorted(codes))
+                                          if codes else 'Node startup output has no recognized program error code')
+                    detail._bridge_diagnostic_stack = frames
+                    failure.secondary_errors.append(detail)
+            except (OSError, ValueError):
+                pass  # Evidence collection must not change the startup failure.
+        return failure
 
     def wait_for_process_identity(self, processes, pid, script, *, child=None, timeout=5):
         """Wait for a newly spawned process to finish exec() into Tavern.
@@ -740,6 +838,7 @@ class NativeRuntime:
             str(Path(env.get("HERMES_HOME") or Path.home() / ".hermes") / "SOUL.md"),
         )
         child = None
+        identity_verified = False
         try:
             if service:
                 native_pid = service.start()
@@ -753,30 +852,45 @@ class NativeRuntime:
                 script,
                 child=child,
             )
-        except Exception:
-            self.cleanup_unverified_start(child=child, service=service)
-            raise
-        _atomic_text(run_dir / "native.pid", str(native_pid) + "\n")
-        metadata = {
-            "schema": 1,
-            "run_id": run_id,
-            "port": port,
-            "data_root": str(native_data),
-            "native_pid": native_pid,
-            "started_at": int(time.time()),
-            "contract_commit": self.contract.commit,
-            "process": process,
-        }
-        _atomic_text(run_dir / "run.json", json.dumps(metadata, indent=2) + "\n")
+            identity_verified = True
+        except Exception as error:
+            failure = self.startup_failure(error, child)
+            try:
+                self.cleanup_unverified_start(child=child, service=service)
+            except Exception as cleanup_error:
+                failure.secondary_errors.append(cleanup_error)
+            raise failure from error
+        finally:
+            if not identity_verified:
+                self.close_startup_log(child)
         try:
-            health = self.wait_for_health(port)
-            processes.require_listener(process, script, port)
-        except Exception:
-            # _start is always called while its owner already holds the
-            # lifecycle lock. Cleanup must stay inside that transaction.
-            self._stop_run(run_id)
-            raise
-        return {**metadata, "health": health}
+            _atomic_text(run_dir / "native.pid", str(native_pid) + "\n")
+            metadata = {
+                "schema": 1,
+                "run_id": run_id,
+                "port": port,
+                "data_root": str(native_data),
+                "native_pid": native_pid,
+                "started_at": int(time.time()),
+                "contract_commit": self.contract.commit,
+                "process": process,
+            }
+            _atomic_text(run_dir / "run.json", json.dumps(metadata, indent=2) + "\n")
+            try:
+                health = self.wait_for_health(port, child=child)
+                processes.require_listener(process, script, port)
+            except Exception as error:
+                # _start is always called while its owner already holds the
+                # lifecycle lock. Cleanup must stay inside that transaction.
+                failure = self.startup_failure(error, child)
+                try:
+                    self._stop_run(run_id)
+                except Exception as cleanup_error:
+                    failure.secondary_errors.append(cleanup_error)
+                raise failure from error
+            return {**metadata, "health": health}
+        finally:
+            self.close_startup_log(child)
 
     def request_json(self, url):
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
@@ -801,10 +915,15 @@ class NativeRuntime:
                 "details": {"native": {"error": str(error)}},
             }
 
-    def wait_for_health(self, port, timeout=45):
+    def wait_for_health(self, port, timeout=45, *, child=None):
         deadline = time.monotonic() + timeout
         last = None
         while time.monotonic() < deadline:
+            if child is not None:
+                status = child.poll()
+                if type(status) is int:
+                    raise NativeLifecycleError(f'Started Tavern process exited with status {status} before health verification',
+                                               code='TAVERN_PROCESS_EXITED')
             last = self.health(port)
             if last["ok"]:
                 return last
@@ -982,5 +1101,21 @@ if __name__ == "__main__":
     try:
         main()
     except NativeLifecycleError as error:
+        # Keep the legacy scalar error below even if optional diagnostics are
+        # unavailable in an older or partially restored operations tree.
+        try:
+            here = Path(__file__).resolve().parent
+            candidates = (here.parent / 'deployment/shared/error_diagnostics.py',
+                          here.parent / 'ops/installer/error_diagnostics.py',
+                          here.parent / 'tavern-ops/installer/error_diagnostics.py')
+            source = next(path for path in candidates if path.is_file())
+            spec = importlib.util.spec_from_file_location('native_error_diagnostics', source)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            detail = module.exception_diagnostic(error, project_root=here)
+            print(json.dumps({'event': 'diagnostic', 'component': 'native', 'error': detail},
+                             ensure_ascii=False), file=sys.stderr, flush=True)
+        except Exception:
+            pass  # Diagnostic availability must never replace the startup error.
         print(json.dumps({"ok": False, "error": str(error), "code": error.code}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)

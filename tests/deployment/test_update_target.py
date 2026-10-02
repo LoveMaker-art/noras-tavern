@@ -222,6 +222,139 @@ class UpdateTargetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'启动器'):
             BOOTSTRAP.resolve_update_target(self.home,tavern)
 
+    def test_managed_instance_names_missing_record_without_private_path(self):
+        tavern = self.historical_without_acceptance()
+        (tavern / 'tavern-updates/installed-manifest.json').unlink()
+        with self.assertRaises(RuntimeError) as failure:
+            BOOTSTRAP.managed_instance(self.home, self.root)
+        self.assertEqual(str(failure.exception),
+                         '无法核对启动器实例记录，已停止更新：缺少 installed-manifest.json。')
+        self.assertNotIn(str(self.root), str(failure.exception))
+        self.assertTrue(failure.exception.__suppress_context__)
+
+    def test_managed_instance_reports_json_line_without_document_content(self):
+        tavern = self.managed_installation()
+        marker = tavern / 'tavern-updates/nora-system.json'
+        marker.write_text('{\n"private-key": "private-model-credential",\ninvalid}')
+        with self.assertRaises(RuntimeError) as failure:
+            BOOTSTRAP.managed_instance(self.home, self.root)
+        self.assertEqual(str(failure.exception),
+                         '无法核对启动器实例记录，已停止更新：nora-system.json 的 JSON 损坏（第 3 行）。')
+        self.assertNotIn('private-model-credential', str(failure.exception))
+        self.assertNotIn(str(self.root), str(failure.exception))
+        self.assertTrue(failure.exception.__suppress_context__)
+
+    def test_managed_instance_reports_permission_without_os_error_text(self):
+        self.managed_installation()
+        private_error = PermissionError(13, 'private-config-value', str(self.home / 'nora-instance.json'))
+        with patch.object(Path, 'read_text', side_effect=private_error):
+            with self.assertRaises(RuntimeError) as failure:
+                BOOTSTRAP.managed_instance(self.home, self.root)
+        self.assertEqual(str(failure.exception),
+                         '无法核对启动器实例记录，已停止更新：无法读取或核对 nora-instance.json，系统拒绝访问。')
+        self.assertNotIn('private-config-value', str(failure.exception))
+        self.assertNotIn(str(self.root), str(failure.exception))
+        self.assertTrue(failure.exception.__suppress_context__)
+
+    def test_managed_instance_reports_safe_file_read_failures(self):
+        self.managed_installation()
+        record = self.home / 'nora-instance.json'
+        record.write_bytes(b'{"private-value": "\xff"}')
+        with self.assertRaises(RuntimeError) as failure:
+            BOOTSTRAP.managed_instance(self.home, self.root)
+        self.assertEqual(str(failure.exception),
+                         '无法核对启动器实例记录，已停止更新：nora-instance.json 不是有效的 UTF-8 文本。')
+        for error, reason in [(IsADirectoryError('private-config-value'),
+                               'nora-instance.json 不是可读取的记录文件。'),
+                              (OSError(5, 'private-config-value'),
+                               '读取或核对 nora-instance.json 时发生文件系统错误。')]:
+            with self.subTest(reason=reason), patch.object(Path, 'read_text', side_effect=error):
+                with self.assertRaises(RuntimeError) as failure:
+                    BOOTSTRAP.managed_instance(self.home, self.root)
+                self.assertEqual(str(failure.exception), '无法核对启动器实例记录，已停止更新：' + reason)
+                self.assertNotIn('private-config-value', str(failure.exception))
+                self.assertTrue(failure.exception.__suppress_context__)
+
+    def test_managed_instance_names_invalid_binding_fields_without_values(self):
+        self.managed_installation()
+        record = self.home / 'nora-instance.json'
+        original = json.loads(record.read_text())
+        cases = [
+            ([], 'nora-instance.json 不是 JSON 对象。'),
+            ({**original, 'schema': 999}, 'nora-instance.json 的 schema 无效。'),
+            ({key: value for key, value in original.items() if key != 'installRoot'},
+             'nora-instance.json 缺少 installRoot 字段。'),
+            ({**original, 'noraHome': '/private-user-value'},
+             'nora-instance.json 的 noraHome 路径与启动器实例不符或为符号链接。'),
+            ({**original, 'hermesHome': 42}, 'nora-instance.json 的 hermesHome 路径格式无效。'),
+            ({**original, 'port': 'private-port-value'}, 'nora-instance.json 的 port 无效。'),
+        ]
+        for value, reason in cases:
+            with self.subTest(reason=reason):
+                record.write_text(json.dumps(value))
+                with self.assertRaises(RuntimeError) as failure:
+                    BOOTSTRAP.managed_instance(self.home, self.root)
+                self.assertEqual(str(failure.exception), '无法核对启动器实例记录，已停止更新：' + reason)
+                self.assertNotIn('private-user-value', str(failure.exception))
+                self.assertNotIn('private-port-value', str(failure.exception))
+                self.assertNotIn(str(self.root), str(failure.exception))
+                self.assertEqual(json.loads(record.read_text()), value)
+
+    def test_managed_instance_names_invalid_system_receipt_without_replacing_it(self):
+        tavern = self.managed_installation()
+        marker = tavern / 'tavern-updates/nora-system.json'
+        for value, reason in [([], 'nora-system.json 不是 JSON 对象。'),
+                              ({'schema': 999}, 'nora-system.json 的 schema 无效。')]:
+            with self.subTest(reason=reason):
+                marker.write_text(json.dumps(value))
+                with self.assertRaises(RuntimeError) as failure:
+                    BOOTSTRAP.managed_instance(self.home, self.root)
+                self.assertEqual(str(failure.exception), '无法核对启动器实例记录，已停止更新：' + reason)
+                self.assertEqual(json.loads(marker.read_text()), value)
+        marker.unlink()
+        target = self.root / 'private-receipt-name.json'
+        target.write_text('{"schema":1}')
+        marker.symlink_to(target)
+        with self.assertRaises(RuntimeError) as failure:
+            BOOTSTRAP.managed_instance(self.home, self.root)
+        self.assertEqual(str(failure.exception),
+                         '无法核对启动器实例记录，已停止更新：nora-system.json 为符号链接。')
+        self.assertNotIn(str(target), str(failure.exception))
+
+    def test_managed_instance_distinguishes_historical_receipt_failures(self):
+        tavern = self.historical_without_acceptance()
+        updates = tavern / 'tavern-updates'
+        receipt = json.loads((updates / 'installed.json').read_text())
+        manifest = json.loads((updates / 'installed-manifest.json').read_text())
+        cases = [
+            ('installed.json', [], 'installed.json 不是 JSON 对象。'),
+            ('installed.json', {**receipt, 'schema': 999}, 'installed.json 的 schema 无效。'),
+            ('installed-manifest.json', [], 'installed-manifest.json 不是 JSON 对象。'),
+            ('installed-manifest.json', {**manifest, 'schema': 'private-schema'},
+             'installed-manifest.json 的 schema 无效。'),
+            ('installed.json', {**receipt, 'commit': 'private-commit'}, 'installed.json 的 commit 格式无效。'),
+            ('installed.json', {**receipt, 'version': 'private-version'}, 'installed.json 的 version 格式无效。'),
+            ('installed-manifest.json', {**manifest, 'commit': 'b' * 40},
+             'installed.json 与 installed-manifest.json 的 commit 不一致。'),
+            ('installed-manifest.json', {**manifest, 'versions': {'tavern': '2.3.16'}},
+             'installed.json 与 installed-manifest.json 的 version 不一致。'),
+            ('installed-manifest.json', {**manifest, 'versions': []},
+             'installed-manifest.json 的 versions 字段格式无效。'),
+        ]
+        for name, value, reason in cases:
+            with self.subTest(reason=reason):
+                for original_name, original in [('installed.json', receipt), ('installed-manifest.json', manifest)]:
+                    (updates / original_name).write_text(json.dumps(original))
+                (updates / name).write_text(json.dumps(value))
+                before = {file.name: file.read_bytes() for file in updates.iterdir() if file.is_file()}
+                with self.assertRaises(RuntimeError) as failure:
+                    BOOTSTRAP.managed_instance(self.home, self.root)
+                self.assertEqual(str(failure.exception), '无法核对启动器实例记录，已停止更新：' + reason)
+                self.assertNotIn('private-', str(failure.exception))
+                self.assertNotIn(str(self.root), str(failure.exception))
+                self.assertFalse((updates / 'nora-system.json').exists())
+                self.assertEqual(before, {file.name: file.read_bytes() for file in updates.iterdir() if file.is_file()})
+
     def test_missing_acceptance_refuses_absent_or_conflicting_history(self):
         tavern = self.historical_without_acceptance()
         manifest = tavern / 'tavern-updates/installed-manifest.json'

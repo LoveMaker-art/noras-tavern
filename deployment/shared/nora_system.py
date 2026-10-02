@@ -160,15 +160,34 @@ def save_json(path, value):
             os.unlink(temporary)
 
 
-def update_recovery(root):
+def recovery_module():
+    here = Path(__file__).resolve().parent
+    source = here / 'update_recovery.py'
+    if not source.is_file():
+        source = here.parent / 'update/recovery.py'
+    spec = importlib.util.spec_from_file_location('nora_update_recovery', source)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def update_recovery(root, home=None):
+    root = Path(root)
     file = root / 'tavern-updates/transaction.json'
-    if not file.exists():
+    if not os.path.lexists(file):
         return None
     record = read_json(file)
     if record.get('schema') == 1 and record.get('status') in ('committed', 'restored'):
         return None
-    return {**record, 'status': record.get('status', 'unknown'),
-            'backup': record.get('backup', str(root / 'tavern-backups'))}
+    # Keep the durable service plan/configuration hashes in the backend. The
+    # renderer only needs the available action and its explanation.
+    result = {'status': record.get('status', 'unknown'),
+              'backup': record.get('backup', str(root / 'tavern-backups'))}
+    try:
+        result.update(recovery_module().assess(home or root.parent / 'hermes', root))
+    except (OSError, ImportError, ValueError):
+        result.update(canRecover=False, reason='恢复组件不可用，请保留日志和备份。')
+    return result
 
 
 def digest(path):

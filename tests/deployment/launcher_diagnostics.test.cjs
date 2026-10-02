@@ -26,6 +26,9 @@ test('packaged code fingerprint works without build metadata and fails without b
     assert.equal(fingerprint(),initial);
     fs.writeFileSync(path.join(root,'launcher_bridge.py'),'changed bridge');
     assert.notEqual(fingerprint(),initial);
+    const withBridge = fingerprint();
+    fs.writeFileSync(path.join(root,'update_recovery.py'),'changed recovery helper');
+    assert.notEqual(fingerprint(),withBridge);
     fs.rmSync(root,{recursive:true,force:true});
     assert.equal(fingerprint(),'');
   } finally { fs.rmSync(root,{recursive:true,force:true}); }

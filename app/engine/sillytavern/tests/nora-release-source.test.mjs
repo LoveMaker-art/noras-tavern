@@ -98,6 +98,8 @@ test('delivery allowlist rejects obsolete CLI names and keeps developer-only fil
         'nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json', 'nora-mcp/README.md',
     ];
     const excluded = [
+        'ops/installer/launcher-ui-prototype.html',
+        'ops/installer/launcher-refinement-preview.html',
         'app/engine/sillytavern/default/content/backgrounds/sample.png',
         'app/engine/sillytavern/default/content/default_Seraphina.png',
         'app/engine/sillytavern/default/content/Seraphina/joy.png',

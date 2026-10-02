@@ -84,12 +84,13 @@
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
-    $('management').hidden = busy || Boolean(snapshot.busy);
+    const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery);
+    $('management').hidden = recoveryView || busy || Boolean(snapshot.busy);
     document.querySelectorAll('#management [data-action]').forEach(control => {
       control.hidden = !complete() && control.dataset.action !== 'uninstall';
     });
-    $('launchbar').hidden = !complete();
-    $('status').hidden = complete() && !statusUnknown;
+    $('launchbar').hidden = recoveryView || !complete();
+    $('status').hidden = !recoveryView && complete() && !statusUnknown;
     if (statusUnknown) {
       if ($('status').dataset.unavailable !== 'true') $('status').dataset.previousLabel = $('status').textContent;
       $('status').textContent = '状态暂时无法确认';
@@ -98,6 +99,8 @@
     }
     $('status').dataset.unavailable = String(statusUnknown);
     $('launch').disabled = busy || Boolean(snapshot.busy) || statusUnknown;
+    const recover = $('recoverUpdate');
+    if (recover) recover.disabled = busy || Boolean(snapshot.busy) || statusUnknown;
     let action = '打开酒馆';
     if (['start', 'restart'].includes(activeAction) && activeService !== 'nora') action = '正在启动';
     if (activeAction === 'open') action = '正在打开';
@@ -129,7 +132,7 @@
     stage = index; daily = complete();
     $('status').textContent = busy ? '正在处理' : '需要你参与';
     $('main').classList.toggle('daily', daily);
-    $('main').classList.remove('welcome');
+    $('main').classList.remove('welcome', 'update-recovery');
     $('main').classList.toggle('editing', daily);
     $('management').hidden = !daily;
     displaySteps(); controls();
@@ -221,6 +224,7 @@
 
   function route() {
     lastFailure = null;
+    $('main').classList.remove('update-recovery');
     if (statusUnknown) {
       fail('状态暂时无法确认，请等待查询恢复后再继续。', 'status', () => { view = 'loading'; poll(); });
       return;
@@ -233,12 +237,34 @@
     if (snapshot.updateRecovery) {
       view = 'recovery'; daily = false; clearInline();
       $('main').classList.remove('welcome', 'daily', 'editing');
+      $('main').classList.add('update-recovery');
       $('steps').hidden = true;
-      say('上次更新尚未恢复完成。', '请保留日志和备份，暂勿重装或再次更新。');
-      const note = document.createElement('p'); note.className = 'install-location';
-      note.textContent = snapshot.updateRecovery.backup || '';
-      $('inline').append(note);
-      if (api.openLogs) $('inline').append(button('查看日志', openLogs));
+      const recovery = snapshot.updateRecovery;
+      const canRecover = recovery.canRecover && typeof api.recover === 'function';
+      say(canRecover ? '更新中断了。' : '暂时无法恢复。', canRecover
+        ? '可以先恢复到更新前的版本，再尝试更新。\n恢复期间请保持启动器打开。'
+        : '旧版本的恢复条件尚未确认，请保留当前安装和数据。\n可查看日志，协助定位问题。');
+      const actions = document.createElement('div'); actions.className = 'recovery-actions';
+      if (canRecover) {
+        const recover = button('恢复旧版本', () => run('recover')); recover.id = 'recoverUpdate';
+        actions.append(recover);
+      }
+      if (api.openLogs) {
+        const logs = button('查看日志', openLogs, false); logs.className = 'quiet'; actions.append(logs);
+      }
+      $('inline').append(actions);
+      const details = document.createElement('details'); details.className = 'recovery-details';
+      const summary = document.createElement('summary'); summary.textContent = '查看更新详情'; details.append(summary);
+      const information = document.createElement('dl');
+      const reason = recovery.reason || (recovery.canRecover && !canRecover ? '恢复组件不可用，请保留日志和备份。' : '');
+      for (const [label, value] of [['恢复检查', reason], ['失败信息', snapshot.installer?.phase === 'error' ? snapshot.installer.error : ''],
+        ['备份位置', recovery.backup]]) {
+        if (!value) continue;
+        const term = document.createElement('dt'); term.textContent = label;
+        const description = document.createElement('dd'); description.textContent = value;
+        information.append(term, description);
+      }
+      if (information.children.length) { details.append(information); $('inline').append(details); }
       controls(); $('launchbar').hidden = true; $('status').hidden = false; $('status').textContent = '需要恢复';
       return;
     }
@@ -316,7 +342,7 @@
   }
   function taskView(action) {
     view = 'task'; setupStage(stage); clearInline(); $('management').hidden = true;
-    const messages = { install: '我来准备，你稍等片刻。', pair: '我来连接 ClawChat。', start: '正在准备 Nora 和酒馆。', stop: '正在停止服务。', update: '正在更新诺拉与酒馆。', repair: '正在修复安装。' };
+    const messages = { install: '我来准备，你稍等片刻。', pair: '我来连接 ClawChat。', start: '正在准备 Nora 和酒馆。', stop: '正在停止服务。', update: '正在更新诺拉与酒馆。', repair: '正在修复安装。', recover: '正在恢复旧版本，请保持窗口打开。' };
     say(messages[action] || '我正在处理。');
     $('inline').innerHTML = '<div class="job"><div class="job-head"><span id="jobTitle"></span><span id="jobPercent"></span></div><div class="meter indeterminate"><span id="meterFill"></span></div><div class="job-note" id="jobNote"></div></div><div class="task-actions" id="taskActions"></div>';
     currentTask = '准备中'; startedAt = Date.now(); lastEvent = startedAt;
@@ -330,7 +356,7 @@
       }
       catch (error) { currentTask = textError(error); updateTask(); cancel.disabled = false; }
     }, false);
-    cancel.className = 'quiet'; $('taskActions').append(cancel);
+    cancel.className = 'quiet'; if (action !== 'recover') $('taskActions').append(cancel);
     clearInterval(taskTimer); taskTimer = setInterval(updateTask, 1000); updateTask();
   }
   function progressBytes(value) {
@@ -429,12 +455,16 @@
         if (options.resumeSetup || !complete()) route();
         else dailyHome();
         if (options.openAfter) await openTavern();
-      } else if (action === 'update' || action === 'repair') {
+      } else if (['update', 'repair', 'recover'].includes(action)) {
         versionInfo = null; autoVersionChecked = false; route();
       } else route();
     } catch (error) {
       busy = false; activeAction = ''; clearInterval(taskTimer);
       try { await readStatus(); } catch {}
+      if (['update', 'repair', 'recover'].includes(action) && snapshot.updateRecovery) {
+        if (!statusUnknown) snapshot.installer = { ...snapshot.installer, phase: 'error', error: textError(error) };
+        route(); return;
+      }
       // Single-use pairing codes are never replayed automatically.
       const retry = action === 'pair'
         ? snapshot.clawchatPaired ? () => run('start') : clawForm
@@ -624,13 +654,25 @@
       try {
         const wasUnknown = statusUnknown;
         const before = JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]);
+        const recoveryView = view === 'recovery';
+        const recoverySignature = () => JSON.stringify(snapshot.updateRecovery ? [
+          Boolean(snapshot.updateRecovery.canRecover), snapshot.updateRecovery.reason || '', snapshot.updateRecovery.backup || '',
+          snapshot.installer?.phase === 'error' ? snapshot.installer.error || '' : '',
+        ] : null);
+        const beforeRecovery = recoveryView ? recoverySignature() : '';
+        const detailsOpen = recoveryView && $('inline').querySelector('.recovery-details')?.open === true;
         await readStatus();
-        if (view === 'loading' || (view === 'monitor' && !snapshot.busy)) route();
+        if (!busy && recoveryView && view === 'recovery' && beforeRecovery !== recoverySignature()) {
+          route();
+          const details = view === 'recovery' && $('inline').querySelector('.recovery-details');
+          if (details && detailsOpen) details.open = true;
+        } else if (view === 'loading' || (view === 'monitor' && !snapshot.busy)) route();
         else if (view === 'daily' && (wasUnknown || before !== JSON.stringify([snapshot.running, snapshot.gatewayRunning, snapshot.clawchatConnected, snapshot.warning]))) dailyHome();
         controls();
         void checkVersionsInBackground();
       } catch (error) {
         if (view === 'loading') fail(error, 'status', () => { view = 'loading'; poll(); });
+        else if (!busy && view === 'recovery') route();
         else if (view === 'daily') dailyHome();
         controls();
       }

@@ -101,7 +101,16 @@ function createFaultPackets({ clean = value => value, roots = () => [], environm
         if (message.event === 'error' && structured) return;
         const e = message.event === 'diagnostic' ? message.error : message.event === 'error' ? {message:message.message,code:message.code} : null;
         if (e && typeof e === 'object') {
-          if (message.event === 'diagnostic') structured = true;
+          if (message.event === 'diagnostic' && e.truncated === true) truncated = true;
+          if (message.event === 'diagnostic') {
+            // The install/update script projects its final primary cause and
+            // rollback branches together. Prefer that group over earlier
+            // scalar summaries or cleanup events, then keep it ahead of the
+            // outer bridge's generic exit wrapper. Service commands still
+            // accept only bridge-owned projections above.
+            if (!structured || ['installer','updater'].includes(message.component)) errors.length = 0;
+            structured = true;
+          }
           const projected = evidence(e).errors;
           for (const item of projected) {
             const value = {name:item.kind,message:item.message,stack:item.frames.join('\n'),
@@ -111,7 +120,7 @@ function createFaultPackets({ clean = value => value, roots = () => [], environm
         }
         if (captureOutput && message.event === 'log' && ['stderr','combined'].includes(message.stream)) output.push(text(message.line, 500));
         if (output.length > 12) { output.shift(); truncated = true; }
-        while (errors.length > 4) { errors.shift(); truncated = true; }
+        while (errors.length > 4) { errors.pop(); truncated = true; }
       },
       attach(error) { if (enabled) error.launcherEvidence = {output, errors, truncated}; return error; },
     };

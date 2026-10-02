@@ -47,6 +47,7 @@ if (contextBridge && ipcRenderer) {
     repair(options) {
       return runAction('repair', options);
     },
+    recover(options) { return runAction('recover', options); },
     cancel() {
       return ipcRenderer.invoke('nora:cancel');
     },

@@ -14,9 +14,13 @@
 | 酒馆模型凭据及设置写入 | `app/native_model_config.py::NativeSettingsClient.configure` | 首次配置策略先判断是否允许同步，再调用公共写入函数 |
 | 本地文件锁 | `deployment/shared/runtime_lock.py` | 安装、注册和服务停止使用同一跨平台锁实现 |
 | AGENTS 与问候文件策略 | `deployment/shared/managed_context.py` | 首装、更新共用 |
+| 有界异常类型、调用位置和原因链投影 | `deployment/shared/error_diagnostics.py` | 桥接、首次安装、更新及酒馆 CLI 共用；跨进程接收与远端脱敏另行校验 |
+| 受管更新恢复计划和文件恢复 | `deployment/update/recovery.py` | 更新器保存检查点；桥接器提供停服、恢复运行和验收操作 |
 
 Hermes 网关的进程管理属于 `deployment/shared/services.py`，不是酒馆进程管理的第二套实现。
 完整系统更新负责协调 Hermes 与 Tavern 的备份、安装和回滚，不代替 Tavern 单体更新器的内部业务。
+
+恢复模块只依赖标准库，随桌面资源和增量更新器交付。它不能依赖可能在目录交换中缺失的已安装 operations 文件；路径、身份和备份校验必须在修改文件前执行。
 
 ## 两种安装上下文
 

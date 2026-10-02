@@ -139,6 +139,9 @@ class ManagedUpdateTests(unittest.TestCase):
 
             original_module = update.module_at
             lifecycle_calls = []
+            original_state = {'systemReady': not missing_receipt, 'version': source_version,
+                              'running': True, 'gatewayRunning': True, 'clawchatConnected': True}
+            lifecycle_plan = {**instance, 'bridge': 'test-only-bridge', 'before': original_state}
             def lifecycle(phase, *_args):
                 lifecycle_calls.append(phase)
                 if phase == 'preflight' and preflight_failure:
@@ -148,7 +151,8 @@ class ManagedUpdateTests(unittest.TestCase):
                     raise RuntimeError('injected final service failure')
                 if phase == 'rollback' and rollback_failure:
                     raise RuntimeError('old gateway cannot start')
-                return {'systemReady': True, 'version': manifest['versions']['tavern'],
+                return {**original_state,
+                        **({'systemReady': True, 'version': manifest['versions']['tavern']} if phase == 'verify' else {}),
                         'modelConfigured': True, 'clawchatProfileReady': True}
             stack.enter_context(patch.object(update, 'managed_lifecycle', side_effect=lifecycle, create=True))
             def module(name, file):
@@ -172,7 +176,8 @@ class ManagedUpdateTests(unittest.TestCase):
                     raise RuntimeError("injected MCP failure")
                 return {name: True for name in nora_system.PROOFS}
 
-            stack.enter_context(patch.dict(os.environ, {"HERMES_HOME": str(home), "NORA_TAVERN_HOME": str(root)}, clear=True))
+            stack.enter_context(patch.dict(os.environ, {"HERMES_HOME": str(home), "NORA_TAVERN_HOME": str(root),
+                'NORA_UPDATE_LIFECYCLE': json.dumps(lifecycle_plan)}, clear=True))
             stack.enter_context(patch.dict(sys.modules, bundle=bundle))
             stack.enter_context(patch.object(bundle, "read_bundle", return_value=manifest))
             stack.enter_context(patch.object(bundle, "extract_bundle", side_effect=extract))
@@ -208,7 +213,7 @@ class ManagedUpdateTests(unittest.TestCase):
                     self.assertEqual(file.read_bytes(), value)
                 return
             if failure or late_failure:
-                recovery_text = 'files-restored-start-failed' if rollback_failure else 'restored'
+                recovery_text = 'incomplete' if rollback_failure else 'restored'
                 with self.assertRaisesRegex(RuntimeError, "injected .*failure.*recovery=" + recovery_text):
                     update.install(args)
                 for file, value in {**before, **receipts}.items():
@@ -228,6 +233,12 @@ class ManagedUpdateTests(unittest.TestCase):
             else:
                 update.install(args)
                 installed = json.loads((tavern / "tavern-updates/installed.json").read_text())
+                transaction = json.loads((tavern / "tavern-updates/transaction.json").read_text())
+                self.assertEqual(transaction['status'], 'committed')
+                self.assertEqual(transaction['version'], manifest['versions']['tavern'])
+                self.assertEqual(transaction['backup'], installed['backup'])
+                self.assertEqual(transaction['recoveryPlan']['before'], {**original_state,
+                    'modelConfigured': True, 'clawchatProfileReady': True})
                 self.assertEqual(installed["version"], manifest["versions"]["tavern"])
                 self.assertEqual((home / "AGENTS.md").read_text(), "# New Nora instructions\n")
                 for relative in nora_system.SKILLS:
@@ -253,9 +264,14 @@ class ManagedUpdateTests(unittest.TestCase):
                 self.assertEqual(restored_chat[-1]["extra"]["stat_data"]["玩家"]["体力"], 80)
                 self.assertEqual(restored_chat[-1]["swipes"][restored_chat[-1]["swipe_id"]], "原来的回复")
             self.assertEqual(start.call_args.kwargs["port"], 18899)
-            self.assertEqual(stop.call_count, 2 if failure or late_failure else 1)
+            self.assertEqual(stop.call_count, 1)
+            if failure or late_failure:
+                self.assertIn('recover-stop', lifecycle_calls)
+                self.assertIn('rollback', lifecycle_calls)
             if late_failure:
-                self.assertEqual(lifecycle_calls, ['preflight', 'stop', 'verify', 'stop', 'rollback'])
+                expected = ['preflight', 'stop', 'verify', 'recover-stop', 'rollback']
+                if not rollback_failure:expected.append('recover-verify')
+                self.assertEqual(lifecycle_calls, expected)
             no_install.assert_not_called()
             no_liveware.assert_not_called()
             no_old_start.assert_not_called()

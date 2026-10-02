@@ -80,6 +80,10 @@ def module_at(name: str, path: Path):
 
 
 _shared_paths = module_at("nora_install_paths", ROOT / "ops/updater/bootstrap.py")
+_diagnostics_path = HERE / "error_diagnostics.py"
+if not _diagnostics_path.is_file():
+    _diagnostics_path = HERE.parent / "shared/error_diagnostics.py"
+_error_diagnostics = module_at("nora_install_error_diagnostics", _diagnostics_path)
 
 
 def default_nora_home() -> Path:
@@ -608,6 +612,9 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
+        detail = _error_diagnostics.exception_diagnostic(error, project_root=ROOT)
+        event("diagnostic", component="installer", error=detail)
+        event("error", message=detail["message"], code=detail["code"])
         import traceback
         traceback.print_exc(file=sys.stderr)
         print("[nora-tavern-install] 安装失败：" + str(error), file=sys.stderr)

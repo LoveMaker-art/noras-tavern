@@ -41,6 +41,19 @@ test('desktop bundle carries the profile initializer beside the bridge', () => {
   assert.ok(fs.existsSync(path.resolve(__dirname, '../installer/desktop', entry.from)));
 });
 
+test('recovery and diagnostics ship independently of the installed runtime and with the incremental updater runner', async () => {
+  const pkg = require('../installer/desktop/package.json');
+  for (const name of ['update_recovery.py', 'error_diagnostics.py']) {
+    const entry = pkg.build.extraResources.find(item => item.to === name);
+    assert.ok(entry, 'the desktop must recover and diagnose even when the installed ops directory is absent');
+    assert.ok(fs.existsSync(path.resolve(__dirname, '../installer/desktop', entry.from)));
+  }
+  const { groupRuntimeModules } = await import('../scripts/release-source.mjs');
+  const modules = groupRuntimeModules(['ops/updater/update.py', 'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py']);
+  assert.deepEqual(modules.get('updater'), ['ops/installer/error_diagnostics.py', 'ops/installer/update_recovery.py', 'ops/updater/update.py']);
+  assert.equal(modules.size, 1, 'extract_runner downloads one verified updater module');
+});
+
 test('Mac and Windows packages use the high-resolution Nora icon', () => {
   const pkg = require('../installer/desktop/package.json');
   for (const platform of ['mac', 'win']) {

@@ -5,7 +5,9 @@ import io
 import json
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -164,6 +166,72 @@ class BridgeErrorDiagnosticTests(unittest.TestCase):
         self.assertEqual(events[-1]['event'], 'error')
         self.assertEqual(events[-1]['message'], str(child_error))
         self.assertIn(private_config, events[-1]['message'])
+
+    def test_native_stop_failure_survives_non_installer_fault_collection(self):
+        message = 'Tavern runtime ownership differs from the saved configuration'
+        with tempfile.TemporaryDirectory(prefix='nora-native-stop-diagnostic-') as temporary:
+            root = Path(temporary)
+            install_root = root / 'tavern'
+            lifecycle = install_root / 'apps/tavern-runtime/native_lifecycle.py'
+            lifecycle.parent.mkdir(parents=True)
+            lifecycle.write_text(
+                'import json, sys\n'
+                f'print(json.dumps({{"ok": False, "error": {message!r}, "code": "TAVERN_OWNERSHIP"}}), file=sys.stderr)\n'
+                'sys.exit(1)\n', encoding='utf-8')
+            lock = install_root / 'apps/tavern-ops/updater/runtime_lock.py'
+            lock.parent.mkdir(parents=True)
+            lock.write_text('from contextlib import nullcontext\n'
+                            'def installation_lock(*args): return nullcontext()\n', encoding='utf-8')
+            args = SimpleNamespace(service='all', nora_home=root, hermes_home=root / 'hermes',
+                                   install_root=install_root, port=18899)
+            output = io.StringIO()
+            with patch.object(bridge, 'stop_gateway'), patch.object(bridge, 'stop_liveware'), \
+                 patch.object(bridge, 'installed', return_value=True), \
+                 patch.object(bridge, 'python_command', return_value=sys.executable), \
+                 patch.object(bridge, 'status_payload') as status, \
+                 contextlib.redirect_stdout(output):
+                with self.assertRaises(RuntimeError) as failed:
+                    bridge.command_stop(args)
+            status.assert_not_called()
+        emitted = [json.loads(line) for line in output.getvalue().splitlines()]
+        events, _ = self.capture_fail(str(failed.exception), error=failed.exception)
+        diagnostic = events[0]['error']
+        self.assertEqual(diagnostic['cause']['name'], 'CalledProcessError')
+        self.assertIn(message, diagnostic['cause']['message'])
+        self.assertEqual(diagnostic['cause']['code'], 'TAVERN_OWNERSHIP')
+        self.assert_location_stack(diagnostic['cause'], 'run_stream')
+        self.assertTrue(any(item.get('event') == 'error' and item.get('message') == message
+                            for item in emitted))
+        script = '''
+const fs = require('node:fs');
+const { createFaultPackets } = require(process.argv[1]);
+const packets = createFaultPackets();
+const collector = packets.collector(true, { output: false });
+for (const event of JSON.parse(fs.readFileSync(0, 'utf8'))) collector.observe(event);
+const error = collector.attach(new Error('停止服务失败。'));
+console.log(JSON.stringify(packets.packet(error, { action: 'stop', history: [] })));
+'''
+        packet = subprocess.run(['node', '-e', script,
+                                 str(Path(bridge.__file__).parent / 'desktop/fault-packet.js')],
+                                input=json.dumps(emitted + events), text=True, capture_output=True,
+                                check=True)
+        fault = json.loads(packet.stdout)
+        self.assertTrue(any(message in item['message'] for item in fault['errors']))
+        self.assertEqual(fault['output'], [])
+
+    def test_untrusted_scalar_child_error_does_not_enter_bridge_diagnostic(self):
+        private_config = 'PRIVATE_UNTRUSTED_SCALAR_ERROR_724F'
+        command = [sys.executable, '-c', 'import json,sys; '
+                   f'print(json.dumps({{"ok":False,"error":{private_config!r},"code":"EACCES"}})); '
+                   'sys.exit(1)']
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            bridge.run_stream(command)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        diagnostic = next(item['error'] for item in events
+                          if item.get('event') == 'diagnostic' and item.get('component') == 'bridge')
+        self.assertEqual(diagnostic['message'], '子进程执行失败，退出码 1。')
+        self.assertNotIn(private_config, json.dumps(diagnostic))
 
     def test_cause_cycle_is_finite_and_does_not_repeat_nodes(self):
         first = RuntimeError('cycle first')

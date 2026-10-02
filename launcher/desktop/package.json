@@ -1,6 +1,6 @@
 {
   "name": "nora-tavern-launcher",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "private": true,
   "author": "Nora Tavern",
   "description": "Desktop shell for the Nora Tavern local launcher.",
@@ -75,10 +75,6 @@
         "to": "launcher_services.py"
       },
       {
-        "from": "../launcher-ui-prototype.html",
-        "to": "launcher-ui-prototype.html"
-      },
-      {
         "from": "../launcher_bridge.py",
         "to": "launcher_bridge.py"
       },
@@ -89,6 +85,14 @@
       {
         "from": "../bootstrap.py",
         "to": "bootstrap.py"
+      },
+      {
+        "from": "../update_recovery.py",
+        "to": "update_recovery.py"
+      },
+      {
+        "from": "../error_diagnostics.py",
+        "to": "error_diagnostics.py"
       },
       {
         "from": "../assets",

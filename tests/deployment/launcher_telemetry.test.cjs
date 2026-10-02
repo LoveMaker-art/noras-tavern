@@ -444,6 +444,77 @@ test('fault packets retain technical cause, source frames and installer evidence
   assert.doesNotMatch(JSON.stringify(projection.packet(collector.attach(error),{action:'install'})),/private model reply/);
 });
 
+test('final installer cause group survives prior cleanup diagnostics and later generic wrappers',()=>{
+  const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
+  const projection=createFaultPackets(),collector=projection.collector(true);
+  const group=message=>({name:'RuntimeError',message,cause:{name:'PermissionError',message:message+' cause',code:'EACCES'},
+    secondaryErrors:[{error:{name:'RuntimeError',message:message+' node'}},{error:{name:'OSError',message:message+' rollback'}}]});
+  collector.observe({event:'diagnostic',component:'child',error:group('earlier cleanup')});
+  collector.observe({event:'diagnostic',component:'installer',error:group('original installation')});
+  collector.observe({event:'diagnostic',component:'bridge',error:{name:'CalledProcessError',message:'generic exit'}});
+  const packet=projection.packet(collector.attach(new Error('outer exit')),{action:'install'});
+  assert.deepEqual(packet.errors.map(e=>e.message),['original installation','original installation cause',
+    'original installation node','original installation rollback']);
+  assert.equal(packet.truncated,true);
+  const service=projection.collector(true,{output:false});
+  service.observe({event:'diagnostic',component:'installer',error:group('private child')});
+  const excluded=projection.packet(service.attach(new Error('service exit')),{action:'start'});
+  assert.doesNotMatch(JSON.stringify(excluded),/private child/);
+});
+
+test('actual bridge preserves internal frame truncation in the existing uploaded packet flag',async t=>{
+  const {validFaultPacket}=require(path.join(desktop,'fault-packet'));
+  for (const [command,component] of [['update','updater'],['install','installer'],['start','bridge']]) {
+    const f=fixture(t);
+    const frames=Array.from({length:12},(_,index)=>`File "update.py", line ${index+2}, in apply_update`).join('\n');
+    const runBridge=actualBridge(f.client,{messages:[
+      {event:'diagnostic',component,error:{name:'RuntimeError',message:'限定项目证据',stack:frames,truncated:true}},
+      {event:'diagnostic',component:'bridge',error:{name:'CalledProcessError',message:'子进程退出。'}},
+    ]});
+    f.client.begin(command);
+    await assert.rejects(runBridge(command),error=>{f.client.finish('failed',error);return true;});
+    await f.client.flush();
+    const packet=f.requests.flatMap(request=>request.data.events).find(event=>event.event==='operation_finished').fault;
+    assert.equal(packet.errors.find(error=>error.message==='限定项目证据').frames.length,12);
+    assert.ok(packet.errors.length<4,'the flag comes from the script, not a full error-node budget');
+    assert.equal(packet.truncated,true);
+    assert.equal(validFaultPacket(packet),true,'wire schema remains unchanged');
+    assert.equal(Object.hasOwn(packet.errors[0],'truncated'),false);
+  }
+});
+
+test('collector accumulates internal truncation across final groups and remains compatible with legacy evidence',()=>{
+  const {createFaultPackets,validFaultPacket}=require(path.join(desktop,'fault-packet'));
+  const packets=createFaultPackets();
+  const collector=packets.collector(true);
+  collector.observe({event:'diagnostic',component:'updater',error:{name:'RuntimeError',message:'earlier bounded error',truncated:true}});
+  collector.observe({event:'diagnostic',component:'updater',error:{name:'RuntimeError',message:'final cause',truncated:false}});
+  collector.observe({event:'diagnostic',component:'bridge',error:{name:'CalledProcessError',message:'outer exit'}});
+  const packet=packets.packet(collector.attach(new Error('desktop exit')),{action:'update'});
+  assert.equal(packet.truncated,true);
+  assert.equal(packet.errors.some(error=>error.message==='earlier bounded error'),false);
+  for (const flag of [undefined,false,'true',1]) {
+    const legacy=packets.collector(true);
+    legacy.observe({event:'diagnostic',component:'updater',error:{name:'RuntimeError',message:'not clipped',truncated:flag}});
+    const packet=packets.packet(legacy.attach(new Error('outer exit')),{action:'update'});
+    assert.equal(packet.truncated,false);
+    assert.equal(validFaultPacket(packet),true);
+  }
+  const legacy=Object.assign(new Error('outer exit'),{launcherEvidence:{errors:[],output:[],truncated:true}});
+  assert.equal(packets.packet(legacy,{action:'update'}).truncated,true);
+});
+
+test('internal truncation metadata cannot bypass disabled collection or service-child trust boundaries',()=>{
+  const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
+  const packets=createFaultPackets();
+  for (const collector of [packets.collector(false),packets.collector(true,{output:false})]) {
+    collector.observe({event:'diagnostic',component:'child',error:{name:'RuntimeError',message:'untrusted child',truncated:true}});
+    const packet=packets.packet(collector.attach(new Error('service exit')),{action:'start'});
+    assert.equal(packet.truncated,false);
+    assert.doesNotMatch(JSON.stringify(packet),/untrusted child/);
+  }
+});
+
 test('service failures exclude runtime output and provider response text from fault packets',async t=>{
   const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
   const packets=createFaultPackets();const collector=packets.collector(false);

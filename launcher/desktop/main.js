@@ -22,7 +22,7 @@ function launcherBuild() {
   try {
     const hash = require('node:crypto').createHash('sha256');
     const resources = ['replace-launcher.py','nora_profile.py','nora_system.py','launcher-conversation-prototype.html',
-      'launcher-controller.js','launcher_services.py','launcher-ui-prototype.html','launcher_bridge.py','model_config.py','bootstrap.py'];
+      'launcher-controller.js','launcher_services.py','launcher_bridge.py','model_config.py','bootstrap.py','update_recovery.py','error_diagnostics.py'];
     for (const [directory, names] of [[__dirname,fs.readdirSync(__dirname).filter(name => /\.(?:js|json)$/.test(name)).sort()],
       [installerRoot(),resources]]) {
       for (const name of names) {
@@ -522,7 +522,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       const spec = bridgeArgs(command, options);
       if (command !== 'status') diagnostics.write('process.start', { command: [spec.command, ...spec.args], cwd: installerRoot() });
       proc = spawn(spec.command, spec.args, { env: launcherEnv(), cwd: installerRoot(), detached: command !== 'status' && process.platform !== 'win32', windowsHide: true });
-      proc.cancelSafe = command !== 'update';
+      proc.cancelSafe = !['update', 'recover-update'].includes(command);
       if (command !== 'status') diagnostics.write('process.spawned', { pid: proc.pid });
       if (command !== 'status') activeProcess = proc;
       proc.stdin.end(command === 'pair' ? JSON.stringify({ code: options.code }) : undefined);
@@ -533,7 +533,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }
     let result = null;
     let errorMessage = '', structuredMessage = '', structuredCode, structuredUserCode;
-    const installerCommand = ['install','update','repair','plan-update'].includes(command);
+    const installerCommand = ['install','update','repair','plan-update','recover-update'].includes(command);
     const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled), { output: installerCommand });
     let bridgeError = null;
     const childFailure = error => {
@@ -546,7 +546,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }, 1000);
     const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : 30 * 60 * 1000;
     const timeout = setTimeout(() => {
-      if (command === 'update') {
+      if (['update', 'recover-update'].includes(command)) {
         diagnostics.write('update.waiting-for-transaction', { pid: proc.pid, timeoutMs });
         sendBridgeEvent(webContents, runId, { event: 'task', task: '更新仍在处理，请保留窗口；为避免中断恢复，不会强制终止更新进程。' });
         return;
@@ -976,7 +976,7 @@ if (app && BrowserWindow && ipcMain && shell) {
   });
   const runAction = async (event, payload) => {
     if (modelBusy || activeRun) throw new Error('Nora 正在处理任务，请稍候。');
-    if (!['install', 'start', 'stop', 'restart', 'pair', 'update', 'repair'].includes(payload?.action)) throw new Error('不支持的操作。');
+    if (!['install', 'start', 'stop', 'restart', 'pair', 'update', 'repair', 'recover'].includes(payload?.action)) throw new Error('不支持的操作。');
     if (payload.port !== undefined && (!Number.isInteger(payload.port) || payload.port < 1024 || payload.port > 65535)) throw new Error('端口无效。');
     if (typeof payload.runId !== 'string' || !/^[\w-]{1,100}$/.test(payload.runId)) throw new Error('任务编号无效。');
     if (payload.tag !== undefined && !/^[a-zA-Z0-9._-]{1,100}$/.test(payload.tag)) throw new Error('版本编号无效。');
@@ -988,7 +988,7 @@ if (app && BrowserWindow && ipcMain && shell) {
     diagnostics.begin(payload.runId, { action: payload.action, version: app.getVersion(), channel: CHANNEL,
       platform: process.platform, arch: process.arch, osRelease: os.release(),
       node: process.versions.node, electron: process.versions.electron });
-    const telemetryAction = payload.action === 'install' && fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json')) ? 'repair' : payload.action;
+    const telemetryAction = payload.action === 'recover' || (payload.action === 'install' && fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json'))) ? 'repair' : payload.action;
     const operationId = telemetry?.begin(telemetryAction);
     if (operationId) diagnostics.write('telemetry.operation', { operationId });
     const work = async () => {
@@ -1095,7 +1095,7 @@ if (app && BrowserWindow && ipcMain && shell) {
       if (cancelled) throw new Error('安装已取消。');
       const result = payload.action === 'update'
         ? await performSystemUpdate(selectedPayload, payload, event.sender)
-        : await runBridge(payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
+        : await runBridge(payload.action === 'recover' ? 'recover-update' : payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
         ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
       const finalState = readInstallerState();
       writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '', resumeTarget: null });
