@@ -2,6 +2,7 @@
 import hashlib
 from contextlib import contextmanager
 import json
+import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import re
@@ -22,8 +23,22 @@ MANAGED = {'SOUL.md','SOUL.nora-tavern.example.md','nora-installation.json',
            'scripts/nora-tavern-update-check.py','scripts/nora-tavern-card-send.py'}
 
 
+def _io_path(path):
+    """Adapt I/O only; persisted identities keep their ordinary logical paths.
+
+    Mirrors bootstrap.filesystem_path using only stdlib: recovery must remain
+    loadable when an interrupted update has removed the installed ops modules.
+    """
+    value=os.fspath(path)
+    if os.name=='nt':
+        value=ntpath.normpath(ntpath.abspath(value.replace('/','\\')))
+        if not value.startswith('\\\\?\\'):
+            value='\\\\?\\UNC\\'+value[2:] if value.startswith('\\\\') else '\\\\?\\'+value
+    return Path(value)
+
+
 def atomic_json(path, value):
-    path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+    path=_io_path(path);path.parent.mkdir(parents=True,exist_ok=True)
     fd,name=tempfile.mkstemp(prefix='.'+path.name+'.',dir=path.parent)
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
@@ -34,7 +49,7 @@ def atomic_json(path, value):
 
 
 def read(path,*,max_bytes=2*1024*1024):
-    path=Path(path)
+    path=_io_path(path)
     if linked(path) or path.stat().st_size>max_bytes:raise RuntimeError('恢复记录不是有效文件')
     return json.loads(path.read_text(encoding='utf-8'))
 
@@ -47,13 +62,13 @@ def read_object(path,*,max_bytes=2*1024*1024):
 
 def linked(path):
     try:
-        value=Path(path).lstat()
+        value=_io_path(path).lstat()
         return stat.S_ISLNK(value.st_mode) or bool(getattr(value,'st_file_attributes',0)&0x400)
     except FileNotFoundError:return False
 
 
 def identity(path):
-    try:value=Path(path).lstat()
+    try:value=_io_path(path).lstat()
     except FileNotFoundError:return None
     if linked(path) or value.st_ino<=0:raise RuntimeError('恢复目标的文件身份无法安全确认')
     return [value.st_dev,value.st_ino]
@@ -76,8 +91,8 @@ def safe_path(root, relative):
 @contextmanager
 def recovery_lock(root):
     """Share the installer's nonblocking, first-byte lock without ops imports."""
-    root=Path(root).resolve();root.mkdir(parents=True,exist_ok=True)
-    path=safe_path(root,'tavern-installer.lock')
+    root=Path(root).resolve();_io_path(root).mkdir(parents=True,exist_ok=True)
+    path=_io_path(safe_path(root,'tavern-installer.lock'))
     with path.open('a+') as stream:
         try:
             if os.name=='nt':
@@ -98,7 +113,7 @@ def recovery_lock(root):
 
 def digest(path):
     """Hash regular bytes and link names without following nested junctions."""
-    path=Path(path);result=hashlib.sha256()
+    path=_io_path(path);result=hashlib.sha256()
     def visit(current,relative):
         value=current.lstat()
         if linked(current):
@@ -116,20 +131,21 @@ def digest(path):
 
 def reject_links(path):
     """Copy-only snapshots cannot contain links or Windows junctions."""
-    path=Path(path)
+    path=_io_path(path)
     if linked(path):raise RuntimeError('配置或剧情快照包含链接，未读取目录外文件')
     if path.is_dir():
         for child in path.iterdir():reject_links(child)
 
 
 def restore_permissions(saved,target):
+    saved,target=_io_path(saved),_io_path(target)
     shutil.copystat(saved,target,follow_symlinks=False)
     if saved.is_dir():
         for child in saved.iterdir():restore_permissions(child,target/child.name)
 
 
 def story_inventory(state):
-    state=Path(state);result={}
+    state=_io_path(state);result={}
     # Operational pid/status/log files change during a verified restart.
     # Story resources must retain their exact original bytes.
     native=state/'native'
@@ -192,9 +208,9 @@ class Journal:
             if not allowed_target(name,namespace,relative):raise RuntimeError('恢复计划含未受管目标：'+name)
             target=safe_path(owner,relative)
             targets.append({'name':name,'namespace':namespace,'relative':relative,
-                'oldIdentity':identity(target),'oldDigest':digest(target) if target.exists() else None,
+                'oldIdentity':identity(target),'oldDigest':digest(target) if _io_path(target).exists() else None,
                 'newIdentity':identity(source) if source is not None else None,'phase':'pending'})
-        metadata={name:digest(backup/name) for name in ('host','agents-rollback','managed') if (backup/name).exists()}
+        metadata={name:digest(backup/name) for name in ('host','agents-rollback','managed') if _io_path(backup/name).exists()}
         plan={'schema':1,'hermesHome':str(home),'installRoot':str(root),
               'before':dict(before),'lifecycle':lifecycle,'targets':targets,'metadata':metadata,
               'phase':'prepared','state':None}
@@ -225,7 +241,7 @@ class Journal:
             raise RuntimeError('更新记录缺少完整恢复计划，已保留现场')
         if self.plan.get('hermesHome')!=str(self.home) or self.plan.get('installRoot')!=str(self.root):
             raise RuntimeError('恢复计划与当前安装身份不一致')
-        if self.backup.parent!=self.root/'tavern-backups' or not self.backup.is_dir():
+        if self.backup.parent!=self.root/'tavern-backups' or not _io_path(self.backup).is_dir():
             raise RuntimeError('受管恢复备份缺失或越过安装目录')
         safe_path(self.root,'tavern-backups/'+self.backup.name)
         receipt=read_object(safe_path(self.backup,RECEIPT))
@@ -263,7 +279,7 @@ class Journal:
         for name,expected in self.plan['metadata'].items():
             if full and name in ('host','agents-rollback','managed'):reject_links(safe_path(self.backup,name))
             if (name not in ('host','agents-rollback','managed')
-                    or not safe_path(self.backup,name).is_dir()
+                    or not _io_path(safe_path(self.backup,name)).is_dir()
                     or (full and digest(safe_path(self.backup,name))!=expected)):
                 raise RuntimeError('配置恢复备份缺失或已变化')
         self.metadata_items()  # Validate paths before stopping or changing files.
@@ -298,7 +314,7 @@ class Journal:
             if full and state and item.get('phase')=='restored':
                 for relative,expected_file in item.get('storyInventory',{}).items():
                     current=safe_path(target,relative)
-                    if not current.is_file() or digest(current)!=expected_file:raise RuntimeError('恢复后原有剧情数据发生变化')
+                    if not _io_path(current).is_file() or digest(current)!=expected_file:raise RuntimeError('恢复后原有剧情数据发生变化')
             elif full and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
         elif current_id is not None and current_id!=item.get('newIdentity'):
             raise RuntimeError('新建目标身份未知，未覆盖文件')
@@ -306,11 +322,11 @@ class Journal:
     def swap(self,name):
         item=next(i for i in self.plan['targets'] if i['name']==name)
         source=self._sources[name];target=self.target(item);saved=safe_path(self.backup,'trees/'+name)
-        item['phase']='moving-old';self.save();saved.parent.mkdir(parents=True,exist_ok=True)
-        if item['oldIdentity'] is not None:os.replace(target,saved)
+        item['phase']='moving-old';self.save();_io_path(saved).parent.mkdir(parents=True,exist_ok=True)
+        if item['oldIdentity'] is not None:os.replace(_io_path(target),_io_path(saved))
         item['phase']='installing-new';self.save()
         if source is not None:
-            target.parent.mkdir(parents=True,exist_ok=True);os.replace(source,target)
+            _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(source),_io_path(target))
         item['phase']='applied';self.save()
 
     def bind_sources(self,swaps):
@@ -323,7 +339,7 @@ class Journal:
         source=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
         reject_links(source)
         item['oldDigest']=digest(source);item['phase']='copying';self.save()
-        shutil.copytree(source,saved,symlinks=True)
+        shutil.copytree(_io_path(source),_io_path(saved),symlinks=True)
         item['savedIdentity']=identity(saved);item['savedDigest']=digest(saved)
         item['storyInventory']=story_inventory(saved)
         if item['savedDigest']!=item['oldDigest']:raise RuntimeError('剧情数据快照校验失败')
@@ -332,9 +348,9 @@ class Journal:
     def apply_state(self,source):
         item=self.plan['state'];target=safe_path(self.root,'tavern-state');saved=safe_path(self.backup,'state')
         item.update(mode='move',oldDigest=digest(target),newIdentity=identity(source),phase='moving-old')
-        self.save();os.replace(target,saved)
+        self.save();os.replace(_io_path(target),_io_path(saved))
         item.update(savedIdentity=identity(saved),savedDigest=digest(saved),storyInventory=story_inventory(saved),phase='installing-new')
-        self.save();os.replace(source,target);item['phase']='applied';self.save()
+        self.save();os.replace(_io_path(source),_io_path(target));item['phase']='applied';self.save()
 
     def restore_tree(self,item,target,saved,failed,*,state=False):
         if item.get('phase')=='restored':self.check_tree(item,target,saved,state=state);return
@@ -346,10 +362,10 @@ class Journal:
             item['phase']='restored';self.save();return
         item['phase']='restoring';self.save()
         if identity(target) is not None:
-            if failed.exists():raise RuntimeError('失败现场目标已存在且当前目标未恢复，未覆盖证据')
-            failed.parent.mkdir(parents=True,exist_ok=True);os.replace(target,failed)
+            if _io_path(failed).exists():raise RuntimeError('失败现场目标已存在且当前目标未恢复，未覆盖证据')
+            _io_path(failed).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(target),_io_path(failed))
         if identity(saved) is not None:
-            target.parent.mkdir(parents=True,exist_ok=True);os.replace(saved,target)
+            _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(saved),_io_path(target))
         item['phase']='restored';self.save()
 
     def metadata_items(self):
@@ -375,23 +391,23 @@ class Journal:
                 if (relative not in MANAGED or type(record.get('existed')) is not bool or relative in names):
                     raise RuntimeError('受管配置快照路径无效')
                 names.add(relative);add('hermes',relative,'managed/targets/'+relative)
-                if record['existed'] != items[-1][1].exists():raise RuntimeError('受管配置备份缺失')
+                if record['existed'] != _io_path(items[-1][1]).exists():raise RuntimeError('受管配置备份缺失')
         return items
 
     def restore_metadata(self):
         for index,(target,saved) in enumerate(self.metadata_items()):
-            if target.exists() and saved.exists() and digest(target)==digest(saved):
+            if _io_path(target).exists() and _io_path(saved).exists() and digest(target)==digest(saved):
                 restore_permissions(saved,target);continue
-            if not target.exists() and not saved.exists():continue
+            if not _io_path(target).exists() and not _io_path(saved).exists():continue
             archive=safe_path(self.backup,'failed-new/metadata/'+uuid.uuid4().hex+'/'+str(index))
-            if target.exists():
-                archive.parent.mkdir(parents=True,exist_ok=True);os.replace(target,archive)
-            if saved.exists():
-                target.parent.mkdir(parents=True,exist_ok=True)
+            if _io_path(target).exists():
+                _io_path(archive).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(target),_io_path(archive))
+            if _io_path(saved).exists():
+                _io_path(target).parent.mkdir(parents=True,exist_ok=True)
                 temporary=target.with_name('.nora-restore-'+uuid.uuid4().hex)
-                if saved.is_dir():shutil.copytree(saved,temporary,symlinks=True)
-                else:shutil.copy2(saved,temporary)
-                os.replace(temporary,target)
+                if _io_path(saved).is_dir():shutil.copytree(_io_path(saved),_io_path(temporary),symlinks=True)
+                else:shutil.copy2(_io_path(saved),_io_path(temporary))
+                os.replace(_io_path(temporary),_io_path(target))
 
     def receipt_status(self,status):
         path=safe_path(self.backup,RECEIPT);receipt=read_object(path)

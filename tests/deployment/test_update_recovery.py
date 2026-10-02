@@ -3,7 +3,8 @@ from contextlib import ExitStack
 import importlib.util
 import multiprocessing
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
+import shutil
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -66,7 +67,8 @@ def install_fixture(base,*,interrupt=False):
     original_replace=helper.os.replace
     def replace(source,target):
         original_replace(source,target)
-        if interrupt and Path(target)==root/'apps/tavern-runtime':os._exit(91)
+        if interrupt and Path(first_install.filesystem_path(target))==Path(first_install.filesystem_path(root/'apps/tavern-runtime')):
+            os._exit(91)
     with ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ,{'NORA_UPDATE_LIFECYCLE':json.dumps(lifecycle)}))
         stack.enter_context(patch.dict(sys.modules,{'bundle':bundle}))
@@ -162,6 +164,73 @@ class InterruptedRecoveryTests(unittest.TestCase):
             [('app',self.new,self.old)], version='2.4.2', before=self.before,
             state=self.state if state else None)
 
+    def long_cache_file(self):
+        directory=self.state/'native/_cache/nora-assets-v3/extensions/JS-Slash-Runner/package'
+        while len(str(directory/'asset.woff2'))<=280:
+            directory=directory/'nested-assets-0123456789'
+        physical=Path(first_install.filesystem_path(directory))
+        physical.mkdir(parents=True)
+        (physical/'asset.woff2').write_bytes(b'cached font bytes')
+        return directory/'asset.woff2'
+
+    def test_independent_io_path_matches_installer_windows_namespace(self):
+        cases=(r'C:\Nora Tavern\cache\..\source', r'\\server\share\Nora\source',
+               r'\\?\C:\Nora\source', r'\\?\UNC\server\share\Nora')
+        # PureWindowsPath tests conversion on any host without performing Win32 I/O.
+        with patch.object(recovery.os,'name','nt'),patch.object(recovery,'Path',PureWindowsPath):
+            for value in cases:
+                self.assertEqual(str(recovery._io_path(value)),first_install.filesystem_path(value))
+
+    def exercise_long_path_recovery(self,file):
+        document=file.with_name('manifest.json')
+        Path(first_install.filesystem_path(document)).write_text('{"retained":true}')
+        self.assertEqual(recovery.read(document),{'retained':True})
+        # Exercise a managed directory snapshot as well as the state cache.
+        managed=self.backup/'managed';directory=managed/'targets/clawchat-skills'
+        while len(str(directory/'skill.json'))<=280:directory=directory/'nested-skills-0123456789'
+        physical=Path(first_install.filesystem_path(directory));physical.mkdir(parents=True)
+        (physical/'skill.json').write_text('{"managed":"original"}')
+        (managed/'snapshot.json').write_text('[{"path":"clawchat-skills","existed":true}]')
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        self.run_recover();self.assert_restored()
+        self.assertEqual(Path(first_install.filesystem_path(file)).read_bytes(),b'cached font bytes')
+        record=json.loads((self.root/'tavern-updates/transaction.json').read_text())
+        self.assertEqual(record['backup'],str(self.backup))
+        self.assertEqual(record['recoveryPlan']['installRoot'],str(self.root))
+        self.assertEqual(record['recoveryPlan']['hermesHome'],str(self.home))
+        self.assertNotIn('\\\\?\\',json.dumps(record))
+        relative=directory.relative_to(managed/'targets/clawchat-skills')/'skill.json'
+        self.assertEqual(recovery.read(self.home/'clawchat-skills'/relative),{'managed':'original'})
+
+    @unittest.skipIf(os.name=='nt','Windows runs the real extended-path regression below')
+    def test_long_path_recovery_with_legacy_stat_limit(self):
+        file=self.long_cache_file()
+        # A short alias stands in for Win32's extended-path namespace locally;
+        # all bytes, copies, journal loading and recovery remain real filesystem I/O.
+        with tempfile.TemporaryDirectory(prefix='nora-path-',dir='/tmp') as temporary:
+            alias=Path(temporary)/'io';alias.symlink_to(self.base,target_is_directory=True)
+            original_lstat=Path.lstat;original_stat=Path.stat
+            def guarded(operation):
+                def call(path,*args,**kwargs):
+                    if path.is_relative_to(self.base) and len(str(path))>260:
+                        raise FileNotFoundError(3,'simulated legacy Win32 path limit',str(path))
+                    return operation(path,*args,**kwargs)
+                return call
+            def physical(path):
+                path=Path(path)
+                return alias/path.relative_to(self.base) if path.is_relative_to(self.base) else path
+            with patch.object(Path,'lstat',guarded(original_lstat)), \
+                    patch.object(Path,'stat',guarded(original_stat)), \
+                    patch.object(recovery,'_io_path',side_effect=physical,create=True):
+                self.exercise_long_path_recovery(file)
+
+    @unittest.skipUnless(os.name=='nt','requires actual Windows extended-path I/O')
+    def test_windows_long_path_snapshot_and_recovery(self):
+        # Cleanup must work even with LongPathsEnabled=0, as in the release CI.
+        self.addCleanup(lambda:shutil.rmtree(first_install.filesystem_path(self.base),ignore_errors=False)
+                        if Path(first_install.filesystem_path(self.base)).exists() else None)
+        self.exercise_long_path_recovery(self.long_cache_file())
+
     def run_recover(self, *, resume=None):
         return recovery.recover(self.home,self.root,
             stop=lambda *_:self.stop_calls.append(True),
@@ -179,7 +248,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         replace = recovery.os.replace
         def abrupt(source, target):
             replace(source,target)
-            if Path(target) == wanted:
+            if Path(first_install.filesystem_path(target)) == Path(first_install.filesystem_path(wanted)):
                 raise KeyboardInterrupt('simulated hard interruption after rename')
         with patch.object(recovery.os,'replace',side_effect=abrupt):
             with self.assertRaises(KeyboardInterrupt): operation()

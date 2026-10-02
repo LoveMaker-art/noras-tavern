@@ -22,6 +22,10 @@ on:
         description: Use real installation paths for replacement testing (branch artifacts only)
         type: boolean
         default: false
+      publish_source_run:
+        description: Publish an accepted complete build at this tag commit without rebuilding
+        type: string
+        default: ''
   push:
     tags:
       - 'v*-beta.*'
@@ -40,6 +44,7 @@ env:
 
 jobs:
   build:
+    if: inputs.publish_source_run == ''
     strategy:
       fail-fast: false
       matrix:
@@ -272,7 +277,7 @@ jobs:
             node tooling/run.mjs node --test tests/deployment/launcher_install_cleanup.test.cjs
             if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
             $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
-            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths -v
+            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
             if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
             Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
             $release = Get-ChildItem release -Directory |
@@ -357,19 +362,36 @@ jobs:
           compression-level: 0
 
   publish-release:
-    if: github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all')
+    if: always() && !cancelled() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '')
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Verify accepted source build before publishing without rebuilding
+        if: inputs.publish_source_run != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PUBLISH_SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
+          test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN" > source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN/artifacts?per_page=100" > source-artifacts.json
+          node --test tests/launcher-publish-source.test.cjs
+          node tooling/release/verify-publish-source.cjs source-run.json source-artifacts.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$PUBLISH_SOURCE_RUN"
       - uses: actions/download-artifact@v4
         with:
           pattern: nora-tavern-*
           path: artifacts
+          run-id: ${{ inputs.publish_source_run || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Publish only after all platform builds pass
         env:
           GH_TOKEN: ${{ github.token }}
