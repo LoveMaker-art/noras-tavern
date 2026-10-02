@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import { assertLauncherReuse, assertLauncherVersion, readBaseline, restoreBuiltPayload, reuseArchive } from '../tooling/release/launcher-build-baseline.mjs';
 import { buildCommand } from '../tooling/release/build-commands.mjs';
@@ -58,7 +59,7 @@ test('shared build tools and unknown release scripts cannot reuse compiled paylo
     }
 });
 
-function fixture(t, platform = 'darwin-arm64') {
+function fixture(t, platform = `${process.platform}-${process.arch}`) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-baseline-test-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const baseline = identity();
@@ -98,7 +99,7 @@ function tar(args) {
     return execFileSync(command.command, command.args, { stdio: 'pipe' });
 }
 
-test('restored compiled files keep new version; identical archives reuse bytes, changed files rebuild', t => {
+for (const newline of ['\n', '\r\n']) test(`restored compiled files preserve version and validate archives with ${newline === '\n' ? 'LF' : 'CRLF'} listing output`, t => {
     const f = fixture(t);
     const source = path.join(f.directory, 'source'), stage = path.join(f.directory, 'stage');
     fs.mkdirSync(path.join(stage, 'app'), { recursive: true });
@@ -115,6 +116,14 @@ test('restored compiled files keep new version; identical archives reuse bytes, 
         f.baseline.archives[part] = { name, sha256: digest(fs.readFileSync(path.join(f.directory, name))) };
     }
     f.seal();
+    const execute = childProcess.execFileSync;
+    t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
+        const output = execute(command, args, options);
+        return typeof output === 'string' && (args.includes('-tzf') || args.includes('-tvzf'))
+            ? output.replace(/\r?\n/g, newline) : output;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
     const baseline = readBaseline(f.directory, identity());
     restoreBuiltPayload(baseline, stage);
     assert.equal(fs.readFileSync(path.join(stage, 'app/.tavern-release-version'), 'utf8'), '2.3.18');

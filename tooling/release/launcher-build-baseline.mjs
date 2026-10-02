@@ -71,7 +71,7 @@ export function readBaseline(directory, current, platform = `${process.platform}
     const sharedPath = path.join(directory, 'shared-release-manifest.json');
     if (fs.existsSync(sharedPath)) {
         const checks = fs.readFileSync(path.join(directory, 'shared-SHA256SUMS'), 'utf8');
-        const expected = checks.split('\n').map(line => /^([a-f0-9]{64})  release-manifest\.json$/.exec(line)).filter(Boolean);
+        const expected = checks.split(/\r?\n/).map(line => /^([a-f0-9]{64})  release-manifest\.json$/.exec(line)).filter(Boolean);
         assert.equal(expected.length, 1, 'Missing shared manifest checksum');
         assert.equal(fileDigest(sharedPath), expected[0][1]);
         const shared = json(sharedPath);
@@ -104,14 +104,14 @@ export function restoreBuiltPayload(baseline, stage) {
         const archive = baseline.identity.archives[part];
         const file = path.join(baseline.directory, safeName(archive.name));
         assert.equal(fileDigest(file), archive.sha256);
-        const members = tar(['-tzf', file]).trim().split('\n');
+        const members = tar(['-tzf', file]).trim().split(/\r?\n/);
         const expected = Object.keys(baseline.identity.artifacts).filter(name => name.startsWith(`${part}/`)).sort();
         assert.deepEqual([...members].sort(), expected, `Unexpected ${part} archive members`);
         for (const name of members) {
             assertSafeReleasePath(name);
             assert.ok(!name.includes(':') && !name.startsWith('-'));
         }
-        assert.ok(tar(['-tvzf', file]).trim().split('\n').every(line => line.startsWith('-')), 'Archive links are forbidden');
+        assert.ok(tar(['-tvzf', file]).trim().split(/\r?\n/).every(line => line.startsWith('-')), 'Archive links are forbidden');
         tar(['-xzf', file, '-C', stage]);
         for (const name of expected) {
             const target = path.join(stage, name);
