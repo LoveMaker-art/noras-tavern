@@ -204,6 +204,57 @@ class UpdateTargetTests(unittest.TestCase):
         self.assertEqual(BOOTSTRAP.resolve_update_target(
             self.home, tavern, managed_home=self.root), (self.home, tavern))
 
+    def historical_without_acceptance(self):
+        tavern = self.managed_installation()
+        updates = tavern / 'tavern-updates'
+        (updates / 'nora-system.json').unlink()
+        (updates / 'installed.json').write_text(json.dumps({'schema':1,'version':'2.3.15','commit':'a'*40}))
+        (updates / 'installed-manifest.json').write_text(json.dumps({
+            'schema':'tavern-release/v2','versions':{'tavern':'2.3.15'},'commit':'a'*40}))
+        return tavern
+
+    def test_missing_acceptance_can_resolve_only_with_consistent_desktop_history(self):
+        tavern = self.historical_without_acceptance()
+        files = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root),(self.home,tavern))
+        self.assertTrue(BOOTSTRAP.managed_instance(self.home,self.root)['missingSystemReceipt'])
+        self.assertEqual(files,{p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        with self.assertRaisesRegex(RuntimeError,'启动器'):
+            BOOTSTRAP.resolve_update_target(self.home,tavern)
+
+    def test_missing_acceptance_refuses_absent_or_conflicting_history(self):
+        tavern = self.historical_without_acceptance()
+        manifest = tavern / 'tavern-updates/installed-manifest.json'
+        original = manifest.read_bytes()
+        for broken in (None, '{}', json.dumps({'schema':'tavern-release/v2','versions':{'tavern':'2.3.15'},'commit':'b'*40})):
+            with self.subTest(broken=broken):
+                if broken is None:
+                    manifest.unlink(missing_ok=True)
+                else:
+                    manifest.write_text(broken)
+                with self.assertRaisesRegex(RuntimeError,'实例'):
+                    BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root)
+                self.assertFalse((tavern / 'tavern-updates/nora-system.json').exists())
+                manifest.write_bytes(original)
+
+    def test_existing_corrupt_acceptance_is_not_treated_as_missing(self):
+        tavern = self.historical_without_acceptance()
+        marker = tavern / 'tavern-updates/nora-system.json'
+        for content in ('not json','{"schema":999}'):
+            with self.subTest(content=content):
+                marker.write_text(content)
+                with self.assertRaisesRegex(RuntimeError,'实例'):
+                    BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root)
+                self.assertEqual(marker.read_text(),content)
+
+    def test_missing_acceptance_still_refuses_wrong_paths_and_mcp_port(self):
+        tavern = self.historical_without_acceptance()
+        with self.assertRaisesRegex(RuntimeError,'实例'):
+            BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root/'other')
+        (self.home / 'config.yaml').write_bytes(UPDATER.render_mcp(self.home,tavern,18898))
+        with self.assertRaisesRegex(RuntimeError,'配置'):
+            BOOTSTRAP.resolve_update_target(self.home,tavern,managed_home=self.root)
+
     def test_managed_update_rejects_stale_mcp_binding(self):
         tavern = self.managed_installation()
         (self.home / "config.yaml").write_bytes(UPDATER.render_mcp(self.home, self.root / "wrong-tavern", 18899))

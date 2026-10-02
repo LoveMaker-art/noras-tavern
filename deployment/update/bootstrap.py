@@ -6,6 +6,7 @@ import json
 import ntpath
 import os
 from pathlib import Path, PurePosixPath
+import re
 import subprocess
 import sys
 import tarfile
@@ -59,9 +60,28 @@ def managed_instance(home, root):
         port = instance["port"]
         if isinstance(port, bool) or not isinstance(port, int) or not 1024 <= port <= 65535:
             raise ValueError("invalid port")
-        system = json.loads((expected["installRoot"] / "tavern-updates/nora-system.json").read_text(encoding="utf-8"))
-        if system.get("schema") != 1:
-            raise ValueError("invalid system receipt")
+        system_path = expected["installRoot"] / "tavern-updates/nora-system.json"
+        if system_path.is_symlink():
+            raise ValueError("linked system receipt")
+        if system_path.exists():
+            system = json.loads(system_path.read_text(encoding="utf-8"))
+            if system.get("schema") != 1:
+                raise ValueError("invalid system receipt")
+        else:
+            # Missing acceptance is not authority to invent an installation.
+            # The explicit desktop binding and both historical version records
+            # must agree; the shared transaction will create NEW acceptance only
+            # after real runtime checks and restore absence on failure.
+            updates = expected["installRoot"] / "tavern-updates"
+            receipt = json.loads((updates / "installed.json").read_text(encoding="utf-8"))
+            manifest = json.loads((updates / "installed-manifest.json").read_text(encoding="utf-8"))
+            if (receipt.get("schema") not in (1, 2) or manifest.get("schema") != "tavern-release/v2"
+                    or not re.fullmatch(r"[a-f0-9]{40}", str(receipt.get("commit", "")))
+                    or not re.fullmatch(r"\d+\.\d+\.\d+(?:-beta\.\d+)?", str(receipt.get("version", "")))
+                    or receipt["commit"] != manifest.get("commit")
+                    or receipt["version"] != manifest.get("versions", {}).get("tavern")):
+                raise ValueError("historical release records differ")
+            instance = {**instance, "missingSystemReceipt": True}
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
         raise RuntimeError("无法核对启动器实例记录，已停止更新") from error
     return instance

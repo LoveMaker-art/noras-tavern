@@ -250,6 +250,14 @@ def run(command, *, cwd=None, env=None, timeout=None, capture=False):
         if npm is None or not npm.is_file():
             raise RuntimeError("未找到当前实例的 Node/npm，无法准备更新依赖；当前安装尚未替换")
         command = [node, str(npm), *command[1:]]
+        # npm resolves local dependencies as file URLs. A Win32 device-prefix
+        # cwd produces an invalid URL; retain extended paths only for file I/O.
+        if cwd is not None:
+            cwd = str(cwd)
+            if cwd.startswith("\\\\?\\UNC\\"):
+                cwd = "\\\\" + cwd[8:]
+            elif cwd.startswith("\\\\?\\"):
+                cwd = cwd[4:]
     return subprocess.run(
         [str(value) for value in command],
         cwd=cwd,
@@ -1001,8 +1009,9 @@ def install(args):
                 return
             stamp = time.strftime("%Y%m%d-%H%M%S")
             resolve()
+            before_state = {}
             if managed:
-                managed_lifecycle("preflight", hermes_home, install_root, version)
+                before_state = managed_lifecycle("preflight", hermes_home, install_root, version)
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
             Path(filesystem_path(backup)).mkdir(parents=True)
             record_backup(install_root, backup, "prepared")
@@ -1016,6 +1025,8 @@ def install(args):
                     "nora-installation.json", "cron/jobs.json", "clawchat-skills")
                 ] + [hermes_home / "scripts" / name for name in UPDATE_CHECK_FILES], backup / "managed")
                 setup_completed = managed.read_json(update_root / "nora-system.json").get("setupCompleted", False)
+                if instance.get("missingSystemReceipt"):
+                    setup_completed = bool(before_state.get("modelConfigured") and before_state.get("clawchatProfileReady"))
             applied = []
             state_swapped = False
             state_snapshot = False

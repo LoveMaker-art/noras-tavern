@@ -127,6 +127,7 @@ try {
         checksums.push(`${digest(bytes)}  ${name}`);
     }
     identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer), managedComponents: 1, managedLifecycle: 1,
+        managedReceiptRecovery: 1,
         minimumLauncherVersion: '1.1.0' };
     identity.launcherVersion = JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'), 'utf8')).version;
     const firstBootstrap = fs.readFileSync(path.join(stage, 'ops/installer/bootstrap.py'));

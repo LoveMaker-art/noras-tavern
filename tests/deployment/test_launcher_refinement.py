@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -28,6 +29,53 @@ class RefinementTests(unittest.TestCase):
                 bridge.command_update(self.args)
             run.assert_not_called()
             self.assertIn('缺少系统安装记录', str(emit.call_args_list))
+
+    def test_missing_receipt_uses_verified_new_bootstrap_and_plan_is_read_only(self):
+        self.receipt_recovery_entry(plan=True)
+
+    def test_missing_receipt_apply_keeps_original_failure_recovery_fingerprints(self):
+        self.receipt_recovery_entry(plan=False)
+
+    def receipt_recovery_entry(self, *, plan):
+        payload = self.root / 'release'
+        payload.mkdir()
+        bootstrap = payload / 'tavern-updater-bootstrap.py'
+        bootstrap.write_text('# verified new updater')
+        manifest = {'bootstrap': {'sha256': hashlib.sha256(bootstrap.read_bytes()).hexdigest(),
+                    'managedLifecycle': 1, 'managedReceiptRecovery': 1}}
+        (payload / 'release-manifest.json').write_text(json.dumps(manifest))
+        self.args.release_dir = payload
+        self.args.command = 'plan-update' if plan else 'update'
+        system.save_json(self.args.hermes_home / 'nora-instance.json', {
+            'schema':1,'noraHome':str(self.root),'hermesHome':str(self.args.hermes_home),
+            'installRoot':str(self.args.install_root),'port':self.args.port})
+        (self.args.hermes_home / 'config.yaml').write_text('test-key: must-stay-local')
+        system.save_json(self.args.install_root / 'tavern-updates/installed.json', {'version':'2.3.15'})
+        system.save_json(self.args.install_root / 'tavern-updates/installed-manifest.json', {'commit':'old'})
+        before_files = {p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        with patch.object(bridge,'installed',return_value=True), \
+                patch.object(bridge,'release_dir',return_value=payload), \
+                patch.object(bridge,'python_command',return_value='fixture-python'), \
+                patch.object(bridge,'env_for',return_value={}), \
+                patch.object(bridge,'status_payload',return_value={'version':'2.3.15','systemReady':False}), \
+                patch.object(bridge,'run_json',return_value={'archives':[]}) as read, \
+                patch.object(bridge,'run_stream',return_value={'updateVerified':True}) as apply, \
+                patch.object(bridge,'emit'):
+            bridge.command_update(self.args,plan=plan)
+        selected = read if plan else apply
+        command = selected.call_args.args[0]
+        self.assertEqual(command[3],str(bootstrap))
+        self.assertIn('--managed-home',command)
+        self.assertEqual(command[command.index('--managed-home')+1],str(self.root))
+        self.assertEqual(before_files,{p:p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+        if plan:
+            apply.assert_not_called()
+            self.assertIn('--plan',command)
+        else:
+            recovery = json.loads(apply.call_args.kwargs['env']['NORA_UPDATE_LIFECYCLE'])['receiptRecovery']
+            self.assertEqual(set(recovery),{'instance','config','receipt','manifest'})
+            self.assertTrue(all(len(value)==64 for value in recovery.values()))
+            self.assertNotIn('must-stay-local',json.dumps(recovery))
 
     def test_skill_diagnostics_distinguish_missing_and_changed_files(self):
         relative = 'skills/creative/tavern/SKILL.md'

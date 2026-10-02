@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class ManagedUpdateTests(unittest.TestCase):
     def transaction(self, *, failure=False, bundled=True, same_version=False, late_failure=False, rollback_failure=False, preflight_failure=False,
-                    source_version="2.3.0", target_version="2.3.2", receipt_schema=1, storage_recovery=False):
+                    source_version="2.3.0", target_version="2.3.2", receipt_schema=1, storage_recovery=False,
+                    missing_receipt=False):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
@@ -32,6 +33,12 @@ class ManagedUpdateTests(unittest.TestCase):
             write(tavern / "tavern-updates/installed.json", json.dumps({"schema": receipt_schema,
                   "version": source_version, "commit": "old"}))
             write(tavern / "tavern-updates/nora-system.json", '{"schema":1,"commit":"old","setupCompleted":true}')
+            if missing_receipt:
+                (tavern / "tavern-updates/nora-system.json").unlink()
+                write(tavern / "tavern-updates/installed.json", json.dumps({"schema": receipt_schema,
+                      "version": source_version, "commit": "a" * 40}))
+                write(tavern / "tavern-updates/installed-manifest.json", json.dumps({
+                      "schema": "tavern-release/v2", "versions": {"tavern": source_version}, "commit": "a" * 40}))
             write(tavern / "apps/tavern-runtime/native-runtime.json", '{"old":true}')
             story = tavern / "tavern-state/native/default-user/nora-world-core/worlds/story.json"
             chat = tavern / "tavern-state/native/default-user/chats/story/chat.jsonl"
@@ -141,7 +148,8 @@ class ManagedUpdateTests(unittest.TestCase):
                     raise RuntimeError('injected final service failure')
                 if phase == 'rollback' and rollback_failure:
                     raise RuntimeError('old gateway cannot start')
-                return {'systemReady': True, 'version': manifest['versions']['tavern']}
+                return {'systemReady': True, 'version': manifest['versions']['tavern'],
+                        'modelConfigured': True, 'clawchatProfileReady': True}
             stack.enter_context(patch.object(update, 'managed_lifecycle', side_effect=lifecycle, create=True))
             def module(name, file):
                 if name == "update_nora_system":
@@ -205,6 +213,8 @@ class ManagedUpdateTests(unittest.TestCase):
                     update.install(args)
                 for file, value in {**before, **receipts}.items():
                     self.assertEqual(file.read_bytes(), value, str(file.relative_to(root)))
+                if missing_receipt:
+                    self.assertFalse((tavern / "tavern-updates/nora-system.json").exists())
                 self.assertFalse((home / "clawchat-skills").exists())
                 journal = json.loads((tavern / 'tavern-updates/transaction.json').read_text())
                 self.assertEqual(journal['status'], 'recovery-failed' if rollback_failure else 'restored')
@@ -254,6 +264,17 @@ class ManagedUpdateTests(unittest.TestCase):
 
     def test_managed_update_uses_shared_transaction_and_preserves_user_data(self):
         self.transaction()
+
+    def test_missing_system_receipt_can_upgrade_a_bound_historical_installation(self):
+        self.transaction(missing_receipt=True, source_version="2.3.15", target_version="2.4.1")
+
+    def test_missing_receipt_upgrade_rolls_back_without_fabricating_old_acceptance(self):
+        self.transaction(missing_receipt=True, failure=True, storage_recovery=True,
+                         source_version="2.3.15", target_version="2.4.1")
+
+    def test_missing_receipt_upgrade_restores_after_final_service_failure(self):
+        self.transaction(missing_receipt=True, late_failure=True, storage_recovery=True,
+                         source_version="2.3.15", target_version="2.4.1")
 
     def test_successful_update_preserves_legacy_and_managed_storage_together(self):
         self.transaction(storage_recovery=True)

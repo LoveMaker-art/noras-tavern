@@ -533,9 +533,10 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     }
     let result = null;
     let errorMessage = '', structuredMessage = '', structuredCode, structuredUserCode;
-    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && ['install','update','repair'].includes(command));
+    const installerCommand = ['install','update','repair','plan-update'].includes(command);
+    const evidence = faultPackets.collector(Boolean(telemetry?.settings().enabled) && installerCommand);
     const childFailure = error => {
-      if (!['install','update','repair'].includes(command)) error.remoteMessage = `Launcher ${command} failed; see technical exit status.`;
+      if (!installerCommand) error.remoteMessage = `Launcher ${command} failed; see technical exit status.`;
       return evidence.attach(error);
     };
     const heartbeat = setInterval(() => {

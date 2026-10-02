@@ -25,6 +25,52 @@ function fixture(t, options = {}) {
   return {get client(){return client;},file,requests, read:()=>JSON.parse(fs.readFileSync(file)),
     advance:ms=>{time+=ms;}, restart:()=>{client.close();client=createTelemetry(config);return client;}};
 }
+test('actual update preflight uploads sanitized failures only with diagnostic consent and excludes service output', async t => {
+  const {EventEmitter}=require('node:events');
+  const {PassThrough}=require('node:stream');
+  const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
+  const {launcherError}=require(path.join(desktop,'launcher-errors'));
+  const {consumeLines}=require(path.join(desktop,'process-output'));
+  const source=fs.readFileSync(path.join(desktop,'main.js'),'utf8');
+  const node=parse(source,{ecmaVersion:'latest'}).body.find(n=>n.type==='FunctionDeclaration'&&n.id.name==='runBridge');
+  assert.ok(node);
+  for (const [command,consent] of [['plan-update',true],['plan-update',false],['status',true]]) {
+    const clean=value=>String(value).replaceAll('fixture-secret','[REDACTED]');
+    const f=fixture(t,{consent,clean});
+    const child=new EventEmitter();
+    child.stdout=new PassThrough();child.stderr=new PassThrough();child.stdin={end(){}};child.pid=42;
+    const context={diagnostics:{addSecret(){},write(){},error(){},event(){},clean},
+      faultPackets:createFaultPackets({clean}),telemetry:f.client,launcherError,consumeLines,
+      bridgeArgs:()=>({command:'fixture-python',args:[]}),launcherEnv:()=>({}),installerRoot:()=>os.tmpdir(),
+      process:{platform:'win32'},processSite:()=> 'process.run',sendBridgeEvent(){},terminateProcess(){},
+      sanitizeLine:line=>line,parseJsonLine:JSON.parse,setInterval,setTimeout,clearInterval,clearTimeout,
+      activeProcess:null,cancelled:false,spawn:()=>{
+        queueMicrotask(()=>{
+          child.stdout.end(JSON.stringify({event:'error',message:'缺少系统安装记录 fixture-secret'})+'\n');
+          child.stderr.end('preflight evidence fixture-secret\n');
+          setImmediate(()=>child.emit('close',1,null));
+        });
+        return child;
+      }};
+    const runBridge=vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
+    f.client.begin('update');f.client.stage('verify');
+    let failure;
+    try {await runBridge(command);} catch(error) {failure=error;}
+    assert.ok(failure);assert.match(failure.message,/缺少系统安装记录/);
+    f.client.finish('failed',failure);await f.client.flush();
+    const event=f.requests.flatMap(r=>r.data.events).find(e=>e.event==='operation_finished');
+    assert.equal(event.error_code,'process_failed');
+    assert.doesNotMatch(JSON.stringify(f.requests),/fixture-secret/);
+    if (!consent) {assert.equal(event.fault,null);continue;}
+    if (command==='plan-update') {
+      assert.ok(event.fault.errors.some(e=>e.message.includes('缺少系统安装记录')));
+      assert.ok(event.fault.output.some(line=>line.includes('preflight evidence')));
+    } else {
+      assert.equal(event.fault.output.length,0);
+      assert.doesNotMatch(JSON.stringify(event.fault),/缺少系统安装记录|preflight evidence/);
+    }
+  }
+});
 test('the actual desktop upload gate permits explicit reporting candidates while keeping diagnostic consent separate', async t => {
   const source = fs.readFileSync(path.join(desktop,'main.js'),'utf8');
   let enabledNode;

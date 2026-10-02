@@ -635,6 +635,24 @@ def command_pair(args) -> None:
     command_status(args)
 
 
+def missing_receipt_snapshot(args):
+    marker = args.install_root / 'tavern-updates/nora-system.json'
+    if marker.exists() or marker.is_symlink() or not installed(args.install_root):
+        fail('旧安装恢复条件已变化，未修改当前安装。请重新检查更新。')
+    instance = nora_system.read_json(args.hermes_home / 'nora-instance.json')
+    expected = {'noraHome': args.nora_home, 'hermesHome': args.hermes_home, 'installRoot': args.install_root}
+    if (instance.get('schema') != 1 or instance.get('port') != args.port
+            or any(Path(str(instance.get(name, ''))).resolve() != path.resolve() for name, path in expected.items())):
+        fail('旧安装的实例绑定不一致，未修改现有数据。')
+    files = {'instance': args.hermes_home / 'nora-instance.json', 'config': args.hermes_home / 'config.yaml',
+             'receipt': args.install_root / 'tavern-updates/installed.json',
+             'manifest': args.install_root / 'tavern-updates/installed-manifest.json'}
+    try:
+        return {name: nora_system.digest(file) for name, file in files.items()}
+    except OSError:
+        fail('旧安装的版本或配置记录不完整，未修改现有数据。')
+
+
 def command_update_lifecycle(args):
     plan = json.load(sys.stdin)
     before = plan["before"]
@@ -645,6 +663,10 @@ def command_update_lifecycle(args):
         key = {"nora_home": "noraHome", "hermes_home": "hermesHome", "install_root": "installRoot"}[name]
         if Path(plan[key]).resolve() != getattr(args, name).resolve():
             fail("更新事务路径不匹配")
+    receipt_recovery = plan.get('receiptRecovery')
+    if receipt_recovery and phase in ('preflight', 'rollback'):
+        if missing_receipt_snapshot(args) != receipt_recovery:
+            fail('旧安装的实例、版本或配置与更新前不一致，未恢复服务。')
     if phase == 'preflight':
         state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
         if (not before.get('version') or str(state.get('version', '')).lstrip('v') != str(before['version']).lstrip('v')
@@ -660,8 +682,20 @@ def command_update_lifecycle(args):
         acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
         if not acceptance['ready']:
             fail('更新事务完整性复核失败：' + '；'.join(acceptance['problems']))
-    damaged_rollback = phase == 'rollback' and before.get('systemReady') is False
-    if damaged_rollback:
+    missing_receipt_rollback = phase == 'rollback' and bool(receipt_recovery)
+    damaged_rollback = phase == 'rollback' and before.get('systemReady') is False and not missing_receipt_rollback
+    if missing_receipt_rollback:
+        # Resume only services that actually ran before this transaction, after
+        # exact old bindings/records were restored. Do not manufacture acceptance
+        # for the old version or rerun first setup during rollback.
+        env = env_for(args.nora_home, args.hermes_home, args.install_root)
+        if before.get('running'):
+            lifecycle = args.install_root / 'apps/tavern-runtime/native_lifecycle.py'
+            run_stream([python_command(args.hermes_home), '-u', '-B', str(lifecycle), 'start', '--port', str(args.port)], env=env)
+        if before.get('gatewayRunning'):
+            start_gateway(args.nora_home, args.hermes_home,
+                          [python_command(args.hermes_home), '-m', 'hermes_cli.main', 'gateway', 'run'], env)
+    elif damaged_rollback:
         system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
         if not _same_skill_damage(before, system):
             fail('旧安装的版本或完整性问题与更新前不一致，未恢复服务')
@@ -697,13 +731,17 @@ def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
         fail("还没有安装 Nora Tavern。")
     bootstrap = args.install_root / "apps/tavern-ops/updater/bootstrap.py"
     selected = release_dir(args.release_dir) if getattr(args, "release_dir", None) else None
-    if selected and not managed:
+    manifest = nora_system.read_json(selected / 'release-manifest.json') if selected else {}
+    recovering_receipt = bool(selected and not managed)
+    if recovering_receipt and manifest.get('bootstrap', {}).get('managedReceiptRecovery') != 1:
         fail("缺少系统安装记录，无法确认此旧部署的安全升级与回滚方式。未修改当前安装；请保留数据并导出日志，勿清空重装。")
+    if recovering_receipt:
+        managed = True
+        emit('task', stage_id='verify', task='核对旧安装的实例和版本记录，保留现有数据进行升级')
     if managed:
         if not selected or repair:
             fail("请从启动器的检查更新入口更新完整系统。")
         bootstrap = selected / "tavern-updater-bootstrap.py"
-        manifest = json.loads((selected / "release-manifest.json").read_text(encoding="utf-8"))
         if not bootstrap.is_file() or hashlib.sha256(bootstrap.read_bytes()).hexdigest() != manifest.get("bootstrap", {}).get("sha256"):
             fail("更新器校验失败，当前安装未修改。")
         instance = nora_system.read_json(args.hermes_home / "nora-instance.json")
@@ -747,7 +785,8 @@ def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
             'bridge': str(Path(__file__).resolve()), 'noraHome': str(args.nora_home),
             'hermesHome': str(args.hermes_home), 'installRoot': str(args.install_root),
             'port': args.port, 'before': {key: before.get(key) for key in
-                ('version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected')}})
+                ('version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected')},
+            **({'receiptRecovery': missing_receipt_snapshot(args)} if recovering_receipt else {})})
     result = run_stream(command, env=env)
     if managed:
         if not result or not result.get('updateVerified'):

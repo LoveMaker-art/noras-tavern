@@ -187,11 +187,22 @@ print('PASS: actual Hermes cron script execution, local release fixture, no mode
           .map(file => path.join(userRoot, 'nora-world-core/worlds', file))];
       const before = protectedPaths.map(file => fs.readFileSync(file));
       const pythonIdentity = fs.statSync(python).ino;
+      const missingReceipt = process.argv.includes('--missing-system-receipt');
+      if (missingReceipt) {
+        fs.unlinkSync(path.join(tavern, 'tavern-updates/nora-system.json'));
+        console.log('Rehearsal: isolated old installation is missing its system acceptance receipt');
+      }
       const beforeState = JSON.parse(run([bridge, ...bridgeArgs, 'status']).trim());
       assert.equal(beforeState.running, true, 'Rehearsal must exercise restoration of a running Tavern');
       const lifecycle = { bridge, noraHome: root, hermesHome: home, installRoot: tavern, port,
         before: Object.fromEntries(['version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected']
           .map(key => [key, beforeState[key]])) };
+      if (missingReceipt) {
+        assert.equal(beforeState.systemReady, false);
+        lifecycle.receiptRecovery = JSON.parse(run(['-c',
+          'import json,sys; from pathlib import Path; from types import SimpleNamespace; from ops.installer.launcher_bridge import missing_receipt_snapshot; print(json.dumps(missing_receipt_snapshot(SimpleNamespace(nora_home=Path(sys.argv[1]),hermes_home=Path(sys.argv[2]),install_root=Path(sys.argv[3]),port=int(sys.argv[4])))))',
+          root, home, tavern, String(port)]).trim());
+      }
       const updateCommand = candidate
         ? [path.join(selected, 'tavern-updater-bootstrap.py'), '--hermes-home', home, '--install-root', tavern,
           '--managed-home', root, '--release-dir', selected, '--allow-candidate', '--apply', '--confirm']

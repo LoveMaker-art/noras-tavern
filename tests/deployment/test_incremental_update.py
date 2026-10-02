@@ -261,6 +261,25 @@ class IncrementalUpdateTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], [str(node), str(cli), "ci", "--ignore-scripts"])
             self.assertNotIn("shell", run.call_args.kwargs)
 
+    def test_windows_npm_cwd_uses_file_url_compatible_paths(self):
+        with tempfile.TemporaryDirectory(prefix="node with spaces ") as temporary:
+            node = Path(temporary) / "node.exe"
+            cli = Path(temporary) / "node_modules/npm/bin/npm-cli.js"
+            cli.parent.mkdir(parents=True)
+            cli.write_text("fixture")
+            for supplied, expected in (
+                ("\\\\?\\C:\\Nora 测试\\source\\engine", "C:\\Nora 测试\\source\\engine"),
+                ("\\\\?\\UNC\\server\\share\\source", "\\\\server\\share\\source"),
+                (temporary, temporary),
+            ):
+                with self.subTest(cwd=supplied), \
+                        mock.patch.object(UPDATER, "os", SimpleNamespace(name="nt", environ={"PATH": temporary})), \
+                        mock.patch.object(UPDATER.shutil, "which", return_value=str(node)), \
+                        mock.patch.object(UPDATER.subprocess, "run") as run:
+                    UPDATER.run(["npm", "ci", "--ignore-scripts"], cwd=supplied)
+                    self.assertEqual(run.call_args.kwargs["cwd"], expected)
+                    self.assertEqual(run.call_args.args[0], [str(node), str(cli), "ci", "--ignore-scripts"])
+
     def test_python_install_uses_complete_release_archives(self):
         with tempfile.TemporaryDirectory(prefix="nora-full-plan-") as temporary:
             names, mode = BOOTSTRAP.required_archives(Path(temporary), {"modules": {"updater": {}}})

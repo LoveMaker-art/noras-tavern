@@ -1,4 +1,5 @@
 import io
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -57,6 +58,61 @@ class UpdateLifecycleTests(unittest.TestCase):
                 bridge.command_update_lifecycle(self.args)
             stop.assert_not_called()
             start.assert_not_called()
+
+    def test_missing_receipt_rollback_restores_only_previously_running_services(self):
+        for tavern, nora in ((True, True), (True, False), (False, True), (False, False)):
+            with self.subTest(tavern=tavern, nora=nora):
+                self.missing_receipt_rollback(services=(tavern, nora))
+
+    def test_missing_receipt_recovery_refuses_changed_binding_before_service_commands(self):
+        self.missing_receipt_rollback(change_config=True)
+
+    def missing_receipt_rollback(self, *, services=(True, True), change_config=False):
+        root, home = self.args.install_root, self.args.hermes_home
+        instance = {'schema': 1, 'noraHome': str(self.root), 'hermesHome': str(home),
+                    'installRoot': str(root), 'port': self.args.port}
+        files = {
+            'instance': (home / 'nora-instance.json', json.dumps(instance)),
+            'config': (home / 'config.yaml', 'fixture config'),
+            'receipt': (root / 'tavern-updates/installed.json', '{"version":"2.3.15"}'),
+            'manifest': (root / 'tavern-updates/installed-manifest.json', 'fixture manifest'),
+        }
+        snapshot = {}
+        for name, (file, content) in files.items():
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text(content)
+            snapshot[name] = hashlib.sha256(file.read_bytes()).hexdigest()
+        before = {'version': '2.3.15', 'systemReady': False, 'running': services[0],
+                  'gatewayRunning': services[1], 'clawchatConnected': services[1]}
+        plan = {'phase': 'rollback', 'before': before, 'version': '2.4.1', 'receiptRecovery': snapshot,
+                'noraHome': str(self.root), 'hermesHome': str(home), 'installRoot': str(root)}
+        if change_config:
+            (home / 'config.yaml').write_text('different binding')
+        with ExitStack() as stack:
+            stack.enter_context(patch.object(bridge.sys, 'stdin', io.StringIO(json.dumps(plan))))
+            stop = stack.enter_context(patch.object(bridge, 'command_stop'))
+            stack.enter_context(patch.object(bridge, 'installed', return_value=True))
+            stack.enter_context(patch.object(bridge.nora_system, 'inspect', return_value={'ready':False,'problems':[]}))
+            stack.enter_context(patch.object(bridge, 'status_payload', return_value=before))
+            stack.enter_context(patch.object(bridge, 'env_for', return_value={}))
+            stack.enter_context(patch.object(bridge, 'python_command', return_value='fixture-python'))
+            run = stack.enter_context(patch.object(bridge, 'run_stream'))
+            gateway = stack.enter_context(patch.object(bridge, 'start_gateway'))
+            verify = stack.enter_context(patch.object(bridge.nora_system, 'verify_runtime'))
+            mark = stack.enter_context(patch.object(bridge.nora_system, 'mark_setup_complete'))
+            stack.enter_context(patch.object(bridge, 'emit'))
+            if change_config:
+                with self.assertRaises(SystemExit):
+                    bridge.command_update_lifecycle(self.args)
+                stop.assert_not_called();run.assert_not_called();gateway.assert_not_called()
+            else:
+                bridge.command_update_lifecycle(self.args)
+                self.assertEqual(run.call_count, int(services[0]))
+                self.assertEqual(gateway.call_count, int(services[1]))
+                if services[0]:
+                    self.assertEqual(run.call_args.args[0][-3:], ['start','--port',str(self.args.port)])
+                verify.assert_not_called();mark.assert_not_called()
+            self.assertFalse((root / 'tavern-updates/nora-system.json').exists())
 
     def damaged_rollback(self, *, changes=None, phase='rollback', services=(True, True), problems=None):
         journal = self.args.install_root / 'tavern-updates/transaction.json'
