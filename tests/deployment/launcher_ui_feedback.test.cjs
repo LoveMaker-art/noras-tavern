@@ -12,15 +12,18 @@ function definition(name) {
 }
 function fixture(overrides = {}) {
   const elements = new Map();
+  function descendants(node) {
+    return [node,...(node.children || []).flatMap(descendants)];
+  }
   function element() {
     const children = [], queries = new Map();
     return {children,dataset:{},hidden:false,disabled:false,textContent:'',
-      classList:{remove(){},toggle(){}},setAttribute(){},
+      classList:{add(){},remove(){},toggle(){}},setAttribute(){},
       append(...items){children.push(...items);},prepend(...items){children.unshift(...items);},
       querySelector(selector){if(!queries.has(selector))queries.set(selector,element());return queries.get(selector);}};
   }
   const $ = id => {
-    if(id==='logFeedback') return elements.get('inline')?.children.find(n=>n.id===id) || null;
+    if(id==='logFeedback') return elements.has('inline') ? descendants(elements.get('inline')).find(n=>n.id===id) || null : null;
     if(!elements.has(id))elements.set(id,element());return elements.get(id);
   };
   const context = vm.createContext({snapshot:{},busy:false,daily:true,running:false,stage:0,view:'daily',
@@ -28,8 +31,7 @@ function fixture(overrides = {}) {
     firstCompletionPending:false,sawIncompleteSetup:false,launchHint:element(),api:{},
     document:{createElement:element,querySelectorAll:selector=> {
       if (selector==='#management [data-action]') return [];
-      const all = [];
-      const visit = node=>{all.push(node);node.children?.forEach(visit);};visit($('inline'));
+      const all = descendants($('inline'));
       return [...all.filter(n=>n.className==='icon-action'),$('stopAll')];
     }},$,
     clearInline:()=>{$('inline').children.length=0;},hideMenu(){},setupStage(){},say:(...args)=>{context.copy=args;},
@@ -38,17 +40,17 @@ function fixture(overrides = {}) {
     clearTimeout(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
   vm.runInContext(['textError','errorCopy','complete','serviceRunning','allRunning','syncState','readStatus',
     'controls','renderServices','dailyHome','openLogs','route','poll'].map(definition).join('\n'),context);
-  return {context,$};
+  return {context,$,descendants};
 }
 
 test('the recovery log button displays returned failure and rejection without leaving recovery', async () => {
   for(const mode of ['missing','rejected','success']) {
-    const {context,$}=fixture({snapshot:{updateRecovery:{backup:'/fixture/backup'}},api:{openLogs:async()=>{
+    const {context,$,descendants}=fixture({snapshot:{updateRecovery:{backup:'/fixture/backup'}},api:{openLogs:async()=>{
       if(mode==='rejected')throw new Error('Error: raw OS fixture');
       return mode==='missing'?{ok:false,warning:'日志文件还不存在。'}:{ok:true};
     }}});
     vm.runInContext('route()',context);
-    const action=$('inline').children.find(n=>n.textContent==='查看日志');
+    const action=descendants($('inline')).find(n=>n.textContent==='查看日志');
     const heading=context.copy[0];
     await action.onclick({currentTarget:action});
     assert.equal(context.view,'recovery');assert.equal(context.copy[0],heading);
