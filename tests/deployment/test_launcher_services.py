@@ -569,7 +569,7 @@ class LauncherServicesTests(unittest.TestCase):
         ticks = [54321]
 
         def read_text(path, *args, **kwargs):
-            if str(path) == '/proc/43/stat':
+            if path.as_posix() == '/proc/43/stat':
                 # Field 22 is Linux's start tick count; parentheses can contain spaces.
                 return '43 (gateway python) S ' + ' '.join(['0'] * 18 + [str(ticks[0])] + ['0'] * 5)
             return real_read_text(path, *args, **kwargs)
