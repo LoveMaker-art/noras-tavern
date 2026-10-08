@@ -5,7 +5,7 @@ const os = require('node:os');
 const { test } = require('node:test');
 const { _electron } = require(process.env.NORA_PLAYWRIGHT || 'playwright');
 
-test('packaged candidate really installs through the visible UI and survives reopen', { timeout: 240000 }, async () => {
+test('packaged candidate really installs through the visible UI and survives reopen', { timeout: 240000, skip: !process.env.NORA_PACKAGED_APP || !process.env.NORA_TEST_BUILD_ID }, async () => {
   const executablePath = process.env.NORA_PACKAGED_APP;
   const buildId = process.env.NORA_TEST_BUILD_ID;
   assert.ok(executablePath && /^[a-zA-Z0-9-]+$/.test(buildId || ''), 'Pass the packaged binary and build ID');

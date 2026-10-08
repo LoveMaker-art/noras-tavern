@@ -8,6 +8,7 @@ import os
 import shutil
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 SKILLS = ("creative/tavern", "creative/tavern-ops", "creative/nora-cardforge", "system/tavern-updater",
@@ -17,6 +18,21 @@ MANAGED_FILES = ("hooks/tavern-liveware-register/HOOK.yaml", "hooks/tavern-livew
 CLAWCHAT_SKILLS = ("clawchat-core", "clawchat-liveware", "clawchat-liveware-dev",
                    "clawchat-liveware-sample", "clawchat-set-greeting")
 PROOFS = ("hermesContext", "mcpInstanceRead", "managedConfiguration", "clawchatRegistration")
+
+
+def maintenance_run(command, **options):
+    delegate = getattr(sys, '_nora_operation_delegate', None)
+    if delegate is not None:
+        # The validated delegate belongs to the stable APP wrapper. This module
+        # can come from a prepared tree that is moved during a system exchange.
+        delegate.assert_active()
+        return delegate.run(command, **options)
+    if any(name.startswith('NORA_OPERATION_') for name in os.environ):
+        source = Path(__file__).with_name('operation_control.py')
+        spec = importlib.util.spec_from_file_location('nora_system_control', source)
+        control = importlib.util.module_from_spec(spec); spec.loader.exec_module(control)
+        return control.managed_run(command, **options)
+    return subprocess.run(command, **options)
 
 
 def install_greeting(home, source):
@@ -30,10 +46,10 @@ def install_greeting(home, source):
     return report
 
 
-def record_files_ready(home):
+def record_files_ready(home, journal=None):
     files = inventory(home)
     files.update({name: digest(home / name) for name in MANAGED_FILES})
-    save_json(home / "nora-installation.json", {"schema": 1, "files": files})
+    save_json(home / "nora-installation.json", {"schema": 1, "files": files}, journal=journal)
 
 
 def files_ready(home):
@@ -48,7 +64,11 @@ def files_ready(home):
     return all((home / name).is_file() and (home / name).stat().st_size for name in ("SOUL.md", "AGENTS.md", "clawchat/greeting.md"))
 
 
-def configure_managed(home, root, nora_home, port, source, python, env):
+def configure_managed(home, root, nora_home, port, source, python, env, *, journal=None, work=None):
+    if journal is not None:
+        for prepared, target in prepare_managed(home, root, nora_home, port, source, python, env, Path(work) / 'managed'):
+            journal.apply(prepared, target)
+        return
     save_json(home / "nora-instance.json", {"schema": 1, "noraHome": str(nora_home),
               "hermesHome": str(home), "installRoot": str(root), "port": port,
               "releaseChannel": os.environ.get("NORA_RELEASE_CHANNEL", "stable")})
@@ -56,20 +76,47 @@ def configure_managed(home, root, nora_home, port, source, python, env):
     seed_clawchat_skills(home, python, env)
 
 
-def seed_clawchat_skills(home, python, env):
+def prepare_managed(home, root, nora_home, port, source, python, env, destination):
+    """Use the supported seeder in an isolated home, then expose owned swaps."""
+    destination.mkdir(parents=True, exist_ok=True)
+    instance = destination / 'instance.json'
+    save_json(instance, {'schema': 1, 'noraHome': str(nora_home), 'hermesHome': str(home),
+        'installRoot': str(root), 'port': port, 'releaseChannel': os.environ.get('NORA_RELEASE_CHANNEL', 'stable')})
+    spec = importlib.util.spec_from_file_location('nora_prepared_context', source / 'ops/updater/managed_context.py')
+    context = importlib.util.module_from_spec(spec); spec.loader.exec_module(context)
+    greeting, _report = context.prepare_greeting(home, source, destination / 'greeting')
+    seed_home = destination / 'seed-home'; seed_home.mkdir()
+    config = home / 'config.yaml'
+    if config.exists():
+        recovery_module().reject_links(config)
+        shutil.copy2(config, seed_home / 'config.yaml')
+    existing = home / 'clawchat-skills'
+    if existing.exists():
+        recovery_module().reject_links(existing)
+        shutil.copytree(existing, seed_home / 'clawchat-skills')
+    seed_clawchat_skills(home, python, env, destination=seed_home)
+    configuration = [(seed_home / 'config.yaml', config)] if (seed_home / 'config.yaml').is_file() else []
+    return [(instance, home / 'nora-instance.json'), *[(prepared, target) for _, prepared, target in greeting], *configuration,
+        (seed_home / 'clawchat-skills', home / 'clawchat-skills')]
+
+
+def seed_clawchat_skills(home, python, env, *, destination=None):
     # Use the plugin's supported seeding/registration API, retaining newer managed skills.
     probe = '''
 import sys
 from pathlib import Path
 home = Path.cwd()
-sys.path.insert(0, str(home / "plugins/clawchat"))
+sys.path.insert(0, sys.argv[1])
 from clawchat_gateway import skill_update as skills
 assert skills.bundled_skill_ids(), "No bundled ClawChat skills"
 for name in skills.bundled_skill_ids():
     skills.seed_managed_skill(name, skills.bundled_skills_dir() / name / "SKILL.md")
 skills.ensure_external_skills_dir()
 '''
-    result = subprocess.run([python, "-B", "-c", probe], cwd=home, env=env, capture_output=True, timeout=60)
+    working = Path(destination or home)
+    environment = {**env, **({'HOME': str(working), 'HERMES_HOME': str(working), 'NORA_HERMES_HOME': str(working)} if destination else {})}
+    result = maintenance_run([python, "-B", "-c", probe, str(home / 'plugins/clawchat')],
+        cwd=working, env=environment, capture_output=True, timeout=60)
     if result.returncode:
         raise RuntimeError("ClawChat 技能初始化失败")
 
@@ -145,8 +192,11 @@ def read_json(path):
         return {}
 
 
-def save_json(path, value):
+def save_json(path, value, *, journal=None):
     path = Path(path)
+    if journal is not None:
+        journal.apply_bytes(path, json.dumps(value, ensure_ascii=False, indent=2).encode('utf-8'))
+        return
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".nora-", dir=path.parent)
     try:
@@ -306,11 +356,11 @@ def verify_runtime(home, root, port, python, env):
     problems = managed_problems(home, root, port)
     if problems:
         raise RuntimeError("；".join(problems))
-    result = subprocess.run([python, "-B", str(home / "scripts/nora-instance.py"), "check"],
+    result = maintenance_run([python, "-B", str(home / "scripts/nora-instance.py"), "check"],
                             cwd=home, env=env, capture_output=True, timeout=30)
     if result.returncode:
         raise RuntimeError("Nora 跨平台实例入口检查失败")
-    result = subprocess.run([python, "-B", str(home / "nora-clawchat-check.py")],
+    result = maintenance_run([python, "-B", str(home / "nora-clawchat-check.py")],
                             cwd=home, env=env, capture_output=True, timeout=60)
     if result.returncode:
         raise RuntimeError("ClawChat 插件、工具或 Liveware 运行环境检查失败")
@@ -337,42 +387,37 @@ with patch.object(handle.__globals__["subprocess"], "Popen") as spawn:
     command = spawn.call_args.args[0]
     assert command[1:] == ["-B", str(home / "scripts/nora-instance.py"), "recover-existing"], "Hook runner mismatch"
 '''
-    result = subprocess.run([python, "-B", "-c", prompt_probe], cwd=home, env=env, capture_output=True, timeout=60)
+    result = maintenance_run([python, "-B", "-c", prompt_probe], cwd=home, env=env, capture_output=True, timeout=60)
     if result.returncode:
         raise RuntimeError("Hermes 未能加载完整 Nora 身份、指令或技能；初始化未完成。")
     config = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     mcp = config["mcp_servers"]["nora"]
     if mcp["env"].get("NORA_MCP_BASE_URL") != f"http://127.0.0.1:{port}":
         raise RuntimeError("MCP 端口与当前酒馆不一致")
-    probe = '''
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-const config = JSON.parse(process.argv[1]);
-const client = new Client({ name: 'nora-install-check', version: '1.0.0' });
-const transport = new StdioClientTransport({ ...config, env: { ...process.env, ...config.env }, stderr: 'pipe' });
-try {
-  await client.connect(transport);
-  const tools = await client.listTools();
-  if (!tools.tools.some(t => t.name === 'nora.world.list')) throw new Error('missing world tool');
-  const result = await client.callTool({ name: 'nora.world.list', arguments: {} });
-  if (result.isError) throw new Error('instance read failed');
-} finally { await client.close(); }
-'''
-    result = subprocess.run([mcp["command"], "--input-type=module", "-e", probe, json.dumps({
-        "command": mcp["command"], "args": mcp["args"], "env": mcp["env"]})],
-        cwd=root / "apps/nora-mcp", env=env, capture_output=True, timeout=60)
+    delegate = getattr(sys, '_nora_operation_delegate', None)
+    probe = delegate.resource('mcp_probe.mjs') if delegate is not None else Path(__file__).with_name('mcp_probe.mjs').resolve()
+    if not probe.is_file() or probe.is_symlink():
+        error = RuntimeError('运行资源不完整，请使用匹配平台的完整安装包。')
+        error.code = 'RESOURCE_INCOMPLETE'
+        raise error
+    try:
+        result = maintenance_run([mcp['command'], str(probe)], input=json.dumps({
+            'command': mcp['command'], 'args': mcp['args'], 'env': mcp['env']}),
+            text=True, cwd=root / 'apps/nora-mcp', env=env, capture_output=True, timeout=60, check=True)
+    except subprocess.CalledProcessError as error:
+        raise RuntimeError('Nora MCP 未能读取当前酒馆实例；初始化未完成。') from error
     if result.returncode:
         raise RuntimeError("Nora MCP 未能读取当前酒馆实例；初始化未完成。")
     return {name: True for name in PROOFS}
 
 
-def record_initialization(home, root, manifest, proof):
+def record_initialization(home, root, manifest, proof, *, journal=None):
     save_json(root / "tavern-updates/nora-system.json", {
         "schema": 1, "version": manifest.get("versions", {}).get("tavern"), "commit": manifest.get("commit"),
         "skills": inventory(home), "soulSha256": digest(home / "SOUL.md"), "proof": proof,
         "managed": {name: digest(home / name) for name in MANAGED_FILES},
         "setupCompleted": False,
-    })
+    }, journal=journal)
 
 
 def mark_setup_complete(root):

@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { readLocation, selectLocation, canChangeLocation } = require('../installer/desktop/install-location');
+const { readLocation, prepareLocation, selectLocation, canChangeLocation } = require('../installer/desktop/install-location');
 const { own, makePlan, cleanup } = require('../installer/desktop/uninstall');
 
 function fixture(t) {
@@ -79,8 +79,20 @@ test('uninstall uses chosen root and reinstall can reuse its location', t => {
   fs.mkdirSync(path.join(root, 'hermes')); fs.mkdirSync(path.join(root, 'tavern'));
   const plan = makePlan({ home: root, hermesHome: path.join(root, 'hermes'), installRoot: path.join(root, 'tavern'), mode: 'all' });
   assert.equal(plan.root, root); cleanup(plan);
-  assert.equal(fs.existsSync(root), false);
+  assert.deepEqual(fs.readdirSync(root).sort(),['installer','nora-owner.json']);
+  assert.deepEqual(fs.readdirSync(path.join(root,'installer')),['operations']);
+  assert.deepEqual(fs.readdirSync(path.join(root,'installer/operations')),['.writer.lock']);
   assert.equal(fs.existsSync(f.defaultHome), true);
   assert.equal(readLocation(f.defaultHome, 'stable'), root);
   assert.equal(canChangeLocation(root), true);
+});
+
+test('reserving a validated destination does not redirect existing callers before both writer fences are held',t=>{
+  const f=fixture(t),root=prepareLocation(f.parent,f.options);
+  assert.equal(readLocation(f.defaultHome,'stable'),f.defaultHome);
+  // The native lock scaffold may be created before committing the locator.
+  fs.mkdirSync(path.join(root,'installer/operations'),{recursive:true});
+  fs.writeFileSync(path.join(root,'installer/operations/.writer.lock'),'');
+  assert.equal(f.select(),root);
+  assert.equal(readLocation(f.defaultHome,'stable'),root);
 });

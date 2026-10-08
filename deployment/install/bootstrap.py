@@ -100,6 +100,9 @@ def extract_ops_runner(release_dir: Path, destination: Path) -> Path:
         "ops/scripts/nora-tavern-update-check.py",
         "ops/hooks/tavern-liveware-register/handler.py",
         "ops/updater/bundle.py",
+        "ops/installer/operation_control.py",
+        "ops/installer/operation_cli.py",
+        "ops/installer/operation_evidence.py",
         "ops/scripts/install-hermes-skills.py",
     }
     missing = sorted(required - seen)
@@ -127,6 +130,18 @@ def main() -> None:
     args = parser.parse_args()
     if not (args.apply and args.confirm):
         raise RuntimeError("首次安装必须显式传入 --apply --confirm")
+
+    try:
+        import operation_cli as cli
+    except ImportError:
+        import importlib.util
+        cli_path = Path(__file__).resolve().with_name('operation_cli.py')
+        if not cli_path.is_file():
+            cli_path = Path(__file__).resolve().parents[1] / 'shared/operation_cli.py'
+        spec = importlib.util.spec_from_file_location('nora_first_bootstrap_operation_cli', cli_path)
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+    cli.ensure_operation('install', nora_home=args.nora_home or os.environ.get('NORA_TAVERN_HOME'))
 
     with tempfile.TemporaryDirectory(prefix="nora-tavern-bootstrap.") as temporary:
         work = Path(temporary)
@@ -165,7 +180,7 @@ def main() -> None:
             command.append("--force-first-install")
         if args.allow_candidate:
             command.append("--allow-candidate")
-        result = subprocess.run(command)
+        result = cli._control().managed_run(command)
         raise SystemExit(result.returncode)
 
 

@@ -1,92 +1,120 @@
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
-const { spawnSync } = require('node:child_process');
-const test = require('node:test');
-const update = require('../installer/desktop/system-update');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const os=require('node:os');
+const path=require('node:path');
+const crypto=require('node:crypto');
+const {once}=require('node:events');
+const test=require('node:test');
+const update=require('../installer/desktop/system-update');
+const {acquire}=require('../installer/desktop/operation-lock');
+const desktop=path.resolve(__dirname,'../installer/desktop');
 
-function fixture(t) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-system-update-'));
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  for (const name of ['hermes', 'tavern']) fs.mkdirSync(path.join(home, name));
-  fs.writeFileSync(path.join(home, 'hermes/.env'), 'test-only-key-and-pairing');
-  fs.writeFileSync(path.join(home, 'hermes/SOUL.md'), 'custom soul');
-  fs.writeFileSync(path.join(home, 'tavern/story.json'), 'saved story');
-  fs.writeFileSync(path.join(home, 'tavern/version'), 'beta.1');
-  return home;
+function fixture(t){
+ const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-legacy-recovery-')));
+ t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+ const write=(name,data)=>{const file=path.join(home,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,typeof data==='string'?data:JSON.stringify(data));};
+ write('nora-owner.json',{schema:1,id:crypto.randomUUID()});
+ write('hermes/.env','old credentials');write('tavern/story.json','old story');
+ write('hermes/nora-instance.json',{schema:1,noraHome:home,hermesHome:path.join(home,'hermes'),installRoot:path.join(home,'tavern'),port:18799});
+ write('hermes/hermes-agent/.hermes-bootstrap-complete',{schema:1,source:'nora-integrated-runtime',sha256:'a'.repeat(64),platform:process.platform,arch:process.arch});
+ const manifest={schema:'tavern-release/v2',commit:'b'.repeat(40),versions:{tavern:'2.4.0'},hermesRuntime:{sha256:'a'.repeat(64),platform:process.platform,arch:process.arch}};
+ write('tavern/tavern-updates/installed-manifest.json',manifest);
+ write('tavern/tavern-updates/installed.json',{schema:1,version:'2.4.0',commit:manifest.commit,hermesRuntime:manifest.hermesRuntime});
+ const directory=path.join(home,'installer/system-update');fs.mkdirSync(directory,{recursive:true});
+ for(const name of ['hermes','tavern'])fs.cpSync(path.join(home,name),path.join(directory,name),{recursive:true});
+ write('installer/system-update/journal.json',{schema:1,phase:'applying',target:'v2.4.1'});
+ write('hermes/.env','new credentials');write('tavern/story.json','new story');
+ return {home,directory,write,operationId:crypto.randomUUID()};
 }
-test('successful update retains configuration and story and keeps previous backup', async t => {
-  const home = fixture(t); const calls = [];
-  const result = await update.perform({ home, target: 'beta.2', stop: async () => calls.push('stop'),
-    apply: async () => { calls.push('apply'); fs.writeFileSync(path.join(home, 'tavern/version'), 'beta.2'); },
-    verify: async () => { calls.push('verify'); return { ok: true }; } });
-  assert.deepEqual(calls, ['stop', 'apply', 'verify']);
-  assert.equal(result.ok, true);
-  assert.equal(fs.readFileSync(path.join(home, 'hermes/.env'), 'utf8'), 'test-only-key-and-pairing');
-  assert.equal(fs.readFileSync(path.join(home, 'tavern/story.json'), 'utf8'), 'saved story');
-  assert.equal(fs.readFileSync(path.join(home, 'installer/system-update/tavern/version'), 'utf8'), 'beta.1');
-  assert.equal(update.pending(home), false);
+async function recover(value,{worker=path.join(desktop,'legacy-recovery-worker.js'),offline=true,epoch=1,extraEnv={},digest=update.inspect(value.home).journalDigest}={}){
+ const lease=await acquire({directory:path.join(value.home,'installer'),operationId:value.operationId,ownerEpoch:epoch});
+ try{
+  const child=lease.spawn(process.execPath,[worker,value.home],{kind:'legacy-recovery',env:{...process.env,...extraEnv,ELECTRON_RUN_AS_NODE:'1'}});
+  let stdout='',stderr='';child.stdout.on('data',value=>stdout+=value);child.stderr.on('data',value=>stderr+=value);
+  child.stdin.end(JSON.stringify({journalDigest:digest,offlineProof:{operationId:value.operationId,ownerEpoch:epoch,offline,running:false,gatewayRunning:false}}));
+  const [code,signal]=await once(child,'close');return {code,signal,stdout,stderr,snapshot:await lease.snapshot()};
+ }finally{await lease.release();}
+}
+
+test('retired JS update and user-overlay executors are absent',()=>{
+ assert.equal(update.perform,undefined);assert.equal(update.restoreUserHome,undefined);
 });
-test('failed verification restores programs, data and credentials together', async t => {
-  const home = fixture(t);
-  await assert.rejects(update.perform({ home, target: 'beta.2', stop: async () => {},
-    apply: async () => {
-      fs.writeFileSync(path.join(home, 'hermes/.env'), 'damaged');
-      fs.writeFileSync(path.join(home, 'tavern/version'), 'beta.2');
-      fs.unlinkSync(path.join(home, 'tavern/story.json'));
-    }, verify: async () => { throw new Error('unhealthy'); } }), /已恢复原系统/);
-  assert.equal(fs.readFileSync(path.join(home, 'hermes/.env'), 'utf8'), 'test-only-key-and-pairing');
-  assert.equal(fs.readFileSync(path.join(home, 'tavern/story.json'), 'utf8'), 'saved story');
-  assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
-  assert.equal(update.pending(home), false);
+test('known legacy recovery preserves the current data view and returns files-only facts',{timeout:20000},async t=>{
+ const value=fixture(t),before=update.inspect(value.home);
+ assert.equal(before.canRecover,true);assert.equal(before.restoreVersion,'2.4.0');assert.equal(before.dataPolicy,'restore-backup-preserve-current');
+ const result=await recover(value);assert.equal(result.code,0,result.stdout+result.stderr);
+ const response=result.stdout.trim().split('\n').map(JSON.parse).find(event=>event.event==='result');
+ assert.equal(response.legacyFilesRestored,true);assert.equal(response.recoveryVerification,'files-only');assert.equal(response.systemReady,undefined);
+ assert.equal(response.dataMerged,false);assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'old credentials');
+ const journal=JSON.parse(fs.readFileSync(path.join(value.directory,'journal.json'),'utf8'));
+ assert.equal(fs.readFileSync(path.join(value.directory,journal.restoreSteps[0].failedName,'.env'),'utf8'),'new credentials');
+ assert.equal(fs.readFileSync(path.join(value.directory,journal.restoreSteps[1].failedName,'story.json'),'utf8'),'new story');
+ assert.equal(update.pending(value.home),false);
+ assert.equal(result.snapshot.jobs[0].delegation.identityStatus,'reported');
+ assert.ok(result.snapshot.jobs[0].executionIdentity.jobArgument);assert.ok(result.snapshot.jobs[0].closedAt);
 });
-test('process termination during replacement leaves recoverable journal', async t => {
-  const home = fixture(t);
-  const code = `const update=require(process.argv[1]);update.perform({home:process.argv[2],target:'beta.2',stop:async()=>{},apply:async()=>process.exit(9),verify:async()=>{}})`;
-  const result = spawnSync(process.execPath, ['-e', code, require.resolve('../installer/desktop/system-update'), home]);
-  assert.equal(result.status, 9);
-  assert.equal(update.pending(home), true);
-  await update.recover(home, async () => {});
-  assert.equal(update.pending(home), false);
-  assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
+test('unknown schema, missing backup and foreign instance are never offered recovery',{timeout:20000},async t=>{
+ for(const mode of ['unknown','missing','foreign']){
+  const value=fixture(t);
+  if(mode==='unknown')value.write('installer/system-update/journal.json',{schema:9,phase:'applying'});
+  if(mode==='missing')fs.rmSync(path.join(value.directory,'hermes'),{recursive:true});
+  if(mode==='foreign')value.write('installer/system-update/hermes/nora-instance.json',{schema:1,noraHome:path.dirname(value.home),hermesHome:path.join(value.home,'hermes'),installRoot:path.join(value.home,'tavern'),port:18799});
+  const journal=fs.readFileSync(path.join(value.directory,'journal.json'));
+  assert.equal(update.inspect(value.home).canRecover,false);
+  const result=await recover(value);assert.notEqual(result.code,0);
+  assert.deepEqual(fs.readFileSync(path.join(value.directory,'journal.json')),journal);
+  assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'new credentials');
+ }
 });
-test('previous service selection is restored only after rollback restores its files', async t => {
-  const home = fixture(t);
-  let restored = false;
-  await assert.rejects(update.perform({ home, target: 'beta.2', stop: async () => {},
-    apply: async () => fs.writeFileSync(path.join(home, 'tavern/version'), 'beta.2'),
-    verify: async () => { throw new Error('unhealthy'); },
-    restoreRunning: async () => {
-      assert.equal(update.pending(home), false);
-      assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
-      restored = true;
-    },
-  }), /已恢复原系统/);
-  assert.equal(restored, true);
+test('a private ACK without positive stop proof cannot replace files',{timeout:20000},async t=>{
+ const value=fixture(t),journal=fs.readFileSync(path.join(value.directory,'journal.json'));
+ const result=await recover(value,{offline:false});assert.notEqual(result.code,0);assert.match(result.stdout,/VERIFICATION_FAILED/);
+ assert.deepEqual(fs.readFileSync(path.join(value.directory,'journal.json')),journal);
+ assert.equal(fs.readFileSync(path.join(value.home,'tavern/story.json'),'utf8'),'new story');
 });
-test('failed service stop makes no installation changes', async t => {
-  const home = fixture(t);
-  await assert.rejects(update.perform({ home, target: 'beta.2', stop: async () => { throw new Error('busy'); } }), /busy/);
-  assert.equal(fs.existsSync(path.join(home, 'installer/system-update')), false);
-  assert.equal(fs.readFileSync(path.join(home, 'tavern/version'), 'utf8'), 'beta.1');
+test('legacy worker refuses an environment token without a live guard',{timeout:15000},async t=>{
+ const value=fixture(t);const {spawnSync}=require('node:child_process');
+ const result=spawnSync(process.execPath,[path.join(desktop,'legacy-recovery-worker.js'),value.home],{encoding:'utf8',env:{...process.env,ELECTRON_RUN_AS_NODE:'1',NORA_OPERATION_ID:value.operationId},input:'{}'});
+ assert.notEqual(result.status,0);assert.match(result.stdout,/DELEGATION_REQUIRED/);
+ assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'new credentials');
 });
-test('runtime replacement preserves user state without copying old binaries over new ones', async t => {
-  const home = fixture(t), old = path.join(home, 'hermes'), next = path.join(home, 'new-hermes');
-  for (const root of [old, next]) {
-    for (const name of ['hermes-agent', 'plugins/clawchat', 'clawchat/liveware']) fs.mkdirSync(path.join(root, name), { recursive: true });
-    fs.writeFileSync(path.join(root, 'hermes-agent/core'), root === old ? 'old' : 'new');
-    fs.writeFileSync(path.join(root, 'plugins/clawchat/plugin.py'), root === old ? 'old' : 'new');
-    fs.writeFileSync(path.join(root, 'clawchat/liveware/liveware'), root === old ? 'old' : 'new');
-  }
-  fs.writeFileSync(path.join(old, 'clawchat/nora-profile.json'), 'profile receipt');
-  fs.writeFileSync(path.join(old, 'nora-instance.json'), 'instance binding');
-  await update.restoreUserHome(old, next);
-  assert.equal(fs.readFileSync(path.join(next, '.env'), 'utf8'), 'test-only-key-and-pairing');
-  assert.equal(fs.readFileSync(path.join(next, 'SOUL.md'), 'utf8'), 'custom soul');
-  assert.equal(fs.readFileSync(path.join(next, 'nora-instance.json'), 'utf8'), 'instance binding');
-  assert.equal(fs.readFileSync(path.join(next, 'clawchat/nora-profile.json'), 'utf8'), 'profile receipt');
-  for (const file of ['hermes-agent/core', 'plugins/clawchat/plugin.py', 'clawchat/liveware/liveware']) {
-    assert.equal(fs.readFileSync(path.join(next, file), 'utf8'), 'new');
-  }
+test('a changed journal digest cannot authorize recovery',{timeout:20000},async t=>{
+ const value=fixture(t),before=update.inspect(value.home);value.write('installer/system-update/journal.json',{schema:1,phase:'applying',target:'v2.4.2'});
+ const result=await recover(value,{digest:before.journalDigest});assert.notEqual(result.code,0);assert.match(result.stdout,/CONDITIONS_CHANGED/);
+ assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'new credentials');
+});
+test('recovery can resume after hard interruption immediately after restoring the first tree',{timeout:25000},async t=>{
+ const value=fixture(t),worker=path.join(value.home,'legacy-recovery-worker.js');
+ fs.writeFileSync(worker,`const fs=require('node:fs'),path=require('node:path');const rename=fs.promises.rename;fs.promises.rename=async(from,to)=>{await rename(from,to);if(from===path.join(process.argv[2],'installer/system-update/hermes'))process.kill(process.pid,'SIGKILL');};require(${JSON.stringify(path.join(desktop,'legacy-recovery-worker.js'))}).main();`);
+ assert.notEqual((await recover(value,{worker})).code,0);assert.equal(update.inspect(value.home).canRecover,true);
+ const result=await recover(value,{epoch:2});assert.equal(result.code,0,result.stdout+result.stderr);
+ assert.equal(update.pending(value.home),false);assert.equal(fs.readFileSync(path.join(value.home,'tavern/story.json'),'utf8'),'old story');
+});
+test('a changed live identity or modified sealed backup blocks resumed recovery before replacing more files',{timeout:25000},async t=>{
+ for(const mode of ['live','backup']){
+  const value=fixture(t),worker=path.join(value.home,'legacy-recovery-worker.js');
+  fs.writeFileSync(worker,`const fs=require('node:fs'),path=require('node:path');const rename=fs.promises.rename;fs.promises.rename=async(from,to)=>{if(from===path.join(process.argv[2],'hermes'))process.kill(process.pid,'SIGKILL');return rename(from,to);};require(${JSON.stringify(path.join(desktop,'legacy-recovery-worker.js'))}).main();`);
+  assert.notEqual((await recover(value,{worker})).code,0);
+  if(mode==='live'){fs.renameSync(path.join(value.home,'tavern'),path.join(value.home,'unrelated-original'));fs.mkdirSync(path.join(value.home,'tavern'));}
+  else value.write('installer/system-update/tavern/story.json','changed backup');
+  const inspected=update.inspect(value.home);
+  assert.equal(inspected.canRecover,mode==='backup');
+  if(mode==='backup')assert.equal(inspected.backupVerification,'verify-on-recovery');
+  assert.notEqual((await recover(value,{epoch:2})).code,0);
+  assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'new credentials');
+ }
+});
+
+test('an interrupted legacy swap resumes with a separate process profile while the active Hermes tree is absent',{timeout:25000},async t=>{
+ const value=fixture(t),worker=path.join(value.home,'legacy-recovery-worker.js');
+ fs.writeFileSync(worker,`const fs=require('node:fs'),path=require('node:path');const rename=fs.promises.rename;fs.promises.rename=async(from,to)=>{if(from===path.join(process.argv[2],'installer/system-update/hermes'))process.kill(process.pid,'SIGKILL');return rename(from,to);};require(${JSON.stringify(path.join(desktop,'legacy-recovery-worker.js'))}).main();`);
+ assert.notEqual((await recover(value,{worker})).code,0);assert.equal(fs.existsSync(path.join(value.home,'hermes')),false);
+ fs.writeFileSync(worker,`process.stdout.write(JSON.stringify({event:'fixture',profile:process.env.USERPROFILE})+'\\n');require(${JSON.stringify(path.join(desktop,'legacy-recovery-worker.js'))}).main();`);
+ const result=await recover(value,{worker,epoch:2,extraEnv:{HOME:path.join(value.home,'hermes'),USERPROFILE:path.join(value.home,'hermes'),
+  APPDATA:path.join(value.home,'appdata/roaming'),LOCALAPPDATA:path.join(value.home,'appdata/local')}});
+ assert.equal(result.code,0,result.stdout+result.stderr);
+ const facts=result.stdout.trim().split('\n').map(JSON.parse).find(value=>value.event==='fixture');
+ assert.equal(facts.profile,path.join(value.home,'installer','operations',value.operationId,'bootstrap-profile'));
+ assert.equal(fs.readFileSync(path.join(value.home,'hermes/.env'),'utf8'),'old credentials');
+ assert.equal(update.pending(value.home),false);
 });

@@ -41,7 +41,7 @@ function actualBridge(client, {clean=value=>String(value),messages=[],stderr='',
     bridgeArgs:()=>({command:'fixture-python',args:[]}),launcherEnv:()=>({}),installerRoot:()=>os.tmpdir(),
     process:{platform:'win32'},processSite:command=>['start','stop','pair'].includes(command)?`process.${command}`:'process.run',
     sendBridgeEvent(){},terminateProcess(){},sanitizeLine:line=>line,parseJsonLine:JSON.parse,
-    setInterval,setTimeout,clearInterval,clearTimeout,activeProcess:null,cancelled:false,spawn:()=>{
+    setInterval,setTimeout,clearInterval,clearTimeout,activeProcess:null,activeOperationContext:null,cancelled:false,spawn:()=>{
       queueMicrotask(()=>{
         child.stdout.end(messages.map(message=>JSON.stringify(message)).join('\n')+'\n');
         child.stderr.end(stderr);
@@ -49,13 +49,18 @@ function actualBridge(client, {clean=value=>String(value),messages=[],stderr='',
       });
       return child;
     }};
+  // This fixture supplies the owned transport; admission and actual process
+  // lifetime are exercised separately by operation/CLI public contract tests.
+  context.spawnMaintenance=context.spawn;
   return vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
 }
 test('actual update preflight uploads sanitized failures only with diagnostic consent and excludes untrusted service output', async t => {
   for (const [command,consent] of [['plan-update',true],['plan-update',false],['status',true]]) {
     const clean=value=>String(value).replaceAll('fixture-secret','[REDACTED]');
     const f=fixture(t,{consent,clean});
-    const runBridge=actualBridge(f.client,{clean,messages:[{event:'error',message:'缺少系统安装记录 fixture-secret'}],
+    const runBridge=actualBridge(f.client,{clean,messages:[
+      {event:'diagnostic',component:'bridge',error:{name:'RuntimeError',message:'缺少系统安装记录 fixture-secret'}},
+      {event:'error',message:'缺少系统安装记录 fixture-secret'}],
       stderr:'preflight evidence fixture-secret\n'});
     f.client.begin('update');f.client.stage('verify');
     let failure;
@@ -66,13 +71,9 @@ test('actual update preflight uploads sanitized failures only with diagnostic co
     assert.equal(event.error_code,'process_failed');
     assert.doesNotMatch(JSON.stringify(f.requests),/fixture-secret/);
     if (!consent) {assert.equal(event.fault,null);continue;}
-    if (command==='plan-update') {
-      assert.ok(event.fault.errors.some(e=>e.message.includes('缺少系统安装记录')));
-      assert.ok(event.fault.output.some(line=>line.includes('preflight evidence')));
-    } else {
-      assert.equal(event.fault.output.length,0);
-      assert.doesNotMatch(JSON.stringify(event.fault),/缺少系统安装记录|preflight evidence/);
-    }
+    assert.ok(event.fault.errors.some(e=>e.message.includes('缺少系统安装记录')));
+    assert.ok(event.fault.output.every(line=>/^\[ERROR\] subprocess exitCode=/.test(line)));
+    assert.doesNotMatch(JSON.stringify(event.fault),/preflight evidence/);
   }
 });
 
@@ -426,7 +427,7 @@ test('fault packets retain technical cause, source frames and installer evidence
   const clean=value=>String(value).replaceAll('short-key-fixture','[REDACTED]').replaceAll('pair-fixture','[REDACTED]');
   const projection=createFaultPackets({clean,roots:()=>['/Users/private/Nora'],environment:{launcher_build:'b'.repeat(64)}});
   const collector=projection.collector(true);
-  collector.observe({event:'diagnostic',error:{name:'PermissionError',message:"EPERM symlink '/Users/private/Nora/skills/apple'",code:'EPERM',syscall:'symlink',path:'/Users/private/Nora/skills/apple',stack:'File "/Users/private/Nora/install.py", line 42, in install'}});
+  collector.observe({event:'diagnostic',component:'installer',error:{name:'PermissionError',message:"EPERM symlink '/Users/private/Nora/skills/apple'",code:'EPERM',syscall:'symlink',path:'/Users/private/Nora/skills/apple',stack:'File "/Users/private/Nora/install.py", line 42, in install'}});
   collector.observe({event:'log',stream:'combined',line:'tool failed key=short-key-fixture pair_code=pair-fixture https://private.example/token'});
   const cause=Object.assign(new TypeError('copy failed'),{code:'EPERM',syscall:'symlink',path:'C:\\Users\\Private Name\\Nora\\file.py',stack:'TypeError: private\n at copy (C:\\Users\\Private Name\\Nora\\main.js:42:8)'});
   const {launcherError}=require(path.join(desktop,'launcher-errors'));
@@ -570,7 +571,7 @@ test('long operations retain basic failure and their identity without detailed e
 test('installer diagnostic causes survive child projection and diagnostic redaction failures fail closed',()=>{
   const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
   const packets=createFaultPackets(),child=packets.collector(true);
-  child.observe({event:'diagnostic',error:{name:'RuntimeError',message:'extraction failed',cause:{name:'PermissionError',message:'access denied',code:'EPERM',syscall:'symlink'},secondaryErrors:[{operation:'cleanup',error:{name:'OSError',message:'cleanup denied',code:'EACCES',syscall:'unlink'}}]}});
+  child.observe({event:'diagnostic',component:'installer',error:{name:'RuntimeError',message:'extraction failed',cause:{name:'PermissionError',message:'access denied',code:'EPERM',syscall:'symlink'},secondaryErrors:[{operation:'cleanup',error:{name:'OSError',message:'cleanup denied',code:'EACCES',syscall:'unlink'}}]}});
   const packet=packets.packet(child.attach(new Error('worker failed')),{action:'install'});
   assert.ok(packet.errors.some(e=>e.kind==='PermissionError'&&e.relation==='cause'&&e.syscall==='symlink'));
   assert.ok(packet.errors.some(e=>e.relation==='secondary'&&e.code==='EACCES'&&e.syscall==='unlink'));
@@ -617,4 +618,57 @@ test('desktop default enables only new diagnostic choices and preserves explicit
   f.advance(1100);await restarted.flush();assert.ok(f.requests.at(-1).data.events.every(e=>e.fault===null));
   const disabled=fixture(t,{diagnosticDefault,enabled:false,consent:false});
   assert.equal(disabled.client.settings().enabled,false);
+});
+
+test('telemetry shares the caller operation UUID and keeps it through a self-update handoff',t=>{
+  const operationId=require('node:crypto').randomUUID(), f=fixture(t);
+  assert.equal(f.client.begin('update',{operationId}),operationId);f.client.stage('update_handoff');f.client.finish('handoff');f.restart();
+  assert.equal(f.client.begin('update',{operationId}),operationId);
+  assert.ok(f.read().queue.filter(event=>event.action==='update').every(event=>event.operation_id===operationId));
+});
+test('partial and duplicate acknowledgements persist only confirmed delivery by event ID',async t=>{
+  let accepted;const f=fixture(t,{fetcher:async(_url,options)=>{
+    const events=JSON.parse(options.body).events;accepted=events.filter(event=>event.operation_id).slice(0,1).map(event=>event.event_id);
+    return Response.json({accepted_event_ids:[...accepted,...accepted],rejected_event_ids:[]});}});
+  const id=f.client.begin('install');await f.client.flush();
+  const summary=f.client.deliverySummary(id);assert.equal(summary.accepted,1);assert.equal(summary.queued,1);assert.equal(summary.last_http,200);assert.ok(summary.last_ack);
+  f.restart();assert.equal(f.client.deliverySummary(id).accepted,1);assert.equal(f.client.deliverySummary(id).queued,3,'restart adds interrupted stage and terminal events without treating them as acknowledged');
+});
+test('HTTP, connection and protocol failures cannot masquerade as delivery or installation success',async t=>{
+  for(const mode of ['401','400','offline','unacknowledged']){
+    const f=fixture(t,{fetcher:async()=>{if(mode==='offline')throw Error('private transport');
+      return mode==='unacknowledged'?Response.json({accepted_event_ids:[],rejected_event_ids:[]}):new Response('{}',{status:Number(mode)});}});
+    const id=f.client.begin('install');f.client.finish('succeeded');await f.client.flush();const summary=f.client.deliverySummary(id);
+    assert.equal(summary.accepted,0);assert.ok(summary.queued>0);assert.ok(summary.last_error);assert.doesNotMatch(JSON.stringify(summary),/private transport/);
+    assert.equal(f.read().queue.at(-1).status,'succeeded');
+  }
+});
+test('permanent receiver rejection and queue eviction have explicit outcomes instead of fake ACK',async t=>{
+  const f=fixture(t,{fetcher:async(_url,options)=>Response.json({accepted_event_ids:[],rejected_event_ids:JSON.parse(options.body).events.map(e=>({event_id:e.event_id,reason:'invalid_event'}))})});
+  const id=f.client.begin('update');f.client.finish('failed',{code:'EPERM'});await f.client.flush();
+  const summary=f.client.deliverySummary(id);assert.equal(summary.queued,0);assert.equal(summary.accepted,0);assert.ok(summary.rejected>0);assert.equal(summary.last_error,'invalid_event');
+  const g=fixture(t);const evicted=g.client.begin('install');for(let i=0;i<510;i++)g.client.pulse();assert.ok(g.client.deliverySummary(evicted).evicted>0);
+});
+test('queue expiry and receiver pause remain distinguishable from accepted delivery',async t=>{
+  const f=fixture(t);const old=f.client.begin('install');f.client.finish('succeeded');f.advance(8*86400000);f.client.begin('start');assert.ok(f.client.deliverySummary(old).expired>0);
+  const g=fixture(t,{fetcher:async()=>Response.json({paused:true})});const id=g.client.begin('install');await g.client.flush();
+  assert.ok(g.client.deliverySummary(id).paused>0);assert.equal(g.client.deliverySummary(id).accepted,0);assert.equal(g.client.deliverySummary(id).queued,0);
+});
+
+test('a queue write failure never throws into the operation and reports delivery evidence as missing',t=>{
+  const fsModule=require('node:fs'),updates=[],f=fixture(t,{onDelivery:message=>updates.push(message)}),id=require('node:crypto').randomUUID();
+  const original=fsModule.renameSync;t.mock.method(fsModule,'renameSync',(source,target)=>{if(target===f.file)throw Object.assign(Error('private path'),{code:'EPERM'});return original(source,target);});
+  assert.doesNotThrow(()=>f.client.begin('install',{operationId:id}));
+  const summary=f.client.deliverySummary(id);assert.equal(summary.accepted,0);assert.ok(summary.missing.includes('queue_save_failed'));
+  assert.ok(updates.some(message=>message.operationId===id&&message.summary.missing.includes('queue_save_failed')));
+});
+test('queue durability failure after ACK preserves confirmed intake but marks missing local persistence',async t=>{
+  const fsModule=require('node:fs'),f=fixture(t),id=f.client.begin('install');f.client.finish('succeeded');
+  const original=fsModule.renameSync;t.mock.method(fsModule,'renameSync',(source,target)=>{if(target===f.file)throw Object.assign(Error('private path'),{code:'EPERM'});return original(source,target);});
+  await f.client.flush();const summary=f.client.deliverySummary(id);assert.ok(summary.accepted>0);assert.equal(summary.queued,0);assert.ok(summary.missing.includes('queue_save_failed'));
+});
+test('rate limiting records its response and prevents an immediate repeat transmission',async t=>{
+  let requests=0;const f=fixture(t,{fetcher:async()=>{requests++;return new Response('{}',{status:429,headers:{'Retry-After':'60'}});}}),id=f.client.begin('install');
+  await f.client.flush();assert.equal(f.client.deliverySummary(id).last_http,429);assert.equal(f.client.deliverySummary(id).last_error,'rate_limited');
+  f.advance(59000);await f.client.flush();assert.equal(requests,1);f.advance(1000);await f.client.flush();assert.equal(requests,2);
 });

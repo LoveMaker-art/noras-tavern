@@ -3,14 +3,40 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import unittest
 
 from ops.installer.launcher_bridge import read_verified_model
+from ops.installer import launcher_bridge
+from unittest.mock import patch
+from types import SimpleNamespace
+import contextlib
+import io
 
 
 class VerifiedModelStatusTests(unittest.TestCase):
+    def test_first_start_reports_typed_setup_blocker_without_starting_a_service(self):
+        args = SimpleNamespace(nora_home=Path('/fixture'), hermes_home=Path('/fixture/hermes'),
+                               install_root=Path('/fixture/tavern'), service='nora')
+        for model, code, message in (({}, 'MODEL_SETUP_REQUIRED', '请先配置并测试模型。'),
+                                     ({'model': 'verified'}, 'CLAWCHAT_PAIR_REQUIRED', '请先连接 ClawChat。')):
+            with self.subTest(code=code), patch.object(launcher_bridge.nora_system, 'update_recovery', return_value=None), \
+                 patch.object(launcher_bridge, 'installed', return_value=True), \
+                 patch.object(launcher_bridge.nora_system, 'installation_state', return_value={'ready': True, 'setupCompleted': False}), \
+                 patch.object(launcher_bridge, 'read_verified_model', return_value=model), \
+                 patch.object(launcher_bridge, 'clawchat_paired', return_value=False), \
+                 patch.object(launcher_bridge, 'start_gateway') as start, \
+                 contextlib.redirect_stdout(io.StringIO()) as output, self.assertRaises(SystemExit) as stopped:
+                launcher_bridge.command_start(args)
+            self.assertEqual(stopped.exception.code, 1)
+            start.assert_not_called()
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(events[-1]['userCode'], code)
+            self.assertEqual(events[-1]['message'], message)
+            self.assertIn('command_start', str(events[0]['error']))
+
     def test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key(self):
         with tempfile.TemporaryDirectory(prefix='nora-model-resume-') as temporary:
             root = Path(temporary)
@@ -38,7 +64,12 @@ class VerifiedModelStatusTests(unittest.TestCase):
                    'TAVERN_DATA_ROOT': str(root / 'tavern')}
             script = Path(__file__).resolve().parents[1] / 'installer/model_config.py'
             def resume():
-                return subprocess.run([sys.executable, '-B', str(script)], env=env, capture_output=True,
+                entry = script.parent / 'desktop/operation-lock.js'
+                actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
+                node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+                self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+                return subprocess.run([node, str(actor), str(entry), str(root), sys.executable, str(script)],
+                    env={**env, 'NORA_TEST_VENV_HOME': sys.prefix}, capture_output=True,
                     text=True, timeout=20, input=json.dumps({'action': 'sync-saved-tavern', 'port': 18999}))
             result = resume()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -91,12 +122,17 @@ class VerifiedModelStatusTests(unittest.TestCase):
             (root / "installer").mkdir()
             (hermes / "hermes-agent").symlink_to(os.environ["NORA_TEST_HERMES"], target_is_directory=True)
             env = {**os.environ, "HERMES_HOME": str(hermes), "HOME": str(hermes), "USERPROFILE": str(hermes),
-                   "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1"}
+                   "NORA_TAVERN_HOME": str(root), "TAVERN_DATA_ROOT": str(root / 'tavern'),
+                   "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", 'NORA_TEST_VENV_HOME': sys.prefix}
             script = Path(__file__).resolve().parents[1] / "installer/model_config.py"
-            result = subprocess.run([sys.executable, "-B", str(script)], env=env, capture_output=True, text=True,
+            node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+            self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+            result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+                str(script.parent / 'desktop/operation-lock.js'), str(root), sys.executable, str(script)],
+                env=env, capture_output=True, text=True,
                 input=json.dumps({"action": "save", "provider": "custom", "model": "local-fixture-model.gguf",
                                   "keyEnv": "", "key": "fixture-only", "baseUrl": "http://127.0.0.1:8080/v1"}), timeout=60)
-            self.assertEqual(result.returncode, 0, result.stderr.replace("fixture-only", "<redacted>"))
+            self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).replace("fixture-only", "<redacted>"))
             saved = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertTrue(saved["provider"] == "custom" or saved["provider"].startswith("custom:"))
             (root / "installer/model.json").write_text(json.dumps({"schema": 1, **saved}), encoding="utf-8")

@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { hash, compare } = require('./releases');
+const { hash, compare,validateCapabilities } = require('./releases');
 
 function testBuild(metadata) {
   const value = metadata.noraLocalTest;
@@ -22,6 +22,7 @@ async function prepareTestPayload(root, build, launcherVersion, onEvent = () => 
       manifest.platform !== process.platform || manifest.arch !== process.arch ||
       compare(launcherVersion, manifest.minimumLauncherVersion) === null ||
       compare(launcherVersion, manifest.minimumLauncherVersion) < 0) throw new Error('测试包平台或版本不兼容。');
+  validateCapabilities(manifest);
   for (const required of ['release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz',
     'nora-tavern-ops.tar.gz', 'nora-tavern-nora-mcp.tar.gz', 'nora-hermes-runtime.json',
     'nora-tavern-dependencies.json', 'nora-tavern-first-install-bootstrap.py']) {
@@ -36,6 +37,7 @@ async function prepareTestPayload(root, build, launcherVersion, onEvent = () => 
       throw new Error(`测试包文件校验失败：${name}`);
     }
   }
+  validateCapabilities(JSON.parse(fs.readFileSync(path.join(root,'release-manifest.json'),'utf8')));
   return root;
 }
 

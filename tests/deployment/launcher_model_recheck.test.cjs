@@ -4,7 +4,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { test } = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
-const { modelCredential } = require('../installer/desktop/model-config');
+const { modelCredential,configurationFingerprint } = require('../installer/desktop/model-config');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
 const nodes = {};
@@ -23,11 +23,19 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
   const order = [], events = [];
   const context = vm.createContext({
     telemetry: undefined, launcherError: require('../installer/desktop/launcher-errors').launcherError,
-    diagnostics: { addSecret() {}, error() {}, clean: value => value }, modelCredential,
+    diagnostics: { addSecret() {}, error() {}, clean: value => value }, modelCredential,configurationFingerprint,
+    uninstall:{own:()=> 'isolated-installation-identity'},
     telemetry: null,
+    // This fixture isolates model ordering; the real ownership/close protocol
+    // is exercised separately by launcher_operation_lock.test.cjs.
+    runOwnedTask: async (_kind, _request, execute) => {
+      const result = await execute({ stage: async () => {} });
+      assert.equal(result.verification, 'confirmed');
+      return result.value;
+    },
     activeRun: false, modelBusy: false, statusRequest: Promise.resolve(),
     requireProvider: () => ({ id: 'custom', keyEnv: '', custom: true }), normalizeCustomBaseUrl: value => value,
-    recordEvent: event => { events.push(event); order.push(event.state); },
+    recordFailureEvent(){},recordEvent: event => { events.push(event); order.push(event.state); },
     runModelConfigHelper: async value => {
       order.push(value.action);
       if (value.action === 'sync-saved-tavern' && syncFails) throw new Error('fixture sync failure');

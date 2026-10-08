@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { finished } = require('node:stream/promises');
 const asar = require('../installer/desktop/node_modules/@electron/asar');
 const { verify } = require('./verify_launcher_update.cjs');
 
@@ -28,7 +29,8 @@ async function fixture(t, platform) {
   const executable = path.join(application, platform === 'darwin' ? 'Contents/MacOS/Launcher' : 'Launcher.exe');
   fs.mkdirSync(path.dirname(executable), { recursive: true });
   fs.writeFileSync(executable, 'executable');
-  await asar.createPackage(desktop, path.join(resources, 'app.asar'));
+  // ASAR 3 returns the output stream after end(), before buffered writes close.
+  await finished(await asar.createPackage(desktop, path.join(resources, 'app.asar')));
   return { desktop, resources, executable, run: () => verify(application, desktop, platform) };
 }
 

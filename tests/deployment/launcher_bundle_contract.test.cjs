@@ -41,6 +41,55 @@ test('desktop bundle carries the profile initializer beside the bridge', () => {
   assert.ok(fs.existsSync(path.resolve(__dirname, '../installer/desktop', entry.from)));
 });
 
+test('telemetry loads from the declared desktop package without borrowing source files',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-packaged-telemetry-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const desktop=path.resolve(__dirname,'../installer/desktop'),pkg=require(path.join(desktop,'package.json'));
+  for(const name of pkg.build.files){
+    const source=path.join(desktop,name);
+    if(fs.existsSync(source)&&fs.statSync(source).isFile())fs.copyFileSync(source,path.join(root,name));
+  }
+  const {createTelemetry}=require(path.join(root,'telemetry.js'));
+  const client=createTelemetry({file:path.join(root,'outbox.json'),launcherVersion:'2.0.2',automatic:false});
+  t.after(()=>client.close());
+  assert.match(client.begin('install'),/^[a-f0-9-]{36}$/);
+});
+test('release transport and trusted roots load from the declared package without source-tree dependencies',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-packaged-sources-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const desktop=path.resolve(__dirname,'../installer/desktop'),pkg=require(path.join(desktop,'package.json'));
+  for(const name of pkg.build.files){
+    const source=path.join(desktop,name);
+    if(fs.existsSync(source)&&fs.statSync(source).isFile())fs.copyFileSync(source,path.join(root,name));
+  }
+  assert.equal(typeof require(path.join(root,'release-network')).downloadAsset,'function');
+  const {sourceCandidates}=require(path.join(root,'release-sources'));
+  const candidates=sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest');
+  assert.equal(candidates.at(-1).id,'github');
+  assert.ok(!candidates.some(item=>/example/.test(item.url)));
+});
+
+test('both package configurations and the sealed system carry the shared evidence budget',async()=>{
+  const pkg=require('../installer/desktop/package.json');
+  const {OPERATION_BUDGET,DEFAULT_LIMITS}=require('../installer/desktop/evidence-store');
+  const {RESOURCE_NAMES}=require('../installer/desktop/launcher-capability');
+  const {NORA_SYSTEM_REQUIRED_FILES}=await import('../scripts/release-source.mjs');
+  for(const platform of ['mac','win']){
+    const resources=pkg.build[platform].extraResources||pkg.build.extraResources;
+    const entry=resources.find(resource=>resource.to==='operation-budget.json');
+    assert.ok(entry,platform+' package resource is required');
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.resolve(__dirname,'../installer/desktop',entry.from),'utf8')),OPERATION_BUDGET);
+    const replacement=resources.find(resource=>resource.to==='replace-launcher.py');
+    assert.ok(replacement);assert.ok(fs.existsSync(path.resolve(__dirname,'../installer/desktop',replacement.from)));
+  }
+  assert.ok(RESOURCE_NAMES.includes('operation-budget.json'));
+  assert.ok(RESOURCE_NAMES.includes('replace-launcher.py'));
+  assert.ok(NORA_SYSTEM_REQUIRED_FILES.includes('ops/installer/operation-budget.json'));
+  assert.equal(DEFAULT_LIMITS.historyCapacity,4096+4);
+  assert.equal(DEFAULT_LIMITS.ackCapacity,4096);
+  assert.equal(DEFAULT_LIMITS.globalBytes-DEFAULT_LIMITS.historyCapacity*DEFAULT_LIMITS.ackCapacity,50315264);
+});
+
 test('recovery and diagnostics ship independently of the installed runtime and with the incremental updater runner', async () => {
   const pkg = require('../installer/desktop/package.json');
   for (const name of ['update_recovery.py', 'error_diagnostics.py']) {
@@ -90,12 +139,13 @@ test('unpublished candidate launchers install their sealed payload instead of an
       'nora-tavern-dependencies.json', 'nora-tavern-first-install-bootstrap.py']) {
       fs.writeFileSync(path.join(payload, name), 'fixture');
     }
-    const identity = { candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.2.10-beta.5' },
+    const identity = { launcherCapabilities: {operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}, candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.2.10-beta.5' },
       hermesRuntime: { platform: process.platform, arch: process.arch } };
     const pkg = { ...require('../installer/desktop/package.json'), noraReleaseChannel: 'beta',
       noraTestInstallationId: 'candidate-38e8e898aecc' };
     fs.writeFileSync(packageFile, JSON.stringify(pkg));
-    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version });
+    fs.writeFileSync(path.join(payload, 'release-manifest.json'), JSON.stringify(identity));
+    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version, minimumLauncherVersion: pkg.version });
     configureCandidateLauncher({ packageFile, payload, identity });
     const result = JSON.parse(fs.readFileSync(packageFile));
     assert.equal(result.noraReleaseChannel, undefined, 'beta channel must not override isolated test home');
@@ -105,7 +155,7 @@ test('unpublished candidate launchers install their sealed payload instead of an
     assert.equal(result.noraLocalTest.telemetryEnabled, undefined, 'ordinary candidates do not upload');
     assert.equal(await prepareTestPayload(payload, testBuild(result), result.version), payload);
     const nextIdentity = { ...identity, commit: 'b'.repeat(40) };
-    writeSystemRelease({ release: root, payload, identity: nextIdentity, launcherVersion: pkg.version });
+    writeSystemRelease({ release: root, payload, identity: nextIdentity, launcherVersion: pkg.version, minimumLauncherVersion: pkg.version });
     configureCandidateLauncher({ packageFile, payload, identity: nextIdentity });
     assert.equal(JSON.parse(fs.readFileSync(packageFile)).noraLocalTest.buildId, result.noraLocalTest.buildId);
     fs.writeFileSync(packageFile, JSON.stringify({ ...pkg, noraTestInstallationId: '../outside' }));
@@ -128,11 +178,12 @@ test('a reporting candidate keeps payload verification and selects a separate in
       'nora-tavern-dependencies.json', 'nora-tavern-first-install-bootstrap.py']) {
       fs.writeFileSync(path.join(payload, name), 'fixture');
     }
-    const identity = { candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.3.17' },
+    const identity = { launcherCapabilities: {operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}, candidate: true, commit: 'a'.repeat(40), versions: { tavern: '2.3.17' },
       hermesRuntime: { platform: process.platform, arch: process.arch } };
     const pkg = require('../installer/desktop/package.json');
     fs.writeFileSync(packageFile, JSON.stringify(pkg));
-    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version });
+    fs.writeFileSync(path.join(payload, 'release-manifest.json'), JSON.stringify(identity));
+    writeSystemRelease({ release: root, payload, identity, launcherVersion: pkg.version, minimumLauncherVersion: pkg.version });
     configureCandidateLauncher({ packageFile, payload, identity, telemetryEnabled: true });
     const metadata = JSON.parse(fs.readFileSync(packageFile));
     assert.equal(metadata.noraLocalTest.telemetryEnabled, true);

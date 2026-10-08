@@ -45,26 +45,28 @@ test('DeepSeek selection defaults to V4 Flash without replacing saved models or 
 
 function uiContext(values = {}) {
   const elements = new Map();
-  const element = () => ({ hidden: false, append() {}, classList: { remove() {}, toggle() {} } });
-  return vm.createContext({
-    busy: false, snapshot: {}, view: 'daily', statusUnknown: false,
+  const element = () => ({ hidden: false, append() {}, classList: { add() {}, remove() {}, toggle() {} } });
+  const context = vm.createContext({
+    busy: false, snapshot: {}, view: 'daily', statusUnknown: false, launcherRecoveryConfirmed:false, lastStatusAt:0, api:{}, refreshFailure(){},lastFailure:null,
     $: id => { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     hideMenu() {}, renderServices() {}, renderConversationEntry() {}, controls() {}, showVersionNotice() {},
     firstCompletionPending: false, sawIncompleteSetup: false,
-    clearInline() {}, setupStage() {}, stage: 0,
+    clearInline() {}, setupStage() {}, closeEdit() {}, stage: 0,
     document: { createElement: element, createTextNode: text => text },
     button: () => ({}), textError: String,
     ...values,
   });
+  vm.runInContext(['hasLogs','appendActions','checkedTime','unknownStatusCopy','recoveredOperation','complete','canReturnHome'].map(definition).join('\n'),context);
+  return context;
 }
 
-test('ready greeting requires Tavern, Nora and ClawChat to be ready together', () => {
-  for (const running of [false, true]) for (const gatewayRunning of [false, true]) for (const clawchatConnected of [false, true]) {
+test('completion needs all services while routine status stays in the service rows', () => {
+  for (const firstCompletionPending of [false, true]) for (const running of [false, true]) for (const gatewayRunning of [false, true]) for (const clawchatConnected of [false, true]) {
     let title;
-    const context = uiContext({ snapshot: { running, gatewayRunning, clawchatConnected }, say: value => { title = value; } });
+    const context = uiContext({ firstCompletionPending, snapshot: { running, gatewayRunning, clawchatConnected }, say: value => { title = value; } });
     vm.runInContext(`${definition('allRunning')}\n${definition('dailyHome')}\ndailyHome();`, context);
-    const expected = running && gatewayRunning && clawchatConnected ? '欢迎回来，坐一会儿吧。'
-      : running ? '酒馆已启动。' : gatewayRunning ? '诺拉已启动。' : '随时可以继续。';
+    const expected = firstCompletionPending && running && gatewayRunning && clawchatConnected ? '酒馆准备好了。'
+      : running || gatewayRunning ? '欢迎回来，坐一会儿吧。' : '随时可以继续。';
     assert.equal(title, expected, JSON.stringify({ running, gatewayRunning, clawchatConnected }));
     vm.runInContext("dailyHome('酒馆已停止。');", context);
     assert.equal(title, '酒馆已停止。', 'explicit action feedback remains intact');
@@ -99,7 +101,7 @@ test('conversation entry opens the client, handles failure and never starts paus
     const context = uiContext({
       snapshot: { clawchatPaired: mode !== 'unpaired', gatewayRunning: mode !== 'paused', clawchatConnected: mode !== 'offline' },
       firstCompletionPending: mode === 'first-use',
-      document: { createElement: element }, $: () => ({ prepend(value) { entry = value; } }),
+      document: { createElement: element }, $: () => ({ querySelector:()=>null, prepend(value) { entry = value; } }),
       api: { async openClawChatApp() { opens++; if (mode === 'error') throw Error('missing protocol'); return { ok: ['success', 'first-use'].includes(mode) }; } },
     });
     vm.runInContext(`${definition('allRunning')}\n${definition('renderConversationEntry')}\nrenderConversationEntry();`, Object.assign(context, { snapshot: { ...context.snapshot, running: true } }));
@@ -134,19 +136,21 @@ test('ClawChat client IPC uses a fixed protocol and keeps downloads on a separat
     const result = await vm.runInContext(`(${mainSource.slice(callback.start, callback.end)})()`, context);
     assert.equal(result.ok, !fail); assert.deepEqual(urls, ['clawchat://']);
   }
-  assert.ok(read('desktop/preload.js').includes("ipcRenderer.invoke('nora:open-clawchat-app')"));
+  const events=[], exported={};
+  vm.runInNewContext(read('desktop/preload.js'),{require:()=>({contextBridge:{exposeInMainWorld:(_key,value)=>Object.assign(exported,value)},ipcRenderer:{invoke:async channel=>{events.push(channel);return {ok:true};}}})});
+  await exported.openClawChatApp();assert.deepEqual(events,['nora:open-clawchat-app']);
   assert.ok(mainSource.includes("shell.openExternal('https://clawling.com/zh/chat/#get')"));
 });
 
 test('version details and the daily notice name the channel actually checked', async () => {
   for (const channel of ['stable', 'beta']) for (const state of ['current', 'ahead']) {
     let title;
-    const versionInfo = { state, channel, current: '2.0.0', latest: '2.0.0' };
+    const versionInfo = { state, channel, current: '2.0.0', latest: '2.0.0', latestConfirmed:true };
     const context = uiContext({ versionInfo, say: value => { title = value; }, api: { checkUpdate: async () => versionInfo } });
     vm.runInContext(definition('checkUpdates'), context);
     await vm.runInContext('checkUpdates()', context);
     const channelName = channel === 'beta' ? 'Beta 测试版' : '正式版';
-    assert.equal(title, state === 'current' ? `当前系统已是最新${channelName}。` : `本机版本高于最新${channelName}。`);
+    assert.equal(title, state === 'current' ? `暂无${channelName}更新。` : `本机酒馆版本高于${channelName}发布。`);
     const appended = [];
     context.view = 'daily';
     context.$ = id => id === 'versionNotice' ? null : { append: value => appended.push(value) };
@@ -177,7 +181,7 @@ test('opening an installed launcher starts only Tavern once, including unfinishe
       run: (action, options) => calls.push([action, options.service]),
       dailyHome: () => calls.push('daily'), modelForm: () => calls.push('model'),
     });
-    vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
     assert.deepEqual(calls, [['start', 'tavern']]);
     vm.runInContext('route();', context);
     assert.equal(calls.filter(c => Array.isArray(c)).length, 1, 'no restart loop after failure or manual stop');
@@ -197,7 +201,7 @@ test('startup does not compete with an update, reuse a missing install, or start
       $: () => ({ hidden: false, append() {}, classList: { add() {}, remove() {} } }),
       document: { createElement: () => ({ append() {}, setAttribute() {} }) },
     });
-    vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+    vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
     assert.deepEqual(calls, []);
   }
 });
@@ -210,7 +214,7 @@ test('pending saved model routes to resume rather than requesting the key again'
     pendingModel: () => { resumed = true; }, run: () => assert.fail('must reuse running service'),
     modelForm: () => assert.fail('must not ask for key again'),
   });
-  vm.runInContext(`${definition('complete')}\n${definition('route')}\nroute();`, context);
+  vm.runInContext(`${definition('complete')}\n${definition('recoveredOperation')}\n${definition('route')}\nroute();`, context);
   assert.equal(resumed, true);
 });
 
@@ -224,7 +228,7 @@ test('installation messages describe ClawChat access and the full-system update 
   assert.ok(services.includes('ClawChat 连接服务尚未停止'));
   assert.doesNotMatch(bridge + services, /手机(?:连接组件|酒馆入口|连接服务)/);
   assert.ok(definition('taskView').includes("update: '正在更新诺拉与酒馆。'"));
-  assert.doesNotMatch(definition('renderServices'), /service-detail|services-footer/, 'service rows do not repeat the conversation and launch entries');
+  assert.doesNotMatch(definition('renderServices'), /service-detail|conversation-link|打开酒馆/, 'service rows do not repeat the conversation and launch entries');
 });
 
 test('daily version notices still surface available updates and abnormal states', () => {
@@ -249,4 +253,15 @@ test('secondary management actions live in More and stop-all retains its service
   assert.doesNotMatch(visible, /data-action="(?:claw|update|stop-all)"/);
   for (const action of ['claw', 'update', 'stop-all']) assert.ok(more.includes(`data-action="${action}"`));
   assert.ok(source.includes("if (action === 'stop-all') run('stop', { service: 'all' });"));
+});
+
+test('layout keeps content scrollable and readable without scaling the whole interface',()=>{
+  const html=read('launcher-conversation-prototype.html'),css=html.split('<style>')[1].split('</style>')[0];
+  const rule=selector=>{const escaped=selector.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');return css.match(new RegExp('(?:^|[\\n])\\s*'+escaped+'\\s*\\{([^}]+)\\}'))?.[1]||'';};
+  assert.match(rule('body'),/overflow\s*:\s*hidden/);assert.doesNotMatch(rule('.app'),/transform|width\s*:\s*1120px|height\s*:\s*680px/);
+  assert.match(rule('.inline'),/overflow\s*:\s*auto/);assert.match(rule('.outcome-actions'),/flex-shrink\s*:\s*0/);
+  assert.doesNotMatch(rule('main'),/position\s*:\s*absolute/);assert.doesNotMatch(html,/function fit\(|--scale/);
+  assert.match(rule('.quiet'),/min-height\s*:\s*(?:3[2-9]|[4-9]\d)px/);
+  assert.match(css,/@media\s*\(max-width\s*:\s*760px\)/);assert.match(css,/summary:focus-visible/);
+  for(const id of ['launch','moreButton','telemetryEnabled','steps'])assert.ok(html.includes(`id="${id}"`),id);
 });

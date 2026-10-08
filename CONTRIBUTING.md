@@ -58,6 +58,8 @@ Choose focused tests before repository-wide suites. Tests establish only the wor
 
 ## Launcher Development
 
+The active launcher reliability scope, acceptance gates, and phase reports live in [one delivery plan](docs/launcher-reliability-plan.md). Keep unique regression tests and necessary evidence; delete obsolete one-off drivers, duplicate snapshots and outdated plans. Commands are indexed in [deployment test navigation](tests/deployment/README-nora-acceptance.md). Do not maintain a second mutable progress plan or start another test instance before the current one has closed.
+
 The production page is `launcher/ui/index.html`. `launcher/previews/` contains design experiments, not the desktop entrypoint. Test UI and clicks without repackaging:
 
 ```sh
@@ -95,10 +97,10 @@ The packager exports source, checks Story Profile parity, builds Tavern/MCP, val
 Verify the payload separately:
 
 ```sh
-node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs /absolute/path/to/release/nora-tavern-launcher/payload
+node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload /absolute/path/to/release/nora-tavern-launcher/payload
 ```
 
-This smoke test uses its own installation directory and no real model key or pairing. External routing, model-provider behavior, and desktop acceptance need additional target-environment tests.
+The guarded product harness uses the actual native writer lease and acknowledged child actors in its own installation directory and no real model key or pairing. External routing, model-provider behavior, and desktop acceptance need additional target-environment tests. For an isolated Electron source test using a separately installed exact dependency closure, set `NORA_TEST_DESKTOP_NODE_MODULES` to that complete `node_modules` directory; the source checkout and user installation are unchanged.
 
 The three-platform pipeline is `.github/workflows/build-integrated-launcher.yml`. It verifies runtime, tests deployment, creates the payload, tests fresh installation, builds the desktop shell, and checks packaged icons/content. Publication requires all platform outputs to agree on version and commit.
 

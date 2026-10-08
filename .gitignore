@@ -9,6 +9,7 @@
 **/.cache/
 **/coverage/
 /release/
+/outputs/
 /dist/
 /launcher/desktop/dist/
 /.build/

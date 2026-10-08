@@ -6,10 +6,11 @@ const desktop = fs.existsSync(path.join(__dirname, '../../launcher/desktop/main.
   ? path.join(__dirname, '../../launcher/desktop') : path.join(__dirname, '../installer/desktop');
 const { createReleaseNetwork } = require(path.join(desktop, 'release-network'));
 
-function fixture(fetcher) {
+function fixture(fetcher, policy = {backoffMs:[0,0]}) {
   const events = [];
   const network = createReleaseNetwork({
     app: { whenReady: async () => {} }, net: { fetch: fetcher },
+    policy,
     diagnostics: { write: (event, fields) => events.push({ event, ...fields }),
       error: (event, error, fields) => events.push({ event, error, ...fields }) },
   });
@@ -32,7 +33,8 @@ test('release requests use Chromium and preserve streaming, cancellation and hea
   const headers = { Accept: 'application/json' };
   assert.equal(await f.network.fetch('https://api.github.com/releases?secret=hidden', { signal, headers }), response);
   assert.equal(await response.text(), 'payload');
-  assert.equal(options.signal, signal);
+  assert.ok(options.signal instanceof AbortSignal);
+  assert.equal(options.signal.aborted,false);
   assert.equal(options.headers, headers);
   assert.equal(options.credentials, 'omit');
   assert.equal(options.bypassCustomProtocolHandlers, true);
@@ -49,24 +51,24 @@ test('certificate errors are logged and propagated, never accepted or retried in
   assert.equal(f.events.at(-1).error, error);
 });
 
-test('Chromium connection resets retain network diagnostics and guidance without retrying', async () => {
+test('Chromium connection resets stop after bounded retries and retain the final network evidence', async () => {
   const { describeError } = require(path.join(desktop, 'launcher-errors'));
   const { presentError } = require(path.join(desktop, 'error-presentation'));
   const error = new Error('net::ERR_CONNECTION_RESET');
   let calls = 0;
   const f = fixture(async () => { calls++; throw error; });
   await assert.rejects(f.network.fetch('https://api.github.com/releases'), value => value === error);
-  assert.equal(calls, 1);
-  assert.equal(f.events.filter(event => event.event === 'network.retry').length, 0);
+  assert.equal(calls, 3);
+  assert.equal(f.events.filter(event => event.event === 'network.retry').length, 2);
   assert.equal(f.events.at(-1).event, 'network.failed');
   const detail = describeError(error);
   assert.equal(detail.error_code, 'network');
   assert.equal(detail.system_code, 'ECONNRESET');
   assert.equal(detail.error_source, 'release_service');
   assert.equal(detail.error_site, 'release.request');
-  assert.equal(detail.attempt, 1);
+  assert.equal(detail.attempt, 3);
   assert.deepEqual(presentError(error, { action: 'check_update' }), {
-    title: '连接中断了。', detail: '检查更新尚未确认完成。', next: '请确认网络和代理可用，稍后重试。',
+    title: '连接中断了。', detail: '', next: '请检查网络或代理后重新检查。',
   });
 });
 
@@ -82,7 +84,7 @@ test('a transient network change retries the same read request and recovers', as
   const url = 'https://github.com/release-manifest.json?secret=hidden';
   assert.equal(await f.network.fetch(url, { signal }), response);
   assert.equal(calls.length, 2);
-  assert.ok(calls.every(call => call.url === url && call.options.signal === signal));
+  assert.ok(calls.every(call => call.url === url && call.options.signal instanceof AbortSignal && !call.options.signal.aborted));
   assert.equal(f.events.filter(e => e.event === 'network.retry').length, 1);
   assert.equal(f.events.at(-1).attempt, 2);
   assert.ok(!JSON.stringify(f.events).includes('hidden'));
@@ -105,7 +107,7 @@ test('cancellation during retry backoff prevents any further request', async () 
     calls++;
     setTimeout(() => controller.abort(), 20);
     throw new Error('net::ERR_NETWORK_CHANGED');
-  });
+  },{backoffMs:[50,50]});
   await assert.rejects(f.network.fetch('https://github.com/manifest', { signal: controller.signal }), { name: 'AbortError' });
   assert.equal(calls, 1);
 });
@@ -132,18 +134,18 @@ test('writes, request bodies and other failures are never automatically replayed
   }
 });
 
-test('HTTP errors remain caller-owned and response body failures do not replay a stream', async () => {
+test('temporary HTTP failures are bounded while exposed response bodies are never replayed', async () => {
   let calls = 0;
   const f = fixture(async () => { calls++; return new Response('unavailable', { status: 503 }); });
   assert.equal((await f.network.fetch('https://github.com/manifest')).status, 503);
-  assert.equal(calls, 1);
+  assert.equal(calls, 3);
   const broken = fixture(async () => {
     calls++;
     return new Response(new ReadableStream({ start(controller) { controller.error(new Error('net::ERR_NETWORK_CHANGED')); } }));
   });
   const response = await broken.network.fetch('https://github.com/archive');
   await assert.rejects(response.text(), /ERR_NETWORK_CHANGED/);
-  assert.equal(calls, 2);
+  assert.equal(calls, 4);
 });
 
 test('comparison records Node failure separately from successful Chromium verification', async () => {
@@ -177,7 +179,7 @@ test('Chromium abort caused by a deadline is a timeout and HTTP responses retain
   }}});
   await assert.rejects(network.fetch('https://github.com/example',{signal:controller.signal}),e=>e.code==='TIMEOUT');
   let attempt=0;
-  const retry=createReleaseNetwork({app:{whenReady:async()=>{}},diagnostics:{write(){},error(){}},net:{fetch:async()=>{
+  const retry=createReleaseNetwork({policy:{backoffMs:[0,0]},app:{whenReady:async()=>{}},diagnostics:{write(){},error(){}},net:{fetch:async()=>{
     if(++attempt<3)throw Error('net::ERR_NETWORK_CHANGED');return new Response('{}',{status:403});
   }}});
   assert.equal((await retry.fetch('https://github.com/example')).launcherAttempt,3);

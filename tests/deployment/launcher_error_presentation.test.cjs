@@ -6,13 +6,15 @@ const test = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
 const { presentError, formatUserError } = require('../installer/desktop/error-presentation');
 const { describeError, launcherError } = require('../installer/desktop/launcher-errors');
+const {successResult,failureResult}=require('../installer/desktop/operation-result');
 
 test('known technical errors show evidence-based Chinese guidance without remote dumps', () => {
   for (const code of ['EACCES','EPERM','ENOENT','ENOSPC','ENOTFOUND','ECONNREFUSED','ECONNRESET',
     'CERT_HAS_EXPIRED','TIMEOUT','ABORT_ERR','VERIFICATION_FAILED','INVALID_RESPONSE','EMPTY_RESPONSE','RESPONSE_TOO_LARGE','RENDERER_GONE']) {
     const original = Object.assign(new Error('provider said secret-key /Users/private/path\nTraceback'), {code});
     const message = formatUserError(original, {action:'install'});
-    assert.equal(message.split('\n').length, 3);
+    assert.ok([2,3].includes(message.split("\n").length));
+    assert.ok(message.split("\n").every(line=>line.trim()));
     assert.match(message, /[\u3400-\u9fff]/);
     assert.doesNotMatch(message, /secret-key|private\/path|Traceback/);
     assert.equal(original.message, 'provider said secret-key /Users/private/path\nTraceback');
@@ -36,6 +38,17 @@ test('model authentication and release-service authentication have different rem
     if (status === 429) assert.match(message, /配额/);
     if (status === 500) assert.match(message, /服务暂时异常/);
   }
+});
+test('proven release rate limit survives wrappers and has a bounded retry recommendation',()=>{
+  const original=launcherError('opaque HTTP response',{status:403,source:'release_service',site:'release.request',rateLimited:true,retryAfterMs:120000,rateLimitRemaining:0});
+  const wrapper=launcherError('query failed',{},original);
+  assert.equal(wrapper.rateLimited,true);
+  assert.equal(describeError(wrapper).error_code,'rate_limited');
+  const text=formatUserError(wrapper,{action:'check_update'});
+  assert.match(text,/请求过于频繁|限流/);
+  assert.match(text,/2 分钟/);
+  assert.doesNotMatch(text,/API Key|模型访问权限|opaque/);
+  assert.equal(describeError({status:403,source:'release_service'}).error_code,'http_forbidden');
 });
 
 test('unknown errors do not assert permissions, missing dependencies or safe rollback', () => {
@@ -83,21 +96,45 @@ test('IPC boundary formats before Electron drops fields, preserving original dia
   const handlers = new Map(), reports = [], localErrors = [];
   const root = '/fixture';
   const context = vm.createContext({require,path,installerRoot:()=>root,MOCK_SCENARIO:false,
-    uninstalling:false,quitting:false,selectingLocation:false,formatUserError,
+    uninstalling:false,quitting:false,selectingLocation:false,formatUserError,successResult,failureResult,
     ipcMain:{handle:(id,fn)=>handlers.set(id,fn)}, telemetry:{report:e=>reports.push(e)},
     diagnostics:{error:(event,error,fields)=>localErrors.push({event,error,fields})}});
   const register = vm.runInContext(`(${source.slice(declaration.init.start,declaration.init.end)})`,context);
   const original = Object.assign(new Error('raw system dump fixture'), {code:'ENOSPC'});
   register('nora:open-directory',async()=>{throw original;});
   const frame = {url:require('node:url').pathToFileURL(path.join(root,'launcher-conversation-prototype.html')).href};
-  await assert.rejects(handlers.get('nora:open-directory')({senderFrame:frame,sender:{mainFrame:frame}}), e=>{
-    assert.match(e.message,/磁盘空间不足/); assert.doesNotMatch(e.message,/raw system dump/); return true;
-  });
+  const response=await handlers.get('nora:open-directory')({senderFrame:frame,sender:{mainFrame:frame}});
+  assert.equal(response.ok,false);assert.equal(response.error.failureCode,'disk_full');
+  assert.match(response.error.guidance.title,/磁盘空间不足/);assert.doesNotMatch(JSON.stringify(response),/raw system dump/);
   assert.equal(reports[0], original);
   assert.equal(localErrors[0].error, original);
   assert.equal(localErrors[0].event, 'launcher.ui-failed');
   assert.deepEqual(localErrors[0].fields.channel, 'nora:open-directory');
   assert.equal(original.message,'raw system dump fixture');
+});
+
+test('timeout guidance distinguishes download, release checks and models without inventing a network cause',()=>{
+  assert.equal(presentError({code:'TIMEOUT',source:'release_service',site:'release.download'},{action:'update'}).title,'资源下载超时。');
+  assert.equal(presentError({code:'TIMEOUT',source:'release_service',site:'release.request'},{action:'check_update'}).title,'检查更新超时。');
+  assert.equal(presentError({code:'TIMEOUT',source:'model_service'},{action:'model'}).title,'模型响应超时。');
+  const unknown=formatUserError({code:'TIMEOUT',source:'launcher_process'},{action:'start'});
+  assert.match(unknown,/启动等待超时/);assert.doesNotMatch(unknown,/GitHub|磁盘故障|已经回滚/);
+});
+
+test('Tavern readiness timeout survives a process wrapper and directs users to the current log',()=>{
+  const original=Object.assign(new Error('native health check timed out after 120.0s; raw local health result'),
+    {code:'TAVERN_START_TIMEOUT'});
+  const wrapper=launcherError('maintenance failed',{exitCode:1},original);
+  const view=presentError(wrapper,{action:'install'});
+  assert.equal(view.title,'酒馆启动超时。');
+  assert.equal(view.detail,'等待120秒后，酒馆仍未就绪。');
+  assert.match(view.next,/本次日志/);
+  assert.doesNotMatch(JSON.stringify(view),/GitHub|代理|Defender|raw local|具体原因尚未确认/);
+  const result=failureResult(wrapper,{action:'install'});
+  assert.equal(result.error.userCode,'TAVERN_START_TIMEOUT');
+  assert.deepEqual(result.error.allowedActions,['recheck','logs']);
+  const recovery={state:'failed',effectState:'unknown',allowedActions:['recover','logs']};
+  assert.deepEqual(failureResult(wrapper,{action:'update',operation:recovery}).error.allowedActions,['recover','logs']);
 });
 
 test('renderer separates title from steps and suppresses legacy raw exceptions', () => {
@@ -146,7 +183,7 @@ test('returned release failures retain the original local diagnosis before UI fo
     CHANNEL:'stable',formatUserError,diagnostics:{error:(event,error)=>reports.push({event,error})}});
   const check = vm.runInContext(`(${source.slice(callback.start,callback.end)})`,context);
   const returned = await check();
-  assert.equal(reports[0].error, original);
+  assert.equal(reports.length,0,'the tracked check must not append its error to an unrelated operation');
   assert.equal(returned.state,'blocked');
   assert.match(returned.compatibilityError,/该发布暂时无法安装/);
   assert.match(returned.compatibilityError,/1\.2\.0/);
@@ -157,7 +194,7 @@ test('returned release failures retain the original local diagnosis before UI fo
     result.diagnosticError = launcherError('raw manifest request failure', {source:'release_service',...evidence});
     const response = await check();
     assert.doesNotMatch(response.compatibilityError,/先升级启动器|核对版本要求/);
-    assert.match(response.compatibilityError,evidence.status ? /更新服务拒绝访问/ : /等待后台响应超时/);
+    assert.match(response.compatibilityError,evidence.status ? /更新服务拒绝了请求/ : /检查更新超时/);
   }
 });
 
@@ -179,4 +216,45 @@ test('gateway status permission failures describe unknown state without assertin
   const message = formatUserError(error,{action:'status'});
   assert.match(message,/状态.*无法确认/);
   assert.doesNotMatch(message,/已停止|本次未启动|未启动第二个|读写权限|opaque/);
+});
+test('partial model configuration states saved facts while retaining a more precise safety next step',()=>{
+  const partial=launcherError('opaque final check failed',{userCode:'MODEL_CONFIG_PARTIAL'},Object.assign(new Error('opaque OS error'),{code:'EPERM',userCode:'INSTALLER_STATE_WRITE_FAILED'}));
+  const text=formatUserError(partial,{action:'model'});assert.match(text,/模型配置已保存，后续检查未完成/);assert.match(text,/无需再次提交|先重新查询状态/);assert.match(text,/勿直接重复更新|先重新查询状态/);assert.doesNotMatch(text,/opaque|已回滚/);
+  const ownership=launcherError('opaque',{userCode:'MODEL_CONFIG_PARTIAL'},launcherError('opaque',{userCode:'GATEWAY_IDENTITY'}));assert.match(formatUserError(ownership,{action:'model'}),/勿强行结束/);
+});
+
+test('proven Chromium proxy connection failure uses network guidance without inventing a system code',()=>{
+  // Shape of the received v2.0.2 fault: check wrapper -> request wrapper -> Electron error.
+  const native = new Error('net::ERR_PROXY_CONNECTION_FAILED');
+  const request = launcherError(native.message,{source:'release_service',site:'release.request'},native);
+  const fault = launcherError('',{source:'release_service',site:'release.request'},request);
+  const technical = describeError(fault);
+  assert.equal(technical.error_code,'network');
+  assert.equal(technical.system_code,'');
+  assert.equal(fault.cause,request);assert.equal(request.cause,native);
+  const guidance = formatUserError(fault,{action:'check_update'});
+  assert.match(guidance,/无法连接系统代理/);assert.match(guidance,/系统代理设置和代理程序/);
+  assert.doesNotMatch(guidance,/net::|API Key|已回滚|关闭安全校验/);
+  assert.equal(native.message,'net::ERR_PROXY_CONNECTION_FAILED');assert.equal(native.code,undefined);
+  for (const error of [
+    {message:native.message,source:'model_service',site:'model.test'},
+    {message:native.message},
+    {message:'provider response: '+native.message,source:'release_service',site:'release.request'},
+    {message:native.message+' trailing response',source:'release_service',site:'release.request'},
+    {message:native.message,source:'release_service',site:'release.verify'},
+  ]) {
+    assert.equal(describeError(error).error_code,'unknown');
+    assert.doesNotMatch(formatUserError(error),/无法连接系统代理/);
+  }
+});
+
+test('proven ClawChat connection timeout preserves the running Nora fact before generic child exit guidance',()=>{
+  const child=Object.assign(new Error('Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。'),{userCode:'CLAWCHAT_CONNECT_TIMEOUT'});
+  const wrapper=launcherError(child.message,{source:'launcher_process',site:'process.start',exitCode:1},child);
+  assert.equal(describeError(wrapper).error_code,'process_failed');
+  const text=formatUserError(wrapper,{action:'start'});
+  assert.match(text,/诺拉已启动，ClawChat 尚未连通/);assert.equal(text.split("\n").length,2);
+  assert.match(text,/检查网络和代理/);assert.match(text,/配对码失效时重新获取并配对/);assert.doesNotMatch(text,/请.*卸载重装/);
+  assert.doesNotMatch(text,/具体原因尚未确认|已停止|已回滚|结束进程|必须重新配对/);
+  assert.equal(wrapper.cause,child);assert.equal(wrapper.exitCode,1);
 });

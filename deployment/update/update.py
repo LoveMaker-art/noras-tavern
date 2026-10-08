@@ -78,6 +78,18 @@ _diagnostics_path = HERE.parent / "installer/error_diagnostics.py"
 if not _diagnostics_path.is_file():
     _diagnostics_path = HERE.parent / "shared/error_diagnostics.py"
 _error_diagnostics = module_at("nora_update_error_diagnostics", _diagnostics_path)
+_control_path = HERE.parent / 'installer/operation_control.py'
+if not _control_path.is_file(): _control_path = HERE.parent / 'shared/operation_control.py'
+_operation_control = module_at('nora_update_operation_control', _control_path)
+_evidence_path = HERE.parent / 'installer/operation_evidence.py'
+if not _evidence_path.is_file(): _evidence_path = HERE.parent / 'shared/operation_evidence.py'
+_operation_evidence = module_at('nora_update_operation_evidence', _evidence_path)
+
+
+def resource_incomplete(message):
+    error = RuntimeError(message)
+    error.code = 'RESOURCE_INCOMPLETE'
+    return error
 
 
 def recovery_module():
@@ -259,22 +271,20 @@ def stop_unmanaged(app):
 
 
 def run(command, *, cwd=None, env=None, timeout=None, capture=False):
-    if command and command[0] == "npm" and os.name == "nt":
-        node = shutil.which("node", path=(env or os.environ).get("PATH"))
-        npm = Path(node).parent / "node_modules/npm/bin/npm-cli.js" if node else None
-        if npm is None or not npm.is_file():
-            raise RuntimeError("未找到当前实例的 Node/npm，无法准备更新依赖；当前安装尚未替换")
-        command = [node, str(npm), *command[1:]]
-        # npm resolves local dependencies as file URLs. A Win32 device-prefix
-        # cwd produces an invalid URL; retain extended paths only for file I/O.
-        if cwd is not None:
-            cwd = str(cwd)
-            if cwd.startswith("\\\\?\\UNC\\"):
-                cwd = "\\\\" + cwd[8:]
-            elif cwd.startswith("\\\\?\\"):
-                cwd = cwd[4:]
-    return subprocess.run(
-        [str(value) for value in command],
+    command=[str(value) for value in command]
+    name=Path(command[0]).name.lower() if command else ''
+    if name in ('npm', 'npm.cmd', 'npm.exe'):
+        raise resource_incomplete('更新资源缺少完整依赖，当前安装尚未替换。请重新下载完整正式安装包。')
+    if name in ('node','node.exe') and command[1:]==['--version']:
+        # Exact read-only probe; arbitrary Node programs use the owned guard.
+        return subprocess.run(command,cwd=cwd,env=env,timeout=timeout,check=True,text=True,capture_output=capture)
+    if name in ('hermes','hermes.exe'):
+        entry=Path(command[0])
+        if not entry.is_absolute():raise RuntimeError('维护任务必须使用 Nora 自带的 Hermes CLI。')
+        command=[sys.executable,'-B','-c',
+            'import runpy,sys; p=sys.argv.pop(1); sys.argv[0]=p; runpy.run_path(p,run_name="__main__")',*command]
+    return _operation_control.managed_run(
+        command,
         cwd=cwd,
         env=env,
         timeout=timeout,
@@ -383,51 +393,70 @@ def link_or_copy(source, target):
     return target
 
 
-def reuse_or_install_dependencies(target, current, lock_name, command, required):
+def reuse_dependencies(target, current, lock_name, required):
     target = Path(target)
     current = Path(current)
     modules = target / "node_modules"
+    if modules.is_dir() and all((modules / relative).is_file() for relative in required):
+        return 'bundled'
     reusable = same_file(target / lock_name, current / lock_name) and all(
         (current / "node_modules" / relative).is_file() for relative in required
     )
     if reusable:
         shutil.copytree(current / "node_modules", modules, symlinks=True, copy_function=link_or_copy)
         return "reused"
-    run(command, cwd=target)
-    return "installed"
+    raise resource_incomplete('更新资源依赖不完整，且现有依赖不能安全复用；当前安装尚未替换。请重新下载完整正式安装包。')
+
+
+def materialize_staged_local_dependencies(source):
+    """Copy reviewed file dependencies inside staging, without installation."""
+    source = Path(source)
+    native = module_at("prepared_native_lifecycle", source / "app/native_lifecycle.py")
+    contract = native.RuntimeContract.from_dict(json.loads(
+        (source / "app/native-runtime.json").read_text(encoding="utf-8"),
+    ))
+    runtime = native.NativeRuntime(source, source / "app", source / "tavern-state", contract)
+    materialized = runtime.materialize_local_dependencies()
+    if materialized:
+        log("Tavern 本地依赖已准备为独立目录：" + ", ".join(materialized))
 
 
 def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, bundled=False):
     if bundled:
-        return {"tavern": "bundled", "mcp": "bundled"}
+        for name, changed in (('app/engine/sillytavern', app_changed), ('nora-mcp', mcp_changed)):
+            if not changed: continue
+            target=Path(source)/name
+            try: required=package_dependency_manifests(target)
+            except (OSError, RuntimeError) as error:
+                raise resource_incomplete('完整更新包缺少生产依赖清单，当前安装尚未替换。') from error
+            if name == 'app/engine/sillytavern':
+                package = json.loads((target / 'package.json').read_text(encoding='utf-8'))
+                if any(isinstance(value, str) and value.startswith('file:') for value in package['dependencies'].values()):
+                    try: materialize_staged_local_dependencies(source)
+                    except (OSError, RuntimeError) as error:
+                        raise resource_incomplete('完整更新包的本地生产依赖无法安全准备，当前安装尚未替换。') from error
+            if any(not (target/'node_modules'/relative).is_file() for relative in required):
+                raise resource_incomplete('完整更新包缺少生产依赖，当前安装尚未替换。请重新下载完整正式安装包。')
+        return {"tavern": "bundled" if app_changed else 'unchanged', "mcp": "bundled" if mcp_changed else 'unchanged'}
     report = {"tavern": "unchanged", "mcp": "unchanged"}
     if app_changed:
         log("准备 Tavern 依赖")
         engine = source / "app/engine/sillytavern"
-        report["tavern"] = reuse_or_install_dependencies(
+        report["tavern"] = reuse_dependencies(
             engine,
             Path(old_app) / "engine/sillytavern",
             "package-lock.json",
-            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
             package_dependency_manifests(engine),
         )
         # npm's Windows junctions contain staging paths. Materialize them while
         # those paths are still valid, before stopping services or moving app.
-        native = module_at("prepared_native_lifecycle", source / "app/native_lifecycle.py")
-        contract = native.RuntimeContract.from_dict(json.loads(
-            (source / "app/native-runtime.json").read_text(encoding="utf-8"),
-        ))
-        runtime = native.NativeRuntime(source, source / "app", source / "tavern-state", contract)
-        materialized = runtime.materialize_local_dependencies()
-        if materialized:
-            log("Tavern 本地依赖已准备为独立目录：" + ", ".join(materialized))
+        materialize_staged_local_dependencies(source)
     if mcp_changed:
         log("准备 Nora MCP 依赖")
-        report["mcp"] = reuse_or_install_dependencies(
+        report["mcp"] = reuse_dependencies(
             source / "nora-mcp",
             old_mcp,
             "npm-shrinkwrap.json",
-            ["npm", "ci", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"],
             package_dependency_manifests(source / "nora-mcp"),
         )
     return report
@@ -719,18 +748,8 @@ def start_old(hermes_home, install_root, service, snapshot):
         return
     layout = python_layout(app)
     if layout:
-        log_file = install_root / "tavern-state/runtime/python-recovery.log"
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        with log_file.open("ab", buffering=0) as output:
-            subprocess.Popen(
-                [sys.executable, str(app / layout["entry"]), "--port", "8799"],
-                cwd=app,
-                env={**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)},
-                stdin=subprocess.DEVNULL,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
+        error=RuntimeError('旧 Python 酒馆无法由新版启动器安全接管。文件和数据已保留，请使用完整正式包重新安装启动器。')
+        error.code='LEGACY_RUNTIME_UNSUPPORTED';raise error
 
 
 @contextmanager
@@ -897,7 +916,7 @@ def managed_lifecycle(phase, home, root, version):
     command = [sys.executable, "-B", plan["bridge"], "--nora-home", plan["noraHome"],
                "--hermes-home", str(home), "--install-root", str(root),
                "--port", str(plan["port"]), "update-lifecycle"]
-    result = subprocess.run(command, input=json.dumps({**plan, "phase": phase, "version": version}),
+    result = _operation_control.managed_run(command, input=json.dumps({**plan, "phase": phase, "version": version}),
                             text=True, capture_output=True, timeout=300)
     messages = []
     for line in result.stdout.splitlines():
@@ -943,7 +962,12 @@ def install(args):
         if transaction_file.exists():
             previous = json.loads(transaction_file.read_text(encoding="utf-8"))
             if previous.get("status") not in ("committed", "restored"):
-                raise RuntimeError("上次更新事务未完成，禁止覆盖恢复现场；请保留备份：" + str(previous.get("backup", "")))
+                previous_effects=recovery_module().effects(hermes_home,install_root)
+                if previous_effects['effectState']!='untouched':
+                    raise RuntimeError("上次更新事务未完成，禁止覆盖恢复现场；请保留备份：" + str(previous.get("backup", "")))
+                # A trusted preparation with no remaining write effect is
+                # historical evidence, not a permanent lock on later updates.
+                json_write(Path(previous['backup'])/'transaction-retired.json',previous)
         with tempfile.TemporaryDirectory(prefix="direct-", dir=filesystem_path(update_root)) as temporary:
             work = Path(temporary)
             source = work / "source"
@@ -1083,8 +1107,9 @@ def install(args):
                     if managed:
                         journal.plan["phase"] = "stopping"
                         journal.save()
-                        managed_lifecycle("stop", hermes_home, install_root, version)
+                        stopped=managed_lifecycle("stop", hermes_home, install_root, version)
                         helpers.stop_install_runtime(install_root)
+                        journal.seal_offline(stopped)
                         journal.plan["phase"] = "stopped"
                         journal.save()
                     elif service:
@@ -1110,6 +1135,7 @@ def install(args):
                 else:
                     log("应用非运行时更新，Tavern 保持运行")
                 if managed:
+                    journal.mark_metadata([hermes_home/name for name in ('SOUL.md','SOUL.nora-tavern.example.md')])
                     helpers.install_soul(hermes_home, source, replace=False, dedicated=True)
                 for name, prepared, target in swaps:
                     saved = backup / "trees" / name
@@ -1140,17 +1166,23 @@ def install(args):
                             raise
                         state_swapped = True
                 if agents_changed:
+                    if journal is not None:journal.mark_metadata([hermes_home/'AGENTS.md',hermes_home/'AGENTS.md.bak'])
                     install_agents(hermes_home, desired_agents)
                 if config_changed:
+                    if journal is not None:journal.mark_metadata([hermes_home/'config.yaml'])
                     atomic(hermes_home / "config.yaml", mcp_config, mode=0o600)
                 if managed:
                     log("更新诺拉技能、定时任务并核对当前实例")
+                    journal.mark_metadata([hermes_home/'clawchat-skills'])
                     managed.seed_clawchat_skills(hermes_home, sys.executable, dict(os.environ))
+                    journal.mark_metadata([hermes_home/'cron/jobs.json']+[hermes_home/'scripts'/name for name in UPDATE_CHECK_FILES])
                     update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
                     if update_check.get("status") != "installed":
                         raise RuntimeError("诺拉更新提醒任务未成功注册")
+                    journal.mark_metadata([hermes_home/'nora-installation.json'])
                     managed.record_files_ready(hermes_home)
                 if app_changed:
+                    if journal is not None:journal.mark_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
                     json_write(
                         install_root / "tavern-state/native-runtime/dependencies.json",
                         dependency_marker(install_root / "apps/tavern-runtime"),
@@ -1180,6 +1212,7 @@ def install(args):
                     world_verification = verify_preserved_worlds(
                         install_root / "apps/tavern-runtime", install_root / "tavern-state",
                         story_inventory, story_worlds)
+                    journal.mark_metadata([update_root/'nora-system.json'])
                     managed.record_initialization(hermes_home, install_root, manifest, proof)
                     if setup_completed:
                         managed.mark_setup_complete(install_root)
@@ -1207,6 +1240,7 @@ def install(args):
                     "clawchatGreeting": gateway_report,
                     "worldVerification": world_verification,
                 }
+                if journal is not None:journal.mark_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
                 verified_state = managed_lifecycle("verify", hermes_home, install_root, version) if managed else None
@@ -1261,6 +1295,8 @@ def install(args):
                     log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
                 return
             except BaseException as error:
+                _operation_evidence.freeze(error, nora_home=managed_home or install_root.parent,
+                    install_root=install_root, context={'stage': 'update_apply'})
                 if committed:
                     raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
                 log("更新未完成，恢复旧版本")
@@ -1282,11 +1318,16 @@ def install(args):
                             verify=verify_restored,
                         )
                     except BaseException as recovery_error:
+                        _operation_evidence.freeze(recovery_error, nora_home=managed_home or install_root.parent,
+                            install_root=install_root, context={'stage': 'restoring'})
                         failure = RuntimeError(f"更新失败：{error}; 恢复未完成：{recovery_error}; recovery=incomplete; backup={backup}")
+                        failure.code = getattr(error,'code',None)
                         failure._bridge_diagnostic_message = "更新失败，旧版本恢复未完成；请保留日志和备份。"
                         failure.secondary_errors = [recovery_error]
                         raise failure from error
-                    raise RuntimeError(f"{error}; recovery=restored; backup={backup}") from error
+                    failure=RuntimeError(f"{error}; recovery=restored; backup={backup}")
+                    failure.code=getattr(error,'code',None)
+                    raise failure from error
                 if runtime_stopped:
                     try:
                         active_app = install_root / "apps/tavern-runtime"
@@ -1338,6 +1379,8 @@ def main():
     command.add_argument("--confirm", action="store_true", required=True)
     command.add_argument("--allow-candidate", action="store_true")
     args = parser.parse_args()
+    cli = module_at('nora_update_operation_cli', _control_path.with_name('operation_cli.py'))
+    cli.ensure_operation('update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
     install(args)
 
 

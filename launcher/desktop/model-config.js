@@ -2,7 +2,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const https = require('node:https');
 const path = require('node:path');
-const { createHash } = require('node:crypto');
+const { createHash, createHmac } = require('node:crypto');
 const { launcherError } = require('./launcher-errors');
 
 // Hermes/OpenAI SDKs require a nonempty credential even for unauthenticated
@@ -13,8 +13,19 @@ const redact = (value, secret) => secret ? String(value).replaceAll(secret, '***
 function modelCredential(provider, payload) {
   if (provider.custom && payload?.authMode === 'none') return NO_AUTH_KEY;
   const key = String(payload?.key || '').trim();
-  if (!key || key.length > 8192 || /[\r\n]/.test(key)) throw new Error('请输入有效的 API Key，或为自定义服务选择“无需鉴权”。');
+  const invalid = cause => launcherError('API Key 格式不正确，请从服务商后台重新复制。',
+    {userCode:'MODEL_KEY_INVALID',source:'model_service'},cause);
+  if (!key || key.length > 8192 || /[\r\n]/.test(key)) throw invalid();
+  // Use the transport's validator for every protocol, including providers
+  // whose list API places the key in a URL but whose model test uses a header.
+  try { http.validateHeaderValue('Authorization',`Bearer ${key}`); }
+  catch (error) { throw invalid(error); }
   return key;
+}
+
+function configurationFingerprint({provider,model,key,baseUrl='',authMode='key'},salt){
+  if(typeof salt!=='string'||salt.length<16)throw new TypeError('Installation identity is required for model conditions');
+  return createHmac('sha256',salt).update(JSON.stringify([provider,model,key,baseUrl,authMode])).digest('hex');
 }
 
 const PROVIDERS = Object.freeze([
@@ -116,10 +127,18 @@ function requestHeaders(provider, key) {
   return headers;
 }
 
+function rejectInterruptedResponse(response, reject, site) {
+  const fields = { source: 'model_service', site };
+  const message = '模型服务连接中断，请检查网络或服务状态后重试。';
+  response.once('error', (error) => reject(launcherError(message, fields, error)));
+  response.once('aborted', () => reject(launcherError(message, { ...fields, code: 'ECONNRESET' })));
+}
+
 function requestJson(url, headers, secret, timeoutMs = 20000) {
   return new Promise((resolve, reject) => {
     const transport = new URL(url).protocol === 'http:' ? http : https;
     const request = transport.get(url, { headers, timeout: timeoutMs }, (response) => {
+      rejectInterruptedResponse(response, reject, 'model.list');
       let body = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
@@ -150,7 +169,7 @@ function requestJson(url, headers, secret, timeoutMs = 20000) {
 
 function testCustomModel(baseUrl, key, model, protocol = 'openai') {
   return new Promise((resolve, reject) => {
-    const secret = String(key || '').trim();
+    const secret = modelCredential(requireProvider('custom'),{key,authMode:key===NO_AUTH_KEY?'none':'key'});
     const normalizedBaseUrl = normalizeCustomBaseUrl(baseUrl);
     const endpoint = new URL(protocol === 'anthropic' ? `${normalizedBaseUrl}/messages`
       : protocol === 'gemini' ? `${normalizedBaseUrl}/models/${encodeURIComponent(model)}:generateContent`
@@ -177,6 +196,7 @@ function testCustomModel(baseUrl, key, model, protocol = 'openai') {
       },
       timeout: 120000,
     }, (response) => {
+      rejectInterruptedResponse(response, reject, 'model.test');
       let responseBody = '';
       response.setEncoding('utf8');
       response.on('data', (chunk) => {
@@ -303,6 +323,7 @@ function readVerifiedModel(noraHome) {
 }
 
 module.exports = {
+  configurationFingerprint,
   modelCredential,
   NO_AUTH_KEY,
   loadProviderModels,

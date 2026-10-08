@@ -1,49 +1,41 @@
-# Nora 安装验收记录
+# 启动器测试导航
 
-## 2026-09-08 资料同步修复
+唯一执行范围、验收和阶段状态见 [可靠性交付方案](../../docs/launcher-reliability-plan.md)。本文件只索引既有测试入口，不另维护“已通过”清单。过期验收说明与临时脚本已删除；必要技术报告保留其原候选和场景身份，不能代替当前候选证据。
 
-- 只读检查参考机器：`clawchat/greeting.md` 原本要求模型在首次问候前设置昵称和指定的公开头像；本地简短问候模板缺少这段要求。
-- 启动器现由程序在配对后、启动 gateway 前同步名字和头像，并通过服务端读回验证。中文使用「诺拉」，其他语言使用「Nora」；头像沿用参考机器的公开图片 URL。
-- 成功记录与当前配对账号绑定。重复启动保留用户后续修改；换账号重新初始化。同步失败保留配对，不重放一次性配对码，也不标记启动检查完成。
-- 使用本地整合包的真实 ClawChat API 客户端对本地模拟 HTTP 服务完成初始化、读取验证、重复启动测试。未调用真实 ClawChat 写接口，未计作手机端头像显示验收。
-- 版本检查区分「发现更高发布版本」与「完整包可安装」；平台组件缺失时显示阻塞状态，不再误报可用更新。
-- 21 项 Python 检查、15 项 Node 检查通过。此次为源码验证，尚未替换用户桌面测试应用或修改测试账号。
+## 选择测试
 
-## 2026-09-07 安装验证
+修改哪个职责，先运行对应现有合同测试；出现通过范围外的问题，再扩展关联检查。不要因为整理文档就运行所有平台完整流程，也不要以测试数证明完成。
 
-2026-09-07，本机 macOS arm64。
+| 主题 | 入口示例 |
+| --- | --- |
+| 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs` |
+| 原生锁、委托与关闭 | `launcher_operation_lock.test.cjs`、`launcher_operation_inspection.test.cjs`、`test_operation_control.py` |
+| 首装、更新与恢复 | `launcher_runtime_transaction.test.cjs`、`launcher_update_executor.test.cjs`、`test_first_install_transaction.py`、`test_update_operation_safety.py` |
+| 版本、来源与下载 | `launcher_release_plan.test.cjs`、`launcher_network_policy.test.cjs`、`launcher_network.test.cjs` |
+| 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs` |
+| 引导、进度与界面 | `launcher_guidance_flow.test.cjs`、`launcher_task_progress.test.cjs`、`launcher_controller.test.cjs` |
+| 真实程序流程 | `launcher_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
+| 打包 APP | `launcher_packaged_app.test.cjs`、`verify_launcher_package.cjs`：实际 Electron/ASAR/资源核验；缺输入或 skip 不算通过 |
 
-补充桌面验收：已生成独立本地候选 `.app`，通过真实界面点击安装、Nora 完整性检查和 MCP 读取，
-自动进入模型配置；停止并重开仍停在模型配置，不重复安装。修复了首次打开借用系统 Python、
-因缺少 yaml 而阻塞安装入口的问题。该桌面验收通过，未使用模型 Key 或 ClawChat 配对信息。
+辅助文件 `launcher_owned_test_actor.cjs` 与 `launcher_operation_test_lock.cjs` 被现有测试引用，承担真实受管执行，不属于可按名称删除的重复测试。普通单元测试、native actor、实际 GUI 和生产入库分别报告。
 
-## 已验证
+## 从源码运行
 
-- 从新生成的候选发布包，在独立临时目录解压真实 Hermes、Python、Node.js、ClawChat、Liveware 和酒馆。
-- Hermes 加载 Nora SOUL、AGENTS、四组 Nora 技能及 ClawChat 技能；通过 Hermes Hook loader 加载启动 Hook。
-- 实际注册 ClawChat 插件并检查工具、Hook、Liveware 可执行文件。
-- 通过真实 MCP stdio 请求读取本次安装的酒馆实例，使用随机非默认端口。
-- 通过 Hermes cron 执行器实际执行 Python 更新检查脚本；版本源使用本地测试文件，不访问模型或发送消息。
-- 未配置模型、未配对时 setupCompleted 为 false；测试结束后停止并删除临时实例。
-- 回归覆盖配置及任务回滚、Key 保留、托管组件损坏、任务重复和禁用、端口传递、发布漏文件、版本判断与下载校验。
-
-## 尚未验证或交付
-
-- Windows x64、macOS Intel 的真机安装与账户流程；CI 配置不是已通过的运行结果。
-- 用户模型响应、手机收到 Nora 问候、手机 Liveware 访问和定时通知送达。
-- 整套 Hermes 跨版本迁移及启动器自更新，当前禁止用旧 Tavern 更新器替代。
-- GitHub 最新正式发布的完整平台资产。实时检查 v2.2.8 缺少 nora-system-darwin-arm64.json，安装前会报错，不降级使用旧嵌入包。
-- 当前用户测试应用未替换，现有测试 Key、配对信息及主酒馆未修改。
-
-## 重复执行
-
-在提供 Node 和测试 Python 的环境中，从仓库根目录执行：
+交付相对导入通过唯一映射生成，统一从仓库根运行：
 
 ```sh
-python3 -B -m unittest ops.tests.test_nora_instance ops.tests.test_nora_system ops.tests.test_first_install ops.tests.test_update_check ops.tests.test_liveware_cache_release ops.tests.test_launcher_services
-node --test ops/tests/launcher_releases.test.cjs ops/tests/launcher_bundle_contract.test.cjs ops/tests/launcher_runtime.test.cjs
-node ops/tests/launcher_bundle_smoke.cjs <候选目录>/nora-tavern-launcher/payload
+node tooling/run.mjs node --test tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_guidance_flow.test.cjs
+node tooling/run.mjs python -B -m unittest tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety
 ```
 
-UI 布局未修改。此前控制器测试因未配置 Playwright 路径未运行；后续使用已配置的 Playwright
-完成上述打包应用端到端测试。未将账户配对和实际模型对话计作已通过。
+依赖和隔离 native 输入见 [开发说明](../../CONTRIBUTING.md)。不要直接运行不存在的源码 `ops/tests/`，不要在用户安装目录修补代码。
+
+完整流程需已冻结且平台匹配的真实 payload：
+
+```sh
+node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload /absolute/path/to/candidate/payload --scratch-base /absolute/path/to/disposable-test-root --keep
+```
+
+入口创建隔离实例并运行真实程序，执行前登记候选身份、平台和实例。重用实例读取 receipt 端口和运行事实；测试在失败分支也必须结束自己的 APP、驱动和受管服务。清理失败先停止该轮，不启动第二个候选。
+
+真实模型/ClawChat、Windows NSIS 覆盖更换、Intel 主机和接收端原操作查询是独立验收项。正式数据、密钥和真实用户事件均不作为可删除 fixture。

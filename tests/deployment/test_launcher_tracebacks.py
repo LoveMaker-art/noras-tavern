@@ -9,6 +9,9 @@ import contextlib
 import json
 from unittest.mock import patch
 import ast
+import os
+import shutil
+import tempfile
 
 
 class LauncherTracebackTests(unittest.TestCase):
@@ -67,8 +70,18 @@ def main():
         ]
         for name, args, message in cases:
             with self.subTest(entrypoint=name):
-                result = subprocess.run([sys.executable, "-B", str(installer / name), *args],
-                                        capture_output=True, text=True, timeout=20)
+                if name == 'first_install.py':
+                    node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+                    self.assertTrue(node, 'A real Node runtime is required for the owned install actor')
+                    with tempfile.TemporaryDirectory(prefix='nora-traceback-owner-') as temporary:
+                        result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+                            str(installer / 'desktop/operation-lock.js'), str(Path(temporary).resolve()),
+                            sys.executable, str(installer / name), *args],
+                            env={**os.environ, 'NORA_TEST_VENV_HOME': sys.prefix},
+                            capture_output=True, text=True, timeout=20, input='')
+                else:
+                    result = subprocess.run([sys.executable, "-B", str(installer / name), *args],
+                                            capture_output=True, text=True, timeout=20)
                 self.assertEqual(result.returncode, 1, result.stderr)
                 self.assertIn("Traceback (most recent call last):", result.stderr)
                 self.assertIn(name, result.stderr)

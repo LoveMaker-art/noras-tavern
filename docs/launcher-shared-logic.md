@@ -12,7 +12,8 @@
 | ClawChat 开场白补丁 | `deployment/shared/clawchat_greeting_patch.py` 及同目录 `.patch` | 构建时预应用，安装时校验 |
 | Nora MCP 配置生成 | `deployment/update/update.py::render_mcp` | 首装调用同一函数，显式传入端口 |
 | 酒馆模型凭据及设置写入 | `app/native_model_config.py::NativeSettingsClient.configure` | 首次配置策略先判断是否允许同步，再调用公共写入函数 |
-| 本地文件锁 | `deployment/shared/runtime_lock.py` | 安装、注册和服务停止使用同一跨平台锁实现 |
+| 总体维护写者准入与子执行委托 | `launcher/desktop/operation-lock.js` / `os-lock.js`、`deployment/shared/operation_control.py` | GUI与技能维护入口共用原生锁，实际进程握手后委托 |
+| 实例内部生命周期锁 | `deployment/shared/runtime_lock.py` | 酒馆安装、注册和服务停止使用同一实例锁，不再次获取总体维护锁 |
 | AGENTS 与问候文件策略 | `deployment/shared/managed_context.py` | 首装、更新共用 |
 | 有界异常类型、调用位置和原因链投影 | `deployment/shared/error_diagnostics.py` | 桥接、首次安装、更新及酒馆 CLI 共用；跨进程接收与远端脱敏另行校验 |
 | 受管更新恢复计划和文件恢复 | `deployment/update/recovery.py` | 更新器保存检查点；桥接器提供停服、恢复运行和验收操作 |

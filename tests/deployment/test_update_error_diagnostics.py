@@ -101,6 +101,7 @@ class UpdateErrorDiagnosticTests(unittest.TestCase):
         tree.body[0].body[0].handlers[0].body = [branch]
         ast.fix_missing_locations(tree)
         namespace = {'fail_start': fail_start, 'journal': object(), 'recovery_helper': SimpleNamespace(recover=fail_restore),
+                     '_operation_evidence': SimpleNamespace(freeze=Mock()), 'managed_home': Path('/fixture'),
                      'hermes_home': Path('/fixture/hermes'), 'install_root': Path('/fixture/tavern'),
                      'version': '2.4.2', 'backup': Path('/fixture/backup')}
         exec(compile(tree, update.__file__, 'exec'), namespace)
@@ -199,18 +200,15 @@ for(const event of JSON.parse(process.argv[2]))collector.observe(event);
 const packet=faults.packet(collector.attach(new Error('outer exit wrapper')),{action:process.argv[3],history:[]});
 process.stdout.write(JSON.stringify(packet));
 """
-        return json.loads(subprocess.run(['node', '-e', script, str(desktop), json.dumps(events), action],
+        return json.loads(subprocess.run([native_fixtures.NODE, '-e', script, str(desktop), json.dumps(events), action],
                                          capture_output=True, text=True, check=True).stdout)
 
-    @unittest.skipUnless(shutil.which('node'), 'requires a real Node executable')
+    @unittest.skipUnless(native_fixtures.NODE, 'requires a real Node executable')
     def test_real_node_failure_crosses_first_install_bridge_and_fault_packet(self):
         case = native_fixtures.NativeStartupEvidenceTests('test_real_node_exit_preserves_exit_code_and_program_locations')
         case.setUp()
         self.addCleanup(case.doCleanups)
-        case.script("setTimeout(() => { require('nora-intentionally-missing-test-module'); }, 150);\n")
-        def failure():
-            case.runtime.start(port=case.port)
-        events, _local = self.entrypoint(first_install, failure)
+        events = case.guarded_failure_events()
         self.assertEqual(events[1]['code'], 'TAVERN_PROCESS_EXITED')
         forwarded = self.bridge_events(events)
         self.assertTrue(any(event.get('component') == 'installer' for event in forwarded))
@@ -222,7 +220,7 @@ process.stdout.write(JSON.stringify(packet));
         self.assertNotIn('nora-intentionally-missing-test-module', json.dumps(packet))
         self.assertNotIn(str(case.base), json.dumps(packet))
 
-    @unittest.skipUnless(shutil.which('node'), 'requires a real Node executable')
+    @unittest.skipUnless(native_fixtures.NODE, 'requires a real Node executable')
     def test_four_node_updater_diagnostic_keeps_primary_after_outer_bridge_exit(self):
         def failure():
             primary = RuntimeError('原始更新失败，必须保留。')

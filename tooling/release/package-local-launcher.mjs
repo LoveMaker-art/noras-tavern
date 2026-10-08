@@ -15,8 +15,17 @@ if (system.candidate !== true || system.platform !== process.platform || system.
 }
 const source = path.join(root, 'ops/installer/desktop');
 const desktop = path.join(launcher, 'desktop');
-if (!fs.existsSync(path.join(desktop, 'node_modules'))) {
-  fs.symlinkSync(fs.realpathSync(path.join(source, 'node_modules')), path.join(desktop, 'node_modules'), 'junction');
+const modules = path.join(desktop, 'node_modules');
+const sourceModules = fs.realpathSync(path.join(source, 'node_modules'));
+if (process.platform === 'win32' && fs.existsSync(modules) && fs.lstatSync(modules).isSymbolicLink()) {
+  // electron-builder's npm collector can omit transitive dependencies when
+  // this input is a junction to another project. Replace only our own link.
+  if (fs.realpathSync(modules).toLowerCase() !== sourceModules.toLowerCase()) throw new Error('Unexpected launcher dependency junction');
+  fs.unlinkSync(modules);
+}
+if (!fs.existsSync(modules)) {
+  if (process.platform === 'win32') fs.cpSync(sourceModules, modules, { recursive: true, dereference: true });
+  else fs.symlinkSync(sourceModules, modules, 'dir');
 }
 const pkg = JSON.parse(fs.readFileSync(path.join(source, 'package.json')));
 for (const file of ['package.json', ...pkg.build.files]) {
@@ -26,7 +35,10 @@ fs.copyFileSync(path.join(source, pkg.build.nsis.include), path.join(desktop, pk
 // Refresh launcher resources too; the pinned system payload remains unchanged.
 for (const resource of pkg.build.extraResources) {
   if (resource.to === 'payload') continue;
-  fs.cpSync(path.resolve(source, resource.from), path.resolve(desktop, resource.from), { recursive: true });
+  const origin = resource.to === 'operation-delegate.js' ? path.join(source, 'operation-delegate.js')
+    : resource.to === 'update_paths.py' ? path.resolve(source, '../../updater/bootstrap.py')
+      : path.resolve(source, resource.from);
+  fs.cpSync(origin, path.resolve(desktop, resource.from), { recursive: true });
 }
 const buildId = `local-${Date.now()}`;
 const config = {

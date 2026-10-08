@@ -2,6 +2,29 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
+// Released launchers through 2.0.2 predate the registered executor protocol.
+// Candidate labels may be reused locally; they cannot establish compatibility
+// for a public release. The first public version is chosen at delivery.
+const LAST_LEGACY_LAUNCHER = [2, 0, 2];
+const compareVersion = (left, right) => {
+    for (let index = 0; index < 3; index++) if (left[index] !== right[index]) return Math.sign(left[index] - right[index]);
+    return 0;
+};
+export function assertMaintenanceVersions({ launcherVersion, minimumLauncherVersion, candidate = false }) {
+    const parse = value => {
+        if (typeof value !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value))
+            throw new Error('Missing or invalid maintenance launcher version');
+        const parts = value.split('.').map(Number);
+        if (!parts.every(Number.isSafeInteger)) throw new Error('Invalid maintenance launcher version');
+        return parts;
+    };
+    const launcher = parse(launcherVersion), minimum = parse(minimumLauncherVersion);
+    if (compareVersion(minimum, launcher) > 0) throw new Error('Maintenance minimum exceeds the bundled launcher version');
+    if (!candidate && compareVersion(minimum, LAST_LEGACY_LAUNCHER) <= 0)
+        throw new Error('The new maintenance protocol cannot advertise legacy launchers through 2.0.2; choose a new public launcher version');
+    return minimumLauncherVersion;
+}
+
 export function fileDigest(file) {
     const hash = crypto.createHash('sha256');
     const fd = fs.openSync(file, 'r');
@@ -35,9 +58,10 @@ export function configureCandidateLauncher({ packageFile, payload, identity, tel
 }
 
 // Each platform publishes unique names; no shared manifest is overwritten by another build.
-export function writeSystemRelease({ release, payload, identity, launcherVersion, minimumLauncherVersion = '0.3.4' }) {
+export function writeSystemRelease({ release, payload, identity, launcherVersion, minimumLauncherVersion = identity.bootstrap?.minimumLauncherVersion }) {
     const runtime = identity.hermesRuntime;
     if (!runtime) return null;
+    assertMaintenanceVersions({ launcherVersion, minimumLauncherVersion, candidate: identity.candidate === true });
     const platform = `${runtime.platform}-${runtime.arch}`;
     const output = path.join(release, 'system-assets');
     fs.mkdirSync(output, { recursive: true });
@@ -54,6 +78,7 @@ export function writeSystemRelease({ release, payload, identity, launcherVersion
         candidate: Boolean(identity.candidate), platform: runtime.platform, arch: runtime.arch,
         channel: /-beta\./.test(identity.versions.tavern) ? 'beta' : 'stable',
         launcherVersion, minimumLauncherVersion, components: identity.versions, files,
+        launcherCapabilities:identity.launcherCapabilities,
     };
     const bytes = JSON.stringify(manifest, null, 2) + '\n';
     fs.writeFileSync(path.join(output, `nora-system-${platform}.json`), bytes);

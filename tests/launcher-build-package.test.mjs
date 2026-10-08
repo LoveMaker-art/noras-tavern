@@ -68,6 +68,8 @@ for (const changed of [false, true]) test(`real packager: ${changed ? 'changed l
     t.after(() => fs.rmSync(release, { recursive: true, force: true }));
     const result = JSON.parse(fs.readFileSync(path.join(release, 'release-manifest.json')));
     assert.equal(result.candidate, true);
+    assert.equal(result.bootstrap.minimumLauncherVersion,
+        JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'))).version);
     assert.deepEqual(result.launcherBuildReuse.modules, Object.fromEntries(Object.entries(baseline.modules)
         .filter(([, item]) => item.artifacts.every(name => baseline.artifacts[name] === result.artifacts[name]))
         .map(([name, item]) => [name, item.sha256])));

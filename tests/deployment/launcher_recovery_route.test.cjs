@@ -5,7 +5,8 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/launcher-controller.js'), 'utf8');
-const route = source.slice(source.indexOf('  function route()'), source.indexOf('  function taskView('));
+const guidanceSource = source.slice(source.indexOf('  const textError'), source.indexOf('  function complete()'));
+const route = source.slice(source.indexOf('  function recoveredOperation('), source.indexOf('  function taskView('));
 
 function element(tag = 'div') {
   const node = { tagName: tag.toUpperCase(), children: [], dataset: {}, className: '', open: false,
@@ -49,7 +50,8 @@ function recovery(version, updateRecovery, extra = {}, apiExtra = {}) {
   const context = vm.createContext({
     api: { recover() {}, openLogs() {}, ...apiExtra }, openLogs: () => calls.push(['logs']), snapshot: { installed: true, hermesInstalled: true, systemReady: false, version, updateRecovery,
       running: true, systemProblems: ['技能文件内容与安装记录不一致'], ...extra },
-    autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false, statusUnknown: false,
+    autoStartAttempted: false, bundledUpgradeAttempted: false, complete: () => false, statusUnknown: false, launcherRecoveryConfirmed:false,
+    versionInfo:null,lastFailure:null,lastStatusError:'',busy:false,
     $: id => {
       const nested = [...elements.values()].flatMap(descendants).find(node => node.id === id);
       if (nested) return nested;
@@ -58,8 +60,9 @@ function recovery(version, updateRecovery, extra = {}, apiExtra = {}) {
     document: { createElement: element }, clearInline() { context.$('inline').replaceChildren(); }, controls() {},
     say: (...args) => calls.push(['say', ...args]), button,
     run: (...args) => calls.push(args),
+    fail: (error,action) => { context.view='error';calls.push(['failure',error,action]);context.clearInline();context.$('inline').append(button('查看日志',()=>calls.push(['logs']),false)); },
   });
-  vm.runInContext(`${route}\nroute();`, context);
+  vm.runInContext(`${guidanceSource}\n${route}\nroute();`, context);
   return { elements, calls, context, reroute: () => vm.runInContext('route();', context) };
 }
 
@@ -74,6 +77,21 @@ test('legacy integrity failure resolves a compatible release instead of pinning 
   assert.equal(h.calls.at(-1)[1]?.tag, undefined);
 });
 
+test('historical restoration discloses the selected data checkpoint before moving files',()=>{
+  const h=recovery('2.4.2',{kind:'legacy',canRecover:true,restoreVersion:'2.4.1',backup:'/retained/backup',journalReference:'/retained/journal'});
+  const copy=h.calls.filter(call=>call[0]==='say').at(-1);
+  assert.match(copy[2],/2.4.1/);assert.match(copy[2],/数据和配置/);assert.match(copy[2],/较新数据/);assert.match(copy[2],/需手动启动/);
+  assert.deepEqual(buttons(h).map(node=>node.label),['恢复旧版本','查看日志']);
+});
+
+test('file-only historical recovery keeps an explicit start action and truthful guidance',()=>{
+  const h=recovery('2.4.1',null,{operation:{operationId:'fixture',state:'rolled-back',kind:'recover',verification:'failed',
+    recoveryOutcome:'files-restored-start-failed',result:{legacyFilesRestored:true},allowedActions:['start-restored','recheck','logs']}});
+  const failure=h.calls.find(call=>call[0]==='failure');
+  assert.equal(failure[1].guidance.title,'旧版本文件已恢复。');assert.match(failure[1].guidance.detail,/保持停止/);
+  assert.match(failure[1].guidance.next,/启动旧版本/);
+});
+
 test('replacement installer upgrades an existing system to its bundled version only once', () => {
   for (const systemReady of [true, false]) {
     const h = recovery('2.3.2', null, { systemReady, bundledUpgradeTarget: 'v2.3.13' });
@@ -85,14 +103,11 @@ test('replacement installer upgrades an existing system to its bundled version o
   }
 });
 
-test('a failed upgrade requires an explicit retry and keeps the new bundled target', () => {
-  const h = recovery('2.3.2', null, { bundledUpgradeTarget: 'v2.3.13',
-    installer: { phase: 'error', error: 'fixture download failed' } });
-  assert.equal(h.calls.some(c => c[0] === 'update'), false);
-  const button = h.elements.get('inline').children[0];
-  assert.equal(button.label, '继续更新');
-  button.click();
-  assert.equal(h.calls.at(-1)[1].tag, 'v2.3.13');
+test('a legacy failed upgrade has no direct replay and preserves its bundled target for diagnosis', () => {
+  const h = recovery('2.3.2', null, { bundledUpgradeTarget:'v2.3.13', installer:{phase:'error',error:'fixture download failed'} });
+  assert.equal(h.calls.some(call=>call[0]==='update'),false);
+  assert.equal(h.context.view,'error');assert.equal(h.context.snapshot.bundledUpgradeTarget,'v2.3.13');
+  assert.equal(buttons(h).some(node=>node.label==='继续更新'),false);assert.ok(buttons(h).some(node=>node.label==='查看日志'));
 });
 
 test('unknown installed version cannot trigger an unpinned repair', () => {
@@ -120,7 +135,7 @@ test('validated interrupted update offers explicit recovery and preserves the lo
 test('incomplete recovery records explain the block without offering an unsafe rollback', () => {
   const reason = '旧更新记录缺少恢复计划，无法安全恢复。';
   const h = recovery('2.3.17', { status: 'prepared', canRecover: false, reason });
-  assert.equal(h.calls.find(call => call[0] === 'say')[1], '暂时无法恢复。');
+  assert.equal(h.calls.find(call => call[0] === 'say')[1], '暂时不能恢复旧版本。');
   assert.equal(h.calls.find(c => c[0] === 'say')[2].includes(reason), false);
   assert.equal(tagged(h, 'details', 'recovery-details')[0].textContent.includes(reason), true);
   assert.equal(buttons(h).some(c => c.label === '恢复旧版本'), false);
@@ -155,7 +170,7 @@ test('a missing recovery API never offers an unusable recovery action', () => {
   for (const recover of [undefined, null, 'unavailable']) {
     const h = recovery('2.3.17', { status: 'prepared', canRecover: true }, {}, { recover });
     assert.deepEqual(buttons(h).map(node => node.label), ['查看日志']);
-    assert.equal(h.calls.find(call => call[0] === 'say')[1], '暂时无法恢复。');
+    assert.equal(h.calls.find(call => call[0] === 'say')[1], '暂时不能恢复旧版本。');
     assert.equal(h.calls.some(call => call[0] === 'recover'), false);
   }
 });
@@ -167,8 +182,8 @@ async function failedRun(action, { freshRecovery = null, staleRecovery = null, s
   h.calls.length = 0; h.elements.get('inline').replaceChildren();
   const c = h.context;
   Object.assign(c, {
-    snapshot: { installed: true, hermesInstalled: true, systemReady: true, setupCompleted: true, version: '2.3.17', updateRecovery: staleRecovery },
-    busy: false, taskTimer: null, statusUnknown: false, firstCompletionPending: false,
+    snapshot: { installed: true, hermesInstalled: true, systemReady: true, setupCompleted: true, version: '2.3.17', updateRecovery: null },
+    busy: false, taskTimer: null, statusUnknown: false, launcherRecoveryConfirmed:false, firstCompletionPending: false,
     complete: () => true, clearInterval() {}, onEvent() {},
     taskView: value => { h.calls.push(['task', value]); c.clearInline(); },
     syncState: value => { c.snapshot = { ...c.snapshot, ...value }; },
@@ -177,9 +192,11 @@ async function failedRun(action, { freshRecovery = null, staleRecovery = null, s
   });
   c.api = {
     recover() {}, openLogs() {},
-    status: async () => { h.calls.push(['status']); if (statusError) throw statusError;
+    status: async () => { h.calls.push(['status']);
+      if(action==='recover' && !h.calls.some(call=>call[0]==='request')) return {updateRecovery:{canRecover:true,backup:'/saved/backup'}};
+      if (statusError) throw statusError;
       return { installed: true, hermesInstalled: true, systemReady: true, updateRecovery: freshRecovery }; },
-    [action]: async () => { h.calls.push(['request', action]); throw new Error(message); },
+    [action]: async () => { h.calls.push(['request', action]); if(staleRecovery)c.snapshot.updateRecovery=staleRecovery;throw new Error(message); },
   };
   vm.runInContext(`${route}\nconst actualRoute = route; route = () => { observedCalls.push(['route']); return actualRoute(); };\n${statusSource}\n${runSource}`, Object.assign(c, { observedCalls: h.calls }));
   await vm.runInContext(`run(${JSON.stringify(action)});`, c);
@@ -282,7 +299,7 @@ test('polling updates recovery availability and explanation from freshly confirm
   assert.equal(buttons(h).some(node => node.label === '恢复旧版本'), true);
   await h.poll({ updateRecovery: { canRecover: false, reason: '备份已无法核实', backup: '/saved/backup' } });
   assert.equal(buttons(h).some(node => node.label === '恢复旧版本'), false);
-  assert.equal(h.calls.filter(call => call[0] === 'say').at(-1)[1], '暂时无法恢复。');
+  assert.equal(h.calls.filter(call => call[0] === 'say').at(-1)[1], '暂时不能恢复旧版本。');
   assert.equal(tagged(h, 'details', 'recovery-details')[0].textContent.includes('备份已无法核实'), true);
   await h.poll({ updateRecovery: { canRecover: true, reason: '', backup: '/saved/backup' } });
   assert.equal(buttons(h).some(node => node.label === '恢复旧版本'), true);

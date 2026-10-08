@@ -7,6 +7,7 @@ import { buildCommand } from './build-commands.mjs';
 import { projectDelivery } from '../../tooling/layout.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
+export const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
 
 export const NORA_SYSTEM_REQUIRED_FILES = [
     'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
@@ -16,6 +17,9 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/hooks/tavern-liveware-register/HOOK.yaml', 'ops/hooks/tavern-liveware-register/handler.py',
     'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
     'ops/updater/managed_context.py', 'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
+    'ops/installer/operation_control.py', 'ops/installer/operation_cli.py', 'ops/installer/operation_node.mjs', 'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',
+    'ops/installer/desktop/operation-delegate.js',
+    'ops/installer/mcp_probe.mjs',
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
     'ops/scripts/nora-tavern-card-send.py', 'ops/skills/agents-tavern.md',
@@ -39,7 +43,8 @@ export function assertSafeReleasePath(relative) {
         throw new Error(`Unsafe release path: ${relative}`);
     }
     const defaultTemplate = ['app/engine/sillytavern/default/config.yaml', 'app/engine/sillytavern/default/content/settings.json'].includes(relative);
-    if (parts.some(part => ['.git', 'node_modules', 'local-state', 'tavern-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
+    if (relative.startsWith('outputs/')
+        || parts.some(part => ['.git', 'node_modules', 'local-state', 'tavern-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
         || parts.some(part => /^\.env(?:\.|$)/.test(part))
         || (!defaultTemplate && /(?:^|\/)(?:secrets\.json|config\.yaml|settings\.json|cookie-secret\.txt|apps\.json)$/.test(relative))
         || /(?:^|\/)(?:model_configs\.json|model-input\.json|secrets\.json)(?:\.[^/]*)?$/.test(relative)
@@ -82,7 +87,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
     const dirty = Boolean(git(['status', '--porcelain', '--untracked-files=all']).trim());
     if (dirty && !candidate) throw new Error('Stable packaging requires a clean committed tree. Use --candidate for local verification only.');
     const files = [...new Set(git(candidate ? ['ls-files', '-z', '--cached', '--others', '--exclude-standard']
-        : ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0').filter(Boolean))].sort();
+        : ['ls-tree', '-r', '--name-only', '-z', commit]).split('\0').filter(relative => relative && !relative.startsWith('outputs/')))].sort();
     const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'tavern-release-source-'));
     const hashes = {};
     try {
@@ -90,6 +95,9 @@ export function createReleaseSource(root, { candidate = false } = {}) {
             const archive = execFileSync('git', ['archive', '--format=tar', commit], { cwd: root, maxBuffer: 256 * 1024 * 1024 });
             const extract = buildCommand('tar', ['-x', '-C', stage]);
             execFileSync(extract.command, extract.args, { input: archive, env: { ...process.env, COPYFILE_DISABLE: '1' } });
+            // Historical tracked evidence is excluded as well as new ignored
+            // reports. This removes only the disposable export's copy.
+            fs.rmSync(path.join(stage, 'outputs'), { recursive: true, force: true });
         }
         for (const relative of files) {
             const source = path.join(candidate ? root : stage, relative);
@@ -109,7 +117,7 @@ export function createReleaseSource(root, { candidate = false } = {}) {
             }
         }
         const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
-        return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,
+        return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,launcherCapabilities:LAUNCHER_CAPABILITIES,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes } };
     } catch (error) {
         fs.rmSync(stage, { recursive: true, force: true });

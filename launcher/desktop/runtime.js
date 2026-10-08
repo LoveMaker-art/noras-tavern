@@ -1,9 +1,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
-const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
-const { restoreRetained, RETAINED } = require('./uninstall');
 const { launcherError } = require('./launcher-errors');
 
 const RUNTIME_MANIFEST = 'nora-hermes-runtime.json';
@@ -59,41 +57,6 @@ function commandFailure(message, result, command) {
   });
 }
 
-function extractArchive(bundle, destination, onEvent = () => {}) {
-  const command = extractionCommand(bundle.archive, destination);
-  const result = spawnSync(command.file, command.args, { encoding: 'utf8', windowsHide: true, timeout: 600000 });
-  if (!result.error && result.status === 0) return;
-  const nativeFailure = commandFailure(`无法释放 Hermes 运行时：${(result.error?.message || result.stderr || result.stdout || '').trim()}`, result, [command.file, ...command.args]);
-  if (process.platform !== 'win32' || result.error?.code !== 'ENOENT' || bundle.manifest.format !== 'zip') throw nativeFailure;
-  onEvent({event:'task',stage_id:'runtime_extract',milestone:0,task:'使用 Windows 内置 ZIP 工具释放 Nora 核心',current:1,total:3});
-
-  // Supported Windows runtimes are ZIPs. PowerShell/.NET is already present
-  // on supported Windows versions; no external downloads or PATH tools needed.
-  const powershell = path.win32.join(process.env.SystemRoot || 'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    'Add-Type -AssemblyName System.IO.Compression.FileSystem',
-    '$archive = $env:NORA_RUNTIME_ARCHIVE',
-    '$destination = [System.IO.Path]::GetFullPath($env:NORA_RUNTIME_DESTINATION)',
-    '$prefix = $destination.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar',
-    '$zip = [System.IO.Compression.ZipFile]::OpenRead($archive)',
-    'try { foreach ($entry in $zip.Entries) {',
-    '  $target = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destination, $entry.FullName))',
-    '  if (!$target.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) { throw "ZIP entry escapes extraction directory" }',
-    '  if ((($entry.ExternalAttributes -shr 16) -band 61440) -eq 40960) { throw "ZIP symbolic links are not supported" }',
-    '} } finally { $zip.Dispose() }',
-    '[System.IO.Compression.ZipFile]::ExtractToDirectory($archive, $destination)',
-  ].join('\n');
-  const args = ['-NoLogo','-NoProfile','-NonInteractive','-Command',script];
-  const fallback = spawnSync(powershell,args,{encoding:'utf8',windowsHide:true,timeout:600000,
-    env:{...process.env,NORA_RUNTIME_ARCHIVE:bundle.archive,NORA_RUNTIME_DESTINATION:destination}});
-  if (!fallback.error && fallback.status === 0) return;
-  const error = commandFailure(`无法释放 Hermes 运行时：${(fallback.error?.message || fallback.stderr || fallback.stdout || '').trim()}`,fallback,[powershell,...args]);
-  error.secondaryErrors = [{operation:'native-extractor',error:nativeFailure}];
-  if (fallback.error?.code === 'ENOENT') error.userCode = 'RUNTIME_EXTRACTOR_UNAVAILABLE';
-  throw error;
-}
-
 function relocateText(text, home, manifest) {
   for (const [token, resolve] of Object.entries(TOKENS)) {
     const native = resolve(home, manifest);
@@ -103,13 +66,17 @@ function relocateText(text, home, manifest) {
   return text;
 }
 
-function relocateFiles(home, manifest) {
+function relocateTextFiles(home, manifest, targetHome=home) {
   for (const relative of manifest.relocatableFiles || []) {
     const target = contained(home, relative);
     if (!fs.existsSync(target)) throw new Error(`运行时缺少可迁移文件：${relative}`);
-    const text = relocateText(fs.readFileSync(target, 'utf8'), home, manifest);
+    const text = relocateText(fs.readFileSync(target, 'utf8'), targetHome, manifest);
     fs.writeFileSync(target, text);
   }
+}
+
+function relocateFiles(home, manifest) {
+  relocateTextFiles(home,manifest);
   if (manifest.platform === 'win32') {
     // uv's Windows trampoline embeds the build interpreter path. Recreate only
     // venv launchers/config from bundled CPython, retaining all site-packages.
@@ -158,7 +125,17 @@ function initializeHome(home, manifest) {
         const source = path.join(sourceSkills, entry.name);
         try { fs.cpSync(source, target, { recursive: true }); }
         catch (error) {
-          error.context = { operation: 'copy-skill', source, destination: target };
+          const describePath = file => {
+            if (typeof file !== 'string') return {type:'unknown',length:0};
+            try {
+              const info=fs.lstatSync(file);
+              return {type:info.isSymbolicLink()?'symbolic-link':info.isDirectory()?'directory':info.isFile()?'file':'other',length:file.length};
+            } catch (inspectionError) { return {type:inspectionError.code==='ENOENT'?'missing':'unknown',length:file.length}; }
+          };
+          const from=describePath(source),to=describePath(target),failed=describePath(error.path);
+          error.context = { operation: 'copy-skill', source, destination: target,
+            sourceType:from.type,destinationType:to.type,failingPathType:failed.type,
+            sourcePathLength:from.length,destinationPathLength:to.length,failingPathLength:failed.length };
           throw error;
         }
       }
@@ -238,72 +215,83 @@ function validateRuntimeLinks(home) {
   walk(home);
 }
 
-function installBundledHermes({ payloadRoot, noraHome, hermesHome, onEvent = () => {} }) {
-  const bundle = findBundledRuntime(payloadRoot);
-  if (!bundle) return null;
-  if (sha256File(bundle.archive) !== bundle.manifest.sha256) {
-    throw launcherError('Hermes 运行时校验失败，安装包可能不完整。',{code:'VERIFICATION_FAILED'});
-  }
-
-  fs.mkdirSync(noraHome, { recursive: true });
-  const work = fs.mkdtempSync(path.join(noraHome, '.runtime-'));
-  const extracted = path.join(work, 'hermes-runtime');
-  const backup = path.join(noraHome, 'installer', 'backups', `hermes-partial-${Date.now()}`);
-  let previous = false;
-  let replaced = false;
-  let failure;
-  try {
-    onEvent({ event: 'task', stage_id: 'runtime_extract', milestone: 0, task: '释放 Nora 核心', current: 1, total: 3 });
-    extractArchive(bundle, work, onEvent);
-    if (!fs.existsSync(extracted)) throw new Error('Hermes 运行时目录结构不正确。');
-
-    if (fs.existsSync(hermesHome)) {
-      fs.mkdirSync(path.dirname(backup), { recursive: true });
-      fs.renameSync(hermesHome, backup);
-      previous = true;
-    }
-    fs.renameSync(extracted, hermesHome);
-    replaced = true;
-
-    onEvent({ event: 'task', stage_id: 'runtime_init', milestone: 0, task: '初始化 Nora', current: 2, total: 3 });
-    relocateFiles(hermesHome, bundle.manifest);
-    initializeHome(hermesHome, bundle.manifest);
-    const restored = previous && restoreRetained(noraHome, backup, hermesHome);
-
-    onEvent({ event: 'task', stage_id: 'runtime_verify', milestone: 0, task: '检查 Nora', current: 3, total: 3 });
-    const version = validateRuntime(hermesHome, bundle.manifest);
-    fs.writeFileSync(path.join(hermesHome, 'hermes-agent', '.hermes-bootstrap-complete'), `${JSON.stringify({
-      schema: 1,
-      source: 'nora-integrated-runtime',
-      platform: bundle.manifest.platform,
-      arch: bundle.manifest.arch,
-      version,
-      sha256: bundle.manifest.sha256,
-      installedAt: new Date().toISOString(),
-    }, null, 2)}\n`, { mode: 0o600 });
-    if (restored) {
-      fs.rmSync(path.join(noraHome, RETAINED));
-      // Failure to remove a redundant backup must not roll back a valid runtime.
-      try { fs.rmSync(backup, { recursive: true, force: true }); } catch {}
-    }
-    return { ...bundle.manifest, version };
-  } catch (error) {
-    failure = error;
-    try {
-      if (replaced) fs.rmSync(hermesHome, { recursive: true, force: true });
-      if (previous && fs.existsSync(backup)) fs.renameSync(backup, hermesHome);
-    } catch (rollbackError) {
-      error.secondaryErrors = [...(error.secondaryErrors || []), { operation: 'rollback', error: rollbackError }];
-    }
-    throw error;
-  } finally {
-    try { fs.rmSync(work, { recursive: true, force: true }); }
-    catch (cleanupError) {
-      if (failure) failure.secondaryErrors = [...(failure.secondaryErrors || []), { operation: 'cleanup', error: cleanupError }];
-      else throw cleanupError;
+// Production maintenance is asynchronous and every executable belongs to the
+// operation guard. Synchronous relocation/validation above are build tools.
+async function checkedRun(delegate,command,args,options,message) {
+  delegate.assertActive();
+  const result=await delegate.run(command,args,{kind:'runtime-helper',windowsHide:true,...options});
+  delegate.assertActive();
+  if(result.error||result.status!==0)throw commandFailure(`${message}：${result.error?.message||result.stderr||result.stdout||'进程退出但未成功'}`,result,[command,...args]);
+  return result;
+}
+async function extractArchiveAsync(bundle,destination,delegate,onEvent=()=>{}) {
+  const spec=extractionCommand(bundle.archive,destination);
+  const command=process.platform==='darwin'?'/usr/bin/tar':spec.file;
+  try{await checkedRun(delegate,command,spec.args,{purpose:'extract',timeoutMs:600000},'无法释放 Hermes 运行时');return;}
+  catch(error){
+    if(process.platform!=='win32'||(error.cause?.code||error.code)!=='ENOENT'||bundle.manifest.format!=='zip')throw error;
+    onEvent({event:'task',stage_id:'runtime_extract',milestone:0,current:1,total:3,task:'使用 Windows 内置 ZIP 工具释放 Nora 核心'});
+    const powershell=path.win32.join(process.env.SystemRoot||'C:\\Windows','System32','WindowsPowerShell','v1.0','powershell.exe');
+    const script=["$ErrorActionPreference = 'Stop'",'Add-Type -AssemblyName System.IO.Compression.FileSystem',
+      '$archive=$env:NORA_RUNTIME_ARCHIVE','$destination=[System.IO.Path]::GetFullPath($env:NORA_RUNTIME_DESTINATION)',
+      '$prefix=$destination.TrimEnd([System.IO.Path]::DirectorySeparatorChar)+[System.IO.Path]::DirectorySeparatorChar',
+      '$zip=[System.IO.Compression.ZipFile]::OpenRead($archive)',
+      'try { foreach($entry in $zip.Entries){',
+      '$target=[System.IO.Path]::GetFullPath([System.IO.Path]::Combine($destination,$entry.FullName))',
+      'if(!$target.StartsWith($prefix,[System.StringComparison]::OrdinalIgnoreCase)){throw "ZIP entry escapes extraction directory"}',
+      'if((($entry.ExternalAttributes -shr 16) -band 61440) -eq 40960){throw "ZIP symbolic links are not supported"}',
+      '} } finally {$zip.Dispose()}',
+      '[System.IO.Compression.ZipFile]::ExtractToDirectory($archive,$destination)'].join('\n');
+    try{await checkedRun(delegate,powershell,['-NoLogo','-NoProfile','-NonInteractive','-Command',script],
+      {purpose:'extract',timeoutMs:600000,env:{...process.env,NORA_RUNTIME_ARCHIVE:bundle.archive,NORA_RUNTIME_DESTINATION:destination}},'无法释放 Hermes 运行时');}
+    catch(fallbackError){
+      if((fallbackError.cause?.code||fallbackError.code)==='ENOENT'){
+        error.userCode='RUNTIME_EXTRACTOR_UNAVAILABLE';
+        error.secondaryErrors=[{operation:'fallback-extractor',error:fallbackError}];
+        throw error;
+      }
+      fallbackError.secondaryErrors=[{operation:'native-extractor',error}];throw fallbackError;
     }
   }
 }
+function runtimePython(home,manifest){return contained(home,manifest.venvPython);}
+function pythonOptions(home,manifest){return {purpose:'python',runtimeRoot:home,managedPythonRoot:path.join(home,'python'),
+  venvHome:path.dirname(path.dirname(runtimePython(home,manifest)))};}
+async function repairRuntimeAsync(home,manifest,delegate){
+  if(manifest.platform!=='win32')return;
+  const base=contained(home,'python/python.exe'),venv=path.dirname(path.dirname(runtimePython(home,manifest)));
+  await checkedRun(delegate,base,['-I','-m','venv','--without-pip','--copies',venv],
+    {purpose:'python',runtimeRoot:home,timeoutMs:60000},'无法重建 Windows Python 环境');
+  const source=['import sys','from pathlib import Path','from importlib.metadata import distributions',
+    'from pip._vendor.distlib.scripts import ScriptMaker','maker = ScriptMaker(None, str(Path(sys.executable).parent))',
+    'maker.executable = sys.executable','maker.clobber = True','maker.variants = {""}',
+    'for distribution in distributions():','    for entry in distribution.entry_points:',
+    '        if entry.group == "console_scripts":','            maker.make(entry.name + " = " + entry.value)'].join('\n');
+  await checkedRun(delegate,runtimePython(home,manifest),['-I','-c',source],
+    {...pythonOptions(home,manifest),timeoutMs:60000},'无法重建 Windows 本地命令入口');
+}
+async function validateRuntimeAsync(home,manifest,delegate){
+  validateRuntimeLinks(home);
+  const node=contained(home,path.join(manifest.nodeBin,process.platform==='win32'?'node.exe':'node'));
+  const npm=contained(home,process.platform==='win32'?'node/node_modules/npm/bin/npm-cli.js':'node/lib/node_modules/npm/bin/npm-cli.js');
+  await checkedRun(delegate,node,[npm,'--version'],{purpose:'node',runtimeRoot:home,timeoutMs:15000},'内置 Node.js / npm 不完整或无法执行');
+  const environment={...process.env,HOME:home,HERMES_HOME:home,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
+    PYTHONPATH:path.join(home,'hermes-agent'),PYTHONNOUSERSITE:'1',PYTHONDONTWRITEBYTECODE:'1',
+    PATH:[path.dirname(runtimePython(home,manifest)),path.join(home,manifest.nodeBin),process.env.PATH||''].join(path.delimiter)};
+  // The console-script Windows trampoline can outlive its handle. Run the real
+  // interpreter instead, and keep the component probe completely offline.
+  const result=await checkedRun(delegate,runtimePython(home,manifest),['-B','-c',
+    'from hermes_cli._startup_fast import print_fast_version_info;print_fast_version_info(check_updates=False)'],
+    {...pythonOptions(home,manifest),env:environment,timeoutMs:30000},'Hermes 运行时校验失败');
+  await checkedRun(delegate,runtimePython(home,manifest),['-B',contained(home,manifest.componentProbe)],
+    {...pythonOptions(home,manifest),timeoutMs:60000,env:{SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',
+      HOME:home,USERPROFILE:home,HERMES_HOME:home,APPDATA:path.join(home,'appdata'),LOCALAPPDATA:path.join(home,'localappdata'),
+      TMPDIR:home,TMP:home,TEMP:home,XDG_CACHE_HOME:path.join(home,'.cache'),PYTHONPATH:path.join(home,'hermes-agent'),
+      PYTHONDONTWRITEBYTECODE:'1',PYTHONNOUSERSITE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
+      PATH:[path.dirname(runtimePython(home,manifest)),path.join(home,manifest.nodeBin)].join(path.delimiter)}},'ClawChat / Liveware 离线加载检查失败');
+  return (result.stdout||result.stderr||'').trim();
+}
+function installBundledHermes(options){return require('./runtime-transaction').install(options);}
 
 module.exports = {
   extractionCommand,
@@ -312,6 +300,10 @@ module.exports = {
   installBundledHermes,
   initializeHome,
   relocateFiles,
+  relocateTextFiles,
+  extractArchiveAsync,
+  repairRuntimeAsync,
+  validateRuntimeAsync,
   relocateText,
   sha256File,
   validateRuntime,

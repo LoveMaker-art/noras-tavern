@@ -26,6 +26,11 @@ class GatewayIdentityError(RuntimeError):
     user_code = 'GATEWAY_IDENTITY'
 
 
+class GatewayConnectionError(RuntimeError):
+    """Gateway is running, but its ClawChat connection is not yet confirmed."""
+    user_code = 'CLAWCHAT_CONNECT_TIMEOUT'
+
+
 def read_json(path):
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -285,7 +290,7 @@ def start_gateway(nora_home, hermes_home, command, env, timeout=60):
         if not result["gatewayRunning"]:
             raise RuntimeError("Nora 启动后退出，请检查运行环境和 ClawChat 配置。")
         time.sleep(0.5)
-    raise RuntimeError("Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。")
+    raise GatewayConnectionError("Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。")
 
 
 def _write_gateway_record(directory, record):

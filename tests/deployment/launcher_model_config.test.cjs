@@ -4,6 +4,7 @@ const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
 const test = require('node:test');
+const { spawnSync } = require('node:child_process');
 
 const {
   loadProviderModels,
@@ -51,6 +52,24 @@ test('rejects an empty key before making a network request', async () => {
   await assert.rejects(loadProviderModels('openrouter', ''), /API Key/);
 });
 
+test('invalid header characters are rejected as key input before list and protocol test requests', async () => {
+  const {failureResult}=require('../installer/desktop/operation-result');
+  const base='http://127.0.0.1:1/v1';
+  for(const key of ['fake-密钥', 'fake-\u0001-key', 'fake-\r\n-key']) {
+    for(const work of [()=>loadProviderModels('custom',key,base),
+      ...['openai','anthropic','gemini'].map(protocol=>()=>testCustomModel(base,key,'fixture',protocol))]) {
+      await assert.rejects(async()=>work(), error=>{
+        assert.equal(error.userCode,'MODEL_KEY_INVALID');
+        const result=failureResult(error,{action:'model'});
+        assert.match(result.error.guidance.title,/API Key/);
+        assert.match(result.error.guidance.next,/重新复制/);
+        assert.doesNotMatch(JSON.stringify(result),/fake-|ERR_INVALID_CHAR|原因尚未确认/);
+        return true;
+      });
+    }
+  }
+});
+
 test('no-auth is explicit and cannot bypass a cloud provider key requirement', () => {
   const custom = publicProviders().find(p => p.custom);
   assert.equal(modelCredential(custom, { authMode: 'none' }), NO_AUTH_KEY);
@@ -84,6 +103,51 @@ test('local service refusal points to model service, not an invalid key', async 
   const port = server.address().port;
   await new Promise(resolve => server.close(resolve));
   await assert.rejects(testCustomModel(`http://127.0.0.1:${port}/v1`, NO_AUTH_KEY, 'local'), /先启动 Ollama/);
+});
+
+for (const action of ['list', 'test']) test(`an interrupted ${action} response becomes a request failure without crashing the launcher`, () => {
+  const script = `
+    const http = require('node:http');
+    const model = require(process.argv[1]);
+    const server = http.createServer((request, response) => {
+      request.resume();
+      response.writeHead(200, {'Content-Type':'application/json'});
+      response.write('{"partial":');
+      setTimeout(() => response.destroy(), 10);
+    });
+    const deadline = setTimeout(() => process.exit(3), 2000);
+    server.listen(0, '127.0.0.1', async () => {
+      const base = 'http://127.0.0.1:' + server.address().port + '/v1';
+      try {
+        await (${JSON.stringify(action)} === 'list'
+          ? model.loadProviderModels('custom', '', base, 'none')
+          : model.testCustomModel(base, model.NO_AUTH_KEY, 'fixture-model'));
+        process.exitCode = 2;
+      } catch (error) {
+        if (error.code !== 'ECONNRESET' || error.source !== 'model_service'
+            || error.site !== ${JSON.stringify(action === 'list' ? 'model.list' : 'model.test')}) process.exitCode = 4;
+        else process.stdout.write('REQUEST_FAILURE_CAPTURED\\n');
+      } finally { clearTimeout(deadline); server.close(); }
+    });
+  `;
+  const result = spawnSync(process.execPath, ['-e', script, require.resolve('../installer/desktop/model-config')],
+    {encoding:'utf8', timeout:5000});
+  assert.equal(result.status, 0, result.stderr || `fixture exit ${result.status}`);
+  assert.match(result.stdout, /REQUEST_FAILURE_CAPTURED/);
+});
+
+test('response interruption handling preserves the model response size limit', async () => {
+  const server = http.createServer((request, response) => {
+    request.resume();
+    response.writeHead(200, {'Content-Type':'application/json'});
+    response.end('x'.repeat(4 * 1024 * 1024 + 1));
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}/v1`;
+    await assert.rejects(loadProviderModels('custom', '', base, 'none'), {code:'RESPONSE_TOO_LARGE'});
+    await assert.rejects(testCustomModel(base, NO_AUTH_KEY, 'fixture-model'), {code:'RESPONSE_TOO_LARGE'});
+  } finally { await new Promise(resolve => server.close(resolve)); }
 });
 
 test('normalizes and validates a custom OpenAI-compatible endpoint', () => {

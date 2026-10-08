@@ -410,6 +410,17 @@ def main():
         print(json.dumps({"archives": [{"name": name, "sha256": sums[name]} for name in archives],
                           "mode": mode, "version": manifest["versions"]["tavern"]}))
         return
+    try:
+        import operation_cli as cli
+    except ImportError:
+        import importlib.util
+        cli_path = Path(__file__).resolve().parents[1] / 'installer/operation_cli.py'
+        if not cli_path.is_file():
+            cli_path = Path(__file__).resolve().parents[1] / 'shared/operation_cli.py'
+        spec = importlib.util.spec_from_file_location('nora_bootstrap_operation_cli', cli_path)
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+    cli.ensure_operation('repair' if args.repair else 'update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
     root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"
@@ -467,7 +478,7 @@ def main():
         ]
         if args.allow_candidate:
             command.append("--allow-candidate")
-        result = subprocess.run(command)
+        result = cli._control().managed_run(command)
         raise SystemExit(result.returncode)
 
 

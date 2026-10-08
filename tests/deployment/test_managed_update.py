@@ -106,6 +106,7 @@ class ManagedUpdateTests(unittest.TestCase):
 
             def extract(_release, source, _manifest, **_kwargs):
                 write(source / "app/native-runtime.json", '{"new":true}')
+                write(source / 'app/engine/sillytavern/package.json', '{"dependencies":{}}')
                 for name in ("first_install.py", "nora_system.py", "templates/SOUL.md", "templates/greeting.md"):
                     dest = source / "ops/installer" / name
                     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -151,7 +152,7 @@ class ManagedUpdateTests(unittest.TestCase):
                     raise RuntimeError('injected final service failure')
                 if phase == 'rollback' and rollback_failure:
                     raise RuntimeError('old gateway cannot start')
-                return {**original_state,
+                return {'offline':True} if phase in ('stop','recover-stop') else {**original_state,
                         **({'systemReady': True, 'version': manifest['versions']['tavern']} if phase == 'verify' else {}),
                         'modelConfigured': True, 'clawchatProfileReady': True}
             stack.enter_context(patch.object(update, 'managed_lifecycle', side_effect=lifecycle, create=True))

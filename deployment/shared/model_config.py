@@ -86,7 +86,20 @@ def local_selection_record(home: Path) -> Path:
 
 def fail(message: str, secret: str = "") -> None:
     clean = str(message).replace(secret, "***") if secret else str(message)
-    print(json.dumps({"ok": False, "error": clean[:300]}, ensure_ascii=False))
+    result={"ok":False,"error":clean[:300]}
+    if isinstance(message,BaseException):
+        try:
+            from .error_diagnostics import exception_diagnostic
+        except ImportError:
+            from error_diagnostics import exception_diagnostic
+        detail=exception_diagnostic(message,project_root=Path(__file__).resolve().parent)
+        def redact(value):
+            if isinstance(value,str):return value.replace(secret,'***') if secret else value
+            if isinstance(value,list):return [redact(item) for item in value]
+            if isinstance(value,dict):return {key:redact(item) for key,item in value.items()}
+            return value
+        result['diagnostic']=redact(detail)
+    print(json.dumps(result, ensure_ascii=False))
     raise SystemExit(1)
 
 
@@ -95,6 +108,11 @@ def main() -> None:
     try:
         body = json.load(sys.stdin)
         action = str(body.get("action") or "save").strip()
+        if action not in ('normalize', 'verify-runtime'):
+            spec = importlib.util.spec_from_file_location('nora_model_operation_cli', Path(__file__).with_name('operation_cli.py'))
+            cli = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cli)
+            cli.ensure_operation('model', nora_home=os.environ.get('NORA_TAVERN_HOME'), stdin=json.dumps(body))
         if action == "verify-runtime":
             home = Path(os.environ["HERMES_HOME"]).resolve()
             sys.path.insert(0, str(home / "hermes-agent"))

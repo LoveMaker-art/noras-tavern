@@ -17,7 +17,10 @@
     "pack:win:x64": "electron-builder --win nsis zip --x64",
     "pack:dir": "electron-builder --dir"
   },
-  "dependencies": { "semver": "7.8.5" },
+  "dependencies": {
+    "semver": "7.8.5",
+    "fs-native-extensions": "1.5.1"
+  },
   "devDependencies": {
     "acorn": "8.15.0",
     "electron": "^38.0.0",
@@ -35,6 +38,8 @@
       "runtime.js",
       "releases.js",
       "system-update.js",
+      "legacy-recovery-worker.js",
+      "system-update-executor.js",
       "skill-update.js",
       "local-release.js",
       "launcher-update.js",
@@ -45,15 +50,35 @@
       "runtime-worker.js",
       "diagnostics.js",
       "telemetry.js",
+      "operation-log-delivery.js",
       "launcher-errors.js",
       "error-presentation.js",
       "fault-packet.js",
       "telemetry-contract.json",
       "release-network.js",
-      "process-output.js"
+      "release-sources.js",
+      "release-sources.json",
+      "process-output.js",
+      "operation-lock.js",
+      "os-lock.js",
+      "operation-lock-worker.js",
+      "operation-delegate.js",
+      "operation-state.js",
+      "operation-result.js",
+      "evidence-store.js",
+      "operation-inspection.js",
+      "operation-policy.js",
+      "managed-python.js",
+      "runtime-transaction.js",
+      "tree-integrity.js",
+      "operation-cli.js",
+      "launcher-capability.js"
     ],
     "extraResources": [
-      { "from": "replace-launcher.py", "to": "replace-launcher.py" },
+      {
+        "from": "replace-launcher.py",
+        "to": "replace-launcher.py"
+      },
       {
         "from": "../nora_profile.py",
         "to": "nora_profile.py"
@@ -101,6 +126,42 @@
       {
         "from": "../payload",
         "to": "payload"
+      },
+      {
+        "from": "../operation_control.py",
+        "to": "operation_control.py"
+      },
+      {
+        "from": "../operation_node.mjs",
+        "to": "operation_node.mjs"
+      },
+      {
+        "from": "../operation_evidence.py",
+        "to": "operation_evidence.py"
+      },
+      {
+        "from": "../operation-budget.json",
+        "to": "operation-budget.json"
+      },
+      {
+        "from": "../operation_cli.py",
+        "to": "operation_cli.py"
+      },
+      {
+        "from": "../first_install.py",
+        "to": "first_install.py"
+      },
+      {
+        "from": "../update_paths.py",
+        "to": "update_paths.py"
+      },
+      {
+        "from": "../mcp_probe.mjs",
+        "to": "mcp_probe.mjs"
+      },
+      {
+        "from": "../operation-delegate.js",
+        "to": "operation-delegate.js"
       }
     ],
     "mac": {
@@ -122,6 +183,9 @@
     },
     "portable": {
       "artifactName": "Nora-Tavern-Launcher-${version}-win-${arch}-portable.${ext}"
-    }
+    },
+    "asarUnpack": [
+      "node_modules/fs-native-extensions/prebuilds/**"
+    ]
   }
 }

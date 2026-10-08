@@ -10,14 +10,15 @@ function extractor(run) {
   const module = {exports:{}};
   const context = vm.createContext({module,exports:module.exports,
     process:{...process,platform:'win32',env:{...process.env,SystemRoot:'D:\\Windows'}},
-    require:name=>name==='node:child_process'?{spawnSync:run}:realRequire(name)});
-  vm.runInContext(fs.readFileSync(filename,'utf8')+'\nmodule.exports.extractArchive = extractArchive;',context);
-  return module.exports.extractArchive;
+    require:realRequire});
+  vm.runInContext(fs.readFileSync(filename,'utf8'),context);
+  const delegate={assertActive(){},run:async (file,args,options)=>{assert.equal(options.kind,'runtime-helper');return run(file,args,options);}};
+  return (bundle,destination)=>module.exports.extractArchiveAsync(bundle,destination,delegate);
 }
 const bundle={archive:'C:\\Users\\测试 用户\\runtime.zip',manifest:{platform:'win32',format:'zip'}};
-test('missing Windows tar falls back to system PowerShell without interpolating user paths',()=>{
+test('missing Windows tar falls back to system PowerShell without interpolating user paths',async()=>{
   const calls=[];
-  extractor((file,args,options)=>{
+  await extractor((file,args,options)=>{
     calls.push({file,args,options});
     return calls.length===1?{status:null,error:Object.assign(new Error('tar missing'),{code:'ENOENT'})}:{status:0};
   })(bundle,'C:\\用户目录\\.runtime-123');
@@ -30,21 +31,21 @@ test('missing Windows tar falls back to system PowerShell without interpolating 
   assert.equal(calls[1].options.env.NORA_RUNTIME_DESTINATION,'C:\\用户目录\\.runtime-123');
   assert.doesNotMatch(calls[1].args.join(' '),/测试 用户|用户目录/);
 });
-test('native extraction succeeds without starting PowerShell',()=>{
-  let calls=0;extractor(()=>{calls++;return {status:0};})(bundle,'destination');assert.equal(calls,1);
+test('native extraction succeeds without starting PowerShell',async()=>{
+  let calls=0;await extractor(()=>{calls++;return {status:0};})(bundle,'destination');assert.equal(calls,1);
 });
-test('corruption, access errors and timeout do not retry with another extractor',()=>{
+test('corruption, access errors and timeout do not retry with another extractor',async()=>{
   for(const result of [{status:2,stderr:'corrupt zip'},
     {status:null,error:Object.assign(new Error('denied'),{code:'EACCES'})},
     {status:null,error:Object.assign(new Error('timeout'),{code:'ETIMEDOUT'})}]){
     let calls=0;
-    assert.throws(()=>extractor(()=>{calls++;return result;})(bundle,'destination'),/无法释放/);
+    await assert.rejects(()=>extractor(()=>{calls++;return result;})(bundle,'destination'),/无法释放/);
     assert.equal(calls,1);
   }
 });
-test('failed fallback preserves native and fallback causes with actionable guidance',()=>{
+test('failed fallback preserves native and fallback causes with actionable guidance',async()=>{
   let calls=0;
-  assert.throws(()=>extractor(()=>{calls++;return {status:null,error:Object.assign(new Error('missing'),{code:'ENOENT'})};})(bundle,'destination'),error=>{
+  await assert.rejects(()=>extractor(()=>{calls++;return {status:null,error:Object.assign(new Error('missing'),{code:'ENOENT'})};})(bundle,'destination'),error=>{
     assert.equal(calls,2);
     assert.equal(error.userCode,'RUNTIME_EXTRACTOR_UNAVAILABLE');
     assert.equal(error.cause.code,'ENOENT');
@@ -52,9 +53,9 @@ test('failed fallback preserves native and fallback causes with actionable guida
     return true;
   });
 });
-test('a non-ZIP archive cannot enter the Windows ZIP fallback',()=>{
+test('a non-ZIP archive cannot enter the Windows ZIP fallback',async()=>{
   let calls=0;
-  assert.throws(()=>extractor(()=>{calls++;return {status:null,error:Object.assign(new Error('missing'),{code:'ENOENT'})};})
+  await assert.rejects(()=>extractor(()=>{calls++;return {status:null,error:Object.assign(new Error('missing'),{code:'ENOENT'})};})
     ({...bundle,manifest:{platform:'win32',format:'tar.gz'}},'destination'),/无法释放/);
   assert.equal(calls,1);
 });

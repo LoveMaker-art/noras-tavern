@@ -2,6 +2,8 @@ import json
 import shutil
 from pathlib import Path
 import tempfile
+import subprocess
+import sys
 import unittest
 from unittest.mock import patch
 from contextlib import ExitStack
@@ -12,6 +14,22 @@ from ops.installer import launcher_bridge as bridge
 
 
 class NoraSystemTests(unittest.TestCase):
+    def test_live_delegate_runs_after_the_prepared_system_module_is_moved(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary); source = root / 'prepared'; source.mkdir()
+            shutil.copy2(system.__file__, source / 'nora_system.py')
+            moved = first_install.module_at('fixture_moved_nora_system', source / 'nora_system.py')
+            source.rename(root / 'installed')
+            calls = []
+            def execute(command, **options):
+                calls.append('run'); return subprocess.run(command, **options)
+            delegate = SimpleNamespace(assert_active=lambda: calls.append('active'), run=execute)
+            with patch.object(sys, '_nora_operation_delegate', delegate, create=True):
+                result = moved.maintenance_run([sys.executable, '-B', '-c', 'print("actual child completed")'],
+                    capture_output=True, text=True, check=True)
+            self.assertEqual(calls, ['active', 'run'])
+            self.assertEqual(result.stdout.strip(), 'actual child completed')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -70,6 +88,21 @@ class NoraSystemTests(unittest.TestCase):
         result = system.inspect(self.home, self.root, 18899)
         self.assertFalse(result["ready"])
         self.assertFalse(result["setupCompleted"])
+
+    def test_mcp_read_probe_uses_owned_script_and_passes_configuration_only_through_stdin(self):
+        from types import SimpleNamespace
+        with patch.object(system, 'managed_problems', return_value=[]), patch.object(system, 'maintenance_run',
+                return_value=SimpleNamespace(returncode=0)) as run:
+            result = system.verify_runtime(self.home, self.root, 18899, '/fixture/python', {'PRIVATE_KEY': 'private-value'})
+        command = run.call_args.args[0]
+        self.assertEqual(Path(command[1]).name, 'mcp_probe.mjs')
+        self.assertTrue(Path(command[1]).is_absolute())
+        self.assertEqual(len(command), 2)
+        config = json.loads(run.call_args.kwargs['input'])
+        self.assertEqual(config['command'], str(self.home / 'node'))
+        self.assertNotIn('private-value', json.dumps(command))
+        self.assertEqual(run.call_args.kwargs['cwd'], self.root / 'apps/nora-mcp')
+        self.assertTrue(all(result.values()))
 
     def test_verified_install_is_not_yet_paired_and_configured(self):
         self.initialize()

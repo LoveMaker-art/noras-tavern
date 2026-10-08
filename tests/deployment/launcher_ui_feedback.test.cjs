@@ -20,14 +20,15 @@ function fixture(overrides = {}) {
     return {children,dataset:{},hidden:false,disabled:false,textContent:'',
       classList:{add(){},remove(){},toggle(){}},setAttribute(){},
       append(...items){children.push(...items);},prepend(...items){children.unshift(...items);},
+      querySelectorAll(selector){assert.equal(selector,'[data-retry-at]');return children.flatMap(descendants).filter(node=>node.dataset?.retryAt);},
       querySelector(selector){if(!queries.has(selector))queries.set(selector,element());return queries.get(selector);}};
   }
   const $ = id => {
-    if(id==='logFeedback') return elements.has('inline') ? descendants(elements.get('inline')).find(n=>n.id===id) || null : null;
+    if(['logFeedback','launcherDownloadFeedback'].includes(id)) return elements.has('inline') ? descendants(elements.get('inline')).find(n=>n.id===id) || null : null;
     if(!elements.has(id))elements.set(id,element());return elements.get(id);
   };
   const context = vm.createContext({snapshot:{},busy:false,daily:true,running:false,stage:0,view:'daily',
-    refreshing:false,statusUnknown:false,alive:true,pollTimer:null,activeAction:'',activeService:'all',lastFailure:null,
+    refreshing:false,statusUnknown:false,launcherRecoveryConfirmed:false,lastStatusError:'',lastStatusAt:0,versionInfo:null,alive:true,pollTimer:null,activeAction:'',activeService:'all',lastFailure:null,operationCancelled:false,
     firstCompletionPending:false,sawIncompleteSetup:false,launchHint:element(),api:{},
     document:{createElement:element,querySelectorAll:selector=> {
       if (selector==='#management [data-action]') return [];
@@ -37,11 +38,33 @@ function fixture(overrides = {}) {
     clearInline:()=>{$('inline').children.length=0;},hideMenu(){},setupStage(){},say:(...args)=>{context.copy=args;},
     renderConversationEntry(){},showVersionNotice(){},
     button:(text,onclick)=>Object.assign(element(),{textContent:text,onclick}),
-    clearTimeout(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
-  vm.runInContext(['textError','errorCopy','complete','serviceRunning','allRunning','syncState','readStatus',
-    'controls','renderServices','dailyHome','openLogs','route','poll'].map(definition).join('\n'),context);
+    clearTimeout(){},clearInterval(){},setTimeout:()=>1,checkVersionsInBackground(){},...overrides});
+  vm.runInContext(['textError','errorCopy','operationFailure','currentOperation','allowedActions','noraUpdateGuidance','recheckFailure','refreshFailure','recoveryReason','hasLogs','appendActions','checkedTime','unknownStatusCopy','operationFact','retryLabel','complete','canReturnHome','serviceRunning','allRunning','syncState','readStatus',
+    'controls','renderServices','dailyHome','openLogs','openLauncherDownload','recoveredOperation','route','poll'].map(definition).join('\n'),context);
   return {context,$,descendants};
 }
+test('an incompatible package offers its replacement page and preserves the failure when that page cannot open',async()=>{
+  for(const rejects of [false,true]){
+    const opened=[],{context,$,descendants}=fixture({api:{openExternal:async url=>{
+      opened.push(url);if(rejects)throw new Error('raw browser launch failure');return {ok:true};
+    },openLogs:async()=>({ok:true})}});
+    context.problem={userCode:'RELEASE_EXECUTOR_INCOMPATIBLE',allowedActions:['replace-launcher','logs'],
+      guidance:{title:'安装包与当前启动器不兼容。',detail:'原安装和数据未修改。',next:'请下载新版完整安装包，保留原数据目录。'}};
+    vm.runInContext(definition('fail'),context);
+    vm.runInContext("fail(problem, 'install')",context);
+    const controls=descendants($('inline'));
+    assert.equal(controls.some(node=>node.textContent==='重试'),false);
+    const replacement=controls.find(node=>node.textContent==='下载新版完整启动器');
+    assert.ok(replacement,'the replacement action must have a visible button');
+    const title=context.copy[0];
+    await replacement.onclick({currentTarget:replacement});
+    assert.deepEqual(opened,['https://github.com/LoveMaker-art/noras-tavern/releases/latest']);
+    assert.equal(context.copy[0],title);assert.equal(context.view,'error');assert.equal(replacement.disabled,false);
+    const feedback=$('launcherDownloadFeedback');assert.ok(feedback);
+    assert.match(feedback.textContent,rejects?/未能打开/:/已.*打开/);
+    assert.doesNotMatch(feedback.textContent,/raw browser/);
+  }
+});
 
 test('the recovery log button displays returned failure and rejection without leaving recovery', async () => {
   for(const mode of ['missing','rejected','success']) {
@@ -129,16 +152,18 @@ function mainHandler(channel, values) {
     if(node.type==='CallExpression' && node.callee.name==='handle' && node.arguments[0]?.value===channel)callback=node.arguments[1];
     for(const value of Object.values(node))if(Array.isArray(value))value.forEach(visit);else if(value && typeof value==='object')visit(value);
   }
-  visit(parse(mainSource,{ecmaVersion:'latest'}));
-  return vm.runInNewContext(`(${mainSource.slice(callback.start,callback.end)})`,values);
+  const ast = parse(mainSource,{ecmaVersion:'latest'}); visit(ast);
+  const cancellation = ast.body.find(n=>n.id?.name==='taskCancellation');
+  return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n(${mainSource.slice(callback.start,callback.end)})`,
+    {updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,...values});
 }
 
 test('main status failures return unavailable instead of invented stopped or broken-installation facts', async () => {
   for(const mode of ['bridge-failed','missing-python','empty-install','healthy']) {
     const failures=[], original=new Error('raw status fixture');
     const status=mainHandler('nora:status',{
-      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,
-      lastStatusError:'',systemUpdate:{pending:()=>false},noraHome:()=>'/fixture',
+      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,readLauncherRecovery:async()=>null,
+      lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},operations:()=>({snapshot:async()=>null}),noraHome:()=>'/fixture',
       readInstallerState:()=>({phase:'ready'}),findPython:()=>!['missing-python','empty-install'].includes(mode),
       nodeStatus:()=>({installed:mode!=='empty-install',running:false,systemReady:false}),
       runBridge:async()=>{if(mode==='bridge-failed')throw original;return {installed:true,running:true,systemReady:true};},
@@ -165,13 +190,13 @@ test('system log-open failure preserves raw evidence and produces guidance witho
   for(const mode of ['result','rejection']) {
   const original = new Error('private raw OS fixture');
   const open=mainHandler('nora:open-logs',{fs:{existsSync:()=>true},path,
-    diagnostics:{lastFile:'/fixture/install.log'},installerDirectory:()=>'/fixture',
+    diagnostics:{lastFile:'/fixture/install.log',error(){}},readLauncherRecovery:async()=>null,installerDirectory:()=>'/fixture',
     installRoot:()=>'/fixture',shell:{openPath:async()=> {if(mode==='rejection')throw original;return original.message;}},launcherError});
   await assert.rejects(open(),error=>{
     assert.equal(error.userCode,'LOG_OPEN_FAILED');
     assert.equal(error.cause.message,'private raw OS fixture');
     if(mode==='rejection')assert.equal(error.cause,original);
-    const copy=formatUserError(error);assert.match(copy,/无法打开日志/);assert.match(copy,/安装目录/);
+    const copy=formatUserError(error);assert.match(copy,/无法打开日志/);assert.match(copy,/重新打开启动器/);assert.doesNotMatch(copy,/打开安装目录/);
     assert.doesNotMatch(copy,/private raw/);return true;
   });
   }

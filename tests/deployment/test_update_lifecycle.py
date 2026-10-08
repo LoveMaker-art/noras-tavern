@@ -2,6 +2,7 @@ import io
 import hashlib
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import time
@@ -238,7 +239,7 @@ class UpdateLifecycleTests(unittest.TestCase):
                            {'version': '2.3.8', 'systemReady': True, 'gatewayRunning': True, 'clawchatConnected': False})
 
     def test_rollback_checks_old_version_and_old_health(self):
-        before = {'version': '2.3.7', 'systemReady': True, 'running': True}
+        before = {'version': '2.3.7', 'systemReady': True, 'running': True, 'gatewayRunning': False}
         self.assertEqual(self.run_phase('rollback', before, before), (1, 1, 'tavern'))
         with self.assertRaises(SystemExit):
             self.run_phase('rollback', before, {**before, 'version': '2.3.8'})
@@ -249,12 +250,16 @@ class UpdateLifecycleTests(unittest.TestCase):
                           'print(json.dumps({"event":"result","systemReady":True,"version":p["version"]}))\n')
         plan = {'bridge': str(script), 'noraHome': str(self.root), 'port': 18899,
                 'hermesHome': str(self.args.hermes_home), 'installRoot': str(self.args.install_root)}
-        with patch.dict(os.environ, {'NORA_UPDATE_LIFECYCLE': json.dumps(plan)}):
+        # Keep the real fixture Python transport while substituting only the
+        # already-owned process seam. Real guard delegation has its own matrix.
+        with patch.dict(os.environ, {'NORA_UPDATE_LIFECYCLE': json.dumps(plan)}), \
+                patch.object(update._operation_control, 'managed_run', side_effect=subprocess.run) as owned:
             result = update.managed_lifecycle('verify', self.args.hermes_home, self.args.install_root, '2.3.8')
             self.assertTrue(result['systemReady'])
             script.write_text(script.read_text() + 'sys.exit(1)\n')
             with self.assertRaisesRegex(RuntimeError, '服务事务检查失败'):
                 update.managed_lifecycle('verify', self.args.hermes_home, self.args.install_root, '2.3.8')
+            self.assertEqual(owned.call_count, 2)
 
     def test_incomplete_transaction_cannot_start_outside_recovery(self):
         journal = self.args.install_root / 'tavern-updates/transaction.json'

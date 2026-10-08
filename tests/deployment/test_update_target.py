@@ -8,7 +8,7 @@ import tempfile
 import unittest
 from contextlib import ExitStack
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import yaml
 
@@ -55,8 +55,12 @@ class UpdateTargetTests(unittest.TestCase):
         (self.home / "config.yaml").write_bytes(UPDATER.render_mcp(self.home, root))
 
     def bootstrap(self, extra=()):
+        # These tests start at the target-selection boundary. Real CLI owner
+        # admission is exercised by the independent native/APP gates.
+        cli = SimpleNamespace(ensure_operation=Mock())
         with patch.object(sys, "argv", ["bootstrap.py", "--apply", "--confirm",
                                         "--target-commit", "same-commit", *extra]), \
+                patch.dict(sys.modules, operation_cli=cli), \
                 patch.object(BOOTSTRAP, "download", side_effect=AssertionError("unexpected download")), \
                 patch("sys.stdout", new_callable=io.StringIO):
             BOOTSTRAP.main()
@@ -81,7 +85,7 @@ class UpdateTargetTests(unittest.TestCase):
                     patch.object(UPDATER.sys, "platform", "win32"), \
                     patch.object(UPDATER, "HERE", PureWindowsPath(prefix) / "ops/updater"), \
                     patch.object(UPDATER.shutil, "which", return_value="node.exe"), \
-                    patch.object(UPDATER.subprocess, "run", return_value=SimpleNamespace(stdout="{}")) as probe:
+                    patch.object(UPDATER._operation_control, "managed_run", return_value=SimpleNamespace(stdout="{}")) as probe:
                 self.assertEqual(UPDATER.verify_worlds(PureWindowsPath(prefix) / "app", state), {})
                 command = probe.call_args.args[0]
                 self.assertEqual(command[1], str(PureWindowsPath(expected) / "ops/updater/verify-worlds.mjs"))

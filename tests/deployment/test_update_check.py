@@ -9,6 +9,9 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
+import ssl
+import urllib.error
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -29,6 +32,52 @@ def load_updater():
 
 
 class UpdateCheckScriptTests(unittest.TestCase):
+    def checker_module(self, home: Path):
+        spec = importlib.util.spec_from_file_location("tavern_mirrored_update_check", ROOT / "ops/scripts/nora-tavern-update-check.py")
+        module = importlib.util.module_from_spec(spec)
+        environment = {key: value for key, value in os.environ.items() if key not in {"TAVERN_RELEASE_API_URL", "TAVERN_DATA_ROOT"}}
+        environment["HERMES_HOME"] = str(home)
+        with mock.patch.dict(os.environ, environment, clear=True):
+            spec.loader.exec_module(module)
+        return module
+
+    def test_github_success_never_queries_sourceforge(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            with mock.patch.object(module, "query_release", return_value={"tag_name": "v2.4.2", "body": "更新摘要"}) as query:
+                self.assertEqual(module.latest_release(), ("2.4.2", "更新摘要"))
+            self.assertEqual(query.call_count, 1)
+            self.assertTrue(query.call_args.args[0].startswith("https://api.github.com/"))
+
+    def test_github_network_failures_fall_back_without_losing_release_summary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            for error in [urllib.error.HTTPError(module.API_URL, 403, "forbidden", {}, None), urllib.error.URLError("connection reset")]:
+                with mock.patch.object(module, "query_release", side_effect=[error, {"tag_name": "v2.4.2", "body": "更新摘要"}]) as query:
+                    self.assertEqual(module.latest_release(), ("2.4.2", "更新摘要"))
+                self.assertEqual(query.call_args_list[1].args[0], module.SOURCEFORGE_ROOT + "channels/stable.json")
+
+    def test_certificate_or_invalid_metadata_is_not_hidden_by_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            for error in [urllib.error.URLError(ssl.SSLCertVerificationError("bad certificate")), json.JSONDecodeError("invalid", "x", 0)]:
+                with mock.patch.object(module, "query_release", side_effect=error) as query:
+                    with self.assertRaises(Exception):
+                        module.latest_release()
+                self.assertEqual(query.call_count, 1)
+
+    def test_sourceforge_redirects_preserve_the_project_and_file_path(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            source = module.SOURCEFORGE_ROOT + "channels/stable.json"
+            handler = module.ReleaseRedirect(source)
+            request = module.urllib.request.Request(source)
+            safe = source.replace("downloads.sourceforge.net", "zenlayer.dl.sourceforge.net")
+            self.assertEqual(handler.redirect_request(request, None, 302, "", {}, safe).full_url, safe)
+            for target in [safe.replace("https:", "http:"), safe.replace("nora-tavern", "other"), safe.replace("zenlayer.dl.sourceforge.net", "evil.example")]:
+                with self.assertRaises(RuntimeError):
+                    handler.redirect_request(request, None, 302, "", {}, target)
+
     def test_legacy_check_without_data_root_reads_existing_home(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -210,8 +259,14 @@ class UpdateCheckInstallerTests(unittest.TestCase):
             old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = str(binary) + os.pathsep + old_path
             try:
-                result = updater.install_update_check(home, ROOT / "ops")
-                again = updater.install_update_check(home, ROOT / "ops")
+                # This fixture tests cron deduplication using the temporary CLI,
+                # not the separate launcher-owned process capability protocol.
+                def fixture_run(command, *, env=None, capture=False, **options):
+                    return subprocess.run([str(value) for value in command], env=env, capture_output=capture,
+                                          text=True, check=True, timeout=10, **options)
+                with mock.patch.object(updater, "run", fixture_run):
+                    result = updater.install_update_check(home, ROOT / "ops")
+                    again = updater.install_update_check(home, ROOT / "ops")
             finally:
                 os.environ["PATH"] = old_path
 

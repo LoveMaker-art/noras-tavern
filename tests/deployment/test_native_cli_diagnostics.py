@@ -15,6 +15,7 @@ from ops.installer import launcher_bridge as bridge
 
 
 ROOT = Path(__file__).resolve().parents[2]
+NODE = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
 
 
 class NativeCliDiagnosticTests(unittest.TestCase):
@@ -44,13 +45,13 @@ console.log(JSON.stringify({fault,queue:JSON.parse(fs.readFileSync(process.argv[
 telemetry.close();
 '''
         desktop = Path(bridge.__file__).parent / 'desktop'
-        result = subprocess.run([shutil.which('node'), '-e', script,
+        result = subprocess.run([NODE, '-e', script,
                                  str(desktop / 'fault-packet.js'), str(desktop / 'telemetry.js'),
                                  str(directory / 'telemetry.json')], input=json.dumps(events),
                                 text=True, capture_output=True, check=True)
         return json.loads(result.stdout)
 
-    @unittest.skipUnless(shutil.which('node'), 'requires a local Node executable')
+    @unittest.skipUnless(NODE, 'requires a local Node executable')
     def test_real_native_cli_node_failure_reaches_fault_without_service_output(self):
         with tempfile.TemporaryDirectory(prefix='nora-native-cli-') as temporary:
             root = Path(temporary)
@@ -62,9 +63,9 @@ telemetry.close();
                 target = operations / 'updater' / (name + '.py')
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(ROOT / 'ops/updater' / (name + '.py'), target)
-            helper = operations / 'installer/error_diagnostics.py'
-            helper.parent.mkdir(parents=True)
-            shutil.copy2(ROOT / 'ops/installer/error_diagnostics.py', helper)
+            helper = operations / 'installer'; helper.mkdir(parents=True)
+            for name in ('error_diagnostics.py', 'operation_cli.py', 'operation_control.py'):
+                shutil.copy2(ROOT / 'ops/installer' / name, helper / name)
             (app / 'native-runtime.json').write_text(json.dumps({
                 'schema': 2, 'engine': 'SillyTavern',
                 'upstream_repository': 'https://github.com/SillyTavern/SillyTavern',
@@ -85,8 +86,11 @@ telemetry.close();
                 port = listener.getsockname()[1]
             env = {**os.environ, 'TAVERN_DATA_ROOT': str(root), 'TAVERN_APP_DIR': str(app),
                    'TAVERN_STATE_DIR': str(root / 'tavern-state'),
-                   'HERMES_HOME': str(root / 'hermes'), 'TAVERN_NODE_EXECUTABLE': shutil.which('node')}
-            events = self.collect([sys.executable, '-B', str(app / 'native_lifecycle.py'),
+                   'HERMES_HOME': str(root / 'hermes'), 'NORA_TAVERN_HOME': str(root),
+                   'NORA_TEST_VENV_HOME': sys.prefix, 'TAVERN_NODE_EXECUTABLE': NODE}
+            events = self.collect([NODE, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+                                   str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(root.resolve()),
+                                   sys.executable, str(app / 'native_lifecycle.py'),
                                    'start', '--run-id', 'fixture', '--port', str(port)],
                                   env=env, native_cli=True)
             diagnostics = [event['error'] for event in events
@@ -94,6 +98,11 @@ telemetry.close();
             native = diagnostics[0]
             self.assertEqual(native['name'], 'NativeLifecycleError')
             self.assertEqual(native['code'], 'TAVERN_PROCESS_EXITED')
+            self.assertEqual(native['context']['stage'], 'native_start')
+            self.assertEqual(native['context']['port'], port)
+            self.assertEqual(native['context']['exitCode'], 1)
+            self.assertTrue(native['context']['loopback'])
+            self.assertGreater(native['context']['pid'], 0)
             self.assertIn('cause', native)
             self.assertIn('MODULE_NOT_FOUND', json.dumps(native['secondaryErrors']))
             self.assertIn('server.js', json.dumps(native['secondaryErrors']))
@@ -124,6 +133,16 @@ telemetry.close();
         malformed = [{**original, 'locals': {'secret': 'private'}},
                      {**original, 'stack': 'File "/private/chat.json", line 1, in run'},
                      {**original, 'truncated': 'yes'},
+                     {**original, 'context': {'pid': True}},
+                     {**original, 'context': {'pid': -1}},
+                     {**original, 'context': {'port': 65536}},
+                     {**original, 'context': {'exitCode': 2 ** 40}},
+                     {**original, 'context': {'loopback': 'yes'}},
+                     {**original, 'context': {'stage': 'PRIVATE_STAGE'}},
+                     {**original, 'context': {'path': '/private/chat.json'}},
+                     {**original, 'missingReasons': ['private content']},
+                     {**original, 'missingReasons': ['a' * 97]},
+                     {**original, 'missingReasons': ['launch_log_unavailable'] * 17},
                      {**original, 'secondaryErrors': [{'error': original}] * 3}]
         chain = original
         for _ in range(4):
@@ -140,6 +159,22 @@ telemetry.close();
                 self.assertEqual(len(trusted), 1)
                 self.assertIn('legacy native error', trusted[0]['message'])
                 self.assertNotIn('UNTRUSTED_INVALID_NATIVE', json.dumps(trusted))
+
+    def test_reviewed_native_missing_reasons_and_secondary_context_are_accepted(self):
+        detail = {'name': 'NativeLifecycleError', 'message': 'Native startup failed.',
+                  'code': 'TAVERN_PROCESS_EXITED', 'stack': 'File "native_lifecycle.py", line 3, in run',
+                  'context': {'pid': 42, 'exitCode': -1, 'port': 12345, 'loopback': True, 'stage': 'native_start'},
+                  'missingReasons': ['launch_log_unavailable'], 'truncated': True,
+                  'secondaryErrors': [{'error': {'name': 'Error', 'message': 'Node syntax validation failed.',
+                     'code': None, 'stack': 'File "server.js", line 1, in node',
+                     'context': {'pid': 42, 'exitCode': -1, 'stage': 'native_start'},
+                     'missingReasons': ['non_project_frames_omitted']}}]}
+        command = [sys.executable, '-c', 'import json,sys; '
+                   f'print(json.dumps({{"event":"diagnostic","component":"native","error":{detail!r}}})); sys.exit(1)']
+        events = self.collect(command, native_cli=True)
+        trusted = [event['error'] for event in events
+                   if event.get('event') == 'diagnostic' and event.get('component') == 'bridge']
+        self.assertEqual(trusted[0], detail)
 
     def test_missing_optional_helper_keeps_actual_native_cli_scalar_failure(self):
         with tempfile.TemporaryDirectory(prefix='nora-native-cli-legacy-') as temporary:

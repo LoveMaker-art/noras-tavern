@@ -1,13 +1,30 @@
-function consumeLines(stream, onLine) {
-  let pending = '';
+function consumeLines(stream, onLine, onError, {preserveBlankLines=false}={}) {
+  let pending = '',dropping=false;
+  const maximum=256*1024;
+  const deliver = line => {
+    try { onLine(line); }
+    catch (error) {
+      if (typeof onError !== 'function') throw error;
+      onError(error);
+    }
+  };
   stream.setEncoding('utf8');
   stream.on('data', chunk => {
-    pending += chunk;
-    const lines = pending.split(/\r?\n/);
-    pending = lines.pop();
-    for (const line of lines) if (line.trim()) onLine(line);
+    for(const part of String(chunk).split(/(?<=\n)/)){
+      if(!dropping&&pending.length+part.length>maximum){
+        pending='';dropping=true;
+        const error=Object.assign(new Error('程序单条输出超过诊断读取上限，已继续排空输出并保留错误。'),{code:'PROCESS_OUTPUT_TOO_LARGE'});
+        if(typeof onError==='function')onError(error);else throw error;
+      }
+      if(!dropping)pending+=part;
+      if(part.endsWith('\n')){
+        if(!dropping&&(preserveBlankLines||pending.trim()))deliver(pending.replace(/\r?\n$/,''));
+        pending='';dropping=false;
+      }
+    }
   });
-  stream.on('end', () => { if (pending.trim()) onLine(pending); pending = ''; });
+  stream.on('end', () => { if (preserveBlankLines?pending.length:pending.trim()) deliver(pending); pending = ''; });
+  if (typeof onError === 'function') stream.on('error', onError);
 }
 
 function externalUrl(value) {

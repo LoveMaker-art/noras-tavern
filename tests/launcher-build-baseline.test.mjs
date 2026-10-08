@@ -171,15 +171,15 @@ test('release verifier requires installers, new launcher identity and unchanged 
     const output = path.join(f.directory, 'public'); fs.mkdirSync(output);
     const write = (name, value) => fs.writeFileSync(path.join(output, name), typeof value === 'string' ? value : JSON.stringify(value));
     const seal = name => ({ asset: name, sha256: digest(fs.readFileSync(path.join(output, name))), size: fs.statSync(path.join(output, name)).size });
-    const current = { ...identity(), commit: 'b'.repeat(40), versions: { tavern: '2.3.18' }, launcherVersion: '1.1.3',
-        bootstrap: { minimumLauncherVersion: '1.1.0' }, archives: {}, modules: {},
+    const current = { ...identity(), launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}, commit: 'b'.repeat(40), versions: { tavern: '2.3.18' }, launcherVersion: '2.1.1',
+        bootstrap: { minimumLauncherVersion: '2.1.0' }, archives: {}, modules: {},
         launcherBuildReuse: { schema: 1, baselineCommit: 'a'.repeat(40), baselineVersion: '2.3.17', archives: {}, modules: {} } };
     let last;
     for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
         const [os, arch] = platform.split('-');
         const payload = structuredClone(current);
         const system = { version: '2.3.18', commit: current.commit, candidate: false, channel: 'stable', platform: os, arch,
-            launcherVersion: '1.1.3', minimumLauncherVersion: '1.1.0', files: {} };
+            launcherVersion: '2.1.1', minimumLauncherVersion: '2.1.0', launcherCapabilities:current.launcherCapabilities, files: {} };
         for (const [manifest, key] of [['nora-hermes-runtime.json', 'runtimeSha256'], ['nora-tavern-dependencies.json', 'dependenciesSha256']]) {
             const archive = `${key}.tar.gz`;
             write(`${platform}-${archive}`, 'old environment'); system.files[archive] = seal(`${platform}-${archive}`);
@@ -192,9 +192,9 @@ test('release verifier requires installers, new launcher identity and unchanged 
         write(`nora-system-${platform}.json`, system);
         write(`Nora-Tavern-package-verification-${platform}.json`, { commit: current.commit, version: '2.3.18', nativeIcon: true,
             instructions: { 'ops/installer/templates/greeting.md': 'hash' } });
-        write(`Nora-Tavern-Launcher-1.1.3-${platform.replace('darwin', 'mac').replace('win32', 'win')}${os === 'darwin' ? '.dmg' : '-setup.exe'}`, 'installer');
+        write(`Nora-Tavern-Launcher-2.1.1-${platform.replace('darwin', 'mac').replace('win32', 'win')}${os === 'darwin' ? '.dmg' : '-setup.exe'}`, 'installer');
         const asset = `Nora-${platform}-update.zip`; write(asset, 'launcher');
-        write(`nora-launcher-${platform}.json`, { schema: 'nora-launcher/v1', candidate: false, version: '1.1.3', commit: current.commit,
+        write(`nora-launcher-${platform}.json`, { schema: 'nora-launcher/v1', candidate: false, version: '2.1.1', commit: current.commit,
             platform: os, arch, ...seal(asset) });
         last = { platform, payload, system };
     }

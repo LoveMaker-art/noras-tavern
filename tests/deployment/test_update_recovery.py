@@ -50,6 +50,11 @@ def install_fixture(base,*,interrupt=False):
         return {'changedModules':['nora-runtime']}
     def service(phase,*_):
         phases.append(phase)
+        if phase=='stop': return {'offline':True}
+        if phase=='recover-stop':
+            evidence=base/'installer/operations/11111111-1111-4111-8111-111111111111/evidence/python.json'
+            assert json.loads(evidence.read_text())['primary']['message']=='new runtime failed'
+            return {'offline':True}
         return dict(before)
     helpers=SimpleNamespace(extract_dependency_bundle=lambda *_:False,
         snapshot_targets=first_install.snapshot_targets,stop_install_runtime=lambda *_:None,
@@ -70,7 +75,7 @@ def install_fixture(base,*,interrupt=False):
         if interrupt and Path(first_install.filesystem_path(target))==Path(first_install.filesystem_path(root/'apps/tavern-runtime')):
             os._exit(91)
     with ExitStack() as stack:
-        stack.enter_context(patch.dict(os.environ,{'NORA_UPDATE_LIFECYCLE':json.dumps(lifecycle)}))
+        stack.enter_context(patch.dict(os.environ,{'NORA_UPDATE_LIFECYCLE':json.dumps(lifecycle),'NORA_OPERATION_ID':'11111111-1111-4111-8111-111111111111','NORA_INSTALLER_DIRECTORY':str(base/'installer')}))
         stack.enter_context(patch.dict(sys.modules,{'bundle':bundle}))
         stack.enter_context(patch.object(updater,'resolve_update_target',return_value=(home,root)))
         stack.enter_context(patch.object(updater,'managed_instance',return_value=instance))
@@ -122,7 +127,7 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual(transaction['recoveryPlan']['targets'][0]['phase'],'installing-new')
             self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'new program')
             self.assertTrue(recovery.assess(home,root)['canRecover'])
-            recovery.recover(home,root,stop=lambda *_:None,resume=lambda *_:None,
+            recovery.recover(home,root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
                              verify=lambda plan,_:dict(plan['before']))
             self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'old program')
             self.assertEqual((root/'tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
@@ -159,10 +164,15 @@ class InterruptedRecoveryTests(unittest.TestCase):
         self.before = {'version':'2.3.17','running':True,'gatewayRunning':False,'clawchatConnected':False}
         self.stop_calls = []; self.resume_calls = []
 
-    def journal(self, *, state=True):
-        return recovery.Journal.create(self.home, self.root, self.backup,
+    def journal(self, *, state=True, metadata_changes=True):
+        journal=recovery.Journal.create(self.home, self.root, self.backup,
             [('app',self.new,self.old)], version='2.4.2', before=self.before,
             state=self.state if state else None)
+        if metadata_changes:
+            journal.plan['metadataPhase']='applying'
+            journal.plan['metadataIntents']=[journal.metadata_key(target) for target,_ in journal.metadata_items()]
+            journal.save()
+        return journal
 
     def long_cache_file(self):
         directory=self.state/'native/_cache/nora-assets-v3/extensions/JS-Slash-Runner/package'
@@ -233,7 +243,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
 
     def run_recover(self, *, resume=None):
         return recovery.recover(self.home,self.root,
-            stop=lambda *_:self.stop_calls.append(True),
+            stop=lambda *_:(self.stop_calls.append(True) or {'offline':True}),
             resume=resume or (lambda *_:self.resume_calls.append(True)),
             verify=lambda *_:dict(self.before))
 
@@ -284,6 +294,83 @@ class InterruptedRecoveryTests(unittest.TestCase):
         inode=self.old.stat().st_ino
         self.run_recover(); self.assert_restored()
         self.assertEqual(self.old.stat().st_ino,inode)
+
+    def test_recovery_requires_explicit_offline_proof_before_restoring_files(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        with self.assertRaisesRegex(RuntimeError,'停止状态'):
+            recovery.recover(self.home,self.root,stop=lambda *_:{'running':False},
+                             resume=lambda *_:self.resume_calls.append(True),verify=lambda *_:dict(self.before))
+        self.assertEqual((self.old/'program.txt').read_text(),'new program')
+        self.assertEqual(self.resume_calls,[])
+
+    def test_recovery_missing_service_facts_are_not_treated_as_stopped(self):
+        self.before.update(running=False,gatewayRunning=False)
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        with self.assertRaisesRegex(RuntimeError,'服务状态'):
+            recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
+                             verify=lambda *_:{'version':self.before['version']})
+
+    def test_successful_start_may_change_managed_code_without_false_recovery_failure(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        def start(*_): (self.old/'generated.txt').write_text('runtime generated file')
+        result=recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=start,
+                                verify=lambda *_:dict(self.before))
+        self.assertEqual(result['status'],'restored')
+        self.assertEqual((self.old/'generated.txt').read_text(),'runtime generated file')
+
+    def test_user_config_change_before_first_write_is_retained_during_recovery(self):
+        journal=self.journal(metadata_changes=False)
+        (self.home/'config.yaml').write_text('user changed config after preparation')
+        with self.assertRaises(RuntimeError) as raised: journal.seal_offline({'offline':True})
+        self.assertEqual(raised.exception.code,'CONDITIONS_CHANGED')
+        self.run_recover()
+        self.assertEqual((self.home/'config.yaml').read_text(),'user changed config after preparation')
+
+    def test_pending_code_snapshot_is_sealed_after_offline_without_changing_identity(self):
+        journal=self.journal(state=False,metadata_changes=False)
+        # This simulates an ordinary file generated before service stop. It is
+        # updater-managed code, while user configuration remains authoritative.
+        (self.old/'generated.txt').write_text('generated before stop')
+        (self.home/'config.yaml').write_text('old config')
+        (self.home/'AGENTS.md').write_text('old instructions')
+        (self.root/'tavern-updates/installed.json').write_text('{"version":"2.3.17"}')
+        journal.seal_offline({'offline':True});journal.swap('app');self.run_recover()
+        self.assertEqual((self.old/'generated.txt').read_text(),'generated before stop')
+
+    def test_effects_require_trusted_intents_instead_of_nonterminal_status_alone(self):
+        journal=self.journal(metadata_changes=False)
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'untouched')
+        journal.swap('app')
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'changed')
+        self.run_recover()
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'restored')
+        record=json.loads(journal.file.read_text());record['recoveryPlan']['targets'][0]['phase']='invented';journal.file.write_text(json.dumps(record))
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+
+    def test_effects_do_not_authorize_a_prepared_record_with_changed_backup_bytes(self):
+        self.journal(metadata_changes=False)
+        (self.backup/'host/config.yaml').write_text('tampered backup')
+        self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+
+    def test_recovery_never_overwrites_configuration_without_its_write_intent(self):
+        journal=self.journal(metadata_changes=False);journal.swap('app')
+        (self.home/'config.yaml').write_text('latest user-owned configuration')
+        self.run_recover()
+        self.assertEqual((self.home/'config.yaml').read_text(),'latest user-owned configuration')
+
+    def test_failed_checkpoint_save_does_not_replace_recovery_primary_error(self):
+        journal=self.journal();journal.swap('app')
+        original_save=recovery.Journal.save
+        def save(journal,status=None):
+            if journal.record.get('error'): raise PermissionError('checkpoint write denied')
+            return original_save(journal,status)
+        failure=RuntimeError('actual service recovery failure')
+        with patch.object(recovery.Journal,'save',save):
+            with self.assertRaises(RuntimeError) as raised:
+                recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},
+                    resume=lambda *_:(_ for _ in ()).throw(failure),verify=lambda *_:dict(self.before))
+        self.assertIs(raised.exception,failure)
+        self.assertIsInstance(failure.secondary_errors[0],PermissionError)
 
     def test_partial_state_snapshot_keeps_original_state(self):
         journal=self.journal(); journal.swap('app')
@@ -336,7 +423,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
                 previous=journal.file.read_bytes();callbacks=[]
                 self.assertFalse(recovery.assess(self.home,self.root)['canRecover'])
                 with self.assertRaises(RuntimeError):
-                    recovery.recover(self.home,self.root,stop=lambda *_:callbacks.append('stop'),
+                    recovery.recover(self.home,self.root,stop=lambda *_:(callbacks.append('stop') or {'offline':True}),
                         resume=lambda *_:callbacks.append('resume'),verify=lambda *_:callbacks.append('verify'))
                 self.assertEqual(callbacks,[])
                 self.assertEqual(journal.file.read_bytes(),previous)
@@ -406,7 +493,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         (managed/'snapshot.json').write_text(json.dumps(records))
         journal=self.journal();journal.snapshot_state();journal.swap('app')
         (self.home/'cron').mkdir();(self.home/'cron/jobs.json').write_text('new jobs')
-        recovery.recover(self.home,self.root,stop=lambda *_:None,resume=lambda *_:None,
+        recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
                          verify=lambda *_:dict(self.before))
         self.assertEqual((self.home/'cron/jobs.json').read_text(),'old jobs')
         self.assertEqual((self.home/'scripts/nora-instance.py').read_text(),'old script')
@@ -417,7 +504,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         saved=self.backup/'host/config.yaml';saved.write_text('same config');saved.chmod(0o600)
         active=self.home/'config.yaml';active.write_text('same config');active.chmod(0o644)
         journal=self.journal();journal.snapshot_state();journal.swap('app')
-        recovery.recover(self.home,self.root,stop=lambda *_:None,resume=lambda *_:None,
+        recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
                          verify=lambda *_:dict(self.before))
         self.assertEqual(active.stat().st_mode&0o777,0o600)
 
@@ -443,7 +530,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
 
     def test_new_clawchat_connection_is_allowed_if_previously_disconnected(self):
         journal=self.journal();journal.snapshot_state();journal.swap('app')
-        recovery.recover(self.home,self.root,stop=lambda *_:None,resume=lambda *_:None,
+        recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
                          verify=lambda *_:{**self.before,'clawchatConnected':True})
         self.assert_restored()
 

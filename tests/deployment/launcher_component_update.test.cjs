@@ -19,7 +19,7 @@ function harness(failure, running = true, gatewayRunning = true, version = '2.3.
     path, hermesHome: () => path.join(home, 'hermes'), noraHome: () => home, installRoot: () => path.join(home, 'tavern'),
     fs: { readFileSync: () => JSON.stringify({ versions: { tavern: '2.3.7' } }) },
     releases: { compare: (a, b) => a === b ? 0 : a < b ? -1 : 1 },
-    updatingSystem: false, sendBridgeEvent() {}, diagnostics: { error() {} },
+    updatingSystem: false,activeOperationContext:{snapshot:{handoffRef:null}}, sendBridgeEvent() {}, diagnostics: { error() {} },
     systemUpdate: { perform: () => { throw new Error('EBUSY: rename hermes'); } },
     stopForUpdate: async () => calls.push('stop'),
     runBridge: async (action, options) => {
@@ -28,6 +28,8 @@ function harness(failure, running = true, gatewayRunning = true, version = '2.3.
       return { ...before, version: updated ? '2.3.7' : version, systemReady: updated || systemReady, updateVerified: updated };
     },
   });
+  context.systemUpdateExecutor=()=>require('../installer/desktop/system-update-executor').create({
+    bridge:context.runBridge,compare:context.releases.compare});
   return { calls, context, run: vm.runInContext(`(${source.slice(fn.start, fn.end)})`, context) };
 }
 test('damaged current version can be repaired by the shared transaction without reinstalling', async () => {
@@ -72,6 +74,7 @@ test('component download uses shared updater plan, with no Hermes or platform bu
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sha = x => crypto.createHash('sha256').update(x).digest('hex');
   const manifest = { schema: 'tavern-release/v2', commit: 'a'.repeat(40), versions: { tavern: '2.3.7' },
+    launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2},
     bootstrap: { sha256: sha('updater'), managedComponents: 1 } };
   const files = { 'release-manifest.json': JSON.stringify(manifest), 'tavern-updater-bootstrap.py': 'updater',
     'nora-tavern-module-updater.tar.gz': 'changed-module' };

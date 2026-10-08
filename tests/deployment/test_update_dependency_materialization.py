@@ -60,22 +60,19 @@ class UpdateDependencyMaterializationTests(unittest.TestCase):
         else:
             link.symlink_to(source, target_is_directory=True)
 
-    def test_installed_local_dependency_is_materialized_before_directory_swap(self):
+    def test_bundled_local_dependency_is_materialized_before_directory_swap(self):
         with tempfile.TemporaryDirectory(prefix="nora-pre-swap-local-dependency-") as temporary:
             root = Path(temporary)
             source = root / "stage/source"
             engine, vendor = self.source_fixture(source)
             target = engine / "node_modules/image-size"
 
-            def npm(_command, *, cwd):
-                self.assertEqual(cwd, engine)
-                self.directory_link(target, vendor)
-
-            with mock.patch.object(UPDATER, "run", side_effect=npm) as npm_run:
+            self.directory_link(target, vendor)
+            with mock.patch.object(UPDATER, "run", side_effect=AssertionError("must not install dependencies during update")) as npm_run:
                 report = UPDATER.prepare_dependencies(source, root / "old-app", root / "old-mcp",
                                                       app_changed=True, mcp_changed=False)
-            npm_run.assert_called_once()
-            self.assertEqual(report, {"tavern": "installed", "mcp": "unchanged"})
+            npm_run.assert_not_called()
+            self.assertEqual(report, {"tavern": "bundled", "mcp": "unchanged"})
             self.assertFalse(target.is_symlink())
             self.assertEqual(getattr(target.lstat(), "st_reparse_tag", 0), 0)
 
@@ -85,6 +82,29 @@ class UpdateDependencyMaterializationTests(unittest.TestCase):
             self.assertEqual(installed.joinpath("index.js").read_text(), "module.exports = 'preserved';\n")
             self.assertEqual((active / "engine/sillytavern/vendor/image-size/index.js").read_text(),
                              "module.exports = 'preserved';\n")
+
+    def test_full_platform_bundle_materializes_tar_directory_links_before_validation(self):
+        with tempfile.TemporaryDirectory(prefix="nora-full-bundle-local-dependency-") as temporary:
+            root = Path(temporary)
+            source = root / "stage/source"
+            engine, vendor = self.source_fixture(source)
+            target = engine / "node_modules/image-size"
+            target.parent.mkdir()
+            # tarfile creates this link without a directory flag on Windows.
+            target.symlink_to('../vendor/image-size')
+            old_app = root / 'old-app'
+            old_app.mkdir(); (old_app / 'preserve.txt').write_text('old installation')
+            with mock.patch.object(UPDATER, 'run', side_effect=AssertionError('must not install dependencies')) as npm_run:
+                report = UPDATER.prepare_dependencies(source, old_app, root / 'old-mcp',
+                    app_changed=True, mcp_changed=False, bundled=True)
+            npm_run.assert_not_called()
+            self.assertEqual(report, {'tavern': 'bundled', 'mcp': 'unchanged'})
+            self.assertFalse(target.is_symlink())
+            self.assertEqual((old_app / 'preserve.txt').read_text(), 'old installation')
+            self.assertEqual(vendor.joinpath('index.js').read_text(), "module.exports = 'preserved';\n")
+            active = root / 'active-app'; os.replace(source / 'app', active)
+            self.assertEqual((active / 'engine/sillytavern/node_modules/image-size/index.js').read_text(),
+                "module.exports = 'preserved';\n")
 
     def test_reused_local_dependency_is_materialized_before_directory_swap(self):
         with tempfile.TemporaryDirectory(prefix="nora-pre-swap-reused-dependency-") as temporary:
@@ -136,9 +156,10 @@ class UpdateDependencyMaterializationTests(unittest.TestCase):
             stop = stack.enter_context(mock.patch.object(UPDATER, "stop_unmanaged"))
             start = stack.enter_context(mock.patch.object(UPDATER, "install_runtime"))
 
-            with self.assertRaisesRegex(RuntimeError, "bundled local dependency is invalid"):
+            with self.assertRaisesRegex(RuntimeError, "更新资源依赖不完整") as failure:
                 UPDATER.install(SimpleNamespace(home=hermes, install_root=install_root,
                                                release_dir=root / "release", manifest_sha256=None))
+            self.assertEqual(failure.exception.code, 'RESOURCE_INCOMPLETE')
             preparation.assert_not_called()
             stop.assert_not_called()
             start.assert_not_called()
@@ -146,17 +167,25 @@ class UpdateDependencyMaterializationTests(unittest.TestCase):
             self.assertEqual(installed.joinpath("preserve.txt").read_text(), "unchanged install")
             self.assertFalse((install_root / "tavern-backups").exists())
 
-    def test_unchanged_or_bundled_dependencies_do_not_require_a_staging_runtime(self):
+    def test_unchanged_dependencies_do_not_require_a_staging_runtime(self):
         with tempfile.TemporaryDirectory(prefix="nora-unmodified-dependency-preparation-") as temporary:
             source = Path(temporary)
+            engine, vendor = self.source_fixture(source)
+            shutil.copytree(vendor, engine / 'node_modules/image-size')
+            mcp = source / 'nora-mcp'
+            mcp.mkdir()
+            (mcp / 'package.json').write_text(json.dumps({'dependencies': {}}))
             with mock.patch.object(UPDATER, "module_at") as native_loader:
                 self.assertEqual(UPDATER.prepare_dependencies(source, source / "old-app", source / "old-mcp",
                                                              app_changed=False, mcp_changed=False),
                                  {"tavern": "unchanged", "mcp": "unchanged"})
-                self.assertEqual(UPDATER.prepare_dependencies(source, source / "old-app", source / "old-mcp",
-                                                             app_changed=True, mcp_changed=True, bundled=True),
-                                 {"tavern": "bundled", "mcp": "bundled"})
             native_loader.assert_not_called()
+            before = (engine / 'node_modules/image-size/index.js').stat()
+            self.assertEqual(UPDATER.prepare_dependencies(source, source / 'old-app', source / 'old-mcp',
+                app_changed=True, mcp_changed=True, bundled=True), {'tavern': 'bundled', 'mcp': 'bundled'})
+            after = (engine / 'node_modules/image-size/index.js').stat()
+            self.assertEqual((after.st_dev, after.st_ino, after.st_mtime_ns),
+                (before.st_dev, before.st_ino, before.st_mtime_ns))
 
 
 if __name__ == "__main__":

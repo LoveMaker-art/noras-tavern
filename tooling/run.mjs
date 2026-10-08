@@ -32,7 +32,12 @@ const stop = signal => {
 const signalHandlers = new Map(['SIGINT', 'SIGTERM'].map(signal => [signal, () => stop(signal)]));
 try {
     for (const directory of ['launcher/desktop/node_modules', 'app/engine/sillytavern/node_modules', 'nora-mcp/node_modules']) {
-        const source = path.join(root, directory);
+        const source = directory === 'launcher/desktop/node_modules' && process.env.NORA_TEST_DESKTOP_NODE_MODULES
+            ? path.resolve(process.env.NORA_TEST_DESKTOP_NODE_MODULES) : path.join(root, directory);
+        if (directory === 'launcher/desktop/node_modules' && process.env.NORA_TEST_DESKTOP_NODE_MODULES
+            && !fs.existsSync(path.join(source, 'fs-native-extensions/package.json'))) {
+            throw new Error('The isolated launcher test dependencies must contain the native writer lock');
+        }
         if (!fs.existsSync(source)) continue;
         const target = path.join(stage, translatePath(directory, rules));
         fs.mkdirSync(path.dirname(target), { recursive: true });

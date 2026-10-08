@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import uuid
 
@@ -213,7 +214,7 @@ class Journal:
         metadata={name:digest(backup/name) for name in ('host','agents-rollback','managed') if _io_path(backup/name).exists()}
         plan={'schema':1,'hermesHome':str(home),'installRoot':str(root),
               'before':dict(before),'lifecycle':lifecycle,'targets':targets,'metadata':metadata,
-              'phase':'prepared','state':None}
+              'phase':'prepared','metadataPhase':'pending','metadataIntents':[],'state':None}
         if state is not None:
             if Path(state).resolve()!=root/'tavern-state':raise RuntimeError('剧情状态恢复路径不匹配')
             plan['state']={'oldIdentity':identity(state),'oldDigest':None,'savedIdentity':None,
@@ -222,6 +223,10 @@ class Journal:
             instance=safe_path(home,'nora-instance.json')
             plan['instanceDigest']=digest(instance)
         record={'schema':1,'status':'prepared','version':version,'backup':str(backup),'recoveryPlan':plan}
+        gate=getattr(sys,'_nora_operation_delegate',None)
+        if gate is not None:
+            gate.assert_active()
+            record.update(operationId=gate.operation_id,ownerEpoch=gate.owner_epoch)
         journal=cls(home,root,record).bind_sources(swaps);journal.validate();journal.save();return journal
 
     def save(self,status=None):
@@ -241,6 +246,9 @@ class Journal:
             raise RuntimeError('更新记录缺少完整恢复计划，已保留现场')
         if self.plan.get('hermesHome')!=str(self.home) or self.plan.get('installRoot')!=str(self.root):
             raise RuntimeError('恢复计划与当前安装身份不一致')
+        if 'operationId' in self.record and (not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',str(self.record['operationId']),re.I)
+                or type(self.record.get('ownerEpoch')) is not int or not 0<self.record['ownerEpoch']<=2**53-1):
+            raise RuntimeError('恢复计划的操作身份无效')
         if self.backup.parent!=self.root/'tavern-backups' or not _io_path(self.backup).is_dir():
             raise RuntimeError('受管恢复备份缺失或越过安装目录')
         safe_path(self.root,'tavern-backups/'+self.backup.name)
@@ -282,7 +290,12 @@ class Journal:
                     or not _io_path(safe_path(self.backup,name)).is_dir()
                     or (full and digest(safe_path(self.backup,name))!=expected)):
                 raise RuntimeError('配置恢复备份缺失或已变化')
-        self.metadata_items()  # Validate paths before stopping or changing files.
+        metadata_items=self.metadata_items()  # Validate before stopping or changing files.
+        if 'metadataIntents' in self.plan:
+            intents=self.plan['metadataIntents']
+            allowed={self.metadata_key(target) for target,_ in metadata_items}
+            if not isinstance(intents,list) or len(intents)!=len(set(intents)) or any(key not in allowed for key in intents):
+                raise RuntimeError('配置恢复变更意图无效')
         names=set();paths=set()
         if not isinstance(self.plan.get('targets'),list):raise RuntimeError('恢复计划目标列表格式无效')
         for item in self.plan['targets']:
@@ -322,6 +335,11 @@ class Journal:
     def swap(self,name):
         item=next(i for i in self.plan['targets'] if i['name']==name)
         source=self._sources[name];target=self.target(item);saved=safe_path(self.backup,'trees/'+name)
+        # A context/script swap can also replace a metadata-snapshotted file.
+        # Record it once before its write so later metadata checks do not
+        # mistake our own replacement for an external configuration change.
+        if self.metadata_key(target) in {self.metadata_key(path) for path,_ in self.metadata_items()}:
+            self.mark_metadata([target])
         item['phase']='moving-old';self.save();_io_path(saved).parent.mkdir(parents=True,exist_ok=True)
         if item['oldIdentity'] is not None:os.replace(_io_path(target),_io_path(saved))
         item['phase']='installing-new';self.save()
@@ -332,6 +350,38 @@ class Journal:
     def bind_sources(self,swaps):
         self._sources={name:Path(source) if source is not None else None for name,source,_ in swaps}
         return self
+
+    def metadata_key(self,target):
+        owner=self.root if target.is_relative_to(self.root) else self.home
+        return ('install:' if owner==self.root else 'hermes:')+target.relative_to(owner).as_posix()
+
+    def check_metadata_before_write(self,items):
+        for target,saved in items:
+            current=digest(target) if _io_path(target).exists() else None
+            original=digest(saved) if _io_path(saved).exists() else None
+            if current!=original:
+                error=RuntimeError('准备更新后配置已发生变化，当前配置已保留。请重新检查并准备更新。')
+                error.code='CONDITIONS_CHANGED';raise error
+
+    def seal_offline(self,proof):
+        if not isinstance(proof,dict) or proof.get('offline') is not True:
+            raise RuntimeError('未确认服务停止状态，未激活更新。')
+        for item in self.plan['targets']:
+            target=self.target(item)
+            if item['phase']!='pending' or identity(target)!=item['oldIdentity']:
+                error=RuntimeError('更新目标身份发生变化，未激活更新。');error.code='CONDITIONS_CHANGED';raise error
+            item['oldDigest']=digest(target) if identity(target) is not None else None
+        self.save()
+        self.check_metadata_before_write(self.metadata_items())
+
+    def mark_metadata(self,targets):
+        items={self.metadata_key(target):(target,saved) for target,saved in self.metadata_items()}
+        keys=[self.metadata_key(Path(target).absolute()) for target in targets]
+        if any(key not in items for key in keys):raise RuntimeError('配置变更目标超出受管范围')
+        fresh=[key for key in keys if key not in self.plan.get('metadataIntents',[])]
+        self.check_metadata_before_write([items[key] for key in fresh])
+        self.plan.setdefault('metadataIntents',[]).extend(fresh)
+        self.plan['metadataPhase']='applying';self.save()
 
     def snapshot_state(self):
         item=self.plan['state']
@@ -396,6 +446,7 @@ class Journal:
 
     def restore_metadata(self):
         for index,(target,saved) in enumerate(self.metadata_items()):
+            if 'metadataIntents' in self.plan and self.metadata_key(target) not in self.plan['metadataIntents']:continue
             if _io_path(target).exists() and _io_path(saved).exists() and digest(target)==digest(saved):
                 restore_permissions(saved,target);continue
             if not _io_path(target).exists() and not _io_path(saved).exists():continue
@@ -441,37 +492,105 @@ def assess(home,root):
         return {'canRecover':False,'reason':str(error)}
 
 
+def effects(home,root):
+    """Read-only evidence of remaining writes, not an inference from status."""
+    try:
+        journal=load(home,root,full=False);plan=journal.plan
+        # Read-only assessment may omit live managed-code byte inventories,
+        # but must still authenticate the immutable recovery sources.
+        for name,expected in plan['metadata'].items():
+            saved=safe_path(journal.backup,name);reject_links(saved)
+            if digest(saved)!=expected:raise RuntimeError('配置恢复备份已变化')
+        for item in plan['targets']:
+            saved=safe_path(journal.backup,'trees/'+item['name'])
+            if identity(saved) is not None and digest(saved)!=item.get('oldDigest'):
+                raise RuntimeError('旧程序恢复备份已变化')
+        state=plan.get('state')
+        if state and state.get('savedDigest'):
+            saved=safe_path(journal.backup,'state')
+            if identity(saved) is not None and digest(saved)!=state['savedDigest']:
+                raise RuntimeError('剧情状态恢复备份已变化')
+        phases=[item.get('phase') for item in plan['targets']]
+        if state and state.get('phase') not in ('pending','copying','saved','untouched','restored','moving-old','installing-new','applied','restoring'):
+            raise RuntimeError('剧情状态变更意图未知')
+        metadata=plan.get('metadataPhase')
+        if metadata is None and plan.get('phase') in ('prepared','stopping','stopped') and all(value=='pending' for value in phases):
+            metadata='pending'  # Old prepared records have not reached host writes.
+        if metadata not in ('pending','applying','restored') or any(value not in
+                ('pending','moving-old','installing-new','applied','restoring','restored') for value in phases):
+            raise RuntimeError('更新变更意图缺少可核验记录')
+        state_phase=state.get('phase') if state else 'untouched'
+        if metadata=='pending' and all(value=='pending' for value in phases) and state_phase in ('pending','copying','saved','untouched'):
+            effect='untouched'
+        elif metadata=='restored' and all(value in ('pending','restored') for value in phases) and state_phase in ('pending','copying','untouched','restored'):
+            effect='restored'
+        else: effect='changed'
+        outcome='not-required' if effect=='untouched' else 'restored-and-verified' if journal.record.get('status')=='restored' else 'files-restored-start-failed' if effect=='restored' else 'recovery-required'
+        return {'effectState':effect,'recoveryOutcome':outcome,'reason':'',
+                'canRecover':journal.record.get('status') in RECOVERABLE_STATES,
+                'status':journal.record.get('status'),'operationId':journal.record.get('operationId')}
+    except (OSError,ValueError,KeyError,TypeError,RuntimeError) as error:
+        return {'effectState':'unknown','recoveryOutcome':'recovery-required','canRecover':False,'reason':str(error)}
+
+
 def recover(home,root,*,stop,resume,verify):
     journal=load(home,root);plan=journal.plan;backup=journal.backup
+    gate=getattr(sys,'_nora_operation_delegate',None)
+    if gate is not None:
+        gate.assert_active()
+        if journal.record.get('operationId') and journal.record['operationId']!=gate.operation_id:
+            raise RuntimeError('更新事务属于另一次操作，未覆盖当前文件。请从原操作恢复入口继续。')
+    original_effect=effects(home,root)['effectState']
     reason=recovery_block_reason(journal.record.get('status'))
     if reason:raise RuntimeError(reason)
     try:
-        plan['phase']='stopping';journal.save('recovery-failed');stop(plan,backup)
+        plan['phase']='stopping';journal.save('recovery-failed')
+        stopped=stop(plan,backup)
+        if not isinstance(stopped,dict) or stopped.get('offline') is not True:
+            raise RuntimeError('未确认服务停止状态，未恢复文件。请重新检查状态并保留备份。')
         plan['phase']='restoring-files';journal.save()
-        for item in reversed(plan['targets']):
+        for item in reversed(plan['targets']) if original_effect!='untouched' else []:
             journal.restore_tree(item,journal.target(item),safe_path(backup,'trees/'+item['name']),
                                  safe_path(backup,'failed-new/'+item['name']))
-        if plan.get('state'):
+        if plan.get('state') and original_effect!='untouched':
             journal.restore_tree(plan['state'],safe_path(journal.root,'tavern-state'),safe_path(backup,'state'),
                                  safe_path(backup,'failed-new/state'),state=True)
+        elif plan.get('state'):
+            plan['state']['phase']='untouched';journal.save()
         plan['phase']='restoring-metadata';journal.save();journal.restore_metadata()
+        plan['metadataPhase']='restored';journal.save()
+        # Authoritative backup and managed bytes are checked while services are
+        # offline. Running code may legitimately create cache/generated files.
+        journal.validate()
         plan['phase']='resuming-services';journal.save();resume(plan,backup)
         proof=verify(plan,backup)
         before=plan['before']
         if not isinstance(proof,dict) or proof.get('version')!=before['version']:
             raise RuntimeError('恢复后的旧版本核验失败')
+        for key in ('running','gatewayRunning','clawchatConnected'):
+            if type(proof.get(key)) is not bool:raise RuntimeError('恢复后缺少明确服务状态：'+key)
         for key in ('running','gatewayRunning'):
-            if bool(before.get(key))!=bool(proof.get(key)):raise RuntimeError('未恢复原服务状态：'+key)
-        if before.get('clawchatConnected') and not proof.get('clawchatConnected'):
+            if before[key]!=proof[key]:raise RuntimeError('未恢复原服务状态：'+key)
+        if before.get('clawchatConnected') and not proof['clawchatConnected']:
             raise RuntimeError('未恢复原服务状态：clawchatConnected')
-        # Ensure programs and data still match the old snapshots after startup.
-        journal.validate()
+        # Identity remains strict after start, without whole-tree byte checks.
+        journal.validate(full=False)
+        state=plan.get('state')
+        if state and state.get('phase')=='restored':
+            for relative,expected in state.get('storyInventory',{}).items():
+                current=safe_path(journal.root/'tavern-state',relative)
+                if not _io_path(current).is_file() or digest(current)!=expected:
+                    raise RuntimeError('恢复后原有剧情数据发生变化')
         plan['phase']='restored';journal.record['recovery']='restored';journal.record.pop('error',None)
         journal.save('restored')
         journal.receipt_status('restored')
         return {'status':'restored','version':before['version'],'backup':str(backup),'state':proof}
     except Exception as error:
-        journal.record['error']=str(error)[-2000:];journal.save('recovery-failed')
+        journal.record['error']=str(error)[-2000:]
+        try:journal.save('recovery-failed')
+        except (OSError,ValueError,RuntimeError) as saving:
+            error.secondary_errors=[*getattr(error,'secondary_errors',()),saving]
         try:journal.receipt_status('recovery-failed')
-        except (OSError,ValueError,RuntimeError):pass  # Keep the original failure and both records.
+        except (OSError,ValueError,RuntimeError) as saving:
+            error.secondary_errors=[*getattr(error,'secondary_errors',()),saving]
         raise

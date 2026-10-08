@@ -221,5 +221,82 @@
   "faultLimits": {
     "packetBytes": 24576,
     "batchBytes": 60000
-  }
+  },
+  "faultOperationStages": [
+    "idle",
+    "prepare",
+    "release_check",
+    "download",
+    "verify",
+    "runtime_extract",
+    "runtime_init",
+    "runtime_verify",
+    "install_components",
+    "install_verify",
+    "model_test",
+    "model_save",
+    "profile_sync",
+    "pair",
+    "start_tavern",
+    "start_nora",
+    "connect",
+    "health_check",
+    "update_apply",
+    "update_handoff",
+    "rollback",
+    "stop",
+    "wait_model",
+    "wait_pair",
+    "wait_start",
+    "selecting",
+    "downloading",
+    "staged",
+    "prepared",
+    "applying",
+    "verifying",
+    "committing",
+    "recovering"
+  ],
+  "faultEffectStates": [
+    "untouched",
+    "changed",
+    "restored",
+    "unknown"
+  ],
+  "faultRecoveryOutcomes": [
+    "not-required",
+    "recovery-required",
+    "restored-and-verified",
+    "files-restored-start-failed"
+  ],
+  "faultVerifications": [
+    "unconfirmed",
+    "confirmed",
+    "failed"
+  ],
+  "faultEvidenceStatuses": [
+    "not-needed",
+    "missing",
+    "save-failed",
+    "saved",
+    "saved-truncated",
+    "unknown"
+  ],
+  "faultMissingReasons": [
+    "operation_context_missing",
+    "target_version_missing",
+    "current_version_missing",
+    "plan_digest_missing",
+    "primary_detail_missing",
+    "primary_frames_missing",
+    "unreviewed_output",
+    "unreviewed_event",
+    "sensitive_content_omitted",
+    "sensitive_fields_omitted",
+    "redaction_failed",
+    "evidence_missing",
+    "evidence_invalid",
+    "evidence_read_limit",
+    "unknown_evidence_gap"
+  ]
 }

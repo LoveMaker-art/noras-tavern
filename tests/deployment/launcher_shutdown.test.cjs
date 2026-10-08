@@ -12,8 +12,9 @@ const functions = new Map(ast.body.filter(n => n.type === 'FunctionDeclaration')
 function fixture(overrides = {}) {
   const calls = [], dialogs = [];
   const context = vm.createContext({
-    quitting: false, quitReady: false, uninstalling: false, MOCK_SCENARIO: '',
+    quitting: false, quitReady: false, uninstalling: false, MOCK_SCENARIO: '', setImmediate,
     activeRun: false, modelBusy: false, selectingLocation: false, statusRequest: null,
+    runOwnedTask: async (kind,target,work) => { calls.push(['owned',kind,target]); return work({stage:async()=>{}}); },
     findPython: () => '/managed/python', nodeStatus: () => ({ installed: false, hermesInstalled: false }),
     runBridge: async (command, options) => { calls.push([command, options.service]); return { running: false, gatewayRunning: false }; },
     app: { quit: () => calls.push('quit') },
@@ -30,6 +31,19 @@ function fixture(overrides = {}) {
   return { context, calls, dialogs, quit, event };
 }
 
+test('cancellation availability describes the actual backend boundary, including replacement and guarded processes',()=>{
+  const node=functions.get('taskCancellation');
+  const state=vm.createContext({updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null});
+  const read=vm.runInContext(`(${source.slice(node.start,node.end)})`,state);
+  assert.equal(read().canCancel,false);
+  state.releaseAbort={signal:{aborted:false}};assert.equal(read().canCancel,true);
+  state.updatingSystem=true;assert.equal(read().canCancel,false);assert.match(read().cancelReason,/暂不能取消/);
+  state.updatingSystem=false;state.releaseAbort=null;state.activeProcess={cancelSafe:false};state.activeOperationContext={};
+  assert.equal(read().canCancel,false);
+  state.activeProcess.cancelSafe=true;assert.equal(read().canCancel,true);
+  state.cancelled=true;assert.equal(read().canCancel,false);assert.match(read().cancelReason,/正在取消/);
+});
+
 test('full exit awaits stopping both services before allowing Electron to quit', async () => {
   let finish;
   const f = fixture({ runBridge: (command, options) => {
@@ -38,13 +52,14 @@ test('full exit awaits stopping both services before allowing Electron to quit',
   } });
   const event = f.event();
   const pending = f.quit(event);
+  await new Promise(resolve=>setImmediate(resolve));
   assert.equal(event.prevented, true);
-  assert.deepEqual(f.calls, [['stop', 'all']]);
+  assert.deepEqual(f.calls.map(item=>Array.isArray(item)&&item[0]==='owned'?'owned':item), ['owned',['stop', 'all']]);
   await f.quit(f.event());
-  assert.equal(f.calls.length, 1, 'Repeated quit must not race shutdown');
+  assert.equal(f.calls.length, 2, 'Repeated quit must not race shutdown');
   finish({ running: false, gatewayRunning: false });
   await pending;
-  assert.deepEqual(f.calls, [['stop', 'all'], 'quit']);
+  assert.deepEqual(f.calls.map(item=>Array.isArray(item)&&item[0]==='owned'?'owned':item), ['owned',['stop', 'all'],'quit']);
   const second = f.event();
   await f.quit(second);
   assert.equal(second.prevented, false);
@@ -79,7 +94,7 @@ test('status read settles before shutdown and shutdown still runs if it failed',
     const statusRequest = fails ? Promise.reject(new Error('status failed')) : Promise.resolve();
     const f = fixture({ statusRequest });
     await f.quit(f.event());
-    assert.deepEqual(f.calls, [['stop', 'all'], 'quit']);
+    assert.deepEqual(f.calls.map(item=>Array.isArray(item)&&item[0]==='owned'?'owned':item), ['owned',['stop', 'all'],'quit']);
   }
 });
 
@@ -103,7 +118,11 @@ test('mock and uninstall retain their own lifecycle', async () => {
 });
 
 test('only the primary instance registers managed shutdown', () => {
-  assert.match(source, /if \(!app\.requestSingleInstanceLock\(\)\) app\.quit\(\);\s*else\s*\{\s*app\.on\('before-quit', requestQuit\)/);
+  const primary = source.indexOf('if (primaryInstance) {');
+  assert.ok(source.indexOf('app.requestSingleInstanceLock()') < primary);
+  assert.ok(primary < source.indexOf('telemetry = createTelemetry('));
+  assert.ok(primary < source.indexOf("app.on('before-quit', requestQuit)"));
+  assert.match(source, /if\(initialized&&!primaryInstance\)app\.quit\(\)/);
   assert.ok(source.includes("if (quitting && channel !== 'nora:status') throw new Error('正在退出"));
 });
 

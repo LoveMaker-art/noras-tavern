@@ -10,7 +10,7 @@ const ast = parse(source, { ecmaVersion: 'latest' });
 let selection;
 function walk(node) {
   if (!node || typeof node !== 'object') return;
-  if (node.type === 'IfStatement' && source.slice(node.test.start, node.test.end) === "['install', 'update'].includes(payload.action)") selection = node;
+  if (node.type === 'IfStatement' && source.slice(node.test.start, node.test.end) === "payload.action==='install'||isUpdate") selection = node;
   for (const value of Object.values(node)) {
     if (Array.isArray(value)) value.forEach(walk);
     else if (value && typeof value === 'object') walk(value);
@@ -18,15 +18,34 @@ function walk(node) {
 }
 walk(ast);
 
+test('GUI telemetry distinguishes explicit recovery from a failed update with automatic rollback',()=>{
+  const node=ast.body.find(value=>value.type==='FunctionDeclaration'&&value.id.name==='finishOperationTelemetry');
+  assert.ok(node);const outcomes=[],records=[],operationErrors=new Map(),primaryFailure={code:'ORIGINAL_FAILURE'};
+  const context=vm.createContext({operationErrors,diagnostics:{operationId:'fixture',write:(event,fields)=>records.push({event,fields})},
+    telemetry:{finish:(outcome,error)=>outcomes.push({outcome,error})}});
+  const finish=vm.runInContext(`(${source.slice(node.start,node.end)})`,context);
+  const original={operationId:'fixture',kind:'update',state:'rolled-back',verification:'confirmed',primaryFailure};
+  operationErrors.set('fixture',primaryFailure);finish(original);
+  assert.equal(outcomes.at(-1).outcome,'failed');assert.equal(outcomes.at(-1).error,primaryFailure);
+  finish(original,{recover:true});assert.equal(outcomes.at(-1).outcome,'succeeded');
+  finish({...original,verification:'failed'},{recover:true});assert.equal(outcomes.at(-1).outcome,'failed');
+  assert.equal(original.primaryFailure,primaryFailure);assert.equal(operationErrors.has('fixture'),false);
+  assert.equal(records.length,3);assert.ok(records.every(record=>record.event==='operation.result'));
+  assert.equal(records.at(-1).fields.verification,'failed');
+});
+
 test('actual first-install handler selects the latest complete release; local candidates stay offline', async () => {
   assert.ok(selection);
   for (const [action, local, expected] of [['install', false, 'latest'], ['install', true, 'candidate'], ['update', false, 'online']]) {
     const calls = [];
     const context = vm.createContext({
-      payload: { action }, LOCAL_TEST: local, CHANNEL: 'stable', AbortController,
+      payload: { action }, isUpdate: action === 'update', LOCAL_TEST: local, CHANNEL: 'stable', AbortController, process,
+      selectedPlan: null, fixedTarget: async plan => { context.selectedPlan = plan; },
+      context: { stage: async () => {}, effect: async () => {} }, fs: { readFileSync: () => JSON.stringify({versions:{tavern:'2.4.2'},commit:'a'.repeat(40)}) },
       releaseAbort: null, selectedPayload: null, cancelled: false,
       app: { getVersion: () => '1.0.0' }, path,
       noraHome: () => '/home', payloadDirectory: () => '/payload',
+      operationDirectory: '/operation/fixture-install',
       event: { sender: {} }, sendBridgeEvent() {},
       releaseNetwork: { fetch() { throw new Error('network unavailable'); } },
       updateFetch() { throw new Error('network unavailable'); },
@@ -34,6 +53,7 @@ test('actual first-install handler selects the latest complete release; local ca
         prepareBundled: async () => { calls.push('bundled'); return '/payload'; },
         prepareInstall: async options => {
           assert.equal(options.fetcher, context.updateFetch);
+          assert.equal(options.operationDirectory, context.operationDirectory);
           assert.equal(typeof options.confirmBundled, 'function');
           calls.push('latest'); return '/latest';
         },

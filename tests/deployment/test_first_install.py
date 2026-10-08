@@ -218,13 +218,14 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
                 self.assertEqual((home / "AGENTS.md").read_bytes(), (source / "ops/skills/agents-tavern.md").read_bytes())
                 self.assertEqual((home / "AGENTS.md.bak").read_bytes(), original_agents)
                 self.assertEqual(list(tavern.glob("tavern-first-install-backups/*/hermes/targets/AGENTS.md*")), [])
-                (home / "cron/jobs.json").write_text('{"jobs": [{"id": "nora"}]}')
-                (home / "scripts").mkdir(exist_ok=True)
-                (home / "scripts/nora-tavern-update-check.py").write_text("new script")
+                journal = _args[2]
+                journal.apply_bytes(home / 'cron/jobs.json', b'{"jobs": [{"id": "nora"}]}')
+                journal.apply_bytes(home / 'scripts/nora-tavern-update-check.py', b'new script')
                 return {"status": "installed"}
             with patch.dict(os.environ), \
                  patch.object(MODULE, "validate_hermes", return_value={}), \
                  patch.object(MODULE, "source_from_release", return_value=(source, {"versions": {"tavern": "2.2.8"}})), \
+                 patch.object(MODULE, "prepare_runtime_source", return_value=source / 'app'), \
                  patch.object(MODULE, "prepare_skills", return_value={"creative/tavern": skill}), \
                  patch.object(MODULE, "install_host_hook", return_value="hook"), \
                  patch.object(MODULE, "start_tavern", return_value={"health": {"ok": True}}), \
@@ -234,7 +235,7 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
                  patch.object(nora_system, "record_files_ready"), \
                  patch.object(MODULE, "module_at", side_effect=load_module), \
                  patch.object(nora_system, "verify_runtime", side_effect=RuntimeError("probe failed")), \
-                 patch.object(MODULE, "stop_install_runtime") as stop, \
+                 patch.object(MODULE, "stop_install_runtime", return_value={'offline': True}) as stop, \
                  patch.object(MODULE, "event") as event:
                 with self.assertRaisesRegex(RuntimeError, "probe failed"):
                     MODULE.install(args)

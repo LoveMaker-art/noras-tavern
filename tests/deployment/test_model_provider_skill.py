@@ -57,7 +57,8 @@ class LocalModelSkillTests(unittest.TestCase):
         shutil.copytree(SKILL, self.entry.parent.parent)
         helper = self.tavern / 'apps/tavern-ops/installer'
         helper.mkdir(parents=True)
-        for name in ['model_config.py', 'nora_system.py']:
+        for name in ['model_config.py', 'nora_system.py', 'operation_cli.py',
+                     'operation_control.py', 'error_diagnostics.py']:
             shutil.copy2(ROOT / 'ops/installer' / name, helper / name)
         (self.home / 'nora-instance.json').write_text(json.dumps({
             'schema': 1, 'noraHome': str(self.root), 'hermesHome': str(self.home),
@@ -72,15 +73,22 @@ class LocalModelSkillTests(unittest.TestCase):
         }))
         self.env = {**os.environ, 'HERMES_HOME': str(self.home), 'HOME': str(self.home),
                     'USERPROFILE': str(self.home), 'PYTHONNOUSERSITE': '1',
-                    'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CACHE_HOME': str(self.root / 'cache')}
+                    'PYTHONDONTWRITEBYTECODE': '1', 'XDG_CACHE_HOME': str(self.root / 'cache'),
+                    'NORA_TAVERN_HOME': str(self.root), 'TAVERN_DATA_ROOT': str(self.tavern)}
         self.marker = self.root / 'installer/model.json'
         self.request = {'provider': 'custom', 'model': 'test-model', 'api_key': 'test-only-not-valid',
                         'base_url': 'https://example.invalid/v1'}
 
+    def owned_run(self, script, data, *args):
+        node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+        self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+        return subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+            str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
+            sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix},
+            input=json.dumps(data), capture_output=True, text=True, timeout=60)
+
     def invoke(self, data=None):
-        result = subprocess.run([sys.executable, '-B', str(self.entry)], env=self.env,
-                                input=json.dumps(data or self.request), capture_output=True,
-                                text=True, timeout=60)
+        result = self.owned_run(self.entry, data or self.request)
         self.assertNotIn(self.request['api_key'], result.stdout + result.stderr)
         return result, json.loads(result.stdout.splitlines()[-1])
 
@@ -131,9 +139,7 @@ class LocalModelSkillTests(unittest.TestCase):
             else:
                 payload = {'action': 'save', 'provider': 'custom', 'model': request['model'],
                            'keyEnv': '', 'key': key, 'baseUrl': request['base_url']}
-                result = subprocess.run([sys.executable, '-B', str(ROOT / 'ops/installer/model_config.py')],
-                                        env=self.env, input=json.dumps(payload), capture_output=True,
-                                        text=True, timeout=60)
+                result = self.owned_run(ROOT / 'ops/installer/model_config.py', payload)
                 reply = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertEqual(result.returncode, 0, reply)
             current = yaml.safe_load(self.config.read_text())
@@ -167,9 +173,10 @@ class LocalModelSkillTests(unittest.TestCase):
             'p=patch.object(model_config,"verify_custom_runtime",side_effect=ValueError("runtime mismatch")); '
             'p.start(); model_config.main()'
         )
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'ops/installer')],
-                                env=self.env, input=json.dumps(payload), capture_output=True, text=True, timeout=60)
+        runner = self.root / 'runtime-mismatch.py'; runner.write_text(code, encoding='utf-8')
+        result = self.owned_run(runner, payload, ROOT / 'ops/installer')
         self.assertEqual(result.returncode, 1)
+        self.assertIn('runtime mismatch', json.loads(result.stdout.splitlines()[-1])['error'])
         self.assertNotIn(payload['key'], result.stdout + result.stderr)
         for path, contents in before.items():
             self.assertEqual(path.read_bytes() if path.exists() else None, contents)
@@ -299,9 +306,10 @@ class LocalModelSkillTests(unittest.TestCase):
             'p=patch.object(nora_system,"save_json",side_effect=OSError("test-only failure")); '
             'p.start(); model_config.main()'
         )
-        result = subprocess.run([sys.executable, '-B', '-c', code, str(ROOT / 'ops/installer')],
-                                input=json.dumps(request), env=self.env, capture_output=True, text=True, timeout=60)
+        runner = self.root / 'marker-failure.py'; runner.write_text(code, encoding='utf-8')
+        result = self.owned_run(runner, request, ROOT / 'ops/installer')
         self.assertEqual(result.returncode, 1)
+        self.assertIn('test-only failure', json.loads(result.stdout.splitlines()[-1])['error'])
         self.assertNotIn(self.request['api_key'], result.stdout + result.stderr)
         for p, contents in before.items():
             self.assertEqual(p.read_bytes() if p.exists() else None, contents)

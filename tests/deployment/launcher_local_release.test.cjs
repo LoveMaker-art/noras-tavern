@@ -11,7 +11,7 @@ test('local acceptance uses production check, plan and verified component downlo
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nora-local-release-')));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const sha = data => crypto.createHash('sha256').update(data).digest('hex');
-  const manifest = { schema: 'tavern-release/v2', commit: 'a'.repeat(40), versions: { tavern: '2.3.8' },
+  const manifest = { schema: 'tavern-release/v2', commit: 'a'.repeat(40),launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}, versions: { tavern: '2.3.8' },
     bootstrap: { managedComponents: 1, sha256: sha('bootstrap') } };
   const files = { 'release-manifest.json': JSON.stringify(manifest),
     'tavern-updater-bootstrap.py': 'bootstrap', 'nora-tavern-module-updater.tar.gz': 'module' };

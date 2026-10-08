@@ -7,8 +7,8 @@ import { createRequire } from 'node:module';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assemblePlatform, assertReusable, launcherProvenance, PLATFORMS } from '../tooling/release/package-component-update.mjs';
-import { fileDigest } from '../tooling/release/system-release.mjs';
-import { NORA_SYSTEM_REQUIRED_FILES } from '../tooling/release/release-source.mjs';
+import { assertMaintenanceVersions, fileDigest, writeSystemRelease } from '../tooling/release/system-release.mjs';
+import { NORA_SYSTEM_REQUIRED_FILES, LAUNCHER_CAPABILITIES } from '../tooling/release/release-source.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const sourceNames = ['launcher/desktop/main.js', 'launcher/ui/index.html',
@@ -17,6 +17,20 @@ const sourceNames = ['launcher/desktop/main.js', 'launcher/ui/index.html',
     'app/engine/sillytavern/package.json', 'app/engine/sillytavern/package-lock.json',
     'nora-mcp/package.json', 'nora-mcp/npm-shrinkwrap.json'];
 
+test('maintenance compatibility rejects legacy public versions and missing or impossible minimums',()=>{
+    for(const [launcherVersion,minimumLauncherVersion] of [['2.0.2','2.0.2'],['2.1.0','1.1.0'],
+        ['2.1.0',undefined],['2.1.0','2.2.0'],['2.1.0','02.1.0']])
+        assert.throws(()=>assertMaintenanceVersions({launcherVersion,minimumLauncherVersion}));
+    assert.equal(assertMaintenanceVersions({launcherVersion:'2.1.0',minimumLauncherVersion:'2.1.0'}),'2.1.0');
+    assert.equal(assertMaintenanceVersions({launcherVersion:'2.0.2',minimumLauncherVersion:'2.0.2',candidate:true}),'2.0.2');
+});
+test('system generation refuses an omitted minimum before writing platform resources',t=>{
+    const f=fixture(t);
+    assert.throws(()=>writeSystemRelease({release:f.output,payload:f.release,
+        identity:{...f.current,hermesRuntime:f.baseline.hermesRuntime,bootstrap:{}},launcherVersion:'2.1.0'}),/maintenance launcher version/);
+    assert.equal(fs.existsSync(f.output),false);
+});
+
 function fixture(t, platform = 'darwin-arm64') {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-component-test-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
@@ -24,7 +38,8 @@ function fixture(t, platform = 'darwin-arm64') {
     fs.mkdirSync(release); fs.mkdirSync(baselineRoot);
     const [systemPlatform, arch] = platform.split('-');
     const baseline = { schema: 'tavern-release/v2', candidate: false, commit: 'a'.repeat(40),
-        versions: { tavern: '2.3.0' }, launcherVersion: '0.3.3', bootstrap: { minimumLauncherVersion: '0.3.3' },
+        launcherCapabilities: LAUNCHER_CAPABILITIES,
+        versions: { tavern: '2.3.0' }, launcherVersion: '2.1.0', bootstrap: { minimumLauncherVersion: '2.1.0' },
         sourceFiles: Object.fromEntries(sourceNames.map(name => [name, 'a'.repeat(64)])) };
     const current = { ...baseline, commit: 'b'.repeat(40), versions: { tavern: '2.3.1' },
         sourceFiles: { ...baseline.sourceFiles, 'deployment/update/update.py': 'c'.repeat(64), 'nora/greeting.md': 'd'.repeat(64) },
@@ -33,7 +48,7 @@ function fixture(t, platform = 'darwin-arm64') {
         fs.writeFileSync(path.join(directory, name), typeof value === 'string' ? value : JSON.stringify(value));
     };
     const system = { schema: 'nora-system/v1', candidate: false, channel: 'stable', platform: systemPlatform, arch,
-        version: '2.3.0', commit: baseline.commit, launcherVersion: '0.3.3', minimumLauncherVersion: '0.3.2', files: {} };
+        version: '2.3.0', commit: baseline.commit, launcherVersion: '2.1.0', minimumLauncherVersion: '0.3.2', files: {} };
     for (const [manifestName, archive, bytes, identityKey] of [
         ['nora-hermes-runtime.json', 'hermes.tar.gz', 'hermes-python-node', 'hermesRuntime'],
         ['nora-tavern-dependencies.json', 'deps.tar.gz', 'native-dependencies', 'dependencies'],
@@ -74,18 +89,18 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
     const assetsRoot = path.join(f.output, 'system-assets');
     const system = JSON.parse(fs.readFileSync(path.join(assetsRoot, `nora-system-${platform}.json`)));
     assert.equal(system.version, '2.3.1'); assert.equal(system.commit, f.current.commit);
-    assert.equal(system.minimumLauncherVersion, '0.3.3'); assert.equal(system.launcherVersion, '0.3.3');
+    assert.equal(system.minimumLauncherVersion, '2.1.0'); assert.equal(system.launcherVersion, '2.1.0');
     assert.notEqual(system.minimumLauncherVersion, f.system.minimumLauncherVersion);
     assert.equal(system.files['hermes.tar.gz'].sha256, f.system.files['hermes.tar.gz'].sha256);
     assert.equal(system.files['deps.tar.gz'].sha256, f.system.files['deps.tar.gz'].sha256);
     assert.ok(!fs.readdirSync(assetsRoot).some(name => /\.(?:dmg|exe|zip)$/.test(name)));
     const desktopRequire = createRequire(path.join(root, 'launcher/desktop/package.json'));
     fs.cpSync(path.dirname(desktopRequire.resolve('semver/package.json')), path.join(f.temporary, 'node_modules/semver'), { recursive: true });
-    fs.copyFileSync(path.join(root, 'deployment/update/releases.js'), path.join(f.temporary, 'releases.cjs'));
-    for (const file of ['launcher-errors.js', 'telemetry-contract.json']) {
+    fs.copyFileSync(path.join(root, 'deployment/update/releases.js'), path.join(f.temporary, 'releases.js'));
+    for (const file of ['launcher-errors.js', 'telemetry-contract.json', 'release-network.js', 'release-sources.js', 'release-sources.json', 'launcher-update.js']) {
         fs.copyFileSync(path.join(root, 'launcher/desktop', file), path.join(f.temporary, file));
     }
-    const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.cjs'));
+    const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.js'));
     assert.throws(() => client.validateSystem(system, { tag_name: 'v2.3.1' }, system.platform, system.arch, '0.3.2'), /升级启动器/);
     const tag = 'v2.3.1', base = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/`;
     const release = { tag_name: tag, draft: false, prerelease: false, assets: fs.readdirSync(assetsRoot)
@@ -96,12 +111,12 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
         return new Response(url.endsWith('/releases/latest') ? JSON.stringify(release) : fs.readFileSync(path.join(assetsRoot, url.split('/').pop())));
     };
     const prepared = await client.prepare({ cacheRoot: path.join(f.temporary, 'cache'), bundledRoot: f.baselineRoot,
-        launcherVersion: '0.3.3', platform: system.platform, arch: system.arch, fetcher });
+        launcherVersion: '2.1.0', platform: system.platform, arch: system.arch, fetcher });
     assert.equal(JSON.parse(fs.readFileSync(path.join(prepared, 'nora-system.json'))).version, '2.3.1');
     assert.ok(!fetched.some(url => url.endsWith('-hermes.tar.gz') || url.endsWith('-deps.tar.gz')), 'Matching bundled environments should not download again');
     release.assets = release.assets.filter(a => a.name !== system.files['hermes.tar.gz'].asset);
     await assert.rejects(client.prepare({ cacheRoot: path.join(f.temporary, 'empty-cache'), bundledRoot: f.baselineRoot,
-        launcherVersion: '0.3.3', platform: system.platform, arch: system.arch, fetcher }), /缺少完整组件/);
+        launcherVersion: '2.1.0', platform: system.platform, arch: system.arch, fetcher }), /缺少完整组件/);
 });
 
 test('corrupt or wrong-platform baseline is refused', t => {
@@ -122,10 +137,10 @@ test('component verifier requires complete system assets without requiring new i
     fs.cpSync(f.release, path.join(f.output, 'shared'), { recursive: true });
     for (const platform of PLATFORMS) {
         const [system, arch] = platform.split('-');
-        const asset = `Nora-Tavern-Launcher-0.3.3-${platform}-update.zip`;
+        const asset = `Nora-Tavern-Launcher-2.1.0-${platform}-update.zip`;
         f.write(f.output, asset, 'launcher');
         const launcher = { schema: 'nora-launcher/v1', candidate: false, commit: f.baseline.commit,
-            platform: system, arch, version: '0.3.3', asset, size: 8, sha256: fileDigest(path.join(f.output, asset)) };
+            platform: system, arch, version: '2.1.0', asset, size: 8, sha256: fileDigest(path.join(f.output, asset)) };
         f.write(f.output, `nora-launcher-${platform}.json`, launcher);
         reused.find(item => item.platform === platform).launcher = launcherProvenance(f.current, f.baseline, launcher, platform);
     }

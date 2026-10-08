@@ -1,4 +1,6 @@
-# 统一更新流程
+# 统一更新流程（2026-09-10 历史设计）
+
+此文记录当时的实现与验收，不是当前维护方案。当前总体写者、APP联合提交与恢复边界见 [启动器安装、更新与恢复](../launcher-unified-update.md)。
 
 ## 范围
 
@@ -61,7 +63,7 @@ Windows 文件读写使用扩展路径；调用 Node 世界校验时转换回盘
 - `test_managed_update.py`：同一更新事务更新完整 Nora 配置，注入失败后恢复数据与配置。
 - `test_launcher_shared_logic.py`：启动器执行目标发布的已校验更新器，不调用首次安装。
 - `launcher_system_update.test.cjs`：完整环境回滚、进程中断恢复、用户配置及实例绑定保留。
-- `launcher_bundle_smoke.cjs <正式包 payload> --update-release <本地候选更新目录>`：隔离安装正式包，再实际执行新更新器，不使用模型密钥。
+- `launcher_product_refactor_smoke.cjs --payload <正式包 payload> --update-release <本地候选更新目录>`：隔离安装正式包，再实际执行新更新器，不使用模型密钥。
 
 2026-09-10 两轮 macOS Apple 芯片真实演练通过：从 v2.3.0 正式安装内容更新至本地
 候选代码；3 个世界、11 个受保护文件通过核对，Hermes 加载、MCP 读取、自选端口均通过。

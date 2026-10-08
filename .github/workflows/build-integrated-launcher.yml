@@ -206,13 +206,29 @@ jobs:
           node --test tests/backup-safety-gate.test.mjs
           node tooling/checks/verify-backup-safety.mjs
 
+      - name: Configure actual operation actors and native lock tests
+        shell: bash
+        run: |
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py"
+
+      - name: Test operation ownership, evidence, bounded retry and recovery contracts
+        timeout-minutes: 10
+        run: node tooling/run.mjs node --test tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
+
+      - name: Test native transaction and complete evidence contracts
+        shell: bash
+        run: node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics
+
       - name: Verify runtime independently of original installation
         timeout-minutes: 15
         shell: bash
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$RUNNER_TEMP/hermes-runtime" --runtime-only
+          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Test release channels and update rollback
         run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
@@ -238,8 +254,6 @@ jobs:
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_incremental_update
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_update_lifecycle
           "$py" -B -m unittest tests.deployment.test_updater_skill_environment
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
@@ -268,8 +282,9 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs "$release_dir/nora-tavern-launcher/payload" \
-            --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt
+          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload "$release_dir/nora-tavern-launcher/payload" \
+            --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
+            --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Test Windows installation and managed update with legacy path limits
         if: runner.os == 'Windows'
@@ -295,7 +310,7 @@ jobs:
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
             $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
-            node tooling/run.mjs node tests/deployment/launcher_bundle_smoke.cjs $payload --update-release $payload --missing-system-receipt
+            node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
             if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
           } finally {
             if ($null -eq $previous) {
@@ -336,6 +351,37 @@ jobs:
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm run "${{ matrix.package_script }}"
 
+      - name: Verify real APP production module closure and executor receipts
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          export NORA_CANDIDATE_LAUNCHER="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher")"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            executable="$(find "$release_dir/nora-tavern-launcher/desktop/dist" -path '*/win-unpacked/*.exe' | head -n 1)"
+            resources="$(dirname "$executable")/resources"
+          else
+            executable="$(find "$release_dir/nora-tavern-launcher/desktop/dist" -path '*.app/Contents/MacOS/*' -type f | head -n 1)"
+            resources="$(dirname "$executable")/../Resources"
+          fi
+          test -f "$executable"
+          export NORA_PACKED_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$resources/app.asar")"
+          export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/Scripts/python.exe"; fi
+          export NORA_GATE_REPORT="$RUNNER_TEMP/nora-packaged-app-acceptance.json"
+          ELECTRON_RUN_AS_NODE=1 "$executable" --test tests/deployment/launcher_packaged_app.test.cjs
+
+      - name: Preserve isolated operation acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
+            ${{ runner.temp }}/nora-packaged-app-acceptance.json
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Verify packaged Nora images and instructions
         shell: bash
         run: |
@@ -375,6 +421,10 @@ jobs:
     if: always() && !cancelled() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '')
     needs: build
     runs-on: ubuntu-latest
+    # Different version tags share mutable SourceForge channel pointers.
+    concurrency:
+      group: nora-sourceforge-release-channels
+      cancel-in-progress: false
     permissions:
       contents: write
       actions: read
@@ -382,6 +432,30 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Prepare private SourceForge publishing credentials
+        env:
+          NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
+          NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
+          NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, pathlib, re, tempfile
+          username = os.environ.get('NORA_SF_USERNAME', '')
+          if not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,29}', username):
+              raise SystemExit('Configure SOURCEFORGE_USERNAME before publishing.')
+          if not os.environ.get('NORA_SF_PRIVATE_KEY') or not os.environ.get('NORA_SF_KNOWN_HOSTS'):
+              raise SystemExit('Configure the private SourceForge upload key and verified host keys before publishing.')
+          root = pathlib.Path(tempfile.mkdtemp(prefix='nora-sourceforge-', dir=os.environ['RUNNER_TEMP']))
+          key, hosts, config = root / 'identity', root / 'known_hosts', root / 'publisher.json'
+          for file, text in [(key, os.environ['NORA_SF_PRIVATE_KEY']), (hosts, os.environ['NORA_SF_KNOWN_HOSTS'])]:
+              file.write_text(text.rstrip() + '\n'); file.chmod(0o600)
+          config.write_text(json.dumps({'project':'nora-tavern', 'username':username, 'identityFile':str(key), 'knownHostsFile':str(hosts)}))
+          config.chmod(0o600)
+          with open(os.environ['GITHUB_ENV'], 'a') as output:
+              output.write(f'NORA_SOURCEFORGE_UPLOAD_CONFIG={config}\n')
+          PY
       - name: Verify accepted source build before publishing without rebuilding
         if: inputs.publish_source_run != ''
         env:
@@ -415,3 +489,15 @@ jobs:
           done
           node --test tests/launcher-release-notes.test.cjs
           node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full
+      - name: Remove private SourceForge publishing files
+        if: always()
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil
+          config = os.environ.get('NORA_SOURCEFORGE_UPLOAD_CONFIG')
+          if config:
+              root = pathlib.Path(config).parent
+              if root.parent == pathlib.Path(os.environ['RUNNER_TEMP']) and root.name.startswith('nora-sourceforge-'):
+                  shutil.rmtree(root)
+          PY

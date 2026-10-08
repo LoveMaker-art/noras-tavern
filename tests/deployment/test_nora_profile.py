@@ -2,12 +2,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from ops.installer import nora_profile as profile
 from ops.installer.launcher_bridge import env_for
@@ -101,6 +103,29 @@ class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
                 await profile.initialize(self.home, 'usr_test', self.client)
             self.client.get_my_profile.assert_not_awaited()
 
+    def test_profile_failure_preserves_status_and_type_without_request_credentials(self):
+        secret = 'profile-token-private'
+        cause = RuntimeError('request Authorization=Bearer '+secret)
+        cause.response = SimpleNamespace(status_code=403)
+        try:
+            raise RuntimeError('url=https://example.test/?token='+secret) from cause
+        except RuntimeError as error:
+            result = profile.failure_result(error)
+        encoded = json.dumps(result)
+        self.assertNotIn(secret, encoded)
+        self.assertNotIn('https://', encoded)
+        self.assertEqual(result['diagnostic']['cause']['code'], 403)
+        self.assertEqual(result['diagnostic']['cause']['name'], 'RuntimeError')
+        self.assertFalse(result['ok'])
+
+    def test_unowned_profile_entry_never_loads_the_client_or_writes_a_receipt(self):
+        with patch.object(sys, 'argv', ['nora_profile.py', str(self.home)]), \
+                patch.dict(os.environ, {'NORA_TAVERN_HOME': str(self.home.parent)}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                profile.main()
+        self.assertEqual(caught.exception.code, 'OPERATION_CAPABILITY_INVALID')
+        self.assertFalse(profile.receipt_path(self.home).exists())
+
 
 @unittest.skipUnless(os.environ.get('NORA_CLAWCHAT_PLUGIN'), 'requires the bundled ClawChat plugin')
 class BundledProfileIntegrationTests(unittest.TestCase):
@@ -145,7 +170,17 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                 env['CLAWCHAT_USER_ID'] = 'wrong-inherited-account'
                 env['CLAWCHAT_TOKEN'] = 'wrong-inherited-token'
                 command = [sys.executable, '-B', str(Path(profile.__file__).resolve()), str(home)]
-                result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
+                # The real client remains beneath the same native operation
+                # lease used by the APP; never bypass ownership for integration.
+                def owned_client():
+                    node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+                    self.assertTrue(node, 'A real Node runtime is required for the owned client integration')
+                    entry = Path(profile.__file__).resolve().parent / 'desktop/operation-lock.js'
+                    actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
+                    owned_env = {**env, 'NORA_TEST_VENV_HOME': sys.prefix}
+                    return subprocess.run([node, str(actor), str(entry), str(root), *command[:1], *command[2:]],
+                                          env=owned_env, text=True, capture_output=True, timeout=30)
+                result = owned_client()
                 self.assertEqual(result.returncode, 0)
                 self.assertTrue(json.loads(result.stdout)['ok'], result.stdout)
                 self.assertEqual(state['nickname'], '诺拉')
@@ -154,7 +189,7 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                                             ('PATCH', '/v1/users/me'), ('GET', '/v1/users/me')])
                 state.update(nickname='custom name', avatar_url='https://example.org/custom.png')
                 requests.clear()
-                result = subprocess.run(command, env=env, text=True, capture_output=True, timeout=30)
+                result = owned_client()
                 self.assertTrue(json.loads(result.stdout)['alreadyInitialized'])
                 self.assertEqual(requests, [])
                 self.assertEqual(state['nickname'], 'custom name')

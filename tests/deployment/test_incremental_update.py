@@ -194,7 +194,9 @@ class IncrementalUpdateTests(unittest.TestCase):
                 path.write_text("fixture", encoding="utf-8")
             with mock.patch.object(sys, "argv", [
                     "bootstrap.py", "--hermes-home", str(home), "--target-commit", "abc123",
-                    "--apply", "--confirm"]), mock.patch.object(BOOTSTRAP, "download", side_effect=AssertionError("must not download")):
+                    "--apply", "--confirm"]), \
+                    mock.patch.dict(sys.modules, operation_cli=SimpleNamespace(ensure_operation=mock.Mock())), \
+                    mock.patch.object(BOOTSTRAP, "download", side_effect=AssertionError("must not download")):
                 BOOTSTRAP.main()
 
     def test_native_install_downloads_only_changed_modules_and_target_updater(self):
@@ -248,37 +250,21 @@ class IncrementalUpdateTests(unittest.TestCase):
                 self.assertTrue(BUNDLE.file_matches(file, digest(b"same"), 0o755))
                 self.assertFalse(BUNDLE.file_matches(file, digest(b"changed"), 0o755))
 
-    def test_windows_dependencies_use_node_cli_not_a_cmd_shell(self):
-        with tempfile.TemporaryDirectory(prefix="node with spaces ") as temporary:
-            node = Path(temporary) / "node.exe"
-            cli = Path(temporary) / "node_modules/npm/bin/npm-cli.js"
-            cli.parent.mkdir(parents=True)
-            cli.write_text("fixture")
-            with mock.patch.object(UPDATER, "os", SimpleNamespace(name="nt", environ={"PATH": temporary})), \
-                    mock.patch.object(UPDATER.shutil, "which", return_value=str(node)), \
-                    mock.patch.object(UPDATER.subprocess, "run") as run:
-                UPDATER.run(["npm", "ci", "--ignore-scripts"], cwd=temporary)
-            self.assertEqual(run.call_args.args[0], [str(node), str(cli), "ci", "--ignore-scripts"])
-            self.assertNotIn("shell", run.call_args.kwargs)
+    def test_runtime_npm_fallback_is_rejected_without_a_shell_or_subprocess(self):
+        for name in ('npm', 'npm.cmd', 'npm.exe'):
+            with self.subTest(command=name), mock.patch.object(UPDATER.subprocess, 'run') as run:
+                with self.assertRaises(RuntimeError) as raised:
+                    UPDATER.run([name, 'ci', '--ignore-scripts'])
+                self.assertEqual(raised.exception.code, 'RESOURCE_INCOMPLETE')
+                run.assert_not_called()
 
-    def test_windows_npm_cwd_uses_file_url_compatible_paths(self):
-        with tempfile.TemporaryDirectory(prefix="node with spaces ") as temporary:
-            node = Path(temporary) / "node.exe"
-            cli = Path(temporary) / "node_modules/npm/bin/npm-cli.js"
-            cli.parent.mkdir(parents=True)
-            cli.write_text("fixture")
-            for supplied, expected in (
-                ("\\\\?\\C:\\Nora 测试\\source\\engine", "C:\\Nora 测试\\source\\engine"),
-                ("\\\\?\\UNC\\server\\share\\source", "\\\\server\\share\\source"),
-                (temporary, temporary),
-            ):
-                with self.subTest(cwd=supplied), \
-                        mock.patch.object(UPDATER, "os", SimpleNamespace(name="nt", environ={"PATH": temporary})), \
-                        mock.patch.object(UPDATER.shutil, "which", return_value=str(node)), \
-                        mock.patch.object(UPDATER.subprocess, "run") as run:
-                    UPDATER.run(["npm", "ci", "--ignore-scripts"], cwd=supplied)
-                    self.assertEqual(run.call_args.kwargs["cwd"], expected)
-                    self.assertEqual(run.call_args.args[0], [str(node), str(cli), "ci", "--ignore-scripts"])
+    def test_exact_node_version_probe_is_read_only_but_node_scripts_are_guarded(self):
+        with mock.patch.object(UPDATER.subprocess, 'run') as probe, mock.patch.object(UPDATER._operation_control, 'managed_run') as managed:
+            UPDATER.run(['node', '--version'], capture=True)
+            probe.assert_called_once()
+            UPDATER.run(['node', '/fixture/verify-worlds.mjs'], capture=True)
+            managed.assert_called_once_with(['node', '/fixture/verify-worlds.mjs'], cwd=None, env=None, timeout=None,
+                                           check=True, text=True, capture_output=True)
 
     def test_python_install_uses_complete_release_archives(self):
         with tempfile.TemporaryDirectory(prefix="nora-full-plan-") as temporary:
@@ -386,11 +372,10 @@ class IncrementalUpdateTests(unittest.TestCase):
                 path = current / "node_modules" / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("{}\n", encoding="utf-8")
-            result = UPDATER.reuse_or_install_dependencies(
+            result = UPDATER.reuse_dependencies(
                 target,
                 current,
                 "package-lock.json",
-                ["command-that-must-not-run"],
                 ("express/package.json", "webpack/package.json"),
             )
             self.assertEqual(result, "reused")
@@ -420,16 +405,10 @@ class IncrementalUpdateTests(unittest.TestCase):
 
             required = UPDATER.package_dependency_manifests(target)
             with mock.patch.object(UPDATER, "run") as run:
-                result = UPDATER.reuse_or_install_dependencies(
-                    target,
-                    current,
-                    "package-lock.json",
-                    ["npm", "ci"],
-                    required,
-                )
-
-            self.assertEqual(result, "installed")
-            run.assert_called_once_with(["npm", "ci"], cwd=target)
+                with self.assertRaises(RuntimeError) as raised:
+                    UPDATER.reuse_dependencies(target, current, "package-lock.json", required)
+                self.assertEqual(raised.exception.code, "RESOURCE_INCOMPLETE")
+            run.assert_not_called()
 
     def test_dependency_marker_reads_the_installed_app_layout(self):
         with tempfile.TemporaryDirectory(prefix="nora-dependency-marker-") as temporary:

@@ -10,6 +10,10 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
+import ssl
+import urllib.error
+import urllib.parse
 import urllib.request
 
 
@@ -41,6 +45,10 @@ API_URL = os.environ.get(
     "TAVERN_RELEASE_API_URL",
     "https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100" if CHANNEL == 'beta'
     else "https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest",
+)
+SOURCEFORGE_ROOT = "https://downloads.sourceforge.net/project/nora-tavern/"
+RELEASE_URLS = (API_URL,) if os.environ.get("TAVERN_RELEASE_API_URL") else (
+    API_URL, SOURCEFORGE_ROOT + f"channels/{CHANNEL}.json",
 )
 MARKER = DATA_ROOT / "apps/tavern-runtime/.tavern-release-version"
 INSTALL_RECORD = DATA_ROOT / "tavern-updates/installed.json"
@@ -113,22 +121,65 @@ def release_summary(value: object) -> str:
     return summary[: SUMMARY_MAX_CHARS - 1].rstrip() + "…"
 
 
+class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def __init__(self, source: str):
+        self.source = urllib.parse.urlsplit(source)
+
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        destination = urllib.parse.urlsplit(newurl)
+        if destination.scheme != "https" or destination.username or destination.password or destination.fragment:
+            raise RuntimeError("版本信息跳转到不受信任地址，已停止检查")
+        if self.source.hostname == "downloads.sourceforge.net" and (
+            destination.port is not None or destination.path != self.source.path
+            or not (destination.hostname == self.source.hostname
+                    or re.fullmatch(r"[a-z0-9-]+\.dl\.sourceforge\.net", destination.hostname or ""))
+        ):
+            raise RuntimeError("版本信息跳转偏离 SourceForge 官方镜像，已停止检查")
+        return super().redirect_request(request, fp, code, msg, headers, newurl)
+
+
+def query_release(source: str, timeout: float):
+    request = urllib.request.Request(source, headers={
+        "Accept": "application/json", "User-Agent": "nora-tavern-update-check/3",
+    })
+    # The explicit local override is kept for offline checks and deployments.
+    opener = urllib.request.build_opener(ReleaseRedirect(source))
+    with opener.open(request, timeout=timeout) as response:
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise RuntimeError("版本信息超过大小限制")
+    return json.loads(raw)
+
+
 def latest_release() -> tuple[str, str]:
-    request = urllib.request.Request(
-        API_URL,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "nora-tavern-update-check/2",
-        },
-    )
-    with urllib.request.urlopen(request, timeout=20) as response:
-        payload = json.loads(response.read(1024 * 1024))
+    deadline = time.monotonic() + 30
+    payload = None
+    for index, source in enumerate(RELEASE_URLS):
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("版本检查超时")
+            payload = query_release(source, min(15, remaining))
+            break
+        except urllib.error.HTTPError as error:
+            if index == len(RELEASE_URLS) - 1 or error.code not in {403, 404, 408, 410, 429, 500, 502, 503, 504}:
+                raise
+        except (urllib.error.URLError, OSError) as error:
+            reason = getattr(error, "reason", error)
+            if isinstance(reason, ssl.SSLCertVerificationError) or index == len(RELEASE_URLS) - 1:
+                raise
+    if payload is None:
+        raise RuntimeError("所有版本来源均不可用")
     if CHANNEL == 'beta':
+        if not isinstance(payload, list):
+            raise RuntimeError('Beta 版本信息格式无效')
         releases = [item for item in payload if isinstance(item, dict) and not item.get('draft')
                     and item.get('prerelease') and re.fullmatch(r'v?\d+\.\d+\.\d+-beta\.\d+', item.get('tag_name', ''))]
         if not releases:
             raise RuntimeError('尚未发布 Beta 测试版本')
         payload = max(releases, key=lambda item: version_key(normalize_version(item['tag_name'])))
+    if not isinstance(payload, dict) or payload.get('draft') or bool(payload.get('prerelease')) != (CHANNEL == 'beta'):
+        raise RuntimeError('版本信息与更新渠道不符')
     value = normalize_version(payload.get("tag_name"))
     version_key(value)
     return value, release_summary(payload.get("body"))

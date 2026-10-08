@@ -55,7 +55,7 @@ function canChangeLocation(home) {
   } catch { return false; }
 }
 
-function selectLocation(parent, { defaultHome, currentHome, scope, appPath }) {
+function candidateLocation(parent, { defaultHome, currentHome, scope, appPath }) {
   if (!canChangeLocation(currentHome)) throw new Error('已经开始安装，不能更改位置。');
   if (typeof parent !== 'string' || !path.isAbsolute(parent) || !fs.statSync(parent).isDirectory()) throw new Error('请选择本机文件夹。');
   const selected = path.resolve(parent);
@@ -86,15 +86,28 @@ function selectLocation(parent, { defaultHome, currentHome, scope, appPath }) {
       for (const name of ['hermes', 'tavern', 'installer', 'cache', 'launcher']) contained(root, name);
     }
   }
+  return root;
+}
+
+function prepareLocation(parent, options) {
+  const root = candidateLocation(parent, options);
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const probe = contained(root, `.nora-write-${crypto.randomUUID()}`);
   try { fs.writeFileSync(probe, '', { flag: 'wx', mode: 0o600 }); }
   catch { throw new Error('这个位置无法写入，请换一个文件夹。'); }
   finally { fs.rmSync(probe, { force: true }); }
-  const owner = own(root);
-  writeJson(contained(root, SCOPE), { schema: 1, scope });
-  writeJson(receipt(defaultHome), { schema: 1, scope, root, owner });
+  const alreadyOwned=fs.existsSync(contained(root,OWNER));
+  own(root);
+  if(!alreadyOwned)writeJson(contained(root, SCOPE), { schema: 1, scope:options.scope });
   return root;
 }
 
-module.exports = { readLocation, selectLocation, canChangeLocation };
+function selectLocation(parent, options) {
+  const root = prepareLocation(parent, options);
+  const owner=ownerAt(root);
+  writeJson(contained(root,SCOPE), {schema:1,scope:options.scope});
+  writeJson(receipt(options.defaultHome), { schema: 1, scope:options.scope, root, owner });
+  return root;
+}
+
+module.exports = { readLocation, candidateLocation, prepareLocation, selectLocation, canChangeLocation };

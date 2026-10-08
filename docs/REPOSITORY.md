@@ -53,12 +53,16 @@ docs/                  用户文档、当前导航、历史记录
 
 ### 更新
 
+当前重构的唯一执行方案是 [启动器可靠性交付设计与执行方案](launcher-reliability-plan.md)，包含清理范围、功能合同、验收和阶段汇报。过期方案与一次性测试产物已删除，必要验收报告独立保留，不作为活动任务入口。
+
+当前重构源码边界见 [启动器安装、更新与恢复](launcher-unified-update.md)。源码已实现不表示已发布或三个目标平台均已验收。
+
 | 对象 | 唯一入口与职责 |
 | --- | --- |
-| 启动器管理的完整本地系统 | `deployment/update/system-update.js` 管事务，`releases.js` 检查目标版本；调用同一初始化与校验逻辑更新 Hermes、Nora、Tavern、MCP 等，保留用户状态并支持失败恢复。 |
+| 启动器管理的完整本地系统 | `operation-state.js` / `operation-policy.js` 统一准入、结果和恢复策略；`runtime-transaction.js`、`first_install.py`、`update.py` 各自保存受管文件事务。`system-update.js` 只负责受支持历史快照恢复。 |
 | 旧独立部署的 Tavern | `deployment/update/update.py` 管模块更新、旧数据迁移和恢复；不能替代完全版系统更新。 |
 | Git 克隆、npm 启动的精简版 | 按精简版文档拉取源码、安装依赖和重新构建；不是启动器安装。 |
-| 桌面启动器应用本身 | 下载对应平台新安装包替换应用，保留安装数据。不是完整系统更新事务内的自替换。 |
+| 桌面启动器应用本身 | `launcher-update.js` / `replace-launcher.py` 替换 APP 并验证同一操作交接；联合交付验收之前保留备份。完整安装器也可覆盖更换 APP，保留原数据目录。 |
 
 它们共享适用的配置、实例定位和校验逻辑，但更新对象不同。不能为了表面上只剩一个“更新”文件，把桌面应用、Agent 运行时和源码检出强行混成同一种升级。
 

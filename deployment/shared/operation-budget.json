@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "historyCapacity": 4096,
+  "stopReserve": 4,
+  "ackCapacity": 4096,
+  "globalBytes": 67108864,
+  "evidenceBytes": 262144,
+  "pythonBytes": 65536
+}

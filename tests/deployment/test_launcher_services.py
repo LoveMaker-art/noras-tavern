@@ -1,3 +1,4 @@
+import contextlib
 import json
 import io
 import os
@@ -14,6 +15,28 @@ from ops.installer import launcher_bridge as bridge
 
 
 class LauncherServicesTests(unittest.TestCase):
+    def test_clawchat_connection_timeout_preserves_running_gateway_and_business_guidance(self):
+        process = Mock(pid=12345)
+        process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        record = {'pid': process.pid, 'command': process.cmdline.return_value}
+        with patch.object(services, 'owned_gateway', return_value=process), \
+             patch.object(services, 'read_json', return_value=record), \
+             patch.object(services, 'gateway_status', return_value={'gatewayRunning': True, 'clawchatConnected': False}), \
+             patch.object(services, 'time', types.SimpleNamespace(monotonic=Mock(side_effect=[0, 0, 2]), sleep=Mock())), \
+             patch.object(services.subprocess, 'Popen') as spawn:
+            with self.assertRaises(RuntimeError) as failure:
+                services.start_gateway('/fixture', '/fixture/hermes', [], {}, timeout=1)
+        self.assertEqual(getattr(failure.exception, 'user_code', None), 'CLAWCHAT_CONNECT_TIMEOUT')
+        process.terminate.assert_not_called()
+        process.kill.assert_not_called()
+        spawn.assert_not_called()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            bridge.fail(str(failure.exception), user_code=failure.exception.user_code, error=failure.exception)
+        events = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertEqual(events[-1]['userCode'], 'CLAWCHAT_CONNECT_TIMEOUT')
+        self.assertIn('ClawChat', events[-1]['message'])
+
     def test_launcher_pins_tavern_to_its_bundled_node_on_both_platforms(self):
         home = Path('/fixture/hermes')
         for platform, executable in [('posix', home / 'node/bin/node'), ('nt', home / 'node/node.exe')]:
@@ -726,7 +749,7 @@ else:
              patch.object(bridge, 'hermes_command', return_value='hermes'), \
              patch.object(bridge, 'require_bundled_clawchat'), \
              patch.object(bridge, 'run_stream'), \
-             patch.object(bridge.subprocess, 'run', return_value=Mock(returncode=0)), \
+             patch.object(bridge.operation_control, 'managed_run', return_value=Mock(returncode=0)), \
              patch.object(bridge, 'clawchat_paired', return_value=True), \
              patch.object(bridge, 'stop_gateway'), \
              patch.object(bridge, 'command_status'), \
@@ -776,7 +799,7 @@ else:
                      patch.object(bridge, 'python_command', return_value=sys.executable), \
                      patch.object(bridge, 'require_bundled_clawchat'), \
                      patch.object(bridge, 'run_stream'), \
-                     patch.object(bridge.subprocess, 'run', side_effect=activate), \
+                     patch.object(bridge.operation_control, 'managed_run', side_effect=activate), \
                      patch.object(bridge, 'clawchat_paired', side_effect=[paired, True]), \
                      patch.object(bridge, 'stop_gateway'), \
                      patch.object(bridge, 'command_status'), \

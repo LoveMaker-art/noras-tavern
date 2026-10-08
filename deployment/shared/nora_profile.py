@@ -84,6 +84,11 @@ def main():
     home = Path(sys.argv[1]).resolve()
     if ready(home):
         return {"ok": True, "alreadyInitialized": True}
+    try:
+        from .operation_cli import ensure_operation
+    except ImportError:
+        from operation_cli import ensure_operation
+    ensure_operation('pair', nora_home=os.environ.get('NORA_TAVERN_HOME') or home.parent)
     # Never let credentials inherited from another installation select this account.
     for key in list(os.environ):
         if key.startswith("CLAWCHAT_"):
@@ -98,10 +103,33 @@ def main():
     return asyncio.run(initialize(home, config.user_id, client))
 
 
+def failure_result(error):
+    try:
+        from .error_diagnostics import exception_diagnostic
+    except ImportError:
+        from error_diagnostics import exception_diagnostic
+    detail = exception_diagnostic(error, project_root=Path(__file__).resolve().parent)
+    def project(value, original=None):
+        # Request bodies, URLs and plugin exception messages may contain the
+        # paired token. Keep type/status and our source locations only.
+        value['message'] = f"ClawChat 资料同步失败（{value['name']}）。"
+        response = getattr(original, 'response', None)
+        status = getattr(response, 'status_code', None) or getattr(original, 'status', None)
+        if type(status) is int and 400 <= status <= 599:
+            value['code'] = status
+        if isinstance(value.get('cause'), dict):
+            cause = getattr(original, '__cause__', None) or getattr(original, '__context__', None)
+            project(value['cause'], cause)
+        for item in value.get('secondaryErrors', []):
+            project(item['error'])
+    project(detail, error)
+    return {'ok': False, 'error': 'ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重新检查连接。',
+            'diagnostic': detail}
+
+
 if __name__ == "__main__":
     try:
         result = main()
-    except Exception:
-        # Plugin exceptions can contain credential-bearing request diagnostics.
-        result = {"ok": False, "error": "ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重试。"}
+    except Exception as error:
+        result = failure_result(error)
     print(json.dumps(result, ensure_ascii=False))

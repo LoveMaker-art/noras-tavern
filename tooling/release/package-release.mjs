@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { configureCandidateLauncher, fileDigest, writeSystemRelease } from './system-release.mjs';
+import { assertMaintenanceVersions, configureCandidateLauncher, fileDigest, writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -50,6 +50,9 @@ function copyPackageTree(source, target) {
 }
 
 try {
+    identity.launcherVersion = JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'), 'utf8')).version;
+    const minimumLauncherVersion = assertMaintenanceVersions({ launcherVersion: identity.launcherVersion,
+        minimumLauncherVersion: identity.launcherVersion, candidate });
     const baseline = baselineDirectory ? readBaseline(path.resolve(baselineDirectory), identity) : null;
     const mcp = path.join(stage, 'nora-mcp');
     if (baseline) {
@@ -128,8 +131,7 @@ try {
     }
     identity.bootstrap = { sha256: digest(bootstrap), installerSha256: digest(installer), managedComponents: 1, managedLifecycle: 1,
         managedReceiptRecovery: 1,
-        minimumLauncherVersion: '1.1.0' };
-    identity.launcherVersion = JSON.parse(fs.readFileSync(path.join(stage, 'ops/installer/desktop/package.json'), 'utf8')).version;
+        minimumLauncherVersion };
     const firstBootstrap = fs.readFileSync(path.join(stage, 'ops/installer/bootstrap.py'));
     const firstInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.sh'));
     const firstPowerShellInstaller = fs.readFileSync(path.join(stage, 'ops/installer/install.ps1'));
@@ -257,11 +259,16 @@ try {
     for (const name of starterFiles) {
         copyPackageFile(path.join(stage, 'ops/installer/package', name), path.join(starterRoot, name));
     }
-    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py']) {
+    for (const name of ['launcher-conversation-prototype.html', 'launcher-controller.js', 'launcher_services.py', 'launcher_bridge.py', 'nora_profile.py', 'nora_system.py', 'model_config.py', 'bootstrap.py', 'update_recovery.py', 'error_diagnostics.py',
+        'first_install.py','operation_control.py','operation_cli.py','operation_node.mjs','operation_evidence.py','operation-budget.json','mcp_probe.mjs']) {
         copyPackageFile(path.join(stage, 'ops/installer', name), path.join(starterRoot, name));
     }
+    copyPackageFile(path.join(stage,'ops/updater/bootstrap.py'),path.join(starterRoot,'update_paths.py'));
     copyPackageTree(path.join(stage, 'ops/installer/assets'), path.join(starterRoot, 'assets'));
     copyPackageTree(path.join(stage, 'ops/installer/desktop'), path.join(starterRoot, 'desktop'));
+    // Keep the flat Node wrapper helper and the ASAR module from one source.
+    // extraResources inside desktop would exclude that module from ASAR.
+    copyPackageFile(path.join(stage, 'ops/installer/desktop/operation-delegate.js'), path.join(starterRoot, 'operation-delegate.js'));
     if (/-beta\./.test(identity.versions.tavern)) {
         const packageFile = path.join(starterRoot, 'desktop/package.json');
         const desktop = JSON.parse(fs.readFileSync(packageFile, 'utf8'));

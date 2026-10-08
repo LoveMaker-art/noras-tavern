@@ -468,7 +468,9 @@ class NativeRuntime:
             raise NativeLifecycleError("bundled SillyTavern dependencies are not prepared")
         return {**report, "node_major": node_major, "dependencies": "ready"}
 
-    def install(self):
+    def install(self, *, allow_dependency_install=False, journal=None):
+        self.assert_operation()
+        if journal is not None: self._install_journal = journal
         report = self.verify_source()
         try:
             node_major = self.node_major()
@@ -478,8 +480,10 @@ class NativeRuntime:
             raise NativeLifecycleError(
                 f"Node.js {self.contract.node_min_major}+ is required; found {node_major}"
             )
-        materialized = self.materialize_local_dependencies()
         installed = not self.dependencies_ready(node_major)
+        if installed and (not allow_dependency_install or os.environ.get('NORA_OPERATION_DELEGATE_ENDPOINT')):
+            raise NativeLifecycleError('运行资源不完整，请使用匹配平台的完整安装包。', code='RESOURCE_INCOMPLETE')
+        materialized = self.materialize_local_dependencies()
         if installed:
             try:
                 subprocess.run(
@@ -509,6 +513,7 @@ class NativeRuntime:
         }
 
     def sync_assets(self, data_root=None):
+        self.assert_operation()
         self.verify_source()
         data_root = Path(data_root or self.native_data_root)
         extension_source = self.app_root / "native-extensions"
@@ -519,27 +524,35 @@ class NativeRuntime:
             raise NativeLifecycleError("Nora native extensions are missing")
         extension_target = data_root / "default-user/extensions"
         extension_target.mkdir(parents=True, exist_ok=True)
+        journal = getattr(self, '_install_journal', None)
         for name in OBSOLETE_MANAGED_EXTENSIONS:
-            shutil.rmtree(extension_target / name, ignore_errors=True)
+            self.assert_operation()
+            if journal is not None: journal.remove(extension_target / name)
+            else: shutil.rmtree(extension_target / name, ignore_errors=True)
         for name in MANAGED_EXTENSIONS:
+            self.assert_operation()
             source = extension_source / name
             if not source.is_dir():
                 raise NativeLifecycleError(f"managed Nora extension is missing: {name}")
             target = extension_target / name
-            shutil.rmtree(target, ignore_errors=True)
-            shutil.copytree(source, target)
+            if journal is not None: journal.apply(source, target)
+            else:
+                shutil.rmtree(target, ignore_errors=True)
+                shutil.copytree(source, target)
         # Initial installation owns defaults; subsequent starts/updates preserve
         # the operator's settings instead of silently resetting config.yaml.
         if not self.config_path.exists():
             config = render_native_config(
                 (self.engine_root / "default/config.yaml").read_text(encoding="utf-8")
             )
-            _atomic_text(self.config_path, config, mode=0o600)
+            if journal is not None: journal.apply_bytes(self.config_path, config.encode('utf-8'))
+            else: _atomic_text(self.config_path, config, mode=0o600)
         elif os.environ.get("TAVERN_VERBOSE_LOGGING") != "1":
             config = self.config_path.read_text(encoding="utf-8")
             production_config = render_production_logging_config(config)
             if production_config != config:
-                _atomic_text(self.config_path, production_config, mode=0o600)
+                if journal is not None: journal.apply_bytes(self.config_path, production_config.encode('utf-8'))
+                else: _atomic_text(self.config_path, production_config, mode=0o600)
         return {
             "extensions": list(MANAGED_EXTENSIONS),
             "engine": str(self.engine_root),
@@ -610,30 +623,69 @@ class NativeRuntime:
         failure = NativeLifecycleError(f'{error}; {state}',
             code='TAVERN_PROCESS_EXITED' if status is not None else getattr(error, 'code', None))
         failure.secondary_errors = []
+        context = {'stage': 'native_start', 'loopback': True}
+        if type(getattr(child, 'pid', None)) is int: context['pid'] = child.pid
+        if type(status) is int: context['exitCode'] = status
+        context.update(getattr(child, '_nora_startup_context', {}))
+        missing = []
+        truncated = False
         cursor = getattr(child, '_nora_startup_log', None)
         if isinstance(cursor, tuple) and len(cursor) == 3:
             reader, offset, identity = cursor
             try:
                 current = os.fstat(reader.fileno())
                 if (current.st_dev, current.st_ino) == identity and current.st_size > offset:
+                    truncated = current.st_size - offset > MAX_STARTUP_EVIDENCE_BYTES
                     reader.seek(max(offset, current.st_size - MAX_STARTUP_EVIDENCE_BYTES))
                     output = reader.read(MAX_STARTUP_EVIDENCE_BYTES).decode('utf-8', errors='replace')
-                    codes, frames = set(), []
+                    codes, frames, header = set(), [], None
                     for line in output.splitlines():
+                        candidate = re.match(r'^\s*(TypeError|RangeError|SyntaxError|ReferenceError|URIError|EvalError|AggregateError|Error)(?:\s*\[([A-Z_0-9]+)\])?:\s*(.*)$', line)
+                        if candidate: header = candidate.groups()
                         match = re.match(r'\s*(?:\w*Error\s*\[([A-Z_]+)\]|code:\s*[\'"]([A-Z_]+)[\'"])', line)
                         if match:
                             code = next((value for value in match.groups() if value), None)
                             if code in NODE_STARTUP_ERROR_CODES: codes.add(code)
                         if re.match(r'\s*at\s', line):
-                            location = re.search(r'([A-Za-z0-9_.-]+\.(?:js|cjs|mjs)):(\d+)(?::\d+)?', line)
-                            if location and len(frames) < 8:
-                                frames.append(traceback.FrameSummary(location[1], int(location[2]), 'node', lookup_line=False))
-                    detail = RuntimeError('Node startup program evidence: ' + ', '.join(sorted(codes))
-                                          if codes else 'Node startup output has no recognized program error code')
-                    detail._bridge_diagnostic_stack = frames
+                            candidate = line.strip()[3:].rsplit('(', 1)[-1]
+                            location = re.fullmatch(r'(.+\.(?:js|cjs|mjs)):(\d+)(?::\d+)?\)?', candidate)
+                            if location:
+                                source = Path(location[1].removeprefix('file://'))
+                                if source.resolve().is_relative_to(self.engine_root.resolve()):
+                                    frames.append(traceback.FrameSummary(source.name, int(location[2]), 'node', lookup_line=False))
+                                elif 'non_project_frames_omitted' not in missing: missing.append('non_project_frames_omitted')
+                    if len(frames) > 12: truncated = True
+                    message = 'Node startup program evidence: ' + ', '.join(sorted(codes)) if codes else None
+                    if header and not codes:
+                        name, _code, original = header
+                        # Error text may echo arbitrary config or response values.
+                        # Preserve reviewed engine summaries, never quoted data.
+                        match = re.match(r'^Cannot read properties of (undefined|null)\b', original)
+                        if name == 'TypeError' and match:
+                            message = 'Cannot read properties of ' + match[1] + ' (property omitted).'
+                        elif name == 'RangeError' and original == 'Maximum call stack size exceeded':
+                            message = original
+                        elif name == 'SyntaxError': message = 'Node JavaScript syntax validation failed.'
+                        else:
+                            message = f'Node program failed ({name}).'
+                            missing.append('program_message_unreviewed')
+                    if not message:
+                        message = 'Node startup output has no recognized program error code'
+                        missing.append('program_error_missing')
+                    detail = RuntimeError(message)
+                    if header: detail._diagnostic_name = header[0]
+                    detail._bridge_diagnostic_stack = frames[-12:]
+                    detail._diagnostic_context = context
+                    detail._diagnostic_missing = missing
+                    detail._diagnostic_truncated = truncated
                     failure.secondary_errors.append(detail)
+                else: missing.append('launch_log_empty_or_changed')
             except (OSError, ValueError):
-                pass  # Evidence collection must not change the startup failure.
+                missing.append('launch_log_unavailable')
+        else: missing.append('launch_log_unavailable')
+        failure._diagnostic_context = context
+        failure._diagnostic_missing = missing
+        failure._diagnostic_truncated = truncated
         return failure
 
     def wait_for_process_identity(self, processes, pid, script, *, child=None, timeout=5):
@@ -682,9 +734,10 @@ class NativeRuntime:
     def operations_module(self, name):
         if name == 'service_manager':
             self.operations_module('runtime_process')
-        source = Path(__file__).resolve().parents[1] / 'ops/updater' / (name + '.py')
+        folder = 'installer' if name in ('operation_control','operation_cli') else 'updater'
+        source = Path(__file__).resolve().parents[1] / 'ops' / folder / (name + '.py')
         if not source.is_file():
-            source = self.app_root.parent / 'tavern-ops/updater' / (name + '.py')
+            source = self.app_root.parent / 'tavern-ops' / folder / (name + '.py')
         existing = sys.modules.get(name)
         # During update, staged/installed source paths change. Maintenance
         # ownership stays with the executing updater, not the staged module.
@@ -698,6 +751,10 @@ class NativeRuntime:
             sys.modules[key] = module
             sys.modules.setdefault(name, module)
         return sys.modules[key]
+
+    def assert_operation(self):
+        if getattr(sys, '_nora_operation_delegate', None) is not None or os.environ.get('NORA_OPERATION_DELEGATE_ENDPOINT'):
+            self.operations_module('operation_control').require_operation().assert_active()
 
     def service_module(self):
         return self.operations_module('service_manager')
@@ -840,10 +897,12 @@ class NativeRuntime:
         child = None
         identity_verified = False
         try:
+            self.assert_operation()
             if service:
                 native_pid = service.start()
             else:
                 child = self.spawn(self.node_command(port, native_data), env, run_dir / 'native.log')
+                child._nora_startup_context = {'port': port}
                 native_pid = child.pid
                 self._children[native_pid] = child
             process = self.wait_for_process_identity(
@@ -894,7 +953,10 @@ class NativeRuntime:
 
     def request_json(self, url):
         request = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(request, timeout=3) as response:
+        # Tavern health is local. System proxies must not redirect the check
+        # or turn a healthy listener into a proxy connection failure.
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(request, timeout=3) as response:
             if response.status != 200:
                 raise NativeLifecycleError(f"unexpected health status: {response.status}")
             return json.loads(response.read(1024 * 1024).decode("utf-8"))
@@ -915,20 +977,28 @@ class NativeRuntime:
                 "details": {"native": {"error": str(error)}},
             }
 
-    def wait_for_health(self, port, timeout=45, *, child=None):
-        deadline = time.monotonic() + timeout
+    def wait_for_health(self, port, timeout=120, *, child=None):
+        # First launch can be delayed by local file inspection or slow storage.
+        # Keep one bounded readiness window for install, update and normal start.
+        started = time.monotonic()
+        deadline = started + timeout
         last = None
-        while time.monotonic() < deadline:
+        child_state = 'unobserved'
+        while (now := time.monotonic()) < deadline:
             if child is not None:
                 status = child.poll()
                 if type(status) is int:
                     raise NativeLifecycleError(f'Started Tavern process exited with status {status} before health verification',
                                                code='TAVERN_PROCESS_EXITED')
+                child_state = 'running' if status is None else 'unobserved'
             last = self.health(port)
             if last["ok"]:
                 return last
             time.sleep(1)
-        raise NativeLifecycleError(f"native health check timed out: {last}")
+        raise NativeLifecycleError(
+            f"native health check timed out after {now - started:.1f}s "
+            f"(limit={timeout:g}s; child={child_state}): {last}",
+            code='TAVERN_START_TIMEOUT')
 
     def _read_pid(self, path):
         try:
@@ -971,6 +1041,7 @@ class NativeRuntime:
             return self._stop_run(run_id)
 
     def _stop_run(self, run_id):
+        self.assert_operation()
         run_dir = self.run_dir(run_id)
         processes = self.process_module()
         service = self.managed_service() if run_id == 'production' else None
@@ -1057,6 +1128,7 @@ def main(argv=None):
     if args.command == 'status':
         print(json.dumps(runtime.status(args.run_id), ensure_ascii=False, indent=2))
         return
+    runtime.operations_module('operation_cli').ensure_operation('native', nora_home=os.environ.get('NORA_TAVERN_HOME'))
     with runtime.operations_module('runtime_lock').installation_lock(runtime.data_root):
         result = execute(runtime, args)
     print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -1100,7 +1172,7 @@ def execute(runtime, args):
 if __name__ == "__main__":
     try:
         main()
-    except NativeLifecycleError as error:
+    except Exception as error:
         # Keep the legacy scalar error below even if optional diagnostics are
         # unavailable in an older or partially restored operations tree.
         try:
@@ -1117,5 +1189,5 @@ if __name__ == "__main__":
                              ensure_ascii=False), file=sys.stderr, flush=True)
         except Exception:
             pass  # Diagnostic availability must never replace the startup error.
-        print(json.dumps({"ok": False, "error": str(error), "code": error.code}, ensure_ascii=False), file=sys.stderr)
+        print(json.dumps({"ok": False, "error": str(error), "code": getattr(error, 'code', None)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)

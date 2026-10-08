@@ -46,6 +46,29 @@ test('candidate projection preserves every authored byte and requires the full N
     assert.equal(exported.files.includes('nora/SOUL.md'), false, 'No second delivery copy');
 });
 
+test('private acceptance reports never enter stable or candidate source identities',t=>{
+    const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'nora-layout-evidence-'));
+    t.after(()=>fs.rmSync(fixture,{recursive:true,force:true}));
+    fs.mkdirSync(path.join(fixture,'tooling'));fs.mkdirSync(path.join(fixture,'outputs'));
+    fs.writeFileSync(path.join(fixture,'tooling/source-layout.json'),JSON.stringify({schema:1,rules:[['source.js','app/source.js']]}));
+    fs.writeFileSync(path.join(fixture,'source.js'),'module.exports=1;');
+    const report=path.join(fixture,'outputs/report.json');fs.writeFileSync(report,'{"private":"fixture"}');
+    const git=args=>execFileSync('git',args,{cwd:fixture,stdio:'pipe'});
+    git(['init']);git(['add','.']);git(['-c','user.name=fixture','-c','user.email=fixture@example.invalid','commit','-m','fixture']);
+    const stable=createReleaseSource(fixture);
+    t.after(()=>fs.rmSync(stable.stage,{recursive:true,force:true}));
+    assert.equal(fs.existsSync(path.join(stable.stage,'outputs')),false);
+    assert.equal(stable.identity.sourceFiles['outputs/report.json'],undefined);
+    const before=createReleaseSource(fixture,{candidate:true});
+    t.after(()=>fs.rmSync(before.stage,{recursive:true,force:true}));
+    fs.writeFileSync(report,'{"private":"changed fixture"}');
+    const after=createReleaseSource(fixture,{candidate:true});
+    t.after(()=>fs.rmSync(after.stage,{recursive:true,force:true}));
+    assert.equal(before.identity.sourceDigest,after.identity.sourceDigest);
+    assert.equal(fs.existsSync(path.join(after.stage,'outputs')),false);
+    assert.equal(fs.readFileSync(report,'utf8'),'{"private":"changed fixture"}');
+});
+
 test('stable source uses the committed layout, not uncommitted path overrides', t => {
     const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-layout-test-'));
     t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));

@@ -22,12 +22,13 @@ import traceback
 import time
 
 try:
-    from . import nora_system, nora_profile, error_diagnostics
+    from . import nora_system, nora_profile, error_diagnostics, operation_control
     from .launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 except ImportError:
     import nora_system
     import nora_profile
     import error_diagnostics
+    import operation_control
     from launcher_services import check_gateway_control, clawchat_paired, gateway_status, start_gateway, stop_gateway, stop_liveware
 
 
@@ -213,12 +214,13 @@ ANSI = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 def run_stream(command: list[str], *, env: dict[str, str] | None = None, native_cli=False):
     def native_diagnostic(value):
         # This is a process boundary, not permission for arbitrary child output.
-        # Accept only the bounded location-only native exception protocol.
+        # Accept the bounded native exception protocol, including reviewed
+        # process facts. Never forward arbitrary child context or output.
         remaining = 4
         def valid(item, *, root=False):
             nonlocal remaining
             required = {'name', 'message', 'code', 'stack'}
-            optional = {'cause', 'secondaryErrors'} | ({'truncated'} if root else set())
+            optional = {'cause', 'secondaryErrors', 'context', 'missingReasons'} | ({'truncated'} if root else set())
             if (remaining == 0 or not isinstance(item, dict)
                     or not required.issubset(item) or not set(item).issubset(required | optional)):
                 return False
@@ -238,6 +240,25 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None, native_
                 return False
             if 'truncated' in item and type(item['truncated']) is not bool:
                 return False
+            if 'context' in item:
+                context = item['context']
+                if (not isinstance(context, dict) or not context
+                        or not set(context).issubset({'pid', 'exitCode', 'port', 'loopback', 'stage'})):
+                    return False
+                bounds = {'pid': (1, 4294967295), 'exitCode': (-2147483648, 4294967295), 'port': (1, 65535)}
+                for key, (minimum, maximum) in bounds.items():
+                    if key in context and (type(context[key]) is not int or not minimum <= context[key] <= maximum):
+                        return False
+                if 'loopback' in context and type(context['loopback']) is not bool:
+                    return False
+                if 'stage' in context and context['stage'] not in ('native_start', 'first_install', 'update_apply', 'restoring'):
+                    return False
+            if 'missingReasons' in item:
+                reasons = item['missingReasons']
+                if (not isinstance(reasons, list) or len(reasons) > 16
+                        or any(not isinstance(reason, str) or len(reason) > 96
+                               or not re.fullmatch(r'[a-z_]+(?::[A-Z_]+)?', reason) for reason in reasons)):
+                    return False
             if 'cause' in item and not valid(item['cause']):
                 return False
             secondary = item.get('secondaryErrors', [])
@@ -248,7 +269,10 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None, native_
 
     started = time.monotonic()
     emit("command", command=command)
-    process = subprocess.Popen(
+    gate = getattr(sys, '_nora_operation_delegate', None)
+    if gate and Path(command[0]).name.lower() in ('hermes', 'hermes.exe'):
+        command = [sys.executable, '-B', '-c', 'import sys; from hermes_cli.main import main; sys.exit(main())', *command[1:]]
+    process = (operation_control.managed_popen if gate else subprocess.Popen)(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -319,7 +343,8 @@ def run_stream(command: list[str], *, env: dict[str, str] | None = None, native_
 
 
 def run_json(command: list[str], *, env: dict[str, str] | None = None, timeout: int = 60) -> dict:
-    result = subprocess.run(command, text=True, capture_output=True, env=env, timeout=timeout)
+    run = operation_control.managed_run if getattr(sys, '_nora_operation_delegate', None) else subprocess.run
+    result = run(command, text=True, capture_output=True, env=env, timeout=timeout)
     if result.returncode:
         return {"ok": False, "error": (result.stderr or result.stdout).strip()}
     try:
@@ -573,9 +598,9 @@ def command_start(args) -> None:
     first_setup = not system["setupCompleted"]
     lifecycle = args.install_root / "apps/tavern-runtime/native_lifecycle.py"
     if first_setup and service != "tavern" and not read_verified_model(args.nora_home, args.hermes_home):
-        fail("请先配置并测试模型。")
+        fail("请先配置并测试模型。", user_code='MODEL_SETUP_REQUIRED')
     if first_setup and service != "tavern" and not clawchat_paired(args.hermes_home):
-        fail("请先连接 ClawChat。")
+        fail("请先连接 ClawChat。", user_code='CLAWCHAT_PAIR_REQUIRED')
     if service != "tavern" and first_setup:
         sync_nora_profile(args)
     if service == "all":
@@ -681,7 +706,11 @@ def sync_nora_profile(args) -> None:
     except (OSError, subprocess.TimeoutExpired) as error:
         fail("ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重试。", error=error)
     if result.get("ok") is not True or not nora_profile.ready(args.hermes_home):
-        fail("ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重试。")
+        diagnostic = result.get('diagnostic')
+        if isinstance(diagnostic, dict):
+            emit('diagnostic', component='bridge', error=diagnostic)
+        fail("ClawChat 已配对，但诺拉的名字和头像未完成同步。配对已保留，请重新检查连接。",
+             code=diagnostic.get('code') if isinstance(diagnostic, dict) else None)
 
 
 def command_pair(args) -> None:
@@ -707,7 +736,7 @@ def command_pair(args) -> None:
         "sys.argv=[data['cli'],'activate',data['code'],'--no-restart'] + (['--repair'] if data['repair'] else []); "
         "runpy.run_path(data['cli'],run_name='__main__')"
     )
-    result = subprocess.run([python_command(args.hermes_home), "-B", "-c", activation],
+    result = operation_control.managed_run([python_command(args.hermes_home), "-B", "-c", activation],
                             input=json.dumps({"agent": str(args.hermes_home / "hermes-agent"),
                                               "cli": str(plugin / "clawchat_cli.py"), "code": code,
                                               "repair": clawchat_paired(args.hermes_home)}),
@@ -783,18 +812,25 @@ def recovery_stop(args):
     if all((args.install_root / name).is_file() for name in required):
         args.service = 'all'
         command_stop(args)
-        return
-    # Renaming either app or ops may have been interrupted. Do not load a
-    # mixed controller or guess ownership from a saved PID in that state.
+    else:
+        # Renaming either app or ops may have been interrupted. Do not load a
+        # mixed controller or guess ownership from a saved PID in that state.
+        _recovery_require_native_offline(args)
+        stop_gateway(args.nora_home, hermes_home=args.hermes_home)
+        stop_liveware(args.hermes_home)
     _recovery_require_native_offline(args)
-    stop_gateway(args.nora_home, hermes_home=args.hermes_home)
-    stop_liveware(args.hermes_home)
-    _recovery_require_native_offline(args)
-    emit('result', running=False, gatewayRunning=False)
+    gateway = gateway_status(args.nora_home, args.hermes_home)
+    if gateway.get('gatewayRunning') is not False:
+        raise RuntimeError('尚未确认诺拉后台进程已停止，未恢复文件。')
+    proof = {'offline': True, 'running': False, 'gatewayRunning': False}
+    emit('result', **proof)
+    return proof
 
 
 def recovery_verify(args, before):
     state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if any(type(value.get(key)) is not bool for value in (state, before) for key in ('running', 'gatewayRunning')):
+        raise RuntimeError('恢复前后的服务核验信息不完整。')
     if str(state.get('version', '')).lstrip('v') != str(before.get('version', '')).lstrip('v'):
         raise RuntimeError('恢复后的旧版本核验失败。')
     if before.get('systemReady') and not state.get('systemReady'):
@@ -807,6 +843,9 @@ def recovery_verify(args, before):
 
 
 def command_recover_update(args):
+    gate = operation_control.require_operation()
+    if gate.operation_id != args.operation_id:
+        raise RuntimeError('更新恢复编号与当前受管操作不一致，未修改文件。')
     helper = nora_system.recovery_module()
     emit('task', stage_id='verify', task='正在核验更新事务和旧版本备份')
 
@@ -824,7 +863,7 @@ def command_recover_update(args):
     def stop(plan, _backup):
         bind(plan)
         emit('task', stage_id='stop', task='正在停止当前实例，保留失败现场')
-        recovery_stop(args)
+        return recovery_stop(args)
 
     def resume(plan, _backup):
         lifecycle = bind(plan)
@@ -843,7 +882,108 @@ def command_recover_update(args):
     with helper.recovery_lock(args.install_root):
         helper.recover(args.hermes_home, args.install_root, stop=stop, resume=resume, verify=verify)
     emit('task', stage_id='health_check', task='旧版本和原有服务状态已恢复')
-    command_status(args)
+    emit('result', **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port),
+         updateRecovered=True, recoveryVerification='confirmed')
+
+
+def _first_install_helper():
+    source = HERE / 'first_install.py'
+    if not source.is_file():
+        raise RuntimeError('启动器缺少首次安装恢复组件，请保留数据并重新安装新版启动器。')
+    spec = importlib.util.spec_from_file_location('launcher_first_install_recovery', source)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def command_operation_effects(args):
+    transaction = args.nora_home / 'installer/operations' / args.operation_id / 'first-install/transaction.json'
+    if transaction.is_file():
+        effects = _first_install_helper().inspect_first_install(transaction)
+    elif args.kind == 'update':
+        if not (args.install_root / 'tavern-updates/transaction.json').exists():
+            effects = {'effectState': 'untouched', 'canRecover': False, 'reason': 'no_journal'}
+        else:
+            effects = nora_system.recovery_module().effects(args.hermes_home, args.install_root)
+        if effects.get('operationId') != args.operation_id and effects.get('status') in ('committed', 'restored'):
+            effects = {'effectState': 'untouched', 'canRecover': False, 'reason': 'other_completed_operation'}
+        elif effects.get('operationId') == args.operation_id and effects.get('status') == 'committed':
+            effects.update(recoveryOutcome='not-required', canResume=True)
+    else:
+        effects = {'effectState': 'untouched', 'canRecover': False, 'reason': 'no_journal'}
+    emit('result', effects=effects)
+
+
+def command_resume_committed_update(args):
+    helper = nora_system.recovery_module()
+    journal = helper.load(args.hermes_home, args.install_root, full=False)
+    gate = operation_control.require_operation()
+    if (journal.record.get('status') != 'committed' or journal.record.get('operationId') != args.operation_id
+            or gate.operation_id != args.operation_id):
+        raise RuntimeError('此次更新没有已提交的受管事务，未重复替换文件。')
+    lifecycle = journal.plan.get('lifecycle')
+    if not isinstance(lifecycle, dict):
+        raise RuntimeError('更新事务缺少原服务验收计划，未改变文件。')
+    for key, target in (('noraHome', args.nora_home), ('hermesHome', args.hermes_home), ('installRoot', args.install_root)):
+        if Path(str(lifecycle.get(key, ''))).resolve() != target.resolve():
+            raise RuntimeError('更新事务的实例绑定无法确认。')
+    args.port = lifecycle['port']
+    command_update_lifecycle(args, {**lifecycle, 'before': journal.plan['before'], 'phase': 'verify',
+                                   'version': journal.record['version']})
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if state.get('systemReady') is not True or str(state.get('version', '')).lstrip('v') != str(journal.record['version']).lstrip('v'):
+        raise RuntimeError('更新后的版本或完整性尚未通过验收，已保留旧版本备份。')
+    emit('result', **state, operationVerified=True, updateVerified=True)
+
+
+def command_verify_current_update(args):
+    operation_control.require_operation()
+    acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if (acceptance.get('ready') is not True or state.get('systemReady') is not True
+            or str(state.get('version', '')).lstrip('v') != str(args.version).lstrip('v')
+            or any(type(state.get(key)) is not bool for key in ('running', 'gatewayRunning'))):
+        raise RuntimeError('当前酒馆的固定版本、文件或进程状态未通过核验，旧启动器备份已保留。')
+    emit('result', **state, updateVerified=True)
+
+
+def command_resume_committed_install(args):
+    gate = operation_control.require_operation()
+    transaction = args.nora_home / 'installer/operations' / args.operation_id / 'first-install/transaction.json'
+    helper = _first_install_helper()
+    journal = helper.FirstInstallJournal.load(transaction)
+    effects = helper.inspect_first_install(transaction)
+    if (gate.operation_id != args.operation_id or effects.get('operationId') != args.operation_id
+            or effects.get('status') != 'committed' or effects.get('canResume') is not True
+            or journal.record.get('noraHome') != str(args.nora_home)
+            or journal.record.get('roots') != {'hermes': str(args.hermes_home), 'tavern': str(args.install_root)}):
+        raise RuntimeError('首装事务尚未确认提交，未重复安装文件。')
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if state.get('running') is False:
+        args.service = 'tavern'
+        command_start(args)
+    acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+    proof = nora_system.verify_runtime(args.hermes_home, args.install_root, args.port,
+                                       python_command(args.hermes_home), env_for(args.nora_home, args.hermes_home, args.install_root))
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if (acceptance.get('ready') is not True or state.get('systemReady') is not True
+            or state.get('running') is not True or not all(proof.get(key) for key in nora_system.PROOFS)
+            or str(state.get('version', '')).lstrip('v') != str(effects.get('version', '')).lstrip('v')):
+        raise RuntimeError('首装文件已提交，但实际程序和连接尚未通过验收；未重复安装。')
+    emit('result', **state, operationVerified=True, firstInstallVerified=True)
+
+
+def command_recover_install(args):
+    transaction = args.nora_home / 'installer/operations' / args.operation_id / 'first-install/transaction.json'
+    result = _first_install_helper().resume_first_install(transaction, stop=lambda: recovery_stop(args))
+    if result.get('status') != 'restored':
+        error = RuntimeError('首次安装恢复未完成，已保留故障现场和原数据。')
+        error.code = 'UPDATE_RECOVERY_REQUIRED'
+        error.secondary_errors = result.get('errors', [])
+        raise error
+    emit('result', **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port),
+         firstInstallRecovered=True, recoveryVerification='confirmed')
 
 
 def command_update_lifecycle(args, plan=None):
@@ -870,13 +1010,18 @@ def command_update_lifecycle(args, plan=None):
         check_gateway_control(args.nora_home, args.hermes_home)
         state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
         if (not before.get('version') or str(state.get('version', '')).lstrip('v') != str(before['version']).lstrip('v')
-                or any(bool(state.get(key)) != bool(before.get(key)) for key in ('running', 'gatewayRunning'))):
+                or any(type(state.get(key)) is not bool or type(before.get(key)) is not bool
+                       or state[key] != before[key] for key in ('running', 'gatewayRunning'))):
             fail('更新前的版本或服务状态已变化，请重新检查更新')
         emit('result', **state)
         return
     args.service = 'all'
     command_stop(args)
     if phase == 'stop':
+        _recovery_require_native_offline(args)
+        if gateway_status(args.nora_home, args.hermes_home).get('gatewayRunning') is not False:
+            raise RuntimeError('尚未确认诺拉后台进程已停止，未开始替换。')
+        emit('result', offline=True, running=False, gatewayRunning=False)
         return
     if phase == 'verify':
         acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
@@ -918,7 +1063,7 @@ def command_update_lifecycle(args, plan=None):
     if (phase == 'verify' or before.get('systemReady')) and not state.get('systemReady'):
         fail('更新事务完整性复核失败：' + '；'.join(state.get('systemProblems', [])))
     for key in ('running', 'gatewayRunning'):
-        if bool(state.get(key)) != bool(before.get(key)):
+        if type(state.get(key)) is not bool or type(before.get(key)) is not bool or state[key] != before[key]:
             fail('未能恢复更新前的服务状态：' + key)
     if before.get('clawchatConnected') and not state.get('clawchatConnected'):
         fail('未能恢复更新前的 ClawChat 连接')
@@ -1050,13 +1195,19 @@ def main() -> None:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
     sub.add_parser("verify-model")
+    sub.add_parser('verify-current-update').add_argument('--version', required=True)
     install = sub.add_parser("install")
     install.add_argument("--release-dir")
     for action in ("start", "stop", "restart"):
         sub.add_parser(action).add_argument("--service", choices=("all", "nora", "tavern"), default="all")
     sub.add_parser("finish-update")
     sub.add_parser("update-lifecycle")
-    sub.add_parser("recover-update")
+    sub.add_parser("recovery-stop")
+    for name in ('operation-effects', 'recover-update', 'recover-install', 'resume-committed-update', 'resume-committed-install'):
+        command = sub.add_parser(name)
+        command.add_argument('--operation-id', required=True)
+        if name == 'operation-effects':
+            command.add_argument('--kind', choices=('install', 'update'), required=True)
     sub.add_parser("pair")
     update = sub.add_parser("update")
     update.add_argument("--tag")
@@ -1069,6 +1220,8 @@ def main() -> None:
     open_url = sub.add_parser("open-url")
     open_url.add_argument("url")
     args = parser.parse_args()
+    if hasattr(args, 'operation_id') and not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', args.operation_id, re.I):
+        raise RuntimeError('操作记录编号无效')
     if args.command != "status":
         emit("diagnostic", component="python", executable=sys.executable, version=sys.version)
     args.nora_home = safe(args.nora_home) if args.nora_home else default_nora_home()
@@ -1076,6 +1229,14 @@ def main() -> None:
     args.install_root = safe(args.install_root) if args.install_root else default_install_root(args.nora_home)
     require_descendant(args.nora_home, args.hermes_home, "Hermes 目录")
     require_descendant(args.nora_home, args.install_root, "Tavern 目录")
+    readonly = args.command in ('status', 'verify-model', 'operation-effects', 'plan-update', 'check-update', 'open-logs', 'open-settings', 'open-url')
+    if not readonly:
+        from operation_cli import ensure_operation
+        ensure_operation({'recover-update': 'recover', 'recover-install': 'recover',
+                          'recovery-stop': 'stop', 'update-lifecycle': 'update',
+                          'resume-committed-update': 'update', 'resume-committed-install': 'install',
+                          'verify-current-update': 'update'}.get(args.command, args.command),
+                         nora_home=args.nora_home)
     if args.command == "status":
         command_status(args)
     elif args.command == "verify-model":
@@ -1088,6 +1249,8 @@ def main() -> None:
         command_start(args)
     elif args.command == "stop":
         command_stop(args)
+    elif args.command == "recovery-stop":
+        recovery_stop(args)
     elif args.command == "restart":
         command_stop(args)
         command_start(args)
@@ -1108,6 +1271,16 @@ def main() -> None:
         command_update_lifecycle(args)
     elif args.command == "recover-update":
         command_recover_update(args)
+    elif args.command == 'recover-install':
+        command_recover_install(args)
+    elif args.command == 'operation-effects':
+        command_operation_effects(args)
+    elif args.command == 'resume-committed-update':
+        command_resume_committed_update(args)
+    elif args.command == 'resume-committed-install':
+        command_resume_committed_install(args)
+    elif args.command == 'verify-current-update':
+        command_verify_current_update(args)
     elif args.command == "plan-update":
         command_update(args, plan=True)
     elif args.command == "check-update":

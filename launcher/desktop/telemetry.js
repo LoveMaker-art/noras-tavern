@@ -5,8 +5,10 @@ const { AsyncLocalStorage } = require('node:async_hooks');
 const contract = require('./telemetry-contract.json');
 const { describeError } = require('./launcher-errors');
 const { createFaultPackets, validFaultPacket } = require('./fault-packet');
+const { createOperationLogDelivery } = require('./operation-log-delivery');
 const EMPTY_DETAILS = {error_source:'',error_site:'',system_code:'',http_status:null,exit_code:null,exit_signal:'',error_kind:'',attempt:0};
 const DAY = 86400000;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const ENDPOINT = 'https://noratavern.com/api/launcher/events';
 const VERSION = /^(?:unknown|\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]{1,40})?)$/;
 const version = value => {
@@ -20,11 +22,12 @@ function errorCode(error) {
 
 function createTelemetry({ file, launcherVersion, platform = process.platform, arch = process.arch,
   enabled = true, diagnosticDefault = false, cohort = 'unknown', fetcher = globalThis.fetch, now = Date.now, random = Math.random,
-  diagnostic = () => {}, automatic = true, clean, roots, environment }) {
+  diagnostic = () => {}, automatic = true, clean, roots, environment, operationContext, onDelivery = () => {}, operationLogs, logScope }) {
   let state, broken = false, controller, sending = false, attempts = 0, due = 0, timer;
   let productVersion = 'unknown', progressValue = null, generation = 0;
   const operations = new AsyncLocalStorage(), reported = new WeakMap(), diagnosticTasks = new WeakMap();
   const faults = createFaultPackets({clean,roots,environment});
+  let rawLogs;
   const report = code => { try { diagnostic(code); } catch {} };
   try {
     if (fs.existsSync(file)) {
@@ -49,7 +52,7 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
             || !(event.exit_code === null || Number.isInteger(event.exit_code) && event.exit_code >= 0 && event.exit_code <= 65535)
             || !Number.isInteger(event.attempt) || event.attempt < 0 || event.attempt > 10) throw Error('invalid detail');
         }
-        if (event.schema_version === 3 && event.fault !== null && (!validFaultPacket(event.fault) || Buffer.byteLength(JSON.stringify(event.fault)) > contract.faultLimits.packetBytes)) throw Error('invalid packet');
+        if (event.schema_version === 3 && event.fault !== null && (event.fault?.schema === 2 && event.fault.operation && event.fault.operation.operation_id !== event.operation_id || !validFaultPacket(event.fault) || Buffer.byteLength(JSON.stringify(event.fault)) > contract.faultLimits.packetBytes)) throw Error('invalid packet');
         if (Object.entries(event).filter(([key]) => key !== 'fault').map(([,value]) => value).some(value => value !== null && !['string','number'].includes(typeof value))) throw Error('invalid event');
         for (const [key, list] of Object.entries({event:'events',action:'actions',stage:'stages',status:'statuses',error_code:'errors',cohort:'cohorts',platform:'platforms',arch:'arches'})) {
           if (!contract[list].includes(event[key])) throw Error('invalid enum');
@@ -62,6 +65,52 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       }
     } else state = { schema: 1, id: randomUUID(), cohort, enabled: false, consentVersion: 0, sequence: 0, seen: false, ready: false, active: null, queue: [] };
   } catch { broken = true; state = { enabled: false, queue: [] }; report('state_unreadable'); }
+  const deliveryKeys = ['accepted','rejected','expired','evicted','paused','detail_suppressed','last_http','last_ack','last_error','missing'];
+  const dirtyDelivery = new Set();
+  const restoredDelivery = state.delivery;
+  state.delivery = {};
+  for (const [id,entry] of Object.entries(restoredDelivery || {}).slice(-512)) {
+    if (!UUID.test(id) || !entry || typeof entry !== 'object') continue;
+    const projected = Object.fromEntries(deliveryKeys.filter(key => Object.hasOwn(entry,key)).map(key => [key,entry[key]]));
+    if (['accepted','rejected','expired','evicted','paused','detail_suppressed'].every(key => Number.isSafeInteger(projected[key]) && projected[key] >= 0)
+      && (projected.last_http === null || Number.isInteger(projected.last_http) && projected.last_http >= 100 && projected.last_http <= 599)
+      && (projected.last_ack === null || Number.isSafeInteger(projected.last_ack) && projected.last_ack >= 0)
+      && /^[a-z0-9_]{0,80}$/.test(projected.last_error || '') && Array.isArray(projected.missing)
+      && projected.missing.length <= 16 && projected.missing.every(value => /^[a-z_]{1,80}$/.test(value))) state.delivery[id] = projected;
+  }
+  function delivery(id) {
+    if (!UUID.test(id || '')) return null;
+    if (!state.delivery[id]) {
+      const old = Object.keys(state.delivery).find(key => !state.queue.some(event => event.operation_id === key) && key !== state.active?.id);
+      if (Object.keys(state.delivery).length >= 512 && old) {
+        state.delivery[old].missing = [...new Set([...state.delivery[old].missing,'summary_evicted'])].slice(-16);
+        notifyDelivery(old); delete state.delivery[old];
+      }
+      state.delivery[id] = { accepted:0,rejected:0,expired:0,evicted:0,paused:0,detail_suppressed:0,last_http:null,last_ack:null,last_error:'',missing:[] };
+    }
+    return state.delivery[id];
+  }
+  function deliverySummary(id) {
+    const entry = UUID.test(id || '') ? state.delivery[id] : null;
+    return { schema:1, operationId:UUID.test(id || '') ? id : '', queued:state.queue.filter(event => event.operation_id === id).length,
+      ...(entry ? JSON.parse(JSON.stringify(entry)) : {accepted:0,rejected:0,expired:0,evicted:0,paused:0,detail_suppressed:0,last_http:null,last_ack:null,last_error:'',missing:['delivery_not_recorded']}) };
+  }
+  function notifyDelivery(id) {
+    try { const result = onDelivery({operationId:id,summary:deliverySummary(id)}); result?.catch?.(() => report('delivery_summary_save_failed')); }
+    catch { report('delivery_summary_save_failed'); }
+  }
+  function deliveryChange(events, change) {
+    for (const id of new Set(events.map(event => event.operation_id).filter(Boolean))) {
+      const entry = delivery(id); if (!entry) continue;
+      change(entry, events.filter(event => event.operation_id === id).length); dirtyDelivery.add(id);
+    }
+  }
+  function discard(events, reason) {
+    deliveryChange(events,(entry,count) => {entry[reason] += count; entry.last_error = reason;
+      entry.missing = [...new Set([...entry.missing,reason])].slice(-16);});
+    const ids = new Set(events.map(event => event.event_id)); state.queue = state.queue.filter(event => !ids.has(event.event_id));
+  }
+  function expireQueue() { discard(state.queue.filter(event => event.occurred_at < now() - 7 * DAY),'expired'); }
   // Apply the desktop's default only when no current diagnostic choice exists.
   // Preserve explicit v3 opt-out and never promote queued legacy evidence.
   if (state.consentVersion !== 3) {
@@ -72,13 +121,23 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
   // Persist the consent instance so a self-update handoff cannot gain a later authorization.
   if (!state.enabled) state.diagnosticConsentId = '';
   else if (!/^[a-f0-9-]{36}$/.test(state.diagnosticConsentId || '')) state.diagnosticConsentId = randomUUID();
-  const stripFaults = () => { state.queue = state.queue.map(event => event.schema_version === 3 ? {...event,fault:null} : event); };
+  const stripFaults = () => {
+    deliveryChange(state.queue.filter(event => event.fault),(entry,count) => {entry.detail_suppressed += count; entry.missing = [...new Set([...entry.missing,'diagnostic_disabled'])].slice(-16);});
+    state.queue = state.queue.map(event => event.schema_version === 3 ? {...event,fault:null} : event);
+  };
   if (!state.enabled) stripFaults();
   function save() {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const temporary = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 });
-    fs.renameSync(temporary, file);
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const temporary = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 }); fs.renameSync(temporary, file);
+    } catch (error) {
+      deliveryChange(state.queue,(entry) => {entry.last_error='queue_save_failed';entry.missing=[...new Set([...entry.missing,'queue_save_failed'])].slice(-16);});
+      for (const id of dirtyDelivery) {const entry=delivery(id);entry.last_error='queue_save_failed';
+        entry.missing=[...new Set([...entry.missing,'queue_save_failed'])].slice(-16);notifyDelivery(id);}
+      dirtyDelivery.clear(); throw error;
+    }
+    for (const id of dirtyDelivery) notifyDelivery(id); dirtyDelivery.clear();
   }
   // Basic operation statistics are independent of detailed diagnostic consent.
   const allowed = () => enabled && !broken && now() >= (state.pauseUntil || 0);
@@ -90,7 +149,10 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
   const admitDiagnostics = task => diagnosticTasks.set(task,{enabled:detailedAllowed(),generation});
   function faultFor(error, task, context) {
     const consent = diagnosticTasks.get(task);
-    return detailedAllowed() && consent?.enabled && consent.generation === generation ? faults.packet(error,task,context) : null;
+    if (!detailedAllowed() || !consent?.enabled || consent.generation !== generation) return null;
+    let operation; if (typeof operationContext === 'function') {try {operation = operationContext();} catch {}}
+    const correlated = operation?.operationId === task.id ? operation : null;
+    return faults.packet(error,task,typeof operationContext === 'function' ? {...context,operation:correlated,evidence:correlated?.evidence} : context);
   }
   const elapsed = start => Math.max(0, Math.min(30 * DAY, now() - start));
   function enqueue(event, status = 'running', code = 'none', stageOverride, details = EMPTY_DETAILS, taskOverride, fault = null) {
@@ -106,17 +168,17 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       progress_age_ms: global || task.lastProgress === null ? null : Math.min(elapsed(task.lastProgress), elapsed(task.stageStarted)),
       ...details,
     };
-    state.queue = state.queue.filter(e => e.occurred_at >= now() - 7 * DAY);
+    expireQueue();
     // Prefer dropping old heartbeats over terminal/error evidence when the queue is full.
     while (state.queue.length >= 500) {
-      const i = state.queue.findIndex(e => e.event === 'heartbeat'); state.queue.splice(i < 0 ? 0 : i, 1);
+      const i = state.queue.findIndex(e => e.event === 'heartbeat'); discard([state.queue[i < 0 ? 0 : i]],'evicted');
     }
-    state.queue.push(record);
+    state.queue.push(record); if (record.operation_id) {delivery(record.operation_id);dirtyDelivery.add(record.operation_id);}
     if (task && !global && !['heartbeat','launcher_error'].includes(event)) {
       task.history = [...(task.history || []), {event,stage:record.stage,status,elapsed_ms:record.elapsed_ms}].slice(-16);
     }
     while (Buffer.byteLength(JSON.stringify(state.queue)) > 1024 * 1024) {
-      const i = state.queue.findIndex(e => e.event === 'heartbeat'); state.queue.splice(i < 0 ? 0 : i, 1);
+      const i = state.queue.findIndex(e => e.event === 'heartbeat'); discard([state.queue[i < 0 ? 0 : i]],'evicted');
     }
   }
   function stage(id) {
@@ -131,6 +193,7 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
     const details = status === 'failed' ? describeError(error) : EMPTY_DETAILS;
     const code = status === 'failed' ? details.error_code : 'none';
     enqueue('stage_finished', status, code, undefined, details); enqueue('operation_finished', status, code, undefined, details, undefined, status === 'failed' ? faultFor(error,state.active) : null);
+    if (status !== 'handoff') rawLogs?.finish(state.active.id,status);
     if (status === 'handoff') state.active.handoff = true;
     else state.active = null;
     save();
@@ -158,17 +221,20 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       const task = {id:randomUUID(),action,stage:stageId,started:now(),stageStarted:now(),lastProgress:null};
       if (!contract.actions.includes(action) || !contract.stages.includes(stageId)) return work();
       const admitted = allowed(); admitDiagnostics(task);
+      if (admitted && logScope) rawLogs?.begin(task.id);
       const emit = protect((status, error) => {
+        if(status==='failed')task.logFailed=true;
         if (!admitted || !allowed()) return;
         const details = error ? describeError(error) : EMPTY_DETAILS;
         enqueue(status === 'running' ? 'operation_started' : 'operation_finished', status,
           error ? details.error_code : 'none', undefined, details, task, error ? faultFor(error,task) : null); save();
       });
       emit('running');
-      try { const result = await operations.run({task,admitted},work);
+      try { const result = await operations.run({task,admitted},()=>logScope ? logScope(task,work) : work());
         const error = result?.diagnosticError, cancelled = error && errorCode(error) === 'cancelled';
         emit(cancelled ? 'cancelled' : error ? 'failed' : 'succeeded',cancelled ? undefined : error); return result; }
       catch (error) { const cancelled = errorCode(error) === 'cancelled'; emit(cancelled ? 'cancelled' : 'failed',cancelled ? undefined : error); throw error; }
+      finally { if(logScope)rawLogs?.finish(task.id,task.logFailed?'failed':'succeeded'); }
     },
     settings: () => ({ enabled: enabled && state.enabled && state.consentVersion === 3 && !broken, available: enabled && !broken, installationId: state.id || '' }),
     setEnabled: protect(value => {
@@ -177,21 +243,43 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
       generation++; controller?.abort(); state.enabled = value; state.consentVersion = 3;
       state.diagnosticConsentId = value ? randomUUID() : '';
       if (!value) stripFaults();
+      rawLogs?.sync();
       // Preserve basic statistics and task ownership; old tasks cannot gain consent.
       save(); return api.settings();
     }),
-    begin: protect(action => {
-      if (!allowed() || !contract.actions.includes(action) || action === 'none') return;
+    // Independent actors bind their outbox to the GUI's explicit consent ID.
+    // A revoke/re-enable cycle cannot grant an older packet new authorization.
+    syncDiagnosticConsent: protect(choice => {
+      const consentId=choice?.enabled===true&&UUID.test(choice?.consentId||'')?choice.consentId:'';
+      const next=Boolean(consentId);
+      if(broken||!enabled)return api.settings();
+      if(state.externalDiagnosticConsentId===consentId&&state.enabled===next&&state.diagnosticConsentId===consentId)return api.settings();
+      generation++;controller?.abort();
+      if(state.externalDiagnosticConsentId!==consentId||!next)stripFaults();
+      state.externalDiagnosticConsentId=consentId;state.enabled=next;state.consentVersion=3;state.diagnosticConsentId=consentId;
+      rawLogs?.sync();
+      save();return api.settings();
+    }),
+    deliverySummary,
+    begin: protect((action, {operationId} = {}) => {
+      if (!contract.actions.includes(action) || action === 'none') return;
+      if (!allowed()) {
+        if (UUID.test(operationId || '')) {const entry=delivery(operationId);
+          entry.missing=[...new Set([...entry.missing,broken?'queue_unavailable':enabled?'telemetry_paused':'telemetry_disabled'])].slice(-16);notifyDelivery(operationId);}
+        return;
+      }
+      if (operationId !== undefined && !UUID.test(operationId)) {report('invalid_operation_id');return;}
       state.waiting = null;
-      if (state.active?.handoff && action === 'update') {
+      if (state.active?.handoff && action === 'update' && (!operationId || operationId === state.active.id)) {
         state.active.handoff = false;
         if (state.active.diagnosticConsentId && state.active.diagnosticConsentId === state.diagnosticConsentId) admitDiagnostics(state.active);
         stage('prepare'); save(); return state.active.id;
       }
       if (state.active) finish('interrupted');
-      state.active = { id: randomUUID(), action, started: now(), stage: 'prepare', stageStarted: now(), lastProgress: null,
+      state.active = { id: operationId || randomUUID(), action, started: now(), stage: 'prepare', stageStarted: now(), lastProgress: null,
         diagnosticConsentId: detailedAllowed() ? state.diagnosticConsentId : '' };
       admitDiagnostics(state.active);
+      rawLogs?.begin(state.active.id);
       enqueue('operation_started'); enqueue('stage_started'); save();
       return state.active.id;
     }),
@@ -219,16 +307,24 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
     relocate: protect(next => {
       if (next === file || broken) return;
       const previous = file;
-      if (fs.existsSync(next)) throw Error('destination already has statistics');
-      file = next; save(); fs.rmSync(previous, { force: true });
+      if (fs.existsSync(next)||rawLogs&&fs.existsSync(next+'.logs')) throw Error('destination already has statistics');
+      file = next;
+      try{save();}catch(error){file=previous;throw error;}
+      if(rawLogs&&!rawLogs.relocate(next+'.logs')){
+        // Keep the original pair available for restart; relocation failure must
+        // not destroy a durable pending capture.
+        file=previous;fs.rmSync(next,{force:true});throw Error('raw log relocation failed');
+      }
+      fs.rmSync(previous, { force: true });
     }),
     async flush() {
-      if (!allowed() || sending || now() < due || !state.queue.length) return;
+      const rawWork=rawLogs?.flush();
+      if (!allowed() || sending || now() < due || !state.queue.length) { await rawWork; return; }
       sending = true; controller = new AbortController();
       const sentGeneration = generation;
       const timeout = setTimeout(() => controller?.abort(), 10000); timeout.unref?.();
       try {
-        state.queue = state.queue.filter(e => e.occurred_at >= now() - 7 * DAY);
+        expireQueue();
         const batch = [];
         for (const event of state.queue.slice(0,20)) {
           if (Buffer.byteLength(JSON.stringify({events:[...batch,event]})) > contract.faultLimits.batchBytes) break;
@@ -238,32 +334,51 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
         const response = await fetcher(ENDPOINT, { method: 'POST', headers: {'Content-Type':'application/json'},
           body: JSON.stringify({events:batch}), signal: controller.signal, redirect:'error', credentials:'omit' });
         if (!allowed() || sentGeneration !== generation) return;
+        deliveryChange(batch,entry => {entry.last_http=response.status;});
         if (response.status === 429) {
           const retry = Number(response.headers.get('Retry-After'));
           if (Number.isFinite(retry) && retry > 0) due = now() + Math.min(retry,300) * 1000;
-          throw Error('retry');
+          throw Error('rate_limited');
         }
-        if (!response.ok) throw Error('http');
+        if (!response.ok) throw Error(`http_${response.status}`);
         const result = await response.json();
         if (!allowed() || sentGeneration !== generation) return;
         if (result.paused === true) {
-          state.queue = []; state.active = null; state.pauseUntil = now() + 3600000; save(); return;
+          discard(state.queue,'paused'); state.active = null; state.pauseUntil = now() + 3600000; save(); return;
         }
         if (!Array.isArray(result.accepted_event_ids) || !Array.isArray(result.rejected_event_ids)) throw Error('response');
-        const sent = new Set(batch.map(e => e.event_id));
-        const done = new Set([...result.accepted_event_ids, ...result.rejected_event_ids.filter(e => ['invalid_event','identity_conflict'].includes(e.reason)).map(e => e.event_id)].filter(id => sent.has(id)));
-        if (!done.size) throw Error('unacknowledged');
-        state.queue = state.queue.filter(e => !done.has(e.event_id)); save(); attempts = 0; due = now() + 1000;
-      } catch {
+        const sent = new Set(batch.map(event => event.event_id));
+        const accepted = new Set(result.accepted_event_ids.filter(id => typeof id === 'string' && sent.has(id)));
+        const rejected = new Map(result.rejected_event_ids.filter(item => item && sent.has(item.event_id)
+          && ['invalid_event','identity_conflict'].includes(item.reason)).map(item => [item.event_id,item.reason]));
+        if ([...rejected.keys()].some(id => accepted.has(id))) throw Error('conflicting_ack');
+        if (!accepted.size && !rejected.size) throw Error('unacknowledged');
+        // Only events still queued may increment counters. Repeated IDs in an
+        // ACK, and retries after a lost response, cannot inflate delivery.
+        deliveryChange(state.queue.filter(event => accepted.has(event.event_id)),(entry,count) => {entry.accepted += count;entry.last_ack=now();entry.last_error='';});
+        for (const [id,reason] of rejected) deliveryChange(state.queue.filter(event => event.event_id === id),(entry,count) => {
+          entry.rejected += count;entry.last_ack=now();entry.last_error=reason;entry.missing=[...new Set([...entry.missing,reason])].slice(-16);
+        });
+        state.queue = state.queue.filter(event => !accepted.has(event.event_id) && !rejected.has(event.event_id));
+        save(); attempts = 0; due = now() + 1000;
+      } catch (error) {
+        const code = ['rate_limited','response','unacknowledged','conflicting_ack'].includes(error.message)
+          || /^http_[45]\d\d$/.test(error.message || '') ? error.message : 'transport_failed';
         if (sentGeneration !== generation) { due = 0; attempts = 0; }
         else {
+          deliveryChange(state.queue.slice(0,20),entry => {entry.last_error=code;});
+          try {save();} catch {}
           due = Math.max(due, now() + Math.min(300000, 2000 * 2 ** Math.min(++attempts,8)) * (0.8 + random() * 0.2));
           report('upload_deferred');
         }
-      } finally { clearTimeout(timeout); controller = null; sending = false; }
+      } finally { clearTimeout(timeout); controller = null; sending = false; await rawWork; }
     },
-    close() { clearInterval(timer); controller?.abort(); },
+    rawLogSummary: id => rawLogs?.summary(id) || null,
+    close() { clearInterval(timer); controller?.abort(); rawLogs?.close(); },
   };
+  if(operationLogs&&enabled&&!broken)rawLogs=createOperationLogDelivery({file:file+'.logs',read:operationLogs,
+    project:text=>faults.text(text,Number.MAX_SAFE_INTEGER),fetcher,now,diagnostic:report,
+    consent:()=>({enabled:detailedAllowed(),id:state.diagnosticConsentId,installation:state.id})});
   protect(() => {
     if (!allowed()) return;
     if (!state.seen) { enqueue('launcher_first_seen'); state.seen = true; }
