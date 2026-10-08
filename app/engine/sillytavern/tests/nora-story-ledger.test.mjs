@@ -107,7 +107,7 @@ test('atomic chat receipt invalidates every old ledger after restart and waits f
     assert.equal(ledgerAfterRestore(f.state, { nora_restore: { id: 'next', ledgerEnabled: false } }).enabled, false);
 });
 
-test('edit preparation holds the session lock and a failed checkpoint releases it without writing the edit', async () => {
+test('edit preparation holds the session lock and a failed source guard releases it without writing the edit', async () => {
     const f = fixture(2);
     let entered, release, wroteEdit = false, wroteSave = false;
     const reached = new Promise(resolve => { entered = resolve; });
@@ -115,9 +115,9 @@ test('edit preparation holds the session lock and a failed checkpoint releases i
     const editing = f.plugin.edit(scope, { messageId: 1, text: 'replacement', expectedSignature: fingerprint(f.messages) },
         () => { wroteEdit = true; }, { beforeWrite: async () => {
             entered(); await gate;
-            throw Object.assign(new Error('backup unavailable'), { code: 'NORA_BACKUP_REQUIRED' });
+            throw Object.assign(new Error('source changed'), { code: 'NORA_LEDGER_EDIT_STALE' });
         } });
-    const rejection = assert.rejects(editing, { code: 'NORA_BACKUP_REQUIRED' });
+    const rejection = assert.rejects(editing, { code: 'NORA_LEDGER_EDIT_STALE' });
     await reached;
     const saved = [...f.messages, { is_user: true, mes: 'later ordinary save' }];
     const saving = f.write(saved).then(() => { wroteSave = true; });

@@ -290,7 +290,7 @@ server.tool("nora.backup.delete", "Permanently delete ONLY the selected managed 
 server.tool("nora.backup.restore_preview", "Read the exact backup/World/Session restore plan and current-history revision. Present message-count changes, scope and restore safeguards before requesting approval. This plan is not permission to write.", {
   ...backupIdSchema, ...scopeSchema,
 }, async request => textResult(await nora.previewBackupRestore(request)));
-server.tool("nora.backup.restore", "Restore the explicitly approved backup to the SAME World and Session, using sha256 and expectedRevision from restore_preview. Protects current chat first; busy/stale/unsafe/protection failure rejects. No model call. Uncertain outcomes must retain the identical proof for verification, not acquire a fresh revision and repeat. Pages need safe authorized reload before showing restored state.", {
+server.tool("nora.backup.restore", "Restore the explicitly approved backup to the SAME World and Session, using sha256 and expectedRevision from restore_preview. Attempts a rollback backup; failure warns via backupWarning without blocking restoration. Explain that a missing rollback copy cannot undo the replacement. Busy/stale/unsafe source rejects. No model call. Uncertain outcomes retain the identical proof for verification, not a fresh revision. Pages need safe authorized reload.", {
   ...backupProofSchema, ...scopeSchema, expectedRevision: z.string().regex(/^[a-f0-9]{64}$/), confirm: z.literal(true),
 }, async ({ confirm: _confirm, ...request }) => textResult(await nora.restoreBackup(request)));
 const operationSchema = { idempotencyKey: z.string().trim().min(1).max(200), confirm: z.literal(true) };

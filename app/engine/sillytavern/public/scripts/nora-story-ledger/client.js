@@ -43,6 +43,13 @@ export async function requestLedger(action, data = {}) {
     });
     const result = await response.json();
     if (!response.ok) throw Object.assign(new Error(result.error || 'Story ledger request failed.'), { code: result.code });
+    if (scopeKey(scope) === scopeKey(ledgerScope()) && (action === 'checkpoint' || result?.backupWarning !== undefined)) {
+        const warning = result.backupWarning || (action === 'checkpoint' && ['failed', 'skipped'].includes(result.status) ? result : null);
+        // Optional presentation must not hold an already successful operation.
+        void import('./backup-reminder.js').then(({ notifyBackupWarning }) => {
+            if (scopeKey(scope) === scopeKey(ledgerScope())) notifyBackupWarning(scope, warning);
+        }).catch(error => console.warn('[Chat backup] Reminder unavailable:', error.name));
+    }
     return result;
 }
 
@@ -154,11 +161,8 @@ export async function protectStoryRegeneration(context, { type, dryRun = false, 
     const unchanged = () => scopeKey(scope) === scopeKey(ledgerScope()) && JSON.stringify(context.chat) === before;
     const expectedSignature = await digestHistory(context.chat);
     if (!unchanged()) throw Object.assign(new Error('Chat changed before backup.'), { code: 'NORA_LEDGER_EDIT_STALE' });
-    let result;
-    try { result = await requestLedger('checkpoint', { expectedSignature }); } catch (error) {
-        if (error?.code === 'NORA_LEDGER_EDIT_STALE') throw error;
-        throw Object.assign(new Error('无法确认改写前的保护备份，本次操作已暂停。'), { code: 'NORA_BACKUP_REQUIRED', cause: error });
-    }
-    if (!result?.id) throw Object.assign(new Error('Protection checkpoint was not confirmed.'), { code: 'NORA_BACKUP_REQUIRED' });
+    const result = await requestLedger('checkpoint', { expectedSignature });
+    if (!['created', 'unchanged', 'failed', 'skipped'].includes(result?.status)
+        || ['created', 'unchanged'].includes(result.status) && !result.id) throw new Error('Regeneration preflight was not confirmed.');
     if (!unchanged()) throw Object.assign(new Error('Chat changed while backing up.'), { code: 'NORA_LEDGER_EDIT_STALE' });
 }

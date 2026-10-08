@@ -2,6 +2,7 @@ import express from 'express';
 import { resolveStoryLedger } from '../nora-story-ledger/runtime.js';
 import { getChatRevision } from '../chat-revision.js';
 import { readSettingsPayload } from './settings.js';
+import { chatBackupWarning } from '../chat-backup-runtime.js';
 
 export const router = express.Router();
 // Separate read contract: no model scheduling, state repair or memory projection.
@@ -43,7 +44,8 @@ for (const action of ['status', 'configure', 'compress', 'edit', 'checkpoint', '
             if (action === 'checkpoint') return response.json(await runtime.checkpoint(scope, request.body));
             if (action === 'edit') {
                 const chat = await runtime.edit(scope, request.body);
-                return response.json({ chat, revision: getChatRevision(chat), ledger: await runtime.plugin.status(scope) });
+                return response.json({ chat, revision: getChatRevision(chat), ledger: await runtime.plugin.status(scope),
+                    backupWarning: chatBackupWarning(request.user.directories, scope) });
             }
             if (action === 'configure') {
                 const { enabled, expectedRevision, contextLimitOverride, outputTokenLimit, timeoutSeconds } = request.body;
@@ -53,7 +55,6 @@ for (const action of ['status', 'configure', 'compress', 'edit', 'checkpoint', '
             if (action === 'compress') void runtime.plugin.schedule(scope, { retry: true });
             return response.json(await runtime.plugin.status(scope));
         } catch (error) {
-            if (error.code === 'NORA_BACKUP_REQUIRED') return response.status(409).json({ code: error.code, backupCode: error.backupCode, error: error.message });
             return response.status(error.status || 400).json({ code: error.code || 'NORA_LEDGER_REQUEST_FAILED', error: 'Story ledger request could not be completed.' });
         }
     });

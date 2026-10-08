@@ -10,23 +10,28 @@ const enabled = () => getConfigValue('backups.chat.enabled', true, 'boolean');
 
 export function chatBackupStore(directories) {
     return createChatBackupStore({ directories, policy: {
-        maxPerSession: getConfigValue('backups.chat.retention.maxPerSession', 20, 'number'),
+        maxPerSession: getConfigValue('backups.chat.retention.maxPerSession', 50, 'number'),
         maxAgeDays: getConfigValue('backups.chat.retention.maxAgeDays', 30, 'number'),
         maxBytes: getConfigValue('backups.chat.retention.maxBytes', 536870912, 'number'),
     } });
 }
 
-/** Mandatory pre-rewrite protection is separate from optional background
- * backup. Failure must reach the caller before any destructive chat write. */
+/** Rollback capture is best-effort. Chat revision/ownership checks belong to
+ * the caller and must stay independent of optional backup availability. */
 export async function protectChatBeforeRewrite({ directories, filePath, data }) {
+    let result;
     try {
-        return await chatBackupStore(directories).capture({ filePath, data, protect: true });
+        result = await chatBackupStore(directories).tryCapture({ filePath, data });
     } catch (cause) {
-        const backupCode = cause.code || 'NORA_BACKUP_WRITE_FAILED';
-        report(directories, { status: 'failed', code: backupCode });
-        throw Object.assign(new Error('无法建立改写前的保护备份，本次操作已暂停，原聊天未改动。请在“数据 → 聊天备份”检查容量或查看日志后重试。'),
-            { code: 'NORA_BACKUP_REQUIRED', backupCode, status: 409 });
+        result = { status: 'failed', code: cause.code || 'NORA_BACKUP_WRITE_FAILED' };
     }
+    const scope = JSON.parse(String(data).split('\n', 1)[0]).chat_metadata;
+    return report(directories, { ...result, worldId: scope?.nora_world?.id, sessionId: scope?.nora_session?.id });
+}
+
+export function chatBackupWarning(directories, scope) {
+    const latest = chatBackupStatus(directories).recent.filter(item => item.worldId === scope.worldId && item.sessionId === scope.sessionId).at(-1);
+    return latest && ['failed', 'skipped'].includes(latest.status) ? { status: latest.status, code: latest.code } : null;
 }
 
 function report(directories, result) {
@@ -35,14 +40,14 @@ function report(directories, result) {
     recent.push({ ...result, at: Date.now() });
     results.set(root, recent.slice(-20));
     if (result.status === 'failed' || result.retention?.warnings?.length) {
-        console.warn('[Chat backup] Formal chat is unchanged; snapshot maintenance:', result.code || result.retention.warnings.map(item => item.code).join(','));
+        console.warn('[Chat backup] Backup unavailable; foreground operations remain independent:', result.code || result.retention.warnings.map(item => item.code).join(','));
     }
     return result;
 }
 
 async function capture(entry) {
     try {
-        return report(entry.directories, await chatBackupStore(entry.directories).capture(entry));
+        return report(entry.directories, await chatBackupStore(entry.directories).tryCapture(entry));
     } catch (error) {
         const superseded = ['NORA_BACKUP_SOURCE_CHANGED', 'NORA_BACKUP_SOURCE_MISSING'].includes(error.code);
         return report(entry.directories, { status: superseded ? 'skipped' : 'failed', code: error.code || 'NORA_BACKUP_WRITE_FAILED' });

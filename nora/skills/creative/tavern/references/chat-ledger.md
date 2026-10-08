@@ -71,10 +71,12 @@ They use the same backend as the backup UI; a connected page is not required.
 4. Before restoring, use `restore_preview` with the exact id/worldId/sessionId.
    Explain the current-to-backup message counts: messages, attached data and
    candidates are replaced; cards, worldbooks and libraries stay unchanged.
-   Current chat must be protected first; old compressed memory is invalidated.
+   A rollback backup is best-effort; backup failure does not block restoration.
+   Explain that a missing rollback backup cannot undo this replacement.
+   Old compressed memory is invalidated.
    Stored MVU data is restored as-is, not completed into a full World save.
 5. After approval, call `nora.backup.restore` with that preview's snapshot.sha256 and
-   current.revision as expectedRevision. Busy/stale/protection failures mean no
+   current.revision as expectedRevision. Busy/stale/invalid-source failures mean no
    restore; inspect and obtain fresh approval after scope/history changes.
    On an unknown outcome retain the IDENTICAL proof to verify through restore;
    its receipt recognizes an already-committed restore. A new preview is not
@@ -84,6 +86,10 @@ They use the same backend as the backup UI; a connected page is not required.
    check the target history with session.read. No model is called by restoration.
    Ask before reloading a live page and preserve unsent/unsaved input; stored
    success is not proof that an open page already displays the restored chat.
+   Report backupWarning separately from restoration success. Automatic backups
+   roll; explicit keeps are never auto-cleared. Report manual count/capacity
+   warnings without stopping normal play. When capacity is exhausted, ask
+   which copies may be unkept/deleted rather than blocking play or removing pins.
 
 ## Ledger operations
 
@@ -105,7 +111,8 @@ They use the same backend as the backup UI; a connected page is not required.
   Failure pauses automatic retries, including after refresh/restart. Foreground
   generation takes priority; waiting/cancelling is not completion.
 - `nora.ledger.reset`: only with explicit memory-reset approval. Read configRevision
-  and expectedSignature first. Backs up, clears memory and disables compression;
+  and expectedSignature first. Attempts a rollback backup, clears memory and disables compression;
+  report any backupWarning separately, not as a reset failure.
   chat/MVU remain. It releases ledger locks and requires live-page reload. Raw
   history may exceed context capacity. Never use file deletion as a substitute.
 

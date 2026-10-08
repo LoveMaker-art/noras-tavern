@@ -18,6 +18,68 @@ const { resolveStoryLedger } = await import('../src/nora-story-ledger/runtime.js
 const { chatSessionOperations } = await import('../src/chat-session-operations.js');
 const { ledgerStatePath } = await import('../src/nora-story-ledger/state-file.js');
 
+test('sixty HTTP regeneration and save cycles retain fifty automatic versions plus the explicitly kept original', async t => {
+    const f = await storageFixture(t), world = await f.create('http-rolling-regeneration');
+    const scope = { worldId: world.world_id, sessionId: world.sessions.default_session_id };
+    const binding = { avatar_url: world.runtime_card.binding.avatar, file_name: world.sessions.items[0].binding.chat_id };
+    const filePath = path.join(f.directories.chats, path.basename(binding.avatar_url, '.png'), `${binding.file_name}.jsonl`);
+    const original = [...await f.chat(world), { name: 'Narrator', is_user: false, mes: 'Reply 0',
+        extra: { stat_data: { version: 0 } } }];
+    await fs.writeFile(filePath, original.map(JSON.stringify).join('\n'));
+    const runtime = resolveStoryLedger(f.directories, { recoverProjection: false });
+    await runtime.resolve(scope);
+    await runtime.configure(scope, { enabled: false });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { req.user = { directories: f.directories, profile: { handle: 'rolling-fixture' } }; next(); });
+    app.use('/ledger', ledgerRouter);
+    app.use('/chats', chatRouter);
+    app.use('/backups', router);
+    const server = http.createServer(app);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(async () => {
+        await flushChatBackups();
+        await new Promise(resolve => { server.closeAllConnections(); server.close(resolve); });
+    });
+    const post = async (route, body = {}) => {
+        const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+        });
+        const result = await response.json();
+        assert.equal(response.status, 200, JSON.stringify(result));
+        return result;
+    };
+    const operations = chatSessionOperations(f.directories);
+    let pinned;
+    for (let i = 0; i < 60; i++) {
+        const before = await f.chat(world);
+        const inspected = await post('/ledger/inspect', scope);
+        const lease = operations.begin(scope, 'generation');
+        try {
+            const checkpoint = await post('/ledger/checkpoint', { ...scope,
+                expectedSignature: inspected.expectedSignature, activityToken: lease.token });
+            assert.deepEqual(await f.chat(world), before, 'preflight never changes the chat');
+            if (i === 0) {
+                pinned = checkpoint.id;
+                await post('/backups/chat/protect', { id: pinned, protected: true });
+            }
+            const next = structuredClone(before);
+            next.at(-1).mes = `Reply ${i + 1}`;
+            next.at(-1).extra.stat_data.version = i + 1;
+            await post('/chats/save', { ...binding, chat: next, nora_complete_history: true,
+                nora_base_revision: getChatRevision(before), nora_activity_token: lease.token });
+            await flushChatBackups();
+            assert.deepEqual(await f.chat(world), next);
+        } finally { operations.end(scope, lease.token); }
+    }
+    const list = await post('/backups/chat/managed');
+    assert.equal(list.policy.maxPerSession, 50);
+    assert.equal(list.snapshots.filter(item => !item.protected).length, 50);
+    assert.deepEqual(list.snapshots.filter(item => item.protected).map(item => item.id), [pinned]);
+    assert.equal((await chatBackupStore(f.directories).download(pinned)).toString(), original.map(JSON.stringify).join('\n'));
+    assert.equal((await f.chat(world)).at(-1).mes, 'Reply 60');
+});
+
 test('upgrade replaces owned legacy backups above quota with verified current-session snapshots without changing chats', async t => {
     const quotaKey = 'SILLYTAVERN_BACKUPS_CHAT_RETENTION_MAXBYTES';
     const previousQuota = process.env[quotaKey];
@@ -79,7 +141,7 @@ test('upgrade replaces owned legacy backups above quota with verified current-se
     assert.equal(after.policy.maxBytes, 65536);
 });
 
-test('unidentified legacy files above quota keep HTTP chat saves usable and gate restoration until protection fits', async t => {
+test('unidentified legacy files above quota warn but do not block HTTP saving or restoration', async t => {
     // Only this isolated test process sees the small quota; production config is untouched.
     const quotaKey = 'SILLYTAVERN_BACKUPS_CHAT_RETENTION_MAXBYTES';
     const previousQuota = process.env[quotaKey];
@@ -170,24 +232,25 @@ test('unidentified legacy files above quota keep HTTP chat saves usable and gate
     const latest = [...later, { is_user: false, mes: 'latest synthetic reply', extra: { stat_data: { hp: 50 } } }];
     await save(latest, later);
     restoreInput.expectedRevision = getChatRevision(latest);
-    const blocked = await post('/backups/chat/restore', restoreInput);
-    assert.equal(blocked.status, 409);
-    assert.equal((await blocked.json()).error, 'NORA_BACKUP_REQUIRED');
-    assert.deepEqual(await readChat(world), latest);
+    const responseWithoutBackup = await post('/backups/chat/restore', restoreInput);
+    assert.equal(responseWithoutBackup.status, 200);
+    const withoutBackup = await responseWithoutBackup.json();
+    assert.equal(withoutBackup.protectedBackupId, null);
+    assert.equal(withoutBackup.backupWarning.code, 'NORA_BACKUP_BUDGET_EXCEEDED');
+    assert.deepEqual((await readChat(world)).slice(1), continued.slice(1));
     assert.equal((await list()).snapshots.length, beforeBlocked.snapshots.length);
 
     process.env[quotaKey] = '262144';
     const restoredResponse = await post('/backups/chat/restore', restoreInput);
     assert.equal(restoredResponse.status, 200);
     const restoredResult = await restoredResponse.json();
-    assert.equal(restoredResult.status, 'restored');
+    assert.equal(restoredResult.status, 'already-restored');
+    assert.equal(restoredResult.backupWarning.code, 'NORA_BACKUP_BUDGET_EXCEEDED');
     const restored = await readChat(world);
     assert.deepEqual(restored.slice(1), continued.slice(1), 'restore retains message variables and selected candidate');
-    const protectedPoint = (await list()).snapshots.find(item => item.id === restoredResult.protectedBackupId);
-    assert.equal(protectedPoint.protected, true);
-    const download = await post('/backups/chat/snapshot', { id: protectedPoint.id });
+    const download = await post('/backups/chat/snapshot', { id: snapshot.id });
     assert.equal(download.status, 200);
-    assert.deepEqual((await download.text()).split('\n').map(JSON.parse), latest);
+    assert.deepEqual((await download.text()).split('\n').map(JSON.parse), continued);
     const next = [...restored, { is_user: true, mes: 'continue after restore' }];
     await save(next, restored);
     assert.deepEqual(await readChat(world), next);
@@ -197,7 +260,7 @@ test('unidentified legacy files above quota keep HTTP chat saves usable and gate
     assert.deepEqual(await readChat(world), next);
     assert.deepEqual(await readChat(other), unchangedOther);
     assert.equal(await fs.readFile(path.join(f.directories.backups, 'chat_pre_upgrade.jsonl'), 'utf8'), legacy);
-    t.diagnostic('64 KiB quota / 80 KiB legacy: saves=200, protection-required restore=409; 256 KiB: restore=200, next save=200, stale save=409; legacy and other World preserved.');
+    t.diagnostic('64 KiB quota / 80 KiB legacy: saves=200, restore=200 with warning; restored retry=200; continuation=200, stale save=409; legacy and other World preserved.');
 });
 
 test('World deletion HTTP returns a conflict for active generation and one durable backup result on replay', async t => {
@@ -428,7 +491,7 @@ test('two pages saving the same revision cannot overwrite each other or back up 
     assert.deepEqual((await store.download(snapshots[0].id)).toString().split('\n').map(JSON.parse), winner);
 });
 
-test('history edit stops on backup failure, leaves chat intact, and succeeds on retry with a protected original', async t => {
+test('history edit succeeds despite backup failure while stale edits and raced source bytes remain blocked', async t => {
     const f = await storageFixture(t);
     const world = await f.create('edit-protection');
     const original = [...await f.chat(world), { is_user: true, mes: 'original action' }, { is_user: false, mes: 'original reply', extra: { stat_data: { hp: 10 } } }];
@@ -453,17 +516,18 @@ test('history edit stops on backup failure, leaves chat intact, and succeeds on 
         if (flags === 'wx') throw Object.assign(new Error('synthetic'), { code: 'ENOSPC' });
         return open(file, flags, ...args);
     });
-    const rejected = await post('edit', edit);
-    assert.equal(rejected.status, 409);
-    const failure = await rejected.json();
-    assert.equal(failure.code, 'NORA_BACKUP_REQUIRED');
-    assert.equal(failure.backupCode, 'ENOSPC');
-    assert.deepEqual(await f.chat(world), original);
+    const accepted = await post('edit', edit);
+    assert.equal(accepted.status, 200);
+    const response = await accepted.json();
+    assert.equal(response.backupWarning.code, 'ENOSPC');
+    assert.equal((await f.chat(world)).at(-1).mes, 'changed action');
+    assert.equal((await post('edit', edit)).status, 409);
     fault.mock.restore();
+    await fs.writeFile(filePath, data);
     assert.equal((await post('edit', edit)).status, 200);
     const list = await chatBackupStore(f.directories).list();
     assert.equal(list.snapshots.length, 1);
-    assert.equal(list.snapshots[0].protected, true);
+    assert.equal(list.snapshots[0].protected, false);
     assert.equal((await chatBackupStore(f.directories).download(list.snapshots[0].id)).toString(), data);
     const changed = await f.chat(world);
     assert.equal(changed.length, 2);
@@ -477,7 +541,7 @@ test('history edit stops on backup failure, leaves chat intact, and succeeds on 
     assert.deepEqual(await f.chat(world), changed, 'regeneration preflight never edits the chat');
     const copies = (await chatBackupStore(f.directories).list()).snapshots;
     assert.equal(copies.length, 2);
-    assert.ok(copies.every(item => item.protected));
+    assert.ok(copies.every(item => !item.protected));
     // A changed MVU value must invalidate preparation even when the narrative
     // signature is unchanged. This simulates a writer outside the session lock.
     changed[1].extra = { stat_data: { hp: 8 } };

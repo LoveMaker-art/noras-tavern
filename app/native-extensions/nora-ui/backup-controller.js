@@ -23,28 +23,30 @@ const backupMessages = {
     '下载': 'Download', '恢复聊天': 'Restore chat', '核实恢复结果': 'Verify restore result',
     '备份整理暂未完成，当前聊天不受影响，系统稍后重试。': 'Backup maintenance is pending. Your chat is unaffected; the system will retry.',
     '正在读取备份…': 'Loading backups...', '刷新': 'Refresh',
-    '每会话最多 ${0} 份，保留 ${1} 天。保留的备份不自动删除。': 'Up to ${0} backups per session, retained for ${1} days. Kept backups are not automatically deleted.',
+    '每会话最多 ${0} 份自动备份，保留 ${1} 天。保留的备份不占自动备份份数，不自动删除。': 'Up to ${0} automatic backups per session, retained for ${1} days. Kept backups do not use automatic slots and are not automatically deleted.',
     '自动备份已关闭。': 'Automatic backups are disabled.', '等待备份：${0}': 'Pending backups: ${0}',
-    '已超出备份预算，暂停新增。聊天保存不受影响。': 'Backup budget exceeded; new backups are paused. Chat saving is unaffected.',
+    '备份空间不足，暂未新增回滚备份。正常操作仍可继续。': 'Backup space is insufficient. No new rollback backup was added; normal operations can continue.',
+    '同一会话保留的备份已超过 ${0} 份，请整理不需要的备份。正常操作仍可继续。': 'A session has more than ${0} kept backups. Review and remove unwanted backups. Normal operations can continue.',
+    '已保留 ${0} 份备份，占用 ${1}。请清理不需要的备份；保留的备份需先取消保留，再删除。': '${0} kept backups use ${1}. Remove unwanted backups; unkeep kept backups before deleting them.',
+    '请清理不需要的备份，释放备份空间。': 'Remove unwanted backups to free backup space.',
+    '未能备份恢复前的聊天；选定备份已成功恢复。': 'The pre-restore chat could not be backed up; the selected backup was restored successfully.',
     '近期备份异常，不代表聊天保存失败：': 'Recent backup errors do not mean chat saving failed: ',
     '部分备份无法验证，已保留，不参与自动清理。': 'Unverifiable backups are retained and excluded from automatic cleanup.',
     '重新加载页面': 'Reload page', '暂无可管理的新备份。': 'No managed backups yet.',
     '旧备份及未受管文件（${0}）· 仅预览': 'Legacy and unmanaged backups (${0}) - preview only',
     '恢复这份聊天备份？': 'Restore this chat backup?',
-    '先保护当前聊天，再用选定备份替换该会话。保护失败则不会覆盖。请先保留其他页面尚未保存的内容。': 'Protect the current chat before replacing this session. If protection fails, nothing is overwritten. Preserve unsaved content on other pages first.',
+    '将用选定备份替换该会话，并尽力备份恢复前的聊天；备份失败不阻止恢复，届时无法通过新备份撤回。请先保留其他页面尚未保存的内容。': 'Replace this session with the selected backup and attempt to back up the current chat. A backup failure does not stop restoration, but the new rollback point will be unavailable. Preserve unsaved content on other pages first.',
     '消息：${0} → ${1}；候选回复：${2}。': 'Messages: ${0} to ${1}; alternative replies: ${2}.',
     '恢复消息、消息附带的变量和候选回复；不替换卡片、世界书或库原件。': 'Restore messages, their variables and alternative replies; cards, worldbooks and library originals stay unchanged.',
     '已记录变量更新成功，但不代表完整世界存档。': 'Variable update success was recorded; this is not a complete world save.',
     '变量状态未确认或未完成，只恢复备份中实际存在的数据，不自动补齐。': 'Variable state is unconfirmed or incomplete. Only stored data is restored; missing data is not filled in.',
     '旧压缩账本失效；本次不调用模型，继续聊天后按原文重新积累。': 'Old compressed memory is invalidated. No model is called now; memory accumulates from original history when chatting continues.',
     '恢复后请保留未发送的输入，再主动重新加载页面；其他打开该会话的页面也需重新载入。': 'After restoring, preserve unsent input and reload this page and any other page viewing this session.',
-    '保护并恢复': 'Protect and restore',
     '聊天已恢复。请先保留未发送的输入，再重新加载页面查看结果。': 'Chat restored. Preserve unsent input, then reload to see the result.',
     '摘要同步待重试，聊天已保存。': 'Summary synchronization is pending; the chat is saved.',
     '恢复结果尚未确认，请点击“核实恢复结果”；不要重复创建新的恢复请求。': 'Restore is not yet confirmed. Use Verify restore result; do not create a new restore request.',
     '该会话仍在生成、保存或处理账本，可能来自其他页面。请等待完成后再恢复。': 'This session is generating, saving or processing memory, possibly on another page. Wait before restoring.',
     '聊天或备份已变化，本次未恢复。请重新预览并确认。': 'Chat or backup changed; nothing was restored. Preview and confirm again.',
-    '无法保护当前聊天，本次未恢复。请检查备份空间和权限后重试。': 'Current chat could not be protected; nothing was restored. Check backup space and permissions.',
     '目标世界或会话已不可用，不能用聊天备份重建世界。': 'The target world or session is unavailable. A chat backup cannot rebuild a world.',
     '删除所选聊天备份？': 'Delete selected chat backups?',
     '将永久删除 ${0} 份备份（${1}）。不删除当前聊天、世界或库原件。': 'Permanently delete ${0} backups (${1}). Current chats, worlds and library originals stay unchanged.',
@@ -129,11 +131,16 @@ export function createBackupController({ dialogs, select, selectAll, escapeHtml:
             const failures = [...new Set((data?.status?.recent || []).filter(item => item.status === 'failed').map(item => item.code))];
             const failureText = failures.map(code => code === 'NORA_BACKUP_UPGRADE_PENDING'
                 ? tr('备份整理暂未完成，当前聊天不受影响，系统稍后重试。') : code).join('、');
+            const kept = data?.capacity?.protectedCount ?? data?.snapshots.filter(item => item.protected).length ?? 0;
+            const keptBytes = data?.capacity?.protectedBytes ?? data?.snapshots.filter(item => item.protected).reduce((sum, item) => sum + item.bytes, 0) ?? 0;
+            const capacityWarning = data && (data.overBudget || data.totalBytes >= data.policy.maxBytes
+                || data.status?.recent?.at(-1)?.code === 'NORA_BACKUP_BUDGET_EXCEEDED');
+            const keptCountWarning = data?.capacity?.protectedCountExceeded === true;
             const detail = viewed && data?.snapshots.find(item => item.id === viewed.id);
             const refreshButton = `<button type="button" class="nora-icon-button" data-backup-refresh title="${tr('刷新')}" aria-label="${tr('刷新')}"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i></button>`;
-            const policy = data ? `<section class="nora-backup-policy" aria-label="${tr('备份信息')}"><div class="nora-backup-policy-heading"><h3>${tr('备份信息')}</h3><span>${bytes(data.totalBytes)} / ${bytes(data.policy.maxBytes)}</span></div><p class="nora-model-note">${esc(t`每会话最多 ${data.policy.maxPerSession} 份，保留 ${data.policy.maxAgeDays} 天。保留的备份不自动删除。`)}</p>${data.status?.enabled === false || data.status?.pending ? `<p class="nora-model-note">${data.status?.enabled === false ? tr('自动备份已关闭。') : ''}${data.status?.pending ? ` ${esc(t`等待备份：${data.status.pending}`)}` : ''}</p>` : ''}</section>` : '';
+            const policy = data ? `<section class="nora-backup-policy" aria-label="${tr('备份信息')}"><div class="nora-backup-policy-heading"><h3>${tr('备份信息')}</h3><span>${bytes(data.totalBytes)} / ${bytes(data.policy.maxBytes)}</span></div><p class="nora-model-note">${esc(t`每会话最多 ${data.policy.maxPerSession} 份自动备份，保留 ${data.policy.maxAgeDays} 天。保留的备份不占自动备份份数，不自动删除。`)}</p>${data.status?.enabled === false || data.status?.pending ? `<p class="nora-model-note">${data.status?.enabled === false ? tr('自动备份已关闭。') : ''}${data.status?.pending ? ` ${esc(t`等待备份：${data.status.pending}`)}` : ''}</p>` : ''}</section>` : '';
             host.innerHTML = `${policy}${detail ? `<div class="nora-backup-toolbar"><button type="button" class="nora-backup-view" data-backup-back><i class="fa-solid fa-arrow-left" aria-hidden="true"></i>${tr('返回备份列表')}</button>${refreshButton}</div>` : `<div class="nora-backup-toolbar"><select class="nora-backup-filter" data-backup-filter aria-label="${tr('筛选聊天备份')}">${scope?.worldId && scope?.sessionId ? `<option value="current" ${filter === 'current' ? 'selected' : ''}>${tr('当前聊天')}</option>` : ''}<option value="all" ${filter === 'all' ? 'selected' : ''}>${tr('全部世界')}</option>${[...names].map(([id, title]) => `<option value="${esc(id)}" ${filter === id ? 'selected' : ''}>${esc(title)}</option>`).join('')}</select><button type="button" class="nora-backup-view" data-backup-manage aria-pressed="${managing}">${tr(managing ? '完成管理' : '管理')}</button></div>${managing || !ready ? `<div class="nora-backup-management">${refreshButton}${managing && data?.legacyFiles ? `<button type="button" class="nora-backup-view" data-backup-legacy>${esc(t`旧备份及未受管文件（${data.legacyFiles}）· 仅预览`)}</button>` : ''}${managing ? '<button type="button" class="nora-library-action nora-library-action-danger" data-backup-delete></button>' : ''}</div>` : ''}`}
-                ${data?.overBudget ? `<p role="status">${tr('已超出备份预算，暂停新增。聊天保存不受影响。')}</p>` : ''}
+                ${capacityWarning || keptCountWarning ? `<section class="nora-backup-capacity-warning" role="alert"><strong><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i> ${capacityWarning ? tr('备份空间不足，暂未新增回滚备份。正常操作仍可继续。') : esc(t`同一会话保留的备份已超过 ${data.policy.maxPerSession} 份，请整理不需要的备份。正常操作仍可继续。`)}</strong><p>${kept ? esc(t`已保留 ${kept} 份备份，占用 ${bytes(keptBytes)}。请清理不需要的备份；保留的备份需先取消保留，再删除。`) : tr('请清理不需要的备份，释放备份空间。')}</p></section>` : ''}
                 ${failures.length ? `<p role="status">${tr('近期备份异常，不代表聊天保存失败：')}${esc(failureText)}</p>` : ''}
                 ${data?.warnings?.length ? `<p role="status">${tr('部分备份无法验证，已保留，不参与自动清理。')}</p>` : ''}
                 <p role="alert" data-backup-error>${esc(errorMessage || (pendingRestore ? tr('恢复结果尚未确认，请点击“核实恢复结果”；不要重复创建新的恢复请求。') : ''))}</p>
@@ -184,14 +191,14 @@ export function createBackupController({ dialogs, select, selectAll, escapeHtml:
                     const preview = await request('restore-preview', target);
                     if (!alive()) return;
                     const approved = await dialogs.confirm({ title: tr('恢复这份聊天备份？'),
-                        body: `${names.get(item.worldId)} · ${t`会话：${item.sessionId}`} · ${time(preview.snapshot.createdAt)}\n${t`消息：${preview.current.messageCount} → ${preview.snapshot.messageCount}；候选回复：${preview.snapshot.swipeCount}。`}\n${tr('先保护当前聊天，再用选定备份替换该会话。保护失败则不会覆盖。请先保留其他页面尚未保存的内容。')}`,
+                        body: `${names.get(item.worldId)} · ${t`会话：${item.sessionId}`} · ${time(preview.snapshot.createdAt)}\n${t`消息：${preview.current.messageCount} → ${preview.snapshot.messageCount}；候选回复：${preview.snapshot.swipeCount}。`}\n${tr('将用选定备份替换该会话，并尽力备份恢复前的聊天；备份失败不阻止恢复，届时无法通过新备份撤回。请先保留其他页面尚未保存的内容。')}`,
                         details: [`${names.get(item.worldId)} · ${t`会话：${item.sessionId}`} · ${time(preview.snapshot.createdAt)}`,
                             ...(scope?.worldId === item.worldId && scope?.sessionId === item.sessionId ? [tr('当前聊天')] : []),
                             tr('恢复消息、消息附带的变量和候选回复；不替换卡片、世界书或库原件。'),
                             tr(preview.snapshot.mvuState === 'confirmed' ? '已记录变量更新成功，但不代表完整世界存档。' : '变量状态未确认或未完成，只恢复备份中实际存在的数据，不自动补齐。'),
                             tr('旧压缩账本失效；本次不调用模型，继续聊天后按原文重新积累。'),
                             tr('恢复后请保留未发送的输入，再主动重新加载页面；其他打开该会话的页面也需重新载入。')],
-                        confirmLabel: tr('保护并恢复'), tone: 'danger', restoreSheet: true });
+                        confirmLabel: tr('恢复聊天'), tone: 'danger', restoreSheet: true });
                     if (!approved || !alive()) return;
                     pendingRestore = { ...target, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 };
                 }
@@ -208,6 +215,7 @@ export function createBackupController({ dialogs, select, selectAll, escapeHtml:
                     await load();
                     if (!alive()) return;
                     showResult(tr('聊天已恢复。请先保留未发送的输入，再重新加载页面查看结果。')
+                        + (result.backupWarning ? ` ${tr('未能备份恢复前的聊天；选定备份已成功恢复。')}` : '')
                         + (result.projectionPending ? ` ${tr('摘要同步待重试，聊天已保存。')}` : ''));
                     reloadAvailable = true;
                     select('[data-backup-reload]', host).hidden = false;
@@ -218,7 +226,6 @@ export function createBackupController({ dialogs, select, selectAll, escapeHtml:
                     if (pendingRestore) throw new Error(tr('恢复结果尚未确认，请点击“核实恢复结果”；不要重复创建新的恢复请求。'));
                     if (['NORA_CHAT_OPERATION_BUSY', 'NORA_LEDGER_BUSY'].includes(code)) throw new Error(tr('该会话仍在生成、保存或处理账本，可能来自其他页面。请等待完成后再恢复。'));
                     if (code === 'NORA_BACKUP_RESTORE_STALE') throw new Error(tr('聊天或备份已变化，本次未恢复。请重新预览并确认。'));
-                    if (code === 'NORA_BACKUP_REQUIRED') throw new Error(tr('无法保护当前聊天，本次未恢复。请检查备份空间和权限后重试。'));
                     if (['NORA_LEDGER_SESSION_UNAVAILABLE', 'NORA_BACKUP_RESTORE_TARGET_UNAVAILABLE'].includes(code)) throw new Error(tr('目标世界或会话已不可用，不能用聊天备份重建世界。'));
                     throw cause;
                 }

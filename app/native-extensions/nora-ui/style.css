@@ -1109,6 +1109,9 @@ body.nora-product .popup .popup-button-close { display: none; }
 .nora-backup-policy-heading h3 { margin:0; color:var(--nora-ink); font-size:13px; font-weight:600; line-height:1.6; }
 .nora-backup-policy-heading > span { color:var(--nora-ink); opacity:.75; font-size:12px; line-height:1.6; font-variant-numeric:tabular-nums; overflow-wrap:anywhere; }
 .nora-backup-policy .nora-model-note { margin:6px 0 0; color:var(--nora-ink); opacity:.8; font-size:12px; line-height:1.7; }
+.nora-backup-capacity-warning { margin:0 0 14px; padding:10px 0 10px 12px; border-left:3px solid var(--nora-danger); color:var(--nora-ink); font-size:13px; line-height:1.7; overflow-wrap:anywhere; }
+.nora-backup-capacity-warning strong { color:var(--nora-danger); font-weight:600; }
+.nora-backup-capacity-warning p { margin:4px 0 0; }
 .nora-backup-manager [data-backup-error]:not(:empty) { color:var(--nora-danger); font-size:13px; overflow-wrap:anywhere; }
 .nora-backup-manager [data-backup-legacy-list]:not(:empty) { border-top:1px solid var(--nora-line); margin-top:18px; padding-top:16px; }
 .nora-backup-manager [data-backup-legacy-list] .nora-backup-info { padding:10px 0; border-bottom:1px solid var(--nora-line); }

@@ -11,12 +11,14 @@ test('backup listing filters exact sessions, bounds results and exposes no store
     const snapshots = ['one', 'two', 'three'].map((id, i) => ({ id, worldId: i === 2 ? 'other' : 'world',
         sessionId: i ? 'second' : 'first', sha256: 'a'.repeat(64), sourcePath: '/private/chat.jsonl' }));
     const calls = [];
-    const plane = new NoraControlPlane({}, { post: async (route, body) => { calls.push([route, body]); return { snapshots, totalBytes: 100, policy: {}, legacyFiles: 0 }; } });
+    const plane = new NoraControlPlane({}, { post: async (route, body) => { calls.push([route, body]); return { snapshots, totalBytes: 100, policy: {}, legacyFiles: 0,
+        capacity: { protectedCount: 60, protectedBytes: 100, protectedCountExceeded: true, protectedLimitReached: true, sourcePath: '/private' } }; } });
     const result = await plane.listBackups({ worldId: 'world', sessionId: 'first', offset: 0, limit: 1 });
     assert.deepEqual(result.snapshots.map(item => item.id), ['one']);
     assert.equal(result.totalMatched, 1);
     assert.equal(result.hasMore, false);
     assert.equal(result.snapshots[0].sourcePath, undefined);
+    assert.deepEqual(result.capacity, { protectedCount: 60, protectedBytes: 100, protectedCountExceeded: true, protectedLimitReached: true });
     assert.deepEqual(calls, [['/api/backups/chat/managed', undefined]]);
     await assert.rejects(plane.listBackups({ sessionId: 'first', offset: 0, limit: 1 }), { code: 'NORA_BACKUP_INVALID_SCOPE' });
     plane.http.post = async () => ({});
@@ -67,6 +69,12 @@ test('restore forwards the approved proof once and retains it on uncertain or wr
     assert.equal(result.reloadRequired, true);
     assert.equal(result.frontendApplied, false);
     assert.deepEqual(calls, [['/api/backups/chat/restore', request]]);
+    plane.http.post = async () => ({ status: 'restored', worldId: 'world', sessionId: 'session', protectedBackupId: null,
+        backupWarning: { status: 'failed', code: 'NORA_BACKUP_BUDGET_EXCEEDED' } });
+    const warning = await plane.restoreBackup(request);
+    assert.equal(warning.protectedBackupId, null);
+    assert.equal(warning.backupWarning.code, 'NORA_BACKUP_BUDGET_EXCEEDED');
+    assert.equal(warning.reloadRequired, true);
     plane.http.post = async () => { throw new NoraRequestError('Transport failed', 'NORA_TRANSPORT_FAILED', null, 'unknown'); };
     await assert.rejects(plane.restoreBackup(request), error => error.outcome === 'unknown'
         && error.details.nextTool === 'nora.backup.restore' && assert.deepEqual(error.details.retryWithSameProof, request) === undefined);

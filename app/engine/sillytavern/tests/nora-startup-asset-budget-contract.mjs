@@ -20,6 +20,12 @@ assert.ok(shellHtmlBrotliSize <= 30_000, `visible shell HTML exceeds 30 KB Brotl
 assert.equal(manifest.legacy, 'dist/nora/legacy.js', 'legacy libraries must use their immutable standalone asset');
 assert.equal(manifest.compiled?.['lib-core.js'], 'dist/nora/lib-core.js', 'compiled core libraries must use their immutable standalone module');
 assert.ok(!Object.hasOwn(manifest.modules || {}, 'lib-core.js'), 'compiled core libraries must not be duplicated as base64');
+const rollbackModule = 'scripts/nora-story-ledger/regeneration-rollback.js';
+assert.ok(manifest.network.includes(rollbackModule), 'regeneration-only rollback must retain an import-map target for on-demand loading');
+assert.ok(!Object.hasOwn(manifest.modules, rollbackModule), 'regeneration-only rollback must not consume the critical startup payload');
+const reminderModule = 'scripts/nora-story-ledger/backup-reminder.js';
+assert.ok(manifest.network.includes(reminderModule), 'optional backup reminders must retain an import-map target for on-demand loading');
+assert.ok(!Object.hasOwn(manifest.modules, reminderModule), 'optional backup reminders must not consume the critical startup payload');
 assert.doesNotMatch(index, /\bcaches\.|indexedDB|nora-static-assets/, 'startup must not coordinate duplicate application cache authorities');
 assert.match(index, /<script type="importmap">\{\{NORA_IMPORT_MAP\}\}<\/script>/);
 assert.doesNotMatch(index, /fetch\(globalThis\.__NORA_INLINE_MANIFEST_URL__/);

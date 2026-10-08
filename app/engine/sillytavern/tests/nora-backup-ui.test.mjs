@@ -4,7 +4,7 @@ import test from 'node:test';
 import { load } from 'cheerio';
 import { createBackupController } from '../../../native-extensions/nora-ui/backup-controller.js';
 
-function fixture({ scope = { worldId: 'world:a', sessionId: 'session:a' } } = {}) {
+function fixture({ scope = { worldId: 'world:a', sessionId: 'session:a' }, inventory = {}, restoreWarning = null } = {}) {
     let dom, modal, accepted = true, failRemove = '', failList = false, hold, restoreError = '', readError = '', reloads = 0, closeGuard;
     let content = [{ chat_metadata: {} }, { name: 'NPC', mes: '<img src=x onerror=bad()> Last message' }].map(JSON.stringify).join('\n');
     const nodes = new WeakMap(), calls = [], confirmations = [], downloads = [];
@@ -63,11 +63,11 @@ function fixture({ scope = { worldId: 'world:a', sessionId: 'session:a' } } = {}
             return { ok: !error, status: error ? 409 : 200, json: async () => error ? { error: restoreError || 'NORA_BACKUP_CHANGED' } : url.endsWith('/restore-preview')
                 ? { worldId: body.worldId, sessionId: body.sessionId, current: { revision: 'current-revision', messageCount: 10 },
                     snapshot: { id: body.id, sha256: 'snapshot-digest', createdAt: 1790630400000, messageCount: 3, swipeCount: 2, mvuState: 'unverified' } }
-                : url.endsWith('/restore') ? { status: 'restored', worldId: body.worldId, sessionId: body.sessionId }
+                : url.endsWith('/restore') ? { status: 'restored', worldId: body.worldId, sessionId: body.sessionId, backupWarning: restoreWarning }
                 : url.endsWith('/managed')
                 ? { snapshots: structuredClone(snapshots), totalBytes: 4096, legacyFiles: 1, warnings: [],
-                    policy: { maxPerSession: 20, maxAgeDays: 30, maxBytes: 536870912 },
-                    status: { enabled: true, pending: 0, recent: [{ status: 'failed', code: 'ENOSPC' }] } }
+                    policy: { maxPerSession: 50, maxAgeDays: 30, maxBytes: 536870912 },
+                    status: { enabled: true, pending: 0, recent: [{ status: 'failed', code: 'ENOSPC' }] }, ...inventory }
                 : url.endsWith('/inventory') ? { complete: false, backups: [{ name: 'chat_legacy.jsonl', bytes: 1024, modifiedAt: 1790630400000, owner: { confidence: 'unknown' } }], warnings: [] } : {},
             blob: async () => new Blob([content]) };
         },
@@ -95,7 +95,8 @@ test('backup sheet offers whole-row viewing and management, without per-row acti
     assert.equal(f.select('.nora-backup-policy').raw.name, 'section');
     assert.equal(f.select('.nora-backup-policy summary'), null);
     assert.match(f.select('.nora-backup-policy').textContent, /0\.00 MiB \/ 512\.00 MiB/);
-    assert.match(f.select('.nora-backup-policy').textContent, /每会话最多 20 份，保留 30 天/);
+    assert.match(f.select('.nora-backup-policy').textContent, /每会话最多 50 份自动备份，保留 30 天/);
+    assert.match(f.select('.nora-backup-policy').textContent, /不占自动备份份数，不自动删除/);
     assert.equal(f.select('.nora-backup-policy').hidden, false);
     assert.equal(f.select('.nora-backup-manager').raw.children.filter(node => node.type === 'tag')[0], f.select('.nora-backup-policy').raw);
     assert.match(f.text(), /ENOSPC/);
@@ -126,7 +127,8 @@ test('restore previews and confirms exact scope, preserves cancellation and requ
     assert.equal(f.calls.filter(call => call.url.endsWith('/restore')).length, 0);
     const confirmation = f.confirmations[0];
     assert.equal(confirmation.restoreSheet, true);
-    assert.match(confirmation.body, /保护当前聊天/);
+    assert.match(confirmation.body, /备份失败不阻止恢复/);
+    assert.equal(confirmation.confirmLabel, '恢复聊天');
     assert.match(confirmation.details.join(' '), /不替换卡片/);
     assert.match(confirmation.details.join(' '), /变量状态未确认/);
     assert.match(confirmation.details.join(' '), /账本.*失效/);
@@ -141,6 +143,36 @@ test('restore previews and confirms exact scope, preserves cancellation and requ
     assert.equal(f.reloads(), 0, 'never discard unsent input through automatic navigation');
     await f.select('[data-backup-reload]').fire();
     assert.equal(f.reloads(), 1);
+});
+
+test('kept backup capacity exhaustion has an obvious cleanup notice without disabling management or restoration', async () => {
+    const f = fixture({ inventory: { totalBytes: 536870913, overBudget: true,
+        capacity: { protectedCount: 60, protectedBytes: 536870913, protectedLimitReached: true } },
+    restoreWarning: { status: 'failed', code: 'NORA_BACKUP_BUDGET_EXCEEDED' } });
+    await f.controller.open();
+    assert.ok(f.select('.nora-backup-capacity-warning[role="alert"]'));
+    assert.match(f.text(), /已保留 60 份备份/);
+    assert.match(f.text(), /先取消保留/);
+    assert.match(f.text(), /正常操作仍可继续/);
+    assert.equal(f.select('[data-backup-manage]').disabled, false);
+    await f.view('a');
+    assert.equal(f.select('[data-backup-restore="a"]').disabled, false);
+    await f.select('[data-backup-restore="a"]').fire();
+    assert.match(f.text(), /选定备份已成功恢复/);
+    assert.equal(f.canClose(), true);
+});
+
+test('manual keeps above fifty warn without falsely claiming exhausted storage or disabling actions', async () => {
+    const f = fixture({ inventory: { totalBytes: 6000, overBudget: false,
+        capacity: { protectedCount: 60, protectedBytes: 6000, protectedCountExceeded: true, protectedLimitReached: true } } });
+    await f.controller.open();
+    assert.ok(f.select('.nora-backup-capacity-warning[role="alert"]'));
+    assert.match(f.text(), /已超过 50 份/);
+    assert.match(f.text(), /正常操作仍可继续/);
+    assert.doesNotMatch(f.text(), /备份空间不足/);
+    assert.equal(f.select('[data-backup-manage]').disabled, false);
+    await f.view('a');
+    assert.equal(f.select('[data-backup-restore="a"]').disabled, false);
 });
 
 test('unknown restore outcome reuses the confirmed proof and busy conflicts never claim success', async () => {

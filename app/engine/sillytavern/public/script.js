@@ -4747,7 +4747,14 @@ export async function runNoraChatActivity(kind, operation) {
 
 export async function Generate(type, options = {}, dryRun = false) {
     try {
-        const generate = () => generateCore(type, options, dryRun);
+        const generate = async () => {
+            if (!dryRun && type === 'regenerate' && isNoraProductMode()) {
+                const { withRegenerationRollback } = await import('./scripts/nora-story-ledger/regeneration-rollback.js');
+                return withRegenerationRollback(() => ({ chat, chatMetadata: chat_metadata }),
+                    () => generateCore(type, options, dryRun), printMessages);
+            }
+            return generateCore(type, options, dryRun);
+        };
         return await (dryRun ? generate() : runNoraChatActivity('generation', generate));
     } catch (error) {
         unblockGeneration(type);
@@ -4769,8 +4776,8 @@ async function generateCore(type, { automatic_trigger, force_name2, quiet_prompt
         if (!dryRun) worldPresetProjection.restore(chat_metadata?.nora_world?.id);
     }
 
-    // Protect the persisted branch before extension events or regeneration can
-    // remove its last reply. Ordinary sends and dry-run prompt previews skip it.
+    // Validate the persisted branch and attempt a bounded, optional rollback
+    // backup. Backup failure does not gate generation; stale chat still does.
     await protectStoryRegeneration({ chat, chatMetadata: chat_metadata }, { type, dryRun, depth });
 
     // Occurs every time, even if the generation is aborted due to slash commands execution

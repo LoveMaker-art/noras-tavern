@@ -9,7 +9,7 @@ import { ledgerAfterRestore, ledgerStatePath } from './state-file.js';
 import { requestStoryProjection } from './profile-projection.js';
 import { prefixText, scopeKey, scopeOf } from '../../public/scripts/nora-story-ledger/history.js';
 import { storyEntityBindings } from '../../public/scripts/nora-worlds/story-context.js';
-import { chatBackupStore, protectChatBeforeRewrite } from '../chat-backup-runtime.js';
+import { chatBackupStore, chatBackupWarning, protectChatBeforeRewrite } from '../chat-backup-runtime.js';
 import { chatSessionOperations } from '../chat-session-operations.js';
 import { reportLedger } from './diagnostics.js';
 
@@ -177,7 +177,7 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             writeFileAtomicSync(filePath, data.map(item => JSON.stringify(item)).join('\n'), 'utf8');
             return receipt;
         } }));
-        return { ...result, projectionPending: !await requestStoryProjection(directories) };
+        return { ...result, backupWarning: chatBackupWarning(directories, scope), projectionPending: !await requestStoryProjection(directories) };
     }
     let projectionRecovered = false;
     function recover() {

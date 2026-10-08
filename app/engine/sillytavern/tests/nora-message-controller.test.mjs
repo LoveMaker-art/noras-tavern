@@ -76,12 +76,12 @@ function createHarness({ messages = {}, model = {}, retryResult = { status: 'com
     };
 }
 
-test('required backup failure pauses the rewrite without offering model settings or calling it generation failure', t => {
+test('canonical chat save failures remain distinct from model configuration errors', t => {
     t.mock.method(console, 'error', () => {});
     const h = createHarness();
-    h.controller.handleGenerationError(Object.assign(new Error('保护备份失败，原聊天未改动'), { code: 'NORA_BACKUP_REQUIRED', phase: 'save' }), { scope: 'story', persisted: true });
-    assert.equal(h.notices[0].title, '改写已暂停');
-    assert.match(h.notices[0].message, /原聊天未改动/);
+    h.controller.handleGenerationError(Object.assign(new Error('聊天文件无法写入'), { code: 'EACCES', phase: 'save' }), { scope: 'story', persisted: true });
+    assert.equal(h.notices[0].title, '聊天保存未完成');
+    assert.match(h.notices[0].message, /聊天文件无法写入/);
     assert.ok(!h.notices[0].actions.some(action => action.label === '模型设置'));
 });
 

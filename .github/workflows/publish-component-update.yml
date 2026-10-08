@@ -55,6 +55,15 @@ jobs:
           node --test tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
           node tooling/run.mjs node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
           node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node tooling/checks/verify-backup-safety.mjs
       - name: Build only shared application and updater components
         run: node tooling/release/package-release.mjs --components-only
       - name: Reuse verified environments and seal three system manifests

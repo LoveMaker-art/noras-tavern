@@ -227,7 +227,9 @@ backups:
     # Legacy maxTotalChatBackups/backups.chat.maxTotalBackups are ignored.
     # Their values are preserved; configure the retention policy explicitly.
     retention:
-      maxPerSession: 20
+      # Automatic snapshots per session. Explicitly kept backups are additional
+      # and do not expire, but still consume the shared maxBytes budget.
+      maxPerSession: 50
       maxAgeDays: 30
       maxBytes: 536870912
     # Trailing debounce interval in milliseconds per chat

@@ -476,6 +476,8 @@ export class NoraControlPlane {
       .map(item => Object.fromEntries(fields.filter(key => key in item).map(key => [key, item[key]]))),
       totalMatched: snapshots.length, offset: request.offset, limit: request.limit, hasMore: request.offset + request.limit < snapshots.length,
       totalBytes: data.totalBytes, policy: data.policy, status: data.status, overBudget: data.overBudget,
+      capacity: isRecord(data.capacity) ? Object.fromEntries(["protectedCount", "protectedBytes", "protectedCountExceeded", "protectedLimitReached"]
+        .filter(key => key in (data.capacity as JsonRecord)).map(key => [key, (data.capacity as JsonRecord)[key]])) : null,
       warnings: Array.isArray(data.warnings) ? data.warnings.slice(0, 100) : [], legacyFiles: data.legacyFiles };
     if (request.includeLegacy) {
       const legacy = asRecord(await this.http.post("/api/backups/chat/inventory"));

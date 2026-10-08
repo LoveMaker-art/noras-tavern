@@ -14,7 +14,7 @@ const managedId = name => /^chat_nora1_([a-f0-9-]{36})\.jsonl$/i.exec(String(nam
 function backupError(response, error) {
     const code = error.code || 'NORA_BACKUP_OPERATION_FAILED';
     const status = error.status || (code === 'ENOENT' ? 404 : code.startsWith('NORA_BACKUP_INVALID_') ? 400
-        : code.startsWith('NORA_BACKUP_RESTORE_') || ['NORA_BACKUP_REQUIRED', 'NORA_BACKUP_PROTECTED', 'NORA_BACKUP_CHANGED', 'NORA_BACKUP_UNSAFE_PATH', 'NORA_BACKUP_UNSAFE_FILE'].includes(code) ? 409 : 500);
+        : code.startsWith('NORA_BACKUP_RESTORE_') || ['NORA_BACKUP_PROTECTED', 'NORA_BACKUP_CHANGED', 'NORA_BACKUP_UNSAFE_PATH', 'NORA_BACKUP_UNSAFE_FILE'].includes(code) ? 409 : 500);
     return response.status(status).json({ error: code });
 }
 

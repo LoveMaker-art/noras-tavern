@@ -196,6 +196,16 @@ jobs:
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
 
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node tooling/checks/verify-backup-safety.mjs
+
       - name: Verify runtime independently of original installation
         timeout-minutes: 15
         shell: bash

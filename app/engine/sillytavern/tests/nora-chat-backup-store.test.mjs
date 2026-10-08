@@ -292,7 +292,7 @@ test('deletion preflight failure leaves the World and its revision unchanged', a
     assert.ok(await f.chat(world));
 });
 
-test('restoration atomically replaces only chat, preserves a protected prior state and is replay-safe', async t => {
+test('restoration atomically replaces only chat, preserves a rolling prior state and is replay-safe', async t => {
     const f = await storageFixture(t), world = await f.create('restore');
     const store = createChatBackupStore({ directories: f.directories });
     const original = await savedChat(f, world, 10);
@@ -316,7 +316,7 @@ test('restoration atomically replaces only chat, preserves a protected prior sta
     assert.equal(restored[0].chat_metadata.world_info, 'current-worldbook-binding');
     assert.equal((await store.download(result.protectedBackupId)).toString(), latest.data);
     const inventory = await store.list();
-    assert.equal(inventory.snapshots.find(item => item.id === result.protectedBackupId).protected, true);
+    assert.equal(inventory.snapshots.find(item => item.id === result.protectedBackupId).protected, false);
     assert.equal(inventory.snapshots.find(item => item.id === snapshot.id).protected, false, 'restoring does not change selected snapshot protection');
     const retry = await store.restore(input);
     assert.equal(retry.status, 'already-restored');
@@ -327,7 +327,7 @@ test('restoration atomically replaces only chat, preserves a protected prior sta
     assert.equal((await store.restore(input)).status, 'already-restored', 'a lost acknowledgement remains recoverable after source snapshot removal');
 });
 
-test('restoration backup failure leaves the canonical chat untouched', async t => {
+test('restoration succeeds with an explicit warning when its optional rollback backup fails', async t => {
     const f = await storageFixture(t), world = await f.create('restore-failure');
     const store = createChatBackupStore({ directories: f.directories });
     const snapshot = await store.capture(await savedChat(f, world));
@@ -339,8 +339,14 @@ test('restoration backup failure leaves the canonical chat untouched', async t =
         if (flags === 'wx') throw Object.assign(new Error('synthetic full disk'), { code: 'ENOSPC' });
         return open(file, flags, ...args);
     });
-    await assert.rejects(store.restore({ ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 }), { code: 'NORA_BACKUP_REQUIRED' });
-    assert.equal(await fs.readFile(latest.filePath, 'utf8'), latest.data);
+    const input = { ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 };
+    const result = await store.restore(input);
+    assert.equal(result.status, 'restored');
+    assert.equal(result.protectedBackupId, null);
+    assert.equal(result.backupWarning.code, 'ENOSPC');
+    const restored = (await fs.readFile(latest.filePath, 'utf8')).split('\n').map(JSON.parse);
+    assert.deepEqual(restored.slice(1), (await store.download(snapshot.id)).toString().split('\n').map(JSON.parse).slice(1));
+    assert.deepEqual((await store.restore(input)).backupWarning, result.backupWarning);
 });
 
 test('failed restore replacement retains canonical bytes and its completed protection checkpoint', async t => {
@@ -358,7 +364,7 @@ test('failed restore replacement retains canonical bytes and its completed prote
     });
     await assert.rejects(store.restore({ ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 }), { code: 'EACCES' });
     assert.equal(await fs.readFile(latest.filePath, 'utf8'), latest.data);
-    const protectedPoint = (await store.list()).snapshots.find(item => item.protected);
+    const protectedPoint = (await store.list()).snapshots[0];
     assert.equal((await store.download(protectedPoint.id)).toString(), latest.data);
 });
 
@@ -597,8 +603,10 @@ test('retention is per session, ages inactive sessions, and never prunes protect
     await store.capture(await savedChat(f, b, 8));
     clock++;
     await store.capture(await savedChat(f, a, 7));
+    clock++;
+    await store.capture(await savedChat(f, a, 6));
     let list = await store.list();
-    assert.equal(list.snapshots.filter(item => item.worldId === a.world_id).length, 2);
+    assert.equal(list.snapshots.filter(item => item.worldId === a.world_id).length, 3);
     assert.ok(!list.snapshots.some(item => item.id === obsolete.id));
     clock += 31 * 86400000;
     await store.maintain();
@@ -611,7 +619,7 @@ test('retention is per session, ages inactive sessions, and never prunes protect
     assert.equal((await store.list()).snapshots.length, 0);
 });
 
-test('default retention bounds disk growth at twenty snapshots and repeated same-state saves add zero bytes', async t => {
+test('default retention bounds disk growth at fifty snapshots and repeated same-state saves add zero bytes', async t => {
     const f = await storageFixture(t);
     const world = await f.create('growth');
     const store = createChatBackupStore({ directories: f.directories });
@@ -619,7 +627,7 @@ test('default retention bounds disk growth at twenty snapshots and repeated same
     const messages = input.data.split('\n').map(JSON.parse);
     messages[1].mes = 'x'.repeat(64 * 1024);
     const times = [];
-    for (let hp = 30; hp > 0; hp--) {
+    for (let hp = 80; hp > 0; hp--) {
         messages[1].extra.stat_data.hp = hp;
         input.data = messages.map(item => JSON.stringify(item)).join('\n');
         await fs.writeFile(input.filePath, input.data);
@@ -630,16 +638,16 @@ test('default retention bounds disk growth at twenty snapshots and repeated same
     const before = await store.list();
     for (let i = 0; i < 10; i++) assert.equal((await store.capture(input)).status, 'unchanged');
     const after = await store.list();
-    assert.equal(after.snapshots.length, 20);
+    assert.equal(after.snapshots.length, 50);
     assert.equal(after.totalBytes, before.totalBytes);
     assert.equal(after.legacyFiles, 0);
-    assert.ok(after.totalBytes < 1.4 * 1024 * 1024);
+    assert.ok(after.totalBytes < 3.4 * 1024 * 1024);
     times.sort((a, b) => a - b);
-    t.diagnostic(`30 changed + 10 unchanged saves: files=${after.snapshots.length}, bytes=${after.totalBytes}, capture median=${times[15].toFixed(1)}ms, max=${times.at(-1).toFixed(1)}ms`);
+    t.diagnostic(`80 changed + 10 unchanged saves: files=${after.snapshots.length}, bytes=${after.totalBytes}, capture median=${times[40].toFixed(1)}ms, max=${times.at(-1).toFixed(1)}ms`);
     assert.ok(times.at(-1) < 2000, 'isolated 64 KiB snapshot retention must finish within two seconds');
 });
 
-test('one oversized addition or an entirely protected session fails explicitly without evicting the protected copy', async t => {
+test('an oversized addition fails but a kept copy does not consume an automatic slot', async t => {
     const f = await storageFixture(t);
     const world = await f.create('limits');
     const input = await savedChat(f, world);
@@ -649,13 +657,14 @@ test('one oversized addition or an entirely protected session fails explicitly w
     const store = createChatBackupStore({ directories: f.directories, policy: { maxPerSession: 1 } });
     const first = await store.capture(input);
     await store.protect(first.id, true);
-    await assert.rejects(store.capture(await savedChat(f, world, 7)), { code: 'NORA_BACKUP_PROTECTED_LIMIT' });
+    assert.equal((await store.capture(await savedChat(f, world, 7))).status, 'created');
+    assert.equal((await store.list()).snapshots.length, 2);
     await fs.truncate(input.filePath, 257 * 1024 * 1024);
     await assert.rejects(store.capture(input), { code: 'NORA_BACKUP_UNSAFE_FILE' });
     assert.equal((await store.download(first.id)).toString(), input.data);
 });
 
-test('required protection is committed with capture, reuses unchanged bytes, and cannot exceed protected slots', async t => {
+test('explicit keep is committed with capture and reuses unchanged bytes outside automatic slots', async t => {
     const f = await storageFixture(t);
     const world = await f.create('required-protection');
     const store = createChatBackupStore({ directories: f.directories, policy: { maxPerSession: 1 } });
@@ -665,8 +674,8 @@ test('required protection is committed with capture, reuses unchanged bytes, and
     assert.equal(protectedCopy.id, first.id);
     assert.equal((await store.list()).snapshots[0].protected, true);
     await assert.rejects(store.remove(first.id), { code: 'NORA_BACKUP_PROTECTED' });
-    await assert.rejects(store.capture({ ...await savedChat(f, world, 8), protect: true }), { code: 'NORA_BACKUP_PROTECTED_LIMIT' });
-    assert.equal((await store.list()).snapshots.length, 1);
+    assert.equal((await store.capture({ ...await savedChat(f, world, 8), protect: true })).status, 'created');
+    assert.equal((await store.list()).snapshots.length, 2);
     assert.equal((await store.download(first.id)).toString(), input.data);
 });
 
@@ -807,7 +816,7 @@ test('a twenty-snapshot, forty-MiB fixture has bounded listing latency and does 
     t.diagnostic(`40 MiB listing ms=${times.map(value => value.toFixed(1)).join('/')} maxRSSKiB=${process.resourceUsage().maxRSS}`);
 });
 
-test('near the default user budget, listing remains bounded and another World cannot evict existing backups', { timeout: 60000 }, async t => {
+test('near the default user budget, automatic backups roll across Worlds without changing either chat', { timeout: 60000 }, async t => {
     const f = await storageFixture(t);
     const store = createChatBackupStore({ directories: f.directories });
     const input = await savedChat(f, await f.create('near-budget'));
@@ -831,8 +840,14 @@ test('near the default user budget, listing remains bounded and another World ca
     otherMessages[1].mes = messages[1].mes;
     another.data = otherMessages.map(item => JSON.stringify(item)).join('\n');
     await fs.writeFile(another.filePath, another.data);
-    await assert.rejects(store.capture(another), { code: 'NORA_BACKUP_BUDGET_EXCEEDED' });
+    const captured = await store.capture(another);
+    assert.equal(captured.status, 'created');
     assert.equal(await fs.readFile(another.filePath, 'utf8'), another.data);
-    assert.deepEqual((await store.list()).snapshots.map(item => item.id), list.snapshots.map(item => item.id));
+    const after = await store.list();
+    assert.equal(after.snapshots.length, 20);
+    assert.ok(after.totalBytes <= after.policy.maxBytes);
+    assert.ok(after.snapshots.some(item => item.id === captured.id));
+    assert.ok(!after.snapshots.some(item => item.id === list.snapshots.at(-1).id), 'oldest automatic snapshot is evicted');
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
     t.diagnostic(`500 MiB listing ms=${elapsed.toFixed(1)} maxRSSKiB=${process.resourceUsage().maxRSS}`);
 });

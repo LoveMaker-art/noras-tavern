@@ -124,7 +124,7 @@ nora.session.read 返回 1–100 条消息及整个历史的 expectedSignature�
 
 `nora.backup.list` 按 World/Session 筛选并分页；旧备份清单仅供查询。读取、下载、保留和删除使用清单里的 id/sha256，文件变化则拒绝。内容读取最多每页20条、每条4000字符，不代替完整文件；下载到实例的私有 exports 目录，原文件不变。
 
-恢复先调用 `nora.backup.restore_preview`，向用户说明目标、消息数变化和保护检查，再取得批准。`nora.backup.restore` 必须提交同一 World/Session、备份哈希和预览里的 expectedRevision；复用现有账本恢复流程，先保护当前聊天，拒绝忙碌或已变化的会话。断线后的未知结果使用原证明查询/重放，不能获取新版本盲目重复。成功回执不代表页面已刷新。上述操作不调用模型。
+恢复先调用 `nora.backup.restore_preview`，向用户说明目标、消息数变化和尽力备份的边界，再取得批准。`nora.backup.restore` 必须提交同一 World/Session、备份哈希和预览里的 expectedRevision；复用现有账本恢复流程，拒绝忙碌或已变化的会话。恢复前备份失败不阻止恢复，以 `backupWarning` 单独报告，不能承诺存在撤回备份。断线后的未知结果使用原证明查询/重放，不能获取新版本盲目重复。成功回执不代表页面已刷新。上述操作不调用模型。
 
 ### 旧维护接口
 

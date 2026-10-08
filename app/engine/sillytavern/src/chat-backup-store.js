@@ -11,6 +11,8 @@ import { getChatRevision } from './chat-revision.js';
 import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
 
 const locks = new KeyedLock();
+const automaticTasks = new Map();
+export const BACKUP_ATTEMPT_TIMEOUT_MS = 1000;
 const ID = /^[a-f0-9-]{36}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const MAX_FILE = 256 * 1024 * 1024;
@@ -40,7 +42,7 @@ function parseRestoreChat(data) {
         return lines;
     } catch { throw fail('NORA_BACKUP_INVALID_RESTORE_CHAT'); }
 }
-export const DEFAULT_CHAT_BACKUP_POLICY = Object.freeze({ maxPerSession: 20, maxAgeDays: 30, maxBytes: 512 * 1024 * 1024 });
+export const DEFAULT_CHAT_BACKUP_POLICY = Object.freeze({ maxPerSession: 50, maxAgeDays: 30, maxBytes: 512 * 1024 * 1024 });
 
 /** Only new, committed JSONL + metadata pairs are managed. Missing, changed or
  * unrecognized records remain untouched. JSONL bytes keep the native format. */
@@ -144,7 +146,15 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             totalBytes += stat.size;
             if (!managed.has(name)) legacyFiles++;
         }
+        const protectedCopies = snapshots.filter(item => item.protected);
+        const protectedBytes = protectedCopies.reduce((sum, item) => sum + item.bytes, 0);
+        const protectedCounts = new Map();
+        for (const item of protectedCopies) protectedCounts.set(item.sessionKey, (protectedCounts.get(item.sessionKey) || 0) + 1);
+        // The rolling count is a cleanup reminder for manual keeps, not a cap.
+        const protectedCountExceeded = [...protectedCounts.values()].some(count => count > policy.maxPerSession);
         return { snapshots: snapshots.sort(newest), totalBytes, legacyFiles, warnings, policy,
+            capacity: { protectedCount: protectedCopies.length, protectedBytes,
+                protectedCountExceeded, protectedLimitReached: protectedCountExceeded || protectedBytes >= policy.maxBytes },
             overBudget: totalBytes > policy.maxBytes };
     }
 
@@ -171,11 +181,18 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return { worldId, sessionId, sessionKey: digest(JSON.stringify(worldId ? [worldId, sessionId] : [relative])) };
     }
 
-    async function writeNew(relative, data) {
+    async function writeNew(relative, data, signal) {
+        signal?.throwIfAborted();
         const parent = await checked(path.dirname(relative));
+        signal?.throwIfAborted();
         const handle = await fs.open(path.join(parent.file, path.basename(relative)), 'wx', 0o600);
         let failure, written;
-        try { await handle.writeFile(data); await handle.sync(); } catch (error) { failure = error; written = await handle.stat().catch(() => null); } finally { await handle.close(); }
+        try {
+            signal?.throwIfAborted();
+            await handle.writeFile(data);
+            signal?.throwIfAborted();
+            await handle.sync();
+        } catch (error) { failure = error; written = await handle.stat().catch(() => null); } finally { await handle.close(); }
         if (failure) {
             // This operation created the file exclusively. Do not remove a
             // replacement made by another writer while handling the failure.
@@ -187,7 +204,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         }
     }
 
-    function obsolete(snapshots) {
+    function obsolete(snapshots, totalBytes = 0, newestId = null) {
         const groups = new Map();
         const removed = [];
         for (const item of snapshots) {
@@ -196,12 +213,22 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         }
         const cutoff = now() - policy.maxAgeDays * 86400000;
         for (const group of groups.values()) {
-            let remaining = Math.max(0, policy.maxPerSession - group.filter(item => item.protected).length);
+            // Explicitly kept (including legacy protected) copies are outside
+            // automatic slots, but still count towards the total byte budget.
+            let remaining = policy.maxPerSession;
             for (const item of group.sort(newest)) {
                 if (item.protected) continue;
                 if (item.createdAt < cutoff || remaining <= 0) removed.push(item);
                 else remaining--;
             }
+        }
+        let remainingBytes = totalBytes - removed.reduce((sum, item) => sum + item.bytes, 0);
+        const selected = new Set(removed.map(item => item.id));
+        for (const item of [...snapshots].sort((a, b) => newest(b, a))) {
+            if (remainingBytes <= policy.maxBytes) break;
+            if (item.protected || item.id === newestId || selected.has(item.id)) continue;
+            removed.push(item);
+            remainingBytes -= item.bytes;
         }
         return removed;
     }
@@ -210,13 +237,14 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         if (sha256 !== undefined && (!DIGEST.test(sha256) || sha256 !== current.value.sha256)) throw fail('NORA_BACKUP_CHANGED');
     }
 
-    async function remove(id, sha256) {
+    async function remove(id, sha256, signal) {
         const current = await record(id);
         verifyDigest(current, sha256);
         if (current.value.protected) throw fail('NORA_BACKUP_PROTECTED');
         const metadata = await checked(recordRelative(id));
         const snapshot = await checked(dataRelative(id));
         if (!equalStat(metadata.stat, current.metadataStat) || !equalStat(snapshot.stat, current.snapshot.stat)) throw fail('NORA_BACKUP_CHANGED');
+        signal?.throwIfAborted();
         // Remove ownership first. If unlink fails afterwards the JSONL is kept as
         // unmanaged data, not silently adopted by a later automatic cleanup.
         await fs.unlink(metadata.file);
@@ -224,10 +252,11 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return { status: 'deleted', id };
     }
 
-    async function prune(candidates) {
+    async function prune(candidates, signal) {
         const deleted = [], warnings = [];
         for (const item of candidates) {
-            try { await remove(item.id); deleted.push(item.id); } catch (error) { warnings.push({ id: item.id, code: error.code || 'NORA_BACKUP_DELETE_FAILED' }); }
+            signal?.throwIfAborted();
+            try { await remove(item.id, undefined, signal); deleted.push(item.id); } catch (error) { warnings.push({ id: item.id, code: error.code || 'NORA_BACKUP_DELETE_FAILED' }); }
         }
         return { deleted, warnings };
     }
@@ -366,11 +395,12 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
                 swipeCount: restored.slice(1).reduce((sum, message) => sum + (message.swipes?.length || 0), 0) },
             includes: ['messages', 'message-data', 'swipes'],
             excludes: ['world-card', 'worldbooks', 'library-originals', 'compression-ledger'],
-            protectionRequired: true };
+            protectionRequired: false, rollbackBackup: 'best-effort' };
         return { preview, ...target, restored };
     }
 
-    async function capture({ filePath, data, protect = false, mvuState = 'unverified' }, retainId = null, upgradeCredit = null) {
+    async function capture({ filePath, data, protect = false, mvuState = 'unverified', signal }, retainId = null, upgradeCredit = null) {
+        signal?.throwIfAborted();
         if (typeof protect !== 'boolean') throw fail('NORA_BACKUP_INVALID_PROTECTION');
         if (!MVU_STATES.has(mvuState)) throw fail('NORA_BACKUP_INVALID_MVU_STATE');
         const owner = await source(filePath, data);
@@ -382,37 +412,49 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             if ((protect && !previous.protected) || observedState !== previous.mvuState) {
                 const current = await record(previous.id);
                 await source(filePath, data);
-                await writeJsonAtomic((await checked(recordRelative(previous.id))).file,
+                const metadata = await checked(recordRelative(previous.id));
+                signal?.throwIfAborted();
+                await writeJsonAtomic(metadata.file,
                     { ...current.value, protected: protect || current.value.protected, mvuState: observedState });
             }
+            signal?.throwIfAborted();
             return { status: 'unchanged', id: previous.id };
         }
-        if (protect && before.snapshots.filter(item => item.sessionKey === owner.sessionKey && item.protected).length >= policy.maxPerSession) throw fail('NORA_BACKUP_PROTECTED_LIMIT');
         const id = crypto.randomUUID();
         const value = { version: 1, id, ...owner, sha256, bytes: Buffer.byteLength(data), createdAt: now(),
             sequence: (previous?.sequence || 0) + 1, protected: protect, consistency: 'chat-only', mvuState };
-        const candidates = obsolete([...before.snapshots.map(item => item.id === retainId ? { ...item, protected: true } : item), value]);
-        if (candidates.some(item => item.id === id)) throw fail('NORA_BACKUP_PROTECTED_LIMIT');
+        const candidates = obsolete([...before.snapshots.map(item => item.id === retainId ? { ...item, protected: true } : item), value],
+            before.totalBytes + value.bytes - (upgradeCredit ?? 0), id);
+        if (candidates.some(item => item.id === id)) throw fail('NORA_BACKUP_RETENTION_CONFLICT');
         // Upgrade credit belongs only to the revalidated legacy deletion set.
         // Keep every old file until ALL replacement snapshots are verified;
         // actual disk exhaustion still fails writes without deleting old data.
         const retainedBytes = before.totalBytes + value.bytes - (upgradeCredit ?? candidates.reduce((sum, item) => sum + item.bytes, 0));
-        if (before.totalBytes - (upgradeCredit ?? 0) > policy.maxBytes || value.bytes > policy.maxBytes || retainedBytes > policy.maxBytes) throw fail('NORA_BACKUP_BUDGET_EXCEEDED');
+        if (value.bytes > policy.maxBytes || retainedBytes > policy.maxBytes) throw fail('NORA_BACKUP_BUDGET_EXCEEDED');
+        signal?.throwIfAborted();
         const parent = await checked(backupRelative);
         await fs.mkdir(path.join(parent.file, '.nora-chat'), { recursive: true });
         await checked(recordsRelative);
         await source(filePath, data);
-        await writeNew(dataRelative(id), data);
+        signal?.throwIfAborted();
+        await writeNew(dataRelative(id), data, signal);
         // A crash before metadata commit leaves an unmanaged file, never a deletion candidate.
         const metadataBytes = Buffer.from(JSON.stringify(value));
         let metadataCommitted = false;
         try {
+            signal?.throwIfAborted();
             await source(filePath, data);
-            await writeNew(recordRelative(id), metadataBytes);
+            signal?.throwIfAborted();
+            await writeNew(recordRelative(id), metadataBytes, signal);
             metadataCommitted = true;
+            // Confirm the on-disk snapshot and metadata before evicting any
+            // prior rollback point or acknowledging a destructive operation.
+            const committed = await record(id);
+            if (committed.value.sha256 !== sha256 || !committed.snapshot.data.equals(Buffer.from(data))) throw fail('NORA_BACKUP_CHANGED');
             // The World or source may change while metadata fsync is in
             // flight. Never prune the previous snapshot on that outcome.
             await source(filePath, data);
+            signal?.throwIfAborted();
         } catch (error) {
             try {
                 if (metadataCommitted) {
@@ -427,8 +469,29 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             } catch { /* A changed or inaccessible remnant is not ours to remove. */ }
             throw error;
         }
-        const retention = upgradeCredit === null ? await prune(candidates) : { deleted: [], warnings: [] };
+        const retention = upgradeCredit === null ? await prune(candidates, signal) : { deleted: [], warnings: [] };
         return { status: 'created', id, retention };
+    }
+
+    // One bounded automatic attempt per user root. A hung backup never builds
+    // an unbounded queue of retained chat buffers or holds foreground editing.
+    function tryCapture(input, retainId = null, admitted = false) {
+        const key = configuredRoot;
+        if (automaticTasks.has(key)) return Promise.resolve({ status: 'skipped', code: 'NORA_BACKUP_BUSY' });
+        const controller = new AbortController();
+        let timer;
+        const operation = () => capture({ ...input, signal: controller.signal }, retainId);
+        const task = Promise.resolve().then(() => admitted ? operation() : run(operation))
+            .catch(error => ({ status: 'failed', code: error.code || 'NORA_BACKUP_WRITE_FAILED' }))
+            .finally(() => { clearTimeout(timer); if (automaticTasks.get(key) === task) automaticTasks.delete(key); });
+        automaticTasks.set(key, task);
+        const deadline = new Promise(resolve => {
+            timer = setTimeout(() => {
+                controller.abort(fail('NORA_BACKUP_TIMEOUT'));
+                resolve({ status: 'failed', code: 'NORA_BACKUP_TIMEOUT' });
+            }, BACKUP_ATTEMPT_TIMEOUT_MS);
+        });
+        return Promise.race([task, deadline]);
     }
 
     async function upgradeLegacy() {
@@ -512,7 +575,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         if (receipt && receipt.snapshotId === input.id && receipt.snapshotSha256 === input.sha256
             && receipt.previousRevision === input.expectedRevision) {
             return { status: 'already-restored', worldId: input.worldId, sessionId: input.sessionId,
-                revision: getChatRevision(target.existing), restoreId: receipt.id, protectedBackupId: receipt.protectedBackupId };
+                revision: getChatRevision(target.existing), restoreId: receipt.id, protectedBackupId: receipt.protectedBackupId,
+                backupWarning: receipt.backupWarning || null };
         }
         const inspected = await inspectRestore(input, target);
         const verify = current => {
@@ -522,17 +586,15 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         verify(inspected);
         // Keep the selected snapshot safe while making the required protection
         // point. Retention must not prune the very snapshot being restored.
-        let checkpoint;
-        try { checkpoint = await capture({ filePath: path.join(configuredRoot, inspected.relative), data: inspected.current.data, protect: true }, input.id); } catch (cause) {
-            throw Object.assign(fail('NORA_BACKUP_REQUIRED'), { backupCode: cause.code || 'NORA_BACKUP_WRITE_FAILED' });
-        }
+        const checkpoint = await tryCapture({ filePath: path.join(configuredRoot, inspected.relative), data: inspected.current.data }, input.id, true);
         const latest = await inspectRestore(input);
         verify(latest);
         const metadata = latest.restored[0].chat_metadata;
         const restoreId = crypto.randomUUID();
         for (const key of ['nora_world', 'nora_session', 'integrity', 'world_info']) metadata[key] = latest.existing[0].chat_metadata[key];
         metadata.nora_restore = { id: restoreId, snapshotId: input.id, snapshotSha256: input.sha256,
-            previousRevision: input.expectedRevision, protectedBackupId: checkpoint.id, ledgerEnabled, at: now(),
+            previousRevision: input.expectedRevision, protectedBackupId: checkpoint.id || null,
+            backupWarning: checkpoint.id ? null : checkpoint, ledgerEnabled, at: now(),
             historySignature: digest(prefixText(latest.restored.slice(1), latest.restored.length - 1)) };
         const data = latest.restored.map(item => JSON.stringify(item)).join('\n');
         // No await between final path/stat validation and the atomic replace.
@@ -540,7 +602,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         const destination = validateUnchanged(latest.relative, latest.current.stat);
         writeFileAtomicSync.sync(destination, data, 'utf8');
         return { status: 'restored', worldId: input.worldId, sessionId: input.sessionId,
-            revision: getChatRevision(latest.restored), restoreId, protectedBackupId: checkpoint.id };
+            revision: getChatRevision(latest.restored), restoreId, protectedBackupId: checkpoint.id || null,
+            backupWarning: checkpoint.id ? null : checkpoint };
     }
 
     return Object.freeze({
@@ -578,7 +641,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             await writeJsonAtomic(target.file, { ...current.value, protected: protectedValue });
             return { status: 'updated', id, protected: protectedValue };
         }),
-        maintain: () => run(async () => prune(obsolete((await inventory()).snapshots))),
+        maintain: () => run(async () => { const state = await inventory(); return prune(obsolete(state.snapshots, state.totalBytes)); }),
+        tryCapture: input => tryCapture(input),
         capture: input => run(() => capture(input)),
     });
 }
