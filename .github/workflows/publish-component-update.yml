@@ -21,6 +21,9 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: nora-sourceforge-release-channels
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
@@ -45,6 +48,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Prepare private SourceForge publishing credentials
+        env:
+          NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
+          NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
+          NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
+        run: node tooling/release/sourceforge-credentials.mjs prepare
+      - name: Verify shared publication configuration
+        run: node --test tests/sourceforge-publishing.test.mjs
       - name: Install test dependencies
         run: |
           python -m pip install PyYAML==6.0.2
@@ -54,7 +65,7 @@ jobs:
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
           node --test tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
           node tooling/run.mjs node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
-          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Require chat backup safety tests
         timeout-minutes: 10
         shell: bash
@@ -74,3 +85,6 @@ jobs:
           node tooling/release/package-component-update.mjs "$release_dir" "$BASELINE_TAG" artifacts
       - name: Publish verified update components
         run: node tooling/release/publish-release.mjs artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" components
+      - name: Remove private SourceForge publishing files
+        if: always()
+        run: node tooling/release/sourceforge-credentials.mjs cleanup

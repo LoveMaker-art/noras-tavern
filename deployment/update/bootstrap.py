@@ -2,15 +2,20 @@
 """Download one release and hand it to the direct Tavern installer."""
 import argparse
 import hashlib
+import http.client
 import json
 import ntpath
 import os
 from pathlib import Path, PurePosixPath
 import re
 import subprocess
+import ssl
 import sys
 import tarfile
 import tempfile
+import time
+import urllib.error
+import urllib.parse
 import urllib.request
 
 REPO = "LoveMaker-art/noras-tavern"
@@ -259,11 +264,124 @@ def sha(path):
     return digest.hexdigest()
 
 
-def download(url, target):
-    request = urllib.request.Request(url, headers={"User-Agent": "tavern-updater/3"})
-    with urllib.request.urlopen(request, timeout=120) as response, Path(target).open("wb") as output:
-        while chunk := response.read(1024 * 1024):
-            output.write(chunk)
+SOURCEFORGE = 'https://downloads.sourceforge.net/project/nora-tavern/'
+TAG_PATTERN = r'v\d+\.\d+\.\d+(?:-beta\.\d+)?'
+ASSET_PATTERN = r'[A-Za-z0-9][A-Za-z0-9._-]*'
+
+
+def sourceforge_url(url):
+    value = urllib.parse.urlsplit(url)
+    return (value.hostname == 'downloads.sourceforge.net'
+            or bool(re.fullmatch(r'[a-z0-9-]+\.dl\.sourceforge\.net', value.hostname or '')))
+
+
+def validate_source(url, original):
+    value, initial = urllib.parse.urlsplit(url), urllib.parse.urlsplit(original)
+    if (value.scheme != 'https' or value.username or value.password or value.fragment
+            or (sourceforge_url(original) and (not sourceforge_url(url)
+                or value.port is not None or value.path != initial.path))):
+        raise RuntimeError('资源响应偏离受信任来源，未使用下载内容。')
+
+
+class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, request, response, code, message, headers, newurl):
+        validate_source(newurl, request.full_url)
+        return super().redirect_request(request, response, code, message, headers, newurl)
+
+
+def open_source(url, *, timeout=120):
+    validate_source(url, url)
+    request = urllib.request.Request(url, headers={'User-Agent': 'tavern-updater/4', 'Accept-Encoding': 'identity'})
+    return urllib.request.build_opener(ReleaseRedirect()).open(request, timeout=timeout)
+
+
+def can_switch_source(error):
+    if isinstance(error, urllib.error.HTTPError):
+        return error.code in (403, 404, 408, 410, 429, 500, 502, 503, 504)
+    if isinstance(error, urllib.error.URLError):
+        return not isinstance(error.reason, (ssl.SSLCertVerificationError, ssl.CertificateError))
+    return isinstance(error, (TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError))
+
+
+def select_release(tag=None):
+    if tag and not re.fullmatch(TAG_PATTERN, tag):
+        raise RuntimeError('发布版本格式无效。')
+    urls = [f'https://api.github.com/repos/{REPO}/releases/' + ('tags/'+tag if tag else 'latest'),
+            SOURCEFORGE + (tag+'/release.json' if tag else 'channels/stable.json')]
+    deadline = time.monotonic()+30
+    for index, url in enumerate(urls):
+        try:
+            with open_source(url, timeout=min(15, max(1, deadline-time.monotonic()))) as response:
+                validate_source(response.geturl(), url)
+                raw = response.read(1024*1024+1)
+            if len(raw) > 1024*1024:
+                raise RuntimeError('发布目录超过读取上限。')
+            release = json.loads(raw)
+            selected = release.get('tag_name', '')
+            if (not re.fullmatch(TAG_PATTERN, selected) or release.get('draft') is not False
+                    or (tag and selected != tag) or (not tag and release.get('prerelease') is not False)
+                    or not isinstance(release.get('assets'), list)):
+                raise RuntimeError('发布目录身份无效，未开始更新。')
+            assets = {}
+            for asset in release['assets']:
+                name = asset.get('name', '')
+                if (not re.fullmatch(ASSET_PATTERN, name) or name in assets or asset.get('state') != 'uploaded'
+                        or not isinstance(asset.get('size'), int) or isinstance(asset['size'], bool) or asset['size'] <= 0
+                        or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '')
+                        or asset.get('browser_download_url') != f'https://github.com/{REPO}/releases/download/{selected}/{name}'):
+                    raise RuntimeError('发布文件身份或校验信息无效。')
+                assets[name] = asset
+            return {**release, 'asset_index': assets}
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
+            if index or not can_switch_source(error):
+                raise
+            print('[WARN] GitHub版本查询失败，正在使用SourceForge备用源。', file=sys.stderr)
+    raise RuntimeError('无法确认发布版本。')
+
+
+def download(url, target, *, expected_sha256=None, expected_size=None):
+    prefix = f'https://github.com/{REPO}/releases/download/'
+    relative = url[len(prefix):] if url.startswith(prefix) else ''
+    if not re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, relative):
+        raise RuntimeError('发布文件地址无效，未下载。')
+    urls = [url, SOURCEFORGE+relative]
+    target = Path(target)
+    temporary = target.with_name(target.name+'.part')
+    deadline = time.monotonic()+1800
+    try:
+        for index, source in enumerate(urls):
+            source_deadline = deadline-(300 if not index else 0)
+            digest, size = hashlib.sha256(), 0
+            try:
+                with open_source(source, timeout=min(120, max(1, source_deadline-time.monotonic()))) as response, temporary.open('wb') as output:
+                    validate_source(response.geturl(), source)
+                    while chunk := response.read(1024*1024):
+                        if time.monotonic() >= source_deadline:
+                            raise TimeoutError('下载超过等待期限。')
+                        size += len(chunk)
+                        if expected_size is not None and size > expected_size:
+                            raise RuntimeError('下载文件大小校验失败。')
+                        digest.update(chunk)
+                        output.write(chunk)
+                if expected_size is not None and size != expected_size:
+                    raise ConnectionError('资源传输中断，文件未下载完整。')
+                if expected_sha256 is not None and digest.hexdigest() != expected_sha256:
+                    raise RuntimeError('下载文件哈希校验失败。')
+                os.replace(temporary, target)
+                return
+            except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
+                if index or not can_switch_source(error):
+                    raise
+                print('[WARN] GitHub资源传输失败，正在从SourceForge重新下载同一文件。', file=sys.stderr)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def download_asset(release, name, target, *, expected_sha256=None):
+    asset = release['asset_index'].get(name)
+    if not asset or (expected_sha256 and asset['digest'] != 'sha256:'+expected_sha256):
+        raise RuntimeError('发布文件缺失或校验信息不一致：'+name)
+    download(asset['browser_download_url'], target, expected_sha256=asset['digest'][7:], expected_size=asset['size'])
 
 
 def checksums(directory):
@@ -448,16 +566,15 @@ def main():
         if bundle is None:
             bundle = work / "release"
             bundle.mkdir()
-            base = (
-                f"https://github.com/{REPO}/releases/download/{args.tag}"
-                if args.tag else f"https://github.com/{REPO}/releases/latest/download"
-            )
+            release = select_release(args.tag)
             for name in METADATA:
-                download(base + "/" + name, bundle / name)
+                download_asset(release, name, bundle / name)
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256)
+            if args.target_commit and manifest.get('commit') != args.target_commit:
+                raise RuntimeError('发布清单与本次更新目标不一致，未修改安装。')
             archives, mode = required_archives(install_root, manifest)
             for name in archives:
-                download(base + "/" + name, bundle / name)
+                download_asset(release, name, bundle / name, expected_sha256=sums.get(name))
         else:
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256, allow_candidate=args.allow_candidate)
             archives, mode = required_archives(install_root, manifest)

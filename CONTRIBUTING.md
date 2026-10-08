@@ -106,6 +106,8 @@ The three-platform pipeline is `.github/workflows/build-integrated-launcher.yml`
 
 ## Release Rules
 
+Full and component publication use the same SourceForge channel lock and `tooling/release/sourceforge-credentials.mjs`. Configure repository variable `SOURCEFORGE_USERNAME` and secrets `SOURCEFORGE_SSH_PRIVATE_KEY` / `SOURCEFORGE_KNOWN_HOSTS` before publication. Register only the public key in SourceForge; private keys remain outside Git and in protected CI secrets. Verify host fingerprints against SourceForge's official documentation. Both jobs remove temporary credentials even when publication fails. A SourceForge account key inherits that account's existing permissions; a separate release technician account can limit access when available.
+
 1. Never commit credentials, runtime homes, logs, installed dependencies, or generated release assets.
 2. Keep source identity, Story Profile snapshot, delivery hashes, and platform manifests consistent.
 3. Commit/push, tag, publish, and deploy are separate explicitly authorized operations.

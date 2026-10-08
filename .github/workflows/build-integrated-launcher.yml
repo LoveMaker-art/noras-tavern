@@ -253,7 +253,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
+          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
           "$py" -B -m unittest tests.deployment.test_updater_skill_environment
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
           node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
@@ -432,30 +432,17 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
       - name: Prepare private SourceForge publishing credentials
         env:
           NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
           NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
           NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          python3 - <<'PY'
-          import json, os, pathlib, re, tempfile
-          username = os.environ.get('NORA_SF_USERNAME', '')
-          if not re.fullmatch(r'[a-z0-9][a-z0-9-]{2,29}', username):
-              raise SystemExit('Configure SOURCEFORGE_USERNAME before publishing.')
-          if not os.environ.get('NORA_SF_PRIVATE_KEY') or not os.environ.get('NORA_SF_KNOWN_HOSTS'):
-              raise SystemExit('Configure the private SourceForge upload key and verified host keys before publishing.')
-          root = pathlib.Path(tempfile.mkdtemp(prefix='nora-sourceforge-', dir=os.environ['RUNNER_TEMP']))
-          key, hosts, config = root / 'identity', root / 'known_hosts', root / 'publisher.json'
-          for file, text in [(key, os.environ['NORA_SF_PRIVATE_KEY']), (hosts, os.environ['NORA_SF_KNOWN_HOSTS'])]:
-              file.write_text(text.rstrip() + '\n'); file.chmod(0o600)
-          config.write_text(json.dumps({'project':'nora-tavern', 'username':username, 'identityFile':str(key), 'knownHostsFile':str(hosts)}))
-          config.chmod(0o600)
-          with open(os.environ['GITHUB_ENV'], 'a') as output:
-              output.write(f'NORA_SOURCEFORGE_UPLOAD_CONFIG={config}\n')
-          PY
+        run: node tooling/release/sourceforge-credentials.mjs prepare
+      - name: Verify shared publication configuration
+        run: node --test tests/sourceforge-publishing.test.mjs
       - name: Verify accepted source build before publishing without rebuilding
         if: inputs.publish_source_run != ''
         env:
@@ -491,13 +478,4 @@ jobs:
           node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full
       - name: Remove private SourceForge publishing files
         if: always()
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import os, pathlib, shutil
-          config = os.environ.get('NORA_SOURCEFORGE_UPLOAD_CONFIG')
-          if config:
-              root = pathlib.Path(config).parent
-              if root.parent == pathlib.Path(os.environ['RUNNER_TEMP']) and root.name.startswith('nora-sourceforge-'):
-                  shutil.rmtree(root)
-          PY
+        run: node tooling/release/sourceforge-credentials.mjs cleanup
