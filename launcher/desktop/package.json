@@ -49,6 +49,7 @@
       "uninstall.js",
       "runtime-worker.js",
       "diagnostics.js",
+      "native-crash.js",
       "telemetry.js",
       "operation-log-delivery.js",
       "launcher-errors.js",

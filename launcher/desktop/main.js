@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, ipcMain, shell, net, session } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, shell, net, session, crashReporter } = require('electron');
 const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -22,6 +22,17 @@ const diagnostics = createDiagnostics({
 });
 const faultPackets = createFaultPackets({clean:diagnostics.clean,roots:() => [installerRoot(),noraHome(),hermesHome(),installRoot(),os.homedir()]});
 const operationEvidence = createEvidenceStore({directory:installerDirectory,clean:diagnostics.clean});
+let nativeCrashes;
+function recordNativeFailure(type,evidence){
+  return trackLauncher('launcher','idle',async()=>{
+    const error=launcherError(`Native ${type} process failure: ${JSON.stringify(evidence)}`,{
+      code:type==='renderer'?'RENDERER_GONE':'PROCESS_EXIT',source:'launcher_process',site:'launcher.window',
+      exitCode:evidence.exitCode,context:evidence,
+    });
+    diagnostics.error('native-crash.failed',error);
+    return {diagnosticError:error};
+  }).catch(()=>diagnostics.write('native-crash.diagnostic',{code:'native_crash_record_failed'}));
+}
 const processSite = command => ['start','stop','pair'].includes(command) ? `process.${command}` : 'process.run';
 function launcherBuild() {
   // Packagers may remove package.json.build. Hash shipped code directly;
@@ -965,12 +976,28 @@ function runModelConfigHelper(payload) {
     });
     let result=null,outputFailure;
     let stderr = '', timedOut = false;
-    const timer = setTimeout(() => {timedOut = true;proc.kill('SIGTERM');}, 60000);
-    consumeLines(proc.stdout,line=>{try{result=JSON.parse(line);}catch{}},error=>{outputFailure ||= error;});
-    consumeLines(proc.stderr,line=>{stderr=(stderr+'\n'+diagnostics.clean(line)).slice(-4000);},error=>{outputFailure ||= error;});
-    proc.on('error', error => { clearTimeout(timer); reject(launcherError(error.message,{source:'launcher_process',site:'model.save'},error)); });
+    const started=Date.now();
+    diagnostics.write('model.helper-start',{site:'model.save',pid:proc.pid});
+    const outputError=error=>{outputFailure ||= error;diagnostics.error('model.output-failed',error,{site:'model.save'});};
+    const log=(line,stream)=>diagnostics.event({event:'log',line,stream,uploadScope:'maintenance',site:'model.save'});
+    const timer = setTimeout(() => {timedOut = true;diagnostics.write('model.helper-timeout',{site:'model.save',pid:proc.pid});proc.kill('SIGTERM');}, 60000);
+    consumeLines(proc.stdout,line=>{
+      // The JSON protocol can contain saved configuration and credentials.
+      // Retain execution output, never serialize this response into the log.
+      try { const value=JSON.parse(line);if(typeof value?.ok==='boolean'){result=value;return;} }
+      catch {}
+      log(line,'stdout');
+    },outputError,{preserveBlankLines:true});
+    consumeLines(proc.stderr,line=>{
+      log(line,'stderr');
+      // Only the UI error summary is bounded; the operation log keeps every line.
+      stderr=(stderr+'\n'+diagnostics.clean(line)).slice(-4000);
+    },outputError,{preserveBlankLines:true});
+    proc.on('error', error => { clearTimeout(timer);diagnostics.error('model.helper-failed',error,{site:'model.save'});
+      reject(launcherError(error.message,{source:'launcher_process',site:'model.save'},error)); });
     proc.on('close', (code,signal) => {
       clearTimeout(timer);
+      diagnostics.write('model.helper-exit',{site:'model.save',pid:proc.pid,exitCode:code,signal,durationMs:Date.now()-started});
       const secret = String(payload.key || '');
       const clean = (value) => {
         const text = String(value || '');
@@ -982,6 +1009,7 @@ function runModelConfigHelper(payload) {
         const error = launcherError(clean(result?.error || stderr || '无法保存模型配置。'),{source:'launcher_process',site:'model.save',exitCode:code,signal,
           code:timedOut ? 'TIMEOUT' : outputFailure?.code || (code===0&&!result?'INVALID_RESPONSE':undefined)},outputFailure||cause);
         error.remoteMessage = 'Model configuration helper failed; see technical exit status.';
+        diagnostics.error('model.helper-failed',error,{site:'model.save'});
         reject(error);
       }
     });
@@ -1036,8 +1064,10 @@ function createWindow() {
   });
   win.loadFile(uiPath, { query: MOCK_SCENARIO ? { mock: MOCK_SCENARIO } : { desktop: '1' } });
   win.webContents.on('render-process-gone', (_event, details) => {
-    if (!quitting && details.reason !== 'clean-exit') telemetry?.report(
-      launcherError('',{code:'RENDERER_GONE',exitCode:details.exitCode}),{source:'launcher',site:'launcher.window'});
+    if (!quitting && details.reason !== 'clean-exit') {
+      void recordNativeFailure('renderer',{reason:details.reason,exitCode:details.exitCode});
+      const timer=setTimeout(()=>nativeCrashes.collect(),1500);timer.unref();
+    }
   });
   if (ISOLATED_TEST) win.on('page-title-updated', event => event.preventDefault());
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -1184,6 +1214,13 @@ const initialized=Boolean(app&&BrowserWindow&&ipcMain&&shell&&initializeLauncher
 const primaryInstance=initialized&&app.requestSingleInstanceLock();
 if(initialized&&!primaryInstance)app.quit();
 if (primaryInstance) {
+  // Start before the first renderer or Electron-as-Node guard is created.
+  nativeCrashes=require('./native-crash').createNativeCrashDiagnostics({
+    directory:path.join(app.getPath('userData'),'diagnostics','native-crashes'),
+    diagnostic:code=>diagnostics.write('native-crash.diagnostic',{code}),
+    onEvidence:evidence=>recordNativeFailure('native',evidence),
+  });
+  nativeCrashes.start({app,crashReporter});
   try {
     const existing = fs.existsSync(path.join(installRoot(), 'apps/tavern-runtime/native-runtime.json'));
     telemetry = createTelemetry({ file: path.join(installerDirectory(), 'telemetry.json'), launcherVersion: app.getVersion(),
@@ -1204,6 +1241,16 @@ if (primaryInstance) {
       }});
     app.on('will-quit', () => telemetry?.close());
   } catch { diagnostics.write('telemetry.diagnostic', { code: 'initialization_failed' }); }
+  void nativeCrashes.collect();
+  // Ordinary child_process Node guards do not emit child-process-gone. Poll
+  // our own crash directory so their evidence also arrives without a restart.
+  const nativeCrashTimer=setInterval(()=>nativeCrashes.collect(),30000);nativeCrashTimer.unref();
+  app.on('will-quit',()=>clearInterval(nativeCrashTimer));
+  app.on('child-process-gone',(_event,details)=>{
+    if(details.reason==='clean-exit'||quitting)return;
+    void recordNativeFailure('child',{type:details.type,reason:details.reason,exitCode:details.exitCode});
+    const timer=setTimeout(()=>nativeCrashes.collect(),1500);timer.unref();
+  });
   const handle = (channel, fn) => ipcMain.handle(channel, async (event, ...args) => {
     try {
     const expected = require('node:url').pathToFileURL(path.join(installerRoot(), 'launcher-conversation-prototype.html')).href;

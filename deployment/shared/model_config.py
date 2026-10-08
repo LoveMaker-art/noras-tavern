@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 import os
 from pathlib import Path
 import sys
+import traceback
 from urllib.parse import urlparse
 
 
@@ -88,6 +89,10 @@ def fail(message: str, secret: str = "") -> None:
     clean = str(message).replace(secret, "***") if secret else str(message)
     result={"ok":False,"error":clean[:300]}
     if isinstance(message,BaseException):
+        # Keep the real exception chain on stderr; stdout remains the private
+        # JSON response protocol. No locals or configuration body are emitted.
+        trace=''.join(traceback.format_exception(type(message),message,message.__traceback__))
+        sys.stderr.write(trace.replace(secret,'***') if secret else trace)
         try:
             from .error_diagnostics import exception_diagnostic
         except ImportError:
@@ -99,6 +104,8 @@ def fail(message: str, secret: str = "") -> None:
             if isinstance(value,dict):return {key:redact(item) for key,item in value.items()}
             return value
         result['diagnostic']=redact(detail)
+    else:
+        sys.stderr.write(clean+'\n')
     print(json.dumps(result, ensure_ascii=False))
     raise SystemExit(1)
 

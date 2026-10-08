@@ -1,7 +1,7 @@
 import io
 import json
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stdout, redirect_stderr
 from ops.installer import model_config
 
 
@@ -14,11 +14,16 @@ class ModelDiagnosticTests(unittest.TestCase):
             except PermissionError as cause:
                 raise RuntimeError('could not save '+secret) from cause
         except RuntimeError as error:
-            output=io.StringIO()
-            with redirect_stdout(output),self.assertRaises(SystemExit):
+            output=io.StringIO(); stderr=io.StringIO()
+            with redirect_stdout(output),redirect_stderr(stderr),self.assertRaises(SystemExit):
                 model_config.fail(error,secret)
         encoded=output.getvalue();self.assertNotIn(secret,encoded)
         result=json.loads(encoded)
         self.assertEqual(result['diagnostic']['cause']['code'],'EACCES')
         self.assertNotIn('config.yaml',result)
         self.assertFalse(result['ok'])
+        self.assertIn('Traceback (most recent call last):',stderr.getvalue())
+        self.assertIn('test_program_failure_preserves',stderr.getvalue())
+        self.assertIn('PermissionError',stderr.getvalue())
+        self.assertIn('RuntimeError',stderr.getvalue())
+        self.assertNotIn(secret,stderr.getvalue())

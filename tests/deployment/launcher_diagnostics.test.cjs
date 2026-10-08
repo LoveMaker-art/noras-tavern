@@ -138,6 +138,65 @@ function mainCallback(context,name) {
   return vm.runInContext(`(${source.slice(callback.start,callback.end)})`,context);
 }
 
+test('model helper keeps complete execution output through restart and failure-log delivery without storing its configuration protocol', async t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-full-output-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'hermes-agent'));
+  const secret='private-model-key-canary',privateConfig='PRIVATE_MODEL_CONFIGURATION';
+  const fixture=path.join(root,'helper.cjs');
+  fs.writeFileSync(fixture,`process.stdin.resume();process.stdin.on('end',()=>{
+    console.log('helper starting');
+    process.stderr.write('Traceback (most recent call last):\\n\\n  File "model_config.py", line 42, in save\\n');
+    for(let i=0;i<180;i++)process.stderr.write('output '+i+' '+ 'x'.repeat(90)+'\\n');
+    process.stderr.write('PermissionError: denied ${secret}\\n');
+    console.log(JSON.stringify({ok:false,error:'write denied',config:'${privateConfig}',key:'${secret}'}));
+    process.exitCode=1;
+  });`);
+  const context=mainContext(root,{$processOutputFixture:true});
+  context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[fixture],{stdio:'pipe'});
+  vm.runInContext('findPython=()=>({command:"fixture",args:[]}); hermesHome=()=>root; spawnMaintenance=spawnFixture;',context);
+  const id=vm.runInContext('diagnostics.operationId',context);
+  await assert.rejects(vm.runInContext('runModelConfigHelper',context)({key:secret,action:'save'}),/write denied/);
+  const file=vm.runInContext('diagnostics.lastFile',context);
+  const read=createDiagnostics({primary:()=>file}).readOperation;
+  const logs=read(id).records.map(r=>r.text).join('\n');
+  assert.match(logs,/helper starting/);assert.match(logs,/Traceback \(most recent call last\):\n\n  File/);
+  assert.match(logs,/output 0 /);assert.match(logs,/output 179 /);assert.match(logs,/PermissionError/);
+  assert.doesNotMatch(fs.readFileSync(file,'utf8'),new RegExp(secret+'|'+privateConfig));
+  const {createOperationLogDelivery}=require('../installer/desktop/operation-log-delivery');
+  const chunks=[];
+  const transport=createOperationLogDelivery({file:path.join(root,'delivery.json'),read,project:text=>require('../installer/desktop/fault-packet').createFaultPackets().text(text,256*1024),
+    consent:()=>({enabled:true,id:'22222222-2222-4222-8222-222222222222',installation:'33333333-3333-4333-8333-333333333333'}),
+    fetcher:async(_url,options)=>{const chunk=JSON.parse(options.body);chunks.push(chunk);return {ok:true,status:200,json:async()=>({accepted:true,index:chunk.index,chunk_id:chunk.chunk_id})};}});
+  t.after(()=>transport.close());transport.begin(id);transport.finish(id,'failed');
+  for(let i=0;i<10&&!transport.summary(id).complete;i++)await transport.flush();
+  assert.equal(transport.summary(id).complete,true);
+  const remote=chunks.map(chunk=>chunk.text).join('');
+  assert.match(remote,/output 0 /);assert.match(remote,/output 179 /);assert.match(remote,/Traceback/);
+  assert.doesNotMatch(remote,new RegExp(secret+'|'+privateConfig));
+});
+
+test('model helper logs success, invalid protocol and timeout separately without exposing successful configuration',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-exit-cases-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(root,'hermes-agent'));
+  for(const mode of ['success','invalid','timeout']){
+    const script=path.join(root,mode+'.cjs');
+    fs.writeFileSync(script,mode==='success'?"console.log(JSON.stringify({ok:true,config:'PRIVATE_SAVED_CONFIG'}));":
+      mode==='invalid'?"console.log('invalid helper protocol');":"process.stderr.write('waiting for helper\\n');setInterval(()=>{},1000);");
+    const context=mainContext(root,{$processOutputFixture:true});
+    context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
+    vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
+    if(mode==='timeout')context.setTimeout=fn=>setTimeout(fn,100);
+    const helper=vm.runInContext('runModelConfigHelper',context);
+    if(mode==='success')assert.equal((await helper({})).config,'PRIVATE_SAVED_CONFIG');
+    else await assert.rejects(helper({}),error=>error.code===(mode==='timeout'?'TIMEOUT':'INVALID_RESPONSE'));
+    const records=vm.runInContext('diagnostics.readOperation(diagnostics.operationId).records',context),text=records.map(r=>r.text).join('\n');
+    assert.match(text,/model.helper-exit/);assert.doesNotMatch(text,/PRIVATE_SAVED_CONFIG/);
+    if(mode==='timeout'){assert.match(text,/model.helper-timeout/);assert.match(text,/SIGTERM/);}
+    else assert.match(text,/exitCode=0/);
+  }
+});
+
 function recoveryControllerFixture(context,pending) {
   const operationId='11111111-1111-4111-8111-111111111111';
   pending.operationId=operationId;
