@@ -181,7 +181,7 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                     return subprocess.run([node, str(actor), str(entry), str(root), *command[:1], *command[2:]],
                                           env=owned_env, text=True, capture_output=True, timeout=30)
                 result = owned_client()
-                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertTrue(json.loads(result.stdout)['ok'], result.stdout)
                 self.assertEqual(state['nickname'], '诺拉')
                 self.assertEqual(state['avatar_url'], profile.AVATAR_URL)

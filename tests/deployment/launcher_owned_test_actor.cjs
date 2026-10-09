@@ -8,7 +8,7 @@ const [entry,root,python,script,...args]=process.argv.slice(2);
   if(![entry,root,python,script].every(value=>value&&path.isAbsolute(value)))throw new Error('Pass absolute fixture actor paths');
   const lease=await require(entry).acquire({directory:path.join(root,'installer'),operationId:randomUUID(),ownerEpoch:1});
   try{
-    const child=lease.spawn(python,['-B',script,...args],{kind:'python-maintenance',venvHome:process.env.NORA_TEST_VENV_HOME,env:process.env});
+    const child=lease.spawn(python,['-B',script,...args],{kind:'python-maintenance',managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,venvHome:process.env.NORA_TEST_VENV_HOME,env:process.env});
     process.stdin.pipe(child.stdin);child.stdout.pipe(process.stdout);child.stderr.pipe(process.stderr);
     const [code]=await once(child,'close');
     const jobs=(await lease.snapshot()).jobs;
