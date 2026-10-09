@@ -401,16 +401,23 @@ test('later bounded metadata updates preserve the entire frozen primary projecti
 test('filesystem save errors retain the original failure and successful files use private permissions', t => {
   const f = fixture(t);
   fs.writeFileSync(f.directory, 'fixture blocked path');
+  let nativeCode;
+  assert.throws(() => fs.mkdirSync(path.join(f.directory, 'operations'), { recursive: true }), error => {
+    nativeCode = error.code; return typeof nativeCode === 'string';
+  });
   const operation = f.store.begin({ operationId: OPERATION_ID, action: 'install' });
   const saved = operation.freeze({ error: Object.assign(new Error('original program error'), { code: 'EACCES' }) });
   assert.equal(saved.primary.message, 'original program error');
-  assert.ok(saved.missingReasons.includes('save_failed:ENOTDIR'));
+  assert.ok(saved.missingReasons.includes(`save_failed:${nativeCode}`));
   fs.rmSync(f.directory);
   const retry = f.store.begin({ operationId: OPERATION_ID, action: 'install' });
   retry.freeze({ error: new Error('safe retry failure') });
-  assert.equal(fs.statSync(retry.directory).mode & 0o777, 0o700);
+  assert.ok(fs.statSync(retry.directory).isDirectory());
+  if (process.platform !== 'win32') assert.equal(fs.statSync(retry.directory).mode & 0o777, 0o700);
   for (const name of ['metadata.json', 'events.jsonl']) {
-    assert.equal(fs.statSync(path.join(retry.directory, name)).mode & 0o777, 0o600);
+    const stat = fs.statSync(path.join(retry.directory, name));
+    assert.ok(stat.isFile());
+    if (process.platform !== 'win32') assert.equal(stat.mode & 0o777, 0o600);
   }
   const snapshot = retry.snapshot();
   snapshot.primary.message = 'caller mutation';

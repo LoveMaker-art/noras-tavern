@@ -50,6 +50,9 @@ test('SourceForge upload pins SSH identity and host trust, preserves immutable o
   const identity=path.join(root,"key with 'quote'"),hosts=path.join(root,'known hosts'),config=path.join(root,'publisher.json');
   fs.writeFileSync(identity,'test fixture',{mode:0o600});fs.writeFileSync(hosts,'test fixture');
   fs.writeFileSync(config,JSON.stringify({project:'nora-tavern',username:'sorrymakerx',identityFile:identity,knownHostsFile:hosts}),{mode:0o600});
+  if(process.platform==='win32'){
+    assert.throws(()=>sourceforgeUploader(config,root),/private/);return;
+  }
   const calls=[],upload=sourceforgeUploader(config,root,{execute:(command,args)=>{
     calls.push({command,args});assert.equal(command,'rsync');
     assert.match(args[args.indexOf('-e')+1],/StrictHostKeyChecking=yes/);

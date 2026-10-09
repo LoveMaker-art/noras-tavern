@@ -51,6 +51,7 @@ function firstLine(proc) {
     proc.stderr.on('data', value => errors += value);
     proc.stdout.on('data', value => { text += value; if (text.includes('\n')) resolve(JSON.parse(text.split('\n')[0])); });
     proc.once('exit', code => { if (!text.includes('\n')) reject(new Error(`Owner exited ${code}: ${errors}`)); });
+    proc.once('error', reject);
   });
 }
 
@@ -355,7 +356,7 @@ print(json.dumps({'pid':identity['pid'],'creationTime':identity['creationTime'],
     assert.equal(fs.realpathSync(output.executable),fs.realpathSync(process.env.NORA_TEST_PYTHON));
     for(const key of ['psutil','requests','hermes','ssl'])assert.ok(output[key]);
   } finally {
-    if(child && child.exitCode===null && child.signalCode===null){const ended=once(child,'close');child.kill();await ended;}
+    if(Number.isInteger(child?.pid) && child.exitCode===null && child.signalCode===null){const ended=once(child,'close');child.kill();await ended;}
     await lease.release();fs.rmSync(directory,{recursive:true,force:true});
   }
 });
@@ -437,7 +438,7 @@ test('a guard-owned nested Python writer survives its parent death and blocks ta
     assert.ok(prior.jobs.find(job=>job.jobId===ready.jobId).closedAt);
     assert.ok(prior.jobs.find(job=>job.jobId===ready.jobId).parentJobId);
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
+    if(Number.isInteger(parent?.pid) && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
     await lease.release();if(next)await next.release();fs.rmSync(directory,{recursive:true,force:true});
   }
 });
@@ -457,7 +458,7 @@ test('nested cancellation reports real close and saved child facts before releas
     assert.equal(fs.existsSync(output)?fs.statSync(output).size:0,before);
     const state=await lease.snapshot();assert.ok(state.jobs.find(job=>job.jobId===result.jobId).closedAt);
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
+    if(Number.isInteger(parent?.pid) && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
     await lease.release();fs.rmSync(directory,{recursive:true,force:true});
   }
 });

@@ -5,6 +5,7 @@ const path=require('node:path');
 const os=require('node:os');
 const {spawnSync}=require('node:child_process');
 const capability=require('../installer/desktop/launcher-capability');
+const python=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON||(process.platform==='win32'?'python':'python3');
 
 function fixture(t){
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-cli-capability-')));
@@ -45,7 +46,7 @@ test('physical maintenance delegate is sealed and a changed helper invalidates t
   await assert.rejects(capability.validate({receiptPath:capability.receiptPath(f.options.noraHome),noraHome:f.options.noraHome}),{code:'OPERATION_CAPABILITY_INVALID'});
   const verifier=path.resolve(__dirname,'../installer/operation_cli.py');
   const source='import importlib.util,sys; s=importlib.util.spec_from_file_location("receipt",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_receipt(sys.argv[2])';
-  const result=spawnSync(process.env.NORA_PYTHON||'python3',['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
+  const result=spawnSync(python,['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
   assert.notEqual(result.status,0);assert.match(result.stderr,/OperationCliError/);
 });
 
@@ -57,7 +58,7 @@ test('changed shared budgets and replacement helpers invalidate the same receipt
     await assert.rejects(capability.validate({receiptPath:capability.receiptPath(f.options.noraHome),noraHome:f.options.noraHome}),{code:'OPERATION_CAPABILITY_INVALID'});
     const verifier=path.resolve(__dirname,'../installer/operation_cli.py');
     const source='import importlib.util,sys; s=importlib.util.spec_from_file_location("receipt",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_receipt(sys.argv[2])';
-    const result=spawnSync(process.env.NORA_PYTHON||'python3',['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
+    const result=spawnSync(python,['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
     assert.notEqual(result.status,0);assert.match(result.stderr,/OperationCliError/);
   }
 });
@@ -90,7 +91,7 @@ test('a JS registered receipt passes the real Python verifier and tampering fail
   const f=fixture(t),receipt=await capability.register(f.options);
   const verifier=path.resolve(__dirname,'../installer/operation_cli.py');
   const source='import importlib.util,sys,json; s=importlib.util.spec_from_file_location("receipt",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); r=m.validate_receipt(sys.argv[2]); print(json.dumps({"schema":r["schema"],"sourceHash":r["sourceHash"]}))';
-  const run=()=>spawnSync(process.env.NORA_PYTHON||'python3',['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
+  const run=()=>spawnSync(python,['-B','-c',source,verifier,receipt.noraHome],{encoding:'utf8'});
   const accepted=run();assert.equal(accepted.status,0,accepted.stderr);assert.equal(JSON.parse(accepted.stdout).sourceHash,receipt.sourceHash);
   fs.appendFileSync(receipt.native.path,'tampered');
   const refused=run();assert.notEqual(refused.status,0);assert.match(refused.stderr,/OperationCliError/);

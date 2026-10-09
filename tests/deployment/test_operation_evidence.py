@@ -96,8 +96,11 @@ class OperationEvidenceTests(unittest.TestCase):
             self.assertEqual(saved['primary']['message'], 'original startup failure')
             self.assertEqual(saved['primary']['cause']['code'], 'EACCES')
             self.assertEqual(Path(first['path']).parent, installer / 'operations' / OPERATION_ID / 'evidence')
-            self.assertEqual(Path(first['path']).stat().st_mode & 0o777, 0o600)
-            self.assertEqual(Path(first['path']).parent.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(Path(first['path']).is_file())
+            self.assertTrue(Path(first['path']).parent.is_dir())
+            if os.name != 'nt':
+                self.assertEqual(Path(first['path']).stat().st_mode & 0o777, 0o600)
+                self.assertEqual(Path(first['path']).parent.stat().st_mode & 0o777, 0o700)
 
     def test_actual_save_failure_preserves_primary_and_projects_missing_to_the_parent(self):
         from ops.installer import operation_evidence, error_diagnostics
@@ -105,14 +108,17 @@ class OperationEvidenceTests(unittest.TestCase):
             home = Path(temporary)
             blocked = home / 'blocked'
             blocked.write_text('fixture directory unavailable')
+            with self.assertRaises(OSError) as unavailable:
+                (blocked / 'operations' / OPERATION_ID / 'evidence').mkdir(parents=True, exist_ok=True)
+            native_code = errno.errorcode[unavailable.exception.errno]
             original = RuntimeError('original startup failed')
             with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(blocked), 'NORA_OPERATION_ID': OPERATION_ID}):
                 saved = operation_evidence.freeze(original, nora_home=home)
             self.assertEqual(str(original), 'original startup failed')
-            self.assertIn('save_failed:ENOTDIR', saved['missingReasons'])
+            self.assertIn('save_failed:' + native_code, saved['missingReasons'])
             detail = error_diagnostics.exception_diagnostic(original)
-            self.assertIn('save_failed:ENOTDIR', detail['missingReasons'])
-            self.assertEqual(detail['secondaryErrors'][0]['error']['code'], 'ENOTDIR')
+            self.assertIn('save_failed:' + native_code, detail['missingReasons'])
+            self.assertEqual(detail['secondaryErrors'][0]['error']['code'], native_code)
             self.assertIn('operation_evidence.py', detail['secondaryErrors'][0]['error']['stack'])
 
     def test_saved_program_evidence_excludes_sensitive_fields_and_subprocess_output(self):
