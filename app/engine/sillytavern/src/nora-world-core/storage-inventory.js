@@ -9,6 +9,7 @@ import sanitize from 'sanitize-filename';
 
 const unknown = reason => ({ confidence: 'unknown', reason });
 const failure = code => Object.assign(new Error(code), { code });
+const portablePath = relative => relative.split(path.sep).join('/');
 const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
 const LIMITS = Object.freeze({ manifestBytes: 16 * 1024 * 1024, snapshotBytes: 256 * 1024 * 1024,
     scanBytes: 512 * 1024 * 1024, lineBytes: 4 * 1024 * 1024, directoryEntries: 10000 });
@@ -245,7 +246,7 @@ export async function inspectChatBackups(directories) {
 
 function storageCategory(relative, references) {
     if (references.length) return { category: 'world-resource', reason: 'manifest-reference-preserved' };
-    const name = relative.split(path.sep).join('/');
+    const name = portablePath(relative);
     if (name.startsWith('nora-world-core/library-cards/sources/')) return { category: 'source-archive', reason: 'source-archive-preserved' };
     if (/^nora-world-core\/(operations|mutations)\//.test(name)) return { category: 'operation-record', reason: 'retry-record-preserved' };
     if (/^nora-world-core\/(staging|quarantine)\//.test(name)) return { category: 'recovery-material', reason: 'recovery-material-preserved' };
@@ -342,6 +343,10 @@ export async function inspectUserStorage(directories) {
         const category = summary.categories[file.category] ||= { files: 0, bytes: 0 };
         category.files++; category.bytes += file.bytes || 0;
     }
-    return { version: 1, readOnly: true, complete: !warnings.length, scope, files: files.sort((a, b) => a.path.localeCompare(b.path)),
-        warnings, summary, metrics: { ...metrics, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
+    // Physical scans and change detection use native paths. The public inventory
+    // uses the same relative path format on every platform, including Windows.
+    return { version: 1, readOnly: true, complete: !warnings.length, scope: scope.map(portablePath),
+        files: files.map(file => ({ ...file, path: portablePath(file.path) })).sort((a, b) => a.path.localeCompare(b.path)),
+        warnings: warnings.map(warning => ({ ...warning, path: portablePath(warning.path) })),
+        summary, metrics: { ...metrics, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
 }

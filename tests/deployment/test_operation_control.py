@@ -351,7 +351,10 @@ assert.ok(packet.errors.some(error=>error.frames.some(line=>line.includes(filena
 if(mode==='diagnostic-async'){
 assert.ok(frozen.missingReasons.includes('non_project_frames_omitted'),JSON.stringify(frozen));
 assert.ok(packet.errors.some(error=>error.code==='ENOENT'&&error.kind==='Error'),JSON.stringify(packet));}
-assert.equal(packet.output.length,0);assert.ok(!JSON.stringify(packet).includes(seed));}
+// Raw child output stays disabled; reviewed omission markers remain visible.
+assert.ok(packet.output.every(line=>/^\[WARNING\] evidence omitted: [a-z_]+$/.test(line)),JSON.stringify(packet));
+assert.ok(packet.output.includes('[WARNING] evidence omitted: non_project_frames_omitted'));
+assert.ok(!JSON.stringify(packet).includes(seed));}
 console.log(JSON.stringify({code,output,errors,jobs,frozen,packet}));process.exitCode=code===0?0:1;
 }finally{await lease.release();}})().catch(error=>{console.error(error);process.exitCode=1;});'''
             result = subprocess.run([str(node), '-e', driver,

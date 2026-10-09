@@ -265,7 +265,7 @@ test('desktop handoff and recovery keep the desktop profile in real independent 
   {timeout:30000,skip:!process.env.NORA_TEST_PYTHON}, async t => {
   const runtime=JSON.parse(execFileSync(python(),['-B','-c',
     'import sys,json;print(json.dumps({"base":sys.base_prefix,"prefix":sys.prefix}))'],{encoding:'utf8'}));
-  const managedPythonRoot=fs.realpathSync(runtime.base),venvHome=fs.realpathSync(runtime.prefix);
+  const managedPythonRoot=fs.realpathSync.native(runtime.base),venvHome=fs.realpathSync.native(runtime.prefix);
   const managedHome=path.dirname(managedPythonRoot);
   const normalized=value=>process.platform==='win32'?path.resolve(value).toLowerCase():path.resolve(value);
   if(normalized(managedPythonRoot)!==normalized(path.join(managedHome,'python'))
@@ -305,7 +305,7 @@ else:
     for(const name of ['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TMPDIR','TEMP','TMP'])
       assert.equal(facts.environment[name],desktopEnv[name],`${method} changed ${name} to the maintenance profile`);
     assert.ok(facts.pid>0&&facts.creationTime>0);
-    assert.equal(normalized(facts.prefix),normalized(venvHome));
+    assert.equal(normalized(fs.realpathSync.native(facts.prefix)),normalized(venvHome));
     await new Promise(resolve=>setTimeout(resolve,350));
   }
 });

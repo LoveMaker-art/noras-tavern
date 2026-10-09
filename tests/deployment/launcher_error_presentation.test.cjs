@@ -167,9 +167,10 @@ test('blocked release guidance retains the required version and suppresses Engli
 
 test('returned release failures retain the original local diagnosis before UI formatting', async () => {
   const source = fs.readFileSync(path.join(__dirname,'../installer/desktop/main.js'),'utf8');
-  let callback;
+  let callback; const definitions = new Map();
   function visit(node) {
     if (!node || typeof node !== 'object') return;
+    if (node.type === 'FunctionDeclaration') definitions.set(node.id.name,node);
     if (node.type === 'CallExpression' && node.callee.name === 'handle' && node.arguments[0]?.value === 'nora:check-update') callback = node.arguments[1];
     for (const value of Object.values(node)) if (Array.isArray(value)) value.forEach(visit); else if (value && typeof value === 'object') visit(value);
   }
@@ -179,8 +180,14 @@ test('returned release failures retain the original local diagnosis before UI fo
       new Error('请先升级启动器到 1.2.0 或更新版本。'))};
   const original = result.diagnosticError;
   const context = vm.createContext({activeRun:false,modelBusy:false,trackLauncher:async(_action,_stage,fn)=>fn(),
-    releases:{check:async()=>result},updateFetch:null,installRoot:()=>'/fixture',app:{getVersion:()=> '1.0.0'},
+    path,describeError,releaseCheckRequest:null,releaseMetadataState:null,noraHome:()=>'/fixture',
+    releases:{check:async()=>result,createMetadataCache:require('../installer/desktop/releases').createMetadataCache},
+    updateFetch:null,installRoot:()=>'/fixture',app:{getVersion:()=> '1.0.0'},
     CHANNEL:'stable',formatUserError,diagnostics:{error:(event,error)=>reports.push({event,error})}});
+  for (const name of ['releaseMetadataCache','checkRelease']) {
+    const node = definitions.get(name); assert.ok(node);
+    vm.runInContext(source.slice(node.start,node.end),context);
+  }
   const check = vm.runInContext(`(${source.slice(callback.start,callback.end)})`,context);
   const returned = await check();
   assert.equal(reports.length,0,'the tracked check must not append its error to an unrelated operation');

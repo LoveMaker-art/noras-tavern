@@ -212,7 +212,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           test -f "$py"
-          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py"
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
