@@ -206,13 +206,23 @@ jobs:
           node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
 
       - name: Test release channels and update rollback
+        id: release_contracts
+        continue-on-error: true
         run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
 
       - name: Test installation diagnostics on the target platform
+        id: installation_contracts
+        continue-on-error: true
         run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
 
       - name: Test diagnostic choices, error presentation and download waiting feedback
+        id: presentation_contracts
+        continue-on-error: true
         run: node tooling/run.mjs node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_telemetry_worker.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
+
+      - name: Require all platform contract checks before native acceptance
+        if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success' || steps.presentation_contracts.outcome != 'success') }}
+        run: node -e "console.error('Platform contract checks failed; native acceptance and packaging are blocked.'); process.exit(1)"
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10

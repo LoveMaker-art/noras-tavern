@@ -375,7 +375,7 @@ test('successful Python configuration save followed by failed JS checkpoint pres
     return true;
   });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home,'config.yaml'),'utf8')),{model:'fixture-new-model',provider:'openai-api'});
-  assert.equal(fs.readFileSync(path.join(home,'.env'),'utf8'),'OPENAI_API_KEY=fixture-key\n');
+  assert.deepEqual(fs.readFileSync(path.join(home,'.env'),'utf8').split(/\r?\n/),['OPENAI_API_KEY=fixture-key','']);
   assert.equal(vm.runInContext('modelBusy',context),false);
 });
 
