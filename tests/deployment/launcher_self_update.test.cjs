@@ -322,25 +322,38 @@ test('unfinished launcher recovery blocks a second handoff before any new job is
 });
 
 test('native recovery helper errors retain ENOENT cause and local traceback without touching the app', async t => {
-  const { root } = fixture(t);
-  const home = path.join(root, 'data'), application = path.join(root, 'application');
-  const job = path.join(home, 'installer', 'launcher-update', 'job-missing-snapshot');
-  const relative = process.platform === 'darwin' ? 'Contents/MacOS/launcher' : 'launcher.exe';
-  const executable = path.join(application, relative);
-  fs.mkdirSync(path.dirname(executable), { recursive: true });
-  fs.mkdirSync(job, { recursive: true });
-  fs.writeFileSync(executable, 'old');
-  const helper = path.join(__dirname, '../installer/desktop/replace-launcher.py');
-  fs.copyFileSync(helper, path.join(job, 'replace.py'));
-  fs.writeFileSync(path.join(job, 'plan.json'), JSON.stringify(planFor(home,executable)));
-  await assert.rejects(update.finalize({ home, executable, job, helper,
-    python: process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
-    version: '1.1.0', target: '2.4.2', systemReady: true, updateVerified: true }),
-  error => error.code === 'ENOENT' && error.cause?.code === 'ENOENT'
-    && error.cause.cause === undefined && /保留日志和备份/.test(error.message));
-  assert.match(fs.readFileSync(path.join(job, 'replace.log'), 'utf8'), /Traceback/);
-  assert.equal(fs.readFileSync(executable, 'utf8'), 'old');
-  assert.equal(fs.existsSync(path.join(job, 'recovery.json')), false);
+  for (const spelling of ['native', 'alias']) {
+    await t.test(spelling, async t => {
+      const fixtureRoot = fixture(t).root;
+      let root = fixtureRoot;
+      if (spelling === 'alias') {
+        const directory = path.join(fixtureRoot, 'canonical-directory');
+        root = path.join(fixtureRoot, 'directory-alias');
+        fs.mkdirSync(directory);
+        fs.symlinkSync(directory, root, process.platform === 'win32' ? 'junction' : 'dir');
+      }
+      // The native helper validates canonical paths before it reads snapshot.json.
+      // Normalize this error fixture with the same Python, including Windows temp aliases.
+      root = execFileSync(python(), ['-B', '-c', 'from pathlib import Path;import sys;print(Path(sys.argv[1]).resolve())', root], {encoding:'utf8'}).trim();
+      const home = path.join(root, 'data'), application = path.join(root, 'application');
+      const job = path.join(home, 'installer', 'launcher-update', 'job-missing-snapshot');
+      const relative = process.platform === 'darwin' ? 'Contents/MacOS/launcher' : 'launcher.exe';
+      const executable = path.join(application, relative);
+      fs.mkdirSync(path.dirname(executable), { recursive: true });
+      fs.mkdirSync(job, { recursive: true });
+      fs.writeFileSync(executable, 'old');
+      const helper = path.join(__dirname, '../installer/desktop/replace-launcher.py');
+      fs.copyFileSync(helper, path.join(job, 'replace.py'));
+      fs.writeFileSync(path.join(job, 'plan.json'), JSON.stringify(planFor(home,executable)));
+      await assert.rejects(update.finalize({ home, executable, job, helper, python: python(),
+        version: '1.1.0', target: '2.4.2', systemReady: true, updateVerified: true }),
+      error => error.code === 'ENOENT' && error.cause?.code === 'ENOENT'
+        && error.cause.cause === undefined && /保留日志和备份/.test(error.message));
+      assert.match(fs.readFileSync(path.join(job, 'replace.log'), 'utf8'), /Traceback/);
+      assert.equal(fs.readFileSync(executable, 'utf8'), 'old');
+      assert.equal(fs.existsSync(path.join(job, 'recovery.json')), false);
+    });
+  }
 });
 
 test('a terminal assessment is not mistaken for successful rollback', async t => {

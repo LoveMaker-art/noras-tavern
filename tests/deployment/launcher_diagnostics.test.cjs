@@ -181,8 +181,9 @@ test('model helper logs success, invalid protocol and timeout separately without
   fs.mkdirSync(path.join(root,'hermes-agent'));
   for(const mode of ['success','invalid','timeout']){
     const script=path.join(root,mode+'.cjs');
-    fs.writeFileSync(script,mode==='success'?"console.log(JSON.stringify({ok:true,config:'PRIVATE_SAVED_CONFIG'}));":
-      mode==='invalid'?"console.log('invalid helper protocol');":"process.stderr.write('waiting for helper\\n');setInterval(()=>{},1000);");
+    const body=mode==='success'?"console.log(JSON.stringify({ok:true,config:'PRIVATE_SAVED_CONFIG'}));":
+      mode==='invalid'?"console.log('invalid helper protocol');":"process.stderr.write('waiting for helper\\n');setInterval(()=>{},1000);";
+    fs.writeFileSync(script,"process.stdin.resume();process.stdin.on('end',()=>{"+body+"});");
     const context=mainContext(root,{$processOutputFixture:true});
     context.spawnFixture=()=>require('node:child_process').spawn(process.execPath,[script],{stdio:'pipe'});
     vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
@@ -195,6 +196,76 @@ test('model helper logs success, invalid protocol and timeout separately without
     if(mode==='timeout'){assert.match(text,/model.helper-timeout/);assert.match(text,/SIGTERM/);}
     else assert.match(text,/exitCode=0/);
   }
+});
+
+test('model helper reports a closed input pipe without an uncaught EPIPE and retains the child failure',async t=>{
+  for(const mode of ['failure','failure-output','success','timeout'])await t.test(mode,{timeout:5000},async t=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-input-closed-'));
+    t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    fs.mkdirSync(path.join(root,'hermes-agent'));
+    const context=mainContext(root,{$processOutputFixture:true});
+    const failed=mode==='failure'||mode==='failure-output';
+    const protocol=mode==='success'?{ok:true,config:'PRIVATE_CONFIG_RESPONSE'}:{ok:false,error:'helper startup denied',config:'PRIVATE_CONFIG_RESPONSE',
+      diagnostic:{name:'PermissionError',code:'EACCES',message:'helper access denied private-input-key',stack:'  File "model_config.py", line 42, in save'}};
+    const body=mode==='timeout'?"process.stderr.write('waiting for helper\\n');process.send('output-ready');setInterval(()=>{},1000);":`
+        ${failed?"process.stderr.write('PermissionError: helper startup denied\\n');":""}
+        ${mode==='failure-output'?"process.stdout.write('x'.repeat(256*1024+1)+'\\n');":""}
+        process.stdout.write(JSON.stringify(${JSON.stringify(protocol)})+'\\n');
+        process.exitCode=${mode==='success'?0:17};
+        process.disconnect();`;
+    const child=require('node:child_process').spawn(process.execPath,['-e',`
+      require('node:fs').closeSync(0);
+      // Keep the standard descriptor occupied while IPC initializes its handles.
+      // The original parent input pipe remains closed and must report EPIPE.
+      require('node:fs').openSync(require('node:os').devNull,'r');
+      process.once('message',()=>{${body}});
+      process.send('input-closed');
+    `],{stdio:['pipe','pipe','pipe','ipc']});
+    t.after(()=>{if(child.exitCode===null)child.kill('SIGTERM');});
+    await new Promise((resolve,reject)=>{
+      const closed=(code,signal)=>reject(new Error(`Input fixture exited before readiness: ${code}/${signal}`));
+      child.once('error',reject);child.once('close',closed);
+      child.once('message',message=>{child.off('error',reject);child.off('close',closed);
+        if(message!=='input-closed')reject(new Error('Input fixture did not close stdin'));else resolve();});
+    });
+    context.spawnFixture=()=>child;
+    vm.runInContext('findPython=()=>({command:"fixture",args:[]});hermesHome=()=>root;spawnMaintenance=spawnFixture;',context);
+    let expire;
+    if(mode==='timeout')context.setTimeout=fn=>{expire=fn;};
+    const pending=vm.runInContext('runModelConfigHelper',context)({key:'private-input-key',action:'save'});
+    const inputListeners=child.stdin.listenerCount('error');
+    const assertion=assert.rejects(pending,error=>{
+      assert.equal(error.code,mode==='timeout'?'TIMEOUT':'EPIPE');
+      assert.equal(error.cause?.code,'EPIPE');
+      if(mode==='timeout')assert.equal(error.signal,'SIGTERM');
+      else{
+        assert.equal(error.exitCode,mode==='success'?0:17);
+        assert.match(error.message,mode==='success'?/无法保存模型配置/:/helper startup denied/);
+        if(failed){
+          const secondary=error.secondaryErrors?.find(item=>item.operation==='model-helper');
+          assert.equal(secondary?.error?.code,'EACCES');
+          assert.equal(secondary.error.name,'PermissionError');
+          assert.match(secondary.error.stack,/model_config\.py.*line 42, in save/);
+        }
+        if(mode==='failure-output')assert.equal(error.secondaryErrors?.find(item=>item.operation==='model-output')?.error?.code,'PROCESS_OUTPUT_TOO_LARGE');
+      }
+      return true;
+    });
+    // Observe only after the actual helper registers its own error handler.
+    // The child cannot respond or exit until this real input write has failed.
+    const inputError=await new Promise(resolve=>child.stdin.once('error',resolve));
+    assert.ok(inputListeners>0,'the model helper owns stdin error handling');
+    assert.equal(inputError.code,'EPIPE');
+    if(mode==='timeout')child.once('message',message=>{assert.equal(message,'output-ready');expire();});
+    child.send('continue');
+    await assertion;
+    const records=vm.runInContext('diagnostics.readOperation(diagnostics.operationId).records',context),text=records.map(r=>r.text).join('\n');
+    assert.match(text,/model.input-failed/);assert.match(text,/EPIPE/);assert.match(text,/model.helper-exit/);
+    if(mode==='timeout'){assert.match(text,/waiting for helper/);assert.match(text,/model.helper-timeout/);}
+    else if(failed){assert.match(text,/PermissionError: helper startup denied/);assert.match(text,/EACCES/);}
+    if(mode==='failure-output')assert.match(text,/PROCESS_OUTPUT_TOO_LARGE/);
+    assert.doesNotMatch(fs.readFileSync(vm.runInContext('diagnostics.lastFile',context),'utf8'),/private-input-key|PRIVATE_CONFIG_RESPONSE/);
+  });
 });
 
 function recoveryControllerFixture(context,pending) {

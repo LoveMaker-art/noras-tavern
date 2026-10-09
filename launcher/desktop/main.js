@@ -974,10 +974,11 @@ function runModelConfigHelper(payload) {
       cwd: path.join(hermesHome(), 'hermes-agent'),
       windowsHide: true,
     });
-    let result=null,outputFailure;
+    let result=null,inputFailure,outputFailure;
     let stderr = '', timedOut = false;
     const started=Date.now();
     diagnostics.write('model.helper-start',{site:'model.save',pid:proc.pid});
+    const inputError=error=>{inputFailure ||= error;diagnostics.error('model.input-failed',error,{site:'model.save'});};
     const outputError=error=>{outputFailure ||= error;diagnostics.error('model.output-failed',error,{site:'model.save'});};
     const log=(line,stream)=>diagnostics.event({event:'log',line,stream,uploadScope:'maintenance',site:'model.save'});
     const timer = setTimeout(() => {timedOut = true;diagnostics.write('model.helper-timeout',{site:'model.save',pid:proc.pid});proc.kill('SIGTERM');}, 60000);
@@ -1003,17 +1004,25 @@ function runModelConfigHelper(payload) {
         const text = String(value || '');
         return (secret ? text.replaceAll(secret, '***') : text).trim();
       };
-      if (code === 0 && result?.ok===true&&!outputFailure) resolve(result);
+      if (code === 0 && result?.ok===true&&!inputFailure&&!outputFailure) resolve(result);
       else {
         const cause=require('./launcher-errors').programError(result?.diagnostic);
+        const failure=inputFailure||outputFailure||cause;
         const error = launcherError(clean(result?.error || stderr || '无法保存模型配置。'),{source:'launcher_process',site:'model.save',exitCode:code,signal,
-          code:timedOut ? 'TIMEOUT' : outputFailure?.code || (code===0&&!result?'INVALID_RESPONSE':undefined)},outputFailure||cause);
+          code:timedOut ? 'TIMEOUT' : inputFailure?.code || outputFailure?.code || (code===0&&!result?'INVALID_RESPONSE':undefined)},failure);
+        const secondary=[{operation:'model-output',error:outputFailure},{operation:'model-helper',error:cause}]
+          .filter(item=>item.error&&item.error!==failure);
+        if(secondary.length)error.secondaryErrors=secondary;
         error.remoteMessage = 'Model configuration helper failed; see technical exit status.';
         diagnostics.error('model.helper-failed',error,{site:'model.save'});
         reject(error);
       }
     });
-    proc.stdin.end(JSON.stringify(payload));
+    // A child can reject startup before reading its input. Stream errors do not
+    // reach ChildProcess's error event; retain them until close drains its logs.
+    proc.stdin.on('error',inputError);
+    try { proc.stdin.end(JSON.stringify(payload)); }
+    catch (error) { inputError(error); }
   });
 }
 

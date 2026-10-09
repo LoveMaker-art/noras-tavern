@@ -310,6 +310,84 @@ jobs:
               --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
           fi
 
+      - name: Freeze verified historical payload for version migration acceptance
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        env:
+          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          export NORA_UPGRADE_PAYLOAD="$release_dir/nora-tavern-launcher/payload"
+          node <<'NODE'
+          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
+          const semver=require(path.resolve('launcher/desktop/node_modules/semver'));
+          const digest=file=>{const hash=crypto.createHash('sha256'),fd=fs.openSync(file,'r'),buffer=Buffer.alloc(1024*1024);try{let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null)))hash.update(buffer.subarray(0,count));}finally{fs.closeSync(fd);}return hash.digest('hex');};
+          const safe=name=>{assert.match(name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);return name;};
+          const artifacts=path.join(process.env.RUNNER_TEMP,'nora-baseline-artifacts'),platform=`${process.platform}-${process.arch}`;
+          const systemName=`nora-system-${platform}.json`;
+          const matches=fs.readdirSync(artifacts,{recursive:true}).filter(name=>path.basename(name)===systemName);
+          assert.equal(matches.length,1,'Expected exactly one historical platform system manifest');
+          const systemFile=path.join(artifacts,matches[0]),system=JSON.parse(fs.readFileSync(systemFile,'utf8'));
+          assert.equal(system.schema,'nora-system/v1');assert.equal(`${system.platform}-${system.arch}`,platform);
+          assert.equal(system.candidate,false);assert.equal(system.channel,'stable');assert.match(system.version,/^\d+\.\d+\.\d+$/);
+          assert.match(system.commit,/^[a-f0-9]{40}$/);assert.match(process.env.RUNTIME_SOURCE_RUN,/^\d+$/);
+          assert.ok(system.files&&typeof system.files==='object'&&!Array.isArray(system.files));
+          const baseline=path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline');fs.mkdirSync(baseline);
+          for(const [name,entry] of Object.entries(system.files)){
+            safe(name);safe(entry.asset);assert.equal(entry.asset,`${platform}-${name}`);
+            assert.match(entry.sha256,/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(entry.size)&&entry.size>=0);
+            const file=path.join(path.dirname(systemFile),entry.asset);assert.equal(fs.lstatSync(file).isFile(),true);
+            assert.equal(fs.statSync(file).size,entry.size,`Historical component size mismatch: ${name}`);
+            assert.equal(digest(file),entry.sha256,`Historical component checksum mismatch: ${name}`);
+            fs.copyFileSync(file,path.join(baseline,name));
+          }
+          fs.copyFileSync(systemFile,path.join(baseline,'nora-system.json'));
+          const read=name=>JSON.parse(fs.readFileSync(path.join(baseline,name),'utf8'));
+          const identity=read('release-manifest.json');assert.equal(identity.schema,'tavern-release/v2');
+          assert.equal(identity.candidate,false);assert.equal(identity.dirty,false);
+          assert.equal(identity.commit,system.commit);assert.equal(identity.versions.tavern,system.version);
+          for(const entry of Object.values(identity.archives||{}))assert.equal(entry.sha256,system.files[safe(entry.name)]?.sha256);
+          for(const [name,key] of [['nora-hermes-runtime.json','hermesRuntime'],['nora-tavern-dependencies.json','dependencies']]){
+            const item=read(name);assert.equal(item.schema,1);assert.equal(`${item.platform}-${item.arch}`,platform);
+            assert.equal(item.sha256,identity[key]?.sha256);assert.equal(item.sha256,system.files[safe(item.archive)]?.sha256);
+          }
+          const payload=path.resolve(process.env.NORA_UPGRADE_PAYLOAD),targetFile=path.join(payload,'release-manifest.json');
+          const target=JSON.parse(fs.readFileSync(targetFile,'utf8')),version=fs.readFileSync('app/.tavern-release-version','utf8').trim();
+          assert.equal(target.versions.tavern,version);assert.equal(target.commit,process.env.GITHUB_SHA);assert.ok(semver.valid(version));
+          const comparison=semver.compare(system.version,version);assert.ok(comparison<=0,'Historical baseline cannot be newer than the target');
+          const proof={schema:'nora-upgrade-baseline/1',sourceRun:process.env.RUNTIME_SOURCE_RUN,platform,
+            baselineVersion:system.version,baselineCommit:system.commit,baselineManifestSha256:digest(path.join(baseline,'release-manifest.json')),
+            systemManifestSha256:digest(systemFile),targetVersion:version,targetCommit:target.commit,targetManifestSha256:digest(targetFile),
+            verifiedFiles:Object.keys(system.files).length,acceptance:comparison<0?'version-transition-required':'same-version-repair-only'};
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),JSON.stringify(proof,null,2)+'\n');
+          fs.appendFileSync(process.env.GITHUB_ENV,`NORA_UPGRADE_REQUIRED=${comparison<0}\nNORA_UPGRADE_BASELINE=${baseline}\nNORA_UPGRADE_PAYLOAD=${payload}\n`);
+          function migrate(){
+            const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{execFileSync}=require('node:child_process');
+            const state=process.argv[2];assert.ok(['running','stopped'].includes(state));
+            const proof=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),'utf8'));
+            assert.equal(proof.acceptance,'version-transition-required');assert.equal(proof.platform,`${process.platform}-${process.arch}`);
+            const base=path.join(process.env.RUNNER_TEMP,'nora-operation-acceptance',`upgrade-${state}`);
+            execFileSync(process.execPath,['tooling/run.mjs','node','tests/deployment/launcher_product_refactor_smoke.cjs',
+              '--payload',process.env.NORA_UPGRADE_PAYLOAD,'--baseline-release',process.env.NORA_UPGRADE_BASELINE,
+              '--update-release',process.env.NORA_UPGRADE_PAYLOAD,'--start-state',state,'--scratch-base',base,'--keep'],{stdio:'inherit'});
+            const matches=fs.readdirSync(base,{recursive:true}).filter(name=>path.basename(name)==='harness-result.json');
+            assert.equal(matches.length,1,'Expected exactly one retained historical migration report');
+            const file=path.join(base,matches[0]),report=JSON.parse(fs.readFileSync(file,'utf8'));
+            assert.equal(report.outcome,'passed');assert.equal(report.platform,process.platform);assert.equal(report.arch,process.arch);
+            assert.equal(report.actorSourceBinding,'verified-selected-candidate-manifest');assert.equal(report.releaseManifestSha256,proof.targetManifestSha256);
+            assert.equal(report.releaseAcceptance,'isolated-version-transition');assert.equal(report.update,'verified-content-transition');assert.ok(report.changedSourceArtifacts>0);
+            assert.equal(report.updateInitialService,state);assert.equal(report.userData,'retained');assert.equal(report.executorHandles,'verified-closed');
+            const installed=JSON.parse(fs.readFileSync(path.join(report.root,'tavern/tavern-updates/installed.json'),'utf8'));
+            assert.equal(installed.version,proof.targetVersion);
+            const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+            assert.equal(hash(path.join(process.env.NORA_UPGRADE_BASELINE,'release-manifest.json')),proof.baselineManifestSha256);
+            assert.equal(hash(path.join(process.env.NORA_UPGRADE_PAYLOAD,'release-manifest.json')),proof.targetManifestSha256);
+            report.versionTransition={...proof,startState:state};fs.writeFileSync(file,JSON.stringify(report,null,2)+'\n');
+          }
+          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-migration.cjs'),`(${migrate.toString()})();\n`);
+          console.log(JSON.stringify(proof));
+          NODE
+
       - name: Test real fresh installation and managed update before desktop packaging
         if: runner.os != 'Windows'
         timeout-minutes: 15
@@ -321,9 +399,17 @@ jobs:
             --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
             --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
+      - name: Test historical version migration with running and stopped Tavern
+        if: runner.os != 'Windows' && env.NORA_UPGRADE_REQUIRED == 'true'
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" running
+          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" stopped
+
       - name: Test Windows installation and managed update with legacy path limits
         if: runner.os == 'Windows'
-        timeout-minutes: 15
+        timeout-minutes: 40
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -347,6 +433,12 @@ jobs:
             $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
             node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
             if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
+            if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
+              foreach ($state in @('running', 'stopped')) {
+                node (Join-Path $env:RUNNER_TEMP 'nora-upgrade-migration.cjs') $state
+                if ($LASTEXITCODE -ne 0) { throw "Historical migration failed with LongPathsEnabled=0 and $state Tavern" }
+              }
+            }
           } finally {
             if ($null -eq $previous) {
               Remove-ItemProperty -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
@@ -386,6 +478,74 @@ jobs:
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm run "${{ matrix.package_script }}"
 
+      - name: Test the actual Windows setup and installed application
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Get-ChildItem release -Directory |
+            Where-Object { $_.Name -match '^(candidate|stable)-' } |
+            Sort-Object Name | Select-Object -Last 1
+          if (-not $release) { throw 'Release payload is missing' }
+          $launcher = Join-Path $release.FullName 'nora-tavern-launcher'
+          $desktop = Join-Path $launcher 'desktop'
+          $dist = Join-Path $desktop 'dist'
+          $setup = @(Get-ChildItem $dist -File -Filter '*-win-x64-setup.exe')
+          if ($setup.Count -ne 1) { throw 'Expected exactly one actual Windows setup' }
+          $package = Get-Content (Join-Path $desktop 'package.json') -Raw | ConvertFrom-Json
+          if ($package.build.nsis.oneClick -ne $false -or $package.build.nsis.script) {
+            throw 'This gate requires the packaged assisted NSIS template'
+          }
+          $template = Get-Content (Join-Path $desktop 'node_modules/app-builder-lib/templates/nsis/installSection.nsh') -Raw
+          if ($template -notmatch '\$\{if\}\s+\$\{isForceRun\}\s+\$\{andIf\}\s+\$\{Silent\}') {
+            throw 'The pinned NSIS template no longer proves silent installation requires force-run to launch'
+          }
+          $include = Get-Content (Join-Path $desktop $package.build.nsis.include) -Raw
+          if ($include -match '!macro\s+customInstall\b') { throw 'A custom installation hook requires separate launch acceptance' }
+          foreach ($registry in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+            $existing = @(Get-ChildItem $registry -ErrorAction SilentlyContinue |
+              Get-ItemProperty -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -eq $package.build.productName })
+            if ($existing.Count) { throw 'This fresh setup gate must not invoke an existing installation uninstaller' }
+          }
+          $installRoot = Join-Path (Join-Path $env:RUNNER_TEMP 'Nora 用户安装验收') 'app'
+          if ($installRoot.Length -ge 248 -or (Test-Path $installRoot)) { throw 'Expected a fresh short isolated setup directory' }
+          # NSIS /D must be last and unquoted even with spaces. /S without force-run
+          # does not launch the app in the pinned assisted installer template.
+          $installer = Start-Process -FilePath $setup[0].FullName -ArgumentList "/S /currentuser /D=$installRoot" -PassThru
+          if (-not $installer.WaitForExit(240000)) {
+            taskkill /PID $installer.Id /T /F
+            throw 'Actual Windows setup timed out'
+          }
+          if ($installer.ExitCode -ne 0) { throw "Actual Windows setup exited $($installer.ExitCode)" }
+          $unpacked = Join-Path $dist 'win-unpacked'
+          $main = @(Get-ChildItem $unpacked -File -Filter '*.exe')
+          if ($main.Count -ne 1) { throw 'Expected one original unpacked main executable' }
+          $executable = Join-Path $installRoot $main[0].Name
+          if (-not (Test-Path $executable -PathType Leaf)) { throw 'Setup did not install the main executable at the requested directory' }
+          $checked = 0
+          foreach ($file in (Get-ChildItem $unpacked -Recurse -File -Force)) {
+            $relative = [System.IO.Path]::GetRelativePath($unpacked, $file.FullName)
+            $installed = Join-Path $installRoot $relative
+            if (-not (Test-Path $installed -PathType Leaf)) { throw "Setup omitted $relative" }
+            if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $installed -Algorithm SHA256).Hash) {
+              throw "Setup changed packaged bytes: $relative"
+            }
+            $checked++
+          }
+          if (@(Get-Process | Where-Object { $_.Path -eq $executable }).Count) { throw 'Silent setup unexpectedly launched the installed application' }
+          $setupProof = @{schema='nora-installed-setup/1'; installer=$setup[0].Name; installerSha256=(Get-FileHash $setup[0].FullName -Algorithm SHA256).Hash.ToLower(); exitCode=$installer.ExitCode; installRoot=$installRoot; verifiedUnpackedFiles=$checked; autoLaunch=$false}
+          $setupProof | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'nora-installed-setup-acceptance.json') -Encoding utf8
+          $env:NORA_CANDIDATE_LAUNCHER = $launcher
+          $env:NORA_PACKED_DESKTOP = Join-Path $installRoot 'resources/app.asar'
+          $env:NORA_TEST_PYTHON = Join-Path $env:RUNNER_TEMP 'hermes-build-source/python/python.exe'
+          $env:NORA_GATE_REPORT = Join-Path $env:RUNNER_TEMP 'nora-installed-app-acceptance.json'
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & $executable --test tests/deployment/launcher_packaged_app.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'The actual installed application gate failed' }
+          if (-not (Test-Path $env:NORA_GATE_REPORT -PathType Leaf)) { throw 'Installed application acceptance report is missing' }
+
       - name: Verify real APP production module closure and executor receipts
         timeout-minutes: 10
         shell: bash
@@ -415,6 +575,8 @@ jobs:
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
+            ${{ runner.temp }}/nora-installed-*-acceptance.json
           if-no-files-found: warn
           retention-days: 14
 
