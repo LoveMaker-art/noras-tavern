@@ -26,10 +26,12 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
     }
     assert.equal(command[2].cwd, path.join(root, 'app/engine/sillytavern'));
     assert.ok(command[1].includes('tests/nora-startup-asset-budget-contract.mjs'));
-    assert.equal(command[2].timeout, 240000);
+    assert.equal(command[2].timeout, 480000, 'the complete serial suite must fit without changing individual scan budgets');
     assert.equal(commands.length, 3);
     assert.ok(commands[1][1].includes('node_modules/typescript/bin/tsc'));
     assert.ok(commands[2][1].includes('tests/integration/backups.test.mjs'));
+    assert.equal(commands[1][2].timeout, 240000);
+    assert.equal(commands[2][2].timeout, 240000);
     assert.equal(commands[2][2].env.NORA_TAVERN_SOURCE, command[2].cwd);
     let called = 0;
     assert.throws(() => verifyBackupSafety({ run: () => ({ status: ++called === 2 ? 1 : 0 }) }));
