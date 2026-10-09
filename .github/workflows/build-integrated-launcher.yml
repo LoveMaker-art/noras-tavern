@@ -61,8 +61,123 @@ jobs:
       - name: Install native guard dependency
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Diagnose Windows identity queries in nine independent cold profiles
+        shell: bash
+        run: |
+          probe="$RUNNER_TEMP/nora-windows-cold-profile-diagnosis.cjs"
+          cat > "$probe" <<'NODE'
+          const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+          const {spawn,execFile}=require('node:child_process');
+          const {performance}=require('node:perf_hooks');
+          const {randomUUID}=require('node:crypto');
+          const root=fs.mkdtempSync(path.join(process.env.RUNNER_TEMP,'nora-windows-identity-diagnosis-'));
+          const reportFile=path.join(process.env.RUNNER_TEMP,'nora-windows-cold-profile-diagnosis.json');
+          const report={schema:'nora-windows-cold-profile-diagnosis/1',commit:process.env.GITHUB_SHA,
+            platform:process.platform,arch:process.arch,node:process.version,root,deadlineMs:30000,
+            psModulePath:process.env.PSModulePath||null,cases:[],outcome:'collecting'};
+          const save=()=>fs.writeFileSync(reportFile,JSON.stringify(report,null,2)+'\n');
+          function environment(profile,noraHome) {
+            for(const suffix of ['', 'AppData/Roaming', 'AppData/Local', 'tmp', 'cache'])
+              fs.mkdirSync(path.join(profile,suffix),{recursive:true});
+            const hermes=path.join(noraHome,'hermes');
+            return {HOME:profile,USERPROFILE:profile,HERMES_HOME:profile,NORA_HERMES_HOME:hermes,
+              NORA_TAVERN_HOME:noraHome,TAVERN_DATA_ROOT:path.join(noraHome,'tavern'),
+              NORA_INSTALLER_DIRECTORY:path.join(noraHome,'installer'),NORA_RELEASE_CHANNEL:'stable',
+              APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
+              TMP:path.join(profile,'tmp'),TEMP:path.join(profile,'tmp'),TMPDIR:path.join(profile,'tmp'),
+              XDG_CACHE_HOME:path.join(profile,'cache'),XDG_DATA_HOME:path.join(noraHome,'data'),
+              PYTHONNOUSERSITE:'1',PYTHONDONTWRITEBYTECODE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
+              SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',COMSPEC:process.env.COMSPEC||'',
+              ...(process.env.PSModulePath?{PSModulePath:process.env.PSModulePath}:{}),
+              PATH:[path.join(hermes,'node/bin'),path.join(hermes,'node'),path.join(hermes,'hermes-agent/venv/bin'),
+                path.join(hermes,'hermes-agent/venv/Scripts'),process.env.PATH||''].join(path.delimiter)};
+          }
+          async function compare(round,method) {
+            const noraHome=path.join(root,`round-${round}-${method}`);
+            const profile=path.join(noraHome,'installer','operations',randomUUID(),'bootstrap-profile');
+            const env=environment(profile,noraHome);
+            const record={round,method,profile,identityQuery:method!=='startup',outcome:'failed'};
+            report.cases.push(record);save();
+            let actor,closed;
+            try {
+              record.spawnBeforeMs=Date.now();
+              actor=spawn(process.execPath,['-e',"process.send({pid:process.pid});setInterval(()=>{},1000)"],
+                {env,windowsHide:true,stdio:['ignore','ignore','pipe','ipc']});
+              closed=new Promise(resolve=>actor.once('close',(code,signal)=>resolve({code,signal})));
+              let actorStderr='';actor.stderr.on('data',value=>actorStderr=(actorStderr+value).slice(-16000));
+              await new Promise((resolve,reject)=>{
+                const timer=setTimeout(()=>reject(new Error('Owned Node actor did not become ready')),5000);
+                actor.once('error',error=>{clearTimeout(timer);reject(error);});
+                actor.once('close',()=>{clearTimeout(timer);reject(new Error(`Owned Node actor exited before ready: ${actorStderr}`));});
+                actor.once('message',message=>{
+                  clearTimeout(timer);
+                  try{assert.equal(message.pid,actor.pid);record.pid=actor.pid;record.readyAfterMs=Date.now();resolve();}
+                  catch(error){reject(error);}
+                });
+              });
+              assert.equal(actor.exitCode,null);assert.equal(actor.signalCode,null);
+              const command=method==='get-process'
+                ?`([DateTimeOffset](Get-Process -Id ${actor.pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()`
+                :method==='dotnet'
+                  ?`([DateTimeOffset]([System.Diagnostics.Process]::GetProcessById(${actor.pid}).StartTime.ToUniversalTime())).ToUnixTimeMilliseconds()`
+                  :"'startup-ready'";
+              const started=performance.now();
+              const result=await new Promise(resolve=>execFile('powershell.exe',
+                ['-NoProfile','-NonInteractive','-Command',command],
+                {env,windowsHide:true,timeout:30000,encoding:'utf8',maxBuffer:65536},
+                (error,stdout,stderr)=>resolve({error,stdout,stderr})));
+              Object.assign(record,{elapsedMs:performance.now()-started,stdout:result.stdout,stderr:result.stderr,
+                status:result.error?(result.error.code??null):0,signal:result.error?.signal??null,killed:result.error?.killed??false,
+                error:result.error?{name:result.error.name,message:result.error.message,code:result.error.code??null}:null});
+              record.actorAliveAfterQuery=actor.exitCode===null&&actor.signalCode===null;
+              assert.ok(record.actorAliveAfterQuery,'The queried actor must remain alive');
+              if(result.error)throw result.error;
+              if(record.identityQuery) {
+                assert.match(result.stdout.trim(),/^[1-9][0-9]+$/);
+                record.birthTimeMs=Number(result.stdout.trim());
+                assert.ok(Number.isSafeInteger(record.birthTimeMs));
+                assert.ok(record.birthTimeMs>=record.spawnBeforeMs&&record.birthTimeMs<=record.readyAfterMs,
+                  `OS birth time ${record.birthTimeMs} is outside owned actor spawn window ${record.spawnBeforeMs}..${record.readyAfterMs}`);
+                record.identityVerified=true;
+              } else {assert.equal(result.stdout.trim(),'startup-ready');record.identityVerified=false;}
+              record.outcome='passed';
+            } catch(error) {record.failure={name:error.name,message:error.message,code:error.code??null};}
+            finally {
+              if(actor) {
+                if(actor.exitCode===null&&actor.signalCode===null)actor.kill('SIGKILL');
+                let timer;
+                try{record.actorClose=await Promise.race([closed,new Promise((_,reject)=>{
+                  timer=setTimeout(()=>reject(new Error('Owned actor did not close after termination')),5000);
+                })]);}
+                catch(error){record.outcome='failed';record.cleanupError=error.message;}
+                finally{clearTimeout(timer);}
+              }
+              save();console.log('[DEBUG-windows-cold-profile] '+JSON.stringify(record));
+            }
+          }
+          (async()=>{
+            assert.equal(process.platform,'win32');
+            const methods=['get-process','dotnet','startup'];
+            for(let round=0;round<3;round++)for(let index=0;index<3;index++)
+              await compare(round+1,methods[(index+round)%methods.length]);
+            assert.equal(report.cases.length,9);
+            report.outcome=report.cases.every(record=>record.outcome==='passed')?'all-probes-passed':'probe-failed';
+            report.startupControlIsIdentityProof=false;
+            save();if(report.outcome==='probe-failed')process.exitCode=1;
+          })().catch(error=>{report.outcome='harness-failed';report.error={name:error.name,message:error.message};save();console.error(error);process.exitCode=1;});
+          NODE
+          node "$probe"
       - name: Reproduce cold-profile bootstrap identity before downloading resources
+        if: ${{ always() && !cancelled() }}
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
+      - name: Upload temporary Windows cold-profile diagnosis
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-cold-profile-diagnosis
+          path: ${{ runner.temp }}/nora-windows-cold-profile-diagnosis.json
+          if-no-files-found: warn
+          retention-days: 7
 
   build:
     if: inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
