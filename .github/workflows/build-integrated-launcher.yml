@@ -368,7 +368,7 @@ jobs:
           test -f "$executable"
           export NORA_PACKED_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$resources/app.asar")"
           export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/Scripts/python.exe"; fi
+          if [[ "$RUNNER_OS" == "Windows" ]]; then export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/python/python.exe"; fi
           export NORA_GATE_REPORT="$RUNNER_TEMP/nora-packaged-app-acceptance.json"
           ELECTRON_RUN_AS_NODE=1 "$executable" --test tests/deployment/launcher_packaged_app.test.cjs
 

@@ -50,19 +50,19 @@ test('sixty HTTP regeneration and save cycles retain fifty automatic versions pl
         return result;
     };
     const operations = chatSessionOperations(f.directories);
-    let pinned;
+    // Protect an explicitly completed snapshot. Automatic checkpoints are
+    // best-effort and may return a timeout without an ID on cold storage.
+    const pinned = (await chatBackupStore(f.directories).capture({ filePath,
+        data: original.map(JSON.stringify).join('\n') })).id;
+    await post('/backups/chat/protect', { id: pinned, protected: true });
     for (let i = 0; i < 60; i++) {
         const before = await f.chat(world);
         const inspected = await post('/ledger/inspect', scope);
         const lease = operations.begin(scope, 'generation');
         try {
-            const checkpoint = await post('/ledger/checkpoint', { ...scope,
+            await post('/ledger/checkpoint', { ...scope,
                 expectedSignature: inspected.expectedSignature, activityToken: lease.token });
             assert.deepEqual(await f.chat(world), before, 'preflight never changes the chat');
-            if (i === 0) {
-                pinned = checkpoint.id;
-                await post('/backups/chat/protect', { id: pinned, protected: true });
-            }
             const next = structuredClone(before);
             next.at(-1).mes = `Reply ${i + 1}`;
             next.at(-1).extra.stat_data.version = i + 1;
