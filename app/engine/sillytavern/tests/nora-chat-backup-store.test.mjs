@@ -21,6 +21,24 @@ async function savedChat(f, world, hp = 10) {
     return { filePath, data };
 }
 
+test('a backward system clock preserves newest backup order and the latest retention slots', async t => {
+    const f = await storageFixture(t), world = await f.create('clock-backward');
+    let clock = Date.now();
+    const store = createChatBackupStore({ directories: f.directories, now: () => clock,
+        policy: { maxPerSession: 2 } });
+    const saved = []; let input;
+    for (const hp of [1, 2, 3]) {
+        input = await savedChat(f, world, hp);
+        saved.push({ ...(await store.capture(input)), data: input.data });
+        clock -= 1000;
+    }
+    const list = await store.list();
+    assert.deepEqual(list.snapshots.map(item => item.id), [saved[2].id, saved[1].id]);
+    assert.deepEqual(list.snapshots.map(item => item.sequence), [3, 2]);
+    for (const item of saved.slice(1)) assert.equal((await store.download(item.id)).toString(), item.data);
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), saved[2].data);
+});
+
 test('list exposes bounded message summaries without changing metadata, snapshot bytes or the current chat', async t => {
     const f = await storageFixture(t), world = await f.create('read-only-summary');
     const store = createChatBackupStore({ directories: f.directories });

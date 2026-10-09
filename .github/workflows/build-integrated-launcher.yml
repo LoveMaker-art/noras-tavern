@@ -196,16 +196,6 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
 
-      - name: Require chat backup safety tests
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
-          node --test tests/backup-safety-gate.test.mjs
-          node tooling/checks/verify-backup-safety.mjs
-
       - name: Configure actual operation actors and native lock tests
         shell: bash
         run: |
@@ -218,6 +208,16 @@ jobs:
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
         run: node tooling/run.mjs node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
+
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node tooling/checks/verify-backup-safety.mjs
 
       - name: Test native transaction and complete evidence contracts
         shell: bash

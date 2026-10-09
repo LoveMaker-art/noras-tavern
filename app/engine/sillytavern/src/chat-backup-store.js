@@ -422,7 +422,9 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             return { status: 'unchanged', id: previous.id };
         }
         const id = crypto.randomUUID();
-        const value = { version: 1, id, ...owner, sha256, bytes: Buffer.byteLength(data), createdAt: now(),
+        // Clock correction must not reorder or evict a newer session checkpoint.
+        const createdAt = Math.max(now(), previous?.createdAt ?? 0);
+        const value = { version: 1, id, ...owner, sha256, bytes: Buffer.byteLength(data), createdAt,
             sequence: (previous?.sequence || 0) + 1, protected: protect, consistency: 'chat-only', mvuState };
         const candidates = obsolete([...before.snapshots.map(item => item.id === retainId ? { ...item, protected: true } : item), value],
             before.totalBytes + value.bytes - (upgradeCredit ?? 0), id);
