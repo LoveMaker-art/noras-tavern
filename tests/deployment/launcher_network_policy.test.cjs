@@ -493,3 +493,20 @@ test('a file close failure cannot replace an earlier progress failure',async t=>
     onEvent:event=>{if(event.event==='progress' && event.current>0) throw primary;}}),error=>error===primary);
   assert.ok(primary.secondaryErrors.includes(secondary));
 });
+
+test('all-source asset failure keeps the canonical identity and the primary Retry-After',async t=>{
+  const identity={tag:'v2.4.2',asset:'asset.zip',size:2048,sha256:'a'.repeat(64)};
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-source-cooldown-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const started=Date.now();
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,identity,target:path.join(root,'asset.zip'),
+    fetcher:async url=>{
+      const github=new URL(url).hostname==='github.com';
+      const response=new Response('unavailable',{status:github?429:503,headers:github?{'retry-after':'60'}:{}});
+      Object.defineProperty(response,'url',{value:String(url)});return response;
+    },policy:{maxAttempts:1}}),error=>{
+      assert.equal(error.conditionResource.url,assetUrl);
+      assert.ok(error.conditionRetryAt>=started+60000);
+      assert.ok(error.secondaryErrors.some(item=>item.operation==='release-source:github'));return true;
+    });
+});

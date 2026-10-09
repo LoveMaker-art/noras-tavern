@@ -168,6 +168,16 @@ function sourceNotice(fetcher,policy,source,next,error,onEvent) {
   onEvent?.({event:'log',level:'warning',uploadScope:'maintenance',
     line:`[WARNING] ${message}`});
 }
+async function sourceFailure(error,url,identity,fetcher,failures,sources) {
+  const retryAt=failures.map(value=>value.conditionRetryAt).filter(Number.isSafeInteger);
+  if(failures.length>1) error.secondaryErrors=[...(error.secondaryErrors || []),...failures.slice(0,-1)
+    .map((failure,index)=>({operation:`release-source:${sources[index].id}`,error:failure}))];
+  // Admission owns the fixed canonical resource, not a provider-specific URL.
+  // Keep source errors and the longest existing cooldown as separate evidence.
+  await rememberFailureResource(error,url,identity,fetcher);
+  if(retryAt.length)error.conditionRetryAt=Math.max(error.conditionRetryAt || 0,...retryAt);
+  return error;
+}
 async function metadataJson(url,options={}) {
   const {fetcher=fetch,signal,policy={},channel='stable'}=options;
   const sources=sourceCandidates(url,{channel,sources:policy.sources});
@@ -176,15 +186,15 @@ async function metadataJson(url,options={}) {
   for(let index=0;index<sources.length;index++) {
     signal?.throwIfAborted();
     const remaining=deadline-now();
-    if(remaining<=0) throw launcherError('发布请求已超过有限等待预算。',{code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1));
+    if(remaining<=0) throw await sourceFailure(launcherError('发布请求已超过有限等待预算。',
+      {code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1)),url,options.conditionIdentity,fetcher,failures,sources);
     const source=sources[index],budget=sources.length>1?Math.min(remaining,policy.attemptTimeoutMs ?? 30000):remaining;
     try {return await metadataFromSource(source.url,{...options,fetcher,source,policy:{...policy,source,deadlineAt:deadline,totalBudgetMs:budget,
       ...(sources.length>1?{maxAttempts:1}:{})}});}
     catch(error) {
       failures.push(error);
       if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {
-        if(failures.length>1) error.secondaryErrors=[...(error.secondaryErrors || []),...failures.slice(0,-1).map((failure,index)=>({operation:`release-source:${sources[index].id}`,error:failure}))];
-        throw error;
+        throw await sourceFailure(error,url,options.conditionIdentity,fetcher,failures,sources);
       }
       sourceNotice(fetcher,policy,source,sources[index+1],error);
     }
@@ -269,7 +279,8 @@ async function downloadAsset(options) {
   for(let index=0;index<sources.length;index++) {
     signal?.throwIfAborted();
     const remaining=deadline-now();
-    if(remaining<=0) throw launcherError('资源下载已超过有限等待预算。',{code:'TIMEOUT',source:'release_service',site:'release.download'},failures.at(-1));
+    if(remaining<=0) throw await sourceFailure(launcherError('资源下载已超过有限等待预算。',
+      {code:'TIMEOUT',source:'release_service',site:'release.download'},failures.at(-1)),url,options.identity,fetcher,failures,sources);
     const source=sources[index];
     // Reserve an actual transfer window for each configured backup, even
     // when the primary keeps sending a few bytes and never reaches idle.
@@ -280,8 +291,7 @@ async function downloadAsset(options) {
     catch(error) {
       failures.push(error);
       if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {
-        if(failures.length>1) error.secondaryErrors=[...(error.secondaryErrors || []),...failures.slice(0,-1).map((failure,index)=>({operation:`release-source:${sources[index].id}`,error:failure}))];
-        throw error;
+        throw await sourceFailure(error,url,options.identity,fetcher,failures,sources);
       }
       sourceNotice(fetcher,policy,source,sources[index+1],error,onEvent);
     }

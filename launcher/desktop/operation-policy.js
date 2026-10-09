@@ -5,6 +5,8 @@ const path=require('node:path');
 const crypto=require('node:crypto');
 const runtime=require('./runtime-transaction');
 const {describeError}=require('./launcher-errors');
+const {sourceCandidates,validateSourceResponse}=require('./release-sources');
+const {fetchRead}=require('./release-network');
 const failure=(code,message)=>Object.assign(new Error(message),{code});
 const safe=new Set(['untouched','restored']);
 const value=input=>typeof input==='function'?input():input;
@@ -154,10 +156,27 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       if(baseline.facts.networkReads.some(item=>item.identity===identity&&item.routeHash===routeHash&&item.readable))return null;
       if(baseline.facts.networkReads.length>=8&&!baseline.facts.networkReads.some(item=>item.identity===identity))return null;
       const end=metadata?null:Math.min(resource.size,1024)-1,maxBytes=metadata?4*1024*1024:end+1;
-      response=await Promise.race([networkFetch(resource.url,{method:'GET',headers:metadata?{Accept:'application/vnd.github+json','Accept-Encoding':'identity'}:{Range:`bytes=0-${end}`,'Accept-Encoding':'identity'},signal,credentials:'omit'}),abort]);
+      const sources=sourceCandidates(resource.url,{channel:value(channel)}),deadline=Date.now()+10000;
+      let selected;
+      for(let index=0;index<sources.length;index++){
+        const source=sources[index],remaining=deadline-Date.now();if(remaining<=0)return null;
+        const attemptSignal=AbortSignal.any([signal,AbortSignal.timeout(Math.max(1,Math.ceil(remaining/(sources.length-index))))]);
+        try{
+          response=await fetchRead(networkFetch,source.url,{method:'GET',
+            headers:metadata?{Accept:'application/vnd.github+json','Accept-Encoding':'identity'}:{Range:`bytes=0-${end}`,'Accept-Encoding':'identity'},
+            signal:attemptSignal,credentials:'omit'},{source,maxAttempts:1,totalBudgetMs:remaining});
+          validateSourceResponse(source,response);
+          if(response.status===200||!metadata&&response.status===206){selected=source;break;}
+          await response.body?.cancel();
+          if(![403,404,408,410,429,500,502,503,504].includes(response.status))return null;
+        }catch(error){
+          if(!attemptSignal.aborted&&!['ENOTFOUND','ECONNREFUSED','ECONNRESET','ETIMEDOUT','TIMEOUT','EAI_AGAIN'].includes(error.code||error.cause?.code))return null;
+        }
+      }
+      if(!selected)return null;
       const final=new URL(response.url||resource.url);
       if(final.protocol!=='https:'||final.username||final.password
-        ||!(metadata&&!resource.type?final.href===resource.url:['github.com','objects.githubusercontent.com','release-assets.githubusercontent.com'].includes(final.hostname))
+        ||!selected.mirror&&!(metadata&&!resource.type?final.href===resource.url:['github.com','objects.githubusercontent.com','release-assets.githubusercontent.com'].includes(final.hostname))
         ||!metadata&&response.headers.get('content-encoding')&&!['identity'].includes(response.headers.get('content-encoding')))return null;
       if(metadata){if(response.status!==200)return null;}
       else if(response.status===206){if(response.headers.get('content-range')!==`bytes 0-${end}/${resource.size}`)return null;}

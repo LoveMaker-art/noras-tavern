@@ -10,6 +10,7 @@ const {createOperationController}=require('../installer/desktop/operation-state'
 const lock=require('../installer/desktop/operation-lock');
 const {downloadAsset}=require('../installer/desktop/release-network');
 const releases=require('../installer/desktop/releases');
+const githubOnly={schema:1,primary:'github',mirrors:[]};
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 
 function fixture(t,{execute,capture=true,policyOptions={}}={}){
@@ -115,7 +116,7 @@ test('native retry remains bounded across real failed asset HTTP reads; original
   const release=await releaseFixture(t);
   const f=fixture(t,{policyOptions:{networkFetch:release.fetcher},execute:async(_context,{home})=>{
     await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher:release.fetcher,
-      policy:{maxAttempts:1,totalBudgetMs:1000}});return {verification:'confirmed'};
+      policy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});return {verification:'confirmed'};
   }});
   const target={request:{action:'install'},releasePlan:release.plan};
   await f.controller().start('install',{target},'network-one');
@@ -144,7 +145,7 @@ test('native retry remains bounded across real failed asset HTTP reads; original
 test('a malformed original-resource range cannot authorize another attempt',async t=>{
   const release=await releaseFixture(t);
   const f=fixture(t,{policyOptions:{networkFetch:release.fetcher},execute:async(_context,{home})=>{
-    await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher:release.fetcher,policy:{maxAttempts:1,totalBudgetMs:1000}});
+    await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher:release.fetcher,policy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
   }});
   const target={request:{action:'install'},releasePlan:release.plan};
   await f.controller().start('install',{target},'range-one');const failed=await f.controller().start('install',{target},'range-two');
@@ -156,7 +157,7 @@ test('a malformed original-resource range cannot authorize another attempt',asyn
 test('an original-resource recheck respects Retry-After before probing, then requires actual bytes',async t=>{
   const release=await releaseFixture(t);release.setMode('throttled');let clock=Date.now();
   const f=fixture(t,{policyOptions:{networkFetch:release.fetcher,now:()=>clock},execute:async(_context,{home})=>{
-    await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher:release.fetcher,policy:{maxAttempts:1,totalBudgetMs:1000}});
+    await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher:release.fetcher,policy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
   }});
   const target={request:{action:'install'},releasePlan:release.plan};
   await f.controller().start('install',{target},'limited-one');const failed=await f.controller().start('install',{target},'limited-two');
@@ -194,7 +195,7 @@ async function metadataFixture(t,{tag,channel='stable'}={}){
 test('initial official metadata failure permits install to continue only after a valid original GET; its consumed proof cannot reset attempts',async t=>{
   const metadata=await metadataFixture(t),completedTags=[];
   const f=fixture(t,{policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
-    const release=await releases.latest(metadata.fetcher,undefined,'stable',undefined,{networkPolicy:{maxAttempts:1,totalBudgetMs:1000}});
+    const release=await releases.latest(metadata.fetcher,undefined,'stable',undefined,{networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     completedTags.push(release.tag_name);return {verification:'confirmed'};
   }});
   const target={request:{action:'install'}};
@@ -223,7 +224,7 @@ test('initial official metadata failure permits install to continue only after a
 test('initial explicit metadata recheck must prove the original fixed tag',async t=>{
   const metadata=await metadataFixture(t,{tag:'v2.4.2'});
   const f=fixture(t,{policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
-    await releases.latest(metadata.fetcher,undefined,'stable','v2.4.2',{networkPolicy:{maxAttempts:1,totalBudgetMs:1000}});
+    await releases.latest(metadata.fetcher,undefined,'stable','v2.4.2',{networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     return {verification:'confirmed'};
   }});
   const target={request:{action:'install',tag:'v2.4.2'}};
@@ -281,7 +282,7 @@ for(const type of ['release','launcher','system'])test(`real selectPlan ${type} 
   const metadata=await manifestFixture(t,type);let completedPlans=0;
   const f=fixture(t,{policyOptions:{networkFetch:metadata.fetcher},execute:async context=>{
     const selected=await releases.selectPlan({fetcher:metadata.fetcher,mode:'install',tag:'v2.4.2',launcherVersion:'2.0.2',
-      networkPolicy:{maxAttempts:1,totalBudgetMs:1000}});
+      networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     await context.plan({...context.target,releasePlan:selected});completedPlans++;return {verification:'confirmed'};
   }});
   const target={request:{action:'install',tag:'v2.4.2'}};
@@ -311,7 +312,7 @@ test('a success keeps consumed original-asset proof when a new request selects t
     if(!context.target.releasePlan)await context.plan({...context.target,releasePlan:release.plan});
     downloadRuns++;
     await downloadAsset({url:release.url,target:path.join(home,`asset-${downloadRuns}`),identity:release.identity,
-      fetcher:release.fetcher,policy:{maxAttempts:1,totalBudgetMs:1000}});
+      fetcher:release.fetcher,policy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     return {verification:'confirmed'};
   }});
   const target={request:{action:'install'}};
@@ -334,7 +335,7 @@ test('an asset network exception retains the original asset identity rather than
   const fetcher=async()=>{throw Object.assign(new Error('original asset DNS failed'),{code:'ENOTFOUND'});};
   fetcher.conditionRoute=release.fetcher.conditionRoute;
   let error;
-  try{await downloadAsset({url:release.url,target:path.join(f.home,'asset'),identity:release.identity,fetcher,policy:{maxAttempts:1,totalBudgetMs:1000}});}catch(caught){error=caught;}
+  try{await downloadAsset({url:release.url,target:path.join(f.home,'asset'),identity:release.identity,fetcher,policy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});}catch(caught){error=caught;}
   assert.equal(error.site,'release.download');
   const condition=f.policy.identifyFailureCondition(error,{kind:'install',operationId:'bb100075-1af2-4b83-ac46-a9f8e24b6b01',target:{releasePlan:release.plan}});
   assert.equal(condition.kind,'release-read');assert.equal(condition.resource.url,release.url);
@@ -459,4 +460,65 @@ test('service setup recheck refuses unknown failures, unhealthy installations an
   status={systemReady:false,modelConfigured:true,clawchatPaired:true};assert.equal((await policy.recheck(pair)).changed,false);
   status={systemReady:true,modelConfigured:false,clawchatPaired:true};assert.equal((await policy.recheck(pair)).changed,true);
   assert.equal((await policy.recheck({...base,primaryFailure:{code:'MODEL_SETUP_REQUIRED'}})).changed,false);
+});
+
+// Source fallback must preserve the fixed resource identity used by retry admission.
+test('both sources failing retain the canonical asset and a recovered backup can authorize one bounded retry',async t=>{
+  const release=await releaseFixture(t);
+  const fetcher=async(url,options)=>{
+    if(new URL(url).hostname==='github.com'){
+      const response=new Response('unavailable',{status:503});
+      Object.defineProperty(response,'url',{value:String(url)});return response;
+    }
+    return release.fetcher(url,options);
+  };
+  fetcher.conditionRoute=release.fetcher.conditionRoute;
+  const f=fixture(t,{policyOptions:{networkFetch:fetcher},execute:async(_context,{home})=>{
+    await downloadAsset({url:release.url,target:path.join(home,'download'),identity:release.identity,fetcher,
+      policy:{maxAttempts:1,totalBudgetMs:1000}});return {verification:'confirmed'};
+  }});
+  const target={request:{action:'install'},releasePlan:release.plan};
+  await f.controller().start('install',{target},'both-sources-one');
+  const failed=await f.controller().start('install',{target},'both-sources-two');
+  assert.equal(failed.currentFailure.conditionTarget?.kind,'release-read');
+  assert.equal(failed.currentFailure.conditionTarget.resource.url,release.url);
+  release.setMode('bad-range');
+  const malformed=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+  assert.equal(malformed.allowedActions.includes('retry'),false);
+  release.setMode('range-only');
+  const checked=await f.controller().recheck(failed.operationId,{snapshotSequence:malformed.snapshotSequence});
+  assert.equal(checked.allowedActions.includes('retry'),true);
+  release.setMode('success');
+  const result=await f.controller().resume(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(result.state,'succeeded');assert.equal(f.runs,3);
+});
+
+test('both metadata sources failing retain the fixed tag and only valid backup metadata permits continuation',async t=>{
+  const metadata=await metadataFixture(t,{tag:'v2.4.2'});
+  const fetcher=async(url,options)=>{
+    if(new URL(url).hostname==='api.github.com'){
+      const response=new Response('unavailable',{status:503});
+      Object.defineProperty(response,'url',{value:String(url)});return response;
+    }
+    const response=await metadata.fetcher(metadata.url,options);
+    Object.defineProperty(response,'url',{value:String(url),configurable:true});return response;
+  };
+  fetcher.conditionRoute=metadata.fetcher.conditionRoute;
+  const f=fixture(t,{policyOptions:{networkFetch:fetcher},execute:async()=>{
+    const release=await releases.latest(fetcher,undefined,'stable','v2.4.2',{networkPolicy:{maxAttempts:1,totalBudgetMs:1000}});
+    assert.equal(release.tag_name,'v2.4.2');return {verification:'confirmed'};
+  }});
+  const target={request:{action:'install',tag:'v2.4.2'}};
+  await f.controller().start('install',{target},'both-metadata-one');
+  const failed=await f.controller().start('install',{target},'both-metadata-two');
+  assert.equal(failed.currentFailure.conditionTarget?.kind,'release-metadata');
+  assert.equal(failed.currentFailure.conditionTarget.resource.url,metadata.url);
+  metadata.setMode('wrong-tag');
+  const wrong=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+  assert.equal(wrong.allowedActions.includes('retry'),false);
+  metadata.setMode('readable');
+  const checked=await f.controller().recheck(failed.operationId,{snapshotSequence:wrong.snapshotSequence});
+  assert.equal(checked.allowedActions.includes('retry'),true);
+  const result=await f.controller().resume(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(result.state,'succeeded');assert.equal(f.runs,3);
 });
