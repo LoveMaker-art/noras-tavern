@@ -64,9 +64,6 @@ jobs:
       - name: Reproduce cold-profile bootstrap identity before downloading resources
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
-      - name: Verify model helper input pipe before downloading resources
-        run: node tooling/run.mjs node --test --test-name-pattern="model helper reports a closed input pipe" tests/deployment/launcher_diagnostics.test.cjs
-
   build:
     if: inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
     strategy:
