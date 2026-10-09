@@ -27,6 +27,10 @@ on:
         description: Publish an accepted complete build at this tag commit without rebuilding
         type: string
         default: ''
+      verified_windows_run:
+        description: Final all-platform assembly reusing a fully accepted Windows-only run at this exact commit
+        type: string
+        default: ''
   push:
     tags:
       - 'v*-beta.*'
@@ -64,15 +68,62 @@ jobs:
       - name: Reproduce cold-profile bootstrap identity before downloading resources
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
+  reuse-windows:
+    if: inputs.verified_windows_run != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+      NORA_BUILD_TARGET: ${{ inputs.target }}
+      NORA_PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+      NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
+      NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Verify accepted Windows source and preserve its exact package bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e 'require("./tooling/release/reuse-windows-build.cjs").verifyModes(process.env)'
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN" > source-run.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/jobs?per_page=100" > source-jobs.json
+          node --test tests/launcher-windows-reuse.test.cjs
+          node tooling/release/reuse-windows-build.cjs source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
+      - name: Preserve accepted Windows delivery without rebuilding
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-tavern-win32-x64
+          path: ${{ runner.temp }}/accepted-windows/delivery/**
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+      - name: Preserve original Windows acceptance and source provenance
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-operation-acceptance-win32-x64
+          path: ${{ runner.temp }}/accepted-windows/acceptance/**
+          if-no-files-found: error
+          retention-days: 14
+
   build:
-    if: inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
+    needs: reuse-windows
+    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
     strategy:
       fail-fast: false
       matrix:
-        # Tags always build every supported platform. Windows ARM lacks Liveware.
+        # A final same-commit assembly reuses an accepted Windows package. Windows ARM lacks Liveware.
         include: >-
           ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
             && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
+            || inputs.verified_windows_run != ''
+            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
             || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 90
@@ -636,8 +687,8 @@ jobs:
           compression-level: 0
 
   publish-release:
-    if: always() && !cancelled() && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '')
-    needs: build
+    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '')
+    needs: [build, reuse-windows]
     runs-on: ubuntu-latest
     # Different version tags share mutable SourceForge channel pointers.
     concurrency:
