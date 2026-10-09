@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import readline from 'node:readline';
 import { getChatRevision } from '../chat-revision.js';
+import { writeChatFileSync } from '../chat-file-write.js';
 import { queueChatBackup } from '../chat-backup-runtime.js';
 import { chatSessionOperations } from '../chat-session-operations.js';
 
@@ -544,7 +545,7 @@ export async function trySaveChat(chatData, filePath, skipIntegrityCheck = false
         await resolveStoryLedger(directories).writeChat(
             filePath,
             chatData,
-            () => writeFileAtomicSync(filePath, jsonlData, 'utf8'),
+            () => writeChatFileSync(filePath, jsonlData, { beforeWrite: verifyWriteBase }),
             { beforeWrite: verifyWriteBase, activityToken: noraSaveContext.activityToken },
         );
     } else {

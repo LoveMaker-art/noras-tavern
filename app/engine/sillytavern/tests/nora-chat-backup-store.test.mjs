@@ -834,7 +834,10 @@ test('a twenty-snapshot, forty-MiB fixture has bounded listing latency and does 
     t.diagnostic(`40 MiB listing ms=${times.map(value => value.toFixed(1)).join('/')} maxRSSKiB=${process.resourceUsage().maxRSS}`);
 });
 
-test('near the default user budget, automatic backups roll across Worlds without changing either chat', { timeout: 60000 }, async t => {
+// Twenty real captures populate 500 MiB and verify earlier snapshots each time.
+// Allow cold native storage to prepare the fixture; the measured list budget
+// below remains two seconds.
+test('near the default user budget, automatic backups roll across Worlds without changing either chat', { timeout: 120000 }, async t => {
     const f = await storageFixture(t);
     const store = createChatBackupStore({ directories: f.directories });
     const input = await savedChat(f, await f.create('near-budget'));

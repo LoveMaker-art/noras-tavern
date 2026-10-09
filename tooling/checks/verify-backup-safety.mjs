@@ -4,6 +4,7 @@ import { spawnSync } from 'node:child_process';
 
 const sourceRoot = fileURLToPath(new URL('../../', import.meta.url));
 const tests = [
+    'nora-chat-file-write.test.mjs',
     'nora-backup-retention-safety.test.mjs',
     'nora-chat-backup-store.test.mjs',
     'nora-chat-backup-runtime.test.mjs',
