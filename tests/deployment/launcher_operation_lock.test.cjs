@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn,execFile } = require('node:child_process');
 const { once } = require('node:events');
 const crypto = require('node:crypto');
 
@@ -12,7 +12,7 @@ const helperPath = process.env.NORA_TEST_OPERATION_HELPER || path.resolve(__dirn
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('a fresh runtime bootstrap acknowledges its actual process before examining payload bytes',
-  {timeout:45000},async()=>{
+  {timeout:90000},async()=>{
   const {acquire}=require(modulePath);
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-bootstrap-identity-')));
   const directory=path.join(root,'installer'),hermes=path.join(root,'hermes'),payload=path.join(root,'payload');
@@ -26,7 +26,8 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
     SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',COMSPEC:process.env.COMSPEC||'',
     PATH:[path.join(hermes,'node/bin'),path.join(hermes,'node'),path.join(hermes,'hermes-agent/venv/bin'),
       path.join(hermes,'hermes-agent/venv/Scripts'),process.platform==='win32'?process.env.PATH||'':'/usr/bin:/bin:/usr/sbin:/sbin'].join(path.delimiter)};
-  const lease=await acquire({directory,operationId:crypto.randomUUID(),ownerEpoch:1});let child;
+  const operationId=crypto.randomUUID();
+  const lease=await acquire({directory,operationId,ownerEpoch:1});let child;
   try {
     child=lease.spawn(process.execPath,[path.resolve(path.dirname(modulePath),'runtime-worker.js'),payload,root,hermes],
       {kind:'runtime-bootstrap',env,cwd:path.resolve(__dirname,'../..'),windowsHide:true});
@@ -36,6 +37,23 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
     const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(status,signal)=>resolve({status,signal}));});
     child.stdin.end();const end=await ended;
     const job=(await lease.snapshot()).jobs.find(value=>value.jobId===child.jobId);
+    if(process.platform==='win32'&&job?.delegation.identityStatus!=='reported') {
+      const profile=path.join(directory,'operations',operationId,'bootstrap-profile');
+      const profileEnv={HOME:profile,USERPROFILE:profile,HERMES_HOME:profile,
+        APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
+        TMP:path.join(profile,'tmp'),TEMP:path.join(profile,'tmp'),TMPDIR:path.join(profile,'tmp'),XDG_CACHE_HOME:path.join(profile,'cache')};
+      for(const [name,environment] of [['inherited',process.env],['lean-profile',{...env,...profileEnv}],['inherited-profile',{...process.env,...env,...profileEnv}]]) {
+        const began=Date.now();
+        await new Promise(resolve=>{
+          const query=execFile('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+            `([DateTimeOffset](Get-Process -Id ${process.pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()`],
+            {env:environment,windowsHide:true,timeout:8000},(error,output,errors)=>{
+              console.log('[DEBUG-bootstrap]',JSON.stringify({name,elapsedMs:Date.now()-began,code:error?.code,signal:error?.signal,
+                stdout:output.slice(-2048),stderr:errors.slice(-2048)}));resolve();
+            });query.stdin?.end();
+        });
+      }
+    }
     const evidence=`Native bootstrap output:\n${stdout}\n${stderr}`;
     assert.equal(job?.delegation.identityStatus,'reported',evidence);
     assert.equal(job.pid,child.pid,evidence);assert.ok(job.creationIdentity.creationTime>0,evidence);assert.ok(job.closedAt,evidence);
