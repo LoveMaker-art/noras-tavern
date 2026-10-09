@@ -117,9 +117,9 @@ async function creationIdentity(pid=process.pid) {
     value=Date.parse(result.stdout.trim())/1000;precisionSeconds=1;
   } else if(process.platform==='win32') {
     const result=await run('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-      `([DateTimeOffset](Get-Process -Id ${pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()`],
-      // PowerShell can initialize a fresh Windows profile before the first
-      // query. Keep the exact OS creation time check, with a bounded cold-start budget.
+      `([DateTimeOffset]([System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime())).ToUnixTimeMilliseconds()`],
+      // Read the same OS birth time without Get-Process's cold-profile overhead.
+      // Keep the exact identity check and bounded query budget.
       {windowsHide:true,timeout:30000});
     value=Number(result.stdout.trim())/1000;precisionSeconds=0.001;
   } else throw failed('DELEGATION_UNSUPPORTED','Operation delegation is unsupported on this platform');
