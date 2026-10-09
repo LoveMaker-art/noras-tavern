@@ -4,10 +4,11 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
 const script = path.resolve(__dirname, '../scripts/verify-launcher-release.cjs');
 const capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
-const publisher=()=>import(path.resolve(__dirname,'../../tooling/release/publish-release.mjs'));
+const publisher=()=>import(pathToFileURL(path.resolve(__dirname,'../../tooling/release/publish-release.mjs')));
 
 function publication(t) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-publish-'));
