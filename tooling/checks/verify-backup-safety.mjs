@@ -22,7 +22,7 @@ const tests = [
 export function verifyBackupSafety({ root = sourceRoot, run = spawnSync } = {}) {
     const engine = path.join(root, 'app/engine/sillytavern');
     for (const invocation of [
-        { cwd: engine, args: ['--test', ...tests.map(name => `tests/${name}`)] },
+        { cwd: engine, args: ['--test', '--test-concurrency=1', ...tests.map(name => `tests/${name}`)] },
         { cwd: path.join(root, 'nora-mcp'), args: ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json'] },
         { cwd: path.join(root, 'nora-mcp'), args: ['--test', 'tests/backups.test.mjs', 'tests/integration/backups.test.mjs'] },
     ]) {

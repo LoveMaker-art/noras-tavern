@@ -268,7 +268,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return locks.run(root, operation);
     };
     function validateUnchanged(relative, expected) {
-        if (fsSync.realpathSync(configuredRoot) !== root || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) throw fail('NORA_BACKUP_UNSAFE_PATH');
+        // Match fs.promises.realpath's native resolver, including Windows 8.3 aliases.
+        if (fsSync.realpathSync.native(configuredRoot) !== root || path.isAbsolute(relative) || relative.split(path.sep).includes('..')) throw fail('NORA_BACKUP_UNSAFE_PATH');
         let target = root;
         for (const part of relative.split(path.sep)) {
             if (!fsSync.lstatSync(target).isDirectory()) throw fail('NORA_BACKUP_UNSAFE_PATH');

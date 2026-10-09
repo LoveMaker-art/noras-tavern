@@ -20,6 +20,7 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
     const command = commands[0];
     assert.equal(command[0], process.execPath);
     assert.equal(command[1][0], '--test');
+    assert.ok(command[1].includes('--test-concurrency=1'), 'isolated scan budgets must not contend with other test files');
     for (const name of ['nora-backup-retention-safety', 'nora-chat-backup-store', 'nora-backup-inventory-http', 'nora-backup-ui']) {
         assert.ok(command[1].includes(`tests/${name}.test.mjs`), name);
     }

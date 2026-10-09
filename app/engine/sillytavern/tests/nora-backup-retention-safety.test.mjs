@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -236,4 +237,21 @@ test('pre-rewrite rollback attempts still work with background backups disabled,
     assert.equal(queueChatBackup({ directories: f.directories, filePath: f.filePath, data: saved.data }).status, 'disabled');
     const result = await protectChatBeforeRewrite({ directories: f.directories, filePath: f.filePath, data: saved.data });
     assert.equal((await f.store.list()).snapshots.find(item => item.id === result.id).protected, false);
+});
+
+test('restore validates the native canonical root when legacy synchronous realpath retains a short alias', async t => {
+    const f = await scenario(t, 'native-root-identity');
+    const first = await f.save(0);
+    const selected = await f.store.capture({ filePath: f.filePath, data: first.data });
+    await f.save(1);
+    const scope = { ...f.scope, id: selected.id };
+    const preview = await f.store.previewRestore(scope);
+    const original = fsSync.realpathSync;
+    const legacy = Object.assign((file, ...args) => path.resolve(file) === path.resolve(f.root)
+        ? f.root + '-short-alias' : original(file, ...args), { native: original.native });
+    t.mock.method(fsSync, 'realpathSync', legacy);
+    const restored = await f.store.restore({ ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 },
+        { ledgerEnabled: false });
+    assert.equal(restored.status, 'restored');
+    assert.deepEqual((await fs.readFile(f.filePath, 'utf8')).split('\n').slice(1), first.data.split('\n').slice(1));
 });
