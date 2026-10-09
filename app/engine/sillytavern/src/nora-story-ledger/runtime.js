@@ -3,6 +3,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import sanitize from 'sanitize-filename';
 import { sync as writeFileAtomicSync } from 'write-file-atomic';
+import { writeChatFile } from '../chat-file-write.js';
 import { resolveNoraWorldCore } from '../nora-world-core/runtime.js';
 import { createStoryLedger, LedgerConflict } from './core.js';
 import { ledgerAfterRestore, ledgerStatePath } from './state-file.js';
@@ -119,12 +120,15 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
     async function edit(scope, request) {
         const { filePath } = await resolve(scope);
         let result, protectedData;
-        await chatSessionOperations(directories).write(scope, request.activityToken, () => plugin.edit(scope, request, messages => {
-            if (fs.readFileSync(filePath, 'utf8') !== protectedData) throw new LedgerConflict('Chat changed after backup.', 'NORA_LEDGER_EDIT_STALE');
+        await chatSessionOperations(directories).write(scope, request.activityToken, () => plugin.edit(scope, request, async messages => {
+            const verify = () => {
+                if (fs.readFileSync(filePath, 'utf8') !== protectedData) throw new LedgerConflict('Chat changed after backup.', 'NORA_LEDGER_EDIT_STALE');
+            };
+            verify();
             const header = jsonl(filePath)[0];
             header.chat_metadata.tainted = true;
             result = [header, ...messages];
-            writeFileAtomicSync(filePath, result.map(item => JSON.stringify(item)).join('\n'), 'utf8');
+            await writeChatFile(filePath, result.map(item => JSON.stringify(item)).join('\n'), { beforeWrite: verify });
         }, { beforeWrite: async () => {
             protectedData = fs.readFileSync(filePath, 'utf8');
             await protectChatBeforeRewrite({ directories, filePath, data: protectedData });
@@ -174,7 +178,9 @@ export function resolveStoryLedger(directories, { recoverProjection = true } = {
             data[0].chat_metadata.nora_restore = receipt;
             // Canonical receipt invalidates old memory even if the process exits
             // before the derived ledger file can be rewritten.
-            writeFileAtomicSync(filePath, data.map(item => JSON.stringify(item)).join('\n'), 'utf8');
+            await writeChatFile(filePath, data.map(item => JSON.stringify(item)).join('\n'), { beforeWrite: () => {
+                if (fs.readFileSync(filePath, 'utf8') !== original) throw new LedgerConflict('Chat changed after backup.', 'NORA_LEDGER_EDIT_STALE');
+            } });
             return receipt;
         } }));
         return { ...result, backupWarning: chatBackupWarning(directories, scope), projectionPending: !await requestStoryProjection(directories) };

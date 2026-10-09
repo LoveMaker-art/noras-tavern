@@ -1,11 +1,17 @@
-/** Drain each small read batch before returning or reporting a failure. */
+export const STORAGE_READ_BUFFER_BYTES = 1024 * 1024;
+
+/** Bound open readers without stalling the whole pool on one slow file. */
 export async function mapStorageReads(items, read) {
-    const values = [];
-    for (let offset = 0; offset < items.length; offset += 4) {
-        const results = await Promise.allSettled(items.slice(offset, offset + 4).map(read));
-        const failed = results.find(result => result.status === 'rejected');
-        if (failed) throw failed.reason;
-        values.push(...results.map(result => result.value));
-    }
+    const values = new Array(items.length);
+    let cursor = 0, failure;
+    const worker = async () => {
+        while (!failure && cursor < items.length) {
+            const index = cursor++;
+            try { values[index] = await read(items[index]); }
+            catch (error) { failure ||= { error }; }
+        }
+    };
+    await Promise.all(Array.from({ length: Math.min(4, items.length) }, worker));
+    if (failure) throw failure.error;
     return values;
 }

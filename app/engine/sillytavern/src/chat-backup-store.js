@@ -1,12 +1,12 @@
 import fs, { constants } from 'node:fs/promises';
 import fsSync from 'node:fs';
-import writeFileAtomicSync from 'write-file-atomic';
+import { writeChatFile } from './chat-file-write.js';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { decode } from 'html-entities';
 import { KeyedLock } from './nora-world-core/locks.js';
 import { documentFileName, writeJsonAtomic } from './nora-world-core/atomic-json.js';
-import { mapStorageReads } from './nora-world-core/storage-read-batch.js';
+import { mapStorageReads, STORAGE_READ_BUFFER_BYTES } from './nora-world-core/storage-read-batch.js';
 import { validateWorldManifest } from './nora-world-core/domain.js';
 import { getChatRevision } from './chat-revision.js';
 import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
@@ -79,7 +79,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         const handle = await fs.open(before.file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
         try {
             if (!equalStat(before.stat, await handle.stat())) throw fail('NORA_BACKUP_CHANGED');
-            const data = Buffer.alloc(keepData ? before.stat.size : Math.min(before.stat.size, 64 * 1024));
+            const data = Buffer.alloc(keepData ? before.stat.size : Math.min(before.stat.size, STORAGE_READ_BUFFER_BYTES));
             const hash = crypto.createHash('sha256');
             let offset = 0;
             while (offset < before.stat.size) {
@@ -595,8 +595,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
                 || typeof input.sha256 !== 'string' || current.preview.snapshot.sha256 !== input.sha256) throw fail('NORA_BACKUP_RESTORE_STALE');
         };
         verify(inspected);
-        // Keep the selected snapshot safe while making the required protection
-        // point. Retention must not prune the very snapshot being restored.
+        // Keep the selected snapshot safe during bounded recovery capture.
+        // An unavailable checkpoint is returned explicitly as backupWarning.
         const checkpoint = await tryCapture({ filePath: path.join(configuredRoot, inspected.relative), data: inspected.current.data }, input.id, true);
         const latest = await inspectRestore(input);
         verify(latest);
@@ -608,10 +608,12 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             backupWarning: checkpoint.id ? null : checkpoint, ledgerEnabled, at: now(),
             historySignature: digest(prefixText(latest.restored.slice(1), latest.restored.length - 1)) };
         const data = latest.restored.map(item => JSON.stringify(item)).join('\n');
-        // No await between final path/stat validation and the atomic replace.
-        validateUnchanged(latest.manifestRelative, latest.manifestStat);
+        // Each retry revalidates synchronously immediately before replacement.
         const destination = validateUnchanged(latest.relative, latest.current.stat);
-        writeFileAtomicSync.sync(destination, data, 'utf8');
+        await writeChatFile(destination, data, { beforeWrite: () => {
+            validateUnchanged(latest.manifestRelative, latest.manifestStat);
+            validateUnchanged(latest.relative, latest.current.stat);
+        } });
         return { status: 'restored', worldId: input.worldId, sessionId: input.sessionId,
             revision: getChatRevision(latest.restored), restoreId, protectedBackupId: checkpoint.id || null,
             backupWarning: checkpoint.id ? null : checkpoint };

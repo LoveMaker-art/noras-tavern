@@ -230,11 +230,14 @@ test('restore checkpoints roll rather than becoming permanent pins, while preser
     await f.store.protect(selected.id, true);
     for (let i = 1; i <= 60; i++) {
         const saved = await f.save(i);
+        const completed = await f.store.capture({ filePath: f.filePath, data: saved.data });
         const scope = { ...f.scope, id: selected.id };
         const preview = await f.store.previewRestore(scope);
         const input = { ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 };
         const restored = await f.store.restore(input, { ledgerEnabled: false });
-        assert.equal((await f.store.download(restored.protectedBackupId)).toString(), saved.data);
+        if (restored.protectedBackupId) assert.equal(restored.protectedBackupId, completed.id);
+        else assert.ok(['NORA_BACKUP_TIMEOUT', 'NORA_BACKUP_BUSY'].includes(restored.backupWarning?.code));
+        assert.equal((await f.store.download(completed.id)).toString(), saved.data);
         assert.equal((await f.store.restore(input)).status, 'already-restored');
         assert.equal((await f.chat(await f.core.getWorld(f.scope.worldId))).at(-1).mes, 'Reply 0');
     }

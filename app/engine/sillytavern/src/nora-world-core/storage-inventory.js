@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { validateWorldManifest } from './domain.js';
 import { documentFileName } from './atomic-json.js';
-import { mapStorageReads } from './storage-read-batch.js';
+import { mapStorageReads, STORAGE_READ_BUFFER_BYTES } from './storage-read-batch.js';
 import { ledgerStatePath } from '../nora-story-ledger/state-file.js';
 import sanitize from 'sanitize-filename';
 
@@ -68,7 +68,7 @@ async function readRegular(root, relative, metrics, consume = null) {
         if (!sameFile(before.stat, await handle.stat())) throw failure('changed-during-scan');
         const chunks = [];
         const hash = crypto.createHash('sha256');
-        const buffer = Buffer.alloc(64 * 1024);
+        const buffer = Buffer.alloc(Math.min(before.stat.size || 1, STORAGE_READ_BUFFER_BYTES));
         let readBytes = 0;
         while (true) {
             const read = await handle.read(buffer, 0, buffer.length, null);

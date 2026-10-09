@@ -193,11 +193,12 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
     }
 
     async function writeChat(scope, messages, writer) {
-        return run(scope, () => {
+        return run(scope, async () => {
             const { state } = checked(scope);
             assertWritable(scope, state, messages);
-            // Writer is synchronous: no interleaving between guard and JSONL commit.
-            const result = writer();
+            // Keep the session lock until replacement succeeds. The writer
+            // rechecks the synchronous file precondition after a bounded wait.
+            const result = await writer();
             if (discardStaleCandidates(state, messages)) writeState(scope, state);
             return result;
         });
@@ -253,7 +254,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
                 if (signature(chat.messages, chat.messages.length) !== expectedSignature) throw new LedgerConflict('Chat changed while preparing the edit.', 'NORA_LEDGER_EDIT_STALE');
                 assertWritable(scope, state, messages);
             }
-            writer(messages);
+            await writer(messages);
             discardStaleCandidates(state, messages);
             writeState(scope, state);
         });

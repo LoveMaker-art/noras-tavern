@@ -60,6 +60,41 @@ async function activate(f, record = f.state.pending) {
     dispatch.release();
 }
 
+test('a delayed failed chat replacement retains its session lock and original ledger state', async () => {
+    const f = fixture(16);
+    await f.plugin.schedule(scope);
+    const before = f.state, messages = f.messages;
+    const changed = copy(messages); changed[0].mes = 'Changed opening';
+    let entered, release;
+    const reached = new Promise(resolve => { entered = resolve; });
+    const held = new Promise(resolve => { release = resolve; });
+    const failure = Object.assign(new Error('replacement still denied'), { code: 'EPERM' });
+    const writing = f.plugin.writeChat(scope, changed, async () => { entered(); await held; throw failure; });
+    await reached;
+    assert.deepEqual(f.state, before);
+    let nextEntered = false;
+    const next = f.plugin.writeChat(scope, messages, () => { nextEntered = true; });
+    await new Promise(setImmediate);
+    assert.equal(nextEntered, false);
+    release();
+    await assert.rejects(writing, error => error === failure);
+    await next;
+    assert.deepEqual(f.state, before);
+    assert.deepEqual(f.messages, messages);
+});
+
+test('a failed asynchronous edit does not invalidate memory before canonical replacement', async () => {
+    const f = fixture(16);
+    await f.plugin.schedule(scope);
+    const before = f.state, messages = f.messages;
+    await assert.rejects(f.plugin.edit(scope, { messageId: 0, text: 'Changed opening', expectedSignature: fingerprint(messages) }, async () => {
+        await new Promise(setImmediate);
+        throw Object.assign(new Error('edit replacement denied'), { code: 'EPERM' });
+    }), { code: 'EPERM' });
+    assert.deepEqual(f.state, before);
+    assert.deepEqual(f.messages, messages);
+});
+
 test('restoration refuses compression and dispatched ledger work, and suppresses scheduling during its critical section', async () => {
     let release, entered;
     const reached = new Promise(resolve => { entered = resolve; });

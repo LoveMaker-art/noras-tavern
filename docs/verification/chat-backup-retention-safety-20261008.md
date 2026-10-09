@@ -79,6 +79,27 @@ The stdio integration uses the real MCP transport and Express routes, including
 export, manual protection, budget-exhausted restoration, isolation and replay.
 No model calls or real user data are involved.
 
+### 2026-10-09 release preflight corrections
+
+Windows replacement retries now yield while retaining the session lock, so
+pending readers can close. Every attempt rechecks the file precondition
+synchronously before atomic replacement; ledger changes await successful
+canonical replacement. Eight attempts have 1,770 ms of total scheduled waiting.
+Permanent denial preserves the original file. A native Windows fixture holds
+a file handle without delete sharing for 600 ms; Mac runs skip that OS-specific
+fixture and cannot establish its Windows outcome.
+
+Inventory uses four read workers and 1 MiB streaming buffers. Large inventory
+hashing therefore retains at most four such buffers, rather than whole snapshot
+bodies. Content hashes, size limits and directory/file identity checks remain
+mandatory. Small display summaries retain their existing 16 MiB per-file cap.
+The two-second developer regression target uses capture P95 and the median of
+three large-list samples; maximum capture time and all list samples are logged.
+This avoids treating one cloud-host scheduling pause as a sustained regression.
+The one-second automatic-attempt deadline and its no-late-commit tests remain
+unchanged. Retention fixtures explicitly establish completed snapshots before
+testing bounded optional attempts; timeout warnings never count as creation.
+
 Final local gate: 158 engine tests passed, zero failures or skips; MCP TypeScript
 compiled and all 5 backup unit/stdio integration tests passed. The 3 release-gate
 contract tests and 8 repository-layout tests also passed. Webpack and generated
