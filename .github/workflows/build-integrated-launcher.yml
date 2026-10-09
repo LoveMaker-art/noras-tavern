@@ -94,6 +94,10 @@ jobs:
       - name: Verify launcher build reuse boundaries
         run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs
 
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+
       - name: Download and verify unchanged published components
         if: inputs.launcher_baseline_tag != ''
         env:
@@ -192,10 +196,6 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
 
-      - name: Install launcher test dependencies
-        working-directory: launcher/desktop
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
       - name: Require chat backup safety tests
         timeout-minutes: 10
         shell: bash
@@ -216,7 +216,7 @@ jobs:
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
-        run: node tooling/run.mjs node --test tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
+        run: node tooling/run.mjs node --test tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
 
       - name: Test native transaction and complete evidence contracts
         shell: bash
