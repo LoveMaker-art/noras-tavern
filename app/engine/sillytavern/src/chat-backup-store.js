@@ -6,6 +6,7 @@ import crypto from 'node:crypto';
 import { decode } from 'html-entities';
 import { KeyedLock } from './nora-world-core/locks.js';
 import { documentFileName, writeJsonAtomic } from './nora-world-core/atomic-json.js';
+import { mapStorageReads } from './nora-world-core/storage-read-batch.js';
 import { validateWorldManifest } from './nora-world-core/domain.js';
 import { getChatRevision } from './chat-revision.js';
 import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
@@ -71,21 +72,26 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
     const dataRelative = id => path.join(backupRelative, `chat_nora1_${id}.jsonl`);
     const recordRelative = id => path.join(recordsRelative, `${id}.json`);
 
-    async function read(relative, maxBytes = MAX_FILE) {
+    async function read(relative, maxBytes = MAX_FILE, keepData = true, expectedBytes = null) {
         const before = await checked(relative);
         if (!before.stat.isFile() || before.stat.size > maxBytes) throw fail('NORA_BACKUP_UNSAFE_FILE');
+        if (expectedBytes !== null && before.stat.size !== expectedBytes) throw fail('NORA_BACKUP_CHANGED');
         const handle = await fs.open(before.file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
         try {
             if (!equalStat(before.stat, await handle.stat())) throw fail('NORA_BACKUP_CHANGED');
-            const data = Buffer.alloc(before.stat.size);
+            const data = Buffer.alloc(keepData ? before.stat.size : Math.min(before.stat.size, 64 * 1024));
+            const hash = crypto.createHash('sha256');
             let offset = 0;
-            while (offset < data.length) {
-                const { bytesRead } = await handle.read(data, offset, data.length - offset, offset);
+            while (offset < before.stat.size) {
+                const bufferOffset = keepData ? offset : 0;
+                const length = Math.min(data.length - bufferOffset, before.stat.size - offset);
+                const { bytesRead } = await handle.read(data, bufferOffset, length, offset);
                 if (!bytesRead) throw fail('NORA_BACKUP_CHANGED');
+                hash.update(data.subarray(bufferOffset, bufferOffset + bytesRead));
                 offset += bytesRead;
             }
             if (!equalStat(before.stat, await handle.stat()) || !equalStat(before.stat, (await checked(relative)).stat)) throw fail('NORA_BACKUP_CHANGED');
-            return { data, stat: before.stat };
+            return { data: keepData ? data : null, sha256: hash.digest('hex'), stat: before.stat };
         } finally { await handle.close(); }
     }
 
@@ -100,7 +106,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return result;
     }
 
-    async function record(id) {
+    async function record(id, { summary = false, inventoryOnly = false } = {}) {
         if (!ID.test(id)) throw fail('NORA_BACKUP_INVALID_ID');
         const { data, stat } = await read(recordRelative(id), 65536);
         const value = JSON.parse(data.toString('utf8'));
@@ -111,8 +117,8 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
             || typeof value.protected !== 'boolean' || value.consistency !== 'chat-only' || !MVU_STATES.has(value.mvuState)
             || ![value.worldId, value.sessionId].every(v => v === null || typeof v === 'string')) throw fail('NORA_BACKUP_INVALID_RECORD');
-        const snapshot = await read(dataRelative(id));
-        if (snapshot.data.length !== value.bytes || digest(snapshot.data) !== value.sha256) throw fail('NORA_BACKUP_CHANGED');
+        const snapshot = await read(dataRelative(id), MAX_FILE, !inventoryOnly || summary && value.bytes <= 16 * 1024 * 1024, value.bytes);
+        if (snapshot.stat.size !== value.bytes || snapshot.sha256 !== value.sha256) throw fail('NORA_BACKUP_CHANGED');
         return { value, metadataStat: stat, metadataSha256: digest(data), snapshot };
     }
 
@@ -120,29 +126,31 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         const snapshots = [], warnings = [];
         let names;
         try { names = await entries(recordsRelative); } catch (error) { if (error.code !== 'ENOENT') throw error; names = []; }
-        for (const name of names) {
-            const id = name.endsWith('.json') ? name.slice(0, -5) : '';
-            if (!ID.test(id)) continue;
+        const ids = names.map(name => name.endsWith('.json') ? name.slice(0, -5) : '').filter(id => ID.test(id));
+        const records = await mapStorageReads(ids, async id => {
             try {
-                const { value, snapshot } = await record(id);
+                const { value, snapshot } = await record(id, { inventoryOnly: true, summary: includeSummary });
                 let summary = {};
                 // List summaries are read-only projections, never written into old metadata.
-                if (includeSummary && snapshot.data.length <= 16 * 1024 * 1024) {
+                if (includeSummary && snapshot.data) {
                     try {
                         const messages = parseRestoreChat(snapshot.data).slice(1);
                         summary = { messageCount: messages.length,
                             preview: backupExcerpt(messages.at(-1)?.mes || '') };
                     } catch { summary = { messageCount: null, preview: '' }; }
                 }
-                snapshots.push({ ...value, ...summary });
-            } catch (error) { warnings.push({ id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' }); }
-        }
+                return { snapshot: { ...value, ...summary } };
+            } catch (error) { return { warning: { id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' } }; }
+        });
+        for (const item of records) { if (item.snapshot) snapshots.push(item.snapshot); else warnings.push(item.warning); }
         const managed = new Set(snapshots.map(item => `chat_nora1_${item.id}.jsonl`));
         let totalBytes = 0, legacyFiles = 0;
-        for (const name of await entries(backupRelative)) {
-            if (!name.startsWith('chat_') || !name.endsWith('.jsonl')) continue;
+        const fileNames = (await entries(backupRelative)).filter(name => name.startsWith('chat_') && name.endsWith('.jsonl'));
+        for (const { name, stat } of await mapStorageReads(fileNames, async name => {
             const { stat } = await checked(path.join(backupRelative, name));
             if (!stat.isFile()) throw fail('NORA_BACKUP_UNSAFE_FILE');
+            return { name, stat };
+        })) {
             totalBytes += stat.size;
             if (!managed.has(name)) legacyFiles++;
         }

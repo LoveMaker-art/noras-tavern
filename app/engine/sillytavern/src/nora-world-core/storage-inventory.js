@@ -4,6 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { validateWorldManifest } from './domain.js';
 import { documentFileName } from './atomic-json.js';
+import { mapStorageReads } from './storage-read-batch.js';
 import { ledgerStatePath } from '../nora-story-ledger/state-file.js';
 import sanitize from 'sanitize-filename';
 
@@ -58,7 +59,10 @@ async function readRegular(root, relative, metrics, consume = null) {
     if (!before.stat.isFile()) throw failure('unsafe-path');
     const maxBytes = consume ? LIMITS.snapshotBytes : LIMITS.manifestBytes;
     if (before.stat.size > maxBytes) throw failure('file-too-large');
-    if (metrics.readBytes + before.stat.size > LIMITS.scanBytes) throw failure('scan-budget-exceeded');
+    // Reserve declared bytes synchronously before opening concurrent readers.
+    // Actual bytes remain measured independently and bounded on every read.
+    if ((metrics.reservedBytes || 0) + before.stat.size > LIMITS.scanBytes) throw failure('scan-budget-exceeded');
+    metrics.reservedBytes = (metrics.reservedBytes || 0) + before.stat.size;
     const handle = await fs.open(before.file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
     try {
         if (!sameFile(before.stat, await handle.stat())) throw failure('changed-during-scan');
@@ -138,14 +142,14 @@ function identify(header, worlds, ambiguous, names) {
 
 async function changedPaths(root, versions, warnings) {
     const paths = new Set();
-    for (const [relative, before] of versions) {
+    await mapStorageReads([...versions], async ([relative, before]) => {
         try {
             const after = await checkedPath(root, relative);
             if (!before || !sameFile(before, after.stat)) paths.add(relative);
         } catch (error) {
             if (before || error.code !== 'ENOENT') paths.add(relative);
         }
-    }
+    });
     for (const relative of paths) warnings.push({ path: relative, code: 'changed-during-scan' });
     return paths;
 }
@@ -200,8 +204,9 @@ export async function inspectChatBackups(directories) {
         if (!names.has(world.name)) names.set(world.name, []);
         names.get(world.name).push(world.world_id);
     }
-    for (const entry of await entries(root, backupRelative, warnings, backupVersions)) {
-        if (!entry.name.startsWith('chat_') || !entry.name.endsWith('.jsonl')) continue;
+    const files = (await entries(root, backupRelative, warnings, backupVersions))
+        .filter(entry => entry.name.startsWith('chat_') && entry.name.endsWith('.jsonl'));
+    backups.push(...await mapStorageReads(files, async entry => {
         let stat, sha256;
         const reader = jsonlReader();
         try {
@@ -210,16 +215,15 @@ export async function inspectChatBackups(directories) {
         } catch (error) {
             const code = error.code || 'read-failed';
             warnings.push({ path: path.join(backupRelative, entry.name), code });
-            backups.push({ name: entry.name, bytes: null, modifiedAt: null, sha256: null, format: 'unreadable',
-                messageCount: null, owner: unknown(code) });
-            continue;
+            return { name: entry.name, bytes: null, modifiedAt: null, sha256: null, format: 'unreadable',
+                messageCount: null, owner: unknown(code) };
         }
         const parsed = reader.finish();
         if (parsed.error) warnings.push({ path: path.join(backupRelative, entry.name), code: parsed.error });
-        backups.push({ name: entry.name, bytes: stat.size, modifiedAt: stat.mtime.toISOString(),
+        return { name: entry.name, bytes: stat.size, modifiedAt: stat.mtime.toISOString(),
             sha256, format: parsed.error ? 'invalid' : 'jsonl', messageCount: parsed.messageCount,
-            owner: parsed.error ? unknown(parsed.error) : identify(parsed.header, worlds, ambiguous, names) });
-    }
+            owner: parsed.error ? unknown(parsed.error) : identify(parsed.header, worlds, ambiguous, names) };
+    }));
     // A World may be deleted or a snapshot replaced during a long scan. Results
     // are observations, never durable authority for a later destructive action.
     const ownershipChanged = (await changedPaths(root, manifestVersions, warnings)).size > 0;
@@ -241,7 +245,7 @@ export async function inspectChatBackups(directories) {
         }
     }
     return { version: 1, readOnly: true, complete: warnings.length === 0, backups, warnings, summary, limits: LIMITS,
-        metrics: { ...metrics, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
+        metrics: { readBytes: metrics.readBytes, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
 }
 
 function storageCategory(relative, references) {
@@ -348,5 +352,5 @@ export async function inspectUserStorage(directories) {
     return { version: 1, readOnly: true, complete: !warnings.length, scope: scope.map(portablePath),
         files: files.map(file => ({ ...file, path: portablePath(file.path) })).sort((a, b) => a.path.localeCompare(b.path)),
         warnings: warnings.map(warning => ({ ...warning, path: portablePath(warning.path) })),
-        summary, metrics: { ...metrics, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
+        summary, metrics: { readBytes: metrics.readBytes, durationMs: Math.round((performance.now() - started) * 10) / 10 } };
 }

@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import unittest
 
@@ -31,10 +32,20 @@ class NativeProgramEvidenceTests(unittest.TestCase):
     def test_replaced_log_filename_cannot_supply_evidence_for_the_owned_launch(self):
         self.fixture.script('setTimeout(() => { const broken = undefined; broken.PRIVATE_PROPERTY; }, 150);\n')
         original = self.fixture.runtime.spawn
+        replacement = []
         def spawn(command, env, log_path):
             child = original(command, env, log_path)
-            log_path.unlink()
-            log_path.write_text('Error [EACCES]: PRIVATE_REPLACEMENT_LOG\n')
+            try:
+                log_path.unlink()
+            except PermissionError as error:
+                # Windows protects the child's open output handle from unlink.
+                # The actual launch must still return and retain its evidence.
+                if os.name != 'nt' or error.winerror != 32:
+                    raise
+                replacement.append('blocked-by-open-handle')
+            else:
+                log_path.write_text('Error [EACCES]: PRIVATE_REPLACEMENT_LOG\n')
+                replacement.append('replaced')
             return child
         self.fixture.runtime.spawn = spawn
         detail = first_install._error_diagnostics.exception_diagnostic(self.fixture.failure())
@@ -43,6 +54,7 @@ class NativeProgramEvidenceTests(unittest.TestCase):
         self.assertIn('server.js', serialized)
         self.assertNotIn('PRIVATE_', serialized)
         self.assertNotIn('EACCES', serialized)
+        self.assertEqual(replacement, ['blocked-by-open-handle' if os.name == 'nt' else 'replaced'])
 
 
 if __name__ == '__main__':

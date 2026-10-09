@@ -850,8 +850,16 @@ test('near the default user budget, automatic backups roll across Worlds without
         await store.capture(input);
     }
     const start = performance.now();
-    const list = await store.list();
+    const allocate = Buffer.alloc;
+    let largestAllocation = 0;
+    const allocations = t.mock.method(Buffer, 'alloc', (size, ...args) => {
+        largestAllocation = Math.max(largestAllocation, size);
+        return allocate(size, ...args);
+    });
+    let list;
+    try { list = await store.list(); } finally { allocations.mock.restore(); }
     const elapsed = performance.now() - start;
+    assert.ok(largestAllocation <= 64 * 1024, 'large snapshot inventory must stream hashes without allocating full chat bodies');
     assert.equal(list.snapshots.length, 20);
     assert.ok(list.totalBytes > 500 * 1024 * 1024 && list.totalBytes < 501 * 1024 * 1024);
     assert.ok(JSON.stringify(list).length < 20000);

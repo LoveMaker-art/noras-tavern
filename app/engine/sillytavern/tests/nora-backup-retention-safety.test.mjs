@@ -42,17 +42,28 @@ test('default policy and runtime both retain fifty automatic snapshots', async t
     assert.equal((await f.store.list()).policy.maxPerSession, 50);
 });
 
-test('120 changed regeneration checkpoints roll through fifty slots without pinning or losing manual backups', async t => {
+function assertOptionalCapture(result, completed) {
+    if (['failed', 'skipped'].includes(result.status)) {
+        assert.ok(['NORA_BACKUP_TIMEOUT', 'NORA_BACKUP_BUSY'].includes(result.code), JSON.stringify(result));
+    } else {
+        assert.equal(result.status, 'unchanged');
+        assert.equal(result.id, completed.id);
+    }
+}
+
+test('125 completed recovery points retain fifty rolling slots and five manual backups across optional checkpoints', async t => {
     const f = await scenario(t, 'repeated-checkpoint');
     const pinned = [];
     let latest;
     for (let i = 0; i < 125; i++) {
         latest = await f.save(i);
+        // Retention applies to completed captures. The foreground checkpoint
+        // remains best-effort and may hit its one-second storage deadline.
+        const completed = await f.store.capture({ filePath: f.filePath, data: latest.data, protect: i < 5 });
         const checkpoint = await f.runtime.checkpoint(f.scope, { expectedSignature: latest.expectedSignature });
-        assert.ok(checkpoint.id);
+        assertOptionalCapture(checkpoint, completed);
         if (i < 5) {
-            await f.store.protect(checkpoint.id, true);
-            pinned.push({ id: checkpoint.id, data: latest.data });
+            pinned.push({ id: completed.id, data: latest.data });
         }
     }
     const list = await f.store.list();
@@ -62,8 +73,10 @@ test('120 changed regeneration checkpoints roll through fifty slots without pinn
         Array.from({ length: 50 }, (_, i) => 125 - i));
     for (const item of pinned) assert.equal((await f.store.download(item.id)).toString(), item.data);
     assert.equal(await fs.readFile(f.filePath, 'utf8'), latest.data);
+    const completed = await f.store.capture({ filePath: f.filePath, data: latest.data });
+    assert.equal(completed.status, 'unchanged');
     const same = await f.runtime.checkpoint(f.scope, { expectedSignature: latest.expectedSignature });
-    assert.equal(same.status, 'unchanged');
+    assertOptionalCapture(same, completed);
     assert.equal((await f.store.list()).snapshots.length, 55);
 });
 
@@ -88,6 +101,7 @@ test('one hundred real message edits keep fifty rollback copies without exhausti
     const f = await scenario(t, 'repeated-edits');
     let saved = await f.save(0);
     for (let i = 1; i <= 100; i++) {
+        await f.store.capture({ filePath: f.filePath, data: saved.data });
         const result = await f.runtime.edit(f.scope, { messageId: 0, text: `Edited reply ${i}`,
             expectedSignature: saved.expectedSignature });
         const messages = result.slice(1);
@@ -106,9 +120,10 @@ test('disk, permission and metadata backup failures do not block editing or remo
     const f = await scenario(t, 'failure-at-limit');
     for (let i = 0; i < 50; i++) {
         const saved = await f.save(i);
-        await f.runtime.checkpoint(f.scope, { expectedSignature: saved.expectedSignature });
+        await f.store.capture({ filePath: f.filePath, data: saved.data });
     }
     const prior = await f.store.list();
+    assert.equal(prior.snapshots.length, 50);
     for (const [metadataOnly, code] of [[false, 'ENOSPC'], [true, 'ENOSPC'], [false, 'EACCES']]) {
         const saved = await f.save(50);
         const open = fs.open;

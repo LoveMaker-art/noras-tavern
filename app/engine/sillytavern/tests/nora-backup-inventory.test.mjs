@@ -187,6 +187,34 @@ test('read-only inventory has bounded metadata and measures a 400-snapshot synth
     assert.ok([...durations].sort((a, b) => a - b)[1] < 2000, 'isolated 25 MiB scan median regression budget is 2s');
 });
 
+test('inventory overlaps only a bounded number of readers and closes them before returning', async t => {
+    const f = await storageFixture(t), world = await f.create('parallel-read');
+    const source = await f.chat(world);
+    for (let i = 0; i < 8; i++) await f.backup(`chat_parallel_${i}.jsonl`, source);
+    const open = fs.open.bind(fs);
+    let active = 0, peak = 0;
+    t.mock.method(fs, 'open', async (file, ...args) => {
+        const handle = await open(file, ...args);
+        if (String(file).includes('chat_parallel_')) {
+            active++; peak = Math.max(peak, active);
+            const read = handle.read.bind(handle), close = handle.close.bind(handle);
+            handle.read = async (...values) => {
+                await new Promise(resolve => setTimeout(resolve, 5));
+                return read(...values);
+            };
+            handle.close = async () => { try { return await close(); } finally { active--; } };
+        }
+        return handle;
+    });
+    const report = await inspectChatBackups(f.directories);
+    assert.equal(report.complete, true);
+    assert.equal(report.summary.files, 8);
+    assert.equal(report.summary.duplicateFiles, 7);
+    assert.ok(peak > 1 && peak <= 4);
+    assert.equal(active, 0);
+    assert.deepEqual(report.backups.map(item => item.name), Array.from({ length: 8 }, (_, i) => `chat_parallel_${i}.jsonl`));
+});
+
 test('a file exchanged for an external symlink before open never receives a digest or trusted owner', async t => {
     const f = await storageFixture(t);
     const world = await f.create('exchange');
