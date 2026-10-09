@@ -37,7 +37,7 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
     const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(status,signal)=>resolve({status,signal}));});
     child.stdin.end();const end=await ended;
     const job=(await lease.snapshot()).jobs.find(value=>value.jobId===child.jobId);
-    if(process.platform==='win32'&&job?.delegation.identityStatus!=='reported') {
+    if(process.platform==='win32'&&(job?.delegation.identityStatus!=='reported'||process.env.NORA_BOOTSTRAP_DIAGNOSTIC==='1')) {
       const profile=path.join(directory,'operations',operationId,'bootstrap-profile');
       const profileEnv={HOME:profile,USERPROFILE:profile,HERMES_HOME:profile,
         APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
@@ -60,6 +60,7 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
         'USERDOMAIN','USERDOMAIN_ROAMINGPROFILE','HOMEDRIVE','HOMEPATH','PUBLIC'];
       let selected=names.filter(name=>process.env[name]!==undefined);
       const add=keys=>({...lean,...Object.fromEntries(keys.map(name=>[name,process.env[name]]))});
+      await queryEnvironment('lean-profile',lean);
       if(await queryEnvironment('system-variables',add(selected))) {
         while(selected.length>1) {
           const split=Math.ceil(selected.length/2),left=selected.slice(0,split),right=selected.slice(split);

@@ -62,6 +62,8 @@ jobs:
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Reproduce cold-profile bootstrap identity before downloading resources
+        env:
+          NORA_BOOTSTRAP_DIAGNOSTIC: '1'
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
   build:
