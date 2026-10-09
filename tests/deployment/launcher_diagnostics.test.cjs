@@ -214,12 +214,15 @@ test('model helper reports a closed input pipe without an uncaught EPIPE and ret
         process.exitCode=${mode==='success'?0:17};
         process.disconnect();`;
     const child=require('node:child_process').spawn(process.execPath,['-e',`
-      require('node:fs').closeSync(0);
-      // Keep the standard descriptor occupied while IPC initializes its handles.
-      // The original parent input pipe remains closed and must report EPIPE.
-      require('node:fs').openSync(require('node:os').devNull,'r');
+      const input=process.stdin;
       process.once('message',()=>{${body}});
-      process.send('input-closed');
+      input.once('close',()=>process.send('input-closed'));
+      // The standard descriptor and Node's Pipe can own separate input handles.
+      // Close both; neither fd closure nor stream destruction alone proves EPIPE.
+      require('node:fs').closeSync(input.fd);
+      // Keep the descriptor occupied so POSIX IPC cannot reuse reserved fd 0.
+      require('node:fs').openSync(require('node:os').devNull,'r');
+      input.destroy();
     `],{stdio:['pipe','pipe','pipe','ipc']});
     t.after(()=>{if(child.exitCode===null)child.kill('SIGTERM');});
     await new Promise((resolve,reject)=>{
