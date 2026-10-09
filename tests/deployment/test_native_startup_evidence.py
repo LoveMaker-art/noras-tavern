@@ -137,6 +137,39 @@ class NativeStartupEvidenceTests(unittest.TestCase):
                     'cwd': str(self.runtime.engine_root)}
         return record
 
+    def test_wrapped_os_denial_on_an_unrelated_pid_does_not_block_runtime_discovery(self):
+        processes = self.runtime.process_module()
+        if processes.psutil is None:
+            self.skipTest('requires the packaged process library')
+        script = self.runtime.engine_root / 'server.js'
+        for field in ('cmdline', 'cwd'):
+            with self.subTest(field=field):
+                denied = mock.Mock()
+                denied.cmdline.return_value = [NODE, str(script)]
+                denied.cwd.return_value = str(self.runtime.engine_root)
+                error = SystemError('proc inspection returned a result with an exception set')
+                error.__cause__ = PermissionError('sysctl denied process inspection')
+                getattr(denied, field).side_effect = error
+                owned = mock.Mock()
+                owned.cmdline.return_value = [NODE, str(script)]
+                owned.cwd.return_value = str(self.runtime.engine_root)
+                with mock.patch.object(processes.psutil, 'pids', return_value=[1001, 1002]), \
+                        mock.patch.object(processes.psutil, 'Process', side_effect=lambda pid: denied if pid == 1001 else owned):
+                    records = processes.find_processes(script)
+                    self.assertEqual([item['pid'] for item in records], [1002])
+                    with self.assertRaisesRegex(self.lifecycle.NativeLifecycleError, 'expected identity'):
+                        self.runtime.wait_for_process_identity(processes, 1001, script, timeout=0)
+
+    def test_unclassified_process_library_failure_remains_visible(self):
+        processes = self.runtime.process_module()
+        if processes.psutil is None:
+            self.skipTest('requires the packaged process library')
+        candidate = mock.Mock()
+        candidate.cmdline.side_effect = SystemError('unexpected library fault')
+        with mock.patch.object(processes.psutil, 'Process', return_value=candidate):
+            with self.assertRaisesRegex(SystemError, 'unexpected library fault'):
+                processes.process_record(1001, self.runtime.engine_root / 'server.js')
+
     def guarded_failure_events(self):
         """Run the real Node owner inside an ACKed maintenance Python handle."""
         profile = self.base / 'guard-profile'; profile.mkdir()

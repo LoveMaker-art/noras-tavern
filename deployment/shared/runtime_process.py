@@ -11,12 +11,22 @@ except ImportError:  # Linux release environments can use /proc without psutil.
     psutil = None
 
 
+def _wrapped_os_denial(error):
+    # Some macOS psutil C calls wrap syscall failures in SystemError instead
+    # of AccessDenied. Unknown library faults must still remain visible.
+    return isinstance(error.__cause__ or error.__context__, OSError)
+
+
 def _argv(pid):
     if psutil is not None:
         try:
             return psutil.Process(int(pid)).cmdline()
         except (psutil.Error, OSError, ValueError):
             return []
+        except SystemError as error:
+            if _wrapped_os_denial(error):
+                return []
+            raise
     try:
         return [os.fsdecode(value) for value in Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0") if value]
     except OSError:
@@ -32,6 +42,10 @@ def process_record(pid, script):
             cwd = Path(psutil.Process(int(pid)).cwd()).resolve()
         except (psutil.Error, OSError, ValueError):
             return None
+        except SystemError as error:
+            if _wrapped_os_denial(error):
+                return None
+            raise
     else:
         try:
             cwd = Path(f"/proc/{pid}/cwd").resolve()
