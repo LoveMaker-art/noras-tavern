@@ -43,7 +43,7 @@ def spawn_nested(source,output):
 `;
 async function until(fn, timeout = 8000) {
   const end = Date.now() + timeout;
-  while (!fn()) { if (Date.now() >= end) throw new Error('Condition was not reached'); await delay(25); }
+  while (!(await fn())) { if (Date.now() >= end) throw new Error('Condition was not reached'); await delay(25); }
 }
 function firstLine(proc) {
   return new Promise((resolve, reject) => {
@@ -241,7 +241,7 @@ test('unavailable source and malformed private diagnostics cannot replace the or
 });
 
 test('a maintenance child keeps exclusion after the desktop dies, then releases on close', {timeout:20000}, async () => {
-  const { acquire } = require(modulePath);
+  const { acquire, probe } = require(modulePath);
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-operation-lock-'));
   const output = path.join(directory, 'writes.txt');
   const childSource = `
@@ -271,7 +271,18 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     await delay(120);
     assert.ok(fs.statSync(output).size > before, 'the original child must still be writing');
     await until(() => fs.readFileSync(output,'utf8').includes('done\n'));
-    await delay(100);
+    // Final output precedes delegation/socket and real process closure. The
+    // guard must retain exclusion until those events arrive on every platform.
+    let finished;
+    await until(async () => { finished = await probe({directory}); return !finished.busy; });
+    const prior = finished.sessions.find(session => session.operationId === 'desktop-death');
+    assert.equal(prior.status, 'released');
+    assert.equal(prior.ownerConnected, false);
+    assert.ok(prior.releasedAt);
+    assert.equal(prior.jobs.length, 1);
+    assert.ok(prior.jobs[0].closedAt);
+    assert.equal(prior.jobs[0].exitCode, 0);
+    assert.deepEqual(finished.errors, []);
     next = await acquire({directory,operationId:'after-close',ownerEpoch:2});
     assert.equal((await next.snapshot()).ownerEpoch, 2);
   } finally {
