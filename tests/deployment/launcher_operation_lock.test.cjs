@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn,execFile } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const crypto = require('node:crypto');
 
@@ -12,7 +12,7 @@ const helperPath = process.env.NORA_TEST_OPERATION_HELPER || path.resolve(__dirn
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('a fresh runtime bootstrap acknowledges its actual process before examining payload bytes',
-  {timeout:180000},async()=>{
+  {timeout:45000},async()=>{
   const {acquire}=require(modulePath);
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-bootstrap-identity-')));
   const directory=path.join(root,'installer'),hermes=path.join(root,'hermes'),payload=path.join(root,'payload');
@@ -24,6 +24,8 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
     APPDATA:path.join(root,'appdata'),LOCALAPPDATA:path.join(root,'localappdata'),
     TMP:temporary,TEMP:temporary,TMPDIR:temporary,XDG_CACHE_HOME:path.join(root,'cache'),
     SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',COMSPEC:process.env.COMSPEC||'',
+    // Keep Windows module discovery intact while isolating the user profile.
+    ...(process.platform==='win32'&&process.env.PSModulePath?{PSModulePath:process.env.PSModulePath}:{}),
     PATH:[path.join(hermes,'node/bin'),path.join(hermes,'node'),path.join(hermes,'hermes-agent/venv/bin'),
       path.join(hermes,'hermes-agent/venv/Scripts'),process.platform==='win32'?process.env.PATH||'':'/usr/bin:/bin:/usr/sbin:/sbin'].join(path.delimiter)};
   const operationId=crypto.randomUUID();
@@ -37,43 +39,6 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
     const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(status,signal)=>resolve({status,signal}));});
     child.stdin.end();const end=await ended;
     const job=(await lease.snapshot()).jobs.find(value=>value.jobId===child.jobId);
-    if(process.platform==='win32'&&(job?.delegation.identityStatus!=='reported'||process.env.NORA_BOOTSTRAP_DIAGNOSTIC==='1')) {
-      const profile=path.join(directory,'operations',operationId,'bootstrap-profile');
-      const profileEnv={HOME:profile,USERPROFILE:profile,HERMES_HOME:profile,
-        APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
-        TMP:path.join(profile,'tmp'),TEMP:path.join(profile,'tmp'),TMPDIR:path.join(profile,'tmp'),XDG_CACHE_HOME:path.join(profile,'cache')};
-      const lean={...env,...profileEnv};
-      const queryEnvironment=async(name,environment)=>{
-        const began=Date.now();
-        return await new Promise(resolve=>{
-          const query=execFile('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-            `([DateTimeOffset](Get-Process -Id ${process.pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()`],
-            {env:environment,windowsHide:true,timeout:8000},(error,output,errors)=>{
-              console.log('[DEBUG-bootstrap]',JSON.stringify({name,elapsedMs:Date.now()-began,code:error?.code,signal:error?.signal,
-                stdout:output.slice(-2048),stderr:errors.slice(-2048)}));resolve(!error&&Number(output.trim())>0);
-            });query.stdin?.end();
-        });
-      };
-      const names=['SystemDrive','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles',
-        'CommonProgramFiles(x86)','CommonProgramW6432','ProgramW6432','PSModulePath','OS','PATHEXT',
-        'NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','ALLUSERSPROFILE','COMPUTERNAME','USERNAME',
-        'USERDOMAIN','USERDOMAIN_ROAMINGPROFILE','HOMEDRIVE','HOMEPATH','PUBLIC'];
-      let selected=names.filter(name=>process.env[name]!==undefined);
-      const add=keys=>({...lean,...Object.fromEntries(keys.map(name=>[name,process.env[name]]))});
-      await queryEnvironment('lean-profile',lean);
-      if(await queryEnvironment('system-variables',add(selected))) {
-        while(selected.length>1) {
-          const split=Math.ceil(selected.length/2),left=selected.slice(0,split),right=selected.slice(split);
-          if(await queryEnvironment('system-left:'+left.join(','),add(left)))selected=left;
-          else if(await queryEnvironment('system-right:'+right.join(','),add(right)))selected=right;
-          else break;
-        }
-        console.log('[DEBUG-bootstrap] required-system-variables',JSON.stringify(selected));
-      } else {
-        await queryEnvironment('inherited',process.env);
-        await queryEnvironment('inherited-profile',{...process.env,...lean});
-      }
-    }
     const evidence=`Native bootstrap output:\n${stdout}\n${stderr}`;
     assert.equal(job?.delegation.identityStatus,'reported',evidence);
     assert.equal(job.pid,child.pid,evidence);assert.ok(job.creationIdentity.creationTime>0,evidence);assert.ok(job.closedAt,evidence);

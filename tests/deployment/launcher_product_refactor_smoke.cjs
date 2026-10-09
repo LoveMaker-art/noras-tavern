@@ -86,6 +86,8 @@ function environment(root, hermes, tavern, payload) {
     PYTHONPATH:[projection,path.join(hermes,'hermes-agent')].join(path.delimiter),
     PYTHONNOUSERSITE:'1',PYTHONDONTWRITEBYTECODE:'1',PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8',
     SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',COMSPEC:process.env.COMSPEC||'',
+    // Production inherits this OS setting; dropping it stalls PowerShell in a fresh profile.
+    ...(process.platform==='win32'&&process.env.PSModulePath?{PSModulePath:process.env.PSModulePath}:{}),
     PATH:[...bins,process.platform==='win32'?process.env.PATH||'':'/usr/bin:/bin:/usr/sbin:/sbin'].join(path.delimiter),
   };
 }
