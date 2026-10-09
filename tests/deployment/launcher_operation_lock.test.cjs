@@ -12,7 +12,7 @@ const helperPath = process.env.NORA_TEST_OPERATION_HELPER || path.resolve(__dirn
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 test('a fresh runtime bootstrap acknowledges its actual process before examining payload bytes',
-  {timeout:90000},async()=>{
+  {timeout:180000},async()=>{
   const {acquire}=require(modulePath);
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-bootstrap-identity-')));
   const directory=path.join(root,'installer'),hermes=path.join(root,'hermes'),payload=path.join(root,'payload');
@@ -42,16 +42,35 @@ test('a fresh runtime bootstrap acknowledges its actual process before examining
       const profileEnv={HOME:profile,USERPROFILE:profile,HERMES_HOME:profile,
         APPDATA:path.join(profile,'AppData/Roaming'),LOCALAPPDATA:path.join(profile,'AppData/Local'),
         TMP:path.join(profile,'tmp'),TEMP:path.join(profile,'tmp'),TMPDIR:path.join(profile,'tmp'),XDG_CACHE_HOME:path.join(profile,'cache')};
-      for(const [name,environment] of [['inherited',process.env],['lean-profile',{...env,...profileEnv}],['inherited-profile',{...process.env,...env,...profileEnv}]]) {
+      const lean={...env,...profileEnv};
+      const queryEnvironment=async(name,environment)=>{
         const began=Date.now();
-        await new Promise(resolve=>{
+        return await new Promise(resolve=>{
           const query=execFile('powershell.exe',['-NoProfile','-NonInteractive','-Command',
             `([DateTimeOffset](Get-Process -Id ${process.pid}).StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()`],
             {env:environment,windowsHide:true,timeout:8000},(error,output,errors)=>{
               console.log('[DEBUG-bootstrap]',JSON.stringify({name,elapsedMs:Date.now()-began,code:error?.code,signal:error?.signal,
-                stdout:output.slice(-2048),stderr:errors.slice(-2048)}));resolve();
+                stdout:output.slice(-2048),stderr:errors.slice(-2048)}));resolve(!error&&Number(output.trim())>0);
             });query.stdin?.end();
         });
+      };
+      const names=['SystemDrive','ProgramData','ProgramFiles','ProgramFiles(x86)','CommonProgramFiles',
+        'CommonProgramFiles(x86)','CommonProgramW6432','ProgramW6432','PSModulePath','OS','PATHEXT',
+        'NUMBER_OF_PROCESSORS','PROCESSOR_ARCHITECTURE','ALLUSERSPROFILE','COMPUTERNAME','USERNAME',
+        'USERDOMAIN','USERDOMAIN_ROAMINGPROFILE','HOMEDRIVE','HOMEPATH','PUBLIC'];
+      let selected=names.filter(name=>process.env[name]!==undefined);
+      const add=keys=>({...lean,...Object.fromEntries(keys.map(name=>[name,process.env[name]]))});
+      if(await queryEnvironment('system-variables',add(selected))) {
+        while(selected.length>1) {
+          const split=Math.ceil(selected.length/2),left=selected.slice(0,split),right=selected.slice(split);
+          if(await queryEnvironment('system-left:'+left.join(','),add(left)))selected=left;
+          else if(await queryEnvironment('system-right:'+right.join(','),add(right)))selected=right;
+          else break;
+        }
+        console.log('[DEBUG-bootstrap] required-system-variables',JSON.stringify(selected));
+      } else {
+        await queryEnvironment('inherited',process.env);
+        await queryEnvironment('inherited-profile',{...process.env,...lean});
       }
     }
     const evidence=`Native bootstrap output:\n${stdout}\n${stderr}`;
