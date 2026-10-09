@@ -18,6 +18,15 @@ test('publishing an already verified build requires the exact tag commit and all
     verifyPublishSource(f.run, f.artifacts, f.expected);
 });
 
+test('native acceptance reports accompany the same four complete publication artifacts', () => {
+    const f = fixture();
+    for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
+        f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], name: `nora-operation-acceptance-${target}` });
+    }
+    f.artifacts.total_count = 7;
+    verifyPublishSource(f.run, f.artifacts, f.expected);
+});
+
 for (const [label, mutate] of [
     ['failed native build', f => { f.run.conclusion = 'failure'; }],
     ['running build', f => { f.run.status = 'in_progress'; }],
@@ -29,6 +38,17 @@ for (const [label, mutate] of [
     ['other run', f => { f.run.id = 124; }],
     ['missing Windows package', f => { f.artifacts.artifacts.pop(); f.artifacts.total_count--; }],
     ['duplicate platform', f => { f.artifacts.artifacts[3] = f.artifacts.artifacts[0]; }],
+    ['incomplete artifact listing', f => { f.artifacts.total_count++; }],
+    ['unknown extra artifact', f => { f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], name: 'unrecognized-files' }); f.artifacts.total_count++; }],
+    ['duplicate acceptance report', f => {
+        const report = { ...f.artifacts.artifacts[0], name: 'nora-operation-acceptance-darwin-arm64' };
+        f.artifacts.artifacts.push(report, report); f.artifacts.total_count += 2;
+    }],
+    ['acceptance report from another commit', f => {
+        f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], name: 'nora-operation-acceptance-darwin-arm64',
+            workflow_run: { ...f.artifacts.artifacts[0].workflow_run, head_sha: 'b'.repeat(40) } });
+        f.artifacts.total_count++;
+    }],
     ['expired artifact', f => { f.artifacts.artifacts[0].expired = true; }],
     ['empty artifact', f => { f.artifacts.artifacts[0].size_in_bytes = 0; }],
     ['artifact from other run', f => { f.artifacts.artifacts[0].workflow_run.id = 124; }],

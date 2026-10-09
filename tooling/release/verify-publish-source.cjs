@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const names = ['nora-tavern-darwin-arm64', 'nora-tavern-darwin-x64', 'nora-tavern-shared', 'nora-tavern-win32-x64'];
+const reports = ['nora-operation-acceptance-darwin-arm64', 'nora-operation-acceptance-darwin-x64', 'nora-operation-acceptance-win32-x64'];
 
 function verifyPublishSource(run, artifacts, { commit, repository, runId }) {
     assert.match(commit, /^[a-f0-9]{40}$/);
@@ -15,8 +16,11 @@ function verifyPublishSource(run, artifacts, { commit, repository, runId }) {
     assert.equal(run.event, 'workflow_dispatch', 'Source build was not explicitly dispatched');
     assert.equal(run.status, 'completed', 'Source build is not complete');
     assert.equal(run.conclusion, 'success', 'Source build did not pass');
-    assert.equal(artifacts.total_count, names.length, 'Source build must contain exactly four artifacts');
-    assert.deepEqual(artifacts.artifacts.map(item => item.name).sort(), names, 'Source build lacks a supported platform');
+    assert.equal(artifacts.total_count, artifacts.artifacts.length, 'Source artifact list is incomplete');
+    const actualNames = artifacts.artifacts.map(item => item.name);
+    assert.equal(new Set(actualNames).size, actualNames.length, 'Duplicate source artifact');
+    assert.ok(actualNames.every(name => names.includes(name) || reports.includes(name)), 'Unknown source artifact');
+    assert.deepEqual(actualNames.filter(name => names.includes(name)).sort(), names, 'Source build lacks a supported platform');
     for (const item of artifacts.artifacts) {
         assert.equal(item.expired, false, 'Source artifact expired');
         assert.ok(Number.isSafeInteger(item.size_in_bytes) && item.size_in_bytes > 0, 'Source artifact is empty');
