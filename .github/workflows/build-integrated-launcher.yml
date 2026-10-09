@@ -363,6 +363,25 @@ jobs:
         if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success' || steps.presentation_contracts.outcome != 'success') }}
         run: node -e "console.error('Platform contract checks failed; native acceptance and packaging are blocked.'); process.exit(1)"
 
+      - name: Verify Windows runtime before long acceptance tests
+        if: matrix.platform == 'win32'
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
+          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+
+      - name: Verify Windows owned model and profile fixtures before long tests
+        if: matrix.platform == 'win32'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          NORA_CLAWCHAT_PLUGIN: ${{ runner.temp }}/nora-clawchat-plugin
+        run: |
+          "$NORA_TEST_PYTHON" -B -c 'import os; from pathlib import Path; assert all(Path(os.environ[key]).is_dir() for key in ["NORA_TEST_HERMES", "NORA_CLAWCHAT_PLUGIN"]), "Native fixture inputs must exist"'
+          node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_nora_profile.BundledProfileIntegrationTests.test_real_bundled_client_initializes_through_cli_and_preserves_customization tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_real_hermes_custom_save_passes_bridge_recheck
+
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
         run: node tooling/run.mjs node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
@@ -382,6 +401,7 @@ jobs:
         run: node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics
 
       - name: Verify runtime independently of original installation
+        if: matrix.platform != 'win32'
         timeout-minutes: 15
         shell: bash
         run: |
