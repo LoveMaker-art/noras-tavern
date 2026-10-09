@@ -11,6 +11,7 @@ on:
           - all
           - win32-x64
           - win32-bootstrap
+          - win32-replacement
       runtime_source_run:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
@@ -68,6 +69,212 @@ jobs:
       - name: Reproduce cold-profile bootstrap identity before downloading resources
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
+  replacement-contract:
+    if: inputs.target == 'win32-replacement'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        include:
+          - runner: windows-latest
+            platform: win32
+            arch: x64
+            package_script: pack:win:x64
+    steps:
+      - name: Preserve repository bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Require isolated diagnostic inputs
+        shell: bash
+        env:
+          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+          PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+          VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
+        run: |
+          node -e 'const assert=require("node:assert/strict"),e=process.env;assert.match(e.RUNTIME_SOURCE_RUN,/^[1-9][0-9]*$/);for(const key of ["PUBLISH_SOURCE_RUN","VERIFIED_WINDOWS_RUN","LAUNCHER_BASELINE"])assert.equal(e[key],"");assert.equal(e.PRODUCTION_MODE,"true");assert.equal(e.GITHUB_REF_TYPE,"branch")'
+      - name: Install launcher test dependencies
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Download verified runtime baseline
+        if: inputs.runtime_source_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/nora-baseline-artifacts
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.runtime_source_run }}
+
+      - name: Restore the exact baseline runtime
+        if: inputs.runtime_source_run != ''
+        shell: bash
+        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+
+      - name: Reproduce the post-move interpreter boundary
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/hermes/python/python.exe" -I -c 'import importlib.util,json; missing=importlib.util.find_spec("psutil") is None; print(json.dumps({"bareBaseMissingPsutil":missing})); assert missing'
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          test ! -e "$RUNNER_TEMP/hermes"
+          node -e 'require("node:fs").rmSync(require("node:path").join(process.env.RUNNER_TEMP,"nora-baseline-artifacts"),{recursive:true,force:true})'
+
+      - name: Build release payload
+        shell: bash
+        env:
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
+          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
+        run: |
+          mode=--candidate
+          if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
+          if [[ -n "$LAUNCHER_BASELINE" ]]; then
+            node tooling/release/package-release.mjs $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+          else
+            node tooling/release/package-release.mjs $mode \
+              --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
+          fi
+
+      - name: Install desktop packaging dependencies
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm ci --no-audit --no-fund
+
+      - name: Build lightweight launcher replacement
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/release/package-launcher-update.cjs "$release_dir/nora-tavern-launcher/desktop" "${{ matrix.platform }}" "${{ matrix.arch }}"
+
+      - name: Verify actual lightweight update archive
+        shell: bash
+        run: |
+          archive="$(find release -path '*/desktop/dist/*-update.zip' | head -n 1)"
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          bash tooling/checks/verify-launcher-replacement.sh "$archive" "$release_dir/nora-tavern-launcher/desktop"
+
+      - name: Assemble full installers from the same verified payload
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          cd "$release_dir/nora-tavern-launcher/desktop"
+          npm run "${{ matrix.package_script }}"
+
+      - name: Test the actual Windows setup and installed application
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $release = Get-ChildItem release -Directory |
+            Where-Object { $_.Name -match '^(candidate|stable)-' } |
+            Sort-Object Name | Select-Object -Last 1
+          if (-not $release) { throw 'Release payload is missing' }
+          $launcher = Join-Path $release.FullName 'nora-tavern-launcher'
+          $desktop = Join-Path $launcher 'desktop'
+          $dist = Join-Path $desktop 'dist'
+          $setup = @(Get-ChildItem $dist -File -Filter '*-win-x64-setup.exe')
+          if ($setup.Count -ne 1) { throw 'Expected exactly one actual Windows setup' }
+          $package = Get-Content (Join-Path $desktop 'package.json') -Raw | ConvertFrom-Json
+          if ($package.build.nsis.oneClick -ne $false -or $package.build.nsis.script) {
+            throw 'This gate requires the packaged assisted NSIS template'
+          }
+          $template = Get-Content (Join-Path $desktop 'node_modules/app-builder-lib/templates/nsis/installSection.nsh') -Raw
+          if ($template -notmatch '\$\{if\}\s+\$\{isForceRun\}\s+\$\{andIf\}\s+\$\{Silent\}') {
+            throw 'The pinned NSIS template no longer proves silent installation requires force-run to launch'
+          }
+          $include = Get-Content (Join-Path $desktop $package.build.nsis.include) -Raw
+          if ($include -match '!macro\s+customInstall\b') { throw 'A custom installation hook requires separate launch acceptance' }
+          foreach ($registry in @('HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall')) {
+            $existing = @(Get-ChildItem $registry -ErrorAction SilentlyContinue |
+              Get-ItemProperty -ErrorAction SilentlyContinue |
+              Where-Object { $_.DisplayName -eq $package.build.productName })
+            if ($existing.Count) { throw 'This fresh setup gate must not invoke an existing installation uninstaller' }
+          }
+          $installRoot = Join-Path (Join-Path $env:RUNNER_TEMP 'Nora 用户安装验收') 'app'
+          if ($installRoot.Length -ge 248 -or (Test-Path $installRoot)) { throw 'Expected a fresh short isolated setup directory' }
+          # NSIS /D must be last and unquoted even with spaces. /S without force-run
+          # does not launch the app in the pinned assisted installer template.
+          $installer = Start-Process -FilePath $setup[0].FullName -ArgumentList "/S /currentuser /D=$installRoot" -PassThru
+          if (-not $installer.WaitForExit(240000)) {
+            taskkill /PID $installer.Id /T /F
+            throw 'Actual Windows setup timed out'
+          }
+          if ($installer.ExitCode -ne 0) { throw "Actual Windows setup exited $($installer.ExitCode)" }
+          $unpacked = Join-Path $dist 'win-unpacked'
+          $main = @(Get-ChildItem $unpacked -File -Filter '*.exe')
+          if ($main.Count -ne 1) { throw 'Expected one original unpacked main executable' }
+          $executable = Join-Path $installRoot $main[0].Name
+          if (-not (Test-Path $executable -PathType Leaf)) { throw 'Setup did not install the main executable at the requested directory' }
+          $checked = 0
+          foreach ($file in (Get-ChildItem $unpacked -Recurse -File -Force)) {
+            $relative = [System.IO.Path]::GetRelativePath($unpacked, $file.FullName)
+            $installed = Join-Path $installRoot $relative
+            if (-not (Test-Path $installed -PathType Leaf)) { throw "Setup omitted $relative" }
+            if ((Get-FileHash $file.FullName -Algorithm SHA256).Hash -ne (Get-FileHash $installed -Algorithm SHA256).Hash) {
+              throw "Setup changed packaged bytes: $relative"
+            }
+            $checked++
+          }
+          if (@(Get-Process | Where-Object { $_.Path -eq $executable }).Count) { throw 'Silent setup unexpectedly launched the installed application' }
+          $setupProof = @{schema='nora-installed-setup/1'; installer=$setup[0].Name; installerSha256=(Get-FileHash $setup[0].FullName -Algorithm SHA256).Hash.ToLower(); exitCode=$installer.ExitCode; installRoot=$installRoot; verifiedUnpackedFiles=$checked; autoLaunch=$false}
+          $setupProof | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'nora-installed-setup-acceptance.json') -Encoding utf8
+          $env:NORA_CANDIDATE_LAUNCHER = $launcher
+          $env:NORA_PACKED_DESKTOP = Join-Path $installRoot 'resources/app.asar'
+          $env:NORA_TEST_PYTHON = Join-Path $env:RUNNER_TEMP 'hermes-build-source/python/python.exe'
+          $env:NORA_GATE_REPORT = Join-Path $env:RUNNER_TEMP 'nora-installed-app-acceptance.json'
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          & $executable --test tests/deployment/launcher_packaged_app.test.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'The actual installed application gate failed' }
+          if (-not (Test-Path $env:NORA_GATE_REPORT -PathType Leaf)) { throw 'Installed application acceptance report is missing' }
+
+      - name: Verify real APP production module closure and executor receipts
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          export NORA_CANDIDATE_LAUNCHER="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher")"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            executable="$(find "$release_dir/nora-tavern-launcher/desktop/dist" -path '*/win-unpacked/*.exe' | head -n 1)"
+            resources="$(dirname "$executable")/resources"
+          else
+            executable="$(find "$release_dir/nora-tavern-launcher/desktop/dist" -path '*.app/Contents/MacOS/*' -type f | head -n 1)"
+            resources="$(dirname "$executable")/../Resources"
+          fi
+          test -f "$executable"
+          export NORA_PACKED_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$resources/app.asar")"
+          export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == "Windows" ]]; then export NORA_TEST_PYTHON="$RUNNER_TEMP/hermes-build-source/python/python.exe"; fi
+          export NORA_GATE_REPORT="$RUNNER_TEMP/nora-packaged-app-acceptance.json"
+          ELECTRON_RUN_AS_NODE=1 "$executable" --test tests/deployment/launcher_packaged_app.test.cjs
+
+      - name: Verify packaged Nora images and instructions
+        shell: bash
+        run: |
+          release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
+          node tooling/run.mjs node tests/deployment/verify_launcher_package.cjs "$release_dir/nora-tavern-launcher/desktop/dist"
+
+      - name: Preserve isolated operation acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-replacement-diagnostic
+          path: |
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
+            ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
+            ${{ runner.temp }}/nora-installed-*-acceptance.json
+          if-no-files-found: warn
+          retention-days: 14
+
   reuse-windows:
     if: inputs.verified_windows_run != ''
     runs-on: ubuntu-latest
@@ -114,7 +321,7 @@ jobs:
 
   build:
     needs: reuse-windows
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
+    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap' && inputs.target != 'win32-replacement'
     strategy:
       fail-fast: false
       matrix:
@@ -536,11 +743,7 @@ jobs:
         run: |
           archive="$(find release -path '*/desktop/dist/*-update.zip' | head -n 1)"
           release_dir="$(find release -maxdepth 1 -type d \( -name 'candidate-*' -o -name 'stable-*' \) | sort | tail -n 1)"
-          py="$RUNNER_TEMP/hermes-build-source/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes-build-source/python/python.exe"; fi
-          export NORA_TEST_LAUNCHER_ARCHIVE="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$archive")"
-          export NORA_TEST_LAUNCHER_DESKTOP="$(node -e 'console.log(require("node:path").resolve(process.argv[1]))' "$release_dir/nora-tavern-launcher/desktop")"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+          bash tooling/checks/verify-launcher-replacement.sh "$archive" "$release_dir/nora-tavern-launcher/desktop"
 
       - name: Assemble full installers from the same verified payload
         shell: bash
