@@ -28,7 +28,9 @@ test('large preset edits use the normal conditional edit route; exports create d
     const first = await plane.exportFile({ kind: 'card', target: 'card.png', format: 'png' });
     const second = await plane.exportFile({ kind: 'preset', target: 'Preset', format: 'json' });
     assert.notEqual(first.path, second.path);
-    assert.equal((await fs.stat(first.path)).mode & 0o777, 0o600);
+    const exportedStat = await fs.stat(first.path);
+    assert.equal(exportedStat.isFile(), true);
+    if (process.platform !== 'win32') assert.equal(exportedStat.mode & 0o777, 0o600);
     assert.equal(await fs.readFile(first.path, 'utf8'), 'PNG fixture');
     assert.deepEqual(JSON.parse(await fs.readFile(second.path, 'utf8')), { prompts: [] });
     assert.equal(first.sha256, createHash('sha256').update('PNG fixture').digest('hex'));

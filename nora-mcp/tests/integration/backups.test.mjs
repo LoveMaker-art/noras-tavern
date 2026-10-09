@@ -93,7 +93,9 @@ test('actual stdio MCP → backup/ledger HTTP verifies read, export, protection,
     assert.equal(exported.error, false);
     assert.equal(await fs.readFile(exported.data.path, 'utf8'), original);
     assert.equal(exported.data.sha256, proof.sha256);
-    assert.equal((await fs.stat(exported.data.path)).mode & 0o777, 0o600);
+    const exportedStat = await fs.stat(exported.data.path);
+    assert.equal(exportedStat.isFile(), true);
+    if (process.platform !== 'win32') assert.equal(exportedStat.mode & 0o777, 0o600);
     assert.equal((await call('nora.backup.restore_preview', { id: saved.id, ...scope(b) })).data.code, 'NORA_BACKUP_RESTORE_SCOPE_MISMATCH');
     let preview = (await call('nora.backup.restore_preview', { id: saved.id, ...scope(a) })).data;
     assert.equal(preview.previewOnly, true);

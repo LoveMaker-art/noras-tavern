@@ -54,7 +54,10 @@ test('download checks digest before writing and uses the shared private export g
     const result = await plane.downloadBackup({ id: 'chosen', sha256 });
     assert.equal(result.sha256, sha256);
     assert.equal(result.format, 'jsonl');
-    assert.equal((await fs.stat(result.path)).mode & 0o777, 0o600);
+    const exportedStat = await fs.stat(result.path);
+    assert.equal(exportedStat.isFile(), true);
+    // Windows reports synthetic mode bits; inherited ACLs govern access there.
+    if (process.platform !== 'win32') assert.equal(exportedStat.mode & 0o777, 0o600);
     assert.deepEqual(await fs.readFile(result.path), bytes);
     await fs.rename(path.join(root, 'exports'), path.join(root, 'actual'));
     await fs.symlink(path.join(root, 'actual'), path.join(root, 'exports'));

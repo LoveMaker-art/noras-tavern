@@ -419,16 +419,18 @@ test('a guard-owned nested Python writer survives its parent death and blocks ta
   const {acquire,probe}=require(modulePath);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-nested-')),output=path.join(directory,'writes');
   const lease=await acquire({directory,operationId:'nested-parent-death',ownerEpoch:1});let parent,next;
-  const nested=pythonGate+`\nwith open(sys.argv[1],'a') as stream:\n    stream.write('started\\n');stream.flush()\nprint('ready',flush=True)\nend=time.time()+1.5\nwhile time.time()<end:\n    with open(sys.argv[1],'a') as stream: stream.write('write\\n')\n    time.sleep(0.03)\nwith open(sys.argv[1],'a') as stream: stream.write('done\\n')\n`;
+  const nested=pythonGate+`\nwith open(sys.argv[1],'a') as stream:\n    stream.write('started\\n');stream.flush()\nprint('ready',flush=True)\nend=time.monotonic()+12\nwhile not os.path.exists(sys.argv[1]+'.finish'):\n    if time.monotonic()>end: raise RuntimeError('writer completion was not requested')\n    with open(sys.argv[1],'a') as stream: stream.write('write\\n')\n    time.sleep(0.03)\nwith open(sys.argv[1],'a') as stream: stream.write('done\\n')\n`;
   const source=pythonGate+`\nnested_source=${JSON.stringify(nested)}\njob=spawn_nested(nested_source,sys.argv[1])\nwhile True:\n    message=event()\n    if message.get('event')=='stdout' and b'ready' in base64.b64decode(message['data']): break\nprint(json.dumps({'ready':True,'jobId':job}),flush=True)\ntime.sleep(20)\n`;
   try {
     parent=lease.spawn(process.env.NORA_TEST_PYTHON,['-B','-u','-c',source,output],{kind:'python-maintenance',
       managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,venvHome:path.dirname(path.dirname(process.env.NORA_TEST_PYTHON))});
     const ready=await firstLine(parent);assert.equal(ready.ready,true);
-    const before=fs.statSync(output).size,ended=once(parent,'close');parent.kill('SIGKILL');await ended;
+    const ended=once(parent,'close');parent.kill('SIGKILL');await ended;
+    const before=fs.statSync(output).size;
     const releasing=lease.release();assert.equal((await probe({directory})).busy,true);
     await assert.rejects(acquire({directory,operationId:'nested-too-early',ownerEpoch:2}),{code:'OPERATION_BUSY'});
-    await delay(120);assert.ok(fs.statSync(output).size>before,'the nested maintenance process must continue its original write');
+    await until(()=>fs.statSync(output).size>before);
+    fs.writeFileSync(output+'.finish','finish');
     await until(()=>/(^|\n)done\r?\n/.test(fs.readFileSync(output,'utf8')));await releasing;
     next=await acquire({directory,operationId:'nested-after-close',ownerEpoch:2});
     const history=await probe({directory});const prior=history.sessions.find(value=>value.operationId==='nested-parent-death');
@@ -506,15 +508,17 @@ test('a production ManagedPopen child remains guard-owned after its authenticate
   const {acquire,probe}=require(modulePath);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-production-parent-')),output=path.join(directory,'writes');
   const lease=await acquire({directory,operationId:crypto.randomUUID(),ownerEpoch:1});let parent;
-  const body=`import sys,time\nprint('ready',flush=True)\nend=time.time()+1.2\nwhile time.time()<end:\n    with open(sys.argv[1],'a') as stream:stream.write('write\\n')\n    time.sleep(0.03)\nwith open(sys.argv[1],'a') as stream:stream.write('done\\n')\n`;
+  const body=`import os,sys,time\nwith open(sys.argv[1],'a') as stream:stream.write('started\\n')\nprint('ready',flush=True)\nend=time.monotonic()+12\nwhile not os.path.exists(sys.argv[1]+'.finish'):\n    if time.monotonic()>end: raise RuntimeError('writer completion was not requested')\n    with open(sys.argv[1],'a') as stream:stream.write('write\\n')\n    time.sleep(0.03)\nwith open(sys.argv[1],'a') as stream:stream.write('done\\n')\n`;
   const source=`import sys,subprocess,json,time\nsys.path.insert(0,${JSON.stringify(path.dirname(helperPath))})\nfrom operation_control import managed_popen\nchild=managed_popen([sys.executable,'-c',${JSON.stringify(body)},${JSON.stringify(output)}],stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)\nassert child.stdout.readline().strip()=='ready'\nprint(json.dumps({'ready':True}),flush=True)\ntime.sleep(20)\n`;
   try {
     parent=lease.spawn(process.env.NORA_TEST_PYTHON,['-B','-u',helperPath,'--delegate-exec','-c',source],{kind:'python-maintenance',
       managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,venvHome:path.dirname(path.dirname(process.env.NORA_TEST_PYTHON))});
     assert.equal((await firstLine(parent)).ready,true);
-    const before=fs.statSync(output).size,ended=once(parent,'close');parent.kill('SIGKILL');await ended;
+    const ended=once(parent,'close');parent.kill('SIGKILL');await ended;
+    const before=fs.statSync(output).size;
     const releasing=lease.release();assert.equal((await probe({directory})).busy,true);
-    await delay(100);assert.ok(fs.statSync(output).size>before);
+    await until(()=>fs.statSync(output).size>before);
+    fs.writeFileSync(output+'.finish','finish');
     await until(()=>/(^|\n)done\r?\n/.test(fs.readFileSync(output,'utf8')));await releasing;
     assert.equal((await probe({directory})).inspectionRequired,false);
   } finally {
