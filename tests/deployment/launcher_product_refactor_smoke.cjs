@@ -143,10 +143,6 @@ async function actor(context, command, args, settings={}) {
   try{await observed;}catch(error){observationError=error;}
   const facts=await context.lease.snapshot();
   const job=facts.jobs.find(job=>job.jobId===child.jobId);
-  assert.ok(job?.closedAt,`${label}: actual child close was not recorded`);
-  assert.equal(job.pid,child.pid,`${label}: guard did not own the actual actor PID`);
-  assert.equal(job.delegation.identityStatus,'reported',`${label}: actor did not receive a real ACK`);
-  assert.ok(job.creationIdentity?.creationTime>0,`${label}: missing actor birth identity`);
   if(end.status!==0||reportedError||observationError) {
     const error=end.status!==0||reportedError
       ?Object.assign(new Error(reportedError?.message||`${label} exited ${end.signal||end.status}`),
@@ -159,6 +155,15 @@ async function actor(context, command, args, settings={}) {
     // this test directory for diagnosing failed gates, never send it anywhere.
     const file=path.join(env.NORA_TAVERN_HOME,`harness-${label||'actor'}.log`);
     fs.writeFileSync(file,stdout+'\n'+stderr,{mode:0o600});error.fixtureLog=file;throw error;
+  }
+  try {
+    assert.ok(job?.closedAt,`${label}: actual child close was not recorded`);
+    assert.equal(job.pid,child.pid,`${label}: guard did not own the actual actor PID`);
+    assert.equal(job.delegation.identityStatus,'reported',`${label}: actor did not receive a real ACK`);
+    assert.ok(job.creationIdentity?.creationTime>0,`${label}: missing actor birth identity`);
+  } catch(error) {
+    const file=path.join(env.NORA_TAVERN_HOME,`harness-${label||'actor'}.log`);
+    fs.writeFileSync(file,stdout+'\n'+stderr,{mode:0o600});error.fixtureLog=file;throw collector.attach(error);
   }
   assert.equal(truncated,false,`${label}: harness output collection exceeded its budget`);
   return {stdout,stderr,jobId:job.jobId,pid:job.pid};

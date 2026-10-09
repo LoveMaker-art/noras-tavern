@@ -10,6 +10,7 @@ on:
         options:
           - all
           - win32-x64
+          - win32-bootstrap
       runtime_source_run:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
@@ -43,8 +44,28 @@ env:
   PYTHONIOENCODING: 'utf-8'
 
 jobs:
+  bootstrap-contract:
+    if: inputs.target == 'win32-bootstrap'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Preserve repository bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Install native guard dependency
+        working-directory: launcher/desktop
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Reproduce cold-profile bootstrap identity before downloading resources
+        run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
+
   build:
-    if: inputs.publish_source_run == ''
+    if: inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap'
     strategy:
       fail-fast: false
       matrix:
@@ -97,6 +118,9 @@ jobs:
       - name: Install launcher test dependencies
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Verify cold-profile bootstrap identity before preparing runtimes
+        run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
       - name: Download and verify unchanged published components
         if: inputs.launcher_baseline_tag != ''
@@ -389,6 +413,7 @@ jobs:
           name: nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
           if-no-files-found: warn
           retention-days: 14

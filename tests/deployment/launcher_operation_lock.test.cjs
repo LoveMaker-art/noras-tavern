@@ -10,6 +10,47 @@ const crypto = require('node:crypto');
 const modulePath = path.resolve(__dirname, '../installer/desktop/operation-lock.js');
 const helperPath = process.env.NORA_TEST_OPERATION_HELPER || path.resolve(__dirname, '../installer/operation_control.py');
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test('a fresh runtime bootstrap acknowledges its actual process before examining payload bytes',
+  {timeout:45000},async()=>{
+  const {acquire}=require(modulePath);
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-bootstrap-identity-')));
+  const directory=path.join(root,'installer'),hermes=path.join(root,'hermes'),payload=path.join(root,'payload');
+  const temporary=path.join(root,'tmp');
+  for(const folder of [directory,payload,temporary])fs.mkdirSync(folder);
+  fs.writeFileSync(path.join(payload,'nora-hermes-runtime.json'),JSON.stringify({schema:0,platform:process.platform,arch:process.arch}));
+  const env={HOME:hermes,USERPROFILE:hermes,HERMES_HOME:hermes,NORA_HERMES_HOME:hermes,
+    NORA_TAVERN_HOME:root,TAVERN_DATA_ROOT:path.join(root,'tavern'),NORA_INSTALLER_DIRECTORY:directory,
+    APPDATA:path.join(root,'appdata'),LOCALAPPDATA:path.join(root,'localappdata'),
+    TMP:temporary,TEMP:temporary,TMPDIR:temporary,XDG_CACHE_HOME:path.join(root,'cache'),
+    SystemRoot:process.env.SystemRoot||'',WINDIR:process.env.WINDIR||'',COMSPEC:process.env.COMSPEC||'',
+    PATH:[path.join(hermes,'node/bin'),path.join(hermes,'node'),path.join(hermes,'hermes-agent/venv/bin'),
+      path.join(hermes,'hermes-agent/venv/Scripts'),process.platform==='win32'?process.env.PATH||'':'/usr/bin:/bin:/usr/sbin:/sbin'].join(path.delimiter)};
+  const lease=await acquire({directory,operationId:crypto.randomUUID(),ownerEpoch:1});let child;
+  try {
+    child=lease.spawn(process.execPath,[path.resolve(path.dirname(modulePath),'runtime-worker.js'),payload,root,hermes],
+      {kind:'runtime-bootstrap',env,cwd:path.resolve(__dirname,'../..'),windowsHide:true});
+    let stdout='',stderr='';
+    child.stdout.on('data',value=>{stdout+=value;if(stdout.length>32768)stdout=stdout.slice(-32768);});
+    child.stderr.on('data',value=>{stderr+=value;if(stderr.length>32768)stderr=stderr.slice(-32768);});
+    const ended=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',(status,signal)=>resolve({status,signal}));});
+    child.stdin.end();const end=await ended;
+    const job=(await lease.snapshot()).jobs.find(value=>value.jobId===child.jobId);
+    const evidence=`Native bootstrap output:\n${stdout}\n${stderr}`;
+    assert.equal(job?.delegation.identityStatus,'reported',evidence);
+    assert.equal(job.pid,child.pid,evidence);assert.ok(job.creationIdentity.creationTime>0,evidence);assert.ok(job.closedAt,evidence);
+    // Deliberately invalid manifest: an authenticated actor must reject it before
+    // creating the real runtime. This probe needs no runtime download or build.
+    assert.equal(end.status,1,evidence);assert.equal(end.signal,null,evidence);
+    const errors=stdout.split(/\r?\n/).filter(line=>line.startsWith('{')).map(line=>JSON.parse(line)).filter(value=>value.event==='error');
+    assert.equal(errors.length,1,evidence);assert.equal(errors[0].code,'VERIFICATION_FAILED',evidence);
+    assert.equal(fs.existsSync(hermes),false,'A rejected payload must leave the runtime absent');
+  } finally {
+    if(child&&child.exitCode===null&&child.signalCode===null)await lease.cancel({signal:'SIGKILL'});
+    await lease.release();fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:100});
+  }
+});
+
 const pythonGate=`import os,json,psutil,socket,sys,time,base64
 endpoint=os.environ['NORA_OPERATION_DELEGATE_ENDPOINT'].split(':')
 connection=socket.create_connection((endpoint[0],int(endpoint[1])),timeout=10)
