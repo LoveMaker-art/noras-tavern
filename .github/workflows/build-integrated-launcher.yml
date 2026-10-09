@@ -12,6 +12,7 @@ on:
           - win32-x64
           - win32-bootstrap
           - win32-replacement
+          - win32-gui-exit
       runtime_source_run:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
@@ -68,6 +69,68 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Reproduce cold-profile bootstrap identity before downloading resources
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
+
+  gui-exit-contract:
+    if: inputs.target == 'win32-gui-exit'
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - name: Preserve repository bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Require isolated GUI diagnostic inputs
+        shell: bash
+        env:
+          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+          PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+          VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
+        run: |
+          node -e 'const assert=require("node:assert/strict"),e=process.env;for(const key of ["RUNTIME_SOURCE_RUN","PUBLISH_SOURCE_RUN","VERIFIED_WINDOWS_RUN","LAUNCHER_BASELINE"])assert.equal(e[key],"");assert.equal(e.GITHUB_REF_TYPE,"branch")'
+      - name: Install the pinned Electron framework
+        working-directory: launcher/desktop
+        run: npm ci --no-audit --no-fund
+      - name: Verify GUI executable waiting and exact success or failure exit codes
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $electron = Join-Path $PWD 'launcher/desktop/node_modules/electron/dist/electron.exe'
+          node -e 'const fs=require("node:fs"),assert=require("node:assert/strict");const b=fs.readFileSync(process.argv[1]),pe=b.readUInt32LE(0x3c);assert.equal(b.readUInt16LE(pe+24+68),2,"Expected the real Windows GUI subsystem")' $electron
+          if ($LASTEXITCODE -ne 0) { throw 'The probe must use a real GUI executable' }
+          $probe = Join-Path $env:RUNNER_TEMP 'nora-gui-exit-probe.cjs'
+          'const fs=require("node:fs");const [report,value]=process.argv.slice(2),code=Number(value);setTimeout(()=>{fs.writeFileSync(report,JSON.stringify({pid:process.pid,exitCode:code,electron:process.versions.electron}));console.log("Native GUI exit proof: "+code);process.exit(code)},800)' | Set-Content $probe -Encoding utf8
+          $env:ELECTRON_RUN_AS_NODE = '1'
+          $proof = @()
+          foreach ($expected in @(0,7)) {
+            $report = Join-Path $env:RUNNER_TEMP "nora-gui-exit-$expected.json"
+            if (Test-Path $report) { throw 'Expected a fresh GUI process report' }
+            $global:LASTEXITCODE = 41
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            # A pipeline consumer makes PowerShell wait for Windows GUI binaries.
+            & $electron $probe $report $expected | Out-Host
+            $timer.Stop()
+            if ($LASTEXITCODE -ne $expected) { throw "Expected exit $expected, got $LASTEXITCODE" }
+            if (-not (Test-Path $report -PathType Leaf)) { throw 'GUI process did not finish writing its report' }
+            $actual = Get-Content $report -Raw | ConvertFrom-Json
+            if ($actual.exitCode -ne $expected -or $actual.pid -le 0 -or -not $actual.electron) { throw 'Invalid native GUI process proof' }
+            $actual | Add-Member -NotePropertyName elapsedMilliseconds -NotePropertyValue $timer.ElapsedMilliseconds
+            $actual | Add-Member -NotePropertyName gateAccepted -NotePropertyValue ($LASTEXITCODE -eq 0)
+            $proof += $actual
+          }
+          @{schema='nora-native-gui-exit/1'; powershell=$PSVersionTable.PSVersion.ToString(); cases=$proof} | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $env:RUNNER_TEMP 'nora-gui-exit-acceptance.json') -Encoding utf8
+          exit 0
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-gui-exit-diagnostic
+          path: ${{ runner.temp }}/nora-gui-exit-acceptance.json
+          if-no-files-found: error
 
   replacement-contract:
     if: inputs.target == 'win32-replacement'
@@ -231,7 +294,7 @@ jobs:
           $env:NORA_TEST_PYTHON = Join-Path $env:RUNNER_TEMP 'hermes-build-source/python/python.exe'
           $env:NORA_GATE_REPORT = Join-Path $env:RUNNER_TEMP 'nora-installed-app-acceptance.json'
           $env:ELECTRON_RUN_AS_NODE = '1'
-          & $executable --test tests/deployment/launcher_packaged_app.test.cjs
+          & $executable --test tests/deployment/launcher_packaged_app.test.cjs | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'The actual installed application gate failed' }
           if (-not (Test-Path $env:NORA_GATE_REPORT -PathType Leaf)) { throw 'Installed application acceptance report is missing' }
 
@@ -274,6 +337,21 @@ jobs:
             ${{ runner.temp }}/nora-installed-*-acceptance.json
           if-no-files-found: warn
           retention-days: 14
+
+
+      - name: Preserve built Windows packages when later acceptance fails
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-failed-packaging-diagnostic
+          path: |
+            release/*/nora-tavern-launcher.zip
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
+            release/*/system-assets/*
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 0
 
   reuse-windows:
     if: inputs.verified_windows_run != ''
@@ -321,7 +399,7 @@ jobs:
 
   build:
     needs: reuse-windows
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap' && inputs.target != 'win32-replacement'
+    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.target != 'win32-bootstrap' && inputs.target != 'win32-replacement' && inputs.target != 'win32-gui-exit'
     strategy:
       fail-fast: false
       matrix:
@@ -816,7 +894,7 @@ jobs:
           $env:NORA_TEST_PYTHON = Join-Path $env:RUNNER_TEMP 'hermes-build-source/python/python.exe'
           $env:NORA_GATE_REPORT = Join-Path $env:RUNNER_TEMP 'nora-installed-app-acceptance.json'
           $env:ELECTRON_RUN_AS_NODE = '1'
-          & $executable --test tests/deployment/launcher_packaged_app.test.cjs
+          & $executable --test tests/deployment/launcher_packaged_app.test.cjs | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'The actual installed application gate failed' }
           if (-not (Test-Path $env:NORA_GATE_REPORT -PathType Leaf)) { throw 'Installed application acceptance report is missing' }
 
@@ -854,6 +932,7 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+
       - name: Verify packaged Nora images and instructions
         shell: bash
         run: |
@@ -887,6 +966,20 @@ jobs:
             release/*/*bootstrap.py
             release/*/SHA256SUMS
           if-no-files-found: error
+          compression-level: 0
+
+      - name: Preserve built Windows packages when later acceptance fails
+        if: failure() && runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-windows-failed-packaging-diagnostic
+          path: |
+            release/*/nora-tavern-launcher.zip
+            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
+            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
+            release/*/system-assets/*
+          if-no-files-found: warn
+          retention-days: 14
           compression-level: 0
 
   publish-release:

@@ -76,12 +76,13 @@ const matrixExpression=workflow.match(/\$\{\{ fromJSON\(([\s\S]*?)\) \}\}/)[1];
 test('actual workflow conditions preserve default and publish-only paths and block failed reuse',()=>{
  assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: reuse-windows/);assert.match(workflow,/    needs: \[build, reuse-windows\]/);
  for(const [target,reuse,publish,ref,expectedBuild,count,expectedPublish] of [
-  ['all','','','branch',true,3,false],['win32-x64','','','branch',true,1,false],['win32-bootstrap','','','branch',false,3,false],['win32-replacement','','','branch',false,3,false],
+  ['all','','','branch',true,3,false],['win32-x64','','','branch',true,1,false],['win32-bootstrap','','','branch',false,3,false],['win32-replacement','','','branch',false,3,false],['win32-gui-exit','','','branch',false,3,false],
   ['all','','','tag',true,3,true],['all','','123','tag',false,3,true],['all','123','','branch',true,2,false],['all','123','','tag',true,2,true],
  ]) {
   const inputs={target,verified_windows_run:reuse,publish_source_run:publish},github={event_name:'workflow_dispatch',ref_type:ref,ref_name:ref==='tag'?'v2.4.3':'branch'},needs={'reuse-windows':{result:reuse?'success':'skipped'},build:{result:expectedBuild?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('replacement-contract'),inputs,github,needs)),target==='win32-replacement');
   assert.equal(Boolean(evaluate(condition('bootstrap-contract'),inputs,github,needs)),target==='win32-bootstrap');
+  assert.equal(Boolean(evaluate(condition('gui-exit-contract'),inputs,github,needs)),target==='win32-gui-exit');
   assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);assert.equal(JSON.parse(evaluate(matrixExpression,inputs,github)).length,count);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs)),expectedPublish);
   for(const result of ['failure','cancelled']) {needs['reuse-windows'].result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs)),false);}
   needs['reuse-windows'].result=reuse?'success':'skipped';assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs,true)),false);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs,true)),false);
