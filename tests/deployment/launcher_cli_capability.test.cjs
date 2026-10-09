@@ -97,6 +97,16 @@ test('a JS registered receipt passes the real Python verifier and tampering fail
   const refused=run();assert.notEqual(refused.status,0);assert.match(refused.stderr,/OperationCliError/);
 });
 
+test('Python rejects a linked home even when its target has a valid APP receipt',
+  {skip:process.platform==='win32'},async t=>{
+    const f=fixture(t),receipt=await capability.register(f.options);
+    const alias=path.join(f.root,'linked-home');fs.symlinkSync(receipt.noraHome,alias,'dir');
+    const verifier=path.resolve(__dirname,'../installer/operation_cli.py');
+    const source='import importlib.util,sys; s=importlib.util.spec_from_file_location("receipt",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); m.validate_receipt(sys.argv[2])';
+    const result=spawnSync(python,['-B','-c',source,verifier,alias],{encoding:'utf8'});
+    assert.notEqual(result.status,0);assert.match(result.stderr,/OperationCliError/);
+  });
+
 test('managed CLI script requires matching installed-manifest hashes and that receipt cannot survive installation changes',async t=>{
   const f=fixture(t),installRoot=path.join(f.options.noraHome,'tavern'),target=path.join(installRoot,'apps/tavern-ops/updater/update.py');
   const sha=require('node:crypto').createHash('sha256').update('trusted updater').digest('hex');

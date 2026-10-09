@@ -81,7 +81,9 @@ def _descriptor(item):
 
 def validate_receipt(nora_home):
     try:
-        home = _safe(Path(nora_home).expanduser().resolve(), directory=True, private=True)
+        # Match the APP's lexical path.resolve contract without expanding Windows
+        # 8.3 names or hiding a linked parent before the original-path safety check.
+        home = _safe(Path(os.path.abspath(Path(nora_home).expanduser())), directory=True, private=True)
         directory = _safe(home / 'installer', directory=True, private=True)
         file = _safe(directory / 'launcher-control.json', private=True)
         if file.stat().st_size > 128 * 1024:
