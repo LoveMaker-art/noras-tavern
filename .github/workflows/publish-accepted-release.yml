@@ -99,7 +99,7 @@ jobs:
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "Product commit: $source_sha; publisher commit: $GITHUB_SHA"
       - name: Check publication source contracts before downloading accepted packages
-        run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs
+        run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs
       - name: Restore accepted delivery with exact artifact ZIP hashes
         shell: bash
         env:

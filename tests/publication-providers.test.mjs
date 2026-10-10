@@ -21,9 +21,13 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
     const stateDir=fs.mkdtempSync(path.join(os.tmpdir(),'nora-publication-provider-'));
     t.after(()=>fs.rmSync(stateDir,{recursive:true,force:true}));
     const p={plan:{tag,commit,channel:'stable',body:'Authored notes.\n',objects:[object]},stateDir};
-    const expectedAsset={id:2,name:'one.zip',state:'uploaded',size:3,digest:'sha256:'+object.sha256,browser_download_url:`https://github.com/${repository}/releases/download/${tag}/one.zip`};
+    const draftTag='untagged-1d64a7233db611c820cf';
+    const expectedAsset={id:2,name:'one.zip',state:'uploaded',size:3,digest:'sha256:'+object.sha256,
+        url:`https://api.github.com/repos/${repository}/releases/assets/2`,browser_download_url:`https://github.com/${repository}/releases/download/${draft?draftTag:tag}/one.zip`};
     const assets=populated?[expectedAsset]:[];
-    const release={id:1,tag_name:tag,draft,prerelease:false,body:'Authored notes.'},calls=[],state={exists};
+    const release={id:1,tag_name:tag,draft,prerelease:false,body:'Authored notes.',
+        url:`https://api.github.com/repos/${repository}/releases/1`,assets_url:`https://api.github.com/repos/${repository}/releases/1/assets`,
+        html_url:`https://github.com/${repository}/releases/tag/${draft?draftTag:tag}`},calls=[],state={exists};
     const notFound=()=>Object.assign(new Error('Not Found'),{diagnostics:'gh: Not Found (HTTP 404)'});
     const execute=async(program,args)=>{
         assert.equal(program,'gh');
@@ -31,6 +35,17 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
         const endpoint=args.at(-1);
         if(args[0]==='api'){
             const base=`repos/${repository}`;
+            if(state.historical){
+                const old=state.historical;
+                if(endpoint===`${base}/git/ref/tags/${old.release.tag_name}`)return JSON.stringify({object:{type:'commit',sha:old.commit}});
+                if(endpoint===`${base}/releases/tags/${old.release.tag_name}`){
+                    if(old.release.draft)throw notFound();
+                    return JSON.stringify(old.release);
+                }
+                if(endpoint===`${base}/releases/${old.release.id}/assets?per_page=100`){
+                    assert.ok(args.includes('--paginate')&&args.includes('--slurp'));return JSON.stringify([old.assets]);
+                }
+            }
             if(endpoint===`${base}/git/ref/tags/${tag}`)return JSON.stringify({object:{type:'commit',sha:commit}});
             if(endpoint===`${base}/releases/tags/${tag}`){
                 if(state.tagError)throw state.tagError;
@@ -42,7 +57,7 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
                 assert.ok(args.includes('--paginate')&&args.includes('--slurp'));
                 if(state.listError)throw state.listError;
                 // Put the target on a later page to exercise complete pagination.
-                return JSON.stringify(state.releasePages??[[{id:99,tag_name:'v2.4.3',draft:false}],state.exists?[release]:[]]);
+                return JSON.stringify(state.releasePages??[[{id:99,tag_name:'v2.4.2',draft:false}],state.exists?[release]:[],state.historical?[state.historical.release]:[]]);
             }
             if(endpoint===`${base}/releases/1`){
                 if(state.idError)throw state.idError;
@@ -65,7 +80,10 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
         }else if(args[1]==='upload'){
             assert.ok(state.exists&&release.draft);assert.equal(args[3],object.file);
             assert.ok(!args.includes('--clobber'));assets.push(expectedAsset);
-        }else if(args[1]==='edit')release.draft=false;
+        }else if(args[1]==='edit'){
+            release.draft=false;release.html_url=`https://github.com/${repository}/releases/tag/${tag}`;
+            for(const asset of assets)asset.browser_download_url=`https://github.com/${repository}/releases/download/${tag}/${asset.name}`;
+        }
         else assert.fail(`Unexpected GitHub command: ${args.join(' ')}`);
         return '';
     };
@@ -196,6 +214,78 @@ test('draft adoption retains asset closure, size, digest and URL validation',asy
     }
     const {provider,p,assets}=githubFixture(t);assets.push({...assets[0],id:3});
     await assert.rejects(provider.assertReady(p),/Duplicate GitHub asset/);
+});
+test('temporary asset URLs require the exact draft binding, API object identity and unaltered byte metadata',async t=>{
+    const base='https://github.com/LoveMaker-art/noras-tavern/releases/';
+    for(const [assetChange,releaseChange,expected] of [
+        [{id:0},{},/Invalid GitHub asset id/],
+        [{id:'2'},{},/Invalid GitHub asset id/],
+        [{url:'https://api.github.com/repos/other/repo/releases/assets/2'},{},/Different GitHub asset API URL/],
+        [{url:'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/assets/3'},{},/Different GitHub asset API URL/],
+        [{browser_download_url:`${base}download/untagged-deadbeef/one.zip`},{},/Different GitHub asset URL/],
+        [{browser_download_url:`${base}download/untagged-1d64a7233db611c820cf/other.zip`},{},/Different GitHub asset URL/],
+        [{browser_download_url:`${base}download/untagged-1d64a7233db611c820cf/one.zip?token=extra`},{},/Different GitHub asset URL/],
+        [{browser_download_url:'https://github.com/other/repo/releases/download/untagged-1d64a7233db611c820cf/one.zip'},{},/Different GitHub asset URL/],
+        [{},{html_url:'https://github.com/other/repo/releases/tag/untagged-1d64a7233db611c820cf'},/Different GitHub draft URL/],
+        [{},{html_url:`${base}tag/untagged-1d64a7233db611c820cf?extra=true`},/Invalid GitHub draft URL/],
+        [{},{html_url:undefined},/Different GitHub draft URL/],
+        [{},{url:'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/3'},/Different GitHub release API URL/],
+        [{},{assets_url:'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/3/assets'},/Different GitHub release assets URL/],
+        [{size:4},{},/Different GitHub asset size/],
+        [{digest:'sha256:'+'0'.repeat(64)},{},/digest/],
+    ]){
+        const {provider,p,assets,release,calls}=githubFixture(t);
+        Object.assign(assets[0],assetChange);Object.assign(release,releaseChange);
+        await assert.rejects(provider.assertReady(p),expected);
+        assert.ok(!calls.some(args=>args[0]==='release'));
+    }
+    const {provider,p,assets}=githubFixture(t);
+    assets[0].browser_download_url=`${base}download/v2.4.4/one.zip`;
+    await provider.assertReady(p);
+});
+test('different draft asset names cannot share a single GitHub asset ID',async t=>{
+    const {provider,p,assets}=githubFixture(t);
+    p.plan.objects.push({...p.plan.objects[0],key:'releases/v2.4.4/two.zip'});
+    assets.push({...assets[0],name:'two.zip'});
+    await assert.rejects(provider.assertReady(p),/Duplicate GitHub asset id/);
+});
+test('a published release cannot retain a draft URL even if its page still has the same temporary tag',async t=>{
+    const {provider,p,assets,release}=githubFixture(t);await provider.assertReady(p);
+    const temporary=assets[0].browser_download_url;
+    await provider.checkPromotion(p);await provider.promote(p);
+    assert.equal(release.draft,false);
+    assets[0].browser_download_url=temporary;
+    release.html_url='https://github.com/LoveMaker-art/noras-tavern/releases/tag/untagged-1d64a7233db611c820cf';
+    await assert.rejects(provider.verifyPromotion(p),/Different GitHub asset URL/);
+    assets[0].browser_download_url='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/one.zip';
+    await provider.verifyPromotion(p);
+});
+test('historical asset references remain formal, commit-bound and canonical while the target is a draft',async t=>{
+    const repository='LoveMaker-art/noras-tavern',tag='v2.4.3',commit='b'.repeat(40);
+    for(const [change,expected] of [
+        [{},null],
+        [{browser_download_url:`https://github.com/${repository}/releases/download/untagged-1d64a7233db611c820cf/old.zip`},/Different GitHub asset URL/],
+        [{browser_download_url:`https://github.com/${repository}/releases/download/v2.4.4/old.zip`},/Different GitHub asset URL/],
+        [{digest:'sha256:'+'0'.repeat(64)},/digest/],
+        [{size:4},/Different GitHub asset size/],
+    ]){
+        const {provider,p,state,execute}=githubFixture(t);
+        const reference={phase:'asset',key:`releases/${tag}/old.zip`,reference:true,assetReleaseTag:tag,sourceCommit:commit,size:3,sha256:'e'.repeat(64)};
+        p.plan.objects.push(reference);
+        state.historical={commit,release:{id:3,tag_name:tag,draft:false,prerelease:false,
+            url:`https://api.github.com/repos/${repository}/releases/3`,assets_url:`https://api.github.com/repos/${repository}/releases/3/assets`},
+        assets:[{id:4,url:`https://api.github.com/repos/${repository}/releases/assets/4`,name:'old.zip',state:'uploaded',size:3,digest:'sha256:'+reference.sha256,
+            browser_download_url:`https://github.com/${repository}/releases/download/${tag}/old.zip`,...change}]};
+        if(expected)await assert.rejects(provider.assertReady(p),expected);
+        else{
+            await provider.assertReady(p);assert.equal(await provider.inspect(reference,null,p),'matching');
+            state.historical.release.draft=true;
+            // A fresh provider must re-evaluate source publication and commit, not inherit a prior cache.
+            await assert.rejects(githubProvider({repository,execute,log:()=>{}}).assertReady(p),/not a formal stable release/);
+            state.historical.release.draft=false;state.historical.commit='c'.repeat(40);
+            await assert.rejects(githubProvider({repository,execute,log:()=>{}}).assertReady(p),/tag differs/);
+        }
+    }
 });
 test('a remote tag change blocks publication independently from local source identity',async t=>{
     const fixture=githubFixture(t);const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute:async(program,args)=>
