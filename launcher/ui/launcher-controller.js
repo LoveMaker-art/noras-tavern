@@ -263,6 +263,25 @@
     const name = ({ install: '安装', update: '更新', repair: '修复', start: '启动', stop: '停止', restart: '重启' })[action];
     return name ? `${resume ? '继续' : '重新尝试'}${name}` : resume ? '继续' : '重试';
   }
+  function canCheckNewUpdate(operation = snapshot.operation) {
+    const current = snapshot.operation;
+    return Boolean(current && operation && operation.operationId === current.operationId
+      && operation.snapshotSequence === current.snapshotSequence
+      && typeof current.operationId === 'string' && current.operationId && Number.isSafeInteger(current.snapshotSequence)
+      && current.snapshotSequence > 0 && current.archived !== true
+      && current.kind === 'update' && ['failed', 'cancelled', 'blocked'].includes(current.state)
+      && current.effectState === 'untouched' && current.recoveryOutcome === 'not-required'
+      && !current.handoffRef && current.busy === false && snapshot.busy === false
+      && !busy && !statusUnknown && !snapshot.updateRecovery && !snapshot.launcherRecovery);
+  }
+  function isNewUpdateTarget(tag, operation = snapshot.operation) {
+    if (!canCheckNewUpdate(operation) || versionInfo?.available !== true || versionInfo.updateSupported !== true
+      || versionInfo.latestConfirmed !== true || tag !== versionInfo.latest) return false;
+    const previous = operation.target?.releasePlan ? operation.target.releasePlan.tag : operation.target?.request?.tag;
+    const releaseTag = /^v?\d+\.\d+\.\d+(?:-beta\.\d+)?$/;
+    return typeof tag === 'string' && releaseTag.test(tag) && typeof previous === 'string' && releaseTag.test(previous)
+      && tag.replace(/^v/, '') !== previous.replace(/^v/, '');
+  }
 
   function complete() { return Boolean(snapshot.setupCompleted ?? snapshot.installer?.setupCompleted) && snapshot.systemReady !== false; }
   function canReturnHome() {
@@ -792,6 +811,10 @@
       if (operation && typeof api.resumeOperation === 'function') entries.push({label:retryLabel(action, actions.includes('resume')), run:() => continueOperation('resume', operation)});
       else if (!operation && retry) entries.push({label:retryLabel(action, false), run:retry});
     }
+    if (operation && canCheckNewUpdate(operation)) entries.push({label:'检查新版更新', run:() => {
+      if (canCheckNewUpdate(operation)) return checkUpdates();
+      route();
+    }});
     if (actions.includes('recheck')) entries.push({label:operation && !statusUnknown ? '重新检查' : '重新查询状态', run:recheckFailure});
     if (actions.includes('logs') && hasLogs()) entries.push({label:'查看日志', run:openLogs, quiet:true});
     if (canReturnHome()) entries.push({label:'返回酒馆', run:() => { lastFailure = null; dailyHome(); }, quiet:true});
@@ -808,7 +831,8 @@
     const operation = snapshot.operation;
     if (operation && !recoveredOperation(operation) && ['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)
       && (operation.kind === action || ['install','update','repair','recover'].includes(action))
-      && !['resumeOperation','recoverOperation'].includes(endpoint)) { route(); return; }
+      && !['resumeOperation','recoverOperation'].includes(endpoint)
+      && !(action === 'update' && endpoint === 'update' && isNewUpdateTarget(options.tag, operation))) { route(); return; }
     if ((snapshot.updateRecovery || snapshot.launcherRecovery) && !['recover', 'recoverLauncher'].includes(action)) { route(); return; }
     const wasComplete = complete();
     if (wasComplete) firstCompletionPending = false;
@@ -1057,10 +1081,15 @@
       const operation = snapshot.operation, entries = [];
       const unresolved = operation && !recoveredOperation(operation) && ['install','update','repair','recover'].includes(operation.kind)
         && ['failed','cancelled','blocked','interrupted','rolled-back'].includes(operation.state);
+      const newTarget = unresolved && isNewUpdateTarget(result.latest, operation);
       if (statusUnknown) {
         const note = document.createElement('p'); note.className = 'model-feedback'; note.textContent = unknownStatusCopy(); $('inline').append(note);
         entries.push({label:'重新查询状态', run:refreshFailure, primary:true});
-      } else if (result.available && result.updateSupported && !unresolved) entries.push({label:'安装更新', run:() => run('update', { tag: result.latest }), primary:true});
+      } else if (result.available && result.updateSupported && (!unresolved || newTarget)) entries.push({
+        label:newTarget ? '安装新版更新' : '安装更新', run:() => {
+          if (newTarget && !isNewUpdateTarget(result.latest, operation)) { route(); return; }
+          return run('update', { tag: result.latest });
+        }, primary:true});
       else if (unresolved) {
         const note = document.createElement('p'); note.className = 'model-feedback';
         note.textContent = '请先处理上次安装或更新。'; $('inline').append(note);

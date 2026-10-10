@@ -150,6 +150,71 @@ function structuredFailure({title='任意清晰错误。',actions=['recheck','lo
   return Object.assign(new Error('raw fixture must not be displayed'),{guidance:operation.primaryFailure.guidance,
     failureCode:'timeout',userCode:code,allowedActions:actions,operation});
 }
+function untouchedUpdate(state='failed') {
+  return {...structuredFailure({actions:['retry','recheck','logs'],attempt:1}).operation,state,busy:false,
+    recoveryOutcome:'not-required',handoffRef:null,
+    target:{request:{action:'update',tag:'v2.4.3'},releasePlan:{tag:'v2.4.3',planId:'frozen-243-plan'}}};
+}
+const newerUpdate={...updateResult,current:'2.4.1',latest:'v2.4.4',latestConfirmed:true};
+test('an untouched terminal update can check and install a different latest target without resuming its old plan',async()=>{
+  for(const state of ['failed','cancelled','blocked']){
+    const operation=untouchedUpdate(state),original=JSON.stringify(operation);let checks=0,updates=0,resumes=0;
+    const completed={...operation,operationId:'new-update-operation',state:'succeeded',snapshotSequence:2};
+    const h=fixture({snapshot:{...ready,version:'2.4.1',busy:false,operation},api:{
+      checkUpdate:async()=>{checks++;return {...newerUpdate};},
+      update:async request=>{updates++;assert.equal(request.tag,'v2.4.4');assert.equal(request.operationId,undefined);
+        assert.equal(request.snapshotSequence,undefined);return {...ready,version:'2.4.4',operation:completed};},
+      resumeOperation:async()=>{resumes++;},status:async()=>({...ready,version:'2.4.4',busy:false,operation:completed})}});
+    await h.invoke('route()');assert.ok(action(h,'重新尝试更新'),'the frozen-target retry remains available');
+    const check=action(h,'检查新版更新');assert.ok(check);await check.onclick();
+    const install=action(h,'安装新版更新');assert.ok(install);await install.onclick();
+    assert.equal(checks,1);assert.equal(updates,1);assert.equal(resumes,0);assert.equal(JSON.stringify(operation),original);
+    assert.equal(h.context.snapshot.operation.operationId,'new-update-operation');
+  }
+});
+test('new-target UI admission rejects uncertain effects, recovery, handoff and every active writer',async()=>{
+  const scenarios=[
+    {operation:{effectState:'unknown'}},{operation:{effectState:'changed'}},{operation:{effectState:'restored'}},
+    {operation:{recoveryOutcome:undefined}},{operation:{recoveryOutcome:'recovery-required'}},
+    {operation:{handoffRef:'/fixture/launcher-job'}},{operation:{busy:true}},
+    {operation:{operationId:undefined}},{operation:{snapshotSequence:undefined}},{operation:{archived:true}},
+    {operation:{kind:'install'}},{operation:{kind:'repair'}},{operation:{kind:'recover'}},
+    {operation:{state:'interrupted'}},{operation:{state:'rolled-back'}},
+    {snapshot:{busy:true}},{snapshot:{busy:undefined}},{snapshot:{updateRecovery:{canRecover:false}}},
+    {snapshot:{launcherRecovery:{canRecover:false}}},{statusUnknown:true},{busy:true},
+  ];
+  for(const scenario of scenarios){
+    let updates=0;const operation={...untouchedUpdate(),...scenario.operation};
+    const h=fixture({snapshot:{...ready,busy:false,operation,...scenario.snapshot},statusUnknown:scenario.statusUnknown||false,
+      busy:scenario.busy||false,api:{checkUpdate:async()=>({...newerUpdate}),update:async()=>{updates++;}}});
+    h.context.versionInfo={...newerUpdate};
+    h.context.original=Object.assign(Error('sealed failure'),{operation,allowedActions:operation.allowedActions});
+    await h.invoke('fail(original,"update")');assert.equal(action(h,'检查新版更新'),undefined,JSON.stringify(scenario));
+    await h.invoke('run("update",{tag:"v2.4.4"})');assert.equal(updates,0,JSON.stringify(scenario));
+    if(!scenario.busy){await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined,JSON.stringify(scenario));}
+  }
+});
+test('checking a new release never releases the same, aliased, unknown or unconfirmed frozen target',async()=>{
+  for(const [previous,latest,confirmed] of [['v2.4.3','v2.4.3',true],['2.4.3','v2.4.3',true],
+    [undefined,'v2.4.4',true],['','v2.4.4',true],['v2.4.3','',true],['v2.4.3','v2.4.4',false]]){
+    const operation=untouchedUpdate();operation.target={request:{tag:previous},releasePlan:{tag:previous}};let updates=0;
+    const h=fixture({snapshot:{...ready,busy:false,operation},api:{checkUpdate:async()=>({...newerUpdate,latest,latestConfirmed:confirmed}),
+      update:async()=>{updates++;},resumeOperation:async()=>{throw Error('the old target must not be resumed by a new-target attempt');}}});
+    await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined);
+    await h.invoke(`run("update",{tag:${JSON.stringify(latest)}})`);assert.equal(updates,0);
+    assert.ok(action(h,'重新尝试更新'),'same-target retry still belongs to the original operation');
+  }
+});
+test('new-target controls recheck live safety on click and honor the selected plan over the request hint',async()=>{
+  const operation=untouchedUpdate();operation.target.request.tag='v2.4.2';let checks=0,updates=0;
+  const h=fixture({snapshot:{...ready,busy:false,operation},api:{checkUpdate:async()=>{checks++;return {...newerUpdate};},update:async()=>{updates++;}}});
+  await h.invoke('route()');const check=action(h,'检查新版更新');assert.ok(check);
+  h.context.snapshot.operation={...operation,busy:true};await check.onclick();assert.equal(checks,0);
+  h.context.snapshot.operation=operation;await h.invoke('checkUpdates()');const install=action(h,'安装新版更新');assert.ok(install);
+  h.context.snapshot.updateRecovery={canRecover:true};await install.onclick();assert.equal(updates,0);
+  h.context.snapshot.updateRecovery=null;h.context.api.checkUpdate=async()=>({...newerUpdate,latest:'v2.4.3'});
+  await h.invoke('checkUpdates()');assert.equal(action(h,'安装新版更新'),undefined,'the release plan overrides an older request hint');
+});
 test('typed setup blockers open the existing configuration forms instead of repeating startup',async()=>{
   for(const [code,label,handler] of [['MODEL_SETUP_REQUIRED','配置模型','modelForm'],
     ['CLAWCHAT_PAIR_REQUIRED','连接 ClawChat','clawForm']]){

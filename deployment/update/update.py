@@ -1289,10 +1289,12 @@ def install(args):
                 if verified_state is not None:
                     print(json.dumps({**verified_state, "updateRecovery": None, "event": "result", "updateVerified": True}, ensure_ascii=False), flush=True)
                 log("更新完成。" + ("请在 ClawChat 输入 /restart。" if reload_required and not managed else ""))
-                try:
-                    shutil.rmtree(agents_backup)
-                except OSError as cleanup_error:
-                    log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
+                # Managed journals authenticate this snapshot until the whole backup is retired.
+                if journal is None:
+                    try:
+                        shutil.rmtree(agents_backup)
+                    except OSError as cleanup_error:
+                        log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
                 return
             except BaseException as error:
                 _operation_evidence.freeze(error, nora_home=managed_home or install_root.parent,

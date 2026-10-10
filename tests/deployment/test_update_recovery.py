@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from ops.installer import update_recovery as recovery
 from ops.installer import first_install
+from ops.installer import nora_system
 from ops.updater import bundle
 
 
@@ -23,7 +24,7 @@ def load_updater():
     return module
 
 
-def install_fixture(base,*,interrupt=False):
+def install_fixture(base,*,interrupt=False,success=False):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
@@ -36,6 +37,10 @@ def install_fixture(base,*,interrupt=False):
     (root/'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
     (home/'config.yaml').write_text('old config');(home/'AGENTS.md').write_text('old agents')
     (home/'SOUL.md').write_text('old soul')
+    if success:
+        for relative in [*(f'skills/{skill}/SKILL.md' for skill in nora_system.SKILLS),*nora_system.MANAGED_FILES]:
+            file=home/relative;file.parent.mkdir(parents=True,exist_ok=True)
+            file.write_text('fixture managed content')
     before={'version':'2.3.17','running':True,'gatewayRunning':False,
             'clawchatConnected':False,'systemReady':True}
     instance={'schema':1,'noraHome':str(base),'hermesHome':str(home),'installRoot':str(root),'port':8799}
@@ -55,12 +60,16 @@ def install_fixture(base,*,interrupt=False):
             evidence=base/'installer/operations/11111111-1111-4111-8111-111111111111/evidence/python.json'
             assert json.loads(evidence.read_text())['primary']['message']=='new runtime failed'
             return {'offline':True}
+        if phase=='verify':return {**before,'version':manifest['versions']['tavern']}
         return dict(before)
     helpers=SimpleNamespace(extract_dependency_bundle=lambda *_:False,
         snapshot_targets=first_install.snapshot_targets,stop_install_runtime=lambda *_:None,
         install_soul=lambda home,*_args,**_kwargs:(home/'SOUL.md').write_text('new soul'))
     managed=SimpleNamespace(read_json=lambda path:json.loads(path.read_text()),
-        seed_clawchat_skills=lambda *_:None,record_files_ready=lambda *_:None)
+        seed_clawchat_skills=lambda *_:None,record_files_ready=lambda *_:None,
+        verify_runtime=lambda *_:{name:True for name in nora_system.PROOFS},
+        record_initialization=nora_system.record_initialization,
+        mark_setup_complete=nora_system.mark_setup_complete)
     modules={'update_nora_system':managed,'update_install_helpers':helpers,
              'simple_service_manager':SimpleNamespace(ManagedService=SimpleNamespace(discover=lambda *_:None)),
              'release_managed_context':SimpleNamespace(prepare_greeting=lambda *_:([],{})),
@@ -93,7 +102,9 @@ def install_fixture(base,*,interrupt=False):
         stack.enter_context(patch.object(updater,'verify_preserved_worlds',return_value={'status':'verified'}))
         stack.enter_context(patch.object(updater,'dependency_marker',return_value={}))
         stack.enter_context(patch.object(updater,'install_update_check',return_value={'status':'installed'}))
-        stack.enter_context(patch.object(updater,'install_runtime',side_effect=RuntimeError('new runtime failed')))
+        stack.enter_context(patch.object(updater,'install_runtime',**(
+            {'return_value':{'native_pid':None,'health':{'ok':True}}} if success else
+            {'side_effect':RuntimeError('new runtime failed')})))
         stack.enter_context(patch.object(helper.os,'replace',side_effect=replace))
         updater.install(SimpleNamespace(home=home,install_root=root,managed_home=base,
             release_dir=base/'release',manifest_sha256=None))
@@ -101,6 +112,34 @@ def install_fixture(base,*,interrupt=False):
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-update-committed-') as temporary:
+            base=Path(temporary).resolve();home=base/'hermes';root=base/'tavern'
+            self.assertEqual(install_fixture(base,success=True),['preflight','stop','verify'])
+            transaction_file=root/'tavern-updates/transaction.json'
+            transaction=json.loads(transaction_file.read_text())
+            self.assertEqual(transaction['status'],'committed')
+            self.assertEqual(json.loads((root/'tavern-updates/installed.json').read_text())['commit'],'a'*40)
+            backup=Path(transaction['backup'])
+            receipt=backup/'nora-update-backup.json'
+            self.assertEqual(json.loads(receipt.read_text())['status'],'committed')
+            metadata=transaction['recoveryPlan']['metadata']
+            self.assertEqual(set(metadata),{'host','agents-rollback','managed'})
+            for name,expected in metadata.items():
+                self.assertTrue((backup/name).is_dir(),name)
+                self.assertEqual(recovery.digest(backup/name),expected,name)
+            self.assertEqual((backup/'agents-rollback/AGENTS.md').read_text(),'old agents')
+            previous={path:path.read_bytes() for path in (transaction_file,receipt)}
+            self.assertEqual(recovery.load(home,root).record['status'],'committed')
+            effects=recovery.effects(home,root)
+            self.assertEqual(effects['effectState'],'changed')
+            self.assertEqual(effects['status'],'committed')
+            self.assertEqual(effects['reason'],'')
+            self.assertFalse(effects['canRecover'])
+            self.assertEqual(recovery.assess(home,root),
+                             {'canRecover':False,'reason':'更新已提交，无需恢复'})
+            self.assertEqual({path:path.read_bytes() for path in previous},previous)
+
     def test_real_install_automatic_recovery_restores_before_reporting_failure(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-recovery-') as temporary:
             base=Path(temporary).resolve()
@@ -172,6 +211,12 @@ class InterruptedRecoveryTests(unittest.TestCase):
             journal.plan['metadataPhase']='applying'
             journal.plan['metadataIntents']=[journal.metadata_key(target) for target,_ in journal.metadata_items()]
             journal.save()
+        return journal
+
+    def committed_journal(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        journal.save('committed')
+        load_updater().record_backup(self.root,self.backup,'committed')
         return journal
 
     def long_cache_file(self):
@@ -351,6 +396,47 @@ class InterruptedRecoveryTests(unittest.TestCase):
         self.journal(metadata_changes=False)
         (self.backup/'host/config.yaml').write_text('tampered backup')
         self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'unknown')
+
+    def test_committed_backup_can_be_observed_but_never_recovered(self):
+        journal=self.committed_journal()
+        receipt=self.backup/'nora-update-backup.json'
+        self.assertEqual(json.loads(receipt.read_text())['status'],'committed')
+        previous={path:path.read_bytes() for path in (journal.file,receipt,
+            self.old/'program.txt',self.state/'chat.txt',self.home/'config.yaml')}
+        self.assertEqual(recovery.load(self.home,self.root).record['status'],'committed')
+        effects=recovery.effects(self.home,self.root)
+        self.assertEqual(effects['effectState'],'changed')
+        self.assertEqual(effects['status'],'committed')
+        self.assertEqual(effects['reason'],'')
+        self.assertFalse(effects['canRecover'])
+        self.assertEqual(recovery.assess(self.home,self.root),
+                         {'canRecover':False,'reason':'更新已提交，无需恢复'})
+        with self.assertRaisesRegex(RuntimeError,'更新已提交，无需恢复'):self.run_recover()
+        self.assertEqual(self.stop_calls,[]);self.assertEqual(self.resume_calls,[])
+        self.assertEqual({path:path.read_bytes() for path in previous},previous)
+
+    def test_committed_backup_tampering_still_refuses_before_stop(self):
+        for mode in ('receipt','config','program','state'):
+            with self.subTest(mode=mode):
+                self.setUp();journal=self.committed_journal()
+                self.assertEqual(recovery.effects(self.home,self.root)['effectState'],'changed')
+                if mode=='receipt':
+                    receipt=self.backup/'nora-update-backup.json'
+                    record=json.loads(receipt.read_text());record['owner']='unknown-updater'
+                    receipt.write_text(json.dumps(record))
+                elif mode=='config':(self.backup/'host/config.yaml').write_text('tampered backup')
+                elif mode=='program':(self.backup/'trees/app/program.txt').write_text('tampered backup')
+                else:(self.backup/'state/chat.txt').write_text('tampered backup')
+                effects=recovery.effects(self.home,self.root)
+                self.assertEqual(effects['effectState'],'unknown')
+                self.assertFalse(effects['canRecover'])
+                self.assertIn('备份',effects['reason'])
+                previous=journal.file.read_bytes()
+                with self.assertRaisesRegex(RuntimeError,'备份'):self.run_recover()
+                self.assertEqual(self.stop_calls,[]);self.assertEqual(self.resume_calls,[])
+                self.assertEqual(journal.file.read_bytes(),previous)
+                self.assertEqual((self.old/'program.txt').read_text(),'new program')
+                self.assertEqual((self.state/'chat.txt').read_text(),'old chat')
 
     def test_recovery_never_overwrites_configuration_without_its_write_intent(self):
         journal=self.journal(metadata_changes=False);journal.swap('app')

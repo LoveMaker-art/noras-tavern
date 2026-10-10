@@ -255,7 +255,7 @@ class Journal:
         receipt=read_object(safe_path(self.backup,RECEIPT))
         if (receipt.get('schema')!='nora-update-backup/1' or receipt.get('owner')!='nora-tavern-updater'
                 or receipt.get('installRoot')!=str(self.root) or receipt.get('backupId')!=self.backup.name
-                or receipt.get('status') not in ('prepared','recovery-failed','restored')):
+                or receipt.get('status') not in ('prepared','committed','recovery-failed','restored')):
             raise RuntimeError('恢复备份归属无法确认')
         before=self.plan.get('before')
         if not isinstance(before,dict) or not isinstance(before.get('version'),str) or not before['version']:

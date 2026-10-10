@@ -358,6 +358,12 @@ jobs:
           python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
           node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
 
+      - name: Verify module-only incremental updater before installation tests
+        shell: bash
+        run: |
+          node --test tests/component-release.test.mjs
+          node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_can_be_observed_but_never_recovered tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_tampering_still_refuses_before_stop tests.deployment.test_update_recovery.ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup
+
       - name: Test release channels and update rollback
         id: release_contracts
         continue-on-error: true
