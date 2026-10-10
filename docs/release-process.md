@@ -71,7 +71,9 @@ node tooling/release/publish-release.mjs "$NORA_ACCEPTED_ASSETS" "$NORA_RELEASE_
 
 ## 5. 失败恢复沿用原计划
 
-发布失败不重打包，不生成新目录时间戳，也不修改资产清单。启动新发布工作流，保留 `release_tag`、`source_run`、`delivery_mode`、`asset_mode`，填写此前的 `state_source_run`。
+发布失败不重打包，也不修改资产清单。已经封存计划并保存状态 artifact 时，启动新发布工作流，保留 `release_tag`、`source_run`、`delivery_mode`、`asset_mode`，填写此前的 `state_source_run`；原目录时间戳和计划身份不得改变。
+
+若失败发生在封存之前且没有任何状态 artifact，尚不存在可恢复计划，禁止将该失败 run 填入 `state_source_run`。定位并修复实际失败后，使用同一已验收产品 tag、来源 run 和资产协议、留空 `state_source_run` 重新执行 `prepare`；这不会重新构建产品。
 
 来源运行可为已结束的成功、失败或取消状态。优先恢复最终检查点；强制终止而没有最终 artifact 时恢复传输前固定计划。每个状态 artifact 仍须通过本仓库、本发布工作流、API 摘要和安全解压检查。
 

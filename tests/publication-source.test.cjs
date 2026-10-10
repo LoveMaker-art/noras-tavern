@@ -131,6 +131,64 @@ test('actual source CLI hashes artifact ZIP bytes before extracting them', t => 
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);
   assert.equal(fs.existsSync(path.join(bad, 'delivery')), false, 'Unverified ZIP bytes must not be extracted');
 });
+function fullCliFixture(t) {
+  const native = nativeFixture(t), f = fixture(), root = native.root;
+  const payloadBytes = fs.readFileSync(path.join(native.delivery, 'payload.json'), 'utf8');
+  const system = JSON.parse(fs.readFileSync(path.join(native.delivery, 'nora-system-darwin-arm64.json')));
+  const installerName = 'Nora-Tavern-2.1.1-win-x64-setup.exe', installerBytes = 'fixture installed setup';
+  const members = { 'nora-tavern-shared': [['release-manifest.json', payloadBytes]] };
+  for (const target of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
+    const [platform, arch] = target.split('-'), payloadName = `${target}-release-manifest.json`;
+    const systemBytes = JSON.stringify({ ...system, platform, arch, files: { 'release-manifest.json': { asset: payloadName } } });
+    const app = { ...native.app, platform, arch, payloadManifestSha256: hash(systemBytes) };
+    members[`nora-tavern-${target}`] = [[`nora-system-${target}.json`, systemBytes], [payloadName, payloadBytes]];
+    members[`nora-operation-acceptance-${target}`] = [
+      ['nora-packaged-app-acceptance.json', JSON.stringify(app)],
+      ['runtime/harness-result.json', JSON.stringify({ ...native.runtime, platform, arch })],
+      ['fresh/harness-result.json', JSON.stringify({ ...native.fresh, platform, arch })],
+    ];
+    if (platform === 'win32') {
+      members[`nora-tavern-${target}`].push([installerName, installerBytes]);
+      members[`nora-operation-acceptance-${target}`].push(
+        ['nora-installed-app-acceptance.json', JSON.stringify(app)],
+        ['nora-installed-setup-acceptance.json', JSON.stringify({ schema: 'nora-installed-setup/1', exitCode: 0, autoLaunch: false,
+          verifiedUnpackedFiles: 2, installer: installerName, installerSha256: hash(installerBytes) })]);
+    }
+  }
+  const selection = selectAcceptanceBaseline([[]], { repository: f.options.repository, targetTag: 'v2.4.4', requestedTag: 'EMPTY' });
+  members['nora-release-plan'] = [
+    ['nora-acceptance-baseline-selection.json', JSON.stringify(selection)],
+    ['nora-acceptance-published-releases.json', JSON.stringify([[]])],
+  ];
+  f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-release-plan' }); f.artifacts.total_count++;
+  const zipInput = path.join(root, 'zip-members.json');
+  fs.writeFileSync(zipInput, JSON.stringify(f.artifacts.artifacts.map(item => members[item.name])));
+  execFileSync('python3', ['-c', 'import json,sys,zipfile,os\nwith open(sys.argv[1]) as f: artifacts=json.load(f)\nfor index,members in enumerate(artifacts,1):\n with zipfile.ZipFile(os.path.join(sys.argv[2],str(index)+".zip"),"w") as z:\n  for name,content in members: z.writestr(name,content)', zipInput, root]);
+  for (const item of f.artifacts.artifacts) {
+    const bytes = fs.readFileSync(path.join(root, `${item.id}.zip`)); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
+  }
+  const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}\nconst resource=process.argv.at(-1);if(!/^repos\\/owner\\/tavern\\/actions\\/artifacts\\/\\d+\\/zip$/.test(resource))throw Error('Unexpected remote read: '+resource);const id=resource.split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`, { mode: 0o755 });
+  const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'), factsFile = path.join(root, 'published-releases.json');
+  fs.writeFileSync(runFile, JSON.stringify(f.run)); fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts));
+  const execute = (output, pages = [[]]) => {
+    fs.writeFileSync(factsFile, JSON.stringify(pages));
+    return spawnSync(process.execPath, [path.resolve(__dirname, '../tooling/release/publication-source.cjs'),
+      'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'full', output, 'v2.4.4', factsFile],
+    { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FIXTURE_ZIP_ROOT: root }, encoding: 'utf8', timeout: 15000 });
+  };
+  return { root, execute };
+}
+test('actual full source CLI forwards the release tag and preserves the independent historical gate', t => {
+  const f = fullCliFixture(t), accepted = path.join(f.root, 'accepted-full');
+  const good = f.execute(accepted); assert.equal(good.status, 0, good.stderr);
+  const receipt = JSON.parse(fs.readFileSync(path.join(accepted, 'source-receipt.json')));
+  assert.equal(receipt.artifacts.length, 8); assert.equal(receipt.historicalAcceptance.initialRelease, true);
+  assert.deepEqual(Object.keys(receipt.acceptance).sort(), ['darwin-arm64', 'darwin-x64', 'win32-x64']);
+  const rejected = path.join(f.root, 'rejected-full'), bad = f.execute(rejected, [[stableRelease('v2.4.3')]]);
+  assert.notEqual(bad.status, 0); assert.match(bad.stderr, /historical stable release now disproves/);
+  assert.equal(fs.existsSync(path.join(rejected, 'source-receipt.json')), false, 'A new published baseline must prevent accepting obsolete first-release evidence');
+});
 for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000, 150]]) test(`artifact ${name} deadline closes an actual child that ignores graceful termination`, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-timeout-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   let child;
