@@ -85,7 +85,7 @@ try {
             identity.launcherBuildReuse.archives[part] = baseline.identity.archives[part].sha256;
         } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
-        identity.archives[part] = { name, sha256 };
+        identity.archives[part] = { name, sha256, size: fs.statSync(path.join(release, name)).size };
         checksums.push(`${sha256}  ${name}`);
     }
     identity.artifacts = Object.fromEntries(members.map(file => [file, digest(fs.readFileSync(path.join(stage, file)))]));
@@ -102,7 +102,7 @@ try {
             identity.launcherBuildReuse.modules[module] = baseline.identity.modules[module].sha256;
         } else run('tar', ['--no-xattrs', '-C', stage, '-czf', path.join(release, name), '-T', list], stage, { COPYFILE_DISABLE: '1' });
         const sha256 = digest(fs.readFileSync(path.join(release, name)));
-        identity.modules[module] = { name, sha256, artifacts: moduleMembers };
+        identity.modules[module] = { name, sha256, size: fs.statSync(path.join(release, name)).size, artifacts: moduleMembers };
         checksums.push(`${sha256}  ${name}`);
     }
     const profile = JSON.parse(fs.readFileSync(path.join(stage, 'app/story_profile_runtime/manifest.json')));

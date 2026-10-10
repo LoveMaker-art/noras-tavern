@@ -22,8 +22,10 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  assert.equal(run.id,Number(runId));assert.equal(run.head_sha,commit);assert.equal(run.repository.full_name,repository);
  assert.ok(Number.isSafeInteger(run.repository.id)&&run.repository.id>0);assert.equal(run.path,'.github/workflows/build-integrated-launcher.yml');
  assert.equal(run.event,'workflow_dispatch');assert.equal(run.status,'completed');assert.equal(run.conclusion,'success');
- assert.equal(artifacts.total_count,artifacts.artifacts.length);assert.deepEqual(artifacts.artifacts.map(item=>item.name).sort(),[...names].sort());
- assert.equal(new Set(artifacts.artifacts.map(item=>item.id)).size,names.length,'Duplicate artifact IDs');
+ assert.equal(artifacts.total_count,artifacts.artifacts.length);
+ assert.equal(new Set(artifacts.artifacts.map(item=>item.name)).size,artifacts.artifacts.length,'Duplicate artifact names');
+ assert.deepEqual(artifacts.artifacts.filter(item=>!['nora-release-plan','nora-windows-failed-packaging-diagnostic'].includes(item.name)).map(item=>item.name).sort(),[...names].sort());
+ assert.equal(new Set(artifacts.artifacts.map(item=>item.id)).size,artifacts.artifacts.length,'Duplicate artifact IDs');
  for(const item of artifacts.artifacts) {
   assert.ok(Number.isSafeInteger(item.id)&&item.id>0);assert.equal(item.expired,false);assert.ok(Number.isSafeInteger(item.size_in_bytes)&&item.size_in_bytes>0);
   assert.match(item.digest,/^sha256:[a-f0-9]{64}$/);assert.equal(item.workflow_run.id,run.id);assert.equal(item.workflow_run.head_sha,commit);
@@ -34,7 +36,8 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  const job=native[0];assert.equal(job.run_id,run.id);assert.equal(job.head_sha,commit);assert.equal(job.status,'completed');assert.equal(job.conclusion,'success');
  assert.ok(job.steps.every(step=>!['failure','cancelled','timed_out','action_required'].includes(step.conclusion)),'Failed native step');
  for(const name of requiredSteps) {const steps=job.steps.filter(step=>step.name===name);assert.equal(steps.length,1,`Missing or duplicate native gate: ${name}`);assert.equal(steps[0].status,'completed');assert.equal(steps[0].conclusion,'success',`Native gate did not pass: ${name}`);}
- return artifacts.artifacts;
+ // The independently retained decision plan is not a package/acceptance archive.
+ return artifacts.artifacts.filter(item=>names.includes(item.name));
 }
 function files(root,relative=false) {
  const result=new Map();for(const entry of fs.readdirSync(root,{recursive:true,withFileTypes:true})) {

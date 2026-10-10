@@ -1,0 +1,179 @@
+name: Prepare, promote or resume an accepted release (no rebuild)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing immutable product tag (publisher code may be newer)
+        required: true
+        type: string
+      source_run:
+        description: Completed successful build containing the accepted delivery at the exact product tag commit
+        required: true
+        type: string
+      delivery_mode:
+        type: choice
+        default: full
+        options: [full, components]
+      stage:
+        description: seal is local only; prepare creates verified drafts; promote/all change formal channels
+        type: choice
+        default: seal
+        options: [seal, prepare, promote, all]
+      state_source_run:
+        description: Previous publication run whose fixed plan/checkpoint must be resumed
+        type: string
+        default: ''
+      asset_mode:
+        description: legacy for existing clients/v2.4.4; shared requires the new client protocol and its minimum version
+        type: choice
+        default: legacy
+        options: [legacy, shared]
+      reuse_tag:
+        description: Published stable baseline for a new shared plan (empty for legacy or resume)
+        type: string
+        default: ''
+
+concurrency:
+  group: nora-publish-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish-accepted:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    concurrency:
+      group: nora-sourceforge-release-channels
+      cancel-in-progress: false
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      SOURCE_RUN: ${{ inputs.source_run }}
+      DELIVERY_MODE: ${{ inputs.delivery_mode }}
+      PUBLICATION_STAGE: ${{ inputs.stage }}
+      STATE_SOURCE_RUN: ${{ inputs.state_source_run }}
+      ASSET_MODE: ${{ inputs.asset_mode }}
+      REUSE_TAG: ${{ inputs.reuse_tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Resolve the product tag independently from the publisher commit
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_RUN_ATTEMPT" != 1 ]]; then
+            echo 'Dispatch a new run with state_source_run set to this previous run; do not regenerate a plan by rerunning a publication job.' >&2
+            exit 1
+          fi
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || exit 1
+          [[ "$SOURCE_RUN" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ -z "$STATE_SOURCE_RUN" || "$STATE_SOURCE_RUN" =~ ^[1-9][0-9]*$ ]] || exit 1
+          if [[ "$ASSET_MODE" == legacy ]]; then test -z "$REUSE_TAG" || exit 1; fi
+          if [[ -n "$STATE_SOURCE_RUN" ]]; then test -z "$REUSE_TAG" || exit 1; fi
+          if [[ "$ASSET_MODE" == shared && -z "$STATE_SOURCE_RUN" ]]; then
+            [[ "$REUSE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || exit 1
+          fi
+          if [[ "$PUBLICATION_STAGE" == promote && -z "$STATE_SOURCE_RUN" ]]; then
+            echo 'Promotion requires the original sealed plan from a previous preparation run.' >&2
+            exit 1
+          fi
+          source_sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" || exit 1
+          test "$RELEASE_TAG" = "v$(git show "$source_sha:app/.tavern-release-version")" || exit 1
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "Product commit: $source_sha; publisher commit: $GITHUB_SHA"
+      - name: Check publication source contracts before downloading accepted packages
+        run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs
+      - name: Restore accepted delivery with exact artifact ZIP hashes
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/source-artifacts.json"
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/published-releases.json"
+          node tooling/release/publication-source.cjs delivery "$RUNNER_TEMP/source-run.json" "$RUNNER_TEMP/source-artifacts.json" "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$SOURCE_RUN" "$DELIVERY_MODE" "$RUNNER_TEMP/accepted-source" "$RELEASE_TAG" "$RUNNER_TEMP/published-releases.json"
+          node tooling/release/verify-launcher-release.cjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE"
+      - name: Restore the original plan and latest checkpoint without changing their identity
+        if: inputs.state_source_run != ''
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STATE_SOURCE_RUN" > "$RUNNER_TEMP/state-run.json"
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$STATE_SOURCE_RUN/artifacts?per_page=100" > "$RUNNER_TEMP/state-artifacts.json"
+          node tooling/release/publication-source.cjs state "$RUNNER_TEMP/state-run.json" "$RUNNER_TEMP/state-artifacts.json" "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$STATE_SOURCE_RUN" "$DELIVERY_MODE" "$RUNNER_TEMP/restored-state" "$RELEASE_TAG" "$SOURCE_RUN" "$ASSET_MODE" "$RUNNER_TEMP/accepted-source/source-receipt.json"
+          cp -a "$RUNNER_TEMP/restored-state/state" "$RUNNER_TEMP/publication-state"
+      - name: Resolve the immutable published baseline for a new shared plan
+        if: inputs.asset_mode == 'shared' && inputs.state_source_run == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/release/asset-catalogue.mjs --baseline "$REUSE_TAG" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/reuse-baseline.json"
+      - name: Seal or revalidate the same local plan before remote writes
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          resume=()
+          if [[ -n "$STATE_SOURCE_RUN" ]]; then
+            expected_plan_id="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/publication-state/workflow-provenance.json")).planId')"
+            resume=(--resume --expected-plan-id "$expected_plan_id")
+          fi
+          reuse=()
+          if [[ "$ASSET_MODE" == shared && -z "$STATE_SOURCE_RUN" ]]; then reuse=(--reuse-from "$RUNNER_TEMP/reuse-baseline.json"); fi
+          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage seal --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" "${resume[@]}" "${reuse[@]}"
+          node -e 'const fs=require("node:fs"),p=require("node:path"),{immutableStateHashes}=require("./tooling/release/publication-source.cjs");const state=p.join(process.env.RUNNER_TEMP,"publication-state"),receipt=JSON.parse(fs.readFileSync(p.join(process.env.RUNNER_TEMP,"accepted-source/source-receipt.json"))),checkpoint=JSON.parse(fs.readFileSync(p.join(state,"publication-state.json")));fs.writeFileSync(p.join(state,"workflow-provenance.json"),JSON.stringify({schema:"nora-publication-workflow/1",tag:process.env.RELEASE_TAG,sourceCommit:process.env.SOURCE_SHA,publisherCommit:process.env.GITHUB_SHA,sourceRun:process.env.SOURCE_RUN,stateSourceRun:process.env.STATE_SOURCE_RUN||null,assetMode:process.env.ASSET_MODE,planId:checkpoint.planId,receipt,sealedStateHashes:immutableStateHashes(state)},null,2)+"\n")'
+      - name: Preserve the fixed plan before beginning transfers
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-publication-state-before-transfer
+          path: ${{ runner.temp }}/publication-state/**
+          if-no-files-found: error
+          retention-days: 90
+      - name: Prepare private SourceForge publishing credentials
+        if: inputs.stage != 'seal'
+        env:
+          NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
+          NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
+          NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
+        run: node tooling/release/sourceforge-credentials.mjs prepare
+      - name: Execute only the selected publication stage against the sealed plan
+        if: inputs.stage != 'seal'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          expected_plan_id="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/publication-state/workflow-provenance.json")).planId')"
+          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage "$PUBLICATION_STAGE" --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" --resume --expected-plan-id "$expected_plan_id"
+      - name: Preserve the final checkpoint and failing stage
+        if: always() && github.run_attempt == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-publication-state
+          path: ${{ runner.temp }}/publication-state/**
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Remove private SourceForge publishing files
+        if: always()
+        run: node tooling/release/sourceforge-credentials.mjs cleanup

@@ -11,7 +11,9 @@ function validateManifest(item,{release,manifest,platform = process.platform,arc
     || item.version !== manifest.launcherVersion || !/^[a-f0-9]{64}$/.test(item.sha256 || '')
     || !Number.isSafeInteger(item.size) || item.size < 1 || item.size > 2 * 1024 ** 3
     || !/^Nora-Tavern-Launcher-[\w.-]+-update\.zip$/.test(item.asset || '')) throw new Error('启动器更新清单无效，当前安装未修改。');
-  releases().assetUrl(release,item.asset);return item;
+  releases().assetUrl(release,item.asset);
+  releases().validateAssetIntegrity(release,item.asset,item);
+  return item;
 }
 async function inspect({ release, manifest, launcherVersion, fetcher, signal, platform = process.platform, arch = process.arch, launcherManifest,metadataCache,networkPolicy,channel }) {
   const r = releases();

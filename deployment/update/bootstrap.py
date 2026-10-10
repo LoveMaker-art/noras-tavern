@@ -267,6 +267,86 @@ def sha(path):
 SOURCEFORGE = 'https://downloads.sourceforge.net/project/nora-tavern/'
 TAG_PATTERN = r'v\d+\.\d+\.\d+(?:-beta\.\d+)?'
 ASSET_PATTERN = r'[A-Za-z0-9][A-Za-z0-9._-]*'
+ASSET_INDEX_NAME = 'release-assets.json'
+CURRENT_ASSET_PATTERN = (r'(?:release-assets\.json|release-manifest\.json|[A-Za-z0-9][A-Za-z0-9._-]*-(?:release-manifest[A-Za-z0-9._-]*\.json|SHA256SUMS|first-install-manifest\.json|nora-tavern-first-install-bootstrap\.py|tavern-updater-bootstrap\.py)|SHA256SUMS|LAUNCHER-SHA256SUMS|bootstrap-manifest\.json|'
+                         r'tavern-updater-bootstrap\.py|nora-(?:system|launcher)-[A-Za-z0-9._-]*\.json|Nora-Tavern-Launcher-[A-Za-z0-9._-]*|'
+                         r'first-install-manifest\.json|nora-tavern-first-install-bootstrap\.py|install-nora-tavern\.(?:sh|ps1)|install-tavern-updater\.sh)')
+
+
+def release_version_key(value):
+    match = re.fullmatch(r'v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?', value or '')
+    if not match:
+        raise RuntimeError('共享资产版本格式无效。')
+    major, minor, patch, beta = match.groups()
+    return (int(major), int(minor), int(patch), 1 if beta is None else 0, int(beta or 0))
+
+
+def validate_asset_index(index, tag):
+    if (not isinstance(index, dict) or index.get('schema') != 'nora-release-assets/1'
+            or index.get('repository') != REPO or index.get('tag') != tag
+            or not re.fullmatch(TAG_PATTERN, tag or '') or not re.fullmatch(r'[a-f0-9]{40}', index.get('commit') or '')
+            or not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', index.get('minimumLauncherVersion') or '')
+            or release_version_key(index['minimumLauncherVersion']) <= release_version_key('2.1.1')
+            or not isinstance(index.get('assets'), list) or len(index['assets']) > 256):
+        raise RuntimeError('共享资产索引身份或兼容门槛无效。')
+    names = set()
+    for item in index['assets']:
+        if (not isinstance(item, dict) or not re.fullmatch(ASSET_PATTERN, item.get('name') or '')
+                or item['name'] in names or re.fullmatch(CURRENT_ASSET_PATTERN, item['name'])
+                or not re.fullmatch(r'v\d+\.\d+\.\d+', item.get('asset_release_tag') or '')
+                or release_version_key(item['asset_release_tag']) >= release_version_key(tag)
+                or not re.fullmatch(r'[a-f0-9]{64}', item.get('sha256') or '')
+                or not isinstance(item.get('size'), int) or isinstance(item['size'], bool) or not 0 < item['size'] <= 2*1024**3
+                or set(item) != {'name', 'asset_release_tag', 'size', 'sha256'}):
+            raise RuntimeError('共享资产引用缺失、冲突或超出可信范围。')
+        names.add(item['name'])
+    return index
+
+
+def expand_asset_index(release, assets):
+    descriptor = assets.get(ASSET_INDEX_NAME)
+    if descriptor is None:
+        return None
+    if descriptor['size'] > 64*1024:
+        raise RuntimeError('共享资产索引超过读取上限。')
+    tag = release['tag_name']
+    urls = [descriptor['browser_download_url'], SOURCEFORGE+tag+'/'+ASSET_INDEX_NAME]
+    for position, url in enumerate(urls):
+        try:
+            with open_source(url, timeout=30) as response:
+                validate_source(response.geturl(), url)
+                raw = response.read(64*1024+1)
+            if len(raw) != descriptor['size'] or hashlib.sha256(raw).hexdigest() != descriptor['digest'][7:]:
+                raise RuntimeError('共享资产索引与当前发布校验信息不一致。')
+            index = validate_asset_index(json.loads(raw), tag)
+            break
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
+            if position or not can_switch_source(error):
+                raise
+            print('[WARN] GitHub共享资产索引请求失败，正在使用SourceForge备用源。', file=sys.stderr)
+    for item in index['assets']:
+        if item['name'] in assets:
+            raise RuntimeError('共享引用与当前发布资产同名。')
+        assets[item['name']] = {'name': item['name'], 'state': 'uploaded', 'size': item['size'],
+                               'digest': 'sha256:'+item['sha256'], 'asset_release_tag': item['asset_release_tag'],
+                               'browser_download_url': f"https://github.com/{REPO}/releases/download/{item['asset_release_tag']}/{item['name']}"}
+    return index
+
+
+def validate_shared_manifest(release, manifest):
+    index = release.get('shared_assets')
+    if index is None:
+        return
+    minimum = manifest.get('bootstrap', {}).get('minimumLauncherVersion')
+    if (manifest.get('commit') != index['commit'] or manifest.get('versions', {}).get('tavern') != index['tag'][1:]
+            or release_version_key(minimum) < release_version_key(index['minimumLauncherVersion'])):
+        raise RuntimeError('共享资产与目标发布提交或客户端兼容门槛不一致。')
+    for descriptor in [*manifest.get('archives', {}).values(), *manifest.get('modules', {}).values()]:
+        asset = release['asset_index'].get(descriptor.get('name'))
+        if asset and asset.get('asset_release_tag') and (asset['digest'] != 'sha256:'+str(descriptor.get('sha256'))
+                or not isinstance(descriptor.get('size'), int) or isinstance(descriptor['size'], bool)
+                or descriptor['size'] != asset['size']):
+            raise RuntimeError('共享资产引用与组件校验信息不一致。')
 
 
 def sourceforge_url(url):
@@ -277,9 +357,16 @@ def sourceforge_url(url):
 
 def validate_source(url, original):
     value, initial = urllib.parse.urlsplit(url), urllib.parse.urlsplit(original)
-    if (value.scheme != 'https' or value.username or value.password or value.fragment
-            or (sourceforge_url(original) and (not sourceforge_url(url)
-                or value.port is not None or value.path != initial.path))):
+    github_assets = {'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'}
+    trusted = False
+    if initial.hostname == 'api.github.com':
+        trusted = value.hostname == initial.hostname and value.path == initial.path and value.query == initial.query
+    elif initial.hostname in github_assets:
+        trusted = value.hostname in github_assets and (value.hostname != 'github.com' or value.path == initial.path)
+    elif sourceforge_url(original):
+        trusted = sourceforge_url(url) and value.port is None and value.path == initial.path
+    if (not trusted or value.scheme != 'https' or value.username or value.password or value.fragment
+            or value.port not in (None, 443)):
         raise RuntimeError('资源响应偏离受信任来源，未使用下载内容。')
 
 
@@ -326,12 +413,14 @@ def select_release(tag=None):
             for asset in release['assets']:
                 name = asset.get('name', '')
                 if (not re.fullmatch(ASSET_PATTERN, name) or name in assets or asset.get('state') != 'uploaded'
+                        or 'asset_release_tag' in asset
                         or not isinstance(asset.get('size'), int) or isinstance(asset['size'], bool) or asset['size'] <= 0
                         or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '')
                         or asset.get('browser_download_url') != f'https://github.com/{REPO}/releases/download/{selected}/{name}'):
                     raise RuntimeError('发布文件身份或校验信息无效。')
                 assets[name] = asset
-            return {**release, 'asset_index': assets}
+            index = expand_asset_index(release, assets)
+            return {**release, 'asset_index': assets, **({'shared_assets': index} if index is not None else {})}
         except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
             if index or not can_switch_source(error):
                 raise
@@ -570,6 +659,7 @@ def main():
             for name in METADATA:
                 download_asset(release, name, bundle / name)
             manifest, manifest_sha, sums = verify_metadata(bundle, args.manifest_sha256)
+            validate_shared_manifest(release, manifest)
             if args.target_commit and manifest.get('commit') != args.target_commit:
                 raise RuntimeError('发布清单与本次更新目标不一致，未修改安装。')
             archives, mode = required_archives(install_root, manifest)

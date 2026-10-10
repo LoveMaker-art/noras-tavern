@@ -7,6 +7,9 @@ const {metadataJson,createMetadataCache,downloadAsset} = require('./release-netw
 
 const REPO = 'LoveMaker-art/noras-tavern';
 const API = `https://api.github.com/repos/${REPO}/releases/latest`;
+const ASSET_INDEX = 'release-assets.json';
+const LAST_LEGACY_ASSET_CLIENT = '2.1.1';
+const CURRENT_ASSET = /^(?:release-assets\.json|release-manifest\.json|[A-Za-z0-9][A-Za-z0-9._-]*-(?:release-manifest[A-Za-z0-9._-]*\.json|SHA256SUMS|first-install-manifest\.json|nora-tavern-first-install-bootstrap\.py|tavern-updater-bootstrap\.py)|SHA256SUMS|LAUNCHER-SHA256SUMS|bootstrap-manifest\.json|tavern-updater-bootstrap\.py|nora-(?:system|launcher)-[A-Za-z0-9._-]*\.json|Nora-Tavern-Launcher-[A-Za-z0-9._-]*|first-install-manifest\.json|nora-tavern-first-install-bootstrap\.py|install-nora-tavern\.(?:sh|ps1)|install-tavern-updater\.sh)$/;
 const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
 function validateCapabilities(manifest){
   if(!manifest?.launcherCapabilities||Object.entries(LAUNCHER_CAPABILITIES).some(([key,value])=>manifest.launcherCapabilities[key]!==value))
@@ -46,9 +49,105 @@ function fileName(name) {
 function assetUrl(release, name) {
   fileName(name);
   const asset = release.assets?.find(item => item.name === name);
-  const expected = `https://github.com/${REPO}/releases/download/${encodeURIComponent(release.tag_name)}/${name}`;
+  const index = release.assetIndexText === undefined ? null : validateAssetReferences(release);
+  const reference = index?.assets.find(item => item.name === name);
+  const expected = `https://github.com/${REPO}/releases/download/${encodeURIComponent(reference?.asset_release_tag || release.tag_name)}/${name}`;
   if (!asset || asset.browser_download_url !== expected) throw new Error(`最新发布缺少完整组件：${name}`);
   return expected;
+}
+function validateAssetIndex(index, tag) {
+  if (!index || index.schema !== 'nora-release-assets/1' || index.repository !== REPO || index.tag !== tag
+      || !/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(tag || '') || !/^[a-f0-9]{40}$/.test(index.commit || '')
+      || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(index.minimumLauncherVersion || '')
+      || compare(index.minimumLauncherVersion,LAST_LEGACY_ASSET_CLIENT) !== 1
+      || !Array.isArray(index.assets) || index.assets.length > 256) throw new Error('共享资产索引身份或兼容门槛无效。');
+  const names = new Set();
+  for (const item of index.assets) {
+    fileName(item?.name);
+    if (names.has(item.name) || CURRENT_ASSET.test(item.name)
+        || !/^v\d+\.\d+\.\d+$/.test(item.asset_release_tag || '') || compare(item.asset_release_tag,tag) !== -1
+        || !/^[a-f0-9]{64}$/.test(item.sha256 || '') || !Number.isSafeInteger(item.size) || item.size < 1 || item.size > 2*1024**3
+        || Object.keys(item).some(key => !['name','asset_release_tag','size','sha256'].includes(key)))
+      throw new Error('共享资产引用缺失、冲突或超出可信范围。');
+    names.add(item.name);
+  }
+  return index;
+}
+function validateAssetReferences(release) {
+  const descriptor = release.assets?.find(item => item.name === ASSET_INDEX);
+  if (typeof release.assetIndexText !== 'string' || Buffer.byteLength(release.assetIndexText) > 64*1024
+      || !descriptor || descriptor.state !== 'uploaded' || !Number.isSafeInteger(descriptor.size) || descriptor.size < 1
+      || descriptor.size !== Buffer.byteLength(release.assetIndexText) || !/^sha256:[a-f0-9]{64}$/.test(descriptor.digest || '')
+      || crypto.createHash('sha256').update(release.assetIndexText).digest('hex') !== descriptor.digest.slice(7)
+      || descriptor.browser_download_url !== `https://github.com/${REPO}/releases/download/${encodeURIComponent(release.tag_name)}/${ASSET_INDEX}`)
+    throw new Error('共享资产索引原文与当前发布校验信息不一致。');
+  const index = validateAssetIndex(JSON.parse(release.assetIndexText),release.tag_name), names = new Set();
+  for (const asset of release.assets) {
+    fileName(asset.name);
+    if (names.has(asset.name)) throw new Error('共享发布包含重复资产。');
+    names.add(asset.name);
+    const reference = index.assets.find(item => item.name === asset.name);
+    const expected = `https://github.com/${REPO}/releases/download/${encodeURIComponent(reference?.asset_release_tag || release.tag_name)}/${asset.name}`;
+    if (asset.browser_download_url !== expected || asset.asset_release_tag !== reference?.asset_release_tag
+        || reference && (asset.size !== reference.size || asset.digest !== `sha256:${reference.sha256}` || asset.state !== 'uploaded'))
+      throw new Error('共享资产与已校验的索引引用不一致。');
+  }
+  if (index.assets.some(item => !names.has(item.name))) throw new Error('共享资产引用未完整纳入发布计划。');
+  return index;
+}
+async function withAssetReferences(release,fetcher,signal,options,evidence) {
+  const descriptor = release.assets?.find(item => item.name === ASSET_INDEX);
+  if (!descriptor) return release;
+  if (release.assets.some(item => item.asset_release_tag !== undefined) || release.assetIndexText !== undefined)
+    throw new Error('线上发布不得伪造已经校验的共享资产。');
+  if (descriptor.state !== 'uploaded' || !Number.isSafeInteger(descriptor.size) || descriptor.size < 1 || descriptor.size > 64*1024
+      || !/^sha256:[a-f0-9]{64}$/.test(descriptor.digest || '')) throw new Error('当前发布缺少共享索引校验信息。');
+  const result = await requestJson(assetUrl(release,ASSET_INDEX),fetcher,signal,{...options,withEvidence:true,
+    conditionIdentity:{sha256:descriptor.digest.slice(7),size:descriptor.size}});
+  evidence.push(result);
+  const index = validateAssetIndex(result.value,release.tag_name);
+  if (index.assets.some(item => release.assets.some(asset => asset.name === item.name))) throw new Error('共享引用与当前发布资产同名。');
+  const expanded = {...release,assetIndexText:result.body,assets:[...release.assets,...index.assets.map(item => ({
+    name:item.name,state:'uploaded',size:item.size,digest:`sha256:${item.sha256}`,asset_release_tag:item.asset_release_tag,
+    browser_download_url:`https://github.com/${REPO}/releases/download/${encodeURIComponent(item.asset_release_tag)}/${item.name}`}))]};
+  validateAssetReferences(expanded);
+  return expanded;
+}
+function validateAssetRelease(manifest,release,minimum) {
+  if (release?.assetIndexText === undefined) return;
+  const index = validateAssetReferences(release);
+  if (manifest.commit !== index.commit || compare(minimum,index.minimumLauncherVersion) === null || compare(minimum,index.minimumLauncherVersion) < 0)
+    throw new Error('共享资产与目标发布提交或客户端兼容门槛不一致。');
+}
+function validateAssetIntegrity(release,name,expected) {
+  if (release?.assetIndexText === undefined) return;
+  const asset = release.assets.find(item => item.name === name);
+  assetUrl(release,name);
+  if (asset.digest !== `sha256:${expected.sha256}` || expected.size !== undefined && asset.size !== expected.size
+      || asset.asset_release_tag && (!Number.isSafeInteger(expected.size) || expected.size < 1))
+    throw new Error('共享资产引用与组件校验信息不一致。');
+}
+// A 2.1.1 APP handoff seals the physical catalogue without understanding refs.
+// Resolve routing at that same tag; never replace or re-seal the selected plan.
+async function resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPolicy,onEvent}) {
+  if (fixed.release.assetIndexText !== undefined || !fixed.release.assets.some(item=>item.name===ASSET_INDEX)) return fixed.release;
+  const resolved = await latest(fetcher,signal,fixed.channel,fixed.tag,{metadataCache,networkPolicy});
+  const physical = resolved.assets.filter(item=>!item.asset_release_tag);
+  if (physical.length !== fixed.release.assets.length || fixed.release.assets.some(item=>{
+    const current=physical.find(asset=>asset.name===item.name);
+    return !current || current.browser_download_url!==item.browser_download_url || current.size!==item.size
+      || !Number.isSafeInteger(item.size) || item.size<1;
+  })) throw new Error('原固定发布的物理资产集合已变化，未重新选择目标。');
+  const index=validateAssetReferences(resolved);
+  if (index.commit!==fixed.commit || index.minimumLauncherVersion!==fixed.releaseManifest.bootstrap.minimumLauncherVersion)
+    throw new Error('共享索引与原固定发布的提交或兼容门槛不符。');
+  validateUpdate(fixed.releaseManifest,resolved,fixed.launcherManifest?.version || fixed.releaseManifest.bootstrap.minimumLauncherVersion);
+  if (fixed.systemManifest) validateSystem(fixed.systemManifest,resolved,fixed.platform,fixed.arch,
+    fixed.launcherManifest?.version || fixed.systemManifest.minimumLauncherVersion,fixed.channel);
+  if (fixed.launcherManifest) require('./launcher-update').validateManifest(fixed.launcherManifest,
+    {release:resolved,manifest:fixed.releaseManifest,platform:fixed.platform,arch:fixed.arch});
+  onEvent?.({event:'log',line:`共享资产来源已按原固定计划核验：${fixed.tag} ${fixed.planId} index ${bytesHash(resolved.assetIndexText)}`});
+  return resolved;
 }
 async function requestJson(url, fetcher, signal, options = {}) {
   const result=await metadataJson(url,{fetcher,signal,metadataCache:options.metadataCache,channel:options.channel,policy:options.networkPolicy,conditionIdentity:options.conditionIdentity});
@@ -79,6 +178,7 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
   } else release = await read(API);
   if (!release || !accepts(release, channel)) throw new Error(channel === 'beta' ? '尚未发布可用的 Beta 测试版本。' : '没有找到有效的正式发布版本。');
   if (tag && release.tag_name !== tag) throw new Error('目标发布与所选版本不一致。');
+  release = await withAssetReferences(release,fetcher,signal,{...options,channel},evidence);
   return options.withEvidence ? {release,checkedAt:evidence.map(item=>item.checkedAt).sort()[0],
     source:evidence.some(item=>item.source==='cache')?'cache':evidence.some(item=>item.source==='revalidated')?'revalidated':'network',
     latestConfirmed:evidence.every(item=>item.latestConfirmed)} : release;
@@ -88,6 +188,7 @@ function validateSystem(manifest, release, platform, arch, launcherVersion, chan
       (manifest.channel || 'stable') !== channel ||
       compare(manifest.version, release ? release.tag_name : manifest.version) !== 0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '')) throw new Error('完整系统发布清单与目标版本或平台不符。');
   validateCapabilities(manifest);
+  validateAssetRelease(manifest,release,manifest.minimumLauncherVersion);
   if (compare(launcherVersion, manifest.minimumLauncherVersion) === null || compare(launcherVersion, manifest.minimumLauncherVersion) < 0) {
     throw new Error(`请先升级启动器到 ${manifest.minimumLauncherVersion} 或更新版本。`);
   }
@@ -98,7 +199,7 @@ function validateSystem(manifest, release, platform, arch, launcherVersion, chan
   for (const [name, item] of Object.entries(manifest.files)) {
     fileName(name); fileName(item.asset);
     if (!/^[a-f0-9]{64}$/.test(item.sha256 || '') || !Number.isSafeInteger(item.size) || item.size < 1) throw new Error('组件校验信息缺失。');
-    if (release) assetUrl(release, item.asset);
+    if (release) { assetUrl(release,item.asset); validateAssetIntegrity(release,item.asset,item); }
   }
   return manifest;
 }
@@ -116,9 +217,12 @@ function validateUpdate(manifest, release, launcherVersion) {
   }
   validateCapabilities(manifest);
   const minimum = manifest.bootstrap.minimumLauncherVersion || '1.0.0';
+  validateAssetRelease(manifest,release,minimum);
   if (compare(launcherVersion, minimum) === null || compare(launcherVersion, minimum) < 0)
     throw launcherError(`请先升级启动器到 ${minimum} 或更新版本。`,
       {userCode:'RELEASE_COMPATIBILITY',source:'release_service',site:'release.verify'});
+  for (const item of [...Object.values(manifest.archives || {}),...Object.values(manifest.modules || {})])
+    if (item.name) validateAssetIntegrity(release,item.name,item);
   return manifest;
 }
 function canonical(value) {
@@ -132,7 +236,9 @@ const OPERATION_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 const bytesHash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 function releaseSnapshot(release){
   return {tag_name:release.tag_name,draft:release.draft===true,prerelease:release.prerelease===true,
+    ...(release.assetIndexText !== undefined ? {assetIndexText:release.assetIndexText} : {}),
     assets:release.assets.map(item=>({name:item.name,browser_download_url:item.browser_download_url,
+      ...(release.assetIndexText !== undefined ? {state:item.state,digest:item.digest,...(item.asset_release_tag ? {asset_release_tag:item.asset_release_tag} : {})} : {}),
       ...(Number.isSafeInteger(item.size)?{size:item.size}:{})}))};
 }
 function planDigest(plan) {
@@ -299,7 +405,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
   onEvent({ event: 'task', stage_id: 'release_check', task: '检查更新清单' });
   const fixed = selectedPlan ? validatePlan(selectedPlan,{launcherVersion,platform,arch,channel,tag,operationDirectory})
     : await selectPlan({fetcher,signal,launcherVersion,platform,arch,channel,tag,metadataCache,networkPolicy});
-  const release = fixed.release;
+  const release = await resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPolicy,onEvent});
   const manifest = validateUpdate(fixed.releaseManifest,release,launcherVersion);
   const root = path.join(cacheRoot, `components-${release.tag_name}-${manifest.commit.slice(0, 12)}`);
   fs.mkdirSync(root, { recursive: true });
@@ -335,6 +441,11 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
   for (const item of result.archives) {
     fileName(item.name);
     if (!/^[a-f0-9]{64}$/.test(item.sha256 || '') || sums.get(item.name) !== item.sha256) throw new Error('更新模块与发布校验清单不一致。');
+    const descriptor=[...Object.values(manifest.archives || {}),...Object.values(manifest.modules || {})].find(value=>value.name===item.name);
+    if(release.assets.find(value=>value.name===item.name)?.asset_release_tag) {
+      if(!descriptor || descriptor.sha256!==item.sha256) throw new Error('共享下载不属于原固定发布清单。');
+      validateAssetIntegrity(release,item.name,descriptor);
+    }
     await download(item.name, item.sha256);
   }
   return root;
@@ -344,7 +455,8 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
   onEvent({ event: 'task', stage_id: 'release_check', task: `确认 GitHub ${channel === 'beta' ? 'Beta 测试' : '正式'}完整版本` });
   signal?.throwIfAborted();
   const fixed=selectedPlan ? validatePlan(selectedPlan,{launcherVersion,platform,arch,channel,tag,mode:'install',operationDirectory}) : null;
-  const release = fixed?.release || selectedRelease || await latest(fetcher, signal, channel, tag,{metadataCache,networkPolicy});
+  const release = fixed ? await resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPolicy,onEvent})
+    : selectedRelease || await latest(fetcher, signal, channel, tag,{metadataCache,networkPolicy});
   if (!accepts(release, channel) || tag && release.tag_name!==tag) throw new Error('所选发布与安装渠道或固定目标不符。');
   const system = fixed?.systemManifest || await systemFor(release, { platform, arch, launcherVersion, fetcher, signal, channel,metadataCache,networkPolicy });
   if(!system) throw new Error('完整安装计划缺少系统清单。');
@@ -445,4 +557,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch);
   return bundledRoot;
 }
-module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,selectPlan,validatePlan,sealPlan,createMetadataCache };
+module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,createMetadataCache };

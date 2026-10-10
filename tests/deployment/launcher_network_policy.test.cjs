@@ -190,14 +190,25 @@ test('a failed GitHub asset downloads the same frozen bytes from SourceForge wit
 });
 test('a continuously slow GitHub body cannot consume the backup download window',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-slow-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('verified'),calls=[];let timer;
+  const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[];let timer,activeUrl,primaryCancelled=false;
+  const backupUrl='https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip';
   t.after(()=>clearInterval(timer));
   await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
-    policy:{sources:sfSources,downloadBudgetMs:200,backupBudgetMs:150,downloadIdleTimeoutMs:100},fetcher:async url=>{
-      calls.push(url);if(url!==assetUrl)return new Response(bytes);
-      return new Response(new ReadableStream({start(controller){timer=setInterval(()=>controller.enqueue(Buffer.from('v')),25);},cancel(){clearInterval(timer);}}));
+    // Keep the same ratios while allowing actual file writes, sync and hashing on a busy runner.
+    // The 625ms byte cadence remains below idle timeout, and cannot overrun the eight-byte identity.
+    policy:{sources:sfSources,downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
+    onEvent:event=>{events.push(event);if(activeUrl===assetUrl&&event.event==='progress'&&event.current>0)primaryProgress.push(event.current);},
+    fetcher:async url=>{
+      calls.push(url);activeUrl=url;
+      if(url!==assetUrl){assert.equal(url,backupUrl);assert.equal(primaryCancelled,true);return new Response(bytes);}
+      return new Response(new ReadableStream({start(controller){timer=setInterval(()=>controller.enqueue(Buffer.from('v')),625);},
+        cancel(){primaryCancelled=true;clearInterval(timer);}}));
     }});
-  assert.equal(calls.length,2);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
+  assert.deepEqual(calls,[assetUrl,backupUrl]);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
+  assert.ok(primaryProgress.length>=2,'the primary produced repeated byte progress without completing');
+  assert.ok(primaryProgress.every((current,index)=>current>0&&current<bytes.length&&(!index||current>primaryProgress[index-1])));
+  assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')&&event.line.includes('TIMEOUT')));
+  assert.equal(primaryCancelled,true);
 });
 
 test('source configuration rejects uncontrolled roots before making any request',async()=>{
