@@ -34,19 +34,27 @@ export function githubProvider({repository, execute=command, log=console.log}={}
     assert.match(repository,/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
     let current, assets=[]; const baseline=new Map();
     const api=async endpoint=>JSON.parse(await execute('gh',['api',`repos/${repository}/${endpoint}`],{capture:true,timeout:120000,log}));
+    const paginated=async(endpoint,kind)=>{
+        const pages=JSON.parse(await execute('gh',['api','--paginate','--slurp',`repos/${repository}/${endpoint}`],{capture:true,timeout:120000,log}));
+        assert.ok(Array.isArray(pages)&&pages.every(Array.isArray),`Invalid paginated GitHub ${kind} response`);
+        return pages.flat();
+    };
     const release=async tag=>{
         try{return await api(`releases/tags/${encodeURIComponent(tag)}`);}
-        catch(error){if(/\(HTTP 404\)/.test(error.diagnostics||''))return null;throw error;}
+        catch(error){if(!/\(HTTP 404\)/.test(error.diagnostics||''))throw error;}
+        // The tag endpoint returns published releases; an authorized list also exposes drafts.
+        const matches=(await paginated('releases?per_page=100','release')).filter(item=>item.tag_name===tag);
+        assert.ok(matches.length<=1,'Duplicate GitHub releases for target tag');
+        if(matches.length)assert.equal(matches[0].draft,true,'GitHub tag lookup and release list disagree');
+        return matches[0]||null;
     };
     const inventory=async item=>{
         assert.ok(Number.isSafeInteger(item.id)&&item.id>0,'Invalid GitHub release id');
-        const pages=JSON.parse(await execute('gh',['api','--paginate','--slurp',`repos/${repository}/releases/${item.id}/assets?per_page=100`],{capture:true,timeout:120000,log}));
-        assert.ok(Array.isArray(pages)&&pages.every(Array.isArray),'Invalid paginated GitHub asset response');
-        return pages.flat();
+        return paginated(`releases/${item.id}/assets?per_page=100`,'asset');
     };
     const physical=p=>p.plan.objects.filter(object=>object.phase==='asset'&&!object.reference);
     const validateRelease=(item,p)=>{
-        assert.ok(item&&item.tag_name===p.plan.tag&&item.prerelease===(p.plan.channel==='beta'),'Different GitHub release identity');
+        assert.ok(item&&typeof item.draft==='boolean'&&item.tag_name===p.plan.tag&&item.prerelease===(p.plan.channel==='beta'),'Different GitHub release identity');
         assert.equal(String(item.body||'').trimEnd(),p.plan.body.trimEnd(),'Different GitHub release notes');
         const names=new Set();for(const asset of assets){assert.ok(!names.has(asset.name),'Duplicate GitHub asset');names.add(asset.name);}
         assert.ok(assets.every(asset=>physical(p).some(object=>path.basename(object.key)===asset.name)), 'Unexpected GitHub asset; preserve and investigate it');
@@ -69,7 +77,13 @@ export function githubProvider({repository, execute=command, log=console.log}={}
         }
         return baseline.get(tag).find(item=>item.name===path.basename(object.key));
     };
-    const refresh=async p=>{current=await release(p.plan.tag);assert.ok(current,'Prepared GitHub release disappeared');assets=await inventory(current);validateRelease(current,p);};
+    const refresh=async p=>{
+        const selected=current||await release(p.plan.tag);assert.ok(selected,'Prepared GitHub release disappeared');
+        assert.ok(Number.isSafeInteger(selected.id)&&selected.id>0,'Invalid GitHub release id');
+        const item=await api(`releases/${selected.id}`);
+        assert.equal(item.id,selected.id,'Different GitHub release id');
+        assets=await inventory(item);validateRelease(item,p);current=item;
+    };
     const checkTag=async p=>{
         let object=(await api(`git/ref/tags/${encodeURIComponent(p.plan.tag)}`)).object;
         for(let hop=0;object?.type==='tag'&&hop<5;hop++){
@@ -101,8 +115,7 @@ export function githubProvider({repository, execute=command, log=console.log}={}
                 let latest;try{latest=await api('releases/latest');}catch(error){if(!/\(HTTP 404\)/.test(error.diagnostics||''))throw error;}
                 if(latest){assert.ok(!latest.draft&&!latest.prerelease);noDowngrade(latest.tag_name,p.plan.tag);}
             } else {
-                const pages=JSON.parse(await execute('gh',['api','--paginate','--slurp',`repos/${repository}/releases?per_page=100`],{capture:true,timeout:120000,log}));
-                for(const item of pages.flat().filter(item=>!item.draft&&item.prerelease))noDowngrade(item.tag_name,p.plan.tag);
+                for(const item of (await paginated('releases?per_page=100','release')).filter(item=>!item.draft&&item.prerelease))noDowngrade(item.tag_name,p.plan.tag);
             }
         },
         async promote(p){await execute('gh',['release','edit',p.plan.tag,'--repo',repository,'--draft=false',`--prerelease=${p.plan.channel==='beta'}`,`--latest=${p.plan.channel==='stable'}`],{timeout:120000,log});},
