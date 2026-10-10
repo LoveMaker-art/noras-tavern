@@ -145,6 +145,7 @@ jobs:
                        for name in ['build_context_files_prompt', 'load_soul_md']}
           name = sys.argv[1]
           assert name == 'ops.tests.test_first_install.FirstInstallSnapshotTests.test_official_hermes_loader_reads_complete_agents_not_backup'
+          sys.path.insert(0,str(Path.cwd()))
           module = importlib.import_module('ops.tests.test_first_install')
           assert digest(module.__file__) == proof['testSourceSha256'] and digest(module.MODULE_PATH) == proof['firstInstallSha256']
           suite = unittest.defaultTestLoader.loadTestsFromName(name)
