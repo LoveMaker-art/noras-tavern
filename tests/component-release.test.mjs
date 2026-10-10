@@ -8,9 +8,51 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assemblePlatform, assertReusable, launcherProvenance, PLATFORMS } from '../tooling/release/package-component-update.mjs';
 import { assertMaintenanceVersions, fileDigest, writeSystemRelease } from '../tooling/release/system-release.mjs';
-import { NORA_SYSTEM_REQUIRED_FILES, LAUNCHER_CAPABILITIES } from '../tooling/release/release-source.mjs';
+import { NORA_SYSTEM_REQUIRED_FILES, LAUNCHER_CAPABILITIES, createReleaseSource, groupRuntimeModules } from '../tooling/release/release-source.mjs';
+import { buildCommand } from '../tooling/release/build-commands.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+
+test('incremental updater archive loads its actual runner without the full ops archive', t => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-updater-closure-'));
+    t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
+    const source = createReleaseSource(root, { candidate: true });
+    t.after(() => fs.rmSync(source.stage, { recursive: true, force: true }));
+    const members = groupRuntimeModules(source.files.filter(name => name.startsWith('ops/'))).get('updater');
+    const name = 'nora-tavern-module-updater.tar.gz';
+    const list = path.join(temporary, 'members.txt');
+    fs.writeFileSync(list, members.join('\n') + '\n');
+    const tar = buildCommand('tar', ['--no-xattrs', '-czf', path.join(temporary, name), '-C', source.stage, '-T', list]);
+    execFileSync(tar.command, tar.args, { env: { ...process.env, COPYFILE_DISABLE: '1' } });
+    const manifest = { artifacts: Object.fromEntries(members.map(file => [file, fileDigest(path.join(source.stage, file))])),
+        modules: { updater: { name, sha256: fileDigest(path.join(temporary, name)), artifacts: members } } };
+    fs.writeFileSync(path.join(temporary, 'release-manifest.json'), JSON.stringify(manifest));
+    const probe = `import importlib.util,json,pathlib,runpy,subprocess,sys
+bundle, bootstrap, node = map(pathlib.Path, sys.argv[1:])
+spec=importlib.util.spec_from_file_location('packaged_bootstrap',bootstrap)
+module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+runner=bundle/'runner'
+module.extract_runner(bundle,runner,json.loads((bundle/'release-manifest.json').read_text()))
+result=subprocess.run([sys.executable,'-B',str(runner/'ops/updater/update.py'),'--help'],capture_output=True,text=True)
+assert result.returncode==0, result.stdout+result.stderr
+namespace=runpy.run_path(str(runner/'ops/updater/update.py'),run_name='closure_probe')
+control=namespace['_control_path']
+cli=namespace['module_at']('packaged_operation_cli',control.with_name('operation_cli.py'))
+cli._control()
+for name in ('operation_evidence.py','operation-budget.json','operation_node.mjs','mcp_probe.mjs','desktop/operation-delegate.js'):
+    assert control.with_name(name).is_file() if '/' not in name else (control.parent/name).is_file(), name
+result=subprocess.run([str(node),str(control.with_name('operation_node.mjs')),str(runner/'ops/updater/verify-worlds.mjs')],capture_output=True,text=True)
+assert result.returncode!=0 and 'DELEGATION_REQUIRED' in result.stderr, result.stdout+result.stderr
+assert 'Node maintenance delegation is unavailable' not in result.stderr, result.stderr
+print('verified module-only runner imports and delegates; no installation executed')
+`;
+    const python = process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+    const environment = { ...process.env, PYTHONDONTWRITEBYTECODE: '1' };
+    delete environment.PYTHONPATH;
+    for (const key of Object.keys(environment)) if (key.startsWith('NORA_OPERATION_')) delete environment[key];
+    execFileSync(python, ['-B', '-c', probe, temporary, path.join(source.stage, 'ops/updater/bootstrap.py'), process.execPath],
+        { env: environment, encoding: 'utf8', timeout: 20000 });
+});
 const sourceNames = ['launcher/desktop/main.js', 'launcher/ui/index.html',
     'deployment/update/releases.js', 'deployment/update/system-update.js',
     'tooling/release/package-hermes-runtime.mjs', 'tooling/source-layout.json',

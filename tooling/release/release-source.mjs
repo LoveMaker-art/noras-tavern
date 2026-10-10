@@ -233,15 +233,23 @@ const NORA_ENGINE_FILES = new Set([
     'app/engine/sillytavern/public/tavern-icon-dbf4ecbd54ec.png',
 ]);
 
+// Incremental bootstrap extracts only the updater module into its cold runner.
+// Keep both Python imports and delegated Node resources in that same archive.
+const UPDATER_RUNTIME_FILES = new Set([
+    'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
+    'ops/installer/operation_control.py', 'ops/installer/operation_cli.py',
+    'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',
+    'ops/installer/operation_node.mjs', 'ops/installer/mcp_probe.mjs',
+    'ops/installer/desktop/operation-delegate.js',
+]);
+
 /**
  * Assign every installed artifact to exactly one independently downloadable
  * module.  The target manifest is the authority; installers never need to
  * understand these path rules.
  */
 export function releaseModuleFor(relative) {
-    // The standalone desktop recovery resource must also travel with the
-    // verified updater runner when only changed modules are downloaded.
-    if (['ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py'].includes(relative)) return 'updater';
+    if (UPDATER_RUNTIME_FILES.has(relative)) return 'updater';
     if (relative.startsWith('ops/updater/')) return 'updater';
     if (relative.startsWith('ops/skills/')) return 'skills';
     if (relative.startsWith('ops/')) return 'operations';
