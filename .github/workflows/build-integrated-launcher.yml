@@ -1,757 +1,187 @@
-name: Build full Nora Tavern installers
+name: Frozen Windows prompt loader check
 
 on:
   workflow_dispatch:
-    inputs:
-      target:
-        description: Build installers or check an existing sealed Windows package
-        type: choice
-        default: all
-        options:
-          - all
-          - win32-x64
-          - win32-package-check
-      package_source_run:
-        description: Diagnostic only - run whose saved Windows package is checked without rebuilding
-        type: string
-        default: ''
-      runtime_source_run:
-        description: Optional verified build run whose Hermes archives are reused for install compatibility
-        type: string
-        default: ''
-      launcher_baseline_tag:
-        description: Launcher-only build using verified unchanged components from a stable tag (otherwise full build)
-        type: string
-        default: ''
-      production_mode:
-        description: Use real installation paths for replacement testing (branch artifacts only)
-        type: boolean
-        default: false
-      publish_source_run:
-        description: Publish an accepted complete build at this tag commit without rebuilding
-        type: string
-        default: ''
-      verified_windows_run:
-        description: Final all-platform assembly reusing a fully accepted Windows-only run at this exact commit
-        type: string
-        default: ''
-  push:
-    tags:
-      - 'v*-beta.*'
-
-concurrency:
-  group: nora-release-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 permissions:
   contents: read
   actions: read
 
-env:
-  PYTHONUTF8: '1'
-  PYTHONIOENCODING: 'utf-8'
-
 jobs:
-  package-check:
-    if: inputs.target == 'win32-package-check' || inputs.package_source_run != ''
+  native-prompt-loader-check:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     env:
-      GH_TOKEN: ${{ github.token }}
-      NORA_BUILD_TARGET: ${{ inputs.target }}
-      NORA_PACKAGE_SOURCE_RUN: ${{ inputs.package_source_run }}
-      NORA_RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
-      NORA_PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
-      NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
-      NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-      NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
+      PYTHONUTF8: '1'
+      PYTHONIOENCODING: 'utf-8'
+      NORA_LOADER_SOURCE_COMMIT: 991afa502365b722199ce7752ff0190ee1c8a328
+      NORA_LOADER_SOURCE_RUN: '37948169463'
     steps:
-      - name: Preserve repository bytes
+      - name: Preserve source bytes
         shell: bash
         run: git config --global core.autocrlf false
       - uses: actions/checkout@v4
         with:
+          ref: 991afa502365b722199ce7752ff0190ee1c8a328
           persist-credentials: false
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: Reject publishing or rebuilding in package-check mode
-        run: node tooling/checks/restore-launcher-check-package.cjs modes
       - uses: actions/setup-python@v5
+        id: extractor
         with:
           python-version: '3.11'
-      - name: Configure the archive extractor
-        shell: pwsh
-        run: |
-          $python = python -c 'import sys; print(sys.executable)'
-          if ($LASTEXITCODE -ne 0) { throw 'Archive extractor is unavailable' }
-          "NORA_CHECK_PYTHON=$python" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-      - name: Verify the shared check runner before downloading packages
-        shell: pwsh
-        run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD 'tooling/checks/launcher-installed-check.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
-          if ($errors.Count) { throw ($errors | Out-String) }
-          node --test tests/launcher-artifact-checks.test.cjs
-          if ($LASTEXITCODE -ne 0) { throw 'Artifact check runner tests failed' }
-      - name: Restore sealed diagnostic package with exact source and API digest checks
-        run: node tooling/checks/restore-launcher-check-package.cjs
-      - name: Install the frozen package inspection dependencies
+      - name: Verify and restore the exact successful Windows artifacts
         shell: bash
-        run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          cd "$release_dir/nora-tavern-launcher/desktop"
-          npm ci --ignore-scripts --no-audit --no-fund
-          node -e 'const fs=require("node:fs"),path=require("node:path");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_TEST_DESKTOP_NODE_MODULES="+path.resolve("node_modules")+"\n")'
-      - name: Restore the packaged native test interpreter
-        shell: bash
-        run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$release_dir/system-assets" "$RUNNER_TEMP"
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-      - name: Recreate the expected native icon from the frozen source image
-        shell: bash
-        run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node -e 'const p=require("node:path"),desktop=p.resolve(process.argv[1],"nora-tavern-launcher/desktop"),t=require(p.join(desktop,"node_modules/app-builder-lib/out/toolsets/icons.js"));t.runIconsTool({inputFile:p.resolve(desktop,"../assets/nora-launcher-portrait.png"),outputFormat:"ico",outDir:p.join(desktop,"dist/.icon-ico")}).catch(e=>{console.error(e);process.exitCode=1})' "$release_dir"
-      - name: Verify actual lightweight update archive
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs replacement
-      - name: Test the actual Windows setup and installed application
-        timeout-minutes: 10
-        shell: pwsh
-        run: ./tooling/checks/launcher-installed-check.ps1
-      - name: Verify real APP production module closure and executor receipts
-        timeout-minutes: 10
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs app
-      - name: Verify packaged Nora images and instructions
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs images
-      - name: Preserve diagnostic evidence without creating release assets
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-windows-package-check-diagnostic
-          path: |
-            ${{ runner.temp }}/nora-package-check-source.json
-            ${{ runner.temp }}/nora-packaged-app-acceptance.json
-            ${{ runner.temp }}/nora-installed-*-acceptance.json
-            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-package-verification-*.json
-          if-no-files-found: warn
-          retention-days: 14
-
-  reuse-windows:
-    if: inputs.verified_windows_run != '' && inputs.package_source_run == ''
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    env:
-      GH_TOKEN: ${{ github.token }}
-      NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
-      NORA_BUILD_TARGET: ${{ inputs.target }}
-      NORA_PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
-      NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-      NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Verify accepted Windows source and preserve its exact package bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          node -e 'require("./tooling/release/reuse-windows-build.cjs").verifyModes(process.env)'
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN" > source-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/jobs?per_page=100" > source-jobs.json
-          node --test tests/launcher-windows-reuse.test.cjs
-          node tooling/release/reuse-windows-build.cjs source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
-      - name: Preserve accepted Windows delivery without rebuilding
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-tavern-win32-x64
-          path: ${{ runner.temp }}/accepted-windows/delivery/**
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-      - name: Preserve original Windows acceptance and source provenance
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-operation-acceptance-win32-x64
-          path: ${{ runner.temp }}/accepted-windows/acceptance/**
-          if-no-files-found: error
-          retention-days: 14
-
-  build:
-    needs: reuse-windows
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64')
-    strategy:
-      fail-fast: false
-      matrix:
-        # A final same-commit assembly reuses an accepted Windows package. Windows ARM lacks Liveware.
-        include: >-
-          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
-            && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
-            || inputs.verified_windows_run != ''
-            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
-            || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-
-    steps:
-      - name: Preserve repository bytes on every platform
-        shell: bash
-        run: git config --global core.autocrlf false
-
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-
-      - name: Verify release tag matches committed payload version
-        if: github.ref_type == 'tag'
-        shell: bash
-        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
-
-      - name: Reject conflicting baseline modes
-        if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
-        shell: bash
-        run: |
-          echo 'Choose a published launcher baseline OR a runtime source run, not both.' >&2
-          exit 1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: npm
-          cache-dependency-path: |
-            app/engine/sillytavern/package-lock.json
-            nora-mcp/npm-shrinkwrap.json
-
-      - name: Verify embedded Story Profile before preparing runtimes
-        run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
-
-      - name: Verify source ownership and compatible delivery layout
-        run: node --test tests/repository-layout.test.mjs
-
-      - name: Verify launcher build reuse boundaries
-        run: node --test tests/launcher-build-baseline.test.mjs tests/launcher-build-package.test.mjs
-
-      - name: Verify artifact check runner before preparing runtimes
-        run: node --test tests/launcher-artifact-checks.test.cjs
-
-      - name: Install launcher test dependencies
-        working-directory: launcher/desktop
-        run: npm ci --ignore-scripts --no-audit --no-fund
-
-      - name: Verify cold-profile bootstrap identity before preparing runtimes
-        run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
-
-      - name: Download and verify unchanged published components
-        if: inputs.launcher_baseline_tag != ''
         env:
           GH_TOKEN: ${{ github.token }}
-          BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
-        shell: bash
-        run: node tooling/release/launcher-build-baseline.mjs "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
-
-      - name: Fetch official ClawChat plugin for the runtime bundle
-        uses: actions/checkout@v4
-        with:
-          repository: clawling/clawchat-plugin-hermes-agent
-          ref: 8651f7078916e60ed1da9f78ec4d1278fef49dd9
-          path: .build-clawchat-plugin
-          persist-credentials: false
-
-      - name: Keep build inputs outside the release source tree
-        shell: bash
-        run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
-
-      - name: Install Hermes core without browser components (macOS)
-        if: runner.os == 'macOS' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
-        shell: bash
+          NORA_LOADER_EXTRACTOR: ${{ steps.extractor.outputs.python-path }}
         run: |
-          set -euo pipefail
-          export HERMES_HOME="$RUNNER_TEMP/hermes"
-          export UV_MANAGED_PYTHON=1
-          export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
-          export UV_PYTHON_INSTALL_BIN=0
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$RUNNER_TEMP/hermes-install.sh"
-          sh "$RUNNER_TEMP/hermes-install.sh" \
-            --dir "$HERMES_HOME/hermes-agent" \
-            --hermes-home "$HERMES_HOME" \
-            --skip-setup \
-            --skip-browser \
-            --skip-computer-use \
-            --non-interactive
-
-      - name: Install Hermes core without browser components (Windows)
-        if: runner.os == 'Windows' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
-          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
-          Invoke-WebRequest https://hermes-agent.nousresearch.com/install.ps1 -OutFile $installer
-          $stages = @(
-            'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
-            'dependencies', 'path', 'config-templates', 'platform-sdks', 'bootstrap-marker'
-          )
-          foreach ($stage in $stages) {
-            & $installer -HermesHome $env:HERMES_HOME `
-              -InstallDir (Join-Path $env:HERMES_HOME 'hermes-agent') `
-              -Stage $stage -NonInteractive -Json -SkipComputerUse
-            if ($LASTEXITCODE -ne 0) { throw "Hermes stage failed: $stage" }
-          }
-
-      - name: Build integrated runtime
-        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
-        shell: bash
-        run: |
-          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
-            --hermes-home "$RUNNER_TEMP/hermes" \
-            --output "$RUNNER_TEMP/hermes-runtime" \
-            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}"
-
-      - name: Download verified runtime baseline
-        if: inputs.runtime_source_run != ''
-        uses: actions/download-artifact@v4
-        with:
-          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
-          path: ${{ runner.temp }}/nora-baseline-artifacts
-          github-token: ${{ github.token }}
-          run-id: ${{ inputs.runtime_source_run }}
-
-      - name: Restore the exact baseline runtime
-        if: inputs.runtime_source_run != ''
-        shell: bash
-        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
-
-      - name: Restore published runtime for existing installation gates
-        if: inputs.launcher_baseline_tag != ''
-        shell: bash
-        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
-
-      - name: Reseal baseline with current ClawChat integration
-        if: inputs.runtime_source_run != ''
-        shell: bash
-        run: |
-          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
-            --hermes-home "$RUNNER_TEMP/hermes" \
-            --output "$RUNNER_TEMP/hermes-runtime" \
-            --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
-            --platform "${{ matrix.platform }}" \
-            --arch "${{ matrix.arch }}"
-
-      - name: Configure actual operation actors and native lock tests
-        shell: bash
-        run: |
-          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
-          test -f "$py"
-          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
-          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
-
-      - name: Test release channels and update rollback
-        id: release_contracts
-        continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
-
-      - name: Test installation diagnostics on the target platform
-        id: installation_contracts
-        continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
-
-      - name: Test diagnostic choices, error presentation and download waiting feedback
-        id: presentation_contracts
-        continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_telemetry_worker.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
-
-      - name: Require all platform contract checks before native acceptance
-        if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success' || steps.presentation_contracts.outcome != 'success') }}
-        run: node -e "console.error('Platform contract checks failed; native acceptance and packaging are blocked.'); process.exit(1)"
-
-      - name: Verify Windows runtime before long acceptance tests
-        if: matrix.platform == 'win32'
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
-
-      - name: Verify Windows owned model and profile fixtures before long tests
-        if: matrix.platform == 'win32'
-        timeout-minutes: 5
-        shell: bash
-        env:
-          NORA_CLAWCHAT_PLUGIN: ${{ runner.temp }}/nora-clawchat-plugin
-        run: |
-          "$NORA_TEST_PYTHON" -B -c 'import os; from pathlib import Path; assert all(Path(os.environ[key]).is_dir() for key in ["NORA_TEST_HERMES", "NORA_CLAWCHAT_PLUGIN"]), "Native fixture inputs must exist"'
-          node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_nora_profile.BundledProfileIntegrationTests.test_real_bundled_client_initializes_through_cli_and_preserves_customization tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_real_hermes_custom_save_passes_bridge_recheck
-
-      - name: Test operation ownership, evidence, bounded retry and recovery contracts
-        timeout-minutes: 10
-        run: node tooling/run.mjs node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
-
-      - name: Require chat backup safety tests
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
-          node --test tests/backup-safety-gate.test.mjs
-          node tooling/checks/verify-backup-safety.mjs
-
-      - name: Test native transaction and complete evidence contracts
-        shell: bash
-        run: node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics
-
-      - name: Verify runtime independently of original installation
-        if: matrix.platform != 'win32'
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
-
-      - name: Test unified update and application replacement
-        shell: bash
-        run: |
-          node tooling/run.mjs node --test tests/deployment/launcher_self_update.test.cjs tests/deployment/launcher_local_release.test.cjs tests/deployment/launcher_recovery_route.test.cjs tests/deployment/launcher_update_package.test.cjs
-          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
-
-      - name: Test Nora initialization and profile synchronization
-        shell: bash
-        run: |
-          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
-          if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
-          export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
-          "$py" -B -m unittest tests.deployment.test_updater_skill_environment
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
-          export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_model_provider_skill
-
-      - name: Build release payload
-        shell: bash
-        env:
-          PRODUCTION_MODE: ${{ inputs.production_mode }}
-          LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
-        run: |
-          mode=--candidate
-          if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
-          if [[ -n "$LAUNCHER_BASELINE" ]]; then
-            node tooling/release/package-release.mjs $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
-          else
-            node tooling/release/package-release.mjs $mode \
-              --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
-          fi
-
-      - name: Freeze verified historical payload for version migration acceptance
-        if: inputs.runtime_source_run != ''
-        shell: bash
-        env:
-          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
-        run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          export NORA_UPGRADE_PAYLOAD="$release_dir/nora-tavern-launcher/payload"
-          node <<'NODE'
-          const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
-          const semver=require(path.resolve('launcher/desktop/node_modules/semver'));
-          const digest=file=>{const hash=crypto.createHash('sha256'),fd=fs.openSync(file,'r'),buffer=Buffer.alloc(1024*1024);try{let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null)))hash.update(buffer.subarray(0,count));}finally{fs.closeSync(fd);}return hash.digest('hex');};
-          const safe=name=>{assert.match(name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);return name;};
-          const artifacts=path.join(process.env.RUNNER_TEMP,'nora-baseline-artifacts'),platform=`${process.platform}-${process.arch}`;
-          const systemName=`nora-system-${platform}.json`;
-          const matches=fs.readdirSync(artifacts,{recursive:true}).filter(name=>path.basename(name)===systemName);
-          assert.equal(matches.length,1,'Expected exactly one historical platform system manifest');
-          const systemFile=path.join(artifacts,matches[0]),system=JSON.parse(fs.readFileSync(systemFile,'utf8'));
-          assert.equal(system.schema,'nora-system/v1');assert.equal(`${system.platform}-${system.arch}`,platform);
-          assert.equal(system.candidate,false);assert.equal(system.channel,'stable');assert.match(system.version,/^\d+\.\d+\.\d+$/);
-          assert.match(system.commit,/^[a-f0-9]{40}$/);assert.match(process.env.RUNTIME_SOURCE_RUN,/^\d+$/);
-          assert.ok(system.files&&typeof system.files==='object'&&!Array.isArray(system.files));
-          const baseline=path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline');fs.mkdirSync(baseline);
-          for(const [name,entry] of Object.entries(system.files)){
-            safe(name);safe(entry.asset);assert.equal(entry.asset,`${platform}-${name}`);
-            assert.match(entry.sha256,/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(entry.size)&&entry.size>=0);
-            const file=path.join(path.dirname(systemFile),entry.asset);assert.equal(fs.lstatSync(file).isFile(),true);
-            assert.equal(fs.statSync(file).size,entry.size,`Historical component size mismatch: ${name}`);
-            assert.equal(digest(file),entry.sha256,`Historical component checksum mismatch: ${name}`);
-            fs.copyFileSync(file,path.join(baseline,name));
-          }
-          fs.copyFileSync(systemFile,path.join(baseline,'nora-system.json'));
-          const read=name=>JSON.parse(fs.readFileSync(path.join(baseline,name),'utf8'));
-          const identity=read('release-manifest.json');assert.equal(identity.schema,'tavern-release/v2');
-          assert.equal(identity.candidate,false);assert.equal(identity.dirty,false);
-          assert.equal(identity.commit,system.commit);assert.equal(identity.versions.tavern,system.version);
-          for(const entry of Object.values(identity.archives||{}))assert.equal(entry.sha256,system.files[safe(entry.name)]?.sha256);
-          for(const [name,key] of [['nora-hermes-runtime.json','hermesRuntime'],['nora-tavern-dependencies.json','dependencies']]){
-            const item=read(name);assert.equal(item.schema,1);assert.equal(`${item.platform}-${item.arch}`,platform);
-            assert.equal(item.sha256,identity[key]?.sha256);assert.equal(item.sha256,system.files[safe(item.archive)]?.sha256);
-          }
-          const payload=path.resolve(process.env.NORA_UPGRADE_PAYLOAD),targetFile=path.join(payload,'release-manifest.json');
-          const target=JSON.parse(fs.readFileSync(targetFile,'utf8')),version=fs.readFileSync('app/.tavern-release-version','utf8').trim();
-          assert.equal(target.versions.tavern,version);assert.equal(target.commit,process.env.GITHUB_SHA);assert.ok(semver.valid(version));
-          const comparison=semver.compare(system.version,version);assert.ok(comparison<=0,'Historical baseline cannot be newer than the target');
-          const proof={schema:'nora-upgrade-baseline/1',sourceRun:process.env.RUNTIME_SOURCE_RUN,platform,
-            baselineVersion:system.version,baselineCommit:system.commit,baselineManifestSha256:digest(path.join(baseline,'release-manifest.json')),
-            systemManifestSha256:digest(systemFile),targetVersion:version,targetCommit:target.commit,targetManifestSha256:digest(targetFile),
-            verifiedFiles:Object.keys(system.files).length,acceptance:comparison<0?'version-transition-required':'same-version-repair-only'};
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),JSON.stringify(proof,null,2)+'\n');
-          fs.appendFileSync(process.env.GITHUB_ENV,`NORA_UPGRADE_REQUIRED=${comparison<0}\nNORA_UPGRADE_BASELINE=${baseline}\nNORA_UPGRADE_PAYLOAD=${payload}\n`);
-          function migrate(){
-            const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto'),{execFileSync}=require('node:child_process');
-            const state=process.argv[2];assert.ok(['running','stopped'].includes(state));
-            const proof=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),'utf8'));
-            assert.equal(proof.acceptance,'version-transition-required');assert.equal(proof.platform,`${process.platform}-${process.arch}`);
-            const base=path.join(process.env.RUNNER_TEMP,'nora-operation-acceptance',`upgrade-${state}`);
-            execFileSync(process.execPath,['tooling/run.mjs','node','tests/deployment/launcher_product_refactor_smoke.cjs',
-              '--payload',process.env.NORA_UPGRADE_PAYLOAD,'--baseline-release',process.env.NORA_UPGRADE_BASELINE,
-              '--update-release',process.env.NORA_UPGRADE_PAYLOAD,'--start-state',state,'--scratch-base',base,'--keep'],{stdio:'inherit'});
-            const matches=fs.readdirSync(base,{recursive:true}).filter(name=>path.basename(name)==='harness-result.json');
-            assert.equal(matches.length,1,'Expected exactly one retained historical migration report');
-            const file=path.join(base,matches[0]),report=JSON.parse(fs.readFileSync(file,'utf8'));
-            assert.equal(report.outcome,'passed');assert.equal(report.platform,process.platform);assert.equal(report.arch,process.arch);
-            assert.equal(report.actorSourceBinding,'verified-selected-candidate-manifest');assert.equal(report.releaseManifestSha256,proof.targetManifestSha256);
-            assert.equal(report.releaseAcceptance,'isolated-version-transition');assert.equal(report.update,'verified-content-transition');assert.ok(report.changedSourceArtifacts>0);
-            assert.equal(report.updateInitialService,state);assert.equal(report.userData,'retained');assert.equal(report.executorHandles,'verified-closed');
-            const installed=JSON.parse(fs.readFileSync(path.join(report.root,'tavern/tavern-updates/installed.json'),'utf8'));
-            assert.equal(installed.version,proof.targetVersion);
-            const hash=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
-            assert.equal(hash(path.join(process.env.NORA_UPGRADE_BASELINE,'release-manifest.json')),proof.baselineManifestSha256);
-            assert.equal(hash(path.join(process.env.NORA_UPGRADE_PAYLOAD,'release-manifest.json')),proof.targetManifestSha256);
-            report.versionTransition={...proof,startState:state};fs.writeFileSync(file,JSON.stringify(report,null,2)+'\n');
-          }
-          fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-migration.cjs'),`(${migrate.toString()})();\n`);
-          console.log(JSON.stringify(proof));
-          NODE
-
-      - name: Test real fresh installation and managed update before desktop packaging
-        if: runner.os != 'Windows'
-        timeout-minutes: 15
-        shell: bash
-        run: |
-          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload "$release_dir/nora-tavern-launcher/payload" \
-            --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
-            --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
-
-      - name: Test historical version migration with running and stopped Tavern
-        if: runner.os != 'Windows' && env.NORA_UPGRADE_REQUIRED == 'true'
-        timeout-minutes: 25
-        shell: bash
-        run: |
-          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" running
-          node "$RUNNER_TEMP/nora-upgrade-migration.cjs" stopped
-
-      - name: Test Windows installation and managed update with legacy path limits
-        if: runner.os == 'Windows'
-        timeout-minutes: 40
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $registry = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
-          $previous = Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
-          try {
-            Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value 0
-            if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
-              throw 'Windows long-path test precondition was not applied'
-            }
-            node tooling/run.mjs node --test tests/deployment/launcher_install_cleanup.test.cjs
-            if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
-            $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
-            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
-            if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
-            Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
-            $release = Get-ChildItem release -Directory |
-              Where-Object { $_.Name -match '^(candidate|stable)-' } |
-              Sort-Object Name | Select-Object -Last 1
-            if (-not $release) { throw 'Candidate release payload is missing' }
-            $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
-            node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
-            if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
-            if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
-              foreach ($state in @('running', 'stopped')) {
-                node (Join-Path $env:RUNNER_TEMP 'nora-upgrade-migration.cjs') $state
-                if ($LASTEXITCODE -ne 0) { throw "Historical migration failed with LongPathsEnabled=0 and $state Tavern" }
+          node <<'JS'
+          const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
+          const {execFileSync}=require('node:child_process');
+          const reuse=require('./tooling/release/reuse-windows-build.cjs');
+          const env=process.env,commit=env.NORA_LOADER_SOURCE_COMMIT,runId=env.NORA_LOADER_SOURCE_RUN;
+          const sha=file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const read=file=>JSON.parse(fs.readFileSync(file,'utf8').replace(/^\uFEFF/,''));
+          const one=items=>{assert.equal(items.length,1,'Expected one frozen package object');return items[0];};
+          async function main(){
+            assert.equal(process.platform,'win32');assert.equal(process.arch,'x64');
+            assert.equal(env.GITHUB_EVENT_NAME,'workflow_dispatch');assert.equal(env.GITHUB_REF_TYPE,'branch');
+            assert.equal(env.GITHUB_REF,'refs/heads/codex/launcher-prompt-loader-check');
+            assert.equal(env.GITHUB_REPOSITORY,'LoveMaker-art/noras-tavern');assert.match(env.GITHUB_SHA,/^[a-f0-9]{40}$/);
+            assert.equal(commit,'991afa502365b722199ce7752ff0190ee1c8a328');assert.equal(runId,'37948169463');
+            assert.notEqual(env.GITHUB_RUN_ID,runId);assert.notEqual(env.GITHUB_SHA,commit);
+            assert.equal(execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),commit);
+            assert.equal(execFileSync('git',['status','--porcelain','--untracked-files=no'],{encoding:'utf8'}).trim(),'');
+            // Keep the original helper unchanged while binding its python3 lookup to the native setup-python directory.
+            const extractor=fs.realpathSync(env.NORA_LOADER_EXTRACTOR),extractorRoot=path.dirname(extractor);
+            const nativeAlias=path.join(extractorRoot,'python3.exe');
+            const aliasStat=fs.lstatSync(nativeAlias,{throwIfNoEntry:false});
+            if(aliasStat){
+              const same=execFileSync(extractor,['-c','import os,sys; print("same" if os.path.samefile(sys.argv[1],sys.executable) else "different")',nativeAlias],{encoding:'utf8'}).trim();
+              assert.ok(['same','different'].includes(same));
+              if(same==='different'){
+                assert.ok(aliasStat.isFile()&&!aliasStat.isSymbolicLink(),'A different Python alias must be a regular identical binary');
+                assert.equal(sha(nativeAlias),sha(extractor),'Refusing a Python alias with different executable bytes');
+                assert.match(env.GITHUB_RUN_ID,/^[1-9][0-9]*$/);
+                const originalAlias=path.join(extractorRoot,`python3.original-${env.GITHUB_RUN_ID}.exe`);assert.ok(!fs.existsSync(originalAlias));
+                fs.renameSync(nativeAlias,originalAlias);fs.linkSync(extractor,nativeAlias);
               }
-            }
-          } finally {
-            if ($null -eq $previous) {
-              Remove-ItemProperty -Path $registry -Name LongPathsEnabled -ErrorAction SilentlyContinue
-            } else {
-              Set-ItemProperty -Path $registry -Name LongPathsEnabled -Type DWord -Value $previous
-            }
+            }else fs.linkSync(extractor,nativeAlias);
+            env.PATH=extractorRoot+path.delimiter+env.PATH;
+            const alias=JSON.parse(execFileSync('python3',['-c','import json,os,sys; from pathlib import Path; expected=Path(os.environ["NORA_LOADER_EXTRACTOR"]).resolve(); assert os.path.samefile(sys.executable,expected); assert Path(sys.base_prefix).resolve()==expected.parent; print(json.dumps({"executable":sys.executable,"prefix":sys.prefix,"basePrefix":sys.base_prefix,"version":sys.version}))'],{encoding:'utf8'}));
+            const api=suffix=>JSON.parse(execFileSync('gh',['api',`repos/${env.GITHUB_REPOSITORY}/actions/${suffix}`],{encoding:'utf8',maxBuffer:8*1024*1024}));
+            const run=api(`runs/${runId}`),artifacts=api(`runs/${runId}/artifacts?per_page=100`),jobs=api(`runs/${runId}/jobs?per_page=100`);
+            assert.equal(run.head_branch,'codex/launcher-packaging-fixes');assert.equal(run.head_repository.id,run.repository.id);
+            const root=path.join(env.RUNNER_TEMP,'nora-prompt-loader-source');
+            await reuse.materialize(run,artifacts,jobs,{commit,repository:env.GITHUB_REPOSITORY,runId},root);
+            const delivery=path.join(root,'delivery');
+            const find=name=>one(fs.readdirSync(delivery,{recursive:true}).filter(file=>path.basename(file)===name).map(file=>path.join(delivery,file)));
+            const systemFile=find('nora-system-win32-x64.json'),system=read(systemFile);
+            const releaseFile=find(system.files['release-manifest.json'].asset),release=read(releaseFile);
+            const runtimeFile=find('win32-x64-nora-hermes-runtime.json'),runtime=read(runtimeFile);
+            assert.equal(runtime.platform,'win32');assert.equal(runtime.arch,'x64');assert.equal(runtime.format,'zip');
+            assert.match(runtime.archive,/^[A-Za-z0-9._-]+$/);assert.match(runtime.sha256,/^[a-f0-9]{64}$/);
+            assert.equal(runtime.sha256,release.hermesRuntime.sha256);assert.equal(runtime.sha256,'16c17af289faa41d33bfb6451c7ec83b56382052eb3ddcf72f76f9346084131c');
+            const archive=find('win32-x64-'+runtime.archive);assert.equal(fs.statSync(archive).size,runtime.size);assert.equal(sha(archive),runtime.sha256);
+            const prompt='hermes-agent/agent/prompt_builder.py';assert.ok(!runtime.relocatableFiles.includes(prompt));
+            const promptArchive=JSON.parse(execFileSync(env.NORA_LOADER_EXTRACTOR,['-c','import hashlib,json,stat,sys,zipfile; name="hermes-runtime/hermes-agent/agent/prompt_builder.py"; z=zipfile.ZipFile(sys.argv[1]); entries=[i for i in z.infolist() if i.filename==name]; assert len(entries)==1; info=entries[0]; assert not info.is_dir() and stat.S_IFMT(info.external_attr>>16) in (0,stat.S_IFREG); data=z.read(info); print(json.dumps({"entry":name,"size":len(data),"sha256":hashlib.sha256(data).hexdigest()}))',archive],{encoding:'utf8'}));
+            const firstInstallSha256=sha('deployment/install/first_install.py');assert.equal(firstInstallSha256,release.artifacts['ops/installer/first_install.py']);
+            const proof={schema:'nora-prompt-loader-source/1',diagnosticOnly:true,rebuilt:false,publicationAcceptance:false,
+              sourceRun:Number(runId),sourceCommit:commit,workflowCommit:env.GITHUB_SHA,workflowRun:Number(env.GITHUB_RUN_ID),
+              artifacts:artifacts.artifacts.map(item=>({id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest})),
+              systemManifestSha256:sha(systemFile),releaseManifestSha256:sha(releaseFile),runtimeManifestSha256:sha(runtimeFile),
+              runtimeSha256:runtime.sha256,runtimeSize:runtime.size,runtimeManifest:runtimeFile,runtimeArchive:archive,
+              promptArchive,firstInstallSha256,testSourceSha256:sha('tests/deployment/test_first_install.py'),extractor:alias};
+            const proofFile=path.join(env.RUNNER_TEMP,'nora-prompt-loader-source.json');assert.ok(!fs.existsSync(proofFile));
+            fs.writeFileSync(proofFile,JSON.stringify(proof,null,2)+'\n',{flag:'wx'});
+            fs.appendFileSync(env.GITHUB_ENV,'NORA_LOADER_ARTIFACTS='+delivery+'\n');
+            console.log(`Verified frozen source ${commit}, run ${runId}, two API-bound artifacts and runtime ${runtime.sha256}; no package rebuild.`);
           }
-
-      - name: Install desktop packaging dependencies
+          main().catch(error=>{console.error(error);process.exitCode=1});
+          JS
+      - name: Prepare the original runtime actor dependencies
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          cd "$release_dir/nora-tavern-launcher/desktop"
-          npm ci --no-audit --no-fund
-
-      - name: Build lightweight launcher replacement
+          npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+          node -e 'const fs=require("node:fs"),path=require("node:path");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_TEST_DESKTOP_NODE_MODULES="+path.resolve("launcher/desktop/node_modules")+"\nNODE_PATH="+path.resolve("launcher/desktop/node_modules")+"\n")'
+      - name: Restore the accepted native interpreter without packaging
+        shell: bash
+        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$NORA_LOADER_ARTIFACTS" "$RUNNER_TEMP"
+      - name: Exercise the one original official prompt loader test
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/release/package-launcher-update.cjs "$release_dir/nora-tavern-launcher/desktop" "${{ matrix.platform }}" "${{ matrix.arch }}"
+          python_script="$RUNNER_TEMP/nora-prompt-loader-check.py"
+          cat > "$python_script" <<'PY'
+          import ast, hashlib, importlib, json, os, platform, sys, unittest
+          from pathlib import Path
 
-      - name: Verify actual lightweight update archive
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs replacement
+          def digest(file):
+              return hashlib.sha256(Path(file).read_bytes()).hexdigest()
 
-      - name: Assemble full installers from the same verified payload
-        shell: bash
-        run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          cd "$release_dir/nora-tavern-launcher/desktop"
-          npm run "${{ matrix.package_script }}"
+          def exact_result(result):
+              return result.testsRun == 1 and not result.errors and not result.failures and not result.skipped
 
-      - name: Test the actual Windows setup and installed application
-        if: runner.os == 'Windows'
-        timeout-minutes: 10
-        shell: pwsh
-        run: ./tooling/checks/launcher-installed-check.ps1
-
-      - name: Verify real APP production module closure and executor receipts
-        timeout-minutes: 10
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs app
-
-      - name: Preserve isolated operation acceptance evidence
+          proof = json.loads((Path(os.environ['RUNNER_TEMP']) / 'nora-prompt-loader-source.json').read_text())
+          assert proof['sourceCommit'] == '991afa502365b722199ce7752ff0190ee1c8a328'
+          assert proof['sourceRun'] == 37948169463 and proof['diagnosticOnly'] and not proof['rebuilt']
+          assert not proof['publicationAcceptance']
+          home = Path(os.environ['RUNNER_TEMP']) / 'hermes'
+          hermes = home / 'hermes-agent'
+          venv = hermes / 'venv'
+          expected_python = venv / 'Scripts/python.exe'
+          assert platform.system() == 'Windows' and os.path.samefile(sys.executable, expected_python)
+          assert Path(sys.prefix).resolve() == venv.resolve() and Path(sys.base_prefix).resolve() == (home / 'python').resolve()
+          assert Path(os.environ['NORA_TEST_HERMES_ROOT']).resolve() == hermes.resolve()
+          runtime_receipt = json.loads((hermes / '.hermes-bootstrap-complete').read_text())
+          assert runtime_receipt['sha256'] == proof['runtimeSha256']
+          prompt = hermes / 'agent/prompt_builder.py'
+          assert digest(prompt) == proof['promptArchive']['sha256'] and prompt.stat().st_size == proof['promptArchive']['size']
+          source = prompt.read_text(encoding='utf-8')
+          definitions = {item.name: item for item in ast.parse(source).body if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))}
+          functions = {name: hashlib.sha256(ast.get_source_segment(source, definitions[name]).encode()).hexdigest()
+                       for name in ['build_context_files_prompt', 'load_soul_md']}
+          name = sys.argv[1]
+          assert name == 'ops.tests.test_first_install.FirstInstallSnapshotTests.test_official_hermes_loader_reads_complete_agents_not_backup'
+          module = importlib.import_module('ops.tests.test_first_install')
+          assert digest(module.__file__) == proof['testSourceSha256'] and digest(module.MODULE_PATH) == proof['firstInstallSha256']
+          suite = unittest.defaultTestLoader.loadTestsFromName(name)
+          assert suite.countTestCases() == 1
+          result = unittest.TextTestRunner(verbosity=2, stream=sys.stdout).run(suite)
+          assert Path(sys.prefix).resolve() == venv.resolve() and Path(sys.base_prefix).resolve() == (home / 'python').resolve()
+          assert digest(prompt) == proof['promptArchive']['sha256']
+          accepted = exact_result(result)
+          report = {'schema': 'nora-prompt-loader-acceptance/1', 'diagnosticOnly': True, 'rebuilt': False,
+                    'publicationAcceptance': False, 'sourceRun': proof['sourceRun'], 'sourceCommit': proof['sourceCommit'],
+                    'workflowRun': proof['workflowRun'], 'workflowCommit': proof['workflowCommit'], 'artifacts': proof['artifacts'],
+                    'runtimeSha256': proof['runtimeSha256'], 'runtimeManifestSha256': proof['runtimeManifestSha256'],
+                    'systemManifestSha256': proof['systemManifestSha256'], 'releaseManifestSha256': proof['releaseManifestSha256'],
+                    'test': 'tests.deployment.test_first_install.FirstInstallSnapshotTests.test_official_hermes_loader_reads_complete_agents_not_backup',
+                    'testSourceSha256': proof['testSourceSha256'], 'firstInstallSha256': proof['firstInstallSha256'],
+                    'actualPython': str(Path(sys.executable).resolve()), 'pythonVersion': sys.version,
+                    'prefix': str(Path(sys.prefix).resolve()), 'basePrefix': str(Path(sys.base_prefix).resolve()),
+                    'prefixVerifiedBeforeAndAfter': True, 'hermesRoot': str(hermes.resolve()),
+                    'hermesPromptSource': {'path': str(prompt.resolve()), 'sha256': digest(prompt), 'archiveEntry': proof['promptArchive']['entry'], 'functionHashes': functions},
+                    'testsRun': result.testsRun, 'errors': len(result.errors), 'failures': len(result.failures), 'skipped': len(result.skipped),
+                    'accepted': accepted}
+          destination = Path(os.environ['RUNNER_TEMP']) / 'nora-prompt-loader-acceptance.json'
+          with destination.open('x', encoding='utf-8') as stream:
+              json.dump(report, stream, indent=2); stream.write('\n')
+          assert accepted, 'The one original loader case must really pass with no skipped tests'
+          print('PASS: original official loader case 1/1, no errors, failures or skips; archived Hermes source and native prefixes verified')
+          PY
+          export NORA_TEST_HERMES_ROOT="$(node -e 'console.log(require("node:path").join(process.env.RUNNER_TEMP,"hermes","hermes-agent"))')"
+          py="$(node -e 'console.log(require("node:path").join(process.env.NORA_TEST_HERMES_ROOT,"venv","Scripts","python.exe"))')"
+          node tooling/run.mjs "$py" -B "$python_script" tests.deployment.test_first_install.FirstInstallSnapshotTests.test_official_hermes_loader_reads_complete_agents_not_backup
+      - name: Preserve only the independently bound loader evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}
+          name: nora-prompt-loader-acceptance
           path: |
-            ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
-            ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
-            ${{ runner.temp }}/nora-packaged-app-acceptance.json
-            ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
-            ${{ runner.temp }}/nora-installed-*-acceptance.json
+            ${{ runner.temp }}/nora-prompt-loader-source.json
+            ${{ runner.temp }}/nora-prompt-loader-acceptance.json
           if-no-files-found: warn
           retention-days: 14
-
-
-      - name: Verify packaged Nora images and instructions
-        shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs images
-
-      - name: Upload launcher
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
-          path: |
-            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
-            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
-            release/*/system-assets/*
-          if-no-files-found: error
-          retention-days: 14
-          compression-level: 0
-
-      - name: Upload shared updater assets
-        if: matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-tavern-shared
-          path: |
-            release/*/*.tar.gz
-            release/*/release-manifest.json
-            release/*/bootstrap-manifest.json
-            release/*/first-install-manifest.json
-            release/*/install-*.sh
-            release/*/install-*.ps1
-            release/*/*bootstrap.py
-            release/*/SHA256SUMS
-          if-no-files-found: error
-          compression-level: 0
-
-      - name: Preserve built Windows packages when later acceptance fails
-        if: failure() && runner.os == 'Windows'
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-windows-failed-packaging-diagnostic
-          path: |
-            release/*/nora-tavern-launcher.zip
-            release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
-            release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
-            release/*/system-assets/*
-          if-no-files-found: warn
-          retention-days: 14
-          compression-level: 0
-
-  publish-release:
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '') && inputs.package_source_run == ''
-    needs: [build, reuse-windows]
-    runs-on: ubuntu-latest
-    # Different version tags share mutable SourceForge channel pointers.
-    concurrency:
-      group: nora-sourceforge-release-channels
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Prepare private SourceForge publishing credentials
-        env:
-          NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
-          NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
-          NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
-        run: node tooling/release/sourceforge-credentials.mjs prepare
-      - name: Verify shared publication configuration
-        run: node --test tests/sourceforge-publishing.test.mjs
-      - name: Verify accepted source build before publishing without rebuilding
-        if: inputs.publish_source_run != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$PUBLISH_SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
-          test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN" > source-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN/artifacts?per_page=100" > source-artifacts.json
-          node --test tests/launcher-publish-source.test.cjs
-          node tooling/release/verify-publish-source.cjs source-run.json source-artifacts.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$PUBLISH_SOURCE_RUN"
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: nora-tavern-*
-          path: artifacts
-          run-id: ${{ inputs.publish_source_run || github.run_id }}
-          github-token: ${{ github.token }}
-      - name: Publish only after all platform builds pass
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for platform in darwin-arm64 darwin-x64 win32-x64; do
-            test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
-          done
-          node --test tests/launcher-release-notes.test.cjs
-          node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full
-      - name: Remove private SourceForge publishing files
-        if: always()
-        run: node tooling/release/sourceforge-credentials.mjs cleanup
