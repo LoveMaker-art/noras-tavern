@@ -95,10 +95,12 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         tag=decodeURIComponent(parts[0]);const asset=parts[1];
         if(!require('./releases').accepts({tag_name:tag,draft:false,prerelease:value(channel)==='beta'},value(channel))
           ||parts[0]!==encodeURIComponent(tag)||requested&&requested!==tag)return null;
-        const type=asset==='release-manifest.json'?'release-manifest':asset===`nora-launcher-${value(platform)}-${value(arch)}.json`?'launcher-manifest'
+        const type=asset==='release-assets.json'?'asset-index':asset==='release-manifest.json'?'release-manifest':asset===`nora-launcher-${value(platform)}-${value(arch)}.json`?'launcher-manifest'
           :asset===`nora-system-${value(platform)}-${value(arch)}.json`?'system-manifest':null;
-        if(!type||type!=='release-manifest'&&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)!==0)return null;
-        return {url:url.href,routeHash:resource.routeHash,tag,type,...(type!=='release-manifest'?{expectedVersion:resource.expectedVersion}:{})};
+        if(!type||!['release-manifest','asset-index'].includes(type)&&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)!==0)return null;
+        if(type==='asset-index'&&(!/^[a-f0-9]{64}$/.test(resource.sha256||'')||!Number.isSafeInteger(resource.size)||resource.size<1||resource.size>64*1024))return null;
+        return {url:url.href,routeHash:resource.routeHash,tag,type,...(type==='asset-index'?{sha256:resource.sha256,size:resource.size}
+          :type!=='release-manifest'?{expectedVersion:resource.expectedVersion}:{})};
       }
       if(url.origin!=='https://api.github.com')return null;
       if(url.pathname===`${base}/latest`&&!url.search){if(requested||value(channel)!=='stable')return null;}
@@ -136,6 +138,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         }else{
           const resource=trustedMetadata(record,current.conditionResource);
           if(resource)return {kind:'release-metadata',resource:{url:resource.url,routeHash:resource.routeHash,
+            ...(resource.type==='asset-index'?{sha256:resource.sha256,size:resource.size}:{}),
             ...(resource.expectedVersion?{expectedVersion:resource.expectedVersion}:{})},retryAt:current.conditionRetryAt??null};
         }
       }
@@ -187,7 +190,11 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         bytes+=chunk.value.byteLength;if(bytes>maxBytes)return null;parts.push(Buffer.from(chunk.value));}
       if(metadata){
         const result=JSON.parse(Buffer.concat(parts).toString('utf8')),releases=require('./releases');
-        if(resource.type==='release-manifest'){
+        if(resource.type==='asset-index'){
+          const raw=Buffer.concat(parts);
+          if(raw.length!==resource.size||crypto.createHash('sha256').update(raw).digest('hex')!==resource.sha256)return null;
+          releases.validateAssetIndex(result,resource.tag);
+        }else if(resource.type==='release-manifest'){
           if(result.launcherVersion!==undefined&&releases.compare(result.launcherVersion,result.launcherVersion)!==0)return null;
           releases.validateUpdate(result,{tag_name:resource.tag},result.launcherVersion||value(launcherVersion));
         }else if(resource.type==='system-manifest'){

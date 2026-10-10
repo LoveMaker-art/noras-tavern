@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 import { fileDigest, writeSystemRelease } from './system-release.mjs';
 import { assertNoraSystemArtifacts } from './release-source.mjs';
+import { readAssetCatalogue, downloadCatalogueAsset, assertBaselineCatalogue } from './asset-catalogue.mjs';
 
 export const PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const REPO = 'LoveMaker-art/noras-tavern';
@@ -112,19 +113,10 @@ function main() {
     assert.equal(current.candidate, false, 'Public updates require a clean committed release');
     assert.ok(!fs.existsSync(output), 'Output must be a new directory');
     const gh = args => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
-    const metadata = JSON.parse(gh(['release', 'view', baselineTag, '--repo', REPO,
-        '--json', 'tagName,isDraft,isPrerelease,assets']));
-    assert.equal(metadata.tagName, baselineTag);
-    assert.equal(metadata.isDraft, false);
-    assert.equal(metadata.isPrerelease, false);
-    const names = metadata.assets.map(asset => asset.name);
+    const catalogue = readAssetCatalogue({ repository: REPO, tag: baselineTag });
+    const names = catalogue.release.assets.map(asset => asset.name);
     const work = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-component-baseline-'));
-    const download = (name, directory) => {
-        safeName(name);
-        assert.ok(names.includes(name), `Missing baseline asset: ${name}`);
-        gh(['release', 'download', baselineTag, '--repo', REPO, '--pattern', name, '--dir', directory]);
-        return path.join(directory, name);
-    };
+    const download = (name, directory, expected) => downloadCatalogueAsset(catalogue, name, directory, { expected });
     try {
         const previous = names.includes('component-release.json') ? json(download('component-release.json', work)) : null;
         const inputs = [];
@@ -132,19 +124,21 @@ function main() {
         for (const platform of PLATFORMS) {
             const directory = path.join(work, platform); fs.mkdirSync(directory);
             const system = json(download(`nora-system-${platform}.json`, directory));
+            assertBaselineCatalogue(catalogue, system);
             assert.equal(`${system.platform}-${system.arch}`, platform);
             for (const name of ['release-manifest.json', 'nora-hermes-runtime.json', 'nora-tavern-dependencies.json']) {
                 const item = system.files[name];
-                const file = download(item.asset, directory);
+                const file = download(item.asset, directory, item);
                 verifyFile(file, item);
                 fs.renameSync(file, path.join(directory, name));
             }
             const baseline = json(path.join(directory, 'release-manifest.json'));
+            assertBaselineCatalogue(catalogue, baseline);
             const launcherName = `nora-launcher-${platform}.json`;
             const launcher = json(download(launcherName, directory));
             assert.equal(launcher.version, current.launcherVersion, 'Launcher version changed: build fresh launcher updates before publishing');
             assert.equal(launcher.candidate, false);
-            const launcherArchive = download(launcher.asset, directory);
+            const launcherArchive = download(launcher.asset, directory, launcher);
             verifyFile(launcherArchive, launcher);
             assertReusable(current, baseline);
             launcherProvenance(current, baseline, launcher, platform, previous);
@@ -172,7 +166,7 @@ function main() {
             for (const manifest of ['nora-hermes-runtime.json', 'nora-tavern-dependencies.json']) {
                 const { archive } = json(path.join(directory, manifest));
                 const item = system.files[safeName(archive)];
-                const file = download(item.asset, directory);
+                const file = download(item.asset, directory, item);
                 verifyFile(file, item);
                 fs.renameSync(file, path.join(directory, archive));
             }

@@ -67,6 +67,11 @@ for (const changed of [false, true]) test(`real packager: ${changed ? 'changed l
     assert.ok(release);
     t.after(() => fs.rmSync(release, { recursive: true, force: true }));
     const result = JSON.parse(fs.readFileSync(path.join(release, 'release-manifest.json')));
+    for (const descriptor of [...Object.values(result.archives), ...Object.values(result.modules)]) {
+        const archive = path.join(release, descriptor.name);
+        assert.equal(descriptor.size, fs.statSync(archive).size, `Actual sealed archive size: ${descriptor.name}`);
+        assert.equal(descriptor.sha256, fileDigest(archive), `Full archive SHA-256: ${descriptor.name}`);
+    }
     assert.equal(result.candidate, true);
     assert.equal(result.bootstrap.minimumLauncherVersion,
         JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'))).version);

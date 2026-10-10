@@ -1,4 +1,4 @@
-name: Build full Nora Tavern installers
+name: Build and accept Nora Tavern installers (no publication)
 
 on:
   workflow_dispatch:
@@ -19,6 +19,10 @@ on:
         description: Optional verified build run whose Hermes archives are reused for install compatibility
         type: string
         default: ''
+      acceptance_baseline_tag:
+        description: Published stable version used only for historical upgrade acceptance (blank uses latest stable; EMPTY requires no stable history)
+        type: string
+        default: ''
       launcher_baseline_tag:
         description: Launcher-only build using verified unchanged components from a stable tag (otherwise full build)
         type: string
@@ -27,10 +31,14 @@ on:
         description: Use real installation paths for replacement testing (branch artifacts only)
         type: boolean
         default: false
-      publish_source_run:
-        description: Publish an accepted complete build at this tag commit without rebuilding
+      planning_baseline:
+        description: Change-plan base tag or commit (blank uses latest stable; EMPTY only for the first release)
         type: string
         default: ''
+      approve_unknown_inputs:
+        description: Explicitly approve reviewed unknown build inputs and require a conservative full build
+        type: boolean
+        default: false
       verified_windows_run:
         description: Final all-platform assembly reusing a fully accepted Windows-only run at this exact commit
         type: string
@@ -52,6 +60,89 @@ env:
   PYTHONIOENCODING: 'utf-8'
 
 jobs:
+  preflight:
+    if: inputs.target != 'win32-package-check' && inputs.package_source_run == ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      acceptance_baseline_tag: ${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}
+      initial_release: ${{ steps.acceptance-baseline.outputs.initial_release }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PLANNING_BASELINE: ${{ inputs.planning_baseline }}
+      APPROVE_UNKNOWN_INPUTS: ${{ inputs.approve_unknown_inputs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the workflow contract parser
+        run: python -m pip install PyYAML==6.0.2
+      - name: Select a published acceptance baseline independently of environment reuse
+        id: acceptance-baseline
+        shell: bash
+        env:
+          ACCEPTANCE_BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/nora-acceptance-published-releases.json"
+          node tooling/release/publication-source.cjs baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "v$(cat app/.tavern-release-version)" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
+      - name: Plan committed changes before native builds
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline="$PLANNING_BASELINE"
+          acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
+          if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
+          if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
+          node tooling/release/release-plan.mjs --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
+      - name: Require a matching build decision and explicit review of unknown inputs
+        shell: bash
+        env:
+          PLAN_MODE: ${{ steps.plan.outputs.mode }}
+          REQUIRES_REVIEW: ${{ steps.plan.outputs.requires_review }}
+          LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
+          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+          VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+        run: |
+          set -euo pipefail
+          if [[ "$REQUIRES_REVIEW" == true && "$APPROVE_UNKNOWN_INPUTS" != true ]]; then
+            echo 'Unknown inputs require a reviewed plan and explicit approve_unknown_inputs=true.' >&2
+            exit 1
+          fi
+          if [[ "$REQUIRES_REVIEW" == true && ( -n "$LAUNCHER_BASELINE_TAG" || -n "$RUNTIME_SOURCE_RUN" || -n "$VERIFIED_WINDOWS_RUN" ) ]]; then
+            echo 'Reviewed unknown inputs require a full build without environment or Windows package reuse.' >&2
+            exit 1
+          fi
+          case "$PLAN_MODE" in
+            full|launcher|review-required) ;;
+            components) echo 'Use the component build workflow for this plan.' >&2; exit 1 ;;
+            verification-only) echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1 ;;
+            *) exit 1 ;;
+          esac
+      - name: Check release tooling before preparing runtimes
+        run: |
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs
+      - name: Preserve the change plan even when preflight rejects the build
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-release-plan
+          overwrite: true
+          path: |
+            ${{ runner.temp }}/release-plan.json
+            ${{ runner.temp }}/nora-acceptance-baseline-selection.json
+            ${{ runner.temp }}/nora-acceptance-published-releases.json
+          if-no-files-found: warn
+          retention-days: 90
+
   package-check:
     if: inputs.target == 'win32-package-check' || inputs.package_source_run != ''
     runs-on: windows-latest
@@ -61,7 +152,7 @@ jobs:
       NORA_BUILD_TARGET: ${{ inputs.target }}
       NORA_PACKAGE_SOURCE_RUN: ${{ inputs.package_source_run }}
       NORA_RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
-      NORA_PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+      NORA_PUBLISH_SOURCE_RUN: ''
       NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
       NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
       NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
@@ -135,15 +226,17 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-windows-package-check-diagnostic
+          overwrite: true
           path: |
             ${{ runner.temp }}/nora-package-check-source.json
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
             ${{ runner.temp }}/nora-installed-*-acceptance.json
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-package-verification-*.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
   reuse-windows:
+    needs: preflight
     if: inputs.verified_windows_run != '' && inputs.package_source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -151,7 +244,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       NORA_VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
       NORA_BUILD_TARGET: ${{ inputs.target }}
-      NORA_PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
+      NORA_PUBLISH_SOURCE_RUN: ''
       NORA_LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
       NORA_PRODUCTION_MODE: ${{ inputs.production_mode }}
     steps:
@@ -166,30 +259,32 @@ jobs:
         run: |
           set -euo pipefail
           node -e 'require("./tooling/release/reuse-windows-build.cjs").verifyModes(process.env)'
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN" > source-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/jobs?per_page=100" > source-jobs.json
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN" > source-run.json
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
+          timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/jobs?per_page=100" > source-jobs.json
           node --test tests/launcher-windows-reuse.test.cjs
           node tooling/release/reuse-windows-build.cjs source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
       - name: Preserve accepted Windows delivery without rebuilding
         uses: actions/upload-artifact@v4
         with:
           name: nora-tavern-win32-x64
+          overwrite: true
           path: ${{ runner.temp }}/accepted-windows/delivery/**
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
           compression-level: 0
       - name: Preserve original Windows acceptance and source provenance
         uses: actions/upload-artifact@v4
         with:
           name: nora-operation-acceptance-win32-x64
+          overwrite: true
           path: ${{ runner.temp }}/accepted-windows/acceptance/**
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
 
   build:
-    needs: reuse-windows
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.publish_source_run == '' && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64')
+    needs: [preflight, reuse-windows]
+    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64')
     strategy:
       fail-fast: false
       matrix:
@@ -324,6 +419,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          overwrite: true
           path: ${{ runner.temp }}/nora-baseline-artifacts
           github-token: ${{ github.token }}
           run-id: ${{ inputs.runtime_source_run }}
@@ -465,11 +561,20 @@ jobs:
               --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
           fi
 
-      - name: Freeze verified historical payload for version migration acceptance
-        if: inputs.runtime_source_run != ''
+      - name: Download the official historical payload exclusively for upgrade acceptance
+        if: needs.preflight.outputs.initial_release != 'true'
         shell: bash
         env:
-          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+          ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
+        run: |
+          set -euo pipefail
+          node tooling/release/acceptance-baseline.mjs --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ matrix.platform }}-${{ matrix.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline"
+
+      - name: Freeze verified historical payload for version migration acceptance
+        if: needs.preflight.outputs.initial_release != 'true'
+        shell: bash
+        env:
+          ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
         run: |
           release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
           export NORA_UPGRADE_PAYLOAD="$release_dir/nora-tavern-launcher/payload"
@@ -478,25 +583,25 @@ jobs:
           const semver=require(path.resolve('launcher/desktop/node_modules/semver'));
           const digest=file=>{const hash=crypto.createHash('sha256'),fd=fs.openSync(file,'r'),buffer=Buffer.alloc(1024*1024);try{let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null)))hash.update(buffer.subarray(0,count));}finally{fs.closeSync(fd);}return hash.digest('hex');};
           const safe=name=>{assert.match(name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);return name;};
-          const artifacts=path.join(process.env.RUNNER_TEMP,'nora-baseline-artifacts'),platform=`${process.platform}-${process.arch}`;
+          const artifacts=path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline'),platform=`${process.platform}-${process.arch}`;
           const systemName=`nora-system-${platform}.json`;
           const matches=fs.readdirSync(artifacts,{recursive:true}).filter(name=>path.basename(name)===systemName);
           assert.equal(matches.length,1,'Expected exactly one historical platform system manifest');
           const systemFile=path.join(artifacts,matches[0]),system=JSON.parse(fs.readFileSync(systemFile,'utf8'));
           assert.equal(system.schema,'nora-system/v1');assert.equal(`${system.platform}-${system.arch}`,platform);
           assert.equal(system.candidate,false);assert.equal(system.channel,'stable');assert.match(system.version,/^\d+\.\d+\.\d+$/);
-          assert.match(system.commit,/^[a-f0-9]{40}$/);assert.match(process.env.RUNTIME_SOURCE_RUN,/^\d+$/);
+          assert.match(system.commit,/^[a-f0-9]{40}$/);assert.match(process.env.ACCEPTANCE_BASELINE_TAG,/^v\d+\.\d+\.\d+$/);
           assert.ok(system.files&&typeof system.files==='object'&&!Array.isArray(system.files));
-          const baseline=path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline');fs.mkdirSync(baseline);
+          const baseline=artifacts,sourceReceipt=JSON.parse(fs.readFileSync(path.join(baseline,'baseline-source-receipt.json'),'utf8'));
+          assert.equal(sourceReceipt.schema,'nora-acceptance-baseline/1');assert.equal(sourceReceipt.tag,process.env.ACCEPTANCE_BASELINE_TAG);assert.equal(sourceReceipt.commit,system.commit);assert.equal(sourceReceipt.platform,platform);
           for(const [name,entry] of Object.entries(system.files)){
             safe(name);safe(entry.asset);assert.equal(entry.asset,`${platform}-${name}`);
             assert.match(entry.sha256,/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(entry.size)&&entry.size>=0);
-            const file=path.join(path.dirname(systemFile),entry.asset);assert.equal(fs.lstatSync(file).isFile(),true);
+            const file=path.join(baseline,name);assert.equal(fs.lstatSync(file).isFile(),true);
             assert.equal(fs.statSync(file).size,entry.size,`Historical component size mismatch: ${name}`);
             assert.equal(digest(file),entry.sha256,`Historical component checksum mismatch: ${name}`);
-            fs.copyFileSync(file,path.join(baseline,name));
           }
-          fs.copyFileSync(systemFile,path.join(baseline,'nora-system.json'));
+          assert.equal(fs.readFileSync(systemFile,'utf8'),fs.readFileSync(path.join(baseline,'nora-system.json'),'utf8'));
           const read=name=>JSON.parse(fs.readFileSync(path.join(baseline,name),'utf8'));
           const identity=read('release-manifest.json');assert.equal(identity.schema,'tavern-release/v2');
           assert.equal(identity.candidate,false);assert.equal(identity.dirty,false);
@@ -509,11 +614,11 @@ jobs:
           const payload=path.resolve(process.env.NORA_UPGRADE_PAYLOAD),targetFile=path.join(payload,'release-manifest.json');
           const target=JSON.parse(fs.readFileSync(targetFile,'utf8')),version=fs.readFileSync('app/.tavern-release-version','utf8').trim();
           assert.equal(target.versions.tavern,version);assert.equal(target.commit,process.env.GITHUB_SHA);assert.ok(semver.valid(version));
-          const comparison=semver.compare(system.version,version);assert.ok(comparison<=0,'Historical baseline cannot be newer than the target');
-          const proof={schema:'nora-upgrade-baseline/1',sourceRun:process.env.RUNTIME_SOURCE_RUN,platform,
+          const comparison=semver.compare(system.version,version);assert.ok(comparison<0,'Historical acceptance baseline must be strictly older than the target');
+          const proof={schema:'nora-upgrade-baseline/1',sourceTag:process.env.ACCEPTANCE_BASELINE_TAG,sourceReceiptSha256:digest(path.join(baseline,'baseline-source-receipt.json')),platform,
             baselineVersion:system.version,baselineCommit:system.commit,baselineManifestSha256:digest(path.join(baseline,'release-manifest.json')),
             systemManifestSha256:digest(systemFile),targetVersion:version,targetCommit:target.commit,targetManifestSha256:digest(targetFile),
-            verifiedFiles:Object.keys(system.files).length,acceptance:comparison<0?'version-transition-required':'same-version-repair-only'};
+            verifiedFiles:Object.keys(system.files).length,acceptance:'version-transition-required'};
           fs.writeFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),JSON.stringify(proof,null,2)+'\n');
           fs.appendFileSync(process.env.GITHUB_ENV,`NORA_UPGRADE_REQUIRED=${comparison<0}\nNORA_UPGRADE_BASELINE=${baseline}\nNORA_UPGRADE_PAYLOAD=${payload}\n`);
           function migrate(){
@@ -642,14 +747,16 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}
+          overwrite: true
           path: |
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
             ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
+            ${{ runner.temp }}/nora-upgrade-baseline/baseline-source-receipt.json
             ${{ runner.temp }}/nora-installed-*-acceptance.json
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
 
 
       - name: Verify packaged Nora images and instructions
@@ -660,12 +767,13 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-tavern-${{ matrix.platform }}-${{ matrix.arch }}
+          overwrite: true
           path: |
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
             release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
             release/*/system-assets/*
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 90
           compression-level: 0
 
       - name: Upload shared updater assets
@@ -673,6 +781,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-tavern-shared
+          overwrite: true
           path: |
             release/*/*.tar.gz
             release/*/release-manifest.json
@@ -690,74 +799,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: nora-windows-failed-packaging-diagnostic
+          overwrite: true
           path: |
             release/*/nora-tavern-launcher.zip
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-*
             release/*/nora-tavern-launcher/desktop/dist/nora-launcher-*.json
             release/*/system-assets/*
           if-no-files-found: warn
-          retention-days: 14
+          retention-days: 90
           compression-level: 0
-
-  publish-release:
-    if: always() && !cancelled() && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && github.ref_type == 'tag' && startsWith(github.ref_name, 'v') && (github.event_name != 'workflow_dispatch' || inputs.target == 'all') && (needs.build.result == 'success' || inputs.publish_source_run != '') && inputs.package_source_run == ''
-    needs: [build, reuse-windows]
-    runs-on: ubuntu-latest
-    # Different version tags share mutable SourceForge channel pointers.
-    concurrency:
-      group: nora-sourceforge-release-channels
-      cancel-in-progress: false
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Prepare private SourceForge publishing credentials
-        env:
-          NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
-          NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
-          NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
-        run: node tooling/release/sourceforge-credentials.mjs prepare
-      - name: Verify shared publication configuration
-        run: node --test tests/sourceforge-publishing.test.mjs
-      - name: Verify accepted source build before publishing without rebuilding
-        if: inputs.publish_source_run != ''
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PUBLISH_SOURCE_RUN: ${{ inputs.publish_source_run }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "$PUBLISH_SOURCE_RUN" =~ ^[1-9][0-9]*$ ]]
-          test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN" > source-run.json
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$PUBLISH_SOURCE_RUN/artifacts?per_page=100" > source-artifacts.json
-          node --test tests/launcher-publish-source.test.cjs
-          node tooling/release/verify-publish-source.cjs source-run.json source-artifacts.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$PUBLISH_SOURCE_RUN"
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: nora-tavern-*
-          path: artifacts
-          run-id: ${{ inputs.publish_source_run || github.run_id }}
-          github-token: ${{ github.token }}
-      - name: Publish only after all platform builds pass
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for platform in darwin-arm64 darwin-x64 win32-x64; do
-            test "$(find artifacts -name "nora-system-$platform.json" | wc -l)" -eq 1
-          done
-          node --test tests/launcher-release-notes.test.cjs
-          node tooling/release/publish-release.mjs artifacts "$TAG" "$GITHUB_SHA" full
-      - name: Remove private SourceForge publishing files
-        if: always()
-        run: node tooling/release/sourceforge-credentials.mjs cleanup

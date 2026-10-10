@@ -9,6 +9,16 @@ function sourceFixture() {
  return {run,artifacts,jobs,options:{commit,repository:'owner/tavern',runId:'123'}};
 }
 test('only a complete same-commit native Windows-only source can be reused',()=>{const f=sourceFixture();assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);});
+test('a same-run decision plan is verified but is not extracted over native acceptance evidence',()=>{
+ const f=sourceFixture();f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:3,name:'nora-release-plan'});f.artifacts.total_count++;
+ assert.deepEqual(verifySource(f.run,f.artifacts,f.jobs,f.options).map(item=>item.name),['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64']);
+ f.artifacts.artifacts[2].workflow_run={...f.artifacts.artifacts[2].workflow_run,head_sha:'b'.repeat(40)};
+ assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options));
+});
+test('failed native diagnostic evidence remains available without replacing the accepted Windows delivery',()=>{
+ const f=sourceFixture();f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:3,name:'nora-windows-failed-packaging-diagnostic'});f.artifacts.total_count++;
+ assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);
+});
 for(const [label,change] of [
  ['wrong commit',f=>f.run.head_sha='b'.repeat(40)],['wrong repository',f=>f.run.repository.full_name='other/tavern'],
  ['wrong workflow',f=>f.run.path='other.yml'],['wrong event',f=>f.run.event='push'],['failed run',f=>f.run.conclusion='failure'],['running source',f=>f.run.status='in_progress'],
@@ -74,29 +84,20 @@ function condition(job) {return workflow.match(new RegExp(`^  ${job}:\\n(?:[^\\n
 function evaluate(expression,inputs,github,needs={},cancelled=false) {return Function('inputs','github','needs','always','cancelled','startsWith','return '+expression.replaceAll('needs.reuse-windows','needs["reuse-windows"]'))(inputs,github,needs,()=>true,()=>cancelled,(a,b)=>a.startsWith(b));}
 const buildWorkflow=workflow.split('\n  build:\n')[1].split(/\n  [\w-]+:\n/)[0];
 const matrixExpression=buildWorkflow.match(/\$\{\{ fromJSON\(([\s\S]*?)\) \}\}/)[1];
-test('actual workflow routes package diagnostics independently and preserves strict build/publication paths',()=>{
- assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: reuse-windows/);assert.match(workflow,/    needs: \[build, reuse-windows\]/);
- assert.doesNotMatch(workflow,/^  (?:bootstrap-contract|replacement-contract|gui-exit-contract):/m);
- for(const [target,reuse,publish,packageSource,ref,expectedBuild,count,expectedPublish] of [
-  ['all','','','','branch',true,3,false],['win32-x64','','','','branch',true,1,false],
-  ['win32-bootstrap','','','','tag',false,3,false],['win32-replacement','','','','tag',false,3,false],['win32-gui-exit','','','','tag',false,3,false],
-  ['all','','','','tag',true,3,true],['all','','123','','tag',false,3,true],
-  ['all','123','','','branch',true,2,false],['all','123','','','tag',true,2,true],
-  ['win32-package-check','','','123','branch',false,3,false],['win32-package-check','','','','tag',false,3,false],
-  ['all','','','123','branch',false,3,false],['all','','','123','tag',false,3,false],
-  ['win32-x64','','','123','branch',false,1,false],['all','123','','125','tag',false,2,false],
-  ['all','','123','125','tag',false,3,false],['win32-package-check','123','125','126','tag',false,2,false],
+test('actual build workflow routes package diagnostics independently, gates native work and never publishes',()=>{
+ assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: \[preflight, reuse-windows\]/);
+ assert.doesNotMatch(workflow,/^  (?:bootstrap-contract|replacement-contract|gui-exit-contract|publish-release):/m);
+ for(const [target,reuse,packageSource,ref,expectedBuild,count] of [
+  ['all','','','branch',true,3],['win32-x64','','','branch',true,1],
+  ['all','','','tag',true,3],['all','123','','branch',true,2],['all','123','','tag',true,2],
+  ['win32-package-check','','123','branch',false,3],['all','','123','branch',false,3],
+  ['win32-x64','','123','branch',false,1],['all','123','125','tag',false,2],
  ]) {
-  const inputs={target,verified_windows_run:reuse,publish_source_run:publish,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref,ref_name:ref==='tag'?'v2.4.3':'branch'},needs={'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'},build:{result:expectedBuild?'success':'skipped'}};
+  const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success'},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),target==='win32-package-check'||packageSource!=='');
   assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),reuse!==''&&packageSource==='');
-  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);assert.equal(JSON.parse(evaluate(matrixExpression,inputs,github)).length,count);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs)),expectedPublish);
-  for(const result of ['failure','cancelled']) {needs['reuse-windows'].result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs)),false);}
-  needs['reuse-windows'].result=reuse&&!packageSource?'success':'skipped';assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs,true)),false);assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs,true)),false);
+  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);assert.equal(JSON.parse(evaluate(matrixExpression,inputs,github)).length,count);
+  for(const result of ['failure','cancelled']) {needs.preflight.result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);}
+  needs.preflight.result='success';assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs,true)),false);
  }
- const inputs={target:'',verified_windows_run:'',publish_source_run:'',package_source_run:''},github={event_name:'push',ref_type:'tag',ref_name:'v2.4.3-beta.1'},needs={'reuse-windows':{result:'skipped'},build:{result:'success'}};
- assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),false);
- assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),true);
- assert.equal(JSON.parse(evaluate(matrixExpression,inputs,github)).length,3);
- assert.equal(Boolean(evaluate(condition('publish-release'),inputs,github,needs)),true);
 });

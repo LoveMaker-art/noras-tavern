@@ -7,14 +7,18 @@ import {test} from 'node:test';
 
 const root=path.resolve(import.meta.dirname,'..');
 const helper='tooling/release/sourceforge-credentials.mjs';
-test('both release jobs prepare credentials before publication, share the channel lock and always clean up',()=>{
-  for(const file of ['build-integrated-launcher.yml','publish-component-update.yml']){
+test('only the independent publication job handles credentials, locks formal channels and always cleans up',()=>{
+  for(const file of ['publish-accepted-release.yml']){
     const text=fs.readFileSync(path.join(root,'.github/workflows',file),'utf8');
     assert.match(text,/group: nora-sourceforge-release-channels/,file);
-    const prepare=text.indexOf(`node ${helper} prepare`),publish=text.indexOf('node tooling/release/publish-release.mjs'),cleanup=text.indexOf(`node ${helper} cleanup`);
+    const prepare=text.indexOf(`node ${helper} prepare`),publish=text.indexOf('node tooling/release/publish-release.mjs',prepare),cleanup=text.indexOf(`node ${helper} cleanup`);
     assert.ok(prepare>=0 && prepare<publish && cleanup>publish,`${file}: credentials must bracket the actual publisher`);
     for(const name of ['SOURCEFORGE_USERNAME','SOURCEFORGE_SSH_PRIVATE_KEY','SOURCEFORGE_KNOWN_HOSTS'])assert.ok(text.includes(name),`${file}: missing ${name}`);
     assert.match(text.slice(publish,cleanup),/if: always\(\)/,`${file}: cleanup must run on failure`);
+  }
+  for(const file of ['build-integrated-launcher.yml','publish-component-update.yml']){
+    const text=fs.readFileSync(path.join(root,'.github/workflows',file),'utf8');
+    assert.ok(!text.includes('SOURCEFORGE_SSH_PRIVATE_KEY'),`${file}: build job must not receive publisher secrets`);
   }
 });
 test('CI credential preparation produces a usable private config and cleanup cannot remove an unrelated directory',t=>{

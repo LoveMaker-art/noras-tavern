@@ -46,6 +46,10 @@ test('public SourceForge verification checks all bytes and the expected digest',
   const wrong=Buffer.alloc(object.size);
   await assert.rejects(verifyDistributionObject(object,{fetcher:async()=>new Response(wrong)}),/Different/);
 });
+test('stalled public verification stops at the idle deadline instead of hanging a publication',async t=>{
+  const {verifyDistributionObject}=await publisher(),object=publication(t).plan.objects[0];
+  await assert.rejects(verifyDistributionObject(object,{idleTimeout:20,fetcher:async()=>new Response(new ReadableStream({start(){}}))}),/verification stalled/);
+});
 test('SourceForge upload pins SSH identity and host trust, preserves immutable objects and cleans staging',async t=>{
   const {sourceforgeUploader}=await publisher(),distribution=publication(t),root=distribution.output;
   const identity=path.join(root,"key with 'quote'"),hosts=path.join(root,'known hosts'),config=path.join(root,'publisher.json');
@@ -133,6 +137,61 @@ test('distribution preparation publishes canonical identities only after verifie
   assert.ok(channel.assets.some(item=>item.name==='nora-system-win32-x64.json'));
   assert.equal(fs.existsSync(path.join(root,'channels')),false);
   await assert.rejects(prepareDistribution({root,tag:'v2.2.11',commit:'a'.repeat(40),output}),/already exists/);
+});
+function sharedPublicationFixture(t) {
+  const {root}=fixture(t),commit='a'.repeat(40),repository='LoveMaker-art/noras-tavern';
+  const changeManifest=value=>{value.launcherVersion='2.1.2';if(value.bootstrap)value.bootstrap.minimumLauncherVersion='2.1.2';else value.minimumLauncherVersion='2.1.2';return value;};
+  for(const name of fs.readdirSync(root))if(name.startsWith('Nora-Tavern-Launcher-2.1.0-'))fs.renameSync(path.join(root,name),path.join(root,name.replace('2.1.0','2.1.2')));
+  for(const name of ['release-manifest.json',...['darwin-arm64','darwin-x64','win32-x64'].map(platform=>`${platform}-release-manifest.json`)]) {
+    const file=path.join(root,name);fs.writeFileSync(file,JSON.stringify(changeManifest(JSON.parse(fs.readFileSync(file)))));
+  }
+  for(const platform of ['darwin-arm64','darwin-x64','win32-x64']) {
+    const file=path.join(root,`nora-system-${platform}.json`),system=changeManifest(JSON.parse(fs.readFileSync(file))),payload=fs.readFileSync(path.join(root,`${platform}-release-manifest.json`));
+    Object.assign(system.files['release-manifest.json'],{size:payload.length,sha256:crypto.createHash('sha256').update(payload).digest('hex')});fs.writeFileSync(file,JSON.stringify(system));
+    const lightFile=path.join(root,`nora-launcher-${platform}.json`),light=JSON.parse(fs.readFileSync(lightFile));light.version='2.1.2';light.asset=light.asset.replace('2.1.0','2.1.2');fs.writeFileSync(lightFile,JSON.stringify(light));
+  }
+  const baseline={schema:'nora-reuse-baseline/1',repository,commit:'b'.repeat(40),release:{tag_name:'v2.2.10',draft:false,prerelease:false,
+    assets:fs.readdirSync(root).map(name=>{const bytes=fs.readFileSync(path.join(root,name));return {name,state:'uploaded',size:bytes.length,
+      digest:'sha256:'+crypto.createHash('sha256').update(bytes).digest('hex'),browser_download_url:`https://github.com/${repository}/releases/download/v2.2.10/${name}`};})}};
+  return {root,commit,repository,baseline};
+}
+test('shared publication references identical older assets while current metadata stays under the new tag',async t=>{
+  const f=sharedPublicationFixture(t),output=f.root+'.shared';t.after(()=>fs.rmSync(output,{recursive:true,force:true}));
+  const {prepareDistribution}=await publisher();
+  const result=await prepareDistribution({...f,tag:'v2.2.11',output,assetMode:'shared',reuseFrom:f.baseline});
+  const refs=result.plan.objects.filter(item=>item.reference);assert.ok(refs.length>0);
+  assert.ok(refs.every(item=>item.key.startsWith('releases/v2.2.10/')&&item.sourceCommit==='b'.repeat(40)));
+  assert.ok(!refs.some(item=>/nora-system-.*\.json|nora-launcher-.*\.json|release-manifest\.json|SHA256SUMS$/.test(path.basename(item.key))));
+  const indexObject=result.plan.objects.find(item=>item.key==='releases/v2.2.11/release-assets.json'),index=JSON.parse(fs.readFileSync(indexObject.file));
+  assert.equal(index.schema,'nora-release-assets/1');assert.equal(index.minimumLauncherVersion,'2.1.2');assert.equal(index.commit,f.commit);
+  assert.equal(index.assets.length,refs.length);
+  assert.ok(result.release.assets.some(item=>item.name==='release-assets.json'));
+  assert.ok(refs.every(item=>!result.release.assets.some(asset=>asset.name===path.basename(item.key))));
+  assert.ok(result.release.assets.every(item=>item.browser_download_url.includes('/v2.2.11/')));
+  const client=require('../installer/desktop/releases');
+  const expanded=await client.latest(async url=>{
+    if(new URL(url).hostname==='api.github.com')return Response.json(result.release);
+    const key='releases/'+new URL(url).pathname.split('/releases/download/')[1];
+    const object=result.plan.objects.find(item=>item.key===key);assert.ok(object,`Unplanned client request ${url}`);return new Response(fs.readFileSync(object.file));
+  });
+  assert.equal(client.validateAssetReferences(expanded).commit,f.commit);
+  for(const object of refs)assert.equal(client.assetUrl(expanded,path.basename(object.key)),`https://github.com/${f.repository}/releases/download/v2.2.10/${path.basename(object.key)}`);
+  const stateModule=await import(pathToFileURL(path.resolve(__dirname,'../../tooling/release/publication-state.mjs')));
+  const stateDir=f.root+'.state';t.after(()=>fs.rmSync(stateDir,{recursive:true,force:true}));
+  fs.mkdirSync(stateDir);fs.renameSync(output,path.join(stateDir,'distribution'));
+  for(const object of result.plan.objects)if(object.file.startsWith(output))object.file=path.join(stateDir,'distribution',path.relative(output,object.file));
+  const sealed=await stateModule.sealPublication(result,{root:f.root,stateDir,repository:f.repository,assetMode:'shared'});
+  assert.equal(sealed.plan.assetMode,'shared');assert.equal(sealed.plan.objects.filter(item=>item.reference).length,refs.length);
+});
+test('old-client release and untrusted reuse baselines cannot activate shared publication',async t=>{
+  const {prepareDistribution}=await publisher();
+  for(const kind of ['old-client','future','foreign','draft'])await t.test(kind,async child=>{
+    const f=kind==='old-client'?fixture(child):sharedPublicationFixture(child),output=f.root+'.shared';child.after(()=>fs.rmSync(output,{recursive:true,force:true}));
+    const baseline=f.baseline||{schema:'nora-reuse-baseline/1',repository:'LoveMaker-art/noras-tavern',commit:'b'.repeat(40),release:{tag_name:'v2.2.10',draft:false,prerelease:false,assets:[]}};
+    if(kind==='future')baseline.release.tag_name='v2.2.12';if(kind==='foreign')baseline.repository='elsewhere/other';if(kind==='draft')baseline.release.draft=true;
+    await assert.rejects(prepareDistribution({root:f.root,tag:'v2.2.11',commit:'a'.repeat(40),output,assetMode:'shared',reuseFrom:baseline}));
+    assert.equal(fs.existsSync(path.join(output,'channels/stable.json')),false);
+  });
 });
 test('corrupt or linked release resources cannot generate an advertised channel',async t=>{
   const {prepareDistribution}=await publisher();

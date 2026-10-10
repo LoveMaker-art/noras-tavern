@@ -7,6 +7,7 @@ import { buildCommand } from './build-commands.mjs';
 import { assertSafeReleasePath, createReleaseSource, digest } from './release-source.mjs';
 import { fileDigest } from './system-release.mjs';
 import { verifyFile, PLATFORMS } from './package-component-update.mjs';
+import { readAssetCatalogue, downloadCatalogueAsset, assertBaselineCatalogue } from './asset-catalogue.mjs';
 
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
 const safeName = name => {
@@ -19,6 +20,7 @@ const allowedFiles = new Set([
     'deployment/shared/nora_profile.py', 'deployment/shared/nora_system.py',
     'tooling/release/package-launcher-update.cjs', 'tooling/release/package-local-launcher.mjs',
     'tooling/release/verify-launcher-release.cjs', 'tooling/release/launcher-release-notes.cjs',
+    'tooling/release/acceptance-baseline.mjs',
 ]);
 
 export function assertLauncherReuse(current, baseline) {
@@ -139,25 +141,18 @@ function main() {
     assert.match(tag || '', /^v\d+\.\d+\.\d+$/);
     assert.ok(PLATFORMS.includes(platform));
     assert.ok(output && !fs.existsSync(output), 'Use a new baseline directory');
-    const gh = args => execFileSync('gh', args, { encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 });
-    const metadata = JSON.parse(gh(['release', 'view', tag, '--repo', 'LoveMaker-art/noras-tavern', '--json', 'isDraft,isPrerelease,assets']));
-    assert.equal(metadata.isDraft, false); assert.equal(metadata.isPrerelease, false);
+    const catalogue = readAssetCatalogue({ tag });
     fs.mkdirSync(output, { recursive: true });
-    const download = (asset, name = asset, entry) => {
-        safeName(asset); safeName(name);
-        assert.ok(metadata.assets.some(item => item.name === asset), `Missing baseline asset: ${asset}`);
-        gh(['release', 'download', tag, '--repo', 'LoveMaker-art/noras-tavern', '--pattern', asset, '--dir', output]);
-        const file = path.join(output, asset);
-        if (entry) verifyFile(file, entry);
-        if (asset !== name) fs.renameSync(file, path.join(output, name));
-    };
+    const download = (asset, name = asset, entry) => downloadCatalogueAsset(catalogue, asset, output, { targetName: name, expected: entry });
     download(`nora-system-${platform}.json`);
     const system = json(path.join(output, `nora-system-${platform}.json`));
+    assertBaselineCatalogue(catalogue, system);
     assert.equal(system.version, tag.slice(1));
     for (const name of ['release-manifest.json', 'nora-hermes-runtime.json', 'nora-tavern-dependencies.json']) {
         download(system.files[name].asset, name, system.files[name]);
     }
     const baseline = json(path.join(output, 'release-manifest.json'));
+    assertBaselineCatalogue(catalogue, baseline);
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const source = createReleaseSource(root, { candidate: true });
     try { assertLauncherReuse(source.identity, baseline); }
@@ -170,6 +165,7 @@ function main() {
     download('release-manifest.json', 'shared-release-manifest.json');
     download('SHA256SUMS', 'shared-SHA256SUMS');
     const shared = json(path.join(output, 'shared-release-manifest.json'));
+    assertBaselineCatalogue(catalogue, shared);
     assert.equal(shared.commit, baseline.commit);
     for (const entry of Object.values(shared.modules)) {
         download(entry.name);
