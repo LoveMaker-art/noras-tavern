@@ -50,21 +50,38 @@ export function githubProvider({repository, execute=command, log=console.log}={}
     };
     const inventory=async item=>{
         assert.ok(Number.isSafeInteger(item.id)&&item.id>0,'Invalid GitHub release id');
+        assert.equal(item.url,`https://api.github.com/repos/${repository}/releases/${item.id}`,'Different GitHub release API URL');
+        assert.equal(item.assets_url,`${item.url}/assets`,'Different GitHub release assets URL');
         return paginated(`releases/${item.id}/assets?per_page=100`,'asset');
     };
     const physical=p=>p.plan.objects.filter(object=>object.phase==='asset'&&!object.reference);
     const validateRelease=(item,p)=>{
         assert.ok(item&&typeof item.draft==='boolean'&&item.tag_name===p.plan.tag&&item.prerelease===(p.plan.channel==='beta'),'Different GitHub release identity');
         assert.equal(String(item.body||'').trimEnd(),p.plan.body.trimEnd(),'Different GitHub release notes');
-        const names=new Set();for(const asset of assets){assert.ok(!names.has(asset.name),'Duplicate GitHub asset');names.add(asset.name);}
+        const names=new Set(),ids=new Set();for(const asset of assets){
+            assert.ok(!names.has(asset.name),'Duplicate GitHub asset');names.add(asset.name);
+            assert.ok(!ids.has(asset.id),'Duplicate GitHub asset id');ids.add(asset.id);
+        }
         assert.ok(assets.every(asset=>physical(p).some(object=>path.basename(object.key)===asset.name)), 'Unexpected GitHub asset; preserve and investigate it');
     };
     const checkAsset=(asset,object)=>{
         assert.ok(asset&&asset.state==='uploaded','GitHub asset is absent or incomplete');
+        assert.ok(Number.isSafeInteger(asset.id)&&asset.id>0,'Invalid GitHub asset id');
+        assert.equal(asset.url,`https://api.github.com/repos/${repository}/releases/assets/${asset.id}`,'Different GitHub asset API URL');
+        assert.equal(asset.name,path.basename(object.key),'Different GitHub asset name');
         assert.equal(asset.size,object.size,'Different GitHub asset size');
         assert.equal(asset.digest,`sha256:${object.sha256}`,'GitHub SHA-256 digest is absent or different');
-        const tag=object.assetReleaseTag||object.key.split('/')[1];
-        assert.equal(asset.browser_download_url,`https://github.com/${repository}/releases/download/${tag}/${path.basename(object.key)}`,'Different GitHub asset URL');
+        const tag=object.assetReleaseTag||object.key.split('/')[1],base=`https://github.com/${repository}/releases/`;
+        const canonical=`${base}download/${tag}/${asset.name}`;
+        if(asset.browser_download_url!==canonical&&current?.draft===true&&!object.reference&&assets.includes(asset)){
+            assert.equal(current.tag_name,tag,'Different GitHub draft asset tag');
+            const prefix=`${base}tag/`;
+            assert.ok(typeof current.html_url==='string'&&current.html_url.startsWith(prefix),'Different GitHub draft URL');
+            const temporaryTag=current.html_url.slice(prefix.length);
+            assert.match(temporaryTag,/^untagged-[a-f0-9]+$/,'Invalid GitHub draft URL');
+            // Only the temporary tag returned for this ID-bound draft may differ before promotion.
+            assert.equal(asset.browser_download_url,`${base}download/${temporaryTag}/${asset.name}`,'Different GitHub asset URL');
+        }else assert.equal(asset.browser_download_url,canonical,'Different GitHub asset URL');
     };
     const lookup=async(object,p)=>{
         if(!object.reference)return assets.find(item=>item.name===path.basename(object.key));

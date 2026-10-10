@@ -131,27 +131,101 @@ function sourceReader() {
     assert.ok(file,'Missing shared release source validator');
     return createRequire(import.meta.url)(file).readSource;
 }
-async function readPublic(key,fetcher,timeout=1800000,options={}) {
-    const url=sfRoot+sfKey(key);
-    return sourceReader()(fetcher,{provider:'sourceforge',origin:new URL(sfRoot).origin,mirror:true,url},url,
-        {...options,signal:options.signal?AbortSignal.any([options.signal,AbortSignal.timeout(timeout)]):AbortSignal.timeout(timeout),headers:{'Accept-Encoding':'identity'}});
+const sfTransientCodes=new Set(['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT','UND_ERR_SOCKET',
+    'UND_ERR_RES_CONTENT_LENGTH_MISMATCH','ECONNRESET','ECONNREFUSED','ETIMEDOUT','EAI_AGAIN','ENETUNREACH','EHOSTUNREACH',
+    'SF_PUBLIC_HEADERS_TIMEOUT','SF_PUBLIC_IDLE_TIMEOUT','SF_PUBLIC_ATTEMPT_TIMEOUT','SF_PUBLIC_HTTP_TRANSIENT']);
+function publicError(message,code) {const error=new Error(message);error.code=code;return error;}
+function transientPublicError(error) {
+    for(let item=error,hop=0;item&&hop<8;item=item.cause,hop++)if(sfTransientCodes.has(item.code))return true;
+    return false;
 }
-export async function verifyDistributionObject(object,{fetcher=fetch,totalTimeout=1800000,idleTimeout=120000}={}) {
-    const controller=new AbortController();
-    const response=await readPublic(object.key,fetcher,totalTimeout,{signal:controller.signal});
-    assert.ok(response.ok&&response.body,`SourceForge object unavailable: ${object.key} (HTTP ${response.status})`);
-    const hash=crypto.createHash('sha256');let size=0;const started=Date.now();
-    const heartbeat=setInterval(()=>console.log(`SourceForge verifying ${object.key}: ${size}/${object.size} bytes (${Math.round((Date.now()-started)/1000)} seconds)`),30000);
-    let idle;const iterator=response.body[Symbol.asyncIterator]();
-    try {for(;;) {
-        const next=await Promise.race([iterator.next(),new Promise((resolve,reject)=>{idle=setTimeout(()=>{controller.abort();reject(new Error(`SourceForge verification stalled: ${object.key} (${size}/${object.size} bytes)`));},idleTimeout);})]);
-        clearTimeout(idle);if(next.done)break;const chunk=next.value;
-        size+=chunk.length;
-        assert.ok(size<=object.size,`SourceForge object too large: ${object.key}`);
-        hash.update(chunk);
-    }} finally {clearTimeout(idle);clearInterval(heartbeat);controller.abort();}
-    assert.equal(size,object.size,`Incomplete SourceForge object: ${object.key}`);
-    assert.equal(hash.digest('hex'),object.sha256,`Different SourceForge object: ${object.key}`);
+function abortable(promise,signal) {
+    const pending=Promise.resolve(promise);
+    if(signal.aborted){pending.catch(()=>{});return Promise.reject(signal.reason);}
+    return new Promise((resolve,reject)=>{
+        const abort=()=>reject(signal.reason);signal.addEventListener('abort',abort,{once:true});
+        pending.then(resolve,reject).finally(()=>signal.removeEventListener('abort',abort));
+    });
+}
+async function publicRetry(key,task,{timeout,attemptTimeout,maxAttempts=4,retryDelay=2000,signal,log=console.log}={}) {
+    for(const [name,value] of Object.entries({timeout,attemptTimeout,maxAttempts,retryDelay}))
+        assert.ok(Number.isSafeInteger(value)&&value>=(name==='retryDelay'?0:1),`Invalid SourceForge ${name}`);
+    assert.ok(maxAttempts<=4,'Too many SourceForge attempts');
+    const total=new AbortController(),timer=setTimeout(()=>total.abort(publicError(`SourceForge public read deadline: ${key}`,'SF_PUBLIC_TOTAL_TIMEOUT')),timeout);
+    const bounded=signal?AbortSignal.any([signal,total.signal]):total.signal;
+    try {for(let attempt=1;attempt<=maxAttempts;attempt++) {
+        bounded.throwIfAborted();
+        const current=new AbortController(),attemptSignal=AbortSignal.any([bounded,current.signal]);
+        const attemptTimer=setTimeout(()=>current.abort(publicError(`SourceForge public attempt deadline: ${key}`,'SF_PUBLIC_ATTEMPT_TIMEOUT')),attemptTimeout);
+        let failure;
+        try {return await abortable(task(attemptSignal,attempt),attemptSignal);}
+        catch(error) {failure=error;current.abort(error);}
+        finally {clearTimeout(attemptTimer);}
+        bounded.throwIfAborted();
+        if(attempt===maxAttempts||!transientPublicError(failure))throw failure;
+        const delay=Math.min(failure.retryAfter??retryDelay*2**(attempt-1),timeout);
+        log(`SourceForge public retry ${attempt}/${maxAttempts-1}: ${key} (${failure.code||failure.cause?.code||failure.name}; wait ${delay} ms; restart from canonical URL)`);
+        // The shared total deadline also bounds Retry-After; never retry early.
+        await abortable(new Promise(resolve=>{
+            const abort=()=>{clearTimeout(wait);bounded.removeEventListener('abort',abort);};
+            const wait=setTimeout(()=>{bounded.removeEventListener('abort',abort);resolve();},delay);
+            bounded.addEventListener('abort',abort,{once:true});
+        }),bounded);
+    }} finally {clearTimeout(timer);}
+}
+export async function readPublic(key,fetcher=fetch,timeout=120000,options={}) {
+    assert.match(key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
+    const {signal,maxAttempts=4,retryDelay=2000,headerTimeout=30000,attemptTimeout=60000,revalidate=false,log=console.log,...request}=options;
+    assert.ok(Number.isSafeInteger(headerTimeout)&&headerTimeout>0,'Invalid SourceForge header timeout');
+    const url=sfRoot+sfKey(key);
+    return publicRetry(key,async(bounded,attempt)=>{
+        // Each retry resolves the canonical URL again. Keep the shared validator
+        // for every HTTPS hop; neither a failed mirror nor its URL is trusted.
+        const fetchHeaders=async(target,settings)=>{
+            const controller=new AbortController(),combined=AbortSignal.any([bounded,controller.signal]);
+            const timer=setTimeout(()=>controller.abort(publicError(`SourceForge headers deadline: ${key}`,'SF_PUBLIC_HEADERS_TIMEOUT')),headerTimeout);
+            try {return await abortable(fetcher(target,{...settings,signal:combined}),combined);}
+            finally {clearTimeout(timer);}
+        };
+        const response=await sourceReader()(fetchHeaders,{provider:'sourceforge',origin:new URL(sfRoot).origin,mirror:true,url},url,
+            {...request,signal:bounded,headers:{'Accept-Encoding':'identity',...(attempt>1||revalidate?{'Cache-Control':'no-cache'}:{})}});
+        if([408,429,500,502,503,504].includes(response.status)){
+            const value=response.headers.get('retry-after');await response.body?.cancel();
+            const error=publicError(`SourceForge transient HTTP ${response.status}: ${key}`,'SF_PUBLIC_HTTP_TRANSIENT');
+            if(value&&/^\d+$/.test(value))error.retryAfter=Number(value)*1000;
+            else if(value&&Number.isFinite(Date.parse(value)))error.retryAfter=Math.max(0,Date.parse(value)-Date.now());
+            throw error;
+        }
+        return response;
+    },{timeout,attemptTimeout:Math.min(timeout,attemptTimeout),maxAttempts,retryDelay,signal,log});
+}
+async function publicBody(response,signal,onChunk,{idleTimeout,key,message='SourceForge public read stalled'}={}) {
+    const iterator=response.body[Symbol.asyncIterator]();let idle;
+    try {for(;;){
+        const next=await abortable(Promise.race([iterator.next(),new Promise((resolve,reject)=>{
+            idle=setTimeout(()=>reject(publicError(`${message}: ${key}`,'SF_PUBLIC_IDLE_TIMEOUT')),idleTimeout);
+        })]),signal);
+        clearTimeout(idle);if(next.done)break;onChunk(next.value);
+    }} finally {clearTimeout(idle);}
+}
+export async function verifyDistributionObject(object,{fetcher=fetch,totalTimeout,attemptTimeout,idleTimeout=120000,headerTimeout=30000,maxAttempts=4,retryDelay=2000,signal,log=console.log}={}) {
+    const small=object.size<=8*1024*1024;
+    totalTimeout??=small?120000:1800000;attemptTimeout??=small?60000:1200000;
+    const started=Date.now();
+    return publicRetry(object.key,async(bounded,attempt)=>{
+        // A failed stream starts again at byte zero with a fresh hash. No prefix
+        // or prior attempt contributes to the final full-object verification.
+        const hash=crypto.createHash('sha256');let size=0;
+        const heartbeat=setInterval(()=>log(`SourceForge verifying ${object.key}: attempt ${attempt}/${maxAttempts}, ${size}/${object.size} bytes (${Math.round((Date.now()-started)/1000)} seconds)`),30000);
+        try {
+            const response=await readPublic(object.key,fetcher,totalTimeout,{signal:bounded,maxAttempts:1,headerTimeout,revalidate:attempt>1,log});
+            assert.ok(response.ok&&response.body,`SourceForge object unavailable: ${object.key} (HTTP ${response.status})`);
+            await publicBody(response,bounded,chunk=>{size+=chunk.length;assert.ok(size<=object.size,`SourceForge object too large: ${object.key}`);hash.update(chunk);},
+                {idleTimeout,key:`${object.key} (${size}/${object.size} bytes)`,message:'SourceForge verification stalled'});
+            assert.equal(size,object.size,`Incomplete SourceForge object: ${object.key}`);
+            assert.equal(hash.digest('hex'),object.sha256,`Different SourceForge object: ${object.key}`);
+        } finally {clearInterval(heartbeat);}
+    },{timeout:totalTimeout,attemptTimeout:Math.min(totalTimeout,attemptTimeout),maxAttempts,retryDelay,signal,log});
 }
 function tagOrder(tag) {
     const match=/^v(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(tag);
@@ -159,14 +233,16 @@ function tagOrder(tag) {
     return [Number(match[1]),Number(match[2]),Number(match[3]),match[4]==null?1:0,Number(match[4]||0)];
 }
 async function preventDowngrade(distribution,fetcher) {
-    const response=await readPublic(`channels/${distribution.plan.channel}.json`,fetcher,30000);
-    if([404,410].includes(response.status)){await response.body?.cancel();return;}
-    assert.ok(response.ok,'Cannot confirm existing SourceForge channel');
-    const chunks=[];let size=0;
-    for await(const chunk of response.body) {
-        size+=chunk.length;assert.ok(size<=4*1024*1024,'Existing channel too large');chunks.push(chunk);
-    }
-    const previous=JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    const key=`channels/${distribution.plan.channel}.json`;
+    const previous=await publicRetry(key,async(signal,attempt)=>{
+        const response=await readPublic(key,fetcher,120000,{signal,maxAttempts:1,revalidate:attempt>1});
+        if([404,410].includes(response.status)){await response.body?.cancel();return null;}
+        assert.ok(response.ok&&response.body,'Cannot confirm existing SourceForge channel');
+        const chunks=[];let size=0;
+        await publicBody(response,signal,chunk=>{size+=chunk.length;assert.ok(size<=4*1024*1024,'Existing channel too large');chunks.push(chunk);},{idleTimeout:30000,key});
+        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    },{timeout:120000,attemptTimeout:60000});
+    if(previous===null)return;
     assert.equal(Array.isArray(previous),distribution.plan.channel==='beta','Existing channel has an invalid shape');
     const items=Array.isArray(previous)?previous:[previous],target=tagOrder(distribution.plan.tag);
     for(const item of items) {
