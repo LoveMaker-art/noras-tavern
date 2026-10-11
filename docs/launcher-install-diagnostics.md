@@ -170,6 +170,8 @@ Windows 用户可按 `Win + R`，输入 `%APPDATA%\NoraTavern\diagnostics`，回
 
 2026-10-05：生产 D1 新备份经隔离恢复验证后，已应用 `0008_launcher_operation_logs.sql` 并部署 S2 接收端。实际投递客户端验证 30 段整次失败日志、两页查询、首尾/调用栈/哈希一致、断网重开与丢 ACK 去重；成功和详细关闭不上传整次日志，基础结果继续。限定清理本次生成的验收记录，未删除真实用户数据。当前接收端已支持新格式，正式客户端仍待完整包实机验收及发布。范围与证据见唯一方案的 S2 生产闭环记录；本文不再维护第二份阶段表。
 
+2026-10-11 12:48 只读复核：12:45 完整错误快照中，启动器 2.1.1 的 33 条错误事件有 12 条 `fault=null`。逐个按相同安装标识和操作编号查询独立日志，其中 1 条有完整日志，确认 `Redirect was cancelled`；另 11 条返回 `missing=[not_received]`、零分块且无日志快照。基础事件没有记录当次详细诊断开关，无法从服务端区分主动关闭、待投递、采集失败和投递失败，原因保持未结案。`fault=null` 不能直接等同整次日志缺失，`not_received` 也不能等同永久丢失；尚未收到的历史内容无法由新源码重建。此前受控投递验收仅认证对应场景，当前诊断可追溯性仍有上述缺口。
+
 此前的部署记录：2026-09-30 已备份 D1、应用 `0005_launcher_events.sql` 并部署基础接收端，真实入库和重复去重已验证，验收数据已清理。该记录不证明当前详细诊断版本已经上线；完整记录保留在落地页 `docs/analytics-api.md`。
 
 隔离回归覆盖授权变更、异步任务及自更新交接、原因链、隐私过滤、故障包大小限制、子进程输出、真实 Worker 与内存 SQLite 入库、去重和鉴权。通过 `node tooling/run.mjs` 执行 `tests/deployment/launcher_telemetry.test.cjs`；设置 `NORA_LANDING_ROOT` 后执行 `tests/deployment/launcher_telemetry_worker.test.cjs` 做跨仓库联测。Windows、Intel Mac、Apple Silicon Mac 的打包实机和 GUI 验收仍未完成。

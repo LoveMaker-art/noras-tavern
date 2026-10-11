@@ -183,7 +183,9 @@ function createTelemetry({ file, launcherVersion, platform = process.platform, a
   }
   function stage(id) {
     if (!allowed() || !currentScope() || !state.active || !contract.stages.includes(id) || state.active.stage === id) return;
-    enqueue('stage_finished', 'succeeded');
+    // A progress label is not an acceptance result: stop/rollback messages can
+    // arrive while update_apply is still running or has failed. Only finish()
+    // owns terminal status. Keep the existing receiver schema and stage IDs.
     Object.assign(state.active, { stage: id, stageStarted: now(), lastProgress: null }); progressValue = null;
     enqueue('stage_started'); save();
   }

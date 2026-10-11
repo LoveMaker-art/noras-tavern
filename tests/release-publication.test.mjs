@@ -3,7 +3,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import {sealPublication, loadPublication, executePublication, fileDigest} from '../tooling/release/publication-state.mjs';
+import {sealPublication, loadPublication, executePublication as executeWithConsumerGate, fileDigest} from '../tooling/release/publication-state.mjs';
+
+// These fixtures exercise resumable provider state, not launcher acceptance.
+// A separate test below invokes the mandatory production consumer gate.
+const executePublication = (publication, options={}) => executeWithConsumerGate(publication,
+    {...options, verifyConsumers:async()=>({scope:'provider-state-test-fixture'})});
 
 async function fixture(t) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-publication-resume-'));
@@ -75,6 +80,12 @@ test('promote requires both verified sources; prepare never publishes',async t=>
     assert.deepEqual(f.events,[]);
     await executePublication(f.publication,{stage:'prepare',providers:f.providers,log:()=>{}});
     assert.equal(f.publication.state.status,'prepared');assert.ok(!f.events.includes('github:promote'));
+});
+test('final distribution without a consumable shipped launcher is rejected before either provider begins',async t=>{
+    const f=await fixture(t);
+    await assert.rejects(executeWithConsumerGate(f.publication,{stage:'all',providers:f.providers,log:()=>{}}),
+        /Final consumer|shipped launcher/);
+    assert.deepEqual(f.events,[]);
 });
 test('partial cross-site promotion resumes the remaining switch without rebuilding or uploading',async t=>{
     const f=await fixture(t);f.setFailure('sourceforge:promote');

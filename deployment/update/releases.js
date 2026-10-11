@@ -141,7 +141,8 @@ async function resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPoli
   const index=validateAssetReferences(resolved);
   if (index.commit!==fixed.commit || index.minimumLauncherVersion!==fixed.releaseManifest.bootstrap.minimumLauncherVersion)
     throw new Error('共享索引与原固定发布的提交或兼容门槛不符。');
-  validateUpdate(fixed.releaseManifest,resolved,fixed.launcherManifest?.version || fixed.releaseManifest.bootstrap.minimumLauncherVersion);
+  validateUpdate(fixed.releaseManifest,resolved,fixed.launcherManifest?.version || fixed.releaseManifest.bootstrap.minimumLauncherVersion,
+    fixed.mode==='install' ? {systemManifest:fixed.systemManifest,platform:fixed.platform,arch:fixed.arch,channel:fixed.channel} : undefined);
   if (fixed.systemManifest) validateSystem(fixed.systemManifest,resolved,fixed.platform,fixed.arch,
     fixed.launcherManifest?.version || fixed.systemManifest.minimumLauncherVersion,fixed.channel);
   if (fixed.launcherManifest) require('./launcher-update').validateManifest(fixed.launcherManifest,
@@ -183,15 +184,12 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
     source:evidence.some(item=>item.source==='cache')?'cache':evidence.some(item=>item.source==='revalidated')?'revalidated':'network',
     latestConfirmed:evidence.every(item=>item.latestConfirmed)} : release;
 }
-function validateSystem(manifest, release, platform, arch, launcherVersion, channel = 'stable') {
+function validateSystemDescriptor(manifest, release, platform, arch, channel = 'stable') {
   if (manifest.schema !== 'nora-system/v1' || manifest.candidate || manifest.platform !== platform || manifest.arch !== arch ||
       (manifest.channel || 'stable') !== channel ||
       compare(manifest.version, release ? release.tag_name : manifest.version) !== 0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '')) throw new Error('完整系统发布清单与目标版本或平台不符。');
   validateCapabilities(manifest);
   validateAssetRelease(manifest,release,manifest.minimumLauncherVersion);
-  if (compare(launcherVersion, manifest.minimumLauncherVersion) === null || compare(launcherVersion, manifest.minimumLauncherVersion) < 0) {
-    throw new Error(`请先升级启动器到 ${manifest.minimumLauncherVersion} 或更新版本。`);
-  }
   const required = ['release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz', 'nora-tavern-ops.tar.gz',
     'nora-tavern-nora-mcp.tar.gz', 'nora-tavern-first-install-bootstrap.py', 'first-install-manifest.json',
     'nora-hermes-runtime.json', 'nora-tavern-dependencies.json'];
@@ -201,14 +199,39 @@ function validateSystem(manifest, release, platform, arch, launcherVersion, chan
     if (!/^[a-f0-9]{64}$/.test(item.sha256 || '') || !Number.isSafeInteger(item.size) || item.size < 1) throw new Error('组件校验信息缺失。');
     if (release) { assetUrl(release,item.asset); validateAssetIntegrity(release,item.asset,item); }
   }
+  if(release) releaseManifestAsset(release,{mode:'install',systemManifest:manifest,platform,arch});
   return manifest;
+}
+function validateSystem(manifest, release, platform, arch, launcherVersion, channel = 'stable') {
+  validateSystemDescriptor(manifest,release,platform,arch,channel);
+  if (compare(launcherVersion, manifest.minimumLauncherVersion) === null || compare(launcherVersion, manifest.minimumLauncherVersion) < 0) {
+    throw new Error(`请先升级启动器到 ${manifest.minimumLauncherVersion} 或更新版本。`);
+  }
+  return manifest;
+}
+function releaseManifestAsset(release,{mode,systemManifest,platform,arch}) {
+  const name=mode==='install' ? systemManifest?.files?.['release-manifest.json']?.asset : 'release-manifest.json';
+  if (name!=='release-manifest.json' && name!==`${platform}-${arch}-release-manifest.json`)
+    throw new Error('完整系统指定的发布清单不属于当前平台。');
+  const assets=release.assets?.filter(item=>item.name===name);
+  if (assets?.length!==1 || assets[0].asset_release_tag!==undefined)
+    throw new Error(`固定发布清单必须是当前发布的唯一实体：${name}`);
+  const url=assetUrl(release,name);
+  if (url!==`https://github.com/${REPO}/releases/download/${encodeURIComponent(release.tag_name)}/${name}`)
+    throw new Error('固定发布清单来源不属于当前发布。');
+  return url;
+}
+function validateInstallManifestText(text,systemManifest) {
+  const descriptor=systemManifest.files['release-manifest.json'];
+  if(descriptor.sha256!==bytesHash(text) || descriptor.size!==Buffer.byteLength(text))
+    throw new Error('完整系统与固定发布清单校验信息不符。');
 }
 async function systemFor(release, { platform = process.platform, arch = process.arch, launcherVersion, fetcher = fetch, signal, channel = 'stable',metadataCache,networkPolicy }) {
   const name = `nora-system-${platform}-${arch}.json`;
   const manifest = await requestJson(assetUrl(release, name), fetcher, signal,{metadataCache,networkPolicy,channel,conditionIdentity:{expectedVersion:launcherVersion}});
   return validateSystem(manifest, release, platform, arch, launcherVersion, channel);
 }
-function validateUpdate(manifest, release, launcherVersion) {
+function validateUpdate(manifest, release, launcherVersion, {systemManifest,platform,arch,channel='stable'} = {}) {
   if (manifest.schema !== 'tavern-release/v2' || manifest.candidate ||
       compare(manifest.versions?.tavern, release.tag_name) !== 0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '') ||
       manifest.bootstrap?.managedComponents !== 1 || !/^[a-f0-9]{64}$/.test(manifest.bootstrap.sha256 || '')) {
@@ -221,8 +244,23 @@ function validateUpdate(manifest, release, launcherVersion) {
   if (compare(launcherVersion, minimum) === null || compare(launcherVersion, minimum) < 0)
     throw launcherError(`请先升级启动器到 ${minimum} 或更新版本。`,
       {userCode:'RELEASE_COMPATIBILITY',source:'release_service',site:'release.verify'});
-  for (const item of [...Object.values(manifest.archives || {}),...Object.values(manifest.modules || {})])
-    if (item.name) validateAssetIntegrity(release,item.name,item);
+  if(systemManifest) {
+    validateSystem(systemManifest,release,platform,arch,launcherVersion,channel);
+    if(systemManifest.commit!==manifest.commit || compare(systemManifest.version,manifest.versions.tavern)!==0)
+      throw new Error('完整系统与组件清单不是同一次发布。');
+  }
+  for (const item of [...Object.values(manifest.archives || {}),...Object.values(manifest.modules || {})]) {
+    if(!item.name) continue;
+    if(!systemManifest) {validateAssetIntegrity(release,item.name,item);continue;}
+    // A complete installation consumes system.files, whose logical filenames
+    // map to platform-specific physical assets. Other component-update modules
+    // are not consumed by this flow and remain governed by the root update plan.
+    const installed=systemManifest.files[item.name];
+    if(!installed) continue;
+    if(installed.sha256!==item.sha256 || item.size!==undefined && installed.size!==item.size)
+      throw new Error('完整安装档案与系统实体校验信息不一致。');
+    validateAssetIntegrity(release,installed.asset,installed);
+  }
   return manifest;
 }
 function canonical(value) {
@@ -332,16 +370,17 @@ function validatePlan(plan, {launcherVersion,platform = process.platform,arch = 
   const parsed = JSON.parse(plan.releaseManifestText);
   if (canonical(parsed) !== canonical(plan.releaseManifest) || plan.commit!==plan.releaseManifest.commit
     ||plan.version!==undefined&&plan.version!==parsed.versions?.tavern) throw new Error('固定发布清单与保存的原文不符。');
-  assetUrl(plan.release,'release-manifest.json');
+  releaseManifestAsset(plan.release,{mode:plan.mode,systemManifest:plan.systemManifest,platform,arch});
   if(plan.launcherManifest) require('./launcher-update').validateManifest(plan.launcherManifest,
     {release:plan.release,manifest:plan.releaseManifest,platform,arch});
   if(compare(launcherVersion,plan.releaseManifest.launcherVersion)===-1 && !plan.launcherManifest) throw new Error('固定计划缺少所需启动器的校验信息。');
-  validateUpdate(plan.releaseManifest,plan.release,plan.launcherManifest?.version || launcherVersion);
+  validateUpdate(plan.releaseManifest,plan.release,plan.launcherManifest?.version || launcherVersion,
+    plan.mode==='install' ? {systemManifest:plan.systemManifest,platform,arch,channel} : undefined);
   if(plan.mode==='install' && !plan.systemManifest) throw new Error('完整安装计划缺少系统清单。');
   if (plan.systemManifest) {
     if(plan.systemManifest.commit!==plan.commit) throw new Error('完整系统与组件清单不是同一次发布。');
     validateSystem(plan.systemManifest,plan.release,platform,arch,plan.launcherManifest?.version || launcherVersion,channel);
-    if(plan.systemManifest.files['release-manifest.json'].sha256!==bytesHash(plan.releaseManifestText))throw new Error('完整系统与固定发布清单校验信息不符。');
+    validateInstallManifestText(plan.releaseManifestText,plan.systemManifest);
   }
   return freezePlan(JSON.parse(JSON.stringify(plan)));
 }
@@ -351,11 +390,21 @@ async function selectPlan({fetcher = fetch,signal,launcherVersion,platform = pro
     : await latest(fetcher,signal,channel,tag,{metadataCache,networkPolicy,withEvidence:true}));
   const release = lookup.release;
   if (!accepts(release,channel) || (tag && release.tag_name !== tag)) throw new Error('所选发布与目标渠道不符。');
-  const metadata = await requestJson(assetUrl(release,'release-manifest.json'),fetcher,signal,{withEvidence:true,metadataCache,networkPolicy,channel});
+  if (!['update','install'].includes(mode)) throw new Error('固定发布计划的操作类型无效。');
+  const systemManifest=mode==='install' ? await requestJson(assetUrl(release,`nora-system-${platform}-${arch}.json`),fetcher,signal,
+    {metadataCache,networkPolicy,channel}) : null;
+  // Validate identity and routing before reading the payload. The launcher gate
+  // is checked after inspecting the same target's possible launcher handoff.
+  if(systemManifest) validateSystemDescriptor(systemManifest,release,platform,arch,channel);
+  const descriptor=systemManifest?.files['release-manifest.json'];
+  const metadata = await requestJson(releaseManifestAsset(release,{mode,systemManifest,platform,arch}),fetcher,signal,
+    {withEvidence:true,metadataCache,networkPolicy,channel,...(descriptor ? {conditionIdentity:{sha256:descriptor.sha256,size:descriptor.size}} : {})});
+  if(systemManifest) validateInstallManifestText(metadata.body,systemManifest);
   validateCapabilities(metadata.value);
   const launcherManifest = await require('./launcher-update').inspect({release,manifest:metadata.value,launcherVersion,fetcher,signal,platform,arch,metadataCache,networkPolicy,channel});
-  validateUpdate(metadata.value,release,launcherManifest?.version || launcherVersion);
-  const systemManifest = mode === 'install' ? await systemFor(release,{platform,arch,launcherVersion:launcherManifest?.version || launcherVersion,fetcher,signal,channel,metadataCache,networkPolicy}) : null;
+  validateUpdate(metadata.value,release,launcherManifest?.version || launcherVersion,
+    systemManifest ? {systemManifest,platform,arch,channel} : undefined);
+  if(systemManifest) validateSystem(systemManifest,release,platform,arch,launcherManifest?.version || launcherVersion,channel);
   const plan = {schema:'nora-release-plan/1',mode,tag:release.tag_name,channel,platform,arch,release:releaseSnapshot(release),
     commit:metadata.value.commit,releaseManifest:metadata.value,releaseManifestText:metadata.body,launcherManifest,systemManifest,
     checkedAt:lookup.checkedAt,metadataSource:lookup.source,latestConfirmed:lookup.latestConfirmed};

@@ -30,7 +30,9 @@ async function prepare(options) {
   const selectedPlan = options.selectedPlan ? r.validatePlan(options.selectedPlan,options) : await r.selectPlan(options);
   const release = selectedPlan.release, manifest = selectedPlan.releaseManifest;
   const item = await inspect({ ...options, release, manifest,launcherManifest:selectedPlan.launcherManifest });
-  r.validateUpdate(manifest, release, item?.version || options.launcherVersion);
+  r.validateUpdate(manifest, release, item?.version || options.launcherVersion,
+    selectedPlan.mode==='install' ? {systemManifest:selectedPlan.systemManifest,platform:selectedPlan.platform,
+      arch:selectedPlan.arch,channel:selectedPlan.channel} : undefined);
   if (!item) return { tag: release.tag_name, manifest, launcher: null,releasePlan:selectedPlan };
   const root = path.join(options.cacheRoot, 'launcher-' + item.sha256.slice(0, 16));
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });

@@ -18,6 +18,105 @@ const releases = require(path.join(modules,'releases'));
 const launcher = require(path.join(modules,'launcher-update'));
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
+function publishedFixture() {
+  const directory=path.join(__dirname,'fixtures/published-v2.4.4');
+  const fixture=JSON.parse(require('node:zlib').brotliDecompressSync(fs.readFileSync(path.join(directory,'metadata.json.br'))));
+  const provenance=JSON.parse(fs.readFileSync(path.join(directory,'provenance.json'),'utf8'));
+  assert.equal(provenance.consumer.path,'deployment/update/releases.js');
+  assert.equal(provenance.sourceCommit,'2b2e34c10348527fc8b30d2e73bd496106a7415c');
+  for(const item of provenance.files) {
+    const asset=fixture.release.assets.find(asset=>asset.name===item.name),text=fixture.files[item.name];
+    assert.equal(sha(text),item.sha256);assert.equal(Buffer.byteLength(text),item.size);
+    assert.equal(asset.digest,`sha256:${item.sha256}`);assert.equal(asset.size,item.size);
+    assert.equal(asset.browser_download_url,item.url);
+  }
+  const requests=[];
+  const fetcher=async url=>{
+    requests.push(url);
+    const asset=fixture.release.assets.find(asset=>asset.browser_download_url===url);
+    assert.ok(asset&&fixture.files[asset.name],`Only captured public metadata may be read: ${url}`);
+    return new Response(fixture.files[asset.name],{headers:{'Content-Type':'application/json'}});
+  };
+  return {...fixture,requests,options:{fetcher,selectedRelease:fixture.release,launcherVersion:'2.1.1',tag:'v2.4.4'}};
+}
+
+for(const [platform,arch] of [['win32','x64'],['darwin','x64'],['darwin','arm64']]) {
+  test(`published v2.4.4 ${platform}-${arch} installation seals the exact platform manifest, and update keeps the root`,async t=>{
+    const fixture=publishedFixture(),options={...fixture.options,platform,arch};
+    const installed=await releases.selectPlan({...options,mode:'install'});
+    const descriptor=installed.systemManifest.files['release-manifest.json'];
+    assert.equal(installed.releaseManifestText,fixture.files[descriptor.asset]);
+    assert.equal(sha(installed.releaseManifestText),descriptor.sha256);
+    assert.equal(Buffer.byteLength(installed.releaseManifestText),descriptor.size);
+    assert.notEqual(installed.releaseManifestText,fixture.files['release-manifest.json']);
+    assert.deepEqual(fixture.requests.map(url=>url.split('/').at(-1)),[`nora-system-${platform}-${arch}.json`,descriptor.asset]);
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-published-plan-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const operationDirectory=path.join(root,'operations',crypto.randomUUID());fs.mkdirSync(operationDirectory,{recursive:true});
+    const saved=releases.sealPlan(installed,{...options,operationDirectory,assertOwner:()=>{}});
+    assert.equal(fs.readFileSync(path.join(operationDirectory,saved.manifestRef.file),'utf8'),fixture.files[descriptor.asset]);
+    assert.equal(releases.validatePlan(saved,{...options,operationDirectory}).planId,installed.planId);
+    fixture.requests.length=0;
+    const updated=await releases.selectPlan({...options,mode:'update'});
+    assert.equal(updated.releaseManifestText,fixture.files['release-manifest.json']);
+    assert.equal(updated.systemManifest,null);
+    assert.deepEqual(fixture.requests.map(url=>url.split('/').at(-1)),['release-manifest.json']);
+  });
+}
+
+function publishedSharedFixture() {
+  const fixture=publishedFixture(),minimum='2.1.2',references=[];
+  for(const name of ['release-manifest.json',...['darwin-arm64','darwin-x64','win32-x64'].map(target=>`${target}-release-manifest.json`)]) {
+    const manifest=JSON.parse(fixture.files[name]);
+    manifest.launcherVersion=minimum;manifest.bootstrap.minimumLauncherVersion=minimum;
+    // Preserve every original platform archive/module hash: this is a routing
+    // regression, not a conversion of platform payloads into root payloads.
+    fixture.files[name]=JSON.stringify(manifest);
+  }
+  for(const target of ['darwin-arm64','darwin-x64','win32-x64']) {
+    const name=`nora-system-${target}.json`,system=JSON.parse(fixture.files[name]);
+    system.minimumLauncherVersion=minimum;system.launcherVersion=minimum;
+    const descriptor=system.files['release-manifest.json'];
+    descriptor.sha256=sha(fixture.files[descriptor.asset]);descriptor.size=Buffer.byteLength(fixture.files[descriptor.asset]);
+    const [,environment]=Object.entries(system.files).find(([name])=>/^nora-hermes-runtime-.+\.(?:tar\.gz|zip)$/.test(name));
+    references.push({name:environment.asset,asset_release_tag:'v2.4.3',size:environment.size,sha256:environment.sha256});
+    fixture.files[name]=JSON.stringify(system);
+  }
+  fixture.files['release-assets.json']=JSON.stringify({schema:'nora-release-assets/1',repository:'LoveMaker-art/noras-tavern',
+    tag:'v2.4.4',commit:JSON.parse(fixture.files['release-manifest.json']).commit,minimumLauncherVersion:minimum,assets:references});
+  fixture.release.assets=fixture.release.assets.filter(asset=>!references.some(item=>item.name===asset.name));
+  for(const [name,text] of Object.entries(fixture.files)) {
+    const asset={name,state:'uploaded',size:Buffer.byteLength(text),digest:`sha256:${sha(text)}`,
+      browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/${name}`};
+    const index=fixture.release.assets.findIndex(item=>item.name===name);
+    if(index===-1)fixture.release.assets.push(asset);else fixture.release.assets[index]=asset;
+  }
+  const fetcher=async url=>url.startsWith('https://api.github.com/') ? Response.json(fixture.release) : fixture.options.fetcher(url);
+  return {...fixture,options:{...fixture.options,selectedRelease:undefined,fetcher,launcherVersion:minimum}};
+}
+
+for(const [platform,arch] of [['win32','x64'],['darwin','x64'],['darwin','arm64']])
+  test(`public-derived shared ${platform}-${arch} installation validates the physical system mapping and retains all platform archive hashes`,async()=>{
+    const fixture=publishedSharedFixture(),options={...fixture.options,platform,arch},selected=await releases.selectPlan({...options,mode:'install'});
+    const manifestName=`${platform}-${arch}-release-manifest.json`;
+    assert.equal(selected.releaseManifestText,fixture.files[manifestName]);
+    const prepared=await launcher.prepare({...options,selectedPlan:selected});
+    assert.equal(prepared.releasePlan.planId,selected.planId);assert.equal(prepared.launcher,null);
+    const updated=await releases.selectPlan({...options,mode:'update'});
+    assert.equal(updated.releaseManifestText,fixture.files['release-manifest.json']);
+  });
+
+test('shared install mapping and root update retain strict checks for the bytes each flow consumes',async()=>{
+  const fixture=publishedSharedFixture(),platform='darwin',arch='x64',options={...fixture.options,platform,arch};
+  const installed=await releases.selectPlan({...options,mode:'install'}),updated=await releases.selectPlan({...options,mode:'update'});
+  const payload=JSON.parse(installed.releaseManifestText);
+  payload.archives.app.sha256=updated.releaseManifest.archives.app.sha256;
+  assert.throws(()=>releases.validateUpdate(payload,installed.release,'2.1.2',{systemManifest:installed.systemManifest,platform,arch}),/安装档案/);
+  const changed=JSON.parse(JSON.stringify(updated.releaseManifest));changed.modules.updater.sha256='0'.repeat(64);
+  assert.throws(()=>releases.validateUpdate(changed,updated.release,'2.1.2'),/校验信息/);
+  const mismatched=JSON.parse(JSON.stringify(installed.systemManifest));mismatched.commit='a'.repeat(40);
+  assert.throws(()=>releases.validateUpdate(installed.releaseManifest,installed.release,'2.1.2',{systemManifest:mismatched,platform,arch}),/提交|同一次发布/);
+});
+
 function releaseFixture(t) {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-fixed-release-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -81,8 +180,95 @@ function fullInstallFixture(t) {
     system.files[name]={asset:name,sha256:sha(value),size:Buffer.byteLength(value)};
   f.bytes['nora-system-win32-x64.json']=JSON.stringify(system);
   f.release.assets=Object.keys(f.bytes).map(name=>({name,browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/${name}`,size:Buffer.byteLength(f.bytes[name])}));
-  return f;
+  return {...f,system};
 }
+
+function refreshFullFixture(f) {
+  f.bytes['nora-system-win32-x64.json']=JSON.stringify(f.system);
+  f.release.assets=Object.entries(f.bytes).map(([name,bytes])=>({name,state:'uploaded',size:Buffer.byteLength(bytes),
+    digest:`sha256:${sha(bytes)}`,browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/${name}`}));
+}
+
+function platformInstallFixture(t) {
+  const f=fullInstallFixture(t),name='win32-x64-release-manifest.json';
+  f.bytes[name]=JSON.stringify({...f.manifest,platformPayload:'win32-x64'})+'\n';
+  f.system.files['release-manifest.json']={asset:name,sha256:sha(f.bytes[name]),size:Buffer.byteLength(f.bytes[name])};
+  refreshFullFixture(f);return f;
+}
+
+test('platform installation consumes its sealed manifest without fetching metadata again',async t=>{
+  const f=platformInstallFixture(t),selectedPlan=await releases.selectPlan({...f.options,mode:'install'});
+  const forbidden=new Set(['release-manifest.json','win32-x64-release-manifest.json','nora-system-win32-x64.json','nora-launcher-win32-x64.json']);
+  const directory=await releases.prepareInstall({...f.options,bundledRoot:path.join(f.root,'no-bundle'),selectedPlan,
+    fetcher:async url=>{assert.ok(!url.includes('api.github.com')&&!forbidden.has(url.split('/').at(-1)));return f.fetcher(url);}});
+  assert.equal(fs.readFileSync(path.join(directory,'release-manifest.json'),'utf8'),selectedPlan.releaseManifestText);
+  assert.notEqual(selectedPlan.releaseManifestText,f.bytes['release-manifest.json']);
+});
+
+test('system identity and control-asset routing reject substitution before reading the install payload',async t=>{
+  const cases=[
+    ['foreign platform',f=>{f.system.platform='darwin';}],
+    ['wrong channel',f=>{f.system.channel='beta';}],
+    ['another platform manifest',f=>{f.system.files['release-manifest.json'].asset='darwin-x64-release-manifest.json';f.bytes['darwin-x64-release-manifest.json']=f.bytes['win32-x64-release-manifest.json'];}],
+    ['arbitrary filename',f=>{f.system.files['release-manifest.json'].asset='other.json';f.bytes['other.json']=f.bytes['win32-x64-release-manifest.json'];}],
+    ['foreign repository',(_f,asset)=>{asset.browser_download_url=asset.browser_download_url.replace('LoveMaker-art/noras-tavern','other/repository');}],
+    ['historical tag',(_f,asset)=>{asset.browser_download_url=asset.browser_download_url.replace('v2.4.2','v2.4.1');}],
+    ['duplicate control asset',(f,asset)=>{f.release.assets.push({...asset});}],
+    ['reference annotation',(_f,asset)=>{asset.asset_release_tag='v2.4.1';}],
+  ];
+  for(const [name,change] of cases) await t.test(name,async t=>{
+    const f=platformInstallFixture(t),requests=[];
+    if(['foreign repository','historical tag','duplicate control asset','reference annotation'].includes(name))
+      change(f,f.release.assets.find(asset=>asset.name==='win32-x64-release-manifest.json'));
+    else {change(f);refreshFullFixture(f);}
+    await assert.rejects(releases.selectPlan({...f.options,mode:'install',fetcher:async url=>{requests.push(url);return f.fetcher(url);}}));
+    assert.deepEqual(requests.map(url=>url.split('/').at(-1)),['latest','nora-system-win32-x64.json']);
+    assert.equal(fs.existsSync(f.options.cacheRoot),false);
+  });
+});
+
+test('install manifest hash and size are checked before inspecting or downloading the launcher',async t=>{
+  for(const kind of ['hash','size']) await t.test(kind,async t=>{
+    const f=platformInstallFixture(t),requests=[];
+    if(kind==='hash')f.bytes['win32-x64-release-manifest.json']+=' ';
+    else f.system.files['release-manifest.json'].size++;
+    refreshFullFixture(f);
+    await assert.rejects(releases.selectPlan({...f.options,mode:'install',fetcher:async url=>{requests.push(url);return f.fetcher(url);}}),/固定发布清单校验/);
+    assert.deepEqual(requests.map(url=>url.split('/').at(-1)),['latest','nora-system-win32-x64.json','win32-x64-release-manifest.json']);
+  });
+});
+
+test('an installation can seal a compatible launcher handoff before applying the system minimum',async t=>{
+  const f=fullInstallFixture(t);
+  delete f.bytes[f.item.asset];f.item.asset='Nora-Tavern-Launcher-2.1.2-win32-x64-update.zip';f.item.version='2.1.2';
+  f.bytes[f.item.asset]='archive';f.bytes['nora-launcher-win32-x64.json']=JSON.stringify(f.item);
+  f.manifest.launcherVersion='2.1.2';f.manifest.bootstrap.minimumLauncherVersion='2.1.2';
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  f.system.minimumLauncherVersion='2.1.2';
+  f.system.files['release-manifest.json']={asset:'release-manifest.json',size:Buffer.byteLength(f.bytes['release-manifest.json']),sha256:sha(f.bytes['release-manifest.json'])};
+  refreshFullFixture(f);
+  const selected=await releases.selectPlan({...f.options,launcherVersion:'2.1.1',mode:'install'});
+  assert.equal(selected.launcherManifest.version,'2.1.2');assert.equal(selected.systemManifest.minimumLauncherVersion,'2.1.2');
+  assert.equal(selected.systemManifest.files['release-manifest.json'].sha256,sha(selected.releaseManifestText));
+});
+
+test('shared assets keep the platform install manifest current while resolving older environment bytes',async t=>{
+  const f=platformInstallFixture(t),old='v2.4.1',minimum='2.1.2';
+  f.manifest.bootstrap.minimumLauncherVersion=minimum;
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  f.bytes['win32-x64-release-manifest.json']=JSON.stringify({...f.manifest,platformPayload:'win32-x64'})+'\n';
+  f.system.minimumLauncherVersion=minimum;
+  f.system.files['release-manifest.json']={asset:'win32-x64-release-manifest.json',sha256:sha(f.bytes['win32-x64-release-manifest.json']),size:Buffer.byteLength(f.bytes['win32-x64-release-manifest.json'])};
+  f.bytes['release-assets.json']=JSON.stringify({schema:'nora-release-assets/1',repository:'LoveMaker-art/noras-tavern',tag:f.release.tag_name,
+    commit:f.manifest.commit,minimumLauncherVersion:minimum,assets:[{name:'runtime.tar.gz',asset_release_tag:old,size:7,sha256:sha('runtime')}]});
+  refreshFullFixture(f);f.release.assets=f.release.assets.filter(asset=>asset.name!=='runtime.tar.gz');
+  const selected=await releases.selectPlan({...f.options,launcherVersion:minimum,mode:'install'});
+  assert.equal(selected.releaseManifestText,f.bytes['win32-x64-release-manifest.json']);
+  assert.equal(releases.assetUrl(selected.release,'runtime.tar.gz'),'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.1/runtime.tar.gz');
+  await assert.rejects(releases.selectPlan({...f.options,launcherVersion:'2.1.1',mode:'install'}),/升级启动器/);
+  const updated=await releases.selectPlan({...f.options,launcherVersion:minimum,mode:'update'});
+  assert.equal(updated.releaseManifestText,f.bytes['release-manifest.json']);
+});
 
 test('full installation reuses its selected system plan even while release queries are unavailable',async t=>{
   const f=fullInstallFixture(t);
@@ -135,14 +321,14 @@ test('release and manifest selection share one total metadata budget',async t=>{
 });
 
 test('first installation shares the release lookup budget with manifest selection before choosing a plan',async t=>{
-  const f=releaseFixture(t),requests=[];let clock=1000,selected=0;
+  const f=fullInstallFixture(t),requests=[];let clock=1000,selected=0;
   await assert.rejects(releases.prepareInstall({...f.options,networkPolicy:{now:()=>clock,totalBudgetMs:100,backoffMs:[0,0]},
     onPlan:async()=>{selected++;},fetcher:async(url,options)=>{
       requests.push(url);clock+=60;return f.fetcher(url,options);
     }}),error=>error.code==='TIMEOUT');
   assert.equal(selected,0,'budget exhaustion cannot freeze an incomplete plan');
   assert.equal(requests.length,2,'the latest lookup must not grant manifest selection another full budget');
-  assert.ok(requests[0].endsWith('/releases/latest'));assert.ok(requests[1].endsWith('/release-manifest.json'));
+  assert.ok(requests[0].endsWith('/releases/latest'));assert.ok(requests[1].endsWith('/nora-system-win32-x64.json'));
   assert.equal(fs.existsSync(f.options.cacheRoot),false,'no asset transfer starts without a complete fixed plan');
 });
 

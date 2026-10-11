@@ -137,6 +137,8 @@ function createMetadataCache({file,ttlMs = 30000,now = Date.now} = {}) {
   },set(key,value){
     entries.delete(key);entries.set(key,{...value,sha256:digest(value.body)});
     persist();
+  },delete(key){
+    entries.delete(key);persist();
   },cooldown(url){
     const origin=new URL(url).origin,value=cooldowns.get(origin);
     if(![403,429].includes(value?.status)||!Number.isSafeInteger(value?.until)||value.until<=now()) {cooldowns.delete(origin);return null;}
@@ -218,17 +220,32 @@ async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='sta
   const budget=Math.min(policy.totalBudgetMs ?? 100000,(policy.deadlineAt ?? Infinity)-(policy.now || Date.now)());
   if(budget<=0) throw launcherError('发布请求已超过有限等待预算。',{code:'TIMEOUT',source:'release_service',site:'release.request'});
   const requestSignal=AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout(Math.ceil(budget))]);
+  const requestDeadline=Math.min(policy.deadlineAt ?? Infinity,(policy.now || Date.now)()+budget);
   let response;
   try {response=await fetchRead(fetcher,url,{headers:requestHeaders,signal:requestSignal},policy);}
   catch(error) {await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
   try {validateSourceResponse(source,response);} catch(error) {await response.body?.cancel().catch(()=>{});throw error;}
-  const responseSource=safeSource(response.url || url);
+  let responseSource=safeSource(response.url || url);
   if(response.status===304) {
-    if(!cached?.etag || cached.responseSource!==responseSource || response.headers.get('etag') && response.headers.get('etag')!==cached.etag)
-      throw launcherError('发布服务返回了无法对应缓存的条件响应。',{code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});
-    const value={...cached,checkedAt:new Date(now()).toISOString()};
-    try {metadataCache.set(key,value);} catch {}
-    return {...value,value:JSON.parse(value.body),source:'revalidated',latestConfirmed:true};
+    if(cached?.etag && requestHeaders.get('If-None-Match')===cached.etag && cached.responseSource===responseSource
+      && (!response.headers.get('etag') || response.headers.get('etag')===cached.etag)) {
+      const value={...cached,checkedAt:new Date(now()).toISOString()};
+      try {metadataCache.set(key,value);} catch {}
+      return {...value,value:JSON.parse(value.body),source:'revalidated',latestConfirmed:true};
+    }
+    // Never assign an unmatched 304 to an old body. Remove this representation
+    // and make one unconditional read of the same checked source within the
+    // original request budget; it still goes through all source/body validators.
+    try {metadataCache?.delete?.(key);} catch {}
+    await response.body?.cancel().catch(()=>{});
+    requestHeaders.delete('If-None-Match');
+    try {response=await fetchRead(fetcher,url,{headers:requestHeaders,signal:requestSignal},
+      {...policy,deadlineAt:requestDeadline,maxAttempts:1});}
+    catch(error){await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
+    try {validateSourceResponse(source,response);} catch(error){await response.body?.cancel().catch(()=>{});throw error;}
+    responseSource=safeSource(response.url || url);
+    if(response.status===304)throw launcherError('发布服务返回了无法对应缓存的条件响应。',
+      {code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});
   }
   if(!response.ok){
     const evidence=responseEvidence(response,now());
@@ -391,11 +408,82 @@ async function downloadFromSource({url,target,identity,fetcher,signal,onEvent=()
   } finally {clearTimeout(idleTimer);if(response?.body && !response.bodyUsed) await response.body.cancel().catch(()=>{});}
 }
 
+// Electron net.fetch cancels manual redirects instead of exposing their 3xx
+// response. Keep Chromium's session/proxy/TLS stack, but expose one net.request
+// hop so readSource can validate the destination before issuing the next one.
+function chromiumManualRead(net,url,options) {
+  options.signal?.throwIfAborted();
+  const method=String(options.method || 'GET').toUpperCase();
+  if(!['GET','HEAD'].includes(method) || options.body!=null)throw new TypeError('发布手动跳转仅支持只读请求。');
+  return new Promise((resolve,reject)=>{
+    const request=net.request({url:String(url),method,redirect:'manual',
+      headers:Object.fromEntries(new Headers(options.headers)),credentials:'omit',
+      cache:'no-store',bypassCustomProtocolHandlers:true});
+    let settled=false,closedIntentionally=false,incoming;
+    const cleanup=()=>options.signal?.removeEventListener('abort',abort);
+    const fail=error=>{
+      if(closedIntentionally)return;
+      if(!settled){settled=true;cleanup();reject(error);}
+      else if(incoming && !incoming.destroyed)incoming.destroy(error);
+    };
+    const abort=()=>{
+      fail(options.signal.reason || new DOMException('发布请求已取消','AbortError'));
+      request.abort();
+    };
+    const stopCompleted=()=>{closedIntentionally=true;cleanup();request.abort();};
+    const responseHeaders=raw=>{
+      const headers=new Headers();
+      for(const [name,value] of Object.entries(raw))for(const item of Array.isArray(value)?value:[value])headers.append(name,item);
+      return headers;
+    };
+    const complete=(body,status,headers)=>{
+      const response=new Response(body,{status,headers});
+      Object.defineProperty(response,'url',{value:String(url)});
+      settled=true;resolve(response);
+    };
+    request.on('error',fail);
+    request.once('abort',()=>fail(options.signal?.reason || new DOMException('发布请求已取消','AbortError')));
+    request.once('redirect',(status,_method,destination,raw)=>{
+      try {
+        const headers=responseHeaders(raw);
+        if(!headers.has('location'))headers.set('location',destination);
+        complete(null,status,headers);
+      } catch(error){fail(error);}
+      // Never follow here. The existing source validator owns every next hop.
+      stopCompleted();
+    });
+    request.once('response',message=>{
+      incoming=message;
+      // Teardown may deliver a late native error even for a bodyless response,
+      // or before a Response could be constructed. Keep that event handled.
+      incoming.on('error',()=>{});
+      try {
+        incoming.once('end',()=>{closedIntentionally=true;cleanup();});
+        incoming.once('close',()=>{cleanup();if(!incoming.readableEnded)stopCompleted();});
+        if(method==='HEAD' || [204,205,304].includes(incoming.statusCode)) {
+          complete(null,incoming.statusCode,responseHeaders(incoming.headers));
+          stopCompleted();return;
+        }
+        // Electron 38 IncomingMessage is a Node Readable with native loader
+        // backpressure. Count bytes in the Web stream queue, rather than letting
+        // its default chunk-count strategy buffer thousands of large chunks.
+        const body=Readable.toWeb(incoming,{strategy:{highWaterMark:incoming.readableHighWaterMark,
+          size:chunk=>chunk.byteLength}});
+        complete(body,incoming.statusCode,responseHeaders(incoming.headers));
+      } catch(error){fail(error);stopCompleted();}
+    });
+    options.signal?.addEventListener('abort',abort,{once:true});
+    if(options.signal?.aborted){abort();return;}
+    request.end();
+  });
+}
+
 function createReleaseNetwork({ app, net, diagnostics, onRetry = () => {}, policy = {},routeFor }) {
   async function readOnce(url,options={}){
     await app.whenReady();
     const parsed = new URL(url);
     if (parsed.protocol !== 'https:') throw new Error('发布资源必须使用 HTTPS。');
+    if(options.redirect==='manual')return chromiumManualRead(net,url,options);
     return net.fetch(url,{...options,credentials:'omit',cache:'no-store',bypassCustomProtocolHandlers:true});
   }
   async function fetchRelease(url, options = {}) {return fetchRead(readOnce,url,options,{...policy,engine:'chromium',diagnostics,onRetry});}

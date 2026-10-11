@@ -1,0 +1,55 @@
+{
+  "schema": 1,
+  "description": "Public published release metadata captured on 2026-10-11; exact seven JSON response bodies. No installation logs or user data.",
+  "repository": "LoveMaker-art/noras-tavern",
+  "tag": "v2.4.4",
+  "sourceCommit": "2b2e34c10348527fc8b30d2e73bd496106a7415c",
+  "consumer": {
+    "path": "deployment/update/releases.js",
+    "sha256": "676e4c99ad76555355f324b2ccbc304baa52d00ebf922e28e3890c912b38f0c7"
+  },
+  "files": [
+    {
+      "name": "darwin-arm64-release-manifest.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/darwin-arm64-release-manifest.json",
+      "size": 569341,
+      "sha256": "236ac8eb9a7c177d3f1516f7fcc5a8985611980045f95a15d9057c6563ee580f"
+    },
+    {
+      "name": "darwin-x64-release-manifest.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/darwin-x64-release-manifest.json",
+      "size": 569333,
+      "sha256": "f1af71e199f1592716180b943e7db364fbb6ac5a20e4bcd5869df1c1dd74669a"
+    },
+    {
+      "name": "nora-system-darwin-arm64.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/nora-system-darwin-arm64.json",
+      "size": 3722,
+      "sha256": "2d94f238621162420c00fb049005435bc68a4645e2590c24ab5f0e85a82857f3"
+    },
+    {
+      "name": "nora-system-darwin-x64.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/nora-system-darwin-x64.json",
+      "size": 3688,
+      "sha256": "cd977481c0aa16c8cc551c4b28aa4961807da50e9764667f592395ae94603334"
+    },
+    {
+      "name": "nora-system-win32-x64.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/nora-system-win32-x64.json",
+      "size": 3665,
+      "sha256": "7fadb7590593b3541e7351b02fbf7eb5de713f52aa37e7daec3bc80a67d6aed4"
+    },
+    {
+      "name": "release-manifest.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/release-manifest.json",
+      "size": 569669,
+      "sha256": "ad3f54b2c1a9321d5460169925d2c8cda4fb21e1e1b9d293e7cc1a78353b0778"
+    },
+    {
+      "name": "win32-x64-release-manifest.json",
+      "url": "https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/win32-x64-release-manifest.json",
+      "size": 569326,
+      "sha256": "96ef05f38d18f316a10c3cfdbabe66479d03ac552ec55f07232ff65a4636503b"
+    }
+  ]
+}

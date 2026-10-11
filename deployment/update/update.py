@@ -1110,6 +1110,7 @@ def install(args):
                         stopped=managed_lifecycle("stop", hermes_home, install_root, version)
                         helpers.stop_install_runtime(install_root)
                         journal.seal_offline(stopped)
+                        for diagnostic in journal.metadata_diagnostics():log('[metadata-check] '+diagnostic)
                         journal.plan["phase"] = "stopped"
                         journal.save()
                     elif service:
@@ -1137,6 +1138,7 @@ def install(args):
                 if managed:
                     journal.mark_metadata([hermes_home/name for name in ('SOUL.md','SOUL.nora-tavern.example.md')])
                     helpers.install_soul(hermes_home, source, replace=False, dedicated=True)
+                    journal.finish_metadata([hermes_home/name for name in ('SOUL.md','SOUL.nora-tavern.example.md')])
                 for name, prepared, target in swaps:
                     saved = backup / "trees" / name
                     if journal is not None:
@@ -1168,25 +1170,31 @@ def install(args):
                 if agents_changed:
                     if journal is not None:journal.mark_metadata([hermes_home/'AGENTS.md',hermes_home/'AGENTS.md.bak'])
                     install_agents(hermes_home, desired_agents)
+                    if journal is not None:journal.finish_metadata([hermes_home/'AGENTS.md',hermes_home/'AGENTS.md.bak'])
                 if config_changed:
                     if journal is not None:journal.mark_metadata([hermes_home/'config.yaml'])
                     atomic(hermes_home / "config.yaml", mcp_config, mode=0o600)
+                    if journal is not None:journal.finish_metadata([hermes_home/'config.yaml'])
                 if managed:
                     log("更新诺拉技能、定时任务并核对当前实例")
                     journal.mark_metadata([hermes_home/'clawchat-skills'])
                     managed.seed_clawchat_skills(hermes_home, sys.executable, dict(os.environ))
+                    journal.finish_metadata([hermes_home/'clawchat-skills'])
                     journal.mark_metadata([hermes_home/'cron/jobs.json']+[hermes_home/'scripts'/name for name in UPDATE_CHECK_FILES])
                     update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
+                    journal.finish_metadata([hermes_home/'cron/jobs.json']+[hermes_home/'scripts'/name for name in UPDATE_CHECK_FILES])
                     if update_check.get("status") != "installed":
                         raise RuntimeError("诺拉更新提醒任务未成功注册")
                     journal.mark_metadata([hermes_home/'nora-installation.json'])
                     managed.record_files_ready(hermes_home)
+                    journal.finish_metadata([hermes_home/'nora-installation.json'])
                 if app_changed:
                     if journal is not None:journal.mark_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
                     json_write(
                         install_root / "tavern-state/native-runtime/dependencies.json",
                         dependency_marker(install_root / "apps/tavern-runtime"),
                     )
+                    if journal is not None:journal.finish_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
                 if runtime_changed:
                     log("启动新版 Tavern")
                     runtime = install_runtime(
@@ -1216,6 +1224,7 @@ def install(args):
                     managed.record_initialization(hermes_home, install_root, manifest, proof)
                     if setup_completed:
                         managed.mark_setup_complete(install_root)
+                    journal.finish_metadata([update_root/'nora-system.json'])
                 elif ops_changed:
                     try:
                         update_check = install_update_check(hermes_home, install_root / "apps/tavern-ops")
@@ -1243,6 +1252,7 @@ def install(args):
                 if journal is not None:journal.mark_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
+                if journal is not None:journal.finish_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
                 verified_state = managed_lifecycle("verify", hermes_home, install_root, version) if managed else None
                 if managed and state_snapshot:
                     verify_preserved_worlds(install_root / "apps/tavern-runtime",

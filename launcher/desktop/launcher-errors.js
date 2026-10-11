@@ -83,6 +83,9 @@ function describeError(error, context = {}) {
   else if (code === 'RESPONSE_TOO_LARGE') category = 'response_too_large';
   else if (code === 'VERIFICATION_FAILED') category = 'verification_failed';
   else if (code === 'RENDERER_GONE') category = 'renderer_gone';
+  // Native OS statuses can exceed the receiver's exit_code range. Keep that
+  // wire field bounded while retaining an explicitly reported process failure.
+  else if (chain.some(error => error.code === 'PROCESS_EXIT')) category = 'process_failed';
   else if (exit !== null) category = 'process_failed';
   return { error_code: category, error_source: source, error_site: site,
     system_code: code, http_status: status, exit_code: exit,

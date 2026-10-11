@@ -56,7 +56,24 @@ async function verifyNativeAcceptance(delivery, acceptance, commit, selected = p
       for (const [name, hash] of Object.entries(value.moduleHashes)) assert.equal(hash, payload.artifacts['ops/installer/desktop/' + name], `APP module differs: ${name}`);
       return value;
     };
-    app('nora-packaged-app-acceptance.json');
+    const packaged = app('nora-packaged-app-acceptance.json');
+    const network = oneReport(reports, 'nora-electron-network-acceptance.json');
+    assert.equal(network.schema, 'nora-electron-network/1');
+    assert.equal(network.scope, 'packaged-network-modules-in-native-chromium');
+    assert.equal(network.platform, platform); assert.equal(network.arch, arch);
+    assert.equal(network.actualChromiumNet, true); assert.equal(network.windowCount, 0);
+    assert.equal(network.versions?.electron, packaged.versions.electron);
+    for (const key of ['manualRedirect', 'sourceFallback', 'untrustedRedirectRefused', 'abort', 'sessionProxy', 'streaming', 'deadline'])
+      assert.equal(network.assertions?.[key], true, `Native network gate failed: ${key}`);
+    for (const field of ['executable', 'asar']) {
+      assert.match(packaged[field]?.sha256 || '', /^[a-f0-9]{64}$/);
+      assert.equal(network[field]?.sha256, packaged[field].sha256, `Native network ${field} differs from APP`);
+    }
+    assert.equal(network.runtimeExecutable?.sha256, packaged.executable.sha256, 'Native network runtime executable differs');
+    const networkModules = ['release-network.js', 'release-sources.js', 'release-sources.json', 'launcher-errors.js'];
+    assert.deepEqual(Object.keys(network.moduleHashes || {}).sort(), networkModules.sort(), 'Native network module closure differs');
+    for (const name of networkModules)
+      assert.equal(network.moduleHashes[name], packaged.moduleHashes[name], `Native network module differs: ${name}`);
     if (platform === 'win32') {
       app('nora-installed-app-acceptance.json'); const setup = oneReport(reports, 'nora-installed-setup-acceptance.json');
       assert.equal(setup.schema, 'nora-installed-setup/1'); assert.equal(setup.exitCode, 0); assert.equal(setup.autoLaunch, false);
@@ -93,7 +110,8 @@ async function verifyNativeAcceptance(delivery, acceptance, commit, selected = p
         assert.equal(historical[0].update, 'verified-content-transition'); assert.equal(historical[0].userConfigurationDigest, fresh[0].userConfigurationDigest);
       }
     }
-    result[target] = { outcome: 'passed', appManifestSha256: systemHash, payloadManifestSha256: payloadHash, harnessReports: harness.length };
+    result[target] = { outcome: 'passed', appManifestSha256: systemHash, payloadManifestSha256: payloadHash,
+      nativeNetwork:network.scope, harnessReports: harness.length };
   }
   return result;
 }

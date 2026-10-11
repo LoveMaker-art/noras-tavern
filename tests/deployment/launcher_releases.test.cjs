@@ -162,7 +162,7 @@ test('first install pins latest once and downloads only the component that diffe
   assert.equal(fs.readFileSync(path.join(target,'nora-tavern-app.tar.gz'),'utf8'),'app');
   assert.equal(f.requested.filter(url => url.endsWith('/releases/latest')).length,1);
   assert.deepEqual(f.requested.filter(url => url.includes('/download/') && !url.endsWith('nora-system-darwin-arm64.json')).map(url=>url.split('/').at(-1)),
-    ['release-manifest.json','darwin-arm64-nora-tavern-app.tar.gz']);
+    ['darwin-arm64-release-manifest.json','darwin-arm64-nora-tavern-app.tar.gz']);
   assert.equal(confirmations,0);
 });
 test('first install awaits one immutable selected plan before starting payload transfer', async t => {

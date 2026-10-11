@@ -2,11 +2,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const os = require('node:os');
 const { spawnSync } = require('node:child_process');
 
 const repository = path.resolve(__dirname, '../..');
 const appAssertions = ['actualElectron', 'nativeDependencyComplete',
   'allFlatResourceHashesMatchCandidate', 'jsPythonReceiptAgree', 'arbitraryCliRefusedBeforeOperation'];
+const networkModules = ['release-network.js', 'release-sources.js', 'launcher-errors.js', 'release-sources.json'];
+const networkAssertions = ['manualRedirect', 'sourceFallback', 'untrustedRedirectRefused', 'abort', 'sessionProxy', 'streaming', 'deadline'];
 const read = file => JSON.parse(fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 const sha = file => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 
@@ -98,6 +101,68 @@ function checkApp({ release = selectRelease(), installed, python = process.env.N
   verifyAppReport(report, { ...selected, launcher, platform });
   console.log(`PASS: completed actual ${installed ? 'installed' : 'unpacked'} APP check with fresh complete evidence`);
 }
+function verifyNetworkReport(file, {executable, asar, launcher, platform = process.platform, arch = process.arch}) {
+  const value = read(regular(file));
+  assert.equal(value.schema, 'nora-electron-network/1');
+  assert.equal(value.scope, 'packaged-network-modules-in-native-chromium');
+  assert.equal(value.platform, platform);
+  assert.equal(value.arch, arch);
+  assert.ok(value.versions?.electron, 'Network verification must run Chromium');
+  assert.equal(value.actualChromiumNet, true);
+  assert.equal(value.windowCount, 0);
+  for (const name of networkAssertions) assert.equal(value.assertions?.[name], true, `Missing real network proof: ${name}`);
+  assert.equal(fs.realpathSync(value.executable.path), fs.realpathSync(executable));
+  assert.equal(value.executable.sha256, sha(executable));
+  assert.equal(value.runtimeExecutable.sha256, value.executable.sha256, 'The isolated native runtime must have identical executable bytes');
+  assert.equal(fs.realpathSync(value.asar.path), fs.realpathSync(asar));
+  assert.equal(value.asar.sha256, sha(asar));
+  assert.deepEqual(Object.keys(value.moduleHashes).sort(), [...networkModules].sort());
+  for (const name of networkModules) assert.equal(value.moduleHashes[name], sha(path.join(launcher, 'desktop', name)));
+  return value;
+}
+function checkNetwork({release = selectRelease(), installed, report, platform = process.platform}) {
+  const launcher = path.resolve(release, 'nora-tavern-launcher');
+  const selected = selectApplication(path.join(launcher, 'desktop/dist'), platform);
+  if (installed) {
+    assert.equal(platform, 'win32');
+    selected.executable = regular(path.join(installed, path.basename(selected.executable)));
+    selected.asar = regular(path.join(installed, 'resources/app.asar'));
+  }
+  report = path.resolve(report || path.join(process.env.RUNNER_TEMP || os.tmpdir(),
+    installed ? 'nora-installed-network-acceptance.json' : 'nora-electron-network-acceptance.json'));
+  assert.ok(!fs.existsSync(report), `Refusing a stale network report: ${report}`);
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-candidate-network-'));
+  try {
+    const source = platform === 'darwin' ? path.dirname(path.dirname(path.dirname(selected.executable))) : path.dirname(selected.executable);
+    const resources = path.dirname(selected.asar);
+    const runtime = path.join(directory, path.basename(source));
+    // The copied runtime has the candidate's exact executable/framework bytes.
+    // Its isolated app entry runs only the fixture; product code is required
+    // directly from the original immutable ASAR, never rewritten or extracted.
+    fs.cpSync(source, runtime, {recursive: true, dereference: false,
+      filter: file => file === resources || !file.startsWith(resources + path.sep)});
+    const runtimeResources = path.join(runtime, path.relative(source, resources));
+    const fixtureApp = path.join(runtimeResources, 'app');
+    fs.mkdirSync(fixtureApp, {recursive: true});
+    fs.writeFileSync(path.join(fixtureApp, 'package.json'), JSON.stringify({name: 'nora-candidate-network-gate', version: '1.0.0', main: 'main.cjs'}));
+    fs.writeFileSync(path.join(fixtureApp, 'main.cjs'), `require(${JSON.stringify(path.join(repository, 'tests/deployment/launcher_electron_network.test.cjs'))});\n`);
+    const executable = path.join(runtime, path.relative(source, selected.executable));
+    assert.equal(sha(executable), sha(selected.executable));
+    const env = {...process.env, NORA_ELECTRON_NETWORK_HOME: directory,
+      NORA_ELECTRON_NETWORK_DESKTOP: selected.asar, NORA_ELECTRON_NETWORK_ASAR: selected.asar,
+      NORA_ELECTRON_NETWORK_ORIGINAL_EXECUTABLE: selected.executable};
+    delete env.ELECTRON_RUN_AS_NODE;
+    runChecked(executable, [], {env, timeout: 40000});
+    const candidateReport = path.join(directory, 'report.json');
+    verifyNetworkReport(candidateReport, {...selected, launcher, platform});
+    fs.copyFileSync(candidateReport, report, fs.constants.COPYFILE_EXCL);
+    console.log(`PASS: actual candidate Chromium network modules; evidence ${report}`);
+  } finally {
+    const candidateReport = path.join(directory, 'report.json');
+    if (fs.existsSync(candidateReport) && !fs.existsSync(report)) fs.copyFileSync(candidateReport, report, fs.constants.COPYFILE_EXCL);
+    fs.rmSync(directory, {recursive: true, force: true});
+  }
+}
 function checkReplacement(release = selectRelease(), env = process.env) {
   const desktop = path.resolve(release, 'nora-tavern-launcher/desktop');
   const archive = only(fs.readdirSync(path.join(desktop, 'dist'))
@@ -144,13 +209,16 @@ if (require.main === module) {
       assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: app [--installed <directory>]');
       checkApp({ installed: args[1], python: process.env.NORA_APP_CHECK_PYTHON || path.join(process.env.RUNNER_TEMP,
         process.platform === 'win32' ? 'hermes-build-source/python/python.exe' : 'hermes-build-source/hermes-agent/venv/bin/python') });
+    } else if (command === 'network') {
+      assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: network [--installed <directory>]');
+      checkNetwork({installed: args[1]});
     } else if (command === 'replacement') checkReplacement();
     else if (command === 'images') checkImages();
     else if (command === 'release') console.log(selectRelease());
-    else throw new Error('Usage: launcher-artifact-checks.cjs <release|replacement|app|images>');
+    else throw new Error('Usage: launcher-artifact-checks.cjs <release|replacement|app|network|images>');
   } catch (error) {
     console.error(error);
     process.exitCode = error.exitCode || 1;
   }
 }
-module.exports = { only, selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, checkReplacement, checkImages };
+module.exports = { only, selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork, checkReplacement, checkImages };

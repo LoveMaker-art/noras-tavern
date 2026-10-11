@@ -373,6 +373,41 @@ test('conditional metadata cache preserves its original confirmation time until 
   assert.equal(f.requests.length,2);
 });
 
+test('an inconsistent conditional response discards its cache and retrieves verified fresh metadata once',async t=>{
+  let clock=1000;
+  const f=await server(t,(req,res,count)=>{
+    if(count===1){res.writeHead(200,{ETag:'"old"'});res.end('{"version":"2.4.3"}');return;}
+    if(count===2){assert.equal(req.headers['if-none-match'],'"old"');res.writeHead(304,{ETag:'"different"'});res.end();return;}
+    assert.equal(req.headers['if-none-match'],undefined,'The inconsistent validator must not be sent again');
+    res.writeHead(200,{ETag:'"fresh"'});res.end('{"version":"2.4.4"}');
+  });
+  const metadataCache=networkModule.createMetadataCache({ttlMs:100,now:()=>clock});
+  const options={fetcher:f.fetcher,metadataCache,policy:{maxAttempts:1,sources:{schema:1,mirrors:[]}}};
+  await networkModule.metadataJson('https://api.github.com/versions',options);clock=1200;
+  const fresh=await networkModule.metadataJson('https://api.github.com/versions',options);
+  assert.deepEqual(fresh.value,{version:'2.4.4'});assert.equal(fresh.latestConfirmed,true);assert.equal(fresh.source,'network');
+  assert.equal(f.requests.length,3);
+});
+
+test('an unconditional cache recovery never trusts another 304 or malformed body',async t=>{
+  for(const kind of ['304','malformed'])await t.test(kind,async child=>{
+    let clock=1000;
+    const f=await server(child,(req,res,count)=>{
+      if(count===1){res.writeHead(200,{ETag:'"old"'});res.end('{"version":"2.4.3"}');return;}
+      if(count===2){res.writeHead(304,{ETag:'"different"'});res.end();return;}
+      assert.equal(req.headers['if-none-match'],undefined);
+      res.writeHead(kind==='304'?304:200);res.end(kind==='304'?'':'not-json');
+    });
+    const metadataCache=networkModule.createMetadataCache({ttlMs:100,now:()=>clock});
+    const options={fetcher:f.fetcher,metadataCache,policy:{maxAttempts:1,sources:{schema:1,mirrors:[]}}};
+    await networkModule.metadataJson('https://api.github.com/versions',options);clock=1200;
+    await assert.rejects(networkModule.metadataJson('https://api.github.com/versions',options),error=>error.code==='INVALID_RESPONSE');
+    assert.equal(f.requests.length,3,'Only one unconditional recovery request is allowed');
+    await assert.rejects(networkModule.metadataJson('https://api.github.com/versions',options),error=>error.code==='INVALID_RESPONSE');
+    assert.equal(f.requests[3].headers['if-none-match'],undefined,'The rejected representation must not survive for the next check');
+  });
+});
+
 test('cancelled bytes resume with a strong validator and complete whole-file verification',async t=>{
   const bytes=Buffer.from('abcdefghij'),controller=new AbortController();
   const f=await server(t,(req,res)=>{
