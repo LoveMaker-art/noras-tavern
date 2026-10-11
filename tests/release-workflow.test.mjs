@@ -47,6 +47,32 @@ test('historical acceptance selects published history and runs independently fro
   const proof = full.jobs.build.steps.find(step => step.with?.name === 'nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}');
   assert.match(proof.with.path, /baseline-source-receipt\.json/);
 });
+test('fresh Hermes builds pin both installers and repository before native runtime packaging', () => {
+  const steps = full.jobs.build.steps;
+  const prepareIndex = steps.findIndex(step => step.name === 'Prepare the verified fixed Hermes bootstrap');
+  const macIndex = steps.findIndex(step => step.name === 'Install Hermes core without browser components (macOS)');
+  const windowsIndex = steps.findIndex(step => step.name === 'Install Hermes core without browser components (Windows)');
+  const verifyIndex = steps.findIndex(step => step.name === 'Verify fixed Hermes source and Python before runtime packaging');
+  const packageIndex = steps.findIndex(step => step.name === 'Build integrated runtime');
+  assert.ok(prepareIndex >= 0 && macIndex > prepareIndex && windowsIndex > prepareIndex);
+  assert.ok(verifyIndex > macIndex && verifyIndex > windowsIndex && packageIndex > verifyIndex);
+  assert.match(full.jobs.preflight.steps.find(step => step.name === 'Check release tooling before preparing runtimes').run,
+    /tests\/hermes-bootstrap\.test\.mjs/);
+  const fresh = "inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''";
+  assert.equal(steps[prepareIndex].if, fresh);
+  assert.equal(steps[verifyIndex].if, fresh);
+  assert.match(steps[prepareIndex].run, /prepare-hermes-bootstrap\.mjs --prepare --platform "\$\{\{ matrix\.platform \}\}" --output "\$RUNNER_TEMP\/hermes-bootstrap"/);
+  assert.match(steps[verifyIndex].run, /prepare-hermes-bootstrap\.mjs --verify --hermes-home "\$RUNNER_TEMP\/hermes" --platform "\$\{\{ matrix\.platform \}\}"/);
+  const mac = steps[macIndex].run, windows = steps[windowsIndex].run;
+  assert.match(mac, /revision="\$\(node tooling\/runtime\/prepare-hermes-bootstrap\.mjs --revision\)"/);
+  assert.match(mac, /bash "\$RUNNER_TEMP\/hermes-bootstrap\/install\.sh"/);
+  assert.match(mac, /--commit "\$revision"\s*\\\n\s*--force-commit/);
+  assert.match(windows, /\$revision = node tooling\/runtime\/prepare-hermes-bootstrap\.mjs --revision/);
+  assert.match(windows, /hermes-bootstrap\/install\.ps1/);
+  assert.match(windows, /foreach \(\$stage in \$stages\)[\s\S]*-Commit \$revision -ForceCommit/);
+  assert.match(windows, /'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv'/);
+  assert.doesNotMatch(mac + windows, /https:\/\/hermes-agent\.nousresearch\.com\/install\.(?:sh|ps1)/);
+});
 test('the independent publication workflow only consumes accepted bytes and defaults to a local seal', () => {
   assert.deepEqual(Object.keys(publisher.on), ['workflow_dispatch']);
   assert.equal(publisher.on.workflow_dispatch.inputs.stage.default, 'seal');

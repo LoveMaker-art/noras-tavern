@@ -129,7 +129,7 @@ jobs:
           esac
       - name: Check release tooling before preparing runtimes
         run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
       - name: Preserve the change plan even when preflight rejects the build
         if: always()
         uses: actions/upload-artifact@v4
@@ -383,6 +383,13 @@ jobs:
         shell: bash
         run: mv .build-clawchat-plugin "$RUNNER_TEMP/nora-clawchat-plugin"
 
+      - name: Prepare the verified fixed Hermes bootstrap
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/runtime/prepare-hermes-bootstrap.mjs --prepare --platform "${{ matrix.platform }}" --output "$RUNNER_TEMP/hermes-bootstrap"
+
       - name: Install Hermes core without browser components (macOS)
         if: runner.os == 'macOS' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: bash
@@ -392,10 +399,12 @@ jobs:
           export UV_MANAGED_PYTHON=1
           export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
           export UV_PYTHON_INSTALL_BIN=0
-          curl -fsSL https://hermes-agent.nousresearch.com/install.sh -o "$RUNNER_TEMP/hermes-install.sh"
-          sh "$RUNNER_TEMP/hermes-install.sh" \
+          revision="$(node tooling/runtime/prepare-hermes-bootstrap.mjs --revision)"
+          bash "$RUNNER_TEMP/hermes-bootstrap/install.sh" \
             --dir "$HERMES_HOME/hermes-agent" \
             --hermes-home "$HERMES_HOME" \
+            --commit "$revision" \
+            --force-commit \
             --skip-setup \
             --skip-browser \
             --skip-computer-use \
@@ -407,8 +416,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
-          $installer = Join-Path $env:RUNNER_TEMP 'hermes-install.ps1'
-          Invoke-WebRequest https://hermes-agent.nousresearch.com/install.ps1 -OutFile $installer
+          $installer = Join-Path $env:RUNNER_TEMP 'hermes-bootstrap/install.ps1'
+          $revision = node tooling/runtime/prepare-hermes-bootstrap.mjs --revision
+          if ($LASTEXITCODE -ne 0) { throw 'Fixed Hermes revision is unavailable' }
           $stages = @(
             'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
             'dependencies', 'path', 'config-templates', 'platform-sdks', 'bootstrap-marker'
@@ -416,9 +426,17 @@ jobs:
           foreach ($stage in $stages) {
             & $installer -HermesHome $env:HERMES_HOME `
               -InstallDir (Join-Path $env:HERMES_HOME 'hermes-agent') `
+              -Commit $revision -ForceCommit `
               -Stage $stage -NonInteractive -Json -SkipComputerUse
             if ($LASTEXITCODE -ne 0) { throw "Hermes stage failed: $stage" }
           }
+
+      - name: Verify fixed Hermes source and Python before runtime packaging
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/runtime/prepare-hermes-bootstrap.mjs --verify --hermes-home "$RUNNER_TEMP/hermes" --platform "${{ matrix.platform }}"
 
       - name: Build integrated runtime
         if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''

@@ -53,7 +53,7 @@ export function workflowInputs(text = '', job = 'build') {
     let block = [];
     const flush = () => {
         const value = normalize(block);
-        if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
+        if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
         else if (/package-release\.(?:mjs|sh)|package-launcher-update|package-component-update|npm run pack:|npm (?:ci|install|prune)(?:\s|$)|electron-builder/.test(value)) packaging.push(value);
         else if (/^[- ]*(?:name|uses):/m.test(value)
             && !/^- name:\s*(?:Verify|Test|Require|Preserve|Reject|Keep build inputs|Configure actual operation actors|Record|Upload|Save|Collect|Check|Restore published runtime)/m.test(value)

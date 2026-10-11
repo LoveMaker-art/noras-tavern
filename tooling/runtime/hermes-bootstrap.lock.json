@@ -1,0 +1,17 @@
+{
+  "schema": "nora-hermes-bootstrap/1",
+  "repository": "https://github.com/NousResearch/hermes-agent.git",
+  "revision": "2237be355906fbe6065ce1815711eee52b2d646e",
+  "hermesVersion": "0.21.1",
+  "pythonMajorMinor": "3.11",
+  "installers": {
+    "darwin": {
+      "path": "scripts/install.sh",
+      "sha256": "5854b15670b51a8daae8f59ddfa917062de9f74be261eb73b4b8d719710f8968"
+    },
+    "win32": {
+      "path": "scripts/install.ps1",
+      "sha256": "226c70a90ad47e8a4d34cb11aca4ecbeb649e2f9b67fbd009ea49791de2d56f5"
+    }
+  }
+}

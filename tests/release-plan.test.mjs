@@ -117,7 +117,9 @@ test('CI test/timeout/formatting changes differ from Node/Python/native build in
         .replace('tests/contracts.test.mjs', 'tests/contracts-v2.test.mjs').replace('  build:\n', '  build:\n    timeout-minutes: 90\n'));
     const testsOnly = createReleasePlan(inputs); assert.equal(testsOnly.mode, 'verification-only'); noEnvironment(testsOnly);
     for (const value of [workflow.replace('node-version: 24', 'node-version: 26'), workflow.replace("python-version: '3.11'", "python-version: '3.12'"),
-        workflow.replace('ubuntu-latest', 'macos-15')]) {
+        workflow.replace('ubuntu-latest', 'macos-15'),
+        workflow.replace('      - name: Test contracts\n        run: node --test tests/contracts.test.mjs',
+            '      - name: Prepare fixed Hermes bootstrap\n        run: node tooling/runtime/prepare-hermes-bootstrap.mjs --platform darwin --output /tmp/bootstrap')]) {
         inputs.current.configuration.workflow = workflowInputs(value);
         const environment = createReleasePlan(inputs); assert.equal(environment.mode, 'full');
         assert.deepEqual(environment.build.environment.hermesRuntime, [...PLATFORMS].sort());
