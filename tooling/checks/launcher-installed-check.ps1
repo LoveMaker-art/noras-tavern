@@ -52,7 +52,7 @@ foreach ($file in (Get-ChildItem $unpacked -Recurse -File -Force)) {
 if (@(Get-Process | Where-Object { $_.Path -eq $executable }).Count) { throw 'Silent setup unexpectedly launched the installed application' }
 $setupProof = @{schema='nora-installed-setup/1'; installer=$setup[0].Name; installerSha256=(Get-FileHash $setup[0].FullName -Algorithm SHA256).Hash.ToLower(); exitCode=$installer.ExitCode; installRoot=$installRoot; verifiedUnpackedFiles=$checked; autoLaunch=$false}
 $setupProof | ConvertTo-Json -Depth 5 | Set-Content $setupReport -Encoding utf8
-# The shared Node runner owns executable selection, child completion and fresh evidence.
-$env:NORA_APP_CHECK_PYTHON = Join-Path $env:RUNNER_TEMP 'hermes-build-source/python/python.exe'
+# The shared Node runner selects and verifies the moved cold or restored Python
+# runtime before checking the installed application's fresh receipt evidence.
 node tooling/checks/launcher-artifact-checks.cjs app --installed $installRoot
 if ($LASTEXITCODE -ne 0) { throw 'The actual installed application gate failed' }

@@ -62,6 +62,48 @@ function runChecked(executable, args, options = {}) {
   }
   return result;
 }
+function within(directory, file) {
+  const relative = path.relative(directory, file);
+  return relative !== '' && relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative);
+}
+function resolveWindowsCheckRuntime(env = process.env, { moved = false } = {}) {
+  assert.ok(typeof env.RUNNER_TEMP === 'string' && path.isAbsolute(env.RUNNER_TEMP), 'An absolute runner temporary directory is required');
+  const original = path.join(env.RUNNER_TEMP, 'hermes');
+  const captured = Object.hasOwn(env, 'NORA_TEST_MANAGED_PYTHON_ROOT');
+  const expected = captured ? env.NORA_TEST_MANAGED_PYTHON_ROOT : path.join(original, 'python');
+  assert.ok(typeof expected === 'string' && path.isAbsolute(expected), 'The captured Python root must be absolute');
+  assert.ok(within(original, expected), 'The captured Python root escapes the original Hermes tree');
+  // Cold bootstraps and restored archives have different layouts. Preserve the
+  // captured relative base-prefix binding; package-check restores the fixed
+  // archive layout and has no cold-bootstrap environment to inherit.
+  const home = fs.realpathSync(path.join(env.RUNNER_TEMP, moved ? 'hermes-build-source' : 'hermes'));
+  const base = fs.realpathSync(path.join(home, path.relative(original, expected)));
+  assert.ok(fs.statSync(base).isDirectory() && within(home, base), 'The actual Python root escapes the isolated Hermes tree');
+  const python = fs.realpathSync(regular(path.join(base, 'python.exe')));
+  assert.ok(within(base, python), 'The base interpreter escapes its verified Python root');
+  return { home, base, python, venv: path.join(home, 'hermes-agent/venv') };
+}
+function verifyCheckPythonIdentity(value, runtime, { venv = false } = {}) {
+  assert.ok(value && typeof value === 'object', 'Missing actual Python identity');
+  const expectedPrefix = fs.realpathSync(venv ? runtime.venv : runtime.base);
+  assert.ok(within(runtime.home, expectedPrefix), 'The actual interpreter prefix escapes the isolated Hermes tree');
+  assert.equal(fs.realpathSync(value.prefix), expectedPrefix, 'Actual sys.prefix differs from the selected runtime');
+  assert.equal(fs.realpathSync(value.basePrefix), runtime.base, 'Actual sys.base_prefix differs from the captured runtime');
+  const executable = venv ? path.join(runtime.venv, 'Scripts/python.exe') : runtime.python;
+  assert.equal(fs.realpathSync(regular(value.executable)), fs.realpathSync(regular(executable)), 'Actual Python executable differs from the selected runtime');
+  if (venv) assert.ok(within(expectedPrefix, fs.realpathSync(regular(value.psutil))), 'psutil must originate inside the selected venv');
+  return true;
+}
+function checkWindowsPython(env = process.env, { moved = false, venv = false } = {}) {
+  const runtime = resolveWindowsCheckRuntime(env, { moved });
+  const python = venv ? regular(path.join(runtime.venv, 'Scripts/python.exe')) : runtime.python;
+  const source = 'import json,sys' + (venv ? ',psutil' : '') + '; print(json.dumps({'
+    + '"prefix":sys.prefix,"basePrefix":sys.base_prefix,"executable":sys.executable'
+    + (venv ? ',"psutil":psutil.__file__' : '') + '}))';
+  const result = runChecked(python, ['-B', '-I', '-c', source], { env, stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8' });
+  verifyCheckPythonIdentity(JSON.parse(result.stdout), runtime, { venv });
+  return python;
+}
 function verifyAppReport(file, { executable, asar, launcher, platform = process.platform, arch = process.arch }) {
   regular(file);
   const value = read(file);
@@ -178,8 +220,7 @@ function checkReplacement(release = selectRelease(), env = process.env) {
       assert.ok(!fs.existsSync(original) && !fs.lstatSync(original, { throwIfNoEntry: false }), 'Original runtime must remain absent before archive checks');
       fs.renameSync(moved, original);
       restored = true;
-      py = path.join(original, 'hermes-agent/venv/Scripts/python.exe');
-      runChecked(regular(py), ['-B', '-c', 'import json,os,sys,psutil; from pathlib import Path; home=Path(os.environ["RUNNER_TEMP"])/"hermes"; venv=(home/"hermes-agent/venv").resolve(); base=(home/"python").resolve(); assert Path(sys.prefix).resolve()==venv; assert Path(sys.base_prefix).resolve()==base; assert Path(psutil.__file__).resolve().is_relative_to(venv); print(json.dumps({"venv":str(venv),"base":str(base),"psutil":psutil.__version__}))'], { env });
+      py = checkWindowsPython(env, { venv: true });
     }
     runChecked(process.execPath, [path.join(repository, 'tooling/run.mjs'), regular(py), '-B', '-m',
       'unittest', 'tests.deployment.test_launcher_replacement', '-v'], { env: { ...env,
@@ -207,8 +248,12 @@ if (require.main === module) {
     const [command, ...args] = process.argv.slice(2);
     if (command === 'app') {
       assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: app [--installed <directory>]');
-      checkApp({ installed: args[1], python: process.env.NORA_APP_CHECK_PYTHON || path.join(process.env.RUNNER_TEMP,
-        process.platform === 'win32' ? 'hermes-build-source/python/python.exe' : 'hermes-build-source/hermes-agent/venv/bin/python') });
+      const python = process.platform === 'win32' ? checkWindowsPython(process.env, { moved: true })
+        : process.env.NORA_APP_CHECK_PYTHON || path.join(process.env.RUNNER_TEMP, 'hermes-build-source/hermes-agent/venv/bin/python');
+      if (process.platform === 'win32' && Object.hasOwn(process.env, 'NORA_APP_CHECK_PYTHON')) {
+        assert.equal(fs.realpathSync(regular(process.env.NORA_APP_CHECK_PYTHON)), fs.realpathSync(python), 'APP interpreter override differs from the verified runtime');
+      }
+      checkApp({ installed: args[1], python });
     } else if (command === 'network') {
       assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: network [--installed <directory>]');
       checkNetwork({installed: args[1]});
@@ -221,4 +266,5 @@ if (require.main === module) {
     process.exitCode = error.exitCode || 1;
   }
 }
-module.exports = { only, selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork, checkReplacement, checkImages };
+module.exports = { only, selectRelease, selectApplication, runChecked, resolveWindowsCheckRuntime, verifyCheckPythonIdentity,
+  checkWindowsPython, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork, checkReplacement, checkImages };

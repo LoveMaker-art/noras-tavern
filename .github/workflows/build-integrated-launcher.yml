@@ -131,6 +131,17 @@ jobs:
         run: |
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
           node tooling/run.mjs python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
+      - name: Verify historical download identities before native builds
+        if: steps.acceptance-baseline.outputs.initial_release != 'true'
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ACCEPTANCE_BASELINE_TAG: ${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}
+        run: |
+          set -euo pipefail
+          for platform in darwin-arm64 darwin-x64 win32-x64; do
+            node tooling/release/acceptance-baseline.mjs --tag "$ACCEPTANCE_BASELINE_TAG" --platform "$platform" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-preflight/$platform" --identity-only
+          done
       - name: Preserve the change plan even when preflight rejects the build
         if: always()
         uses: actions/upload-artifact@v4
@@ -367,6 +378,22 @@ jobs:
       - name: Verify cold-profile bootstrap identity before preparing runtimes
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
+      - name: Prepare the Python interpreter for native backup lock tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Require chat backup safety tests
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NORA_TEST_PYTHON="$(python -B -c 'import sys; print(sys.executable, end="")')"
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
+          node --test tests/backup-safety-gate.test.mjs
+          node tooling/checks/verify-backup-safety.mjs
+
       - name: Download and verify unchanged published components
         if: inputs.launcher_baseline_tag != ''
         env:
@@ -540,16 +567,6 @@ jobs:
         timeout-minutes: 10
         run: node tooling/run.mjs node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs
 
-      - name: Require chat backup safety tests
-        timeout-minutes: 10
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
-          npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
-          node --test tests/backup-safety-gate.test.mjs
-          node tooling/checks/verify-backup-safety.mjs
-
       - name: Test native transaction and complete evidence contracts
         shell: bash
         run: node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics
@@ -603,6 +620,7 @@ jobs:
         if: needs.preflight.outputs.initial_release != 'true'
         shell: bash
         env:
+          GH_TOKEN: ${{ github.token }}
           ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
         run: |
           set -euo pipefail

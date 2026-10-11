@@ -868,11 +868,12 @@ test('near the default user budget, automatic backups roll across Worlds without
         }
     } finally { allocations.mock.restore(); }
     const elapsed = [...listingTimes].sort((a, b) => a - b)[1];
+    t.diagnostic(`500 MiB listing ms=${listingTimes.map(value => value.toFixed(1)).join('/')} median=${elapsed.toFixed(1)} maxRSSKiB=${process.resourceUsage().maxRSS}`);
     assert.ok(largestAllocation <= 1024 * 1024, 'large snapshot inventory must stream hashes without allocating full chat bodies');
     assert.equal(list.snapshots.length, 20);
     assert.ok(list.totalBytes > 500 * 1024 * 1024 && list.totalBytes < 501 * 1024 * 1024);
     assert.ok(JSON.stringify(list).length < 20000);
-    assert.ok(elapsed < 2000, 'near-budget metadata listing must finish within the agreed local scan budget');
+    assert.ok(elapsed < 2000, `near-budget metadata listing must finish within the agreed local scan budget: median=${elapsed.toFixed(1)}ms, budget=2000ms`);
     const another = await savedChat(f, await f.create('over-budget'));
     const otherMessages = another.data.split('\n').map(JSON.parse);
     otherMessages[1].mes = messages[1].mes;
@@ -887,5 +888,4 @@ test('near the default user budget, automatic backups roll across Worlds without
     assert.ok(after.snapshots.some(item => item.id === captured.id));
     assert.ok(!after.snapshots.some(item => item.id === list.snapshots.at(-1).id), 'oldest automatic snapshot is evicted');
     assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
-    t.diagnostic(`500 MiB listing ms=${listingTimes.map(value => value.toFixed(1)).join('/')} median=${elapsed.toFixed(1)} maxRSSKiB=${process.resourceUsage().maxRSS}`);
 });

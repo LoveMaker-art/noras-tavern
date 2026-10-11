@@ -4,7 +4,8 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork } =
+const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork,
+  resolveWindowsCheckRuntime, verifyCheckPythonIdentity } =
   require('../tooling/checks/launcher-artifact-checks.cjs');
 const { verifyInputs, verifySource, verifyDiff } =
   require('../tooling/checks/restore-launcher-check-package.cjs');
@@ -32,6 +33,68 @@ function windowsFixture(t) {
   f.write(`${prefix}/win-unpacked/resources/nested/other.exe`, 'nested helper');
   return { ...f, release, launcher, dist, executable, asar };
 }
+
+function pythonFixture(t, { moved = true, captured = true } = {}) {
+  const f = fixture(t), original = path.join(f.root, 'hermes');
+  const home = path.join(f.root, moved ? 'hermes-build-source' : 'hermes');
+  const relative = captured ? 'hermes-agent/.hermes-runtime/python/cpython-3.11-windows-x86_64-none' : 'python';
+  const base = path.join(home, relative), venv = path.join(home, 'hermes-agent/venv');
+  const python = f.write(path.relative(f.root, path.join(base, 'python.exe')));
+  const venvPython = f.write(path.relative(f.root, path.join(venv, 'Scripts/python.exe')));
+  const psutil = f.write(path.relative(f.root, path.join(venv, 'Lib/site-packages/psutil/__init__.py')));
+  const env = { RUNNER_TEMP: f.root };
+  if (captured) env.NORA_TEST_MANAGED_PYTHON_ROOT = path.join(original, relative);
+  return { ...f, original, home, base, venv, python, venvPython, psutil, env };
+}
+test('Windows QA resolves the captured cold base Python after moving the original Hermes tree', t => {
+  const f = pythonFixture(t);
+  assert.equal(fs.existsSync(path.join(f.home, 'python/python.exe')), false);
+  assert.deepEqual(resolveWindowsCheckRuntime(f.env, { moved: true }),
+    { home: fs.realpathSync(f.home), base: fs.realpathSync(f.base), python: fs.realpathSync(f.python), venv: fs.realpathSync(f.venv) });
+});
+test('Windows QA resolves the same captured base while the original cold tree is temporarily restored', t => {
+  const f = pythonFixture(t, { moved: false });
+  assert.equal(resolveWindowsCheckRuntime(f.env).base, fs.realpathSync(f.base));
+});
+test('Windows package-check without a captured cold prefix accepts only the restored fixed Python layout', t => {
+  const f = pythonFixture(t, { captured: false });
+  assert.equal(resolveWindowsCheckRuntime(f.env, { moved: true }).python, fs.realpathSync(f.python));
+});
+for (const [label, change] of [
+  ['missing base interpreter', f => fs.unlinkSync(f.python)],
+  ['outside captured root', f => f.env.NORA_TEST_MANAGED_PYTHON_ROOT = path.join(f.root, 'other/python')],
+  ['relative captured root', f => f.env.NORA_TEST_MANAGED_PYTHON_ROOT = 'hermes/python'],
+  ['empty captured root', f => f.env.NORA_TEST_MANAGED_PYTHON_ROOT = ''],
+  ['capture does not match the restored tree', f => f.env.NORA_TEST_MANAGED_PYTHON_ROOT = path.join(f.original, 'python')],
+]) test(`Windows QA refuses ${label} before invoking Python or the APP`, t => {
+  const f = pythonFixture(t); change(f);
+  assert.throws(() => resolveWindowsCheckRuntime(f.env, { moved: true }));
+});
+test('Windows QA refuses a base directory symlink escaping its isolated tree', t => {
+  const f = pythonFixture(t), outside = path.join(f.root, 'outside');
+  fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'python.exe'), 'unrelated Python');
+  fs.rmSync(f.base, { recursive: true });
+  fs.symlinkSync(outside, f.base, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => resolveWindowsCheckRuntime(f.env, { moved: true }), /escapes/);
+});
+test('Windows QA verifies both base and venv reports against the selected actual files', t => {
+  const f = pythonFixture(t), runtime = resolveWindowsCheckRuntime(f.env, { moved: true });
+  assert.equal(verifyCheckPythonIdentity({ prefix: f.base, basePrefix: f.base, executable: f.python }, runtime), true);
+  assert.equal(verifyCheckPythonIdentity({ prefix: f.venv, basePrefix: f.base, executable: f.venvPython,
+    psutil: f.psutil }, runtime, { venv: true }), true);
+});
+for (const [label, mutate] of [
+  ['foreign base_prefix', (value, f) => value.basePrefix = f.venv],
+  ['foreign sys.prefix', (value, f) => value.prefix = f.base],
+  ['foreign executable', (value, f) => value.executable = f.python],
+  ['psutil outside the selected venv', (value, f) => value.psutil = f.python],
+  ['missing psutil evidence', value => delete value.psutil],
+]) test(`Windows QA rejects ${label} rather than weakening the actual interpreter guard`, t => {
+  const f = pythonFixture(t), runtime = resolveWindowsCheckRuntime(f.env, { moved: true });
+  const value = { prefix: f.venv, basePrefix: f.base, executable: f.venvPython, psutil: f.psutil };
+  mutate(value, f);
+  assert.throws(() => verifyCheckPythonIdentity(value, runtime, { venv: true }));
+});
 
 test('Windows selection uses the single root EXE despite nested helper executables and Unicode/spaces', t => {
   const f = windowsFixture(t);
