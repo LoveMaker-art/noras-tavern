@@ -91,6 +91,9 @@ class SharedLogicTests(unittest.TestCase):
         order = []
         def run(command, **kwargs):
             order.append("hook" if command[-1].endswith("handler.py") else "tavern")
+        def start_gateway(nora_home, hermes_home, command, env, *, require_connection):
+            self.assertIs(require_connection, True)
+            order.append("gateway")
         with patch.object(bridge, "installed", return_value=True), \
              patch.object(bridge.nora_system, "installation_state", return_value={"ready": True, "setupCompleted": False}), \
              patch.object(bridge, "read_verified_model", return_value={"model": "test"}), \
@@ -98,7 +101,7 @@ class SharedLogicTests(unittest.TestCase):
              patch.object(bridge, "sync_nora_profile"), \
              patch.object(bridge, "python_command", return_value=sys.executable), \
              patch.object(bridge, "run_stream", side_effect=run), \
-             patch.object(bridge, "start_gateway", side_effect=lambda *a: order.append("gateway")), \
+             patch.object(bridge, "start_gateway", autospec=True, side_effect=start_gateway) as gateway, \
              patch.object(bridge, "require_bundled_clawchat"), \
              patch.object(bridge, "status_payload", return_value={"running": True, "clawchatConnected": True}), \
              patch.object(bridge.nora_system, "verify_runtime"), \
@@ -106,6 +109,7 @@ class SharedLogicTests(unittest.TestCase):
              patch.object(bridge, "run_json") as login, patch.object(bridge, "emit"):
             bridge.command_start(args)
         self.assertEqual(order, ["tavern", "gateway", "hook"])
+        gateway.assert_called_once()
         login.assert_not_called()
 
     def test_prepatched_bundle_is_verified_without_git(self):

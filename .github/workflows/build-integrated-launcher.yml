@@ -130,6 +130,7 @@ jobs:
       - name: Check release tooling before preparing runtimes
         run: |
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
+          node tooling/run.mjs python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
       - name: Preserve the change plan even when preflight rejects the build
         if: always()
         uses: actions/upload-artifact@v4

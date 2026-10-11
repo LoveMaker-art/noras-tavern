@@ -36,6 +36,9 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   const gate = steps.findIndex(step => step.name?.startsWith('Require a matching build decision'));
   const contracts = steps.findIndex(step => step.name?.startsWith('Check release tooling'));
   assert.ok(plan >= 0 && gate > plan && contracts > gate);
+  assert.match(steps[contracts].run, /node tooling\/run\.mjs python -B -m unittest tests\.deployment\.test_launcher_shared_logic\.SharedLogicTests\.test_desktop_starts_gateway_before_scheduling_shared_hook/);
+  const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5' && step.with?.['python-version'] === '3.11');
+  assert.ok(python >= 0 && python < contracts);
   assert.equal(steps.find(step => step.with?.name === 'nora-release-plan').if, 'always()');
   assert.match(steps[gate].run, /APPROVE_UNKNOWN_INPUTS.*true/);
   assert.match(steps[gate].run, /verification-only/);
