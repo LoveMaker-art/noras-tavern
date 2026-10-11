@@ -585,7 +585,7 @@ def _same_skill_damage(before, system):
             and str(system.get('version', '')).lstrip('v') == str(before['version']).lstrip('v'))
 
 
-def command_start(args) -> None:
+def command_start(args, *, require_clawchat_connection=True) -> None:
     service = getattr(args, "service", "all")
     if (nora_system.update_recovery(args.install_root)
             and getattr(args, 'command', '') != 'update-lifecycle'):
@@ -614,7 +614,8 @@ def command_start(args) -> None:
     if service != "tavern":
         emit("task", stage_id="start_nora", task="正在连接 ClawChat")
         start_gateway(args.nora_home, args.hermes_home,
-                      [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env)
+                      [python_command(args.hermes_home), "-m", "hermes_cli.main", "gateway", "run"], env,
+                      require_connection=require_clawchat_connection)
     if service == "nora":
         emit("result", **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port))
         return
@@ -630,7 +631,8 @@ def command_start(args) -> None:
                     str(args.hermes_home / "hooks/tavern-liveware-register/handler.py")], env=env)
     emit("task", stage_id="health_check", task="正在检查服务连接")
     status = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
-    if not (status["running"] and status["clawchatConnected"]):
+    gateway_ready = status["clawchatConnected"] if require_clawchat_connection is not False else status["gatewayRunning"]
+    if not (status["running"] and gateway_ready):
         fail("启动检查未通过，请检查服务连接后重试。")
     if first_setup:
         nora_system.verify_runtime(args.hermes_home, args.install_root, args.port, python_command(args.hermes_home), env)
@@ -1029,6 +1031,9 @@ def command_update_lifecycle(args, plan=None):
             fail('更新事务完整性复核失败：' + '；'.join(acceptance['problems']))
     missing_receipt_rollback = phase == 'rollback' and bool(receipt_recovery)
     damaged_rollback = phase == 'rollback' and before.get('systemReady') is False and not missing_receipt_rollback
+    # Explicitly disconnected snapshots require only the original running state.
+    # Missing fields from older lifecycle clients keep the strict start contract.
+    restore_connection = before.get('clawchatConnected') is not False
     if missing_receipt_rollback:
         # Resume only services that actually ran before this transaction, after
         # exact old bindings/records were restored. Do not manufacture acceptance
@@ -1039,7 +1044,8 @@ def command_update_lifecycle(args, plan=None):
             run_stream([python_command(args.hermes_home), '-u', '-B', str(lifecycle), 'start', '--port', str(args.port)], env=env, native_cli=True)
         if before.get('gatewayRunning'):
             start_gateway(args.nora_home, args.hermes_home,
-                          [python_command(args.hermes_home), '-m', 'hermes_cli.main', 'gateway', 'run'], env)
+                          [python_command(args.hermes_home), '-m', 'hermes_cli.main', 'gateway', 'run'], env,
+                          require_connection=restore_connection)
     elif damaged_rollback:
         system = nora_system.inspect(args.hermes_home, args.install_root, args.port)
         if not _same_skill_damage(before, system):
@@ -1048,11 +1054,11 @@ def command_update_lifecycle(args, plan=None):
         for key, service in (('running', 'tavern'), ('gatewayRunning', 'nora')):
             if before.get(key):
                 args.service = service
-                command_start(args)
+                command_start(args, require_clawchat_connection=restore_connection)
     elif before.get('running') or before.get('gatewayRunning'):
         args.service = ('all' if before.get('running') and before.get('gatewayRunning') else
                         'tavern' if before.get('running') else 'nora')
-        command_start(args)
+        command_start(args, require_clawchat_connection=restore_connection if phase == 'rollback' else True)
     state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
     if damaged_rollback and not _same_skill_damage(before, {
             'version': state.get('version'), 'problems': state.get('systemProblems', [])}):

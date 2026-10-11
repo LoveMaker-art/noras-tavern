@@ -22,6 +22,37 @@ RETIRED = {'tavern-world','tavern-runtime-plugins','tavern-continuity',
 MANAGED = {'SOUL.md','SOUL.nora-tavern.example.md','nora-installation.json',
            'cron/jobs.json','clawchat-skills','scripts/nora-instance.py',
            'scripts/nora-tavern-update-check.py','scripts/nora-tavern-card-send.py'}
+CRON_RUNTIME_FIELDS = {'last_run_at','last_status','last_error','last_delivery_error',
+                       'last_delivery_unverified','failure_streak','next_run_at',
+                       'run_claim','fire_claim','last_dispatch','last_fire_error','monitor_state'}
+
+
+def cron_definition(path):
+    """Keep every unknown/user field; omit only known unbounded recurring-run state.
+
+    The packaged Hermes cron store owns updated_at and these run fields. Enabled,
+    paused state, finite execution budgets, IDs and task definitions remain protected.
+    Malformed/new formats never qualify for runtime-only admission.
+    """
+    value=read(path)
+    if not isinstance(value,dict) or not isinstance(value.get('jobs'),list):
+        raise ValueError('cron definition format')
+    result={key:item for key,item in value.items() if key!='updated_at'};jobs=[];ids=set()
+    for job in value['jobs']:
+        if not isinstance(job,dict) or not isinstance(job.get('id'),str) or not job['id'] or job['id'] in ids:
+            raise ValueError('cron definition identity')
+        ids.add(job['id']);definition=dict(job)
+        schedule=job.get('schedule');repeat=job.get('repeat')
+        unbounded=(repeat is None or isinstance(repeat,dict) and repeat.get('times') is None)
+        if (job.get('enabled') is True and isinstance(schedule,dict)
+                and schedule.get('kind') in ('cron','interval') and unbounded):
+            for key in CRON_RUNTIME_FIELDS:definition.pop(key,None)
+            if job.get('state') in ('scheduled','error'):definition.pop('state',None)
+            if isinstance(repeat,dict) and type(repeat.get('completed',0)) is int and repeat.get('completed',0)>=0:
+                definition['repeat']={key:item for key,item in repeat.items() if key!='completed'}
+        jobs.append(definition)
+    result['jobs']=jobs
+    return hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
 
 
 def _io_path(path):
@@ -214,7 +245,8 @@ class Journal:
         metadata={name:digest(backup/name) for name in ('host','agents-rollback','managed') if _io_path(backup/name).exists()}
         plan={'schema':1,'hermesHome':str(home),'installRoot':str(root),
               'before':dict(before),'lifecycle':lifecycle,'targets':targets,'metadata':metadata,
-              'phase':'prepared','metadataPhase':'pending','metadataIntents':[],'state':None}
+              'phase':'prepared','metadataPhase':'pending','metadataIntents':[],
+              'metadataWrites':{},'state':None}
         if state is not None:
             if Path(state).resolve()!=root/'tavern-state':raise RuntimeError('剧情状态恢复路径不匹配')
             plan['state']={'oldIdentity':identity(state),'oldDigest':None,'savedIdentity':None,
@@ -291,11 +323,38 @@ class Journal:
                     or (full and digest(safe_path(self.backup,name))!=expected)):
                 raise RuntimeError('配置恢复备份缺失或已变化')
         metadata_items=self.metadata_items()  # Validate before stopping or changing files.
+        runtime=self.plan.get('runtimeMetadata',{})
+        if (not isinstance(runtime,dict) or any(key!='hermes:cron/jobs.json' for key in runtime)
+                or not set(runtime)<=set(self.metadata_key(target) for target,_ in metadata_items)):
+            raise RuntimeError('运行状态恢复快照无效')
+        for target,saved in metadata_items:
+            if self.metadata_key(target) in runtime:self.metadata_saved(target,saved)
+        restores=self.plan.get('metadataRestores',{})
+        allowed_restores={self.metadata_key(target) for target,_ in metadata_items}
+        if (not isinstance(restores,dict) or not set(restores)<=allowed_restores
+                or 'metadataIntents' in self.plan and not set(restores)<=set(self.plan['metadataIntents'])):
+            raise RuntimeError('配置恢复检查点无效')
+        archives=set()
+        for target,saved in metadata_items:
+            entry,_=self.metadata_restore_entry(target,saved)
+            if entry is not None:
+                if entry['archive'] in archives:raise RuntimeError('配置恢复归档路径重复')
+                archives.add(entry['archive'])
         if 'metadataIntents' in self.plan:
             intents=self.plan['metadataIntents']
             allowed={self.metadata_key(target) for target,_ in metadata_items}
             if not isinstance(intents,list) or len(intents)!=len(set(intents)) or any(key not in allowed for key in intents):
                 raise RuntimeError('配置恢复变更意图无效')
+            writes=self.plan.get('metadataWrites')
+            if writes is not None:
+                if not isinstance(writes,dict) or set(writes)!=set(intents):
+                    raise RuntimeError('配置写入收据与变更意图不一致')
+                for key,entry in writes.items():
+                    if (not isinstance(entry,dict) or set(entry)-{'before','after','afterDefinitionDigest','completed'}
+                            or 'before' not in entry or 'after' not in entry
+                            or type(entry.get('completed')) is not bool
+                            or any(value is not None and not re.fullmatch('[a-f0-9]{64}',str(value)) for name,value in entry.items() if name!='completed')):
+                        raise RuntimeError('配置写入收据无效')
         names=set();paths=set()
         if not isinstance(self.plan.get('targets'),list):raise RuntimeError('恢复计划目标列表格式无效')
         for item in self.plan['targets']:
@@ -346,6 +405,7 @@ class Journal:
         if source is not None:
             _io_path(target).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(source),_io_path(target))
         item['phase']='applied';self.save()
+        if self.metadata_key(target) in self.plan.get('metadataIntents',[]):self.finish_metadata([target])
 
     def bind_sources(self,swaps):
         self._sources={name:Path(source) if source is not None else None for name,source,_ in swaps}
@@ -355,12 +415,61 @@ class Journal:
         owner=self.root if target.is_relative_to(self.root) else self.home
         return ('install:' if owner==self.root else 'hermes:')+target.relative_to(owner).as_posix()
 
-    def check_metadata_before_write(self,items):
+    def metadata_role(self,target):
+        key=self.metadata_key(target)
+        if key=='hermes:cron/jobs.json':return 'hermes-cron','task-definitions-and-runtime-state'
+        if key.startswith('install:'):return 'nora-updater','installation-receipt'
+        if key in ('hermes:config.yaml','hermes:AGENTS.md','hermes:AGENTS.md.bak'):
+            return 'user','user-configuration'
+        return 'nora-updater-and-user','managed-configuration'
+
+    def metadata_saved(self,target,saved):
+        entry=self.plan.get('runtimeMetadata',{}).get(self.metadata_key(target))
+        if entry is None:return saved
+        if (self.metadata_key(target)!='hermes:cron/jobs.json' or not isinstance(entry,dict)
+                or set(entry)!= {'snapshot','digest','definitionDigest'}
+                or entry.get('snapshot')!='runtime-state/cron-jobs.json'):
+            raise RuntimeError('运行状态恢复快照无效')
+        snapshot=safe_path(self.backup,entry['snapshot'])
+        if (not _io_path(snapshot).is_file() or linked(snapshot) or digest(snapshot)!=entry.get('digest')
+                or cron_definition(snapshot)!=entry.get('definitionDigest')
+                or cron_definition(saved)!=entry.get('definitionDigest')):
+            raise RuntimeError('运行状态恢复快照缺失或已变化')
+        return snapshot
+
+    def metadata_diagnostics(self):
+        """Expose only fixed relative paths, ownership, classifications and hashes."""
+        result=[]
+        for target,saved in self.metadata_items():
+            key=self.metadata_key(target);entry=self.plan.get('runtimeMetadata',{}).get(key)
+            if entry is not None:
+                owner,kind=self.metadata_role(target)
+                result.append(f'path={key}; owner={owner}; type={kind}; classification=runtime-state-only; '
+                    f'before={digest(saved)}; after={entry["digest"]}; definition={entry["definitionDigest"]}')
+        return result
+
+    def check_metadata_before_write(self,items,*,offline=False):
         for target,saved in items:
+            saved=self.metadata_saved(target,saved)
             current=digest(target) if _io_path(target).exists() else None
             original=digest(saved) if _io_path(saved).exists() else None
             if current!=original:
-                error=RuntimeError('准备更新后配置已发生变化，当前配置已保留。请重新检查并准备更新。')
+                key=self.metadata_key(target);owner,kind=self.metadata_role(target)
+                if offline and key=='hermes:cron/jobs.json' and key not in self.plan.get('runtimeMetadata',{}):
+                    try:before=cron_definition(saved);after=cron_definition(target)
+                    except (OSError,ValueError,RuntimeError):before=after=None
+                    if before is not None and before==after:
+                        snapshot=safe_path(self.backup,'runtime-state/cron-jobs.json')
+                        _io_path(snapshot).parent.mkdir(parents=True,exist_ok=True)
+                        shutil.copy2(_io_path(target),_io_path(snapshot),follow_symlinks=False)
+                        if linked(snapshot) or digest(snapshot)!=current or digest(target)!=current:
+                            raise RuntimeError('停服运行状态在封存期间变化，未替换配置。')
+                        self.plan.setdefault('runtimeMetadata',{})[key]={'snapshot':'runtime-state/cron-jobs.json',
+                            'digest':current,'definitionDigest':before}
+                        continue
+                # Only a whitelisted logical path, ownership and hashes reach logs.
+                error=RuntimeError('准备更新后配置已发生变化，当前配置已保留。请重新检查并准备更新。 '
+                    f'[path={key}; owner={owner}; type={kind}; before={original}; after={current}]')
                 error.code='CONDITIONS_CHANGED';raise error
 
     def seal_offline(self,proof):
@@ -372,7 +481,8 @@ class Journal:
                 error=RuntimeError('更新目标身份发生变化，未激活更新。');error.code='CONDITIONS_CHANGED';raise error
             item['oldDigest']=digest(target) if identity(target) is not None else None
         self.save()
-        self.check_metadata_before_write(self.metadata_items())
+        self.check_metadata_before_write(self.metadata_items(),offline=True)
+        self.save()
 
     def mark_metadata(self,targets):
         items={self.metadata_key(target):(target,saved) for target,saved in self.metadata_items()}
@@ -380,8 +490,89 @@ class Journal:
         if any(key not in items for key in keys):raise RuntimeError('配置变更目标超出受管范围')
         fresh=[key for key in keys if key not in self.plan.get('metadataIntents',[])]
         self.check_metadata_before_write([items[key] for key in fresh])
+        if 'metadataWrites' in self.plan:
+            for key in keys:
+                target,_=items[key]
+                if key in self.plan['metadataWrites']:self.check_owned_metadata(target)
+                self.plan['metadataWrites'][key]={'before':digest(target) if _io_path(target).exists() else None,'after':None,'completed':False}
         self.plan.setdefault('metadataIntents',[]).extend(fresh)
         self.plan['metadataPhase']='applying';self.save()
+
+    def finish_metadata(self,targets):
+        """Record successful owned-writer outputs, not unverified future changes."""
+        if 'metadataWrites' not in self.plan:return
+        for target in targets:
+            target=Path(target).absolute();key=self.metadata_key(target)
+            if key not in self.plan.get('metadataIntents',[]):raise RuntimeError('配置写入缺少变更意图')
+            entry=self.plan['metadataWrites'].setdefault(key,{'before':None,'after':None,'completed':False})
+            entry['after']=digest(target) if _io_path(target).exists() else None
+            if key=='hermes:cron/jobs.json' and _io_path(target).exists():
+                # Old stores can contain a noncanonical/invalid document. Its exact
+                # owned write remains recoverable; it gains no semantic exemption.
+                entry.pop('afterDefinitionDigest',None)
+                try:entry['afterDefinitionDigest']=cron_definition(target)
+                except (OSError,ValueError,RuntimeError):pass
+            entry['completed']=True
+        self.save()
+
+    def metadata_restore_entry(self,target,saved):
+        entry=self.plan.get('metadataRestores',{}).get(self.metadata_key(target))
+        if entry is None:return None,False
+        if (not isinstance(entry,dict) or set(entry)!={'archive','currentDigest','currentIdentity','savedDigest','phase'}
+                or not isinstance(entry['archive'],str)
+                or not re.fullmatch(r'failed-new/metadata/[a-f0-9]{32}/(?:0|[1-9][0-9]*)',entry['archive'])
+                or entry['phase'] not in ('intent','archived','restored')
+                or any(value is not None and not re.fullmatch('[a-f0-9]{64}',str(value))
+                       for value in (entry['currentDigest'],entry['savedDigest']))
+                or (entry['currentDigest'] is None) != (entry['currentIdentity'] is None)
+                or entry['currentIdentity'] is not None and (not isinstance(entry['currentIdentity'],list)
+                    or len(entry['currentIdentity'])!=2 or any(type(value) is not int for value in entry['currentIdentity']))):
+            raise RuntimeError('配置恢复检查点无效')
+        saved=self.metadata_saved(target,saved)
+        if entry['savedDigest']!=(digest(saved) if _io_path(saved).exists() else None):
+            raise RuntimeError('配置恢复快照与检查点不一致')
+        archive=safe_path(self.backup,entry['archive']);archived=_io_path(archive).exists()
+        if archived:
+            if (entry['currentDigest'] is None or identity(archive)!=entry['currentIdentity']
+                    or digest(archive)!=entry['currentDigest']):
+                raise RuntimeError('配置恢复归档身份或内容已变化，已保留现场。')
+        elif entry['currentDigest'] is not None and (entry['phase']!='intent' or not _io_path(target).exists()):
+            raise RuntimeError('配置恢复归档缺失，已保留现场。')
+        return entry,archived
+
+    def check_owned_metadata(self,target):
+        key=self.metadata_key(target)
+        current=digest(target) if _io_path(target).exists() else None
+        for candidate,saved in self.metadata_items():
+            if candidate==target:
+                restoring,archived=self.metadata_restore_entry(target,saved);break
+        else:restoring,archived=None,False
+        if restoring is not None:
+            if restoring['phase']=='restored':return  # Never overwrite later user edits on retry.
+            if current==restoring['savedDigest']:return
+            if archived and current is None:return
+            if not archived and current==restoring['currentDigest'] and identity(target)==restoring['currentIdentity']:return
+            owner,kind=self.metadata_role(target)
+            error=RuntimeError('配置恢复期间出现未归属的变化，当前配置已保留。 '
+                f'[path={key}; owner={owner}; type={kind}; expected={restoring["savedDigest"]}; after={current}]')
+            error.code='CONDITIONS_CHANGED';raise error
+        if 'metadataWrites' not in self.plan:return  # Existing journals keep their original contract.
+        entry=self.plan['metadataWrites'].get(key)
+        if entry is None:raise RuntimeError('配置恢复缺少写入收据，当前配置已保留。')
+        if current==entry['before'] or entry['completed'] and current==entry['after']:return
+        for candidate,saved in self.metadata_items():
+            if candidate==target:
+                saved=self.metadata_saved(target,saved)
+                if current==(digest(saved) if _io_path(saved).exists() else None):return
+                break
+        if key=='hermes:cron/jobs.json' and entry.get('afterDefinitionDigest'):
+            try:
+                if cron_definition(target)==entry['afterDefinitionDigest']:return
+            except (OSError,ValueError,RuntimeError):pass
+        owner,kind=self.metadata_role(target)
+        error=RuntimeError('配置写入后出现未归属的变化，当前配置已保留。 '
+            f'[path={key}; owner={owner}; type={kind}; expected={entry["after"]}; after={current}]')
+        error.code='CONDITIONS_CHANGED';raise error
 
     def snapshot_state(self):
         item=self.plan['state']
@@ -445,20 +636,44 @@ class Journal:
         return items
 
     def restore_metadata(self):
+        # Check all configuration first. A later conflict must not partially overwrite
+        # other user changes before it is noticed.
+        if self.plan.get('metadataPhase')=='restored':return
+        for target,_ in self.metadata_items():
+            if self.metadata_key(target) in self.plan.get('metadataIntents',[]):self.check_owned_metadata(target)
         for index,(target,saved) in enumerate(self.metadata_items()):
             if 'metadataIntents' in self.plan and self.metadata_key(target) not in self.plan['metadataIntents']:continue
+            saved=self.metadata_saved(target,saved)
+            key=self.metadata_key(target);entry,archived=self.metadata_restore_entry(target,saved)
+            if entry is not None and entry['phase']=='restored':continue
             if _io_path(target).exists() and _io_path(saved).exists() and digest(target)==digest(saved):
-                restore_permissions(saved,target);continue
-            if not _io_path(target).exists() and not _io_path(saved).exists():continue
-            archive=safe_path(self.backup,'failed-new/metadata/'+uuid.uuid4().hex+'/'+str(index))
+                restore_permissions(saved,target)
+                if entry is not None:entry['phase']='restored';self.save()
+                continue
+            if not _io_path(target).exists() and not _io_path(saved).exists():
+                if entry is not None:entry['phase']='restored';self.save()
+                continue
+            if entry is None:
+                entry={'archive':'failed-new/metadata/'+uuid.uuid4().hex+'/'+str(index),
+                    'currentDigest':digest(target) if _io_path(target).exists() else None,
+                    'currentIdentity':identity(target),'savedDigest':digest(saved) if _io_path(saved).exists() else None,
+                    'phase':'intent'}
+                self.plan.setdefault('metadataRestores',{})[key]=entry;self.save()
+            archive=safe_path(self.backup,entry['archive'])
             if _io_path(target).exists():
+                self.check_owned_metadata(target)
+                if archived:raise RuntimeError('配置恢复目标与归档同时存在，当前配置已保留。')
                 _io_path(archive).parent.mkdir(parents=True,exist_ok=True);os.replace(_io_path(target),_io_path(archive))
+            entry['phase']='archived';self.save()
             if _io_path(saved).exists():
                 _io_path(target).parent.mkdir(parents=True,exist_ok=True)
                 temporary=target.with_name('.nora-restore-'+uuid.uuid4().hex)
                 if _io_path(saved).is_dir():shutil.copytree(_io_path(saved),_io_path(temporary),symlinks=True)
                 else:shutil.copy2(_io_path(saved),_io_path(temporary))
+                if _io_path(target).exists():
+                    error=RuntimeError('配置恢复期间目标重新出现，当前配置已保留。');error.code='CONDITIONS_CHANGED';raise error
                 os.replace(_io_path(temporary),_io_path(target))
+            entry['phase']='restored';self.save()
 
     def receipt_status(self,status):
         path=safe_path(self.backup,RECEIPT);receipt=read_object(path)

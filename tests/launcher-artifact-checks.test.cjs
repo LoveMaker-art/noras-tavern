@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp } =
+const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork } =
   require('../tooling/checks/launcher-artifact-checks.cjs');
 const { verifyInputs, verifySource, verifyDiff } =
   require('../tooling/checks/restore-launcher-check-package.cjs');
@@ -172,6 +172,48 @@ test('APP check refuses a missing receipt interpreter before launching an applic
   assert.throws(() => checkApp({ release: f.release, python: path.join(f.root, 'missing python.exe'),
     report: path.join(f.root, 'fresh report.json'), platform: 'win32' }));
   assert.equal(fs.existsSync(path.join(f.root, 'fresh report.json')), false);
+});
+
+function networkReportFixture(t) {
+  const f = windowsFixture(t), names = ['release-network.js', 'release-sources.js', 'launcher-errors.js', 'release-sources.json'];
+  const relative = path.relative(f.root, f.launcher);
+  const moduleHashes = Object.fromEntries(names.map(name => {
+    const file = f.write(`${relative}/desktop/${name}`, `source ${name}`);
+    return [name, hash(fs.readFileSync(file))];
+  }));
+  const report = path.join(f.root, 'network report.json');
+  const value = {schema: 'nora-electron-network/1', scope: 'packaged-network-modules-in-native-chromium',
+    platform: 'win32', arch: 'x64', versions: {electron: '38.8.6'}, actualChromiumNet: true, windowCount: 0,
+    executable: {path: f.executable, sha256: hash(fs.readFileSync(f.executable))},
+    runtimeExecutable: {path: '/isolated/runtime.exe', sha256: hash(fs.readFileSync(f.executable))},
+    asar: {path: f.asar, sha256: hash(fs.readFileSync(f.asar))}, moduleHashes,
+    assertions: Object.fromEntries(['manualRedirect', 'sourceFallback', 'untrustedRedirectRefused', 'abort', 'sessionProxy', 'streaming', 'deadline'].map(name => [name, true]))};
+  const save = () => fs.writeFileSync(report, JSON.stringify(value));
+  save();
+  return {...f, report, value, save, options: {executable: f.executable, asar: f.asar, launcher: f.launcher, platform: 'win32', arch: 'x64'}};
+}
+test('network gate binds real Chromium, runtime executable, ASAR and the exact network module closure', t => {
+  const f = networkReportFixture(t);
+  assert.deepEqual(verifyNetworkReport(f.report, f.options), f.value);
+});
+for (const [label, mutate] of [
+  ['Node execution', value => value.actualChromiumNet = false],
+  ['source modules only', value => value.scope = 'source-network-modules-in-native-chromium'],
+  ['different executable bytes', value => value.runtimeExecutable.sha256 = '0'.repeat(64)],
+  ['different ASAR bytes', value => value.asar.sha256 = '0'.repeat(64)],
+  ['missing streaming proof', value => delete value.assertions.streaming],
+  ['missing abort proof', value => delete value.assertions.abort],
+  ['missing deadline proof', value => delete value.assertions.deadline],
+  ['unexpected window', value => value.windowCount = 1],
+  ['missing source rules', value => delete value.moduleHashes['release-sources.json']],
+  ['extra unverified module', value => value.moduleHashes['other.js'] = '0'.repeat(64)],
+]) test(`network gate rejects ${label}`, t => {
+  const f = networkReportFixture(t); mutate(f.value); f.save();
+  assert.throws(() => verifyNetworkReport(f.report, f.options));
+});
+test('network check refuses stale evidence before copying or running the runtime', t => {
+  const f = networkReportFixture(t);
+  assert.throws(() => checkNetwork({release: f.release, report: f.report, platform: 'win32'}), /stale network report/);
 });
 
 function diagnosticInputs() {

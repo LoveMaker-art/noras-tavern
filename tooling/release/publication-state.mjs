@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import {verifyFinalConsumers} from './final-consumer.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
@@ -145,12 +146,23 @@ export async function loadPublication({root, stateDir, repository, tag, commit, 
     return {root, stateDir, plan: {...plan, objects}, sealedPlan: plan, state,release};
 }
 
-export async function executePublication(publication, {stage = 'seal', providers, publisherCommit = '', log = console.log} = {}) {
+export async function executePublication(publication, {stage = 'seal', providers, publisherCommit = '', log = console.log,
+    verifyConsumers = verifyFinalConsumers} = {}) {
     assert.ok(stages.has(stage), 'Invalid publication stage');
     const {state, plan, stateDir} = publication;
     const save = () => { state.updatedAt = new Date().toISOString(); atomic(path.join(stateDir, 'publication-state.json'), state); };
     if (publisherCommit && !state.publishers.includes(publisherCommit)) state.publishers.push(publisherCommit);
     save();
+    // Re-run against the sealed objects on every entry, including resumed
+    // preparation/promotion. A prior success flag never certifies newer tools.
+    try {
+        const consumerReport = await verifyConsumers(publication);
+        atomic(path.join(stateDir, 'final-consumer-acceptance.json'), consumerReport);
+    } catch (error) {
+        state.status = 'failed';
+        state.failure = {failures:[{phase:'consumer-acceptance',message:String(error.message).slice(0,1000)}], at:new Date().toISOString()};
+        save(); throw error;
+    }
     if (stage === 'seal') return state;
     for (const source of ['sourceforge', 'github']) {
         for (const method of ['begin', 'inspect', 'upload', 'verify', 'assertReady', 'checkPromotion', 'promote', 'verifyPromotion']) {

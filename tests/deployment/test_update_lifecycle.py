@@ -12,6 +12,7 @@ from contextlib import ExitStack
 from unittest.mock import patch, Mock
 
 from ops.installer import launcher_bridge as bridge
+from ops.installer import launcher_services as services
 from ops.updater import update
 
 
@@ -276,6 +277,99 @@ class UpdateLifecycleTests(unittest.TestCase):
         journal.parent.mkdir(parents=True)
         journal.write_text('{broken')
         self.assertEqual(bridge.nora_system.update_recovery(self.args.install_root)['status'], 'unknown')
+
+
+class RecoveryGatewayConnectionTests(unittest.TestCase):
+    def exercise(self, *, before_connected, now_connected, receipt_recovery=False, damaged=False):
+        from ops.tests import test_update_recovery as recovery_fixtures
+        import sys
+        fixture = recovery_fixtures.InterruptedRecoveryTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.before.update(systemReady=True, gatewayRunning=True)
+        if damaged:
+            fixture.before.update(systemReady=False,
+                systemProblems=['技能文件缺失：skills/creative/tavern/SKILL.md'])
+        if before_connected is not None:
+            fixture.before['clawchatConnected'] = before_connected
+        journal = fixture.journal()
+        journal.snapshot_state()
+        journal.swap('app')
+        args = SimpleNamespace(nora_home=fixture.base, hermes_home=fixture.home,
+            install_root=fixture.root, port=8799, command='update-lifecycle')
+        state = {**fixture.before, 'clawchatConnected': now_connected}
+        child = Mock(pid=77)
+        child.poll.return_value = None
+        process = Mock(pid=77)
+        process.cmdline.return_value = ['fixture-python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        process.create_time.return_value = 123.0
+        trace = []
+
+        def resume(plan, _backup):
+            trace.append('bridge.rollback')
+            before = dict(plan['before'])
+            # Older lifecycle clients lacked this field; preserve their stricter start contract.
+            if before_connected is None:
+                before.pop('clawchatConnected')
+            bridge.command_update_lifecycle(args, {'phase': 'rollback',
+                'before': before, 'version': '2.4.4',
+                'noraHome': str(args.nora_home), 'hermesHome': str(args.hermes_home),
+                'installRoot': str(args.install_root),
+                **({'receiptRecovery': {'fixture': True}} if receipt_recovery else {})})
+
+        with ExitStack() as stack:
+            stack.enter_context(patch.dict(sys.modules, {'psutil': SimpleNamespace(Process=lambda _pid: process)}))
+            stack.enter_context(patch.object(bridge, 'command_stop'))
+            stack.enter_context(patch.object(bridge, 'installed', return_value=True))
+            stack.enter_context(patch.object(bridge.nora_system, 'update_recovery', return_value=False))
+            stack.enter_context(patch.object(bridge.nora_system, 'installation_state',
+                return_value={'ready': True, 'setupCompleted': True}))
+            stack.enter_context(patch.object(bridge.nora_system, 'inspect', return_value={
+                'version': fixture.before['version'], 'ready': not damaged,
+                'problems': fixture.before.get('systemProblems', [])}))
+            stack.enter_context(patch.object(bridge, 'env_for', return_value={}))
+            stack.enter_context(patch.object(bridge, 'python_command', return_value='fixture-python'))
+            stack.enter_context(patch.object(bridge, 'status_payload', return_value=state))
+            stack.enter_context(patch.object(bridge, 'missing_receipt_snapshot', return_value={'fixture': True}))
+            stack.enter_context(patch.object(bridge, 'emit'))
+            stack.enter_context(patch.object(bridge, 'run_stream', side_effect=lambda *_args, **_kw: trace.append('tavern.start')))
+            stack.enter_context(patch.object(services, 'owned_gateway', return_value=None))
+            stack.enter_context(patch.object(services, '_check_gateway_hint'))
+            stack.enter_context(patch.object(services.subprocess, 'Popen', side_effect=lambda *_args, **_kw: (trace.append('gateway.spawn') or child)))
+            stack.enter_context(patch.object(services, 'gateway_status',
+                return_value={'gatewayRunning': True, 'clawchatConnected': now_connected}))
+            stack.enter_context(patch.object(services, 'time', SimpleNamespace(
+                monotonic=Mock(side_effect=[0, 0, 0, 0, 61]), sleep=Mock())))
+            try:
+                result = recovery_fixtures.recovery.recover(fixture.home, fixture.root,
+                    stop=lambda *_: {'offline': True}, resume=resume,
+                    verify=lambda *_: bridge.recovery_verify(args, fixture.before))
+            finally:
+                self.assertEqual(trace, ['bridge.rollback', 'tavern.start', 'gateway.spawn'])
+                self.assertEqual((fixture.old / 'program.txt').read_text(), 'old program')
+                self.assertEqual((fixture.home / 'config.yaml').read_text(), 'old config')
+            self.assertEqual(result['status'], 'restored')
+            return result
+
+    def test_running_disconnected_gateway_recovers_its_original_state(self):
+        self.exercise(before_connected=False, now_connected=False)
+
+    def test_missing_receipt_running_disconnected_gateway_recovers_its_original_state(self):
+        self.exercise(before_connected=False, now_connected=False, receipt_recovery=True)
+
+    def test_damaged_old_skills_running_disconnected_gateway_recovers_its_original_state(self):
+        self.exercise(before_connected=False, now_connected=False, damaged=True)
+
+    def test_previously_connected_gateway_still_requires_connection(self):
+        with self.assertRaises(services.GatewayConnectionError):
+            self.exercise(before_connected=True, now_connected=False)
+
+    def test_previously_connected_gateway_recovers_when_connected(self):
+        self.exercise(before_connected=True, now_connected=True)
+
+    def test_old_lifecycle_without_connection_field_keeps_strict_start(self):
+        with self.assertRaises(services.GatewayConnectionError):
+            self.exercise(before_connected=None, now_connected=False)
 
 
 if __name__ == '__main__':

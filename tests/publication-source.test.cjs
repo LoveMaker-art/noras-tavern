@@ -144,6 +144,7 @@ function fullCliFixture(t) {
     members[`nora-tavern-${target}`] = [[`nora-system-${target}.json`, systemBytes], [payloadName, payloadBytes]];
     members[`nora-operation-acceptance-${target}`] = [
       ['nora-packaged-app-acceptance.json', JSON.stringify(app)],
+      ['nora-electron-network-acceptance.json', JSON.stringify({...native.network, platform, arch})],
       ['runtime/harness-result.json', JSON.stringify({ ...native.runtime, platform, arch })],
       ['fresh/harness-result.json', JSON.stringify({ ...native.fresh, platform, arch })],
     ];
@@ -203,22 +204,46 @@ function nativeFixture(t) {
   fs.mkdirSync(delivery); fs.mkdirSync(reports, { recursive: true });
   const actorNames = ['operation_control.py', 'operation_cli.py', 'operation_evidence.py', 'desktop/operation-delegate.js'];
   const actors = Object.fromEntries(actorNames.map(name => [name, hash(name)]));
+  const networkModules = Object.fromEntries(['release-network.js', 'release-sources.js', 'release-sources.json', 'launcher-errors.js'].map(name => [name, hash(name)]));
   const payload = { commit: 'a'.repeat(40), candidate: false, dirty: false, hermesRuntime: { sha256: hash('runtime') },
-    artifacts: { ...Object.fromEntries(Object.entries(actors).map(([name, hash]) => ['ops/installer/' + name, hash])), 'ops/installer/desktop/main.js': hash('main') } };
+    artifacts: { ...Object.fromEntries(Object.entries(actors).map(([name, hash]) => ['ops/installer/' + name, hash])),
+      ...Object.fromEntries(Object.entries(networkModules).map(([name, hash]) => ['ops/installer/desktop/' + name, hash])), 'ops/installer/desktop/main.js': hash('main') } };
   const payloadBytes = JSON.stringify(payload), payloadHash = hash(payloadBytes); fs.writeFileSync(path.join(delivery, 'payload.json'), payloadBytes);
   const system = { commit: payload.commit, candidate: false, platform: 'darwin', arch: 'arm64', version: '2.4.4', files: { 'release-manifest.json': { asset: 'payload.json' } } };
   const systemBytes = JSON.stringify(system); fs.writeFileSync(path.join(delivery, 'nora-system-darwin-arm64.json'), systemBytes);
   const app = { schema: 'nora-app-candidate-gate/1', platform: 'darwin', arch: 'arm64', versions: { electron: 'fixture' }, payloadManifestSha256: hash(systemBytes),
-    moduleHashes: { 'main.js': hash('main'), 'operation-delegate.js': actors['desktop/operation-delegate.js'] },
+    executable:{sha256:hash('native-executable')}, asar:{sha256:hash('native-asar')},
+    moduleHashes: { ...networkModules, 'main.js': hash('main'), 'operation-delegate.js': actors['desktop/operation-delegate.js'] },
     assertions: Object.fromEntries(['actualElectron', 'nativeDependencyComplete', 'allFlatResourceHashesMatchCandidate', 'jsPythonReceiptAgree', 'arbitraryCliRefusedBeforeOperation'].map(name => [name, true])) };
   const runtime = { schema: 'nora-launcher-products-smoke/1', outcome: 'passed', platform: 'darwin', arch: 'arm64', executorHandles: 'verified-closed', operation: 'verified', runtime: 'verified', runtimeSha256: payload.hermesRuntime.sha256, actorSourceFiles: actors, releaseManifestSha256: null };
   const fresh = { ...runtime, releaseManifestSha256: payloadHash, actorSourceBinding: 'verified-selected-candidate-manifest', firstInstall: 'verified', http: 'verified', hermesSkills: 'verified', mcp: 'verified', stop: 'verified', userData: 'retained', modelConfiguration: 'verified-local-A-to-B-model-requests', committedFirstInstall: 'verified-real-resume-without-reinstall', missingSystemReceipt: 'verified-bound-repair-and-preserved-user-data', userConfigurationDigest: hash('user-config') };
+  const network = {schema:'nora-electron-network/1', scope:'packaged-network-modules-in-native-chromium', platform:'darwin', arch:'arm64',
+    versions:{electron:app.versions.electron}, executable:{...app.executable}, runtimeExecutable:{...app.executable}, asar:{...app.asar},
+    moduleHashes:{...networkModules}, actualChromiumNet:true, windowCount:0,
+    assertions:Object.fromEntries(['manualRedirect', 'sourceFallback', 'untrustedRedirectRefused', 'abort', 'sessionProxy', 'streaming', 'deadline'].map(name=>[name,true]))};
   const save = () => { fs.writeFileSync(path.join(reports, 'nora-packaged-app-acceptance.json'), JSON.stringify(app));
+    fs.writeFileSync(path.join(reports, 'nora-electron-network-acceptance.json'), JSON.stringify(network));
     for (const [name, value] of [['runtime', runtime], ['fresh', fresh]]) { fs.mkdirSync(path.join(reports, name), { recursive: true }); fs.writeFileSync(path.join(reports, name, 'harness-result.json'), JSON.stringify(value)); } };
-  save(); return { root, delivery, acceptance, app, runtime, fresh, save, commit: payload.commit };
+  save(); return { root, delivery, acceptance, app, network, runtime, fresh, save, commit: payload.commit };
 }
 test('native source acceptance parses the actual APP and process workflow evidence', async t => {
   const f = nativeFixture(t); const report = await verifyNativeAcceptance(f.delivery, f.acceptance, f.commit, ['darwin-arm64']); assert.equal(report['darwin-arm64'].harnessReports, 2);
+});
+for (const [name, mutate] of [
+  ['Node substituted for Chromium', f=>f.network.actualChromiumNet=false],
+  ['unverified redirect', f=>f.network.assertions.manualRedirect=false],
+  ['different network module', f=>f.network.moduleHashes['release-network.js']=hash('other')],
+  ['different native runtime', f=>f.network.runtimeExecutable.sha256=hash('other')],
+  ['different packed resources', f=>f.network.asar.sha256=hash('other')],
+]) test(`accepted source refuses ${name}`, async t=>{
+  const f=nativeFixture(t); mutate(f); f.save();
+  await assert.rejects(verifyNativeAcceptance(f.delivery,f.acceptance,f.commit,['darwin-arm64']));
+});
+test('native source acceptance refuses absence of real Chromium network evidence', async t => {
+  const f = nativeFixture(t);
+  const report = path.join(f.acceptance, 'nora-operation-acceptance-darwin-arm64/nora-electron-network-acceptance.json');
+  fs.rmSync(report, {force:true});
+  await assert.rejects(verifyNativeAcceptance(f.delivery, f.acceptance, f.commit, ['darwin-arm64']), /network|native report/);
 });
 for (const [name, mutate] of [['false APP assertion', f => f.app.assertions.actualElectron = false], ['missing production module proof', f => delete f.app.moduleHashes['main.js']], ['wrong APP payload', f => f.app.payloadManifestSha256 = hash('other')],
   ['failed native workflow', f => f.fresh.outcome = 'failed'], ['unclosed process', f => f.runtime.executorHandles = 'unverified'],

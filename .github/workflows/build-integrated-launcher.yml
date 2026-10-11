@@ -218,6 +218,10 @@ jobs:
         timeout-minutes: 10
         shell: bash
         run: node tooling/checks/launcher-artifact-checks.cjs app
+      - name: Verify packaged network modules in native Chromium
+        timeout-minutes: 5
+        shell: bash
+        run: node tooling/checks/launcher-artifact-checks.cjs network
       - name: Verify packaged Nora images and instructions
         shell: bash
         run: node tooling/checks/launcher-artifact-checks.cjs images
@@ -230,6 +234,7 @@ jobs:
           path: |
             ${{ runner.temp }}/nora-package-check-source.json
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-electron-network-acceptance.json
             ${{ runner.temp }}/nora-installed-*-acceptance.json
             release/*/nora-tavern-launcher/desktop/dist/Nora-Tavern-package-verification-*.json
           if-no-files-found: warn
@@ -342,6 +347,18 @@ jobs:
       - name: Install launcher test dependencies
         working-directory: launcher/desktop
         run: npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Check source networking in pinned native Chromium before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          node --test tests/release-consumer.test.mjs
+          node launcher/desktop/node_modules/electron/install.js
+          node tooling/run.mjs node --test tests/deployment/launcher_electron_network.test.cjs
+
+      - name: Verify failed-install recovery and error classification before preparing runtimes
+        timeout-minutes: 5
+        run: node tooling/run.mjs node --test tests/deployment/launcher_errors.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_state.test.cjs
 
       - name: Verify cold-profile bootstrap identity before preparing runtimes
         run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
@@ -742,6 +759,11 @@ jobs:
         shell: bash
         run: node tooling/checks/launcher-artifact-checks.cjs app
 
+      - name: Verify packaged network modules in native Chromium
+        timeout-minutes: 5
+        shell: bash
+        run: node tooling/checks/launcher-artifact-checks.cjs network
+
       - name: Preserve isolated operation acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -752,6 +774,7 @@ jobs:
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-electron-network-acceptance.json
             ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
             ${{ runner.temp }}/nora-upgrade-baseline/baseline-source-receipt.json
             ${{ runner.temp }}/nora-installed-*-acceptance.json

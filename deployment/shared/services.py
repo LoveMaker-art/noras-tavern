@@ -243,7 +243,7 @@ def _check_gateway_hint(hermes_home):
         raise GatewayIdentityError(_GATEWAY_IDENTITY_MESSAGE) from cause
 
 
-def start_gateway(nora_home, hermes_home, command, env, timeout=60):
+def start_gateway(nora_home, hermes_home, command, env, timeout=60, *, require_connection=True):
     import psutil
 
     process = owned_gateway(nora_home, require_readable=True)
@@ -285,10 +285,12 @@ def start_gateway(nora_home, hermes_home, command, env, timeout=60):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         result = gateway_status(nora_home, hermes_home)
-        if result["clawchatConnected"]:
-            return result
         if not result["gatewayRunning"]:
             raise RuntimeError("Nora 启动后退出，请检查运行环境和 ClawChat 配置。")
+        # Recovery may restore an originally running, disconnected gateway.
+        # Ownership and the live process remain mandatory in both modes.
+        if result["clawchatConnected"] or require_connection is False:
+            return result
         time.sleep(0.5)
     raise GatewayConnectionError("Nora 已启动，但 ClawChat 未在一分钟内连通。请检查网络或重新配对。")
 

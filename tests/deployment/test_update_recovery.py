@@ -24,7 +24,7 @@ def load_updater():
     return module
 
 
-def install_fixture(base,*,interrupt=False,success=False):
+def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
     """Run the real managed transaction, substituting only release/services."""
     updater=load_updater();base=Path(base).resolve();home=base/'hermes';root=base/'tavern'
     (home/'skills').mkdir(parents=True);(root/'apps/tavern-runtime').mkdir(parents=True)
@@ -41,6 +41,11 @@ def install_fixture(base,*,interrupt=False,success=False):
         for relative in [*(f'skills/{skill}/SKILL.md' for skill in nora_system.SKILLS),*nora_system.MANAGED_FILES]:
             file=home/relative;file.parent.mkdir(parents=True,exist_ok=True)
             file.write_text('fixture managed content')
+    if cron_mutation:
+        cron=home/'cron/jobs.json';cron.parent.mkdir(exist_ok=True)
+        cron.write_text(json.dumps({'jobs':[{'id':'daily','script':'check.py','enabled':True,
+            'schedule':{'kind':'cron','expr':'0 9 * * *'},'state':'scheduled',
+            'fire_claim':{'by':'fixture-gateway'},'last_run_at':None}], 'updated_at':'before'}))
     before={'version':'2.3.17','running':True,'gatewayRunning':False,
             'clawchatConnected':False,'systemReady':True}
     instance={'schema':1,'noraHome':str(base),'hermesHome':str(home),'installRoot':str(root),'port':8799}
@@ -55,10 +60,17 @@ def install_fixture(base,*,interrupt=False,success=False):
         return {'changedModules':['nora-runtime']}
     def service(phase,*_):
         phases.append(phase)
-        if phase=='stop': return {'offline':True}
+        if phase=='stop':
+            if cron_mutation:
+                value=json.loads(cron.read_text());value['updated_at']='stopped'
+                value['jobs'][0].update(fire_claim=None,last_run_at='2026-10-11T02:00:00Z',last_status='ok')
+                if cron_mutation=='definition':value['jobs'][0]['script']='user-selected-private-task.py'
+                cron.write_text(json.dumps(value))
+            return {'offline':True}
         if phase=='recover-stop':
             evidence=base/'installer/operations/11111111-1111-4111-8111-111111111111/evidence/python.json'
-            assert json.loads(evidence.read_text())['primary']['message']=='new runtime failed'
+            message=json.loads(evidence.read_text())['primary']['message']
+            assert ('配置已发生变化' in message if cron_mutation=='definition' else message=='new runtime failed')
             return {'offline':True}
         if phase=='verify':return {**before,'version':manifest['versions']['tavern']}
         return dict(before)
@@ -112,6 +124,29 @@ def install_fixture(base,*,interrupt=False,success=False):
 
 
 class ManagedInstallRecoveryTests(unittest.TestCase):
+    def test_real_install_allows_offline_cron_bookkeeping_and_commits_verified_version(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-') as temporary:
+            base=Path(temporary).resolve()
+            self.assertEqual(install_fixture(base,success=True,cron_mutation='runtime'),['preflight','stop','verify'])
+            transaction=json.loads((base/'tavern/tavern-updates/transaction.json').read_text())
+            self.assertEqual(transaction['status'],'committed')
+            backup=Path(transaction['backup'])
+            original=json.loads((backup/'managed/targets/cron/jobs.json').read_text())
+            stopped=json.loads((backup/'runtime-state/cron-jobs.json').read_text())
+            self.assertIsNotNone(original['jobs'][0]['fire_claim'])
+            self.assertIsNone(stopped['jobs'][0]['fire_claim'])
+            self.assertEqual(json.loads((base/'hermes/cron/jobs.json').read_text()),stopped)
+
+    def test_real_install_rejects_task_change_and_keeps_user_definition_while_resuming_old_version(self):
+        with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-user-') as temporary:
+            base=Path(temporary).resolve()
+            with self.assertRaisesRegex(RuntimeError,'配置已发生变化.*recovery=restored'):
+                install_fixture(base,success=True,cron_mutation='definition')
+            self.assertEqual((base/'tavern/apps/tavern-runtime/program.txt').read_text(),'old program')
+            self.assertEqual(json.loads((base/'hermes/cron/jobs.json').read_text())['jobs'][0]['script'],
+                             'user-selected-private-task.py')
+            self.assertEqual(json.loads((base/'tavern/tavern-updates/transaction.json').read_text())['status'],'restored')
+
     def test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-committed-') as temporary:
             base=Path(temporary).resolve();home=base/'hermes';root=base/'tavern'
@@ -173,6 +208,49 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((home/'SOUL.md').read_text(),'old soul')
 
 
+class CronMetadataClassificationTests(unittest.TestCase):
+    def test_only_proven_unbounded_run_state_is_exempt_from_definition_digest(self):
+        original={'jobs':[{'id':'daily','script':'private-task.py','prompt':'private-fixture',
+            'enabled':True,'paused_at':None,'schedule':{'kind':'cron','expr':'0 9 * * *'},
+            'state':'scheduled','repeat':{'times':None,'completed':0},'fire_claim':{'by':'scheduler'}}],
+            'updated_at':'before'}
+        mutations={
+            'runtime':lambda item:item['jobs'][0].update(last_run_at='now',last_status='ok',fire_claim=None,
+                next_run_at='later',state='error',repeat={'times':None,'completed':1}),
+            'script':lambda item:item['jobs'][0].update(script='other.py'),
+            'schedule':lambda item:item['jobs'][0].update(schedule={'kind':'cron','expr':'0 8 * * *'}),
+            'enabled':lambda item:item['jobs'][0].update(enabled=False),
+            'paused':lambda item:item['jobs'][0].update(state='paused'),
+            'unknown-running':lambda item:item['jobs'][0].update(state='running'),
+            'identity':lambda item:item['jobs'][0].update(id='different'),
+            'unknown':lambda item:item['jobs'][0].update(new_user_field='private'),
+            'top-level':lambda item:item.update(new_config='private'),
+        }
+        with tempfile.TemporaryDirectory(prefix='nora-cron-definition-') as temporary:
+            path=Path(temporary)/'jobs.json';path.write_text(json.dumps(original))
+            before=recovery.cron_definition(path)
+            for name,mutate in mutations.items():
+                with self.subTest(name=name):
+                    candidate=json.loads(json.dumps(original));candidate['updated_at']='after';mutate(candidate)
+                    path.write_text(json.dumps(candidate))
+                    self.assertEqual(recovery.cron_definition(path)==before,name=='runtime')
+
+    def test_finite_repeat_budget_and_malformed_or_duplicate_tasks_stay_protected(self):
+        with tempfile.TemporaryDirectory(prefix='nora-cron-definition-invalid-') as temporary:
+            path=Path(temporary)/'jobs.json'
+            finite={'jobs':[{'id':'daily','enabled':True,'schedule':{'kind':'cron'},
+                            'state':'scheduled','repeat':{'times':2,'completed':0}}]}
+            path.write_text(json.dumps(finite));before=recovery.cron_definition(path)
+            finite['jobs'][0]['repeat']['completed']=1;path.write_text(json.dumps(finite))
+            self.assertNotEqual(recovery.cron_definition(path),before)
+            for invalid in [[],{}, {'jobs':[{'id':'daily'},{'id':'daily'}]}, {'jobs':[{'id':None}]}]:
+                with self.subTest(invalid=invalid):
+                    path.write_text(json.dumps(invalid))
+                    with self.assertRaises(ValueError):recovery.cron_definition(path)
+            path.write_text('incomplete private-fixture')
+            with self.assertRaises(ValueError):recovery.cron_definition(path)
+
+
 class InterruptedRecoveryTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='nora-recovery-test-')
@@ -210,7 +288,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         if metadata_changes:
             journal.plan['metadataPhase']='applying'
             journal.plan['metadataIntents']=[journal.metadata_key(target) for target,_ in journal.metadata_items()]
-            journal.save()
+            journal.finish_metadata([target for target,_ in journal.metadata_items()])
         return journal
 
     def committed_journal(self):
@@ -332,6 +410,66 @@ class InterruptedRecoveryTests(unittest.TestCase):
         self.run_recover(); self.assert_restored()
         self.assertEqual(self.old.stat().st_ino,inode)
 
+    def interrupt_metadata_restore(self,point,*,legacy=False):
+        target=self.home/'config.yaml';saved=self.backup/'host/config.yaml'
+        shutil.copy2(saved,target)
+        shutil.copy2(self.backup/'agents-rollback/AGENTS.md',self.home/'AGENTS.md')
+        journal=self.journal(metadata_changes=False)
+        journal.mark_metadata([target]);target.write_text('owned failed configuration');journal.finish_metadata([target])
+        if legacy:journal.plan.pop('metadataWrites');journal.save()
+        journal.snapshot_state();journal.swap('app')
+        if point=='move':
+            replace=recovery.os.replace
+            def interrupt(source,destination):
+                replace(source,destination)
+                if Path(source)==target:raise KeyboardInterrupt('metadata move completed')
+            context=patch.object(recovery.os,'replace',side_effect=interrupt)
+        else:
+            copy=recovery.shutil.copy2
+            def interrupt(source,destination,*args,**kwargs):
+                if Path(source)==saved:
+                    if point=='copied':copy(source,destination,*args,**kwargs)
+                    raise KeyboardInterrupt('metadata copy interrupted')
+                return copy(source,destination,*args,**kwargs)
+            context=patch.object(recovery.shutil,'copy2',side_effect=interrupt)
+        with context:
+            with self.assertRaises(KeyboardInterrupt):self.run_recover()
+        self.assertFalse(target.exists())
+        return journal,target
+
+    def test_metadata_restore_retry_after_owned_archive_move_restores_original_configuration(self):
+        self.interrupt_metadata_restore('move');self.run_recover();self.assert_restored()
+
+    def test_metadata_restore_retry_before_copy_restores_original_configuration(self):
+        self.interrupt_metadata_restore('copy');self.run_recover();self.assert_restored()
+
+    def test_metadata_restore_retry_after_copy_before_replace_restores_original_configuration(self):
+        self.interrupt_metadata_restore('copied');self.run_recover();self.assert_restored()
+
+    def test_legacy_schema_one_metadata_restore_checkpoint_can_resume_its_owned_move(self):
+        self.interrupt_metadata_restore('move',legacy=True);self.run_recover();self.assert_restored()
+
+    def test_metadata_restore_checkpoint_cannot_overwrite_a_new_unknown_user_file(self):
+        _,target=self.interrupt_metadata_restore('move')
+        target.write_text('new private user configuration after interrupted recovery')
+        with self.assertRaisesRegex(RuntimeError,'当前配置已保留'):self.run_recover()
+        self.assertEqual(target.read_text(),'new private user configuration after interrupted recovery')
+
+    def test_metadata_restore_retry_rejects_changed_owned_archive(self):
+        journal,target=self.interrupt_metadata_restore('move')
+        entry=json.loads(journal.file.read_text())['recoveryPlan']['metadataRestores']['hermes:config.yaml']
+        (self.backup/entry['archive']).write_text('modified failed output')
+        with self.assertRaisesRegex(RuntimeError,'配置恢复归档'):self.run_recover()
+        self.assertFalse(target.exists())
+
+    def test_metadata_restore_retry_rejects_same_bytes_under_a_different_archive_identity(self):
+        journal,target=self.interrupt_metadata_restore('move')
+        entry=json.loads(journal.file.read_text())['recoveryPlan']['metadataRestores']['hermes:config.yaml']
+        archive=self.backup/entry['archive'];replacement=self.base/'replacement'
+        replacement.write_bytes(archive.read_bytes());os.replace(replacement,archive)
+        with self.assertRaisesRegex(RuntimeError,'配置恢复归档'):self.run_recover()
+        self.assertFalse(target.exists())
+
     def test_service_restore_failure_can_retry_without_replacing_old_files(self):
         journal=self.journal(); journal.snapshot_state(); journal.swap('app')
         def fail(*_): raise RuntimeError('service restore failed')
@@ -370,6 +508,94 @@ class InterruptedRecoveryTests(unittest.TestCase):
         self.assertEqual(raised.exception.code,'CONDITIONS_CHANGED')
         self.run_recover()
         self.assertEqual((self.home/'config.yaml').read_text(),'user changed config after preparation')
+
+    def cron_journal(self):
+        # Only the gateway's run bookkeeping changes while services stop.
+        # The task definition and all user configuration remain unchanged.
+        for name, saved in [('config.yaml','host/config.yaml'),('AGENTS.md','agents-rollback/AGENTS.md')]:
+            shutil.copy2(self.backup/saved,self.home/name)
+        (self.root/'tavern-updates').mkdir()
+        shutil.copy2(self.backup/'host/update-receipts/installed.json',self.root/'tavern-updates/installed.json')
+        cron=self.home/'cron/jobs.json';cron.parent.mkdir()
+        prepared={'jobs':[{'id':'daily','script':'nora-tavern-update-check.py',
+            'schedule':{'kind':'cron','expr':'0 9 * * *'},'enabled':True,'state':'scheduled',
+            'run_claim':{'by':'fixture-gateway'},'last_run_at':None}], 'updated_at':'before-stop'}
+        cron.write_text(json.dumps(prepared))
+        first_install.snapshot_targets(self.home,[cron],self.backup/'managed')
+        journal=self.journal(state=False,metadata_changes=False)
+        offline={'jobs':[{**prepared['jobs'][0],'run_claim':None,'last_run_at':'2026-10-11T02:00:00Z',
+            'last_status':'ok','next_run_at':'2026-10-12T01:00:00Z'}], 'updated_at':'after-stop'}
+        cron.write_text(json.dumps(offline))
+        return journal,cron,offline
+
+    def test_offline_cron_runtime_updates_keep_task_definitions_and_latest_state_on_recovery(self):
+        journal,cron,offline=self.cron_journal()
+        journal.seal_offline({'offline':True})
+        journal.mark_metadata([cron]);journal.swap('app')
+        self.run_recover()
+        self.assertEqual(json.loads(cron.read_text()),offline)
+        self.assertEqual(len(journal.metadata_diagnostics()),1)
+        self.assertIn('classification=runtime-state-only',journal.metadata_diagnostics()[0])
+        self.assertNotIn(str(self.home),journal.metadata_diagnostics()[0])
+
+    def test_runtime_snapshot_tampering_is_rejected_before_service_or_file_changes(self):
+        journal,cron,_=self.cron_journal();journal.seal_offline({'offline':True})
+        (self.backup/'runtime-state/cron-jobs.json').write_text('{"jobs":[]}')
+        with self.assertRaisesRegex(RuntimeError,'运行状态恢复快照'):self.run_recover()
+        self.assertEqual(self.stop_calls,[])
+        self.assertEqual((self.old/'program.txt').read_text(),'old program')
+
+    def test_cron_definition_change_is_rejected_and_unknown_user_content_survives_recovery(self):
+        journal,cron,offline=self.cron_journal()
+        offline['jobs'][0]['script']='user-selected-script.py'
+        offline['jobs'][0]['prompt']='private user task secret-fixture'
+        cron.write_text(json.dumps(offline))
+        with self.assertRaises(RuntimeError) as raised:journal.seal_offline({'offline':True})
+        self.assertEqual(raised.exception.code,'CONDITIONS_CHANGED')
+        self.assertIn('path=hermes:cron/jobs.json',str(raised.exception))
+        self.assertIn('type=task-definitions-and-runtime-state',str(raised.exception))
+        self.assertNotIn('private user task',str(raised.exception))
+        self.run_recover()
+        self.assertEqual(json.loads(cron.read_text()),offline)
+
+    def test_cron_definition_changed_after_updater_write_is_not_overwritten_by_recovery(self):
+        journal,cron,offline=self.cron_journal();journal.seal_offline({'offline':True})
+        journal.mark_metadata([cron])
+        changed={**offline,'jobs':[{**offline['jobs'][0],'script':'new-updater-script.py'}]}
+        cron.write_text(json.dumps(changed));journal.finish_metadata([cron])
+        changed['jobs'][0]['script']='user-edited-after-update.py'
+        cron.write_text(json.dumps(changed));journal.swap('app')
+        with self.assertRaisesRegex(RuntimeError,'当前配置已保留'):self.run_recover()
+        self.assertEqual(json.loads(cron.read_text()),changed)
+
+    def test_unreceipted_deletion_is_not_assumed_to_be_an_owned_writer_output(self):
+        journal,cron,_=self.cron_journal();journal.seal_offline({'offline':True})
+        journal.mark_metadata([cron]);cron.unlink();journal.swap('app')
+        with self.assertRaisesRegex(RuntimeError,'当前配置已保留'):self.run_recover()
+        self.assertFalse(cron.exists())
+
+    def test_interrupted_partial_owned_write_preserves_unknown_current_bytes_and_original_backup(self):
+        journal,cron,_=self.cron_journal();journal.seal_offline({'offline':True})
+        journal.mark_metadata([cron]);journal.swap('app')
+        original=(self.backup/'managed/targets/cron/jobs.json').read_bytes()
+        partial=b'{"jobs": [uncompleted writer output'
+        cron.write_bytes(partial)
+        with self.assertRaisesRegex(RuntimeError,'未归属的变化'):self.run_recover()
+        self.assertEqual(cron.read_bytes(),partial)
+        self.assertEqual((self.backup/'managed/targets/cron/jobs.json').read_bytes(),original)
+        self.assertEqual(json.loads(journal.file.read_text())['status'],'recovery-failed')
+
+    def test_schema_one_legacy_journal_without_write_receipts_keeps_existing_recovery_contract(self):
+        journal=self.journal();journal.plan.pop('metadataWrites');journal.save()
+        journal.snapshot_state();journal.swap('app');self.run_recover();self.assert_restored()
+
+    def test_retry_after_metadata_restored_does_not_overwrite_new_user_configuration(self):
+        journal=self.journal();journal.snapshot_state();journal.swap('app')
+        with self.assertRaisesRegex(RuntimeError,'service restore failed'):
+            self.run_recover(resume=lambda *_:(_ for _ in ()).throw(RuntimeError('service restore failed')))
+        (self.home/'config.yaml').write_text('user changed config while recovery waits')
+        self.run_recover()
+        self.assertEqual((self.home/'config.yaml').read_text(),'user changed config while recovery waits')
 
     def test_pending_code_snapshot_is_sealed_after_offline_without_changing_identity(self):
         journal=self.journal(state=False,metadata_changes=False)
@@ -579,6 +805,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         (managed/'snapshot.json').write_text(json.dumps(records))
         journal=self.journal();journal.snapshot_state();journal.swap('app')
         (self.home/'cron').mkdir();(self.home/'cron/jobs.json').write_text('new jobs')
+        journal.finish_metadata([self.home/'cron/jobs.json'])
         recovery.recover(self.home,self.root,stop=lambda *_:{'offline':True},resume=lambda *_:None,
                          verify=lambda *_:dict(self.before))
         self.assertEqual((self.home/'cron/jobs.json').read_text(),'old jobs')

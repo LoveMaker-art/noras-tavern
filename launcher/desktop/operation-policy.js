@@ -41,6 +41,9 @@ function validConditions(proof){
       &&(item.identity===null||Array.isArray(item.identity)&&item.identity.length===2&&item.identity.every(part=>/^\d+$/.test(part)))
       &&[true,false,null].includes(item.writable))&&Array.isArray(proof.facts.networkReads)&&proof.facts.networkReads.length<=8
     &&proof.facts.networkReads.every(item=>item?.readable===true&&/^[a-f0-9]{64}$/.test(item.identity||'')&&/^[a-f0-9]{64}$/.test(item.routeHash||''))
+    &&(proof.facts.installSelections===undefined||Array.isArray(proof.facts.installSelections)&&proof.facts.installSelections.length<=8
+      &&proof.facts.installSelections.every(item=>item?.verified===true&&/^[a-f0-9]{64}$/.test(item.identity||''))
+      &&new Set(proof.facts.installSelections.map(item=>item.identity)).size===proof.facts.installSelections.length)
     &&conditionFingerprint(proof.facts)===proof.fingerprint;
 }
 
@@ -62,7 +65,11 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       const reads=new Map(previous.facts.networkReads.map(item=>[item.identity,item]));
       for(const item of proof.facts.networkReads)reads.set(item.identity,item);
       if(reads.size>8)return null;
-      const facts={...proof.facts,networkReads:[...reads.values()]};
+      const selections=new Map((previous.facts.installSelections||[]).map(item=>[item.identity,item]));
+      for(const item of proof.facts.installSelections||[])selections.set(item.identity,item);
+      if(selections.size>8)return null;
+      const facts={...proof.facts,networkReads:[...reads.values()],
+        ...(proof.facts.installSelections!==undefined||previous.facts.installSelections!==undefined?{installSelections:[...selections.values()]}:{})};
       return {schema:CONDITION_SCHEMA,facts,fingerprint:conditionFingerprint(facts)};
     }catch{return null;}
   }
@@ -222,6 +229,56 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
   const present=file=>{try{fs.lstatSync(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
   const regular=file=>{try{const stat=fs.lstatSync(file);return stat.isFile()&&!stat.isSymbolicLink();}
     catch(error){if(error.code==='ENOENT')return false;throw error;}};
+  function untouchedSelection(record,effects){
+    if(record.kind!=='install'||record.target?.request?.action!=='install'||!['failed','blocked'].includes(record.state)
+      ||record.stageId!=='selecting'||!record.primaryFailure||record.planSelected||record.target?.releasePlan||record.target?.legacyRecovery
+      ||record.handoffRef||record.archived||record.effectState!=='untouched'||effects.effectState!=='untouched'
+      ||!['not-required',undefined].includes(record.recoveryOutcome)||effects.recoveryOutcome!=='not-required'
+      ||record.journalRefs?.length)return false;
+    const request=record.target.request;
+    if(['platform','arch','channel'].some(key=>request[key]!==undefined&&request[key]!==value({platform,arch,channel}[key])))return false;
+    const operationDirectory=path.join(value(home),'installer','operations',record.operationId);
+    try{
+      // A journal, a staged runtime, or an uncommitted seal can own recovery
+      // facts even when the operation record was interrupted before its commit.
+      for(const directory of [value(home),path.join(value(home),'installer'),path.join(value(home),'installer','operations'),operationDirectory]){
+        const stat=fs.lstatSync(directory);if(!stat.isDirectory()||stat.isSymbolicLink())return false;
+      }
+      for(const directory of [value(hermesHome),value(installRoot),path.join(value(installRoot),'tavern-updates')]){
+        const stat=fs.lstatSync(directory,{throwIfNoEntry:false});
+        if(stat&&(!stat.isDirectory()||stat.isSymbolicLink()))return false;
+      }
+      if(['first-install','runtime','runtime-bootstrap.json','release-plan'].some(name=>present(path.join(operationDirectory,name)))
+        ||present(systemJournal())||inspectLegacy())return false;
+      const jobs=path.join(value(home),'installer','launcher-update'),stat=fs.lstatSync(jobs,{throwIfNoEntry:false});
+      if(stat&&(!stat.isDirectory()||stat.isSymbolicLink()||fs.readdirSync(jobs).some(name=>name.startsWith('job-'))))return false;
+      return true;
+    }catch{return false;}
+  }
+  async function verifyInstallSelection(record,baseline,context,effects){
+    if(!validConditions(baseline)||!untouchedSelection(record,effects)||(baseline.facts.installSelections||[]).length>=8)return null;
+    try{
+      context.lease?.assertActive?.();
+      const plan=await require('./releases').selectPlan({fetcher:networkFetch,signal:AbortSignal.timeout(15000),
+        launcherVersion:value(launcherVersion),channel:value(channel),platform:value(platform),arch:value(arch),
+        mode:'install',tag:record.target.request.tag,networkPolicy:{totalBudgetMs:15000}});
+      context.lease?.assertActive?.();
+      const after=await observe(record);
+      context.lease?.assertActive?.();
+      if(!untouchedSelection(record,after))return null;
+      // Checked-at timestamps, API counters and the launcher version alone
+      // cannot replenish attempts. Persist actual accepted content once.
+      const canonical=input=>Array.isArray(input)?input.map(canonical):input&&typeof input==='object'
+        ?Object.fromEntries(Object.keys(input).sort().map(key=>[key,canonical(input[key])])):input;
+      const identity=conditionFingerprint(canonical({schema:plan.schema,mode:plan.mode,tag:plan.tag,commit:plan.commit,
+        channel:plan.channel,platform:plan.platform,arch:plan.arch,
+        manifestSha256:crypto.createHash('sha256').update(plan.releaseManifestText).digest('hex'),
+        system:plan.systemManifest,launcher:plan.launcherManifest||null}));
+      if((baseline.facts.installSelections||[]).some(item=>item.identity===identity))return null;
+      const facts={...baseline.facts,installSelections:[...(baseline.facts.installSelections||[]),{identity,verified:true}]};
+      return {schema:CONDITION_SCHEMA,facts,fingerprint:conditionFingerprint(facts)};
+    }catch{return null;}
+  }
   async function finalRuntimeStatus(context,port){
     context.check();
     if(present(value(hermesHome)))return bridge('status',{port},context);
@@ -403,6 +460,10 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     const baseline=record.conditionBaseline,condition=context.conditionTarget
       ||(record.currentFailure||record.primaryFailure)?.conditionTarget
       ||identifyFailureCondition(record.currentFailure||record.primaryFailure,record);
+    if(untouchedSelection(record,effects)){
+      const proof=await verifyInstallSelection(record,baseline,context,effects);
+      if(proof)return {changed:true,fingerprint:proof.fingerprint,baseline:proof,...effects};
+    }
     if(condition?.kind==='setup-ready'&&['start','restart'].includes(record.kind)
       &&record.target?.request?.service!=='tavern'&&['clawchatPaired','modelConfigured'].includes(condition.requirement)){
       // A typed missing-setup failure is the negative baseline. Only a real
@@ -427,7 +488,8 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     const after=current.facts.directories.find(item=>item.name===condition.directory);
     const improved=before?.writable===false&&after?.writable===true&&before.identity!==null
       &&JSON.stringify(before.identity)===JSON.stringify(after.identity);
-    const facts={...current.facts,networkReads:baseline.facts.networkReads};
+    const facts={...current.facts,networkReads:baseline.facts.networkReads,
+      ...(baseline.facts.installSelections!==undefined?{installSelections:baseline.facts.installSelections}:{})};
     const proof={schema:CONDITION_SCHEMA,facts,fingerprint:conditionFingerprint(facts)};
     return {changed:improved,fingerprint:proof.fingerprint,...(improved?{baseline:proof}:{}),...effects};
   }

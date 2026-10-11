@@ -15,6 +15,34 @@ from ops.installer import launcher_bridge as bridge
 
 
 class LauncherServicesTests(unittest.TestCase):
+    def test_disconnected_restore_still_requires_owned_live_gateway(self):
+        process = Mock(pid=12345)
+        process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']
+        record = {'pid': process.pid, 'command': process.cmdline.return_value}
+        for running in (True, False):
+            with self.subTest(running=running), \
+                    patch.object(services, 'owned_gateway', return_value=process), \
+                    patch.object(services, 'read_json', return_value=record), \
+                    patch.object(services, 'gateway_status', return_value={'gatewayRunning': running, 'clawchatConnected': False}), \
+                    patch.object(services, 'time', types.SimpleNamespace(monotonic=Mock(side_effect=[0, 0, 2]), sleep=Mock())), \
+                    patch.object(services.subprocess, 'Popen') as spawn:
+                if running:
+                    self.assertEqual(services.start_gateway('/fixture', '/fixture/hermes', [], {},
+                        timeout=1, require_connection=False), {'gatewayRunning': True, 'clawchatConnected': False})
+                else:
+                    with self.assertRaisesRegex(RuntimeError, '启动后退出'):
+                        services.start_gateway('/fixture', '/fixture/hermes', [], {}, timeout=1, require_connection=False)
+                spawn.assert_not_called()
+                process.terminate.assert_not_called()
+                process.kill.assert_not_called()
+
+    def test_disconnected_restore_cannot_bypass_gateway_identity_failure(self):
+        with patch.object(services, 'owned_gateway', side_effect=services.GatewayIdentityError('fixture identity unavailable')), \
+                patch.object(services.subprocess, 'Popen') as spawn:
+            with self.assertRaises(services.GatewayIdentityError):
+                services.start_gateway('/fixture', '/fixture/hermes', [], {}, require_connection=False)
+        spawn.assert_not_called()
+
     def test_clawchat_connection_timeout_preserves_running_gateway_and_business_guidance(self):
         process = Mock(pid=12345)
         process.cmdline.return_value = ['python', '-m', 'hermes_cli.main', 'gateway', 'run']

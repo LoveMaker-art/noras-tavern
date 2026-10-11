@@ -233,6 +233,24 @@ test('authorized collection records stages, errors and actual readiness, not jus
   assert.equal(f.requests[0].opts.headers.Authorization,undefined);
   assert.equal(f.read().queue.length,0);
 });
+test('moving into stop or rollback does not claim that the preceding update stage succeeded', t=>{
+  const f=fixture(t);const c=f.client;c.begin('update');
+  c.observe({event:'task',stage_id:'update_apply'});f.advance(1000);
+  c.observe({event:'task',stage_id:'stop'});f.advance(1000);
+  c.observe({event:'task',stage_id:'rollback'});
+  assert.equal(f.read().queue.some(e=>e.event==='stage_finished' && e.status==='succeeded'),false);
+  c.finish('failed',Object.assign(new Error('configuration changed'),{code:'CONDITIONS_CHANGED'}));
+  const terminal=f.read().queue.filter(e=>e.event==='operation_finished');
+  assert.equal(terminal.length,1);assert.equal(terminal[0].status,'failed');
+  assert.equal(f.read().queue.filter(e=>e.event==='stage_finished').length,1);
+});
+test('only authoritative operation completion reports a successful stage',t=>{
+  const f=fixture(t);f.client.begin('update');f.client.observe({event:'task',stage_id:'update_apply'});
+  f.client.observe({event:'result',updateVerified:true,systemReady:true,version:'2.4.4'});
+  assert.equal(f.read().queue.some(e=>e.status==='succeeded'),false);
+  f.client.finish('succeeded');
+  assert.deepEqual(f.read().queue.filter(e=>e.event==='stage_finished').map(e=>[e.stage,e.status]),[['update_apply','succeeded']]);
+});
 test('diagnostic opt out strips queued packets, preserves statistics and remains off after restart',async t=>{
   const f=fixture(t);f.client.begin('install');f.client.finish('failed',new Error('queued-detail'));
   const ids=f.read().queue.map(e=>e.event_id);assert.ok(f.read().queue.some(e=>e.fault));
