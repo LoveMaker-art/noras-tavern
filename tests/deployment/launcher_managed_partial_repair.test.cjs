@@ -23,6 +23,28 @@ function fixture(){
  const snapshot=()=>({schema:'nora-managed-partial-installation/1',version,commit,bindings:facts().bindings,missing:facts().missing,programs:{app:null,ops:null,'nora-mcp':null}});
  return {root,home,tavern,write,args,facts,snapshot};
 }
+function releaseFixture(version='2.4.6'){
+ const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex'),commit='b'.repeat(40),platform=process.platform,arch=process.arch;
+ const launcherCapabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
+ const manifest={schema:'tavern-release/v2',candidate:false,commit,versions:{tavern:version},launcherVersion:'2.1.3',launcherCapabilities,
+  bootstrap:{managedComponents:1,minimumLauncherVersion:'2.1.3',sha256:hash('bootstrap')},
+  archives:Object.fromEntries([['app','nora-tavern-app.tar.gz','app'],['ops','nora-tavern-ops.tar.gz','ops'],['nora-mcp','nora-tavern-nora-mcp.tar.gz','mcp']]
+   .map(([part,name,bytes])=>[part,{name,sha256:hash(bytes),size:Buffer.byteLength(bytes)}])),hermesRuntime:{sha256:hash('runtime')},dependencies:{sha256:hash('deps')}};
+ const bytes={'release-manifest.json':JSON.stringify(manifest),'nora-tavern-app.tar.gz':'app','nora-tavern-ops.tar.gz':'ops',
+  'nora-tavern-nora-mcp.tar.gz':'mcp','nora-tavern-first-install-bootstrap.py':'install','first-install-manifest.json':'{}',
+  'runtime.tar.gz':'runtime','deps.tar.gz':'deps','nora-hermes-runtime.json':JSON.stringify({platform,arch,archive:'runtime.tar.gz',sha256:hash('runtime')}),
+  'nora-tavern-dependencies.json':JSON.stringify({platform,arch,archive:'deps.tar.gz',sha256:hash('deps')})};
+ bytes.SHA256SUMS=Object.entries(bytes).map(([name,value])=>`${hash(value)}  ${name}`).join('\n');
+ const system={schema:'nora-system/v1',candidate:false,version,commit,platform,arch,minimumLauncherVersion:'2.1.3',launcherCapabilities,
+  files:Object.fromEntries(Object.entries(bytes).map(([name,value])=>[name,{asset:name,size:Buffer.byteLength(value),sha256:hash(value)}]))};
+ bytes[`nora-system-${platform}-${arch}.json`]=JSON.stringify(system);
+ const release={tag_name:`v${version}`,draft:false,prerelease:false,assets:Object.entries(bytes).map(([name,value])=>({name,state:'uploaded',size:Buffer.byteLength(value),
+  digest:`sha256:${hash(value)}`,browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v${version}/${name}`}))};
+ const fetcher=async url=>{if(url==='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')return Response.json(release);
+  const asset=release.assets.find(item=>item.browser_download_url===url);assert.ok(asset,'Only the selected fixture release may be fetched');
+  return new Response(bytes[asset.name],{headers:{'Content-Length':String(asset.size)}});};
+ return {version,commit,manifest,fetcher};
+}
 test('managed missing programs keep their receipt; conflicting records cannot become fresh install',()=>{
  const f=fixture();try{assert.equal(f.facts().managedInstallation,true);assert.equal(f.facts().needsRepair,true);assert.equal(f.facts().version,'2.4.5');
   f.write('tavern/tavern-updates/installed.json',{schema:2,version:'2.0.1',commit:'a'.repeat(40)});
@@ -185,36 +207,83 @@ test('complete legacy programs retain receipt-recovery upgrade path while first-
  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
-test('actual independent CLI passes the sealed partial snapshot to the bootstrap lifecycle',async()=>{
- const f=fixture(),Module=require('node:module'),realLoad=Module._load;
- try{
-  f.write('hermes/hermes-agent/venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'),'existing Python');
-  const snapshot=f.snapshot(),targetVersion='2.4.6',desktop=path.join(__dirname,'../installer/desktop');
-  f.write('payload/release-manifest.json',{versions:{tavern:targetVersion}});
-  const plan={schema:'nora-release-plan/1',mode:'install',version:targetVersion,commit:'b'.repeat(40),releaseManifest:{versions:{tavern:targetVersion}}};
-  let selections=0,preparations=0;
-  const releases={selectPlan:async options=>{selections++;assert.equal(options.mode,'install');return plan;},sealPlan:value=>value,validatePlan:value=>value,
-   prepareInstall:async options=>{preparations++;assert.equal(options.selectedPlan,plan);return path.join(f.root,'payload');},
-   hash:async()=> 'b'.repeat(64),compare:(a,b)=>a===b?0:a<b?-1:1};
-  Module._load=function(id,parent,...rest){if(id==='./releases'&&parent?.filename?.startsWith(desktop))return releases;return realLoad.call(this,id,parent,...rest);};
-  const cli=require('../installer/desktop/operation-cli'),bridge=path.join(f.root,'app/launcher_bridge.py'),updater=path.join(f.tavern,'apps/tavern-ops/updater/bootstrap.py');
+test('actual independent CLI repairs with a real sealed plan that has no inline release manifest',async t=>{
+ for(const entry of ['bootstrap-update','bridge-repair'])await t.test(entry,async()=>{
+  const f=fixture();try{
+   const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),release=releaseFixture(),
+    bridge=path.join(f.root,'app/launcher_bridge.py'),updater=path.join(f.tavern,'apps/tavern-ops/updater/bootstrap.py'),viaBridge=entry==='bridge-repair';
+   if(!viaBridge)f.write('hermes/hermes-agent/venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'),'existing Python');
+   const snapshot=f.snapshot(),protectedBytes=Object.fromEntries(['hermes/config.yaml','hermes/.env','tavern/tavern-state/chats/story.json'].map(name=>[name,fs.readFileSync(path.join(f.root,name))]));
+   const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
+    channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
+    'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{'ops/updater/bootstrap.py':{path:updater}}};
+   let lifecycle,applied=false,runtime=0;
+   const completed={version:release.version,commit:release.commit,systemReady:true,running:false,gatewayRunning:false,
+    clawchatConnected:false,port:receipt.port,noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot};
+   const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:viaBridge?'repair':'update',
+    argv:viaBridge?[bridge,'--nora-home',f.root,'repair']:[updater,'--apply','--confirm','--managed-home',f.root,'--hermes-home',f.home,'--install-root',f.tavern],stdin:''}},
+    {validate:async()=>receipt,fetcher:release.fetcher,lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),telemetry:false,
+     policy:{observe:async()=>applied?{effectState:'changed',recoveryOutcome:'not-required',canResume:true}:{effectState:'untouched'}},run:async(context,target,args,options)=>{
+      if(options.node){assert.equal(viaBridge,true);assert.ok(args.includes('--repair-managed'));runtime++;
+       f.write('hermes/hermes-agent/venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'),'repaired Python');return {};}
+      if(options.readonly)return args.includes('repair-preflight')?{partialRepair:snapshot,offline:true,version:'2.4.5',
+       running:false,gatewayRunning:false,clawchatConnected:false,systemReady:false}:completed;
+      assert.equal(target,viaBridge?bridge:updater);const payload=args[args.indexOf('--release-dir')+1];
+      assert.deepEqual(JSON.parse(fs.readFileSync(path.join(payload,'release-manifest.json'),'utf8')),release.manifest);
+      lifecycle=options.lifecycle;applied=true;return {...completed,updateVerified:true};
+     }});
+   const sealed=result.target.releasePlan;assert.equal(sealed.releaseManifest,undefined);assert.equal(sealed.releaseManifestText,undefined);
+   assert.equal(sealed.version,'2.4.6');assert.equal(sealed.manifestRef.schema,'nora-operation-manifest/1');assert.equal(sealed.manifestRef.operationId,result.operationId);
+   assert.equal(result.state,'succeeded',JSON.stringify(result.currentFailure||result.primaryFailure));assert.equal(runtime,viaBridge?1:0);
+   const validated=releases.validatePlan(sealed,{...receipt,operationDirectory:path.join(receipt.installerDirectory,'operations',result.operationId)});
+   assert.deepEqual(validated.releaseManifest,release.manifest);
+   if(!viaBridge){assert.deepEqual(lifecycle.partialRepair,snapshot);assert.deepEqual(lifecycle.before.partialRepair,snapshot);}
+   for(const [name,bytes]of Object.entries(protectedBytes))assert.deepEqual(fs.readFileSync(path.join(f.root,name)),bytes,name);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+ });
+});
+
+test('a real sealed partial-repair downgrade never executes runtime or maintenance and preserves existing data',async()=>{
+ const f=fixture();try{
+  const cli=require('../installer/desktop/operation-cli'),release=releaseFixture('2.4.4'),bridge=path.join(f.root,'app/launcher_bridge.py');
   const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
-   channel:'stable',launcherVersion:targetVersion,resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
-   'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{'ops/updater/bootstrap.py':{path:updater}}};
-  let lifecycle,applied=false;
-  const completed={version:targetVersion,commit:plan.commit,systemReady:true,running:false,gatewayRunning:false,
-   clawchatConnected:false,port:receipt.port,noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot};
-  const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:'update',
-   argv:[updater,'--apply','--confirm','--managed-home',f.root,'--hermes-home',f.home,'--install-root',f.tavern],stdin:''}},
-   {validate:async()=>receipt,lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),telemetry:false,
-    policy:{observe:async()=>applied?{effectState:'changed',recoveryOutcome:'not-required',canResume:true}:{effectState:'untouched'}},run:async(context,target,args,options)=>{
-     if(options.readonly)return args.includes('repair-preflight')?{partialRepair:snapshot,offline:true,version:f.facts().version,
-      running:false,gatewayRunning:false,clawchatConnected:false,systemReady:false}:completed;
-     assert.equal(target,updater);lifecycle=options.lifecycle;applied=true;return {...completed,updateVerified:true};
-    }});
-  assert.equal(result.state,'succeeded');assert.equal(selections,1);assert.equal(preparations,1);
-  assert.deepEqual(lifecycle.partialRepair,snapshot);assert.deepEqual(lifecycle.before.partialRepair,snapshot);
- }finally{Module._load=realLoad;fs.rmSync(f.root,{recursive:true,force:true});}
+   channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
+   'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{}};
+  const original=treeSeal(f.home),story=fs.readFileSync(path.join(f.tavern,'tavern-state/chats/story.json'));let runs=0;
+  const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:'repair',argv:[bridge,'--nora-home',f.root,'repair'],stdin:''}},
+   {validate:async()=>receipt,fetcher:release.fetcher,lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),telemetry:false,
+    policy:{observe:async()=>({effectState:'untouched'})},run:async()=>{runs++;throw Error('a lower sealed target must not execute');}});
+  assert.equal(result.state,'failed');assert.equal(result.currentFailure.code,'RELEASE_COMPATIBILITY');assert.equal(result.target.releasePlan.version,'2.4.4');
+  assert.equal(result.target.releasePlan.releaseManifest,undefined);assert.equal(runs,0);assert.deepEqual(treeSeal(f.home),original);
+  assert.deepEqual(fs.readFileSync(path.join(f.tavern,'tavern-state/chats/story.json')),story);
+ }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('CLI resumption rejects a changed real sealed manifest before reselecting or executing a partial repair',async()=>{
+ const f=fixture();try{
+  const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),{createOperationController}=require('../installer/desktop/operation-state'),
+   release=releaseFixture(),bridge=path.join(f.root,'app/launcher_bridge.py'),lock=require('./launcher_operation_test_lock.cjs').createTestOperationLock();
+  const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
+   channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
+   'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{}};
+  const controller=createOperationController({directory:receipt.installerDirectory,lock,observeEffects:async()=>({effectState:'untouched'})});
+  const paused=await controller.start('repair',{target:{request:{action:'repair',port:receipt.port}},execute:async context=>{
+   const options={...receipt,mode:'install',fetcher:release.fetcher,operationDirectory:path.join(receipt.installerDirectory,'operations',context.operationId)};
+   const selected=await releases.selectPlan(options),sealed=releases.sealPlan(selected,{...options,assertOwner:()=>context.check()});
+   await context.plan({request:{action:'repair',port:receipt.port},releasePlan:sealed,currentVersion:'2.4.5'});
+   throw Error('pause after actual release sealing');
+  }},crypto.randomUUID());
+  const sealed=paused.target.releasePlan;assert.equal(sealed.releaseManifest,undefined);assert.equal(sealed.version,'2.4.6');
+  const artifact=path.join(receipt.installerDirectory,'operations',paused.operationId,sealed.manifestRef.file);fs.appendFileSync(artifact,' ');
+  const original=treeSeal(f.home),story=fs.readFileSync(path.join(f.tavern,'tavern-state/chats/story.json'));let reads=0,runs=0;
+  const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:'repair',operationId:paused.operationId,snapshotSequence:paused.snapshotSequence,
+   argv:[bridge,'--nora-home',f.root,'repair'],stdin:''}},
+   {validate:async()=>receipt,fetcher:async()=>{reads++;throw Error('fixed corrupt plan must not reselect');},lock,telemetry:false,
+    policy:{observe:async()=>({effectState:'untouched'})},run:async()=>{runs++;throw Error('corrupt fixed plan must not execute');}});
+  assert.equal(result.operationId,paused.operationId);assert.equal(result.state,'failed');assert.equal(result.currentFailure.code,'RELEASE_COMPATIBILITY');
+  assert.equal(result.target.releasePlan.planId,sealed.planId);assert.equal(reads,0);assert.equal(runs,0);assert.deepEqual(treeSeal(f.home),original);
+  assert.deepEqual(fs.readFileSync(path.join(f.tavern,'tavern-state/chats/story.json')),story);
+ }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
 test('missing Python recovery uses staged canonical effects and refuses unknown history before runtime recovery',async()=>{
