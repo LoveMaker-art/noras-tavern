@@ -1,5 +1,6 @@
 """Durable, bounded-path recovery of one owned Tavern update transaction."""
 import hashlib
+from datetime import datetime
 from contextlib import contextmanager
 import json
 import ntpath
@@ -53,6 +54,212 @@ def cron_definition(path):
         jobs.append(definition)
     result['jobs']=jobs
     return hashlib.sha256(json.dumps(result,sort_keys=True,separators=(',',':'),ensure_ascii=False).encode()).hexdigest()
+
+
+def _history_time(value):
+    if not isinstance(value,str):raise RuntimeError('历史恢复时间格式无效')
+    try:
+        parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+        if parsed.tzinfo is None:raise ValueError('missing timezone')
+        return parsed.timestamp()
+    except (ValueError,OverflowError):raise RuntimeError('历史恢复时间无法核验') from None
+
+
+def _history_bytes(file,limit):
+    file=_io_path(file);reject_links(file);before=file.lstat()
+    if not stat.S_ISREG(before.st_mode) or before.st_size>limit:raise RuntimeError('历史恢复来源不是有界文件')
+    with file.open('rb') as stream:
+        opened=os.fstat(stream.fileno())
+        fields=lambda item:(item.st_dev,item.st_ino,item.st_size,item.st_mtime_ns,item.st_ctime_ns)
+        if fields(opened)!=fields(before):raise RuntimeError('历史恢复来源在打开前变化')
+        raw=stream.read(opened.st_size+1);after=os.fstat(stream.fileno());named=file.lstat()
+    if fields(after)!=fields(opened) or fields(named)!=fields(opened) or len(raw)!=opened.st_size:
+        raise RuntimeError('历史恢复来源在读取时变化')
+    return raw
+
+
+def _history_object(file,limit):
+    value=json.loads(_history_bytes(file,limit))
+    if not isinstance(value,dict):raise RuntimeError('历史恢复来源必须为对象')
+    return value
+
+
+def _verify_closure_relations(value,journal,nora):
+    """Check sealed source relationships before retiring the last large backup.
+
+    The original capture owns physical proof. These immutable relationships
+    must remain consistent even when their old physical source was pruned.
+    Current runtime and current system effects still have independent readers.
+    """
+    source=value['source'];saved=source['record'];producer=value['producer'];plan=journal.get('recoveryPlan',{});proof=source['proof']
+    if (not isinstance(saved,dict) or not isinstance(plan,dict) or not isinstance(proof,dict)
+            or not isinstance(plan.get('before'),dict) or not isinstance(plan.get('state'),dict)
+            or not isinstance(plan.get('lifecycle'),dict) or not isinstance(plan.get('targets'),list)
+            or any(not isinstance(item,dict) for item in plan['targets'])):
+        raise RuntimeError('历史恢复固定来源格式无效')
+    selected=saved.get('target',{}).get('releasePlan',{});before=plan.get('before',{})
+    if (_history_time(saved.get('updatedAt'))>_history_time(producer.get('createdAt'))
+            or _history_time(value.get('capturedAt'))<_history_time(producer.get('createdAt'))
+            or type(saved.get('ownerEpoch')) is not int or saved['ownerEpoch']<1 or saved['ownerEpoch']>=producer['ownerEpoch']
+            or saved.get('state')!='succeeded' or saved.get('verification')!='confirmed' or saved.get('effectState')!='changed'
+            or saved.get('recoveryOutcome')!='not-required' or saved.get('result',{}).get('systemReady') is not True
+            or saved.get('result',{}).get('updateVerified') is not True or selected.get('mode')!='install'
+            or journal.get('version')!=selected.get('version') or saved.get('result',{}).get('version')!=selected.get('version')
+            or saved.get('result',{}).get('commit')!=selected.get('commit') or proof.get('operationId')!=saved.get('operationId')
+            or proof.get('ownerEpoch')!=saved['ownerEpoch'] or proof.get('version')!=selected.get('version')
+            or proof.get('beforeVersion')!=saved.get('target',{}).get('currentVersion') or proof.get('backup')!=journal.get('backup')
+            or before.get('version')!=saved.get('target',{}).get('currentVersion')
+            or any(before.get(key) is not False for key in ('running','gatewayRunning','clawchatConnected'))
+            or not re.fullmatch('[a-f0-9]{64}',str(plan.get('state',{}).get('savedDigest')))
+            or not isinstance(plan.get('worlds'),dict) or plan.get('lifecycle',{}).get('before')!=before):
+        raise RuntimeError('历史恢复固定来源关系已变化')
+    source_runtime=_history_object(safe_path(nora,'installer/operations/'+saved['operationId']+'/runtime-bootstrap.json'),4*1024*1024)
+    targets=[item for item in plan.get('targets',[]) if item.get('namespace')=='install'];observed=proof.get('targets')
+    if not isinstance(observed,list) or len(observed)!=len(targets):raise RuntimeError('历史程序目标集合已变化')
+    for target in observed:
+        matches=[item for item in targets if all(item.get(key)==target.get(key) for key in ('name','namespace','relative'))]
+        if (len(matches)!=1 or set(target)!={'name','namespace','relative','oldIdentity','oldDigest'}
+                or target.get('oldIdentity')!=(None if matches[0].get('oldIdentity') is None else list(map(str,matches[0]['oldIdentity'])))
+                or target.get('oldDigest')!=matches[0].get('oldDigest')):
+            raise RuntimeError('历史程序目标证据已变化')
+    for item in value['closed']:
+        prior=item['record'];old=_history_object(safe_path(nora,'installer/operations/'+prior['operationId']+'/runtime-bootstrap.json'),4*1024*1024)
+        snapshot=old.get('originalPartial');baseline=plan.get('partialBaseline')
+        if (type(prior.get('ownerEpoch')) is not int or prior['ownerEpoch']<1 or prior['ownerEpoch']>=saved['ownerEpoch']
+                or _history_time(prior.get('updatedAt'))>=_history_time(saved.get('createdAt'))
+                or prior.get('state')!='rolled-back' or prior.get('effectState')!='restored' or prior.get('verification')!='confirmed'
+                or prior.get('recoveryOutcome')!='restored-and-verified' or old.get('recoveryVerification')!='original-partial-confirmed'
+                or old.get('status')!='rolled-back' or old.get('ownerEpoch')!=prior['ownerEpoch'] or old.get('newTreePreserved') is not True
+                or not isinstance(snapshot,dict) or snapshot!=source_runtime.get('originalPartial')
+                or old.get('previousSeal')!=source_runtime.get('previousSeal')
+                or old.get('identities',{}).get('previous')!=source_runtime.get('identities',{}).get('previous')
+                or old.get('partialSystemProof',{}).get('stateDigest')!=plan['state']['savedDigest']
+                or set(snapshot.get('bindings',{}))!={'config','instance','manifest','nativeConfig','receipt','runtimeMarker','system'}):
+            raise RuntimeError('历史运行时原损坏状态关系已变化')
+        if baseline is not None:
+            now=baseline.get('partialRepair',{})
+            if (set(baseline)!={'schema','partialRepair','stateDigest','storyInventory','worlds','readerManifestSha256','readerCommit'}
+                    or baseline.get('schema')!='nora-managed-partial-repair-baseline/1'
+                    or baseline.get('stateDigest')!=plan['state']['savedDigest'] or baseline.get('worlds')!=plan['worlds']
+                    or baseline.get('readerManifestSha256')!=selected.get('manifestSha256') or baseline.get('readerCommit')!=selected.get('commit')
+                    or now!=plan.get('lifecycle',{}).get('partialRepair') or not isinstance(baseline.get('storyInventory'),dict)
+                    or any(snapshot['bindings'][key]!=now.get('bindings',{}).get(key) for key in ('instance','config','manifest','nativeConfig','receipt','system'))
+                    or snapshot.get('programs')!=now.get('programs') or snapshot.get('missing',{}).get('python') is not True
+                    or now.get('missing',{}).get('python') is not False
+                    or any(snapshot.get('missing',{}).get(key)!=now.get('missing',{}).get(key) for key in ('nativeRuntime','nativeLifecycle'))):
+                raise RuntimeError('历史部分修复封存基线已变化')
+        elif ('partialBaseline' in plan or proof.get('partialHistoryKind')!='python-only'
+                or snapshot.get('missing')!={'nativeRuntime':False,'nativeLifecycle':False,'python':True}
+                or before.get('systemReady') is not True or 'partialRepair' in plan.get('lifecycle',{})
+                or proof.get('stateDigest')!=plan['state']['savedDigest']):
+            raise RuntimeError('历史仅Python恢复来源不一致')
+        for name,program in snapshot.get('programs',{}).items():
+            matches=[target for target in observed if target['name']==name]
+            if len(matches)>1 or matches and (matches[0]['oldIdentity']!=(program or {}).get('identity') or matches[0]['oldDigest']!=(program or {}).get('digest')):
+                raise RuntimeError('历史程序目标与原程序快照不一致')
+
+
+def effect_closure_refs(home,root,*,operation_id=None):
+    """Preserve guard-bound opaque closure references; Node owns their proof.
+
+    No status label is used as a historical permission. The producer's exact
+    file SHA and fixed plan, preserved source records/runtimes, and owner are
+    checked here before the unique system journal can be replaced/pruned.
+    """
+    home,root=Path(home).resolve(),Path(root).resolve();nora=root.parent
+    references={};files=[];current=safe_path(root,'tavern-updates/transaction.json')
+    if _io_path(current).exists():files.append(_history_object(current,MAX_TRANSACTION_BYTES).get('recoveryPlan',{}))
+    directory=safe_path(nora,'installer/operations')
+    if _io_path(directory).exists():
+        for entry in _io_path(directory).iterdir():
+            if not re.fullmatch('[a-f0-9-]{36}',entry.name,re.I):continue
+            file=safe_path(nora,'installer/operations/'+entry.name+'/operation.json')
+            if _io_path(file).exists():files.append(_history_object(file,256*1024))
+    for value in files:
+        refs=value.get('effectClosureRefs',[])
+        if not isinstance(refs,list) or len(refs)>128:raise RuntimeError('历史恢复引用容量或格式无效')
+        for ref in refs:
+            if (not isinstance(ref,dict) or set(ref)!={'path','sha256'}
+                    or not re.fullmatch('installer/operations/[a-f0-9-]{36}/partial-history.json',str(ref.get('path')),re.I)
+                    or not re.fullmatch('[a-f0-9]{64}',str(ref.get('sha256')))):
+                raise RuntimeError('历史恢复引用无法归属')
+            prior=references.get(ref['path'])
+            if prior is not None and prior!=ref:raise RuntimeError('历史恢复引用发生冲突')
+            references[ref['path']]=ref
+    if len(references)>128:raise RuntimeError('历史恢复引用超出安全容量')
+    for ref in references.values():
+        file=safe_path(nora,ref['path']);reject_links(file)
+        raw=_history_bytes(file,MAX_TRANSACTION_BYTES)
+        if len(raw)>MAX_TRANSACTION_BYTES or hashlib.sha256(raw).hexdigest()!=ref['sha256']:
+            raise RuntimeError('历史恢复证明内容已变化')
+        value=json.loads(raw)
+        if not isinstance(value,dict):raise RuntimeError('历史恢复证明必须为对象')
+        producer=value.get('producer',{});source=value.get('source',{})
+        owner=read_object(safe_path(nora,'nora-owner.json'),max_bytes=65536)
+        if (not isinstance(value,dict) or set(value)!={'schema','noraHome','owner','producer','source','closed','capturedAt'}
+                or value.get('schema')!='nora-partial-effects-closure/1' or value.get('noraHome')!=str(nora)
+                or value.get('owner')!=owner.get('id') or set(producer)!={'operationId','ownerEpoch','planDigest','createdAt'}
+                or ref['path']!='installer/operations/'+str(producer.get('operationId'))+'/partial-history.json'
+                or set(source)!={'record','runtimeSha256','systemJournal','systemJournalSha256','proof','reader'}
+                or not isinstance(value.get('closed'),list) or not value['closed'] or len(value['closed'])>128
+                or not isinstance(source.get('record'),dict) or not isinstance(source.get('proof'),dict)
+                or not isinstance(source.get('reader'),dict) or set(source['reader'])!={'launcherVersion','platform','arch','channel'}
+                or any(not isinstance(item,dict) or set(item)!={'record','runtimeSha256'} or not isinstance(item.get('record'),dict) for item in value['closed'])):
+            raise RuntimeError('历史恢复证明归属或结构无效')
+        record=_history_object(safe_path(nora,'installer/operations/'+producer['operationId']+'/operation.json'),256*1024)
+        if (type(record.get('ownerEpoch')) is not int or type(producer.get('ownerEpoch')) is not int or not 1<=producer['ownerEpoch']<=9007199254740991
+                or not producer['ownerEpoch']<=record['ownerEpoch']<=9007199254740991 or record.get('planDigest')!=producer.get('planDigest')
+                or record.get('createdAt')!=producer.get('createdAt') or record.get('planSelected') is not True
+                or ref not in record.get('effectClosureRefs',[])):
+            raise RuntimeError('历史恢复证明不属于原固定计划')
+        text=source.get('systemJournal')
+        if not isinstance(text,str) or hashlib.sha256(text.encode()).hexdigest()!=source.get('systemJournalSha256'):
+            raise RuntimeError('历史系统来源封存已变化')
+        journal=json.loads(text);saved=source['record']
+        if (journal.get('operationId')!=saved.get('operationId') or journal.get('ownerEpoch')!=saved.get('ownerEpoch')
+                or journal.get('status')!='committed' or source.get('proof',{}).get('journalSha256')!=source.get('systemJournalSha256')):
+            raise RuntimeError('历史系统来源不一致')
+        for item in [{'record':saved,'runtimeSha256':source['runtimeSha256']}]+value['closed']:
+            prior=item.get('record',{});identifier=prior.get('operationId')
+            if not re.fullmatch('[a-f0-9-]{36}',str(identifier),re.I):raise RuntimeError('历史效果操作身份无效')
+            live=_history_object(safe_path(nora,'installer/operations/'+identifier+'/operation.json'),256*1024)
+            stable=('schema','operationId','kind','ownerEpoch','createdAt','state','effectState','recoveryOutcome',
+                    'verification','planDigest','planSelected','attempt','totalAttempts')
+            if any(live.get(key)!=prior.get(key) for key in stable):raise RuntimeError('历史效果终态事实已变化')
+            if not live.get('archived') and (live.get('target')!=prior.get('target') or live.get('result')!=prior.get('result') or live.get('updatedAt')!=prior.get('updatedAt')):
+                raise RuntimeError('历史固定来源已变化')
+            if live.get('archived') and (live.get('target')!={} or _history_time(live.get('archivedAt'))<_history_time(prior.get('updatedAt'))):
+                raise RuntimeError('历史归档来源不一致')
+            runtime=safe_path(nora,'installer/operations/'+identifier+'/runtime-bootstrap.json')
+            reject_links(runtime)
+            if hashlib.sha256(_history_bytes(runtime,4*1024*1024)).hexdigest()!=item.get('runtimeSha256'):
+                raise RuntimeError('历史运行时来源已变化')
+        _verify_closure_relations(value,journal,nora)
+    return list(references.values())
+
+
+def require_partial_history_before_replace(home,root,previous,refs):
+    if not previous or previous.get('status')!='committed':return
+    nora=Path(root).resolve().parent;identifier=previous.get('operationId')
+    if not identifier:return
+    record_file=safe_path(nora,'installer/operations/'+identifier+'/operation.json')
+    runtime_file=safe_path(nora,'installer/operations/'+identifier+'/runtime-bootstrap.json')
+    if not _io_path(record_file).exists() or not _io_path(runtime_file).exists():return
+    owner=read_object(record_file,max_bytes=256*1024);successor=read_object(runtime_file,max_bytes=4*1024*1024)
+    if owner.get('state')!='succeeded' or owner.get('verification')!='confirmed' or not successor.get('originalPartial'):return
+    closed=set()
+    for ref in refs:
+        proof=read_object(safe_path(nora,ref['path']),max_bytes=MAX_TRANSACTION_BYTES)
+        closed.update(item['record']['operationId'] for item in proof['closed'])
+    for folder in _io_path(safe_path(nora,'installer/operations')).iterdir():
+        if not re.fullmatch('[a-f0-9-]{36}',folder.name,re.I):continue
+        runtime=safe_path(nora,'installer/operations/'+folder.name+'/runtime-bootstrap.json')
+        if not _io_path(runtime).exists():continue
+        old=read_object(runtime,max_bytes=4*1024*1024)
+        if (old.get('status')=='rolled-back' and old.get('originalPartial')
+                and old.get('identities',{}).get('previous')==successor.get('identities',{}).get('previous')
+                and old['originalPartial']==successor['originalPartial'] and folder.name not in closed):
+            raise RuntimeError('原部分安装恢复尚未封存完整后继证明，禁止覆盖最后系统来源')
 
 
 def _io_path(path):
@@ -143,20 +350,29 @@ def recovery_lock(root):
             else:fcntl.flock(stream.fileno(),fcntl.LOCK_UN)
 
 
-def digest(path):
-    """Hash regular bytes and link names without following nested junctions."""
+def digest(path,*,on_progress=None):
+    """Hash regular bytes and link names without following nested junctions.
+
+    Optional progress reports actual (bytes_read, entries_confirmed) increments.
+    """
     path=_io_path(path);result=hashlib.sha256()
     def visit(current,relative):
         value=current.lstat()
         if linked(current):
-            result.update(b'L'+relative.encode()+b'\0'+os.fsencode(os.readlink(current)));return
+            result.update(b'L'+relative.encode()+b'\0'+os.fsencode(os.readlink(current)))
+            if on_progress is not None:on_progress(0,1)
+            return
         if stat.S_ISDIR(value.st_mode):
             result.update(b'D'+relative.encode()+b'\0')
+            if on_progress is not None:on_progress(0,1)
             for child in sorted(current.iterdir(),key=lambda p:p.name):visit(child,relative+'/'+child.name)
         elif stat.S_ISREG(value.st_mode):
             result.update(b'F'+relative.encode()+b'\0')
+            if on_progress is not None:on_progress(0,1)
             with current.open('rb') as stream:
-                for block in iter(lambda:stream.read(1024*1024),b''):result.update(block)
+                for block in iter(lambda:stream.read(1024*1024),b''):
+                    result.update(block)
+                    if on_progress is not None:on_progress(len(block),0)
         else:raise RuntimeError('恢复备份含不支持的文件类型')
     visit(path,'');return result.hexdigest()
 
@@ -254,6 +470,10 @@ class Journal:
         if lifecycle:
             instance=safe_path(home,'nora-instance.json')
             plan['instanceDigest']=digest(instance)
+        refs=effect_closure_refs(home,root)
+        previous=read_object(safe_path(root,'tavern-updates/transaction.json'),max_bytes=MAX_TRANSACTION_BYTES) if _io_path(safe_path(root,'tavern-updates/transaction.json')).exists() else None
+        require_partial_history_before_replace(home,root,previous,refs)
+        if refs:plan['effectClosureRefs']=refs
         record={'schema':1,'status':'prepared','version':version,'backup':str(backup),'recoveryPlan':plan}
         gate=getattr(sys,'_nora_operation_delegate',None)
         if gate is not None:
@@ -278,6 +498,9 @@ class Journal:
             raise RuntimeError('更新记录缺少完整恢复计划，已保留现场')
         if self.plan.get('hermesHome')!=str(self.home) or self.plan.get('installRoot')!=str(self.root):
             raise RuntimeError('恢复计划与当前安装身份不一致')
+        if self.plan.get('effectClosureRefs') is not None:
+            refs=effect_closure_refs(self.home,self.root)
+            if any(ref not in refs for ref in self.plan['effectClosureRefs']):raise RuntimeError('系统历史引用缺失')
         if 'operationId' in self.record and (not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}',str(self.record['operationId']),re.I)
                 or type(self.record.get('ownerEpoch')) is not int or not 0<self.record['ownerEpoch']<=2**53-1):
             raise RuntimeError('恢复计划的操作身份无效')

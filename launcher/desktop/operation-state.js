@@ -34,7 +34,7 @@ const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.p
 // The operation record stores references and outcomes. File swap inventories
 // and installed-version truth stay in their journal and receipt owners.
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
-  observeEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
+  observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
   verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,retention={}}={}) {
   if(!lock?.acquire||!lock?.probe)throw new TypeError('An OS lock adapter is required');
   const root=()=>path.join(typeof directory==='function'?directory():directory,'operations');
@@ -121,7 +121,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         ||['recovery-required','files-restored-start-failed'].includes(facts.recoveryOutcome))continue;}
       const summary={};
       for(const key of ['schema','operationId','requestId','requestDigest','retryTargetDigest','kind','planDigest','conditionFingerprint',
-        'ownerEpoch','sequence','createdAt','updatedAt','state','stageId','attempt','totalAttempts','effectState','recoveryOutcome','verification'])
+        'ownerEpoch','sequence','createdAt','updatedAt','state','stageId','attempt','totalAttempts','effectState','recoveryOutcome','verification','planSelected','effectClosureRefs'])
         if(record[key]!==undefined)summary[key]=record[key];
       summary.target={};summary.archived=true;summary.archivedAt=now();summary.secondaryFailures=[];summary.evidenceStatus='archived';
       summary.retryTargetDigest=record.retryTargetDigest||retryIdentity(record.target);
@@ -145,8 +145,21 @@ function createOperationController({directory,lock,executors={},recoverers={},re
   }
   function failureCondition(record){
     const current=record.currentFailure||record.primaryFailure;
-    if(current?.conditionTarget)return current.conditionTarget;
-    if(current?.code!=='RETRY_CONDITIONS_UNCHANGED')return identifyFailureCondition?.(current,record);
+    if(current&&Object.hasOwn(current,'conditionTarget'))return current.conditionTarget;
+    if(current?.code!=='RETRY_CONDITIONS_UNCHANGED')return identifyFailureCondition?identifyFailureCondition(current,record)||null:undefined;
+    // A first resume can seal its plan, then encounter an older admission block.
+    // Only this two-execution legacy shape has no intervening actual failure;
+    // a later unknown failure must never borrow the initial metadata condition.
+    if(record.totalAttempts===2&&record.planSelected&&record.stageId==='selecting'
+      &&record.primaryFailure?.code!=='RETRY_CONDITIONS_UNCHANGED'
+      &&record.primaryFailure?.conditionTarget?.kind==='release-metadata'){
+      const newer=records().filter(value=>value.operationId!==record.operationId&&value.kind===record.kind
+        &&Date.parse(value.createdAt)>=Date.parse(record.createdAt)
+        &&(value.retryTargetDigest||retryIdentity(value.target))===(record.retryTargetDigest||retryIdentity(record.target))
+        &&failedAttempt(value)).at(-1);
+      if(newer&&Date.parse(newer.createdAt)===Date.parse(record.createdAt))return null;
+      return newer?failureCondition(newer):record.primaryFailure.conditionTarget;
+    }
     // Old admission blocks did not preserve the original typed setup failure.
     // Consult only the latest actual failure for this exact target; never infer
     // changed conditions from a different service or an arbitrary old error.
@@ -163,6 +176,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       guidance:presentError(error,{action:kind})};
     if(record)try{
       const target=error?.code==='RETRY_CONDITIONS_UNCHANGED'?error.retryConditionTarget:identifyFailureCondition?.(error,record);
+      // An explicit absence preserves the latest real failure's boundary.
+      if(error?.code==='RETRY_CONDITIONS_UNCHANGED'&&target===null)detail.conditionTarget=null;
       if(target?.kind==='directory-write'&&['hermesHome','installRoot','noraHome'].includes(target.directory))
         detail.conditionTarget={kind:target.kind,directory:target.directory};
       else if(target?.kind==='setup-ready'&&['clawchatPaired','modelConfigured'].includes(target.requirement))
@@ -343,10 +358,16 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,attempt:failedAttempt(previous)?previous.attempt+1:1});
         if(failedAttempt(previous)&&previous.attempt>=2){
           const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
-          error.retryConditionTarget=failureCondition(previous);throw error;
+          const ownFailure=(record.currentFailure||record.primaryFailure)&&Date.parse(record.createdAt)>Date.parse(previous.createdAt);
+          error.retryConditionTarget=ownFailure?failureCondition(record):failureCondition(previous);throw error;
         }
       },
-      stage:async(stageId,details={})=>{if(!STAGES.has(stageId))throw fail('OPERATION_INVALID_STAGE','Invalid operation stage');await update({state:stageId,stageId});saved?.observe({event:'stage',task:stageId,...details});},
+      stage:async(stageId,details={})=>{if(!STAGES.has(stageId))throw fail('OPERATION_INVALID_STAGE','Invalid operation stage');
+        if(stageId==='prepared'&&['install','update','repair'].includes(record.kind)&&prepareEffects){
+          const refs=await prepareEffects(context);check();
+          if(refs!==undefined)await update({effectClosureRefs:JSON.parse(JSON.stringify(refs))});
+        }
+        await update({state:stageId,stageId});saved?.observe({event:'stage',task:stageId,...details});},
       effect:async effectState=>{if(!['untouched','changed','restored','unknown'].includes(effectState))throw fail('OPERATION_INVALID_EFFECT','Invalid effect state');await update({effectState});},
       journal:async(reference)=>{if(typeof reference!=='string'||reference.length>4096)throw fail('OPERATION_INVALID_JOURNAL','Invalid journal reference');await update({journalRefs:[...new Set([...(record.journalRefs||[]),reference])]});},
       handoff:async(reference)=>{if(typeof reference!=='string'||reference.length>4096)throw fail('OPERATION_INVALID_HANDOFF','Invalid handoff reference');await update({state:'awaiting-handoff',handoffRef:reference});},
@@ -496,7 +517,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         record.state='blocked';record.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation',
           guidance:presentError(error,{action:kind})};
         error.retryConditionTarget=failureCondition(previous);
-        const annotation=failure(error,kind,record).conditionTarget;if(annotation)record.primaryFailure.conditionTarget=annotation;
+        const annotation=failure(error,kind,record).conditionTarget;if(annotation!==undefined)record.primaryFailure.conditionTarget=annotation;
         await write(record,lease,{expected:null});await lease.release();return dto(record);
       }
       await write(record,lease,{expected:null});

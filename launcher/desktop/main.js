@@ -154,6 +154,7 @@ function operations() {
     executors:operationExecutors,recoverers:operationRecoverers,recheckers:operationRecheckers,evidence:operationEvidence,
     projectResult:result=>result?.value ?? result,
     observeEffects:record=>maintenancePolicy().observe(record),
+    prepareEffects:context=>maintenancePolicy().prepareEffects(context),
     captureConditions:(record,context)=>maintenancePolicy().initialConditions(record,context),
     identifyFailureCondition:(error,record)=>maintenancePolicy().identifyFailureCondition(error,record),
     verifyHandoff:async(record,proof)=>launcherUpdate.verifyHandoff({...launcherRecoveryOptions(),job:proof.job,
@@ -166,9 +167,11 @@ function maintenancePolicy(){
   return operationPolicy ||= require('./operation-policy').create({home:noraHome,hermesHome,installRoot,
     networkFetch:releaseNetwork.readOnce,launcherVersion:()=>app.getVersion(),channel:CHANNEL,
     bridge:(command,options)=>runBridge(command,options),
-    runRuntime:(context,{recover,allowCommitted})=>runProcess(process.execPath,
+    runRuntime:(context,{recover,allowCommitted,partialRepair,inspectPartial})=>runProcess(process.execPath,
       [path.join(__dirname,'runtime-worker.js'),payloadDirectory(),noraHome(),hermesHome(),
-        ...(recover?['--recover-runtime']:[]),...(allowCommitted?['--allow-committed']:[])],null,context.operationId),
+        ...(recover?['--recover-runtime']:[]),...(allowCommitted?['--allow-committed']:[]),
+        ...(partialRepair?['--repair-managed']:[]),...(inspectPartial?['--inspect-managed']:[])],null,context.operationId,
+      {input:partialRepair?JSON.stringify(partialRepair):undefined,returnResult:true}),
     runLegacy:(context,request)=>runProcess(process.execPath,[path.join(__dirname,'legacy-recovery-worker.js'),noraHome()],null,
       context.operationId,{kind:'legacy-recovery',input:JSON.stringify(request),returnResult:true}),
     inspectLauncher:job=>launcherUpdate.assessJob({...launcherRecoveryOptions(),job})});
@@ -527,6 +530,8 @@ function nodeStatus(error = '') {
   const verifiedModel = readVerifiedModel(noraHome());
   const installed = fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native-runtime.json'))
     && fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native_lifecycle.py'));
+  const managed = require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
+    installRoot:root,port:readInstallerState().port||DEFAULT_PORT});
   return {
     installed,
     systemReady: false,
@@ -549,6 +554,9 @@ function nodeStatus(error = '') {
     installRoot: root,
     warning: error || undefined,
     installer: readInstallerState(),
+    ...(managed?.needsRepair?{managedInstallation:true,needsRepair:true,version:managed.version,commit:managed.commit,
+      missingPrograms:managed.missing,systemProblems:['已有安装的程序文件缺失，需要保留数据修复。'],
+      running:null,gatewayRunning:null,clawchatConnected:null}:{}),
     ...locationStatus(),
   };
 }
@@ -754,7 +762,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
       try { sendBridgeEvent(webContents, runId, { event: 'heartbeat', at: Date.now() }); }
       catch (error) { onOutputError(error); }
     }, 1000);
-    const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : 30 * 60 * 1000;
+    const timeoutMs = command === 'status' ? 90000 : command === 'stop' ? 60000 : ['repair-preflight','operation-effects'].includes(command) ? 300000 : 30 * 60 * 1000;
     const timeout = setTimeout(() => {
       if (['update', 'recover-update'].includes(command)) {
         diagnostics.write('update.waiting-for-transaction', { pid: proc.pid, timeoutMs });
@@ -940,7 +948,7 @@ async function performSystemUpdate(selectedPayload, payload, webContents) {
   const target = JSON.parse(fs.readFileSync(path.join(selectedPayload, 'release-manifest.json'))).versions;
   const before = await runBridge('status');
   const comparison = releases.compare(before.version, target.tavern);
-  if (comparison !== -1 && !(comparison === 0 && before.systemReady === false)) {
+  if (comparison !== -1 && !(comparison === 0 && (before.systemReady === false || payload.partialRepair))) {
     throw new Error('目标必须高于当前版本，或为需要修复的同一版本；不会降级现有安装。');
   }
   updatingSystem = true;
@@ -1209,10 +1217,9 @@ function initializeLauncher() {
     return true;
   } catch (error) {
     diagnostics.error('launcher.startup-failed', error);
-    const guidance=formatUserError(error,{action:'status'}).replaceAll('在“更多”中查看日志',
-      diagnostics.lastFile?'查看下方本机日志':'保留本次提示');
+    const guidance=formatUserError(error,{action:'startup',logAvailable:Boolean(diagnostics.lastFile)});
     const log=diagnostics.lastFile?`本机日志：${diagnostics.lastFile}`:'本机日志未能保存。';
-    try { dialog.showErrorBox('启动器未能打开', `${guidance}\n\n${log}\n请保留现有安装和数据。`); }
+    try { dialog.showErrorBox('启动器未能打开', `${guidance}\n\n${log}`); }
     catch (dialogError) { diagnostics.error('launcher.startup-dialog-failed', dialogError); }
     app.exit(1);
     return false;
@@ -1300,7 +1307,7 @@ if (primaryInstance) {
       const legacyRecovery=systemUpdate.inspect(noraHome());
       if (!findPython()) {
         const fallback = nodeStatus();
-        if (!fallback.installed) return {...fallback,...taskCancellation(),launcherRecovery,operation};
+        if (!fallback.installed || fallback.managedInstallation) return {...fallback,...taskCancellation(),launcherRecovery,operation};
         throw new Error('无法查询已安装的服务状态，启动器未找到可用的 Python。请保留现有安装和数据。');
       }
       const runtime = await runBridge('status');
@@ -1414,10 +1421,17 @@ if (primaryInstance) {
         if(continued){writeInstallerState({...readInstallerState(),phase:'ready',error:'',task:'',setupCompleted:continued.setupCompleted===true});
           diagnostics.finish('success');return {verification:'confirmed',value:continued};}
       }
+      const managedFacts=require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
+        installRoot:installRoot(),port:payload.port||state.port||DEFAULT_PORT});
+      if(payload.action==='install'&&require('./operation-policy').hasManagedRecords({hermesHome:hermesHome(),installRoot:installRoot()}))
+        throw launcherError('此目录已有受管安装记录，请使用修复当前安装；现有数据已保留，未下载或覆盖程序。',{code:'MANAGED_INSTALLATION_EXISTS'});
+      const managedRepair=isUpdate&&(managedFacts?.needsRepair||selectedPlan?.mode==='install');
+      if(managedRepair){payload.partialRepair=true;
+        if(selectedPlan&&selectedPlan.mode!=='install')throw launcherError('原固定更新计划未包含缺失程序的完整修复资源，未改变已封存目标。请保留原操作记录。',{code:'RELEASE_COMPATIBILITY'});}
       if (isUpdate) {
         telemetry?.stage('release_check');
         if (LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用正式模式包。');
-        const current = await runBridge('status', { port: payload.port }, event.sender, payload.runId);
+        const current = managedFacts?.needsRepair ? nodeStatus() : await runBridge('status', { port: payload.port }, event.sender, payload.runId);
         if(selectedPlan){
           const resumed=await systemUpdateExecutor(payload,event.sender).resumeCommitted(context,
             {hasTransaction:fs.existsSync(path.join(installRoot(),'tavern-updates','transaction.json')),port:payload.port});
@@ -1434,6 +1448,7 @@ if (primaryInstance) {
         try {
           if(!selectedPlan){
             selectedPlan=await releases.selectPlan({fetcher:updateFetch,channel:CHANNEL,tag:payload.tag,
+              mode:managedRepair?'install':'update',
               launcherVersion:app.getVersion(),signal:releaseAbort.signal,
               metadataCache:releaseMetadataCache()});
             await fixedTarget(selectedPlan,current.version);
@@ -1467,7 +1482,7 @@ if (primaryInstance) {
         if (comparison > 0 && current.systemReady === false) {
           throw new Error('当前安装需要修复，但目标版本更旧；未修改现有安装。');
         }
-        if (comparison >= 0 && current.systemReady === true) {
+        if (comparison >= 0 && current.systemReady === true && !managedRepair) {
           // A launcher-only handoff still requires the system acceptance before
           // its old APP backup can become terminal.
           if(context.snapshot.handoffRef){
@@ -1486,7 +1501,10 @@ if (primaryInstance) {
         if (isUpdate && LOCAL_TEST) throw new Error('本地候选包不用于在线更新，请使用 Beta 发布包。');
         releaseAbort = new AbortController();
         try {
-          selectedPayload = payload.action === 'install' ? (LOCAL_TEST
+          selectedPayload = managedRepair ? await releases.prepareInstall({bundledRoot:payloadDirectory(),
+            launcherVersion:app.getVersion(),selectedPlan,operationDirectory,fetcher:updateFetch,
+            cacheRoot:path.join(noraHome(),'cache','releases'),signal:releaseAbort.signal,channel:CHANNEL,tag:payload.tag,
+            onEvent:message=>sendBridgeEvent(event.sender,payload.runId,message)}) : payload.action === 'install' ? (LOCAL_TEST
             ? await prepareTestPayload(payloadDirectory(), LOCAL_TEST, app.getVersion(),
               message => sendBridgeEvent(event.sender, payload.runId, message))
             : selectedPlan?.schema==='nora-bundled-plan/1'
@@ -1534,6 +1552,11 @@ if (primaryInstance) {
           if (removed.length) sendBridgeEvent(event.sender, payload.runId,
             { event: 'task', task: `已清理 ${removed.length} 个上次安装的临时目录` });
           await ensureHermesFromNode(event.sender, payload.runId, selectedPayload);
+        } else if (managedFacts?.missing.python) {
+          const journal=path.join(installerDirectory(),'operations',context.operationId,'runtime-bootstrap.json');
+          await context.journal(journal);
+          await runProcess(process.execPath,[path.join(__dirname,'runtime-worker.js'),selectedPayload,noraHome(),hermesHome(),
+            '--repair-managed'],event.sender,payload.runId,{input:JSON.stringify(managedFacts),returnResult:true});
         }
       }
       if (cancelled) throw Object.assign(new Error('安装已取消。'),{name:'AbortError',code:'ABORT_ERR'});

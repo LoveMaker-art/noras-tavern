@@ -26,6 +26,33 @@ test('a repeated request after reopening returns its stored result without execu
   assert.deepEqual(again.result, {installed:true});
 });
 
+test('prepared closure is persisted by the actual native owner before any runtime write and survives actual archive',async t=>{
+ let clock=Date.parse('2026-01-01T00:00:00Z'),writes=0;
+ const f=fixture(t,async context=>{await context.plan({planId:'fixed-'+context.operationId});await context.stage('prepared');
+  const record=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',context.operationId,'operation.json')));
+  assert.equal(record.state,'prepared');assert.equal(record.planSelected,true);assert.deepEqual(record.effectClosureRefs,[{path:`installer/operations/${context.operationId}/partial-history.json`,sha256:'a'.repeat(64)}]);
+  context.check();writes++;return {installed:true};},{lock:require('../installer/desktop/operation-lock'),now:()=>new Date(clock).toISOString(),
+   retention:{detailDays:30,fullRecords:2,facts:8},prepareEffects:async context=>{
+    context.check();const record=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',context.operationId,'operation.json')));
+    assert.equal(record.planSelected,true);assert.equal(record.effectState,'untouched');assert.notEqual(record.state,'prepared');
+    return [{path:`installer/operations/${context.operationId}/partial-history.json`,sha256:'a'.repeat(64)}];}});
+ f.options.evidence=require('../installer/desktop/evidence-store').createEvidenceStore({directory:f.directory});f.controller=createOperationController(f.options);
+ const first=await f.controller.start('install',{},'closure-first');
+ f.options.evidence.begin({operationId:first.operationId}).finish({delivery:{queued:0,accepted:1,last_ack:clock}});clock+=31*86400000;
+ await f.controller.start('install',{},'closure-second');await f.controller.start('install',{},'closure-third');
+ const archived=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',first.operationId,'operation.json')));
+ assert.equal(writes,3);assert.equal(archived.archived,true);assert.equal(archived.planSelected,true);assert.deepEqual(archived.target,{});
+ assert.deepEqual(archived.effectClosureRefs,[{path:`installer/operations/${first.operationId}/partial-history.json`,sha256:'a'.repeat(64)}]);
+});
+
+test('closure preparation failure stops before prepared and before runtime mutation under the actual native owner',async t=>{
+ let writes=0;
+ const f=fixture(t,async context=>{await context.plan({planId:'fixed'});await context.stage('prepared');writes++;return {installed:true};},
+  {lock:require('../installer/desktop/operation-lock'),prepareEffects:async context=>{context.check();throw Object.assign(new Error('proof write denied'),{code:'EACCES'});}});
+ const result=await f.controller.start('install',{},'closure-denied');assert.equal(writes,0);assert.equal(result.failureCode,'EACCES');assert.equal(result.effectState,'untouched');
+ const record=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',result.operationId,'operation.json')));assert.notEqual(record.stageId,'prepared');assert.equal(record.effectClosureRefs,undefined);
+});
+
 test('failure evidence is frozen before recovery, and recovery failure does not replace the first cause', async t => {
   const order = [];
   const primary = Object.assign(new Error('program failed'), {code:'TAVERN_PROCESS_EXITED'});

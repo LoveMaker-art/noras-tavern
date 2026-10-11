@@ -1,8 +1,10 @@
 import importlib.util
+import hashlib
 import json
 import os
 import subprocess
 import shutil
+import stat
 import sys
 import tempfile
 import unittest
@@ -19,6 +21,98 @@ SPEC.loader.exec_module(worker)
 
 
 class ReplacementTests(unittest.TestCase):
+    def test_file_digest_progress_counts_only_read_blocks_and_preserves_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / 'blocks.bin'
+            payload = b'a' * (1024 * 1024) + b'actual-tail'
+            file.write_bytes(payload)
+            events = []
+            expected = hashlib.sha256(payload).hexdigest()
+            self.assertEqual(worker.digest(file), expected)
+            self.assertEqual(worker.digest(file, on_progress=lambda size, entries: events.append((size, entries))), expected)
+            self.assertEqual(events, [(1024 * 1024, 0), (len(b'actual-tail'), 0)])
+            file.write_bytes(b'')
+            events.clear()
+            self.assertEqual(worker.digest(file, on_progress=lambda size, entries: events.append((size, entries))), hashlib.sha256(b'').hexdigest())
+            self.assertEqual(events, [])
+
+    def test_tree_digest_progress_preserves_size_mode_order_and_empty_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / 'data.bin'
+            payload = b'x' * (1024 * 1024) + b'last-block'
+            data.write_bytes(payload)
+            (root / 'empty').mkdir()
+            empty = root / 'empty/zero.dat'
+            empty.write_bytes(b'')
+            for platform in ('win32', 'darwin'):
+                with self.subTest(platform=platform):
+                    encoded = b'D\0F/data.bin\0' + str(len(payload)).encode() + b'\0'
+                    if platform == 'darwin': encoded += str(data.stat().st_mode & 0o777).encode() + b'\0'
+                    encoded += payload + b'D/empty\0F/empty/zero.dat\x000\0'
+                    if platform == 'darwin': encoded += str(empty.stat().st_mode & 0o777).encode() + b'\0'
+                    expected = hashlib.sha256(encoded).hexdigest()
+                    events = []
+                    self.assertEqual(worker.tree_digest(root, platform), expected)
+                    self.assertEqual(worker.tree_digest(root, platform,
+                        on_progress=lambda size, entries: events.append((size, entries))), expected)
+                    self.assertEqual(events, [(0, 1), (0, 1), (1024 * 1024, 0), (len(b'last-block'), 0), (0, 1), (0, 1)])
+
+    def test_digest_progress_does_not_count_unread_bytes_on_read_failure(self):
+        class InterruptedRead:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self, size):
+                if getattr(self, 'read_once', False): raise OSError('actual second read failed')
+                self.read_once = True
+                return b'b' * size
+        with tempfile.TemporaryDirectory() as directory:
+            file = Path(directory) / 'partial.bin'
+            file.write_bytes(b'b' * (1024 * 1024) + b'not-read')
+            for tree in (False, True):
+                with self.subTest(tree=tree):
+                    events = []
+                    with patch.object(Path, 'open', return_value=InterruptedRead()):
+                        with self.assertRaisesRegex(OSError, 'actual second read failed'):
+                            if tree:
+                                worker.tree_digest(file, 'win32', on_progress=lambda size, entries: events.append((size, entries)))
+                            else:
+                                worker.digest(file, on_progress=lambda size, entries: events.append((size, entries)))
+                    self.assertEqual(events, ([(0, 1)] if tree else []) + [(1024 * 1024, 0)])
+
+    def test_tree_digest_progress_does_not_confirm_failed_or_unsupported_entries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for failure in (OSError('actual lstat failed'), SimpleNamespace(st_mode=stat.S_IFIFO),
+                            SimpleNamespace(st_mode=stat.S_IFDIR, st_file_attributes=0x400)):
+                events = []
+                options = {'side_effect': failure} if isinstance(failure, OSError) else {'return_value': failure}
+                with patch.object(Path, 'lstat', **options):
+                    with self.assertRaises((OSError, ValueError)):
+                        worker.tree_digest(root, 'win32', on_progress=lambda size, entries: events.append((size, entries)))
+                self.assertEqual(events, [])
+
+    @unittest.skipIf(os.name == 'nt', 'Creating symlinks requires Windows developer mode or administrator privileges')
+    def test_tree_digest_progress_counts_only_accepted_internal_mac_link(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'actual').write_bytes(b'content')
+            link = root / 'current'
+            link.symlink_to('actual')
+            events = []
+            expected = worker.tree_digest(root, 'darwin')
+            self.assertEqual(worker.tree_digest(root, 'darwin', on_progress=lambda size, entries: events.append((size, entries))), expected)
+            self.assertEqual(sum(size for size, _ in events), len(b'content'))
+            self.assertEqual(sum(entries for _, entries in events), 3)
+            events.clear()
+            with self.assertRaisesRegex(ValueError, '目录外链接'):
+                worker.tree_digest(link, 'win32', on_progress=lambda size, entries: events.append((size, entries)))
+            self.assertEqual(events, [])
+            link.unlink(); link.symlink_to('../outside')
+            with self.assertRaisesRegex(ValueError, '目录外链接'):
+                worker.tree_digest(link, 'darwin', on_progress=lambda size, entries: events.append((size, entries)))
+            self.assertEqual(events, [])
+
     def test_desktop_relaunch_preserves_user_profile_and_removes_python_execution_flags(self):
         original = {'HOME': '/fixture/user', 'USERPROFILE': r'C:\Users\fixture',
                     'APPDATA': r'C:\Users\fixture\AppData\Roaming',

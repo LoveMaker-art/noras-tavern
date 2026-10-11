@@ -6,6 +6,13 @@ function create({bridge,compare,finalizeLauncher=async()=>{}}){
   async function accept(context,result,target){
     if(result?.updateVerified!==true||result.systemReady!==true||compare(result.version,target)!==0)
       throw failure('更新后的版本、文件或服务尚未通过验收，旧版本备份继续保留。');
+    const plan=context.target.releasePlan;
+    if(plan?.commit!==undefined||plan?.releaseManifest?.commit!==undefined){
+      const commit=plan.commit!==undefined?plan.commit:plan.releaseManifest.commit;
+      if(typeof commit!=='string'||!/^[a-f0-9]{40}$/.test(commit)||result.commit!==commit
+        ||plan.releaseManifest?.commit!==undefined&&plan.releaseManifest.commit!==commit)
+        throw failure('更新后的提交与原固定发布计划不符，旧版本备份继续保留。');
+    }
     const job=context.snapshot.handoffRef;
     if(job)await finalizeLauncher(job,result,context);
     return result;

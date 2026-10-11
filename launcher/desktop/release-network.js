@@ -25,7 +25,7 @@ async function rememberFailureResource(error,url,identity,fetcher){
 const chromiumCodes = {'net::ERR_NETWORK_CHANGED':'ERR_NETWORK_CHANGED','net::ERR_CERT_AUTHORITY_INVALID':'ERR_CERT_AUTHORITY_INVALID',
   'net::ERR_CERT_DATE_INVALID':'CERT_HAS_EXPIRED','net::ERR_NAME_NOT_RESOLVED':'ENOTFOUND','net::ERR_CONNECTION_REFUSED':'ECONNREFUSED',
   'net::ERR_CONNECTION_RESET':'ECONNRESET','net::ERR_CONNECTION_CLOSED':'ECONNRESET',
-  'net::ERR_TIMED_OUT':'TIMEOUT','net::ERR_ABORTED':'ABORT_ERR'};
+  'net::ERR_TIMED_OUT':'TIMEOUT','net::ERR_CONNECTION_TIMED_OUT':'TIMEOUT','net::ERR_ABORTED':'ABORT_ERR'};
 function retryAfter(value, now) {
   if (!value) return null;
   if (/^\d+$/.test(value)) return Number.isSafeInteger(Number(value)) ? Number(value)*1000 : null;
@@ -78,7 +78,7 @@ async function fetchRead(fetcher, url, options = {}, policy = {}) {
         Object.defineProperty(response,'launcherResponse',{value:evidence,configurable:true});} catch {}
       diagnostics.write('network.response',{...attemptFields,...evidence,durationMs:now()-started,
         message:`HTTP ${response.status} ${fields.url} attempt=${attempt} durationMs=${now()-started}`});
-      if([408,429,500,502,503,504].includes(response.status) || response.status===403 && (evidence.rateLimited || evidence.retryAfterMs!==undefined)) {
+      if(!policy.networkRetriesOnly && ([408,429,500,502,503,504].includes(response.status) || response.status===403 && (evidence.rateLimited || evidence.retryAfterMs!==undefined))) {
         wait=evidence.retryAfterMs ?? (response.status===429 ? 60000 : backoff[attempt-1]);
         if(evidence.rateLimited && evidence.rateLimitRemaining===0) {
           // A depleted primary bucket must never be retried before its reset.
@@ -180,6 +180,10 @@ async function sourceFailure(error,url,identity,fetcher,failures,sources) {
   if(retryAt.length)error.conditionRetryAt=Math.max(error.conditionRetryAt || 0,...retryAt);
   return error;
 }
+function sourceReadPolicy(source,index,policy,fetcher) {
+  const attempts=policy.maxAttempts || (fetcher.releaseRead===true&&fetcher.releasePolicy?.maxAttempts) || 2;
+  return {maxAttempts:Math.min(attempts,index===0&&source.id==='github'?2:1),networkRetriesOnly:true};
+}
 async function metadataJson(url,options={}) {
   const {fetcher=fetch,signal,policy={},channel='stable'}=options;
   const sources=sourceCandidates(url,{channel,sources:policy.sources});
@@ -192,7 +196,7 @@ async function metadataJson(url,options={}) {
       {code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1)),url,options.conditionIdentity,fetcher,failures,sources);
     const source=sources[index],budget=sources.length>1?Math.min(remaining,policy.attemptTimeoutMs ?? 30000):remaining;
     try {return await metadataFromSource(source.url,{...options,fetcher,source,policy:{...policy,source,deadlineAt:deadline,totalBudgetMs:budget,
-      ...(sources.length>1?{maxAttempts:1}:{})}});}
+      ...(sources.length>1?sourceReadPolicy(source,index,policy,fetcher):{})}});}
     catch(error) {
       failures.push(error);
       if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {
@@ -304,7 +308,7 @@ async function downloadAsset(options) {
     const reserve=Math.min(policy.backupBudgetMs ?? 300000,remaining/sources.length);
     const budget=remaining-reserve*(sources.length-index-1);
     try {return await downloadFromSource({...options,fetcher,url:source.url,source,eligiblePartials,policy:{...policy,source,deadlineAt:deadline,downloadBudgetMs:Math.ceil(budget),
-      ...(sources.length>1?{maxAttempts:1,downloadIdleTimeoutMs:policy.downloadIdleTimeoutMs ?? 300000}:{})}});}
+      ...(sources.length>1?{...sourceReadPolicy(source,index,policy,fetcher),downloadIdleTimeoutMs:policy.downloadIdleTimeoutMs ?? 300000}:{})}});}
     catch(error) {
       failures.push(error);
       if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {

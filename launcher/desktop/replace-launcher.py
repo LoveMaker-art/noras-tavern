@@ -81,11 +81,12 @@ def fsync_directory(path):
     finally: os.close(descriptor)
 
 
-def digest(file):
+def digest(file, *, on_progress=None):
     result = hashlib.sha256()
     with io_path(file).open('rb') as stream:
         for block in iter(lambda: stream.read(1024 * 1024), b''):
             result.update(block)
+            if on_progress is not None: on_progress(len(block), 0)
     return result.hexdigest()
 
 
@@ -212,7 +213,7 @@ def file_identity(path):
     return [value.st_dev, value.st_ino]
 
 
-def tree_digest(root, platform):
+def tree_digest(root, platform, *, on_progress=None):
     result = hashlib.sha256()
     count = 0
     def visit(file, relative):
@@ -228,10 +229,12 @@ def tree_digest(root, platform):
                 raise ValueError('启动器程序含目录外链接')
             result.update(b'L' + relative.encode() + b'\0' + os.fsencode(link))
             result.update(b'\0')
+            if on_progress is not None: on_progress(0, 1)
         elif getattr(value, 'st_file_attributes', 0) & 0x400:
             raise ValueError('启动器程序包含不支持的重解析目录')
         elif stat.S_ISDIR(value.st_mode):
             result.update(b'D' + relative.encode() + b'\0')
+            if on_progress is not None: on_progress(0, 1)
             for child in sorted(file.iterdir(), key=lambda item: item.name):
                 visit(child, relative + '/' + child.name)
         elif stat.S_ISREG(value.st_mode):
@@ -239,9 +242,11 @@ def tree_digest(root, platform):
             result.update(str(value.st_size).encode() + b'\0')
             if platform == 'darwin':
                 result.update(str(value.st_mode & 0o777).encode() + b'\0')
+            if on_progress is not None: on_progress(0, 1)
             with file.open('rb') as stream:
                 for block in iter(lambda: stream.read(1024 * 1024), b''):
                     result.update(block)
+                    if on_progress is not None: on_progress(len(block), 0)
         else:
             raise ValueError('启动器程序含不支持的文件类型')
     visit(io_path(root), '')

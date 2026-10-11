@@ -18,7 +18,7 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/updater/liveware_integration.py', 'ops/updater/liveware_notice.py', 'ops/updater/runtime_lock.py',
     'ops/updater/managed_context.py', 'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
     'ops/installer/operation_control.py', 'ops/installer/operation_cli.py', 'ops/installer/operation_node.mjs', 'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',
-    'ops/installer/desktop/operation-delegate.js',
+    'ops/installer/desktop/operation-delegate.js', 'ops/installer/desktop/operation-history.js',
     'ops/installer/mcp_probe.mjs',
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
@@ -240,7 +240,7 @@ const UPDATER_RUNTIME_FILES = new Set([
     'ops/installer/operation_control.py', 'ops/installer/operation_cli.py',
     'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',
     'ops/installer/operation_node.mjs', 'ops/installer/mcp_probe.mjs',
-    'ops/installer/desktop/operation-delegate.js',
+    'ops/installer/desktop/operation-delegate.js', 'ops/installer/desktop/operation-history.js',
 ]);
 
 /**

@@ -139,6 +139,131 @@ test('source switching never masks certificate, malformed or corrupt responses',
 
 const sfSources={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
 const sfLatest='https://downloads.sourceforge.net/project/nora-tavern/channels/stable.json';
+test('GitHub connection failures retry the fixed asset once before using a backup',async t=>{
+  for(const message of ['net::ERR_CONNECTION_RESET','net::ERR_CONNECTION_TIMED_OUT'])await t.test(message,async child=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-github-connect-retry-'));child.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const bytes=Buffer.from('verified'),calls=[],waits=[],target=path.join(root,'asset.zip');
+    await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+      policy:{sources:sfSources,backoffMs:[2,5],sleep:async ms=>waits.push(ms)},fetcher:async url=>{
+        calls.push(url);if(calls.length===1)throw new Error(message);return new Response(bytes);
+      }});
+    assert.deepEqual(calls,[assetUrl,assetUrl]);assert.deepEqual(waits,[2]);assert.deepEqual(fs.readFileSync(target),bytes);
+  });
+});
+test('Chromium connection timeouts download the same frozen asset through the official backup',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-chromium-connect-timeout-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('frozen checksum fixture\n'),calls=[],events=[],waits=[],error=new Error('net::ERR_CONNECTION_TIMED_OUT');
+  const url='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.5/SHA256SUMS';
+  const backup='https://downloads.sourceforge.net/project/nora-tavern/v2.4.5/SHA256SUMS';
+  const mirror='https://zenlayer.dl.sourceforge.net/project/nora-tavern/v2.4.5/SHA256SUMS?viasf=1';
+  const target=path.join(root,'SHA256SUMS');
+  await networkModule.downloadAsset({url,target,identity:{tag:'v2.4.5',asset:'SHA256SUMS',size:bytes.length,sha256:sha(bytes)},
+    policy:{sources:sfSources,sleep:async ms=>waits.push(ms)},onEvent:event=>events.push(event),
+    fetcher:async(request,options)=>{
+      calls.push(request);
+      if(request===url)throw error;
+      assert.equal(options.redirect,'manual');
+      if(request===backup)return new Response(null,{status:302,headers:{Location:mirror}});
+      assert.equal(request,mirror);return new Response(bytes,{headers:{'Content-Length':String(bytes.length)}});
+    }});
+  assert.deepEqual(calls,[url,url,backup,mirror]);assert.deepEqual(waits,[2000]);assert.deepEqual(fs.readFileSync(target),bytes);
+  assert.equal(error.code,'TIMEOUT');
+  assert.equal(require(path.join(desktop,'launcher-errors')).describeError(error).error_code,'timeout');
+  assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')&&event.line.includes('TIMEOUT')));
+});
+test('GitHub metadata connection retries keep the original source and total deadlines',async t=>{
+  const url='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.5';
+  const backup='https://downloads.sourceforge.net/project/nora-tavern/v2.4.5/release.json';
+  for(const outcome of ['recovered','source-budget','total-budget','body-failure'])await t.test(outcome,async()=>{
+    const calls=[],waits=[];let clock=1000;
+    const lookup=()=>networkModule.metadataJson(url,{policy:{sources:sfSources,now:()=>clock,
+      totalBudgetMs:outcome==='total-budget'?100:100000,sleep:async ms=>{waits.push(ms);clock+=ms;}},fetcher:async request=>{
+      calls.push(request);
+      if(request===url&&outcome==='body-failure')return new Response(new ReadableStream({start(controller){
+        controller.error(new Error('net::ERR_CONNECTION_TIMED_OUT'));
+      }}));
+      if(request===url&&calls.length===1){clock+=outcome==='source-budget'?29000:outcome==='total-budget'?100:19466;
+        throw new Error('net::ERR_CONNECTION_RESET');}
+      clock+=4000;return Response.json({tag_name:'v2.4.5'});
+    }});
+    if(outcome==='total-budget'){
+      await assert.rejects(lookup(),error=>error.code==='TIMEOUT');assert.deepEqual(calls,[url]);assert.deepEqual(waits,[]);
+    } else {
+      assert.equal((await lookup()).value.tag_name,'v2.4.5');
+      assert.deepEqual(calls,outcome==='recovered'?[url,url]:[url,backup]);assert.deepEqual(waits,outcome==='recovered'?[2000]:[]);
+    }
+  });
+});
+test('explicit one-attempt policies still switch once for metadata and fixed assets',async t=>{
+  for(const kind of ['metadata','asset'])for(const origin of ['caller','transport'])await t.test(`${kind}-${origin}`,async child=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-explicit-source-attempt-'));child.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const calls=[],bytes=Buffer.from('verified'),policy={sources:sfSources,maxAttempts:origin==='caller'?1:undefined,
+      sleep:async()=>assert.fail('an explicit single attempt must not retry')};
+    const readOnce=async url=>{
+      calls.push(url);if(calls.length===1)throw new Error('net::ERR_CONNECTION_RESET');
+      return kind==='metadata'?Response.json({tag_name:'v2.4.5'}):new Response(bytes);
+    };
+    const fetcher=origin==='transport'?Object.assign(async(...args)=>readOnce(...args),{releaseRead:true,readOnce,releasePolicy:{maxAttempts:1}}):readOnce;
+    if(kind==='metadata'){
+      assert.equal((await networkModule.metadataJson(latestUrl,{policy,fetcher})).value.tag_name,'v2.4.5');assert.deepEqual(calls,[latestUrl,sfLatest]);
+    } else {
+      const target=path.join(root,'asset.zip');
+      await networkModule.downloadAsset({url:assetUrl,target,policy,fetcher,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)}});
+      assert.deepEqual(calls,[assetUrl,'https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip']);assert.deepEqual(fs.readFileSync(target),bytes);
+    }
+  });
+});
+test('exhausted GitHub and backup connections retain bounded attempts and the canonical asset',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-source-network-exhaustion-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const calls=[],waits=[],target=path.join(root,'asset.zip');
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:8,sha256:sha('verified')},
+    policy:{sources:sfSources,backoffMs:[2,5],sleep:async ms=>waits.push(ms)},fetcher:async url=>{
+      calls.push(url);throw new Error('net::ERR_CONNECTION_TIMED_OUT');
+    }}),error=>{
+      assert.equal(error.code,'TIMEOUT');assert.equal(error.attempt,1);assert.equal(error.conditionResource.url,assetUrl);
+      assert.equal(error.secondaryErrors[0].operation,'release-source:github');assert.equal(error.secondaryErrors[0].error.attempt,2);return true;
+    });
+  assert.deepEqual(calls,[assetUrl,assetUrl,'https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip']);
+  assert.deepEqual(waits,[2]);assert.equal(fs.existsSync(target),false);
+});
+test('Chromium connection timeouts have bounded metadata retries and retain timeout evidence',async t=>{
+  for(const outcome of ['recovered','exhausted'])await t.test(outcome,async()=>{
+    const calls=[],waits=[],events=[],error=new Error('net::ERR_CONNECTION_TIMED_OUT');let clock=1000;
+    const network=networkModule.createReleaseNetwork({app:{whenReady:async()=>{}},
+      diagnostics:{write:(event,fields)=>events.push({event,...fields}),error:(event,error,fields)=>events.push({event,error,...fields})},
+      net:{fetch:async url=>{
+        calls.push(url);clock+=10;
+        if(outcome==='exhausted'||calls.length<3)throw error;
+        return Response.json({tag_name:'v2.4.5'});
+      }}});
+    const lookup=()=>networkModule.metadataJson(latestUrl,{fetcher:network.fetch,policy:{sources:{schema:1,mirrors:[]},
+      now:()=>clock,totalBudgetMs:100,backoffMs:[2,5],sleep:async ms=>{waits.push(ms);clock+=ms;}}});
+    if(outcome==='recovered')assert.equal((await lookup()).value.tag_name,'v2.4.5');
+    else await assert.rejects(lookup(),caught=>caught.code==='TIMEOUT'&&caught.attempt===3);
+    assert.deepEqual(calls,[latestUrl,latestUrl,latestUrl]);assert.deepEqual(waits,[2,5]);
+    assert.equal(events.filter(event=>event.event==='network.retry').length,2);
+    assert.equal(require(path.join(desktop,'launcher-errors')).describeError(error).error_code,'timeout');
+  });
+});
+test('connection timeout fallback still respects cancellation, certificates, hashes and unknown messages',async t=>{
+  for(const kind of ['cancelled','certificate','hash','unknown-with-url'])await t.test(kind,async child=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-connect-timeout-boundary-'));child.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const calls=[],controller=new AbortController(),target=path.join(root,'asset.zip');
+    const error=new Error(kind==='certificate'?'net::ERR_CERT_AUTHORITY_INVALID':kind==='unknown-with-url'
+      ?`net::ERR_CONNECTION_TIMED_OUT at ${assetUrl}`:'net::ERR_CONNECTION_TIMED_OUT');
+    await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,signal:controller.signal,
+      identity:{tag:'v2.4.2',asset:'asset.zip',size:8,sha256:sha('verified')},policy:{sources:sfSources},
+      fetcher:async url=>{
+        calls.push(url);
+        if(kind==='hash')return new Response('tampered',{headers:{'Content-Length':'8'}});
+        if(kind==='cancelled')controller.abort();
+        throw error;
+      }}),caught=>kind==='hash'?caught.code==='VERIFICATION_FAILED':kind==='certificate'?caught.code==='ERR_CERT_AUTHORITY_INVALID'
+        :kind==='cancelled'?controller.signal.aborted&&caught.code==='TIMEOUT':caught===error&&caught.code===undefined);
+    assert.deepEqual(calls,[assetUrl]);assert.equal(fs.existsSync(target),false);
+    if(kind==='unknown-with-url')assert.equal(require(path.join(desktop,'launcher-errors')).describeError(error).error_code,'unknown');
+  });
+});
 test('the shipped source order is GitHub first and healthy GitHub makes no backup request',async()=>{
   const {sourceCandidates}=require(path.join(desktop,'release-sources'));
   assert.deepEqual(sourceCandidates(latestUrl).map(item=>item.id),['github','sourceforge']);
@@ -188,7 +313,7 @@ test('a failed GitHub asset downloads the same frozen bytes from SourceForge wit
   assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
   assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')));
 });
-test('a continuously slow GitHub body cannot consume the backup download window',async t=>{
+test('a retried, continuously slow GitHub body cannot consume the backup download window',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-slow-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[];let timer,activeUrl,primaryCancelled=false;
   const backupUrl='https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip';
@@ -196,15 +321,16 @@ test('a continuously slow GitHub body cannot consume the backup download window'
   await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
     // Keep the same ratios while allowing actual file writes, sync and hashing on a busy runner.
     // The 625ms byte cadence remains below idle timeout, and cannot overrun the eight-byte identity.
-    policy:{sources:sfSources,downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
+    policy:{sources:sfSources,backoffMs:[0,0],downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
     onEvent:event=>{events.push(event);if(activeUrl===assetUrl&&event.event==='progress'&&event.current>0)primaryProgress.push(event.current);},
     fetcher:async url=>{
       calls.push(url);activeUrl=url;
       if(url!==assetUrl){assert.equal(url,backupUrl);assert.equal(primaryCancelled,true);return new Response(bytes);}
+      if(calls.length===1)throw new Error('net::ERR_CONNECTION_RESET');
       return new Response(new ReadableStream({start(controller){timer=setInterval(()=>controller.enqueue(Buffer.from('v')),625);},
         cancel(){primaryCancelled=true;clearInterval(timer);}}));
     }});
-  assert.deepEqual(calls,[assetUrl,backupUrl]);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
+  assert.deepEqual(calls,[assetUrl,assetUrl,backupUrl]);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
   assert.ok(primaryProgress.length>=2,'the primary produced repeated byte progress without completing');
   assert.ok(primaryProgress.every((current,index)=>current>0&&current<bytes.length&&(!index||current>primaryProgress[index-1])));
   assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')&&event.line.includes('TIMEOUT')));

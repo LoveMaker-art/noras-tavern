@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import ssl
+import stat
 import sys
 import tarfile
 import tempfile
@@ -151,7 +152,183 @@ def managed_instance(home, root):
     return instance
 
 
-def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=None):
+def validate_partial_repair(home, root, instance, lifecycle=None):
+    """Recheck the desktop's exact partial snapshot in the standalone updater.
+
+    The bootstrap cannot import an unverified bridge or guess an old healthy
+    state. Existing records and program identities must still match, and the
+    bridge establishes the positive offline proof again before any swap.
+    """
+    if lifecycle is None:
+        raw = os.environ.get('NORA_UPDATE_LIFECYCLE')
+        lifecycle = json.loads(raw) if raw else {}
+    if not isinstance(lifecycle, dict):
+        raise RuntimeError('部分安装修复的启动器上下文无效。')
+    snapshot = lifecycle.get('partialRepair')
+    if snapshot is None:
+        return None
+    home, root = Path(home).resolve(), Path(root).resolve()
+    nora = root.parent
+    expected = {'noraHome': str(nora), 'hermesHome': str(home), 'installRoot': str(root), 'port': instance['port']}
+    before = lifecycle.get('before')
+    if (home != nora / 'hermes' or root != nora / 'tavern'
+            or any(lifecycle.get(name) != value for name, value in expected.items())
+            or not isinstance(before, dict)
+            or any(before.get(name) is not False for name in ('systemReady', 'running', 'gatewayRunning', 'clawchatConnected'))
+            or not isinstance(snapshot, dict)
+            or set(snapshot) != {'schema', 'version', 'commit', 'bindings', 'missing', 'programs'}
+            or snapshot.get('schema') != 'nora-managed-partial-installation/1'
+            or before.get('version') != snapshot.get('version')):
+        raise RuntimeError('部分安装修复的原实例或服务状态无法核验，未创建新安装。')
+    def linked(path):
+        try:
+            value = Path(filesystem_path(path)).lstat()
+        except FileNotFoundError:
+            return False
+        return stat.S_ISLNK(value.st_mode) or bool(getattr(value, 'st_file_attributes', 0) & 0x400)
+    def reject_links(path):
+        path = Path(filesystem_path(path))
+        if linked(path):
+            raise RuntimeError('部分安装修复包含链接或重定向，已保留现有数据。')
+        if path.is_dir():
+            for child in path.iterdir(): reject_links(child)
+    for directory in (nora, home, root, root / 'tavern-state', root / 'apps', root / 'tavern-updates', home / 'hermes-agent'):
+        current = directory
+        while current != current.parent:
+            if linked(current):
+                raise RuntimeError('部分安装修复的实例路径被重定向，已保留现有数据。')
+            current = current.parent
+    if not (root / 'tavern-state').is_dir():
+        raise RuntimeError('部分安装修复缺少原有数据目录，未创建新实例。')
+    reject_links(root / 'tavern-state')
+    records = {'instance': home / 'nora-instance.json',
+               'system': root / 'tavern-updates/nora-system.json',
+               'receipt': root / 'tavern-updates/installed.json',
+               'manifest': root / 'tavern-updates/installed-manifest.json',
+               'config': home / 'config.yaml',
+               'runtimeMarker': home / 'hermes-agent/.hermes-bootstrap-complete',
+               'nativeConfig': root / 'tavern-state/native-runtime/config.yaml'}
+    bindings = snapshot.get('bindings')
+    if not isinstance(bindings, dict) or set(bindings) != set(records):
+        raise RuntimeError('部分安装修复缺少完整的原记录绑定。')
+    objects = {}
+    for name, file in records.items():
+        reject_links(file)
+        io_file = Path(filesystem_path(file))
+        if name == 'nativeConfig' and not io_file.exists() and bindings[name] is None:
+            continue
+        if not io_file.is_file() or io_file.stat().st_size > 4 * 1024 * 1024:
+            raise RuntimeError('部分安装修复的原记录已变化：' + file.name)
+        raw = io_file.read_bytes()
+        if (not re.fullmatch(r'[a-f0-9]{64}', str(bindings[name] or ''))
+                or hashlib.sha256(raw).hexdigest() != bindings[name]):
+            raise RuntimeError('部分安装修复的原记录已变化：' + file.name)
+        if name not in ('config', 'nativeConfig'):
+            objects[name] = json.loads(raw)
+            if not isinstance(objects[name], dict):
+                raise RuntimeError('部分安装修复的原记录无效：' + file.name)
+    saved_instance = objects['instance']
+    if (type(saved_instance.get('schema')) is not int or saved_instance['schema'] != 1
+            or any(saved_instance.get(name) != value for name, value in expected.items())):
+        raise RuntimeError('部分安装修复的实例记录与启动器绑定不一致。')
+    import yaml
+    try:
+        config = yaml.safe_load((home / 'config.yaml').read_text(encoding='utf-8'))
+        mcp = config['mcp_servers']['nora']
+        env = mcp['env']
+        expected_env = {
+            'NORA_MCP_PROJECT_ROOT': str(root / 'apps/tavern-runtime'),
+            'NORA_MCP_ST_ROOT': str(root / 'apps/tavern-runtime/engine/sillytavern'),
+            'NORA_MCP_STATE_ROOT': str(root / 'tavern-state'),
+            'NORA_MCP_NATIVE_DATA_ROOT': str(root / 'tavern-state/native'),
+            'NORA_MCP_USER_DATA_ROOT': str(root / 'tavern-state/native/default-user'),
+            'NORA_MCP_CONFIG_PATH': str(root / 'tavern-state/native-runtime/config.yaml'),
+            'NORA_MCP_UPLOAD_ROOT': str(root / 'tavern-state/imports'),
+            'NORA_MCP_BASE_URL': f"http://127.0.0.1:{instance['port']}",
+        }
+        if (mcp.get('args') != [str(root / 'apps/nora-mcp/dist/server.js')]
+                or any(env.get(name) != value for name, value in expected_env.items())):
+            raise ValueError('MCP binding mismatch')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError, yaml.YAMLError) as error:
+        raise RuntimeError('部分安装修复的原有 MCP 配置绑定不一致。') from error
+    receipt, manifest, system, marker = (objects[name] for name in ('receipt', 'manifest', 'system', 'runtimeMarker'))
+    version, commit = snapshot.get('version'), snapshot.get('commit')
+    if (type(receipt.get('schema')) is not int or receipt['schema'] not in (1, 2)
+            or not re.fullmatch(r'\d+\.\d+\.\d+(?:-beta\.\d+)?', str(version or ''))
+            or not re.fullmatch(r'[a-f0-9]{40}', str(commit or ''))
+            or receipt.get('version') != version or receipt.get('commit') != commit
+            or type(system.get('schema')) is not int or system['schema'] != 1
+            or system.get('version') != version or system.get('commit') != commit
+            or not isinstance(system.get('proof'), dict)
+            or any(system['proof'].get(name) is not True for name in
+                   ('hermesContext', 'mcpInstanceRead', 'managedConfiguration', 'clawchatRegistration'))
+            or manifest.get('schema') != 'tavern-release/v2' or manifest.get('commit') != commit
+            or not isinstance(manifest.get('versions'), dict) or manifest['versions'].get('tavern') != version
+            or type(marker.get('schema')) is not int or marker['schema'] != 1
+            or marker.get('source') != 'nora-integrated-runtime'
+            or not re.fullmatch(r'[a-f0-9]{64}', str(marker.get('sha256') or ''))):
+        raise RuntimeError('部分安装修复的版本、清单或原运行记录不一致。')
+    programs = snapshot.get('programs')
+    if not isinstance(programs, dict) or set(programs) != {'app', 'ops', 'nora-mcp'}:
+        raise RuntimeError('部分安装修复缺少原程序身份。')
+    def tree_digest(directory):
+        result = hashlib.sha256()
+        def visit(current, relative):
+            value = current.lstat()
+            if linked(current):
+                raise RuntimeError('部分安装修复程序包含链接。')
+            if stat.S_ISDIR(value.st_mode):
+                result.update(b'D' + relative.encode() + b'\0')
+                for child in sorted(current.iterdir(), key=lambda item: item.name): visit(child, relative + '/' + child.name)
+            elif stat.S_ISREG(value.st_mode):
+                result.update(b'F' + relative.encode() + b'\0')
+                with current.open('rb') as stream:
+                    for block in iter(lambda: stream.read(1024 * 1024), b''): result.update(block)
+            else:
+                raise RuntimeError('部分安装修复程序目录类型无效。')
+        visit(Path(filesystem_path(directory)), '')
+        return result.hexdigest()
+    for name, directory in (('app', root / 'apps/tavern-runtime'), ('ops', root / 'apps/tavern-ops'), ('nora-mcp', root / 'apps/nora-mcp')):
+        reject_links(directory)
+        io_directory = Path(filesystem_path(directory))
+        actual = None
+        if io_directory.exists():
+            if not io_directory.is_dir(): raise RuntimeError('部分安装修复程序目录类型无效。')
+            value = io_directory.stat()
+            actual = {'identity': [str(value.st_dev), str(value.st_ino)], 'digest': tree_digest(io_directory)}
+            if value.st_ino <= 0: raise RuntimeError('部分安装修复程序身份无法核验。')
+        expected_program = programs[name]
+        if expected_program is not None and (not isinstance(expected_program, dict)
+                or set(expected_program) != {'identity', 'digest'}
+                or not isinstance(expected_program.get('identity'), list) or len(expected_program['identity']) != 2
+                or any(not isinstance(item, str) or not re.fullmatch(r'[0-9]+', item)
+                       for item in expected_program['identity'])
+                or int(expected_program['identity'][1]) <= 0
+                or not re.fullmatch(r'[a-f0-9]{64}', str(expected_program.get('digest') or ''))):
+            raise RuntimeError('部分安装修复的原程序身份格式无效。')
+        if programs[name] != actual:
+            raise RuntimeError('部分安装修复的原程序已变化，未覆盖现有文件。')
+    python_files = [home / 'hermes-agent/venv' / relative for relative in
+                    (('Scripts/python.exe',) if os.name == 'nt' else ('bin/python3', 'bin/python'))]
+    for file in python_files:
+        # A managed venv may use an interpreter symlink. Its directory binding
+        # remains strict; the runtime controller verifies the executable boundary.
+        current = file.parent
+        while current != home:
+            if linked(current): raise RuntimeError('部分安装修复的 Python 路径被重定向。')
+            current = current.parent
+    native = root / 'apps/tavern-runtime'
+    missing = {'nativeRuntime': not (native / 'native-runtime.json').is_file(),
+               'nativeLifecycle': not (native / 'native_lifecycle.py').is_file(),
+               'python': not any(file.is_file() for file in python_files)}
+    if (not isinstance(snapshot.get('missing'), dict) or set(snapshot['missing']) != set(missing)
+            or any(type(value) is not bool for value in snapshot['missing'].values())
+            or not any(missing.values()) or snapshot['missing'] != missing):
+        raise RuntimeError('部分安装修复的程序缺失集合已变化。')
+    return snapshot
+
+
+def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=None, validate_partial=True):
     """Resolve an existing installation without writing or inventing a new root.
 
     Kept in the standalone bootstrap so the downloaded entry and bundle runner
@@ -242,7 +419,8 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
     if (root / "tavern-updates/nora-system.json").exists() and not instance:
         raise RuntimeError(managed_error)
     app = root / "apps/tavern-runtime"
-    if not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py")) or not (root / "tavern-state").is_dir():
+    partial = validate_partial_repair(home, root, instance) if instance and validate_partial else None
+    if (not partial and not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py"))) or not (root / "tavern-state").is_dir():
         raise RuntimeError("目标不是完整的已有酒馆安装，已停止更新：" + str(root))
     if (root / "tavern-state").is_symlink():
         raise RuntimeError("数据目录是符号链接，无法保证事务回滚，已停止更新：" + str(root / "tavern-state"))

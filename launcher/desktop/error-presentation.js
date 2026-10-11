@@ -4,7 +4,7 @@ const { describeError, isProxyConnectionFailure } = require('./launcher-errors')
 
 const operations = { install: '安装', update: '更新', repair: '修复', start: '启动', stop: '停止', restart: '重启',
   pair: '配对', model: '模型配置', list_models: '获取模型列表', check_update: '检查更新',
-  status: '服务状态检查', open: '打开页面', uninstall: '卸载', settings: '打开安装目录',
+  status: '服务状态检查', startup: '启动器初始化', open: '打开页面', uninstall: '卸载', settings: '打开安装目录',
   recover: '恢复旧版本', recoverLauncher: '恢复旧启动器' };
 const guidance = {
   permission_denied: ['无法访问安装文件。', '请检查目录权限；安全软件拦截时，核实文件后再处理。'],
@@ -83,6 +83,17 @@ function presentError(error, context = {}) {
   }
   const userCode = chain.map(value => value.userCode || value.code).find(code => Object.hasOwn(business, code));
   const readable = chain.map(readableLocalMessage).find(Boolean) || readableLocalMessage(error);
+  if(context.action==='startup'){
+    const technical=describeError(error,context);
+    const local={permission_denied:'无法访问初始化所需的文件或目录，请检查目录权限。',
+      file_not_found:'缺少必要的文件或目录，请检查安装目录。',
+      disk_full:'磁盘空间不足，请检查安装盘和系统临时目录所在磁盘。'};
+    const detail=local[technical.error_code]||(chain.some(value=>value.code==='ENOTDIR')
+      ?'初始化路径中的某一项不是文件夹，请保留该文件并查看日志。':readable||'具体原因尚未确认。');
+    return {title:`${operation}未完成。`,detail,
+      next:context.logAvailable===false?'请复制本次提示反馈。请保留现有安装和数据。'
+        :'请复制下方本机日志反馈。请保留现有安装和数据。'};
+  }
   if (userCode) {
     if (userCode === 'GATEWAY_IDENTITY' && context.action === 'status') return {
       title:'诺拉后台状态暂时无法确认。',

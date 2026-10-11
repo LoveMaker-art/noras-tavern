@@ -32,6 +32,28 @@ test('staging text uses the final runtime directory and home initialization pres
     assert.equal(fs.readFileSync(path.join(root,'.env'),'utf8'),'DUMMY=existing\n');
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+test('skill initialization copies Unicode paths and binary bytes while retaining existing user skills and configuration',()=>{
+  const parent=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-unicode-'));
+  const root=path.join(parent,'中文安装位置');
+  try{
+    const source=path.join(root,'hermes-agent/skills/新增分类/子目录');
+    fs.mkdirSync(source,{recursive:true});
+    const bytes=Buffer.from([0,128,255,10,13,0,42]);
+    fs.writeFileSync(path.join(source,'技能文件.bin'),bytes);
+    fs.mkdirSync(path.join(root,'hermes-agent/skills/已有分类'),{recursive:true});
+    fs.writeFileSync(path.join(root,'hermes-agent/skills/已有分类/SKILL.md'),'bundled default');
+    fs.mkdirSync(path.join(root,'skills/已有分类'),{recursive:true});
+    fs.writeFileSync(path.join(root,'skills/已有分类/SKILL.md'),'user retained content');
+    fs.writeFileSync(path.join(root,'.env'),'EXISTING=preserve\n');
+    fs.writeFileSync(path.join(root,'config.yaml'),'existing: preserve\n');
+    initializeHome(root,{nodeLinks:{}});
+    assert.deepEqual(fs.readFileSync(path.join(root,'skills/新增分类/子目录/技能文件.bin')),bytes);
+    assert.deepEqual(fs.readFileSync(path.join(source,'技能文件.bin')),bytes);
+    assert.equal(fs.readFileSync(path.join(root,'skills/已有分类/SKILL.md'),'utf8'),'user retained content');
+    assert.equal(fs.readFileSync(path.join(root,'.env'),'utf8'),'EXISTING=preserve\n');
+    assert.equal(fs.readFileSync(path.join(root,'config.yaml'),'utf8'),'existing: preserve\n');
+  }finally{fs.rmSync(parent,{recursive:true,force:true});}
+});
 test('bundle lookup validates its platform and component contract without changing the archive',()=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-bundle-'));
   try{

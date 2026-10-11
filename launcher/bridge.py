@@ -366,6 +366,178 @@ def read_version(install_root: Path) -> dict:
     return {"version": None, "commit": None, "versionSource": "unknown"}
 
 
+def _repair_object(file):
+    """A missing or unreadable record is not permission to create an instance."""
+    file = Path(file)
+    try:
+        if file.is_symlink() or not file.is_file() or file.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError('not a regular bounded record')
+        result = json.loads(file.read_text(encoding='utf-8'))
+        if not isinstance(result, dict):
+            raise ValueError('not an object')
+        return result
+    except (OSError, ValueError, UnicodeError) as error:
+        raise RuntimeError('无法核验已有安装记录，现有数据已保留：' + file.name) from error
+
+
+def partial_installation_snapshot(args):
+    """Authenticate the exact damaged managed installation, without modifying it.
+
+    This is a repair/rollback contract, never a claim that the old program works.
+    Service state is established separately by partial_repair_preflight.
+    """
+    recovery = nora_system.recovery_module()
+    root, home, tavern = args.nora_home, args.hermes_home, args.install_root
+    if home != root / 'hermes' or tavern != root / 'tavern':
+        raise RuntimeError('部分安装修复仅支持当前启动器绑定的专属目录。')
+    for directory in (root, home, tavern, tavern / 'tavern-state'):
+        current = directory
+        while current != current.parent:
+            if recovery.linked(current):
+                raise RuntimeError('安装或数据目录被链接重定向，未修改现有安装。')
+            current = current.parent
+        if not directory.is_dir():
+            raise RuntimeError('已有安装目录或数据目录缺失，未创建新实例。')
+    recovery.reject_links(tavern / 'tavern-state')
+    records = {
+        'instance': home / 'nora-instance.json',
+        'system': tavern / 'tavern-updates/nora-system.json',
+        'receipt': tavern / 'tavern-updates/installed.json',
+        'manifest': tavern / 'tavern-updates/installed-manifest.json',
+    }
+    def no_redirect(file):
+        for current in (file, *file.parents):
+            if recovery.linked(current):
+                raise RuntimeError('已有安装路径被链接重定向，未读取目录外文件。')
+    for file in records.values():
+        no_redirect(file)
+        recovery.reject_links(file)
+    objects = {name: _repair_object(file) for name, file in records.items()}
+    instance, system, receipt, manifest = (objects[name] for name in ('instance', 'system', 'receipt', 'manifest'))
+    expected = {'noraHome': root, 'hermesHome': home, 'installRoot': tavern}
+    if (type(instance.get('schema')) is not int or instance['schema'] != 1
+            or type(instance.get('port')) is not int or instance['port'] != args.port
+            or not 1024 <= args.port <= 65535
+            or any(not isinstance(instance.get(name), str) or not Path(instance[name]).is_absolute()
+                   or Path(instance[name]) != value for name, value in expected.items())):
+        raise RuntimeError('已有安装的实例或端口绑定不一致，未修改任何文件。')
+    version, commit = receipt.get('version'), receipt.get('commit')
+    if (type(receipt.get('schema')) is not int or receipt['schema'] not in (1, 2)
+            or not re.fullmatch(r'\d+\.\d+\.\d+(?:-beta\.\d+)?', str(version or ''))
+            or not re.fullmatch(r'[a-f0-9]{40}', str(commit or ''))
+            or type(system.get('schema')) is not int or system['schema'] != 1
+            or system.get('version') != version or system.get('commit') != commit
+            or not isinstance(system.get('proof'), dict)
+            or any(system['proof'].get(name) is not True for name in nora_system.PROOFS)
+            or manifest.get('schema') != 'tavern-release/v2' or manifest.get('commit') != commit
+            or not isinstance(manifest.get('versions'), dict) or manifest['versions'].get('tavern') != version):
+        raise RuntimeError('已有安装的版本、清单或验收记录不一致，未覆盖现有安装。')
+    config = home / 'config.yaml'
+    no_redirect(config)
+    recovery.reject_links(config)
+    try:
+        import yaml
+        value = yaml.safe_load(config.read_text(encoding='utf-8'))
+        mcp = value['mcp_servers']['nora']
+        env = mcp['env']
+        if (mcp.get('args') != [str(tavern / 'apps/nora-mcp/dist/server.js')]
+                or env.get('NORA_MCP_BASE_URL') != f'http://127.0.0.1:{args.port}'
+                or env.get('NORA_MCP_STATE_ROOT') != str(tavern / 'tavern-state')):
+            raise ValueError('binding differs')
+    except (OSError, ValueError, TypeError, KeyError, AttributeError, yaml.YAMLError) as error:
+        raise RuntimeError('已有模型配置与当前实例绑定不一致，未修改配置。') from error
+    marker_file = home / 'hermes-agent/.hermes-bootstrap-complete'
+    no_redirect(marker_file)
+    recovery.reject_links(marker_file)
+    marker = _repair_object(marker_file)
+    if (type(marker.get('schema')) is not int or marker['schema'] != 1 or marker.get('source') != 'nora-integrated-runtime'
+            or not re.fullmatch(r'[a-f0-9]{64}', str(marker.get('sha256') or ''))):
+        raise RuntimeError('缺少可核验的原 Nora 核运行记录，未覆盖用户数据。')
+    python_files = [home / 'hermes-agent/venv' / relative for relative in
+                    (('Scripts/python.exe',) if os.name == 'nt' else ('bin/python3', 'bin/python'))]
+    native = tavern / 'apps/tavern-runtime'
+    missing = {'nativeRuntime': not (native / 'native-runtime.json').is_file(),
+               'nativeLifecycle': not (native / 'native_lifecycle.py').is_file(),
+               'python': not any(file.is_file() for file in python_files)}
+    if not any(missing.values()):
+        raise RuntimeError('当前程序没有本次修复支持的缺失项，请使用正常更新检查。')
+    programs = {}
+    for name, directory in (('app', native), ('ops', tavern / 'apps/tavern-ops'), ('nora-mcp', tavern / 'apps/nora-mcp')):
+        no_redirect(directory)
+        recovery.reject_links(directory)
+        if directory.exists():
+            if not directory.is_dir():
+                raise RuntimeError('已有程序目录类型不正确，未覆盖现有文件。')
+            programs[name] = {'identity': [str(part) for part in recovery.identity(directory)],
+                              'digest': recovery.digest(directory)}
+        else:
+            programs[name] = None
+    bindings = {name: nora_system.digest(file) for name, file in records.items()}
+    bindings['config'] = nora_system.digest(config)
+    native_config = tavern / 'tavern-state/native-runtime/config.yaml'
+    no_redirect(native_config)
+    recovery.reject_links(native_config)
+    if native_config.exists() and not native_config.is_file():
+        raise RuntimeError('原酒馆配置不是可核验的文件，未修改已有数据。')
+    bindings['nativeConfig'] = nora_system.digest(native_config) if native_config.is_file() else None
+    bindings['runtimeMarker'] = nora_system.digest(marker_file)
+    return {'schema': 'nora-managed-partial-installation/1', 'version': version, 'commit': commit,
+            'bindings': bindings, 'missing': missing, 'programs': programs}
+
+
+def partial_repair_preflight(args):
+    snapshot = partial_installation_snapshot(args)
+    partial_repair_offline(args)
+    if partial_installation_snapshot(args) != snapshot:
+        raise RuntimeError('修复检查期间已有安装发生变化，未开始替换文件。')
+    return {'partialRepair': snapshot, 'offline': True, 'running': False, 'gatewayRunning': False,
+            'clawchatConnected': False, 'systemReady': False, 'version': snapshot['version'],
+            'originalState': 'partial', 'runtimeReady': False}
+
+
+def partial_repair_offline(args):
+    check_gateway_control(args.nora_home, args.hermes_home)
+    _recovery_require_native_offline(args)
+    if gateway_status(args.nora_home, args.hermes_home).get('gatewayRunning') is not False:
+        raise RuntimeError('诺拉服务尚未确认停止，未开始修复缺失程序。请先停止服务。')
+    return {'offline': True, 'running': False, 'gatewayRunning': False, 'clawchatConnected': False}
+
+
+def verify_partial_restoration(args, snapshot):
+    result = partial_repair_preflight(args)
+    if result['partialRepair'] != snapshot:
+        raise RuntimeError('恢复后的版本、配置、原程序或缺失集合与修复前不一致，请保留备份。')
+    return result
+
+
+def verify_partial_baseline(args, snapshot):
+    result = verify_partial_restoration(args, snapshot)
+    helper = nora_system.recovery_module()
+    journal = helper.load(args.hermes_home, args.install_root, full=False)
+    plan = journal.plan
+    baseline = plan.get('partialBaseline')
+    saved = (plan.get('state') or {}).get('savedDigest')
+    if saved is None and baseline is None:
+        # The transaction has not taken a data snapshot or entered a swap.
+        if (plan.get('state') or {}).get('phase') not in ('pending', 'untouched') or any(
+                target.get('phase') not in ('pending', 'restored') for target in plan.get('targets', [])):
+            raise RuntimeError('原剧情恢复证据缺失，保留现场。')
+        return result
+    keys = {'schema', 'partialRepair', 'stateDigest', 'storyInventory', 'worlds',
+            'readerManifestSha256', 'readerCommit'}
+    if (not isinstance(baseline, dict) or set(baseline) != keys
+            or baseline.get('schema') != 'nora-managed-partial-repair-baseline/1'
+            or baseline.get('partialRepair') != snapshot or baseline.get('stateDigest') != saved
+            or not isinstance(baseline.get('storyInventory'), dict)
+            or not re.fullmatch(r'[a-f0-9]{64}', str(saved or ''))
+            or not re.fullmatch(r'[a-f0-9]{64}', str(baseline.get('readerManifestSha256') or ''))
+            or not re.fullmatch(r'[a-f0-9]{40}', str(baseline.get('readerCommit') or ''))
+            or (baseline.get('worlds') is not None and baseline.get('worlds') != plan.get('worlds'))
+            or helper.digest(args.install_root / 'tavern-state') != saved):
+        raise RuntimeError('原剧情、聊天或配置未精确恢复，保留备份与现场。')
+    return result
+
+
 def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] | None = None, *, allow_pending=False) -> dict:
     def reject(reason: str) -> dict:
         if problems is not None:
@@ -430,6 +602,20 @@ def read_verified_model(nora_home: Path, hermes_home: Path, problems: list[str] 
 
 
 def status_payload(nora_home: Path, hermes_home: Path, install_root: Path, port: int) -> dict:
+    if not installed(install_root) and any((file.exists() or file.is_symlink()) for file in (
+            hermes_home / 'nora-instance.json', install_root / 'tavern-updates/nora-system.json',
+            install_root / 'tavern-updates/installed.json', install_root / 'tavern-updates/installed-manifest.json')):
+        partial = partial_installation_snapshot(argparse.Namespace(nora_home=nora_home,
+                    hermes_home=hermes_home, install_root=install_root, port=port))
+        return {'installed': False, 'managedInstallation': True, 'needsRepair': True,
+                'version': partial['version'], 'commit': partial['commit'], 'versionSource': 'receipt',
+                'missingPrograms': partial['missing'], 'systemReady': False, 'setupCompleted': False,
+                'systemProblems': ['已有安装的程序文件缺失，需要保留数据修复。'],
+                'running': None, 'gatewayRunning': None, 'clawchatConnected': None,
+                'hermesInstalled': bool(hermes_command(nora_home, hermes_home, install_root)),
+                'noraInstalled': False, 'modelConfigured': False, 'clawchatPaired': False,
+                'port': port, 'url': f'http://127.0.0.1:{port}', 'home': str(nora_home),
+                'noraHome': str(nora_home), 'hermesHome': str(hermes_home), 'installRoot': str(install_root)}
     system = nora_system.installation_state(hermes_home, install_root)
     recovery = nora_system.update_recovery(install_root, hermes_home)
     hermes = hermes_command(nora_home, hermes_home, install_root)
@@ -878,14 +1064,22 @@ def command_recover_update(args):
             args.command = original_command
 
     def verify(plan, _backup):
-        bind(plan)
-        return recovery_verify(args, plan['before'])
+        lifecycle = bind(plan)
+        return (verify_partial_baseline(args, lifecycle['partialRepair'])
+                if lifecycle.get('partialRepair') else recovery_verify(args, plan['before']))
 
     with helper.recovery_lock(args.install_root):
         helper.recover(args.hermes_home, args.install_root, stop=stop, resume=resume, verify=verify)
     emit('task', stage_id='health_check', task='旧版本和原有服务状态已恢复')
-    emit('result', **status_payload(args.nora_home, args.hermes_home, args.install_root, args.port),
-         updateRecovered=True, recoveryVerification='confirmed')
+    journal = helper.read_object(args.install_root / 'tavern-updates/transaction.json')
+    partial = (journal.get('recoveryPlan', {}).get('lifecycle') or {}).get('partialRepair')
+    restored = verify_partial_baseline(args, partial) if partial else status_payload(
+        args.nora_home, args.hermes_home, args.install_root, args.port)
+    if partial:
+        restored.update(installed=installed(args.install_root), managedInstallation=True, needsRepair=True,
+                        hermesInstalled=bool(hermes_command(args.nora_home, args.hermes_home, args.install_root)),
+                        noraInstalled=False, setupCompleted=False)
+    emit('result', **restored, updateRecovered=True, recoveryVerification='confirmed')
 
 
 def _first_install_helper():
@@ -998,6 +1192,17 @@ def command_update_lifecycle(args, plan=None):
         key = {"nora_home": "noraHome", "hermes_home": "hermesHome", "install_root": "installRoot"}[name]
         if Path(plan[key]).resolve() != getattr(args, name).resolve():
             fail("更新事务路径不匹配")
+    partial = plan.get('partialRepair')
+    if partial and phase in ('preflight', 'stop', 'rollback', 'recover-verify'):
+        result = (verify_partial_baseline(args, partial) if phase in ('rollback', 'recover-verify')
+                  else verify_partial_restoration(args, partial))
+        if phase in ('rollback', 'recover-verify'):
+            emit('result', **result, installed=installed(args.install_root), managedInstallation=True,
+                 needsRepair=True, hermesInstalled=bool(hermes_command(args.nora_home, args.hermes_home, args.install_root)),
+                 noraInstalled=False, setupCompleted=False)
+            return
+        emit('result', **result)
+        return
     if phase == 'recover-stop':
         recovery_stop(args)
         return
@@ -1078,7 +1283,8 @@ def command_update_lifecycle(args, plan=None):
 
 def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
     managed = (args.install_root / "tavern-updates/nora-system.json").is_file()
-    if not installed(args.install_root):
+    partial = partial_repair_preflight(args) if managed and not installed(args.install_root) else None
+    if not installed(args.install_root) and not partial:
         fail("还没有安装 Nora Tavern。")
     bootstrap = args.install_root / "apps/tavern-ops/updater/bootstrap.py"
     selected = release_dir(args.release_dir) if getattr(args, "release_dir", None) else None
@@ -1131,13 +1337,14 @@ def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
         return
     env = env_for(args.nora_home, args.hermes_home, args.install_root)
     if managed:
-        before = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+        before = partial or status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
         env['NORA_UPDATE_LIFECYCLE'] = json.dumps({
             'bridge': str(Path(__file__).resolve()), 'noraHome': str(args.nora_home),
             'hermesHome': str(args.hermes_home), 'installRoot': str(args.install_root),
             'port': args.port, 'before': {key: before.get(key) for key in
                 ('version', 'systemReady', 'systemProblems', 'running', 'gatewayRunning', 'clawchatConnected')},
-            **({'receiptRecovery': missing_receipt_snapshot(args)} if recovering_receipt else {})})
+            **({'receiptRecovery': missing_receipt_snapshot(args)} if recovering_receipt else {}),
+            **({'partialRepair': partial['partialRepair']} if partial else {})})
     result = run_stream(command, env=env)
     if managed:
         if not result or not result.get('updateVerified'):
@@ -1200,6 +1407,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8799)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser('repair-preflight').add_argument('--offline-only', action='store_true')
     sub.add_parser("verify-model")
     sub.add_parser('verify-current-update').add_argument('--version', required=True)
     install = sub.add_parser("install")
@@ -1235,7 +1443,7 @@ def main() -> None:
     args.install_root = safe(args.install_root) if args.install_root else default_install_root(args.nora_home)
     require_descendant(args.nora_home, args.hermes_home, "Hermes 目录")
     require_descendant(args.nora_home, args.install_root, "Tavern 目录")
-    readonly = args.command in ('status', 'verify-model', 'operation-effects', 'plan-update', 'check-update', 'open-logs', 'open-settings', 'open-url')
+    readonly = args.command in ('status', 'repair-preflight', 'verify-model', 'operation-effects', 'plan-update', 'check-update', 'open-logs', 'open-settings', 'open-url')
     if not readonly:
         from operation_cli import ensure_operation
         ensure_operation({'recover-update': 'recover', 'recover-install': 'recover',
@@ -1245,6 +1453,8 @@ def main() -> None:
                          nora_home=args.nora_home)
     if args.command == "status":
         command_status(args)
+    elif args.command == 'repair-preflight':
+        emit('result', **(partial_repair_offline(args) if args.offline_only else partial_repair_preflight(args)))
     elif args.command == "verify-model":
         problems = []
         verified = read_verified_model(args.nora_home, args.hermes_home, problems)

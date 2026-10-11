@@ -61,6 +61,21 @@ test('unknown errors do not assert permissions, missing dependencies or safe rol
   }
 });
 
+test('startup guidance cannot invent a network or service failure and handles an unavailable log',()=>{
+  for(const code of ['ECONNRESET','ENOTFOUND','TAVERN_UNHEALTHY']){
+    const view=presentError(Object.assign(new Error('opaque startup fixture'),{code}),{action:'startup'});
+    assert.equal(view.title,'启动器初始化未完成。');assert.equal(view.detail,'具体原因尚未确认。');
+    assert.match(view.next,/复制下方本机日志/);
+    assert.doesNotMatch(JSON.stringify(view),/服务状态检查|网络|代理|酒馆启动检查|opaque/);
+  }
+  const noLog=presentError(new Error('opaque startup fixture'),{action:'startup',logAvailable:false});
+  assert.match(noLog.next,/复制本次提示/);assert.doesNotMatch(noLog.next,/本机日志/);
+  assert.match(noLog.next,/保留现有安装和数据/);
+  const status=presentError(new Error('opaque status fixture'),{action:'status'});
+  assert.equal(status.title,'服务状态检查未完成。');
+  assert.equal(presentError({code:'GATEWAY_IDENTITY'},{action:'status'}).title,'诺拉后台状态暂时无法确认。');
+});
+
 test('business safeguards override generic permission errors and preserve model progress', () => {
   const gateway = {code:'EACCES',userCode:'GATEWAY_IDENTITY'};
   assert.match(formatUserError(gateway), /无法确认诺拉后台进程/);

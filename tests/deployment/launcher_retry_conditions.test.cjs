@@ -289,6 +289,107 @@ function completeReleaseFixture(){
   return {platform,arch,tag,payloads,bytes,release};
 }
 
+async function selectedMetadataBlock(t,{legacy=false,laterUnknown=false,olderMetadata=false}={}){
+  const published=completeReleaseFixture(),url=releases.assetUrl(published.release,'release-manifest.json');
+  let body=published.bytes['release-manifest.json'],reads=0,phase='history';
+  const fetcher=async original=>{
+    reads++;assert.equal(String(original),url);
+    const response=new Response(body);Object.defineProperty(response,'url',{value:String(original)});return response;
+  };
+  fetcher.conditionRoute=async()=> 'DIRECT';
+  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:fetcher,launcherVersion:'2.0.3'}});
+  const plan=await releases.selectPlan({mode:'update',launcherVersion:'2.0.3',selectedRelease:published.release,
+    fetcher:async original=>new Response(published.bytes[String(original).split('/').at(-1)]),
+    networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
+  const request={action:'update',tag:published.tag},target={request};
+  f.options.recheckers.update=f.policy.recheck;
+  f.options.executors.update=async context=>{
+    if(phase==='metadata')throw Object.assign(new Error('original metadata timeout'),{code:'TIMEOUT',source:'release_service',site:'release.request',
+      conditionResource:{url,routeHash:hash('DIRECT')}});
+    if(phase==='unknown')throw new Error('a later unrelated failure');
+    const sealed=releases.sealPlan(plan,{operationDirectory:path.join(f.home,'installer/operations',context.operationId),
+      assertOwner:context.check,launcherVersion:'2.0.3'});
+    await context.plan({request,releasePlan:sealed});
+    if(phase==='history')throw new Error('older unrelated verification failed');
+    return {verification:'confirmed'};
+  };
+  const metadataFailure=async()=>{
+    phase='metadata';const failed=await f.controller().start('update',{target},'original-metadata-timeout');
+    assert.equal(failed.primaryFailure.code,'TIMEOUT');assert.equal(failed.totalAttempts,1);return failed;
+  };
+  let failed=olderMetadata?await metadataFailure():null;
+  phase='history';await f.controller().start('update',{target},'selected-failure-one');
+  const second=await f.controller().start('update',{target},'selected-failure-two');assert.equal(second.attempt,2);
+  if(!failed)failed=await metadataFailure();
+  if(laterUnknown){
+    const checked=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+    assert.equal(checked.attempt,0);
+    phase='unknown';failed=await f.controller().resume(checked.operationId,{snapshotSequence:checked.snapshotSequence});
+    assert.equal(failed.currentFailure.code,'UNKNOWN_PROGRAM_ERROR');assert.equal(failed.primaryFailure.code,'TIMEOUT');
+    const unchanged=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+    assert.equal(unchanged.snapshotSequence,failed.snapshotSequence);assert.equal(reads,1);
+  }
+  phase='success';let blocked=await f.controller().resume(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.totalAttempts,laterUnknown?3:2);
+  assert.equal(blocked.currentFailure.code,'RETRY_CONDITIONS_UNCHANGED');assert.equal(blocked.attempt,3);
+  if(legacy){
+    // Replay the persisted pre-fix shape: the admission error lost its annotation.
+    const file=path.join(f.home,'installer/operations',blocked.operationId,'operation.json');
+    const record=JSON.parse(fs.readFileSync(file));delete record.currentFailure.conditionTarget;
+    fs.writeFileSync(file,JSON.stringify(record));blocked=await f.controller().snapshot(blocked.operationId);
+  }
+  return {...f,blocked,published,url,setBody:value=>{body=value;},get reads(){return reads;}};
+}
+
+test('a metadata timeout followed by fixed-plan admission still verifies its exact sealed bytes before granting one retry',async t=>{
+  for(const legacy of [false,true]){
+    const f=await selectedMetadataBlock(t,{legacy}),fixed=JSON.stringify(f.blocked.target);
+    // Identical parsed fields with altered raw bytes cannot prove the sealed target.
+    f.setBody(f.published.bytes['release-manifest.json']+' ');
+    const badSize=await f.controller().recheck(f.blocked.operationId,{snapshotSequence:f.blocked.snapshotSequence});
+    assert.equal(badSize.attempt,3);assert.equal(badSize.allowedActions.includes('retry'),false);
+    f.setBody(f.published.bytes['release-manifest.json'].replace('a'.repeat(40),'b'.repeat(40)));
+    const badHash=await f.controller().recheck(badSize.operationId,{snapshotSequence:badSize.snapshotSequence});
+    assert.equal(badHash.attempt,3);assert.equal(badHash.allowedActions.includes('retry'),false);
+    f.setBody(f.published.bytes['release-manifest.json']);
+    const checked=await f.controller().recheck(badHash.operationId,{snapshotSequence:badHash.snapshotSequence});
+    assert.equal(checked.attempt,0);assert.equal(checked.allowedActions.includes('retry'),true);
+    assert.equal(JSON.stringify(checked.target),fixed);assert.equal(f.reads,3);
+    const consumed=await f.controller().recheck(checked.operationId,{snapshotSequence:checked.snapshotSequence});
+    assert.equal(consumed.snapshotSequence,checked.snapshotSequence);assert.equal(f.reads,3);
+    const resumed=await f.controller().resume(checked.operationId,{snapshotSequence:checked.snapshotSequence});
+    assert.equal(resumed.state,'succeeded');assert.equal(resumed.attempt,1);assert.equal(JSON.stringify(resumed.target),fixed);
+  }
+});
+
+test('a later actual unknown failure and its admission block cannot revive the first metadata condition',async t=>{
+  for(const legacy of [false,true]){
+    const f=await selectedMetadataBlock(t,{legacy,laterUnknown:true});
+    const checked=await f.controller().recheck(f.blocked.operationId,{snapshotSequence:f.blocked.snapshotSequence});
+    assert.equal(checked.attempt,3);assert.equal(checked.allowedActions.includes('retry'),false);assert.equal(f.reads,1);
+  }
+});
+
+test('an older metadata failure cannot replace later actual failures against the same selected plan',async t=>{
+  for(const legacy of [false,true]){
+    const f=await selectedMetadataBlock(t,{legacy,olderMetadata:true});
+    const checked=await f.controller().recheck(f.blocked.operationId,{snapshotSequence:f.blocked.snapshotSequence});
+    assert.equal(checked.attempt,3);assert.equal(checked.allowedActions.includes('retry'),false);assert.equal(f.reads,0);
+  }
+});
+
+test('post-selection metadata proof refuses another tag, catalogue, descriptor or invalid sealed plan without network reads',async t=>{
+  const f=await selectedMetadataBlock(t);
+  const record=JSON.parse(fs.readFileSync(path.join(f.home,'installer/operations',f.blocked.operationId,'operation.json')));
+  const condition=record.primaryFailure.conditionTarget;
+  for(const url of [f.url.replace('v2.4.2','v2.4.3'),'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest',
+    releases.assetUrl(f.published.release,`nora-system-${process.platform}-${process.arch}.json`)]){
+    assert.equal((await f.policy.recheck(record,{conditionTarget:{...condition,resource:{...condition.resource,url}}})).changed,false);
+  }
+  const invalid={...record,target:{...record.target,releasePlan:{...record.target.releasePlan,planId:'0'.repeat(64)}}};
+  assert.equal((await f.policy.recheck(invalid,{conditionTarget:condition})).changed,false);assert.equal(f.reads,0);
+});
+
 async function manifestFixture(t,type){
   const {platform,arch,tag,payloads,bytes,release}=completeReleaseFixture();
   const name=type==='release'?'release-manifest.json':`nora-${type}-${platform}-${arch}.json`;

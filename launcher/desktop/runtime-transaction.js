@@ -3,6 +3,7 @@
 const fs=require('node:fs');
 const path=require('node:path');
 const crypto=require('node:crypto');
+const {isDeepStrictEqual}=require('node:util');
 const {treeSeal,sameSeal}=require('./tree-integrity');
 const SCHEMA='nora-runtime-bootstrap/1';
 const ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -23,7 +24,7 @@ function paths({noraHome,hermesHome,operationId}){
   const root=canonical(path.resolve(noraHome)),directory=path.join(root,'installer','operations',operationId,'runtime');
   const value={noraHome:root,hermesHome:path.join(root,'hermes'),directory,stage:path.join(directory,'hermes-runtime'),
     backup:path.join(directory,'previous'),failed:path.join(directory,'failed'),journalReference:path.join(path.dirname(directory),'runtime-bootstrap.json')};
-  for(const file of [root,value.hermesHome,directory,value.journalReference]){
+  for(const file of [root,value.hermesHome,directory,value.stage,value.journalReference]){
     let current=root;
     for(const part of path.relative(root,file).split(path.sep).filter(Boolean)){
       current=path.join(current,part);
@@ -41,6 +42,53 @@ function identity(file){
   }catch(error){if(error.code==='ENOENT')return null;throw error;}
 }
 function sameIdentity(a,b){return Boolean(a&&b&&a.device===b.device&&a.inode===b.inode);}
+function programDigest(root){
+  const hash=crypto.createHash('sha256'),buffer=Buffer.allocUnsafe(1024*1024);
+  const visit=(file,relative)=>{const before=fs.lstatSync(file,{bigint:true});
+    if(before.isSymbolicLink())throw fail('RUNTIME_PARTIAL_UNCONFIRMED','原程序目录包含链接，保留现场。');
+    if(before.isDirectory()){
+      hash.update('D'+relative+'\0');
+      for(const name of fs.readdirSync(file).sort((a,b)=>Buffer.compare(Buffer.from(a),Buffer.from(b))))visit(path.join(file,name),relative+'/'+name);
+    }else if(before.isFile()){
+      hash.update('F'+relative+'\0');const fd=fs.openSync(file,'r');try{let count;while((count=fs.readSync(fd,buffer,0,buffer.length,null))>0)hash.update(buffer.subarray(0,count));}finally{fs.closeSync(fd);}
+    }else throw fail('RUNTIME_PARTIAL_UNCONFIRMED','原程序文件类型无法核验。');
+    const after=fs.lstatSync(file,{bigint:true});
+    if(before.dev!==after.dev||before.ino!==after.ino||before.size!==after.size||before.mtimeNs!==after.mtimeNs||before.ctimeNs!==after.ctimeNs)
+      throw fail('RUNTIME_BACKUP_CHANGED','原程序在核验期间发生变化。');
+  };visit(root,'');return hash.digest('hex');
+}
+function partialStateMatches(snapshot,{noraHome,hermesHome,installRoot=path.join(noraHome,'tavern'),port}){
+  try{
+    if(snapshot?.schema!=='nora-managed-partial-installation/1')return false;
+    const facts=require('./operation-policy').inspectManagedInstallation({noraHome,hermesHome,installRoot,port});
+    if(!facts?.needsRepair||facts.version!==snapshot.version||facts.commit!==snapshot.commit
+      ||!isDeepStrictEqual(facts.bindings,snapshot.bindings)
+      ||!isDeepStrictEqual(facts.missing,snapshot.missing))return false;
+    if(!snapshot.programs||Object.keys(snapshot.programs).sort().join(',')!=='app,nora-mcp,ops')return false;
+    for(const [name,relative] of Object.entries({app:'tavern-runtime',ops:'tavern-ops','nora-mcp':'nora-mcp'})){
+      const directory=path.join(installRoot,'apps',relative),actual=identity(directory),expected=snapshot.programs[name];
+      if(!actual){if(expected!==null)return false;continue;}
+      if(!expected||!Array.isArray(expected.identity)||expected.identity.length!==2
+        ||expected.identity[0]!==actual.device||expected.identity[1]!==actual.inode
+        ||expected.digest!==programDigest(directory))return false;
+    }
+    return true;
+  }catch{return false;}
+}
+function systemSeal(location){
+  const file=path.join(location.noraHome,'tavern/tavern-updates/transaction.json');
+  try{const stat=fs.lstatSync(file,{bigint:true});if(!stat.isFile()||stat.isSymbolicLink()||stat.size>32n*1024n*1024n)throw new Error('invalid system journal');
+    return {identity:[String(stat.dev),String(stat.ino)],sha256:crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex')};
+  }catch(error){if(error.code==='ENOENT')return null;throw error;}
+}
+function partialSystemProofMatches(journal,location){
+  const current=systemSeal(location);if(!current)return !journal.partialSystemProof?.journalSeal;
+  const proof=journal.partialSystemProof;
+  return Boolean(proof&&isDeepStrictEqual(current,proof.journalSeal)
+    &&['untouched','restored'].includes(proof.effects?.effectState)
+    &&proof.effects.recoveryOutcome!=='recovery-required'
+    &&proof.stateDigest===programDigest(path.join(location.noraHome,'tavern/tavern-state')));
+}
 function write(file,value){
   const temporary=`${file}.${crypto.randomUUID()}.tmp`;let fd;
   try{
@@ -69,17 +117,28 @@ function facts(journal,location){
         &&marker.platform===journal.target.platform&&marker.arch===journal.target.arch)
       return {effectState:'changed',recoveryOutcome:'not-required',canRecover:previous?
         sameIdentity(backup,previous)&&journal.previousSeal?.schema==='nora-runtime-tree-seal/1':!failed,
-        hasChanges:true,canResume:true,reason:'committed',backupVerification:previous?'verify-on-recovery':'not-required'};
+        hasChanges:true,canResume:true,reason:'committed',backupVerification:previous?'verify-on-recovery':'not-required',
+        ...(journal.originalPartial?{partialOrigin:true,originalPartial:journal.originalPartial,partialPort:journal.partialPort}:{} )};
   }
   if(previous){
     if(sameIdentity(live,previous)&&!backup){
-      const needsVerification=Boolean(journal.recoveryStartedAt&&journal.previousRuntimeSpec&&journal.recoveryVerification!=='confirmed');
+      const partial=journal.originalPartial;
+      const proven=partial&&journal.recoveryVerification==='original-partial-confirmed'
+        &&(!failed||sameIdentity(failed,newTree))&&!identity(location.stage)
+        &&sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
+        &&partialStateMatches(partial,{...location,port:journal.partialPort})&&partialSystemProofMatches(journal,location);
+      const needsVerification=Boolean(journal.recoveryStartedAt
+        &&(partial?!proven:journal.previousRuntimeSpec&&journal.recoveryVerification!=='confirmed'));
       return {effectState:journal.recoveryStartedAt?'restored':'untouched',recoveryOutcome:needsVerification?'recovery-required':journal.recoveryStartedAt?'restored':'not-required',
-        canRecover:needsVerification,hasChanges:Boolean(journal.recoveryStartedAt),reason:needsVerification?'runtime-verification-required':'previous-present'};
+        canRecover:needsVerification,hasChanges:Boolean(journal.recoveryStartedAt),reason:needsVerification?'runtime-verification-required':'previous-present',
+        ...(partial?{partialOrigin:true,originalPartial:partial,partialPort:journal.partialPort}:{}),
+        ...(proven?{originalState:'partial',runtimeReady:false,partialRepair:partial,restorationVerification:'confirmed',
+          systemEffects:journal.partialSystemProof?.effects}:{})};
     }
     if(sameIdentity(backup,previous)&&(!live||sameIdentity(live,newTree))
         &&(!failed||sameIdentity(failed,newTree)))
-      return {effectState:'changed',recoveryOutcome:'recovery-required',canRecover:true,hasChanges:true,reason:'previous-backup-present'};
+      return {effectState:'changed',recoveryOutcome:'recovery-required',canRecover:true,hasChanges:true,reason:'previous-backup-present',
+        ...(journal.originalPartial?{partialOrigin:true,originalPartial:journal.originalPartial,partialPort:journal.partialPort}:{} )};
   }else if(!live){
     return {effectState:journal.recoveryStartedAt?'restored':'untouched',recoveryOutcome:journal.recoveryStartedAt?'restored':'not-required',
       canRecover:false,hasChanges:Boolean(journal.recoveryStartedAt),reason:'previous-absent'};
@@ -92,6 +151,12 @@ function inspect(options){
   try{
     const {location,journal}=read(options);
     if(!journal)return {effectState:'untouched',recoveryOutcome:'not-required',canRecover:false,hasChanges:false,reason:'no_journal',journalReference:location.journalReference};
+    if(journal.originalPartial&&journal.status==='rolled-back'){
+      const closure=require('./operation-history').inspect(location.noraHome).closed.get(journal.operationId);
+      if(closure)return {effectState:'restored',recoveryOutcome:'restored-and-verified',canRecover:false,canResume:false,
+        hasChanges:true,reason:'retired-partial-confirmed',originalState:'retired-partial',runtimeReady:false,
+        restorationVerification:'confirmed',historyReference:closure.ref,journalReference:location.journalReference};
+    }
     return {...facts(journal,location),journalReference:location.journalReference};
   }catch(error){return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,hasChanges:null,reason:error.code||'RUNTIME_JOURNAL_INVALID'};}
 }
@@ -128,7 +193,8 @@ function copyUserData(previous,stage){
     }});
   }
 }
-async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allowCommitted=false,onEvent=()=>{},tools}){
+async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allowCommitted=false,onEvent=()=>{},tools,
+  verifyOffline,originalPartialCandidate,partialPort}){
   requireDelegate(delegate,operationId,ownerEpoch);
   const {location,journal}=read({noraHome,hermesHome,operationId});
   if(!journal)throw fail('RUNTIME_JOURNAL_MISSING','缺少运行时恢复记录，未修改现有安装。');
@@ -138,6 +204,18 @@ async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allo
   if(observed.effectState==='untouched'){
     update(journal,location,delegate,ownerEpoch,{status:'failed'});
     return {...observed,journalReference:location.journalReference};
+  }
+  if(originalPartialCandidate&&!journal.originalPartial){
+    if(!sameIdentity(identity(location.hermesHome),journal.identities.previous)
+      ||!sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
+      ||!partialStateMatches(originalPartialCandidate,{...location,port:partialPort}))
+      throw fail('RUNTIME_PARTIAL_UNCONFIRMED','历史恢复后的原树、记录或缺失集合无法一致核验，保留所有现场。');
+    update(journal,location,delegate,ownerEpoch,{originalPartial:originalPartialCandidate,partialPort});
+  }
+  if(journal.originalPartial){
+    const proof=await verifyOffline?.();requireDelegate(delegate,operationId,ownerEpoch);
+    if(proof?.offline!==true||proof.running!==false||proof.gatewayRunning!==false)
+      throw fail('RUNTIME_OFFLINE_UNCONFIRMED','未取得本次执行的实际离线证明，保留当前安装。');
   }
   if(journal.identities.previous&&!sameIdentity(identity(location.hermesHome),journal.identities.previous)){
     // Verify the whole previous tree before moving a usable current version.
@@ -162,14 +240,39 @@ async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allo
   }
   const restored=journal.identities.previous?sameIdentity(identity(location.hermesHome),journal.identities.previous):!identity(location.hermesHome);
   if(!restored)throw fail('RUNTIME_IDENTITY_UNKNOWN','恢复结果尚未确认，请保留现场。');
-  if(journal.previousRuntimeSpec){
+  if(journal.originalPartial){
+    if(!sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
+      ||!partialStateMatches(journal.originalPartial,{...location,port:journal.partialPort}))
+      throw fail('RUNTIME_PARTIAL_UNCONFIRMED','恢复后原数据树或程序缺失集合发生变化，保留现场。');
+  }else if(journal.previousRuntimeSpec){
     report(onEvent,'runtime.verify-previous','检查恢复后的 Nora 核心');
     await (tools||require('./runtime')).validateRuntimeAsync(location.hermesHome,journal.previousRuntimeSpec,delegate);
   }
-  update(journal,location,delegate,ownerEpoch,{status:'rolled-back',recoveryVerification:journal.previousRuntimeSpec?'confirmed':'files-restored',recoveryCompletedAt:new Date().toISOString()});
+  update(journal,location,delegate,ownerEpoch,{status:'rolled-back',recoveryVerification:journal.originalPartial?'original-partial-confirmed':journal.previousRuntimeSpec?'confirmed':'files-restored',recoveryCompletedAt:new Date().toISOString()});
   return {...facts(journal,location),journalReference:location.journalReference};
 }
-async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,delegate,onEvent=()=>{},tools}){
+function archiveAttempt({noraHome,hermesHome,operationId,ownerEpoch,delegate,bundle}){
+  requireDelegate(delegate,operationId,ownerEpoch);const location=paths({noraHome,hermesHome,operationId});
+  let preceding;
+  if(fs.existsSync(location.journalReference)){
+    const old=read({noraHome,hermesHome,operationId}).journal,observed=facts(old,location);
+    const manifestDigest=crypto.createHash('sha256').update(fs.readFileSync(bundle.manifestPath)).digest('hex');
+    if(!['untouched','restored'].includes(observed.effectState)||old.target.sha256!==bundle.manifest.sha256||old.target.manifestDigest!==manifestDigest)
+      throw fail('RUNTIME_RECOVERY_REQUIRED','上次运行时操作尚未恢复，或此次目标版本不同。现有文件已保留，请先核验上次操作。');
+    const archive=path.join(path.dirname(location.directory),'runtime-history',crypto.randomUUID());
+    let current=location.noraHome;
+    for(const part of path.relative(current,archive).split(path.sep).filter(Boolean)){
+      current=path.join(current,part);let stat;try{stat=fs.lstatSync(current);}catch(error){if(error.code==='ENOENT')continue;throw error;}
+      if(!stat.isDirectory()||stat.isSymbolicLink())throw fail('RUNTIME_JOURNAL_INVALID','运行时历史归档被重定向，原现场已保留。');
+    }
+    fs.mkdirSync(archive,{recursive:true,mode:0o700});
+    write(path.join(archive,'bootstrap-evidence.json'),{schema:'nora-runtime-bootstrap-evidence/1',archivedAt:new Date().toISOString(),journal:old});
+    if(fs.existsSync(location.directory))fs.renameSync(location.directory,path.join(archive,'tree'));
+    preceding={attempt:(old.attempt||1)+1,evidenceReference:path.join(archive,'bootstrap-evidence.json')};
+  }
+  return preceding;
+}
+async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,delegate,onEvent=()=>{},tools,partialRepair,preflightPartial,verifyOffline}){
   requireDelegate(delegate,operationId,ownerEpoch);
   const runtime=tools||require('./runtime');
   const bundle=runtime.findBundledRuntime(payloadRoot);if(!bundle)return null;
@@ -178,18 +281,7 @@ async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,d
   // Use the identity-checked canonical directory consistently for relocation
   // and helpers; an ancestor alias must not become a different runtime scope.
   noraHome=location.noraHome;hermesHome=location.hermesHome;
-  let preceding;
-  if(fs.existsSync(location.journalReference)){
-    const old=read({noraHome,hermesHome,operationId}).journal,observed=facts(old,location);
-    const manifestDigest=crypto.createHash('sha256').update(fs.readFileSync(bundle.manifestPath)).digest('hex');
-    if(!['untouched','restored'].includes(observed.effectState)||old.target.sha256!==bundle.manifest.sha256||old.target.manifestDigest!==manifestDigest)
-      throw fail('RUNTIME_RECOVERY_REQUIRED','上次运行时操作尚未恢复，或此次目标版本不同。现有文件已保留，请先核验上次操作。');
-    const archive=path.join(path.dirname(location.directory),'runtime-history',crypto.randomUUID());
-    fs.mkdirSync(archive,{recursive:true,mode:0o700});
-    write(path.join(archive,'bootstrap-evidence.json'),{schema:'nora-runtime-bootstrap-evidence/1',archivedAt:new Date().toISOString(),journal:old});
-    if(fs.existsSync(location.directory))fs.renameSync(location.directory,path.join(archive,'tree'));
-    preceding={attempt:(old.attempt||1)+1,evidenceReference:path.join(archive,'bootstrap-evidence.json')};
-  }
+  const preceding=archiveAttempt({noraHome,hermesHome,operationId,ownerEpoch,delegate,bundle});
   const previousRuntimeSpec=verifyPrevious(location,bundle.manifest);
   fs.mkdirSync(location.directory,{recursive:true,mode:0o700});
   const journal={schema:SCHEMA,operationId,ownerEpoch,sequence:0,status:'staging',attempt:preceding?.attempt||1,
@@ -210,9 +302,24 @@ async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,d
     phase='runtime_restore_retained';
     if(journal.identities.previous)copyUserData(hermesHome,location.stage);
     runtime.validateRuntimeLinks(location.stage);
+    let originalPartial;
+    if(partialRepair){
+      phase='runtime.partial-preflight';
+      await runtime.repairRuntimeAsync(location.stage,bundle.manifest,delegate);
+      await runtime.validateRuntimeAsync(location.stage,bundle.manifest,delegate);
+      const proof=await preflightPartial?.(location.stage,bundle.manifest);
+      requireDelegate(delegate,operationId,ownerEpoch);
+      originalPartial=proof?.partialRepair;
+      if(proof?.offline!==true||proof.running!==false||proof.gatewayRunning!==false
+        ||originalPartial?.version!==partialRepair.version||originalPartial?.commit!==partialRepair.commit
+        ||!isDeepStrictEqual(originalPartial.bindings,partialRepair.bindings)
+        ||!partialStateMatches(originalPartial,{...location,port:partialRepair.port}))
+        throw fail('RUNTIME_PARTIAL_UNCONFIRMED','缺失程序修复前的原安装或停止状态无法一致核验，未激活新程序。');
+    }
     const previousSeal=journal.identities.previous?treeSeal(hermesHome):null;
     await new Promise(setImmediate);requireDelegate(delegate,operationId,ownerEpoch);
-    update(journal,location,delegate,ownerEpoch,{status:'prepared',previousSeal,identities:{...journal.identities,next:identity(location.stage)}});
+    update(journal,location,delegate,ownerEpoch,{status:'prepared',previousSeal,
+      ...(originalPartial?{originalPartial,partialPort:partialRepair.port}:{}),identities:{...journal.identities,next:identity(location.stage)}});
     // Relocation strings name the final directory; executable-specific repair
     // follows the durable switch, because Windows venv launchers embed paths.
     phase='runtime_relocate';runtime.relocateTextFiles(location.stage,bundle.manifest,hermesHome);
@@ -247,10 +354,20 @@ async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,d
     if(delegate.active){
       try{
         update(journal,location,delegate,ownerEpoch,{primaryFailure:journal.primaryFailure||{name:error.name,code:error.code,message:error.message,stack:error.stack},status:'failed'});
-        await recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,onEvent,tools:runtime});
+        await recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,onEvent,tools:runtime,verifyOffline});
       }catch(recoveryError){error.secondaryErrors=[...(error.secondaryErrors||[]),{operation:'runtime-recovery',error:recoveryError}];}
     }
     throw error;
   }
 }
-module.exports={install,inspect,recover};
+function confirmPartialSystemProof(options,effects){
+  const {location,journal}=read(options);requireDelegate(options.delegate,options.operationId,options.ownerEpoch);
+  if(!journal?.originalPartial||!sameIdentity(identity(location.hermesHome),journal.identities.previous)
+    ||!sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
+    ||!partialStateMatches(journal.originalPartial,{...location,port:journal.partialPort})
+    ||!['untouched','restored'].includes(effects?.effectState)||effects.recoveryOutcome==='recovery-required'
+    ||effects.recoveryOutcome==='files-restored-start-failed')throw fail('RUNTIME_PARTIAL_UNCONFIRMED','原损坏安装的系统恢复尚未通过当前只读检查，保留现场。');
+  const proof={journalSeal:systemSeal(location),stateDigest:programDigest(path.join(location.noraHome,'tavern/tavern-state')),effects};
+  update(journal,location,options.delegate,options.ownerEpoch,{partialSystemProof:proof});
+}
+module.exports={install,inspect,recover,partialStateMatches,programDigest,confirmPartialSystemProof,archiveAttempt,paths};

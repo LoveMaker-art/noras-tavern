@@ -39,7 +39,7 @@ namespace=runpy.run_path(str(runner/'ops/updater/update.py'),run_name='closure_p
 control=namespace['_control_path']
 cli=namespace['module_at']('packaged_operation_cli',control.with_name('operation_cli.py'))
 cli._control()
-for name in ('operation_evidence.py','operation-budget.json','operation_node.mjs','mcp_probe.mjs','desktop/operation-delegate.js'):
+for name in ('operation_evidence.py','operation-budget.json','operation_node.mjs','mcp_probe.mjs','desktop/operation-delegate.js','desktop/operation-history.js'):
     assert control.with_name(name).is_file() if '/' not in name else (control.parent/name).is_file(), name
 result=subprocess.run([str(node),str(control.with_name('operation_node.mjs')),str(runner/'ops/updater/verify-worlds.mjs')],capture_output=True,text=True)
 assert result.returncode!=0 and 'DELEGATION_REQUIRED' in result.stderr, result.stdout+result.stderr

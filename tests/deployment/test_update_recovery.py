@@ -208,6 +208,45 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((home/'SOUL.md').read_text(),'old soul')
 
 
+class DigestProgressTests(unittest.TestCase):
+    def test_digest_progress_preserves_original_tree_hash_and_reports_actual_chunks(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'a-empty').write_bytes(b'');(root/'nested').mkdir()
+            (root/'nested/big').write_bytes(b'x'*(1024*1024+7));(root/'nested/small').write_bytes(b'end')
+            expected='f3ba1b2f46141fad5063c213f451a57ef5abac3ce5fe1e93f2e18c386da8358b'
+            self.assertEqual(recovery.digest(root),expected)
+            progress=[]
+            self.assertEqual(recovery.digest(root,on_progress=lambda size,entries:progress.append((size,entries))),expected)
+            self.assertEqual(progress,[(0,1),(0,1),(0,1),(0,1),(1024*1024,0),(7,0),(0,1),(3,0)])
+            self.assertEqual((root/'nested/big').read_bytes(),b'x'*(1024*1024+7))
+            progress=[]
+            empty=root/'empty';empty.mkdir()
+            self.assertEqual(recovery.digest(empty,on_progress=lambda size,entries:progress.append((size,entries))),recovery.digest(empty))
+            self.assertEqual(progress,[(0,1)])
+
+    def test_digest_progress_reports_no_bytes_for_a_failed_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file=Path(temporary)/'program';file.write_bytes(b'read must succeed before counting')
+            progress=[]
+            with patch.object(Path,'open',side_effect=OSError('read failed')):
+                with self.assertRaisesRegex(OSError,'read failed'):
+                    recovery.digest(file,on_progress=lambda size,entries:progress.append((size,entries)))
+            self.assertEqual(progress,[(0,1)])
+
+    @unittest.skipIf(os.name=='nt','Creating a Windows file symlink may require administrator privileges')
+    def test_digest_progress_confirms_links_only_after_hashing_the_link_name(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);outside=root/'outside';outside.write_bytes(b'not followed')
+            link=root/'link';link.symlink_to('outside');progress=[]
+            self.assertEqual(recovery.digest(link,on_progress=lambda size,entries:progress.append((size,entries))),recovery.digest(link))
+            self.assertEqual(progress,[(0,1)])
+            progress=[]
+            with patch.object(os,'readlink',side_effect=OSError('link read failed')):
+                with self.assertRaisesRegex(OSError,'link read failed'):
+                    recovery.digest(link,on_progress=lambda size,entries:progress.append((size,entries)))
+            self.assertEqual(progress,[])
+
+
 class CronMetadataClassificationTests(unittest.TestCase):
     def test_only_proven_unbounded_run_state_is_exempt_from_definition_digest(self):
         original={'jobs':[{'id':'daily','script':'private-task.py','prompt':'private-fixture',
@@ -351,6 +390,11 @@ class InterruptedRecoveryTests(unittest.TestCase):
                 return call
             def physical(path):
                 path=Path(path)
+                # The alias emulates the extended namespace for descendants.
+                # The logical Nora root itself remains the original directory;
+                # mapping it to the alias symlink would invent a redirected
+                # installation root absent from Windows extended-path I/O.
+                if path==self.base:return path
                 return alias/path.relative_to(self.base) if path.is_relative_to(self.base) else path
             with patch.object(Path,'lstat',guarded(original_lstat)), \
                     patch.object(Path,'stat',guarded(original_stat)), \

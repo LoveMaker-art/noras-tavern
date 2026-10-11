@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import {sealPublication, loadPublication, executePublication as executeWithConsumerGate, fileDigest} from '../tooling/release/publication-state.mjs';
 
 // These fixtures exercise resumable provider state, not launcher acceptance.
@@ -10,7 +11,7 @@ import {sealPublication, loadPublication, executePublication as executeWithConsu
 const executePublication = (publication, options={}) => executeWithConsumerGate(publication,
     {...options, verifyConsumers:async()=>({scope:'provider-state-test-fixture'})});
 
-async function fixture(t) {
+async function fixture(t, {destinations} = {}) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-publication-resume-'));
     t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
     const root = path.join(directory, 'assets'), stateDir = path.join(directory, 'state');
@@ -27,7 +28,7 @@ async function fixture(t) {
         if(phase==='asset')release.assets.push({name:path.basename(key),state:'uploaded',size:object.size,digest:`sha256:${object.sha256}`,browser_download_url:`https://github.com/${repository}/releases/download/${tag}/${path.basename(key)}`});
     }
     const publication = await sealPublication({plan:{tag,commit,mode:'full',channel:'stable',objects},release},
-        {root,stateDir,repository,sourceRun:'123',publisherCommit:'b'.repeat(40)});
+        {root,stateDir,repository,sourceRun:'123',publisherCommit:'b'.repeat(40),destinations});
     const events=[], remote={github:new Map(),sourceforge:new Map()}; let failure;
     const providers=Object.fromEntries(['sourceforge','github'].map(source=>[source, {
         begin:async()=>events.push(`${source}:begin`),
@@ -80,6 +81,73 @@ test('promote requires both verified sources; prepare never publishes',async t=>
     assert.deepEqual(f.events,[]);
     await executePublication(f.publication,{stage:'prepare',providers:f.providers,log:()=>{}});
     assert.equal(f.publication.state.status,'prepared');assert.ok(!f.events.includes('github:promote'));
+});
+test('a GitHub-only sealed plan prepares and promotes without a SourceForge provider',async t=>{
+    const f=await fixture(t,{destinations:['github']});
+    assert.deepEqual(f.publication.plan.destinations,['github']);
+    const providers={github:f.providers.github};
+    await executePublication(f.publication,{stage:'prepare',providers,log:()=>{}});
+    assert.equal(f.publication.state.status,'prepared');
+    assert.equal(f.publication.state.sources.sourceforge.ready,false);
+    assert.ok(!f.events.some(value=>value.startsWith('sourceforge:')||value.endsWith(':promote')));
+    const resumed=await loadPublication({root:f.root,stateDir:f.stateDir,destinations:['github'],expectedPlanId:f.publication.state.planId});
+    await executePublication(resumed,{stage:'promote',providers,log:()=>{}});
+    assert.equal(resumed.state.status,'published');
+    assert.equal(resumed.state.sources.github.promoted,true);
+    assert.equal(resumed.state.sources.sourceforge.promoted,false);
+    assert.ok(!f.events.some(value=>value.startsWith('sourceforge:')));
+});
+test('resuming cannot remove a failed destination from the original sealed plan',async t=>{
+    const f=await fixture(t);
+    await assert.rejects(loadPublication({root:f.root,stateDir:f.stateDir,destinations:['github']}),/destinations/);
+    assert.deepEqual(f.events,[]);
+});
+test('a GitHub-only resume cannot silently add another destination',async t=>{
+    const f=await fixture(t,{destinations:['github']});
+    await assert.rejects(loadPublication({root:f.root,stateDir:f.stateDir,destinations:['github','sourceforge']}),/destinations/);
+    assert.deepEqual(f.events,[]);
+});
+test('an original schema-1 plan without destinations still requires both channels',async t=>{
+    const f=await fixture(t),planFile=path.join(f.stateDir,'publication-plan.json'),stateFile=path.join(f.stateDir,'publication-state.json');
+    const plan=JSON.parse(fs.readFileSync(planFile)),state=JSON.parse(fs.readFileSync(stateFile));
+    delete plan.destinations;const bytes=JSON.stringify(plan,null,2)+'\n';
+    fs.writeFileSync(planFile,bytes);state.planId=crypto.createHash('sha256').update(bytes).digest('hex');
+    fs.writeFileSync(stateFile,JSON.stringify(state,null,2)+'\n');
+    const legacy=await loadPublication({root:f.root,stateDir:f.stateDir,destinations:['github','sourceforge'],expectedPlanId:state.planId});
+    await assert.rejects(executePublication(legacy,{stage:'prepare',providers:{github:f.providers.github},log:()=>{}}),/Missing sourceforge/);
+    assert.deepEqual(f.events,[]);
+    await assert.rejects(loadPublication({root:f.root,stateDir:f.stateDir,destinations:['github']}),/destinations/);
+    await executePublication(legacy,{stage:'all',providers:f.providers,log:()=>{}});
+    assert.equal(legacy.state.sources.github.promoted,true);
+    assert.equal(legacy.state.sources.sourceforge.promoted,true);
+});
+test('invalid or duplicated publication destinations cannot be sealed',async t=>{
+    for(const destinations of [[],['github','github'],['unknown'],['sourceforge','github'],null]){
+        await t.test(JSON.stringify(destinations),async child=>{
+            await assert.rejects(fixture(child,{destinations}),/destinations/);
+        });
+    }
+});
+test('GitHub-only publication requires shipped-consumer acceptance on every entry',async t=>{
+    for(const stage of ['seal','prepare','promote','all'])await t.test(stage,async child=>{
+        const f=await fixture(child,{destinations:['github']});
+        await assert.rejects(executeWithConsumerGate(f.publication,{stage,providers:{github:f.providers.github},log:()=>{}}),/Final consumer|shipped launcher/);
+        assert.deepEqual(f.events,[]);
+        assert.equal(f.publication.state.status,'failed');
+        assert.equal(f.publication.state.failure.failures[0].phase,'consumer-acceptance');
+    });
+});
+test('GitHub-only failure preserves the same immutable bytes for a resumed upload',async t=>{
+    const f=await fixture(t,{destinations:['github']}),providers={github:f.providers.github},failed='releases/v2.4.4/two.zip';
+    f.setFailure(`github:${failed}`);
+    await assert.rejects(executePublication(f.publication,{stage:'all',providers,log:()=>{}}),/preparation failed/);
+    assert.ok(!f.events.some(value=>value.endsWith(':promote')));
+    f.setFailure(null);const resumed=await f.reload();
+    await executePublication(resumed,{stage:'all',providers,log:()=>{}});
+    assert.equal(f.events.filter(value=>value==='github:upload:releases/v2.4.4/one.zip').length,1);
+    assert.equal(resumed.state.planId,f.publication.state.planId);
+    assert.equal(resumed.state.status,'published');
+    assert.ok(!f.events.some(value=>value.startsWith('sourceforge:')));
 });
 test('final distribution without a consumable shipped launcher is rejected before either provider begins',async t=>{
     const f=await fixture(t);

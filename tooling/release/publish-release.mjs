@@ -330,14 +330,16 @@ async function publish() {
 const args=process.argv.slice(2),[rootArg,tag,commit]=args.splice(0,3);
 const mode=args[0]&&!args[0].startsWith('--')?args.shift():'full';
 assert.ok(rootArg,'Release assets root is required');
-const options={stage:'seal',assetMode:'legacy',resume:false};
-const names={'--stage':'stage','--state-dir':'stateDir','--asset-mode':'assetMode','--reuse-from':'reuseFrom','--expected-plan-id':'expectedPlanId'};
+const options={stage:'seal',assetMode:'legacy',resume:false,destinations:'all'};
+const names={'--stage':'stage','--state-dir':'stateDir','--asset-mode':'assetMode','--reuse-from':'reuseFrom','--expected-plan-id':'expectedPlanId','--destinations':'destinations'};
 while(args.length){const name=args.shift();if(name==='--resume'){assert.ok(!options.resume,'Duplicate resume flag');options.resume=true;continue;}
     assert.ok(names[name]&&args[0]&&!args[0].startsWith('--'),`Invalid publication argument: ${name}`);assert.ok(!options['_'+name],`Duplicate ${name}`);options['_'+name]=true;options[names[name]]=args.shift();}
 const root = path.resolve(rootArg);
 const repository = process.env.GH_REPO;
 assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
 assert.ok(['seal','prepare','promote','all'].includes(options.stage));assert.ok(['legacy','shared'].includes(options.assetMode));
+assert.ok(['all','github'].includes(options.destinations),'Invalid publication destinations');
+const destinations=options.destinations==='github'?['github']:['github','sourceforge'];
 assert.ok(['full','components'].includes(mode),'Invalid delivery mode');
 assert.match(commit,/^[a-f0-9]{40}$/);assert.match(tag,/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
 assert.equal(execFileSync('git',['rev-parse','--verify',`refs/tags/${tag}^{commit}`],{encoding:'utf8'}).trim(),commit,'Tag differs from accepted product commit');
@@ -347,7 +349,7 @@ let publication;
 if(options.resume){
     assert.ok(!options.reuseFrom,'Resume uses the original sealed reuse baseline');
     if(process.env.CI)assert.ok(options.expectedPlanId,'CI resume requires the original plan id from its verified source artifact');
-    publication=await loadPublication({root,stateDir,repository,tag,commit,mode,sourceRun,assetMode:options.assetMode,expectedPlanId:options.expectedPlanId});
+    publication=await loadPublication({root,stateDir,repository,tag,commit,mode,sourceRun,assetMode:options.assetMode,expectedPlanId:options.expectedPlanId,destinations});
 } else {
     assert.ok(!options.expectedPlanId,'A new seal cannot claim an existing plan identity');
     assert.ok(!fs.existsSync(stateDir),'State directory already exists; restore and use --resume');
@@ -357,13 +359,13 @@ if(options.resume){
     const distribution=await prepareDistribution({root,tag,commit,mode,repository,output:path.join(stateDir,'distribution'),
         body:fs.readFileSync(notes,'utf8'),assetMode:options.assetMode,reuseFrom:options.reuseFrom});
     process.stdout.write(distribution.verification);
-    publication=await sealPublication(distribution,{root,stateDir,repository,sourceRun,publisherCommit,assetMode:options.assetMode});
+    publication=await sealPublication(distribution,{root,stateDir,repository,sourceRun,publisherCommit,assetMode:options.assetMode,destinations});
 }
 const scratch=options.stage==='seal'?null:fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||path.dirname(stateDir),'nora-publication-transfer-'));
 try {
     const providers=options.stage==='seal'?undefined:{
-        sourceforge:sourceforgeProvider({upload:sourceforgeUploader(process.env.NORA_SOURCEFORGE_UPLOAD_CONFIG,scratch),readPublic,verifyObject:verifyDistributionObject,preventDowngrade}),
-        github:githubProvider({repository})};
+        ...(destinations.includes('sourceforge')?{sourceforge:sourceforgeProvider({upload:sourceforgeUploader(process.env.NORA_SOURCEFORGE_UPLOAD_CONFIG,scratch),readPublic,verifyObject:verifyDistributionObject,preventDowngrade})}:{}),
+        ...(destinations.includes('github')?{github:githubProvider({repository})}:{})};
     const state=await executePublication(publication,{stage:options.stage,providers,publisherCommit});
     console.log(`Publication ${state.status}: ${tag} product=${commit} publisher=${publisherCommit} plan=${state.planId} state=${stateDir}`);
 } finally {if(scratch)fs.rmSync(scratch,{recursive:true,force:true});}

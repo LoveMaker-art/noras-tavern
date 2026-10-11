@@ -19,6 +19,34 @@ def same_filesystem_path(left, right):
 
 
 class FirstInstallTransactionTests(unittest.TestCase):
+    def test_code_digest_progress_preserves_original_hash_and_excludes_migration_backup_bytes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);(root/'a-empty').write_bytes(b'')
+            engine=root/'engine/sillytavern';engine.mkdir(parents=True)
+            (engine/'server.js').write_bytes(b'code');(engine/'backups').mkdir()
+            (engine/'backups/private.dat').write_bytes(b'ignored'*100)
+            (root/'z-large').write_bytes(b'x'*(1024*1024+7))
+            expected='08c0c337ebda3ab6204ca665726bbffed24ae0fb29c2b7aa390e74332d843b7c'
+            self.assertEqual(first_install.first_install_code_digest(root),expected)
+            progress=[]
+            self.assertEqual(first_install.first_install_code_digest(root,on_progress=lambda size,entries:progress.append((size,entries))),expected)
+            self.assertEqual(progress,[(0,1),(0,1),(0,1),(0,1),(0,1),(4,0),(0,1),(1024*1024,0),(7,0)])
+            self.assertEqual((engine/'backups/private.dat').read_bytes(),b'ignored'*100)
+            progress=[]
+            empty=root/'empty';empty.mkdir()
+            self.assertEqual(first_install.first_install_code_digest(empty,on_progress=lambda size,entries:progress.append((size,entries))),
+                first_install.first_install_code_digest(empty))
+            self.assertEqual(progress,[(0,1)])
+
+    def test_code_digest_progress_reports_no_bytes_for_a_failed_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            file=Path(temporary)/'program';file.write_bytes(b'read must succeed before counting')
+            progress=[]
+            with patch.object(Path,'open',side_effect=OSError('read failed')):
+                with self.assertRaisesRegex(OSError,'read failed'):
+                    first_install.first_install_code_digest(file,on_progress=lambda size,entries:progress.append((size,entries)))
+            self.assertEqual(progress,[(0,1)])
+
     def test_declared_skill_io_path_round_trips_without_admitting_unknown_targets(self):
         for existed in (False, True):
             with self.subTest(existed=existed), tempfile.TemporaryDirectory() as temporary:

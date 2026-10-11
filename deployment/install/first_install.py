@@ -682,12 +682,13 @@ def _inspect_committed_first_install(journal):
         'version': receipt['version']}
 
 
-def first_install_code_digest(path):
+def first_install_code_digest(path, *, on_progress=None):
     """Hash program bytes, excluding only the engine's user migration backups.
 
     Normal chat/settings backups live below dataRoot. This legacy migration
     directory lives inside the program tree, is created even on fresh startup,
     and may contain user data. Its fixed path is not an extensible ignore rule.
+    Optional progress reports actual (bytes_read, entries_confirmed) increments.
     """
     root = Path(filesystem_path(path)); result = hashlib.sha256()
     def visit(current, relative):
@@ -697,15 +698,21 @@ def first_install_code_digest(path):
             return
         value = current.lstat()
         if _recovery.linked(current):
-            result.update(b'L' + relative.encode() + b'\0' + os.fsencode(os.readlink(current))); return
+            result.update(b'L' + relative.encode() + b'\0' + os.fsencode(os.readlink(current)))
+            if on_progress is not None: on_progress(0, 1)
+            return
         if stat.S_ISDIR(value.st_mode):
             result.update(b'D' + relative.encode() + b'\0')
+            if on_progress is not None: on_progress(0, 1)
             for child in sorted(current.iterdir(), key=lambda entry: entry.name):
                 visit(child, relative + '/' + child.name)
         elif stat.S_ISREG(value.st_mode):
             result.update(b'F' + relative.encode() + b'\0')
+            if on_progress is not None: on_progress(0, 1)
             with current.open('rb') as stream:
-                for block in iter(lambda: stream.read(1024 * 1024), b''): result.update(block)
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    result.update(block)
+                    if on_progress is not None: on_progress(len(block), 0)
         else: raise RuntimeError('首装程序目录含不支持的文件类型')
     visit(root, '')
     return result.hexdigest()

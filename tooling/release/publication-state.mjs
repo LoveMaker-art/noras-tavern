@@ -7,6 +7,13 @@ import {verifyFinalConsumers} from './final-consumer.mjs';
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const stages = new Set(['seal', 'prepare', 'promote', 'all']);
+function destinations(value = ['github', 'sourceforge']) {
+    assert.ok(Array.isArray(value) && value.length > 0 && value.length <= 2, 'Invalid publication destinations');
+    assert.ok(value.every(name => ['github', 'sourceforge'].includes(name)) && new Set(value).size === value.length,
+        'Invalid publication destinations');
+    assert.deepEqual(value, [...value].sort(), 'Publication destinations must have canonical order');
+    return value;
+}
 const inside = (root, file) => { const relative = path.relative(root, file); return relative && !relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative); };
 function regular(file) {
     assert.ok(fs.lstatSync(file).isFile() && !fs.lstatSync(file).isSymbolicLink(), `Expected regular sealed file: ${file}`);
@@ -32,6 +39,7 @@ function identity(plan) {
     assert.match(plan.commit, /^[a-f0-9]{40}$/);
     assert.ok(['full', 'components'].includes(plan.mode));
     assert.ok(['legacy', 'shared'].includes(plan.assetMode));
+    destinations(plan.destinations);
     assert.equal(plan.channel, plan.tag.includes('-beta.') ? 'beta' : 'stable');
     assert.ok(Number.isFinite(Date.parse(plan.publishedAt)));
     assert.equal(typeof plan.body, 'string');
@@ -61,7 +69,7 @@ function identity(plan) {
 
 // Paths in the signed-by-digest plan are portable across CI runners. Progress is
 // separate: a failed transfer cannot change the catalogue date or asset bytes.
-export async function sealPublication(distribution, {root, stateDir, repository, sourceRun = 'local', publisherCommit = '', assetMode = 'legacy'} = {}) {
+export async function sealPublication(distribution, {root, stateDir, repository, sourceRun = 'local', publisherCommit = '', assetMode = 'legacy', destinations: selectedDestinations} = {}) {
     root = path.resolve(root); stateDir = path.resolve(stateDir);
     assert.ok(!inside(root, stateDir) && root !== stateDir, 'State must be outside release assets');
     assert.ok(!fs.existsSync(path.join(stateDir, 'publication-plan.json')), 'Sealed plan already exists; use --resume');
@@ -69,7 +77,7 @@ export async function sealPublication(distribution, {root, stateDir, repository,
     directory(root);directory(stateDir);
     const plan = {schema: 'nora-publication-plan/1', repository, sourceRun: String(sourceRun),
         tag: distribution.plan.tag, commit: distribution.plan.commit, mode: distribution.plan.mode,
-        channel: distribution.plan.channel, assetMode, publishedAt: distribution.release.published_at,
+        channel: distribution.plan.channel, assetMode, destinations: [...destinations(selectedDestinations)], publishedAt: distribution.release.published_at,
         body: distribution.release.body, objects: []};
     for (const object of distribution.plan.objects) {
         const location = inside(root, object.file) ? 'asset' : 'state';
@@ -91,7 +99,7 @@ export async function sealPublication(distribution, {root, stateDir, repository,
     return loadPublication({root, stateDir, repository, tag: plan.tag, commit: plan.commit, mode: plan.mode, sourceRun});
 }
 
-export async function loadPublication({root, stateDir, repository, tag, commit, mode, sourceRun, assetMode, expectedPlanId} = {}) {
+export async function loadPublication({root, stateDir, repository, tag, commit, mode, sourceRun, assetMode, expectedPlanId, destinations: expectedDestinations} = {}) {
     root = path.resolve(root); stateDir = path.resolve(stateDir);
     assert.ok(!inside(root, stateDir) && root !== stateDir, 'State must be outside release assets');
     directory(root);directory(stateDir);
@@ -99,6 +107,8 @@ export async function loadPublication({root, stateDir, repository, tag, commit, 
     const plan = JSON.parse(fs.readFileSync(path.join(stateDir, 'publication-plan.json')));
     const state = JSON.parse(fs.readFileSync(path.join(stateDir, 'publication-state.json')));
     identity(plan);
+    if (expectedDestinations !== undefined) assert.deepEqual(destinations(plan.destinations), destinations(expectedDestinations),
+        'Sealed publication destinations differ');
     assert.equal(state.schema, 'nora-publication-state/1');
     assert.equal(state.planId, hash(json(plan)), 'Sealed plan digest differs from checkpoint');
     if(expectedPlanId!==undefined){assert.match(expectedPlanId,/^[a-f0-9]{64}$/);assert.equal(state.planId,expectedPlanId,'Plan differs from trusted external receipt');}
@@ -150,6 +160,9 @@ export async function executePublication(publication, {stage = 'seal', providers
     verifyConsumers = verifyFinalConsumers} = {}) {
     assert.ok(stages.has(stage), 'Invalid publication stage');
     const {state, plan, stateDir} = publication;
+    const selected = destinations(plan.destinations);
+    const prepareOrder = ['sourceforge', 'github'].filter(source => selected.includes(source));
+    const promoteOrder = ['github', 'sourceforge'].filter(source => selected.includes(source));
     const save = () => { state.updatedAt = new Date().toISOString(); atomic(path.join(stateDir, 'publication-state.json'), state); };
     if (publisherCommit && !state.publishers.includes(publisherCommit)) state.publishers.push(publisherCommit);
     save();
@@ -164,7 +177,7 @@ export async function executePublication(publication, {stage = 'seal', providers
         save(); throw error;
     }
     if (stage === 'seal') return state;
-    for (const source of ['sourceforge', 'github']) {
+    for (const source of prepareOrder) {
         for (const method of ['begin', 'inspect', 'upload', 'verify', 'assertReady', 'checkPromotion', 'promote', 'verifyPromotion']) {
             assert.equal(typeof providers?.[source]?.[method], 'function', `Missing ${source}.${method}`);
         }
@@ -179,7 +192,7 @@ export async function executePublication(publication, {stage = 'seal', providers
             state.status = 'preparing'; delete state.failure; save();
             // A failure must wait for the other independent source to finish and
             // checkpoint; neither source may promote a channel in this phase.
-            const results = await Promise.allSettled(['sourceforge', 'github'].map(async source => {
+            const results = await Promise.allSettled(prepareOrder.map(async source => {
                 const provider = providers[source], checkpoint = state.sources[source];checkpoint.ready=false;save();
                 try {
                 progress(source, 'begin'); await provider.begin(publication);
@@ -206,15 +219,16 @@ export async function executePublication(publication, {stage = 'seal', providers
             state.status = 'prepared'; delete state.active;delete state.activeSources;save();
         }
         if (stage === 'promote' || stage === 'all') {
-            assert.ok(state.sources.github.ready && state.sources.sourceforge.ready, 'Both sources must be prepared before promotion');
-            for (const source of ['github', 'sourceforge']) {
+            assert.ok(selected.every(source => state.sources[source].ready), selected.length === 2
+                ? 'Both sources must be prepared before promotion' : 'Selected sources must be prepared before promotion');
+            for (const source of promoteOrder) {
                 progress(source, 'ready-check'); await providers[source].assertReady(publication);
                 progress(source, 'promotion-check'); await providers[source].checkPromotion(publication);
             }
             state.status = 'promoting'; save();
             // Cross-site promotion cannot be atomic. Checkpoint GitHub first;
             // a later SourceForge failure resumes only its channel switch.
-            for (const source of ['github', 'sourceforge']) {
+            for (const source of promoteOrder) {
                 if (!state.sources[source].promoted) {
                     progress(source, 'promote'); await providers[source].promote(publication);
                     progress(source, 'verify-promotion'); await providers[source].verifyPromotion(publication);

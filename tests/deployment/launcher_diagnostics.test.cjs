@@ -94,6 +94,105 @@ test('failure to show the startup dialog is logged and cannot become a second un
   assert.equal(records.some(item=>item.event==='main.uncaught'),false);
 });
 
+function startupDialogFixture(t, {setPathError, mkdirError, prepare=()=>{}}={}) {
+  const directory=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-startup-dialog-')));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const home=path.join(directory,'NoraTavern'),data=path.join(home,'tavern','world.json');
+  fs.mkdirSync(path.dirname(data),{recursive:true});fs.writeFileSync(data,'preserved-story');
+  const owner=path.join(home,'nora-owner.json');fs.writeFileSync(owner,JSON.stringify({schema:1,id:'fixture-owner'}));
+  prepare({home,owner});
+  const locations=require('../installer/desktop/install-location');
+  const noraHome=()=>locations.readLocation(home,'stable');
+  const diagnostics=createDiagnostics({primary:()=>path.join(noraHome(),'installer','install.log'),
+    fallback:path.join(directory,'diagnostics','install.log')});
+  const dialogs=[],exits=[],file=path.resolve(__dirname,'../installer/desktop/main.js');
+  const source=fs.readFileSync(file,'utf8');
+  const declaration=parse(source,{ecmaVersion:'latest'}).body.find(node=>node.type==='FunctionDeclaration'&&node.id.name==='initializeLauncher');
+  const context=vm.createContext({fs:{...fs,mkdirSync:(file,...args)=>{
+    if(mkdirError&&file===path.join(home,'cache','tmp'))throw mkdirError;
+    return fs.mkdirSync(file,...args);
+  }},path,os,process,CHANNEL:'stable',noraHome,diagnostics,
+    uninstall:require('../installer/desktop/uninstall'),
+    formatUserError:require('../installer/desktop/error-presentation').formatUserError,
+    app:{getVersion:()=> '2.1.2',setPath(){if(setPathError)throw setPathError;},exit:code=>exits.push(code)},
+    dialog:{showErrorBox:(title,message)=>dialogs.push({title,message})}});
+  const initialized=vm.runInContext(source.slice(declaration.start,declaration.end)+'\ninitializeLauncher()',context,{filename:file});
+  const records=fs.readFileSync(diagnostics.lastFile,'utf8').trim().split('\n').map(JSON.parse);
+  return {initialized,dialogs,exits,records,home,owner,data,log:diagnostics.lastFile};
+}
+
+test('startup initialization failure identifies its phase and the actual local log without guessing a service failure',t=>{
+  const original=new Error('opaque initialization fixture');
+  const f=startupDialogFixture(t,{setPathError:original});
+  assert.equal(f.initialized,false);assert.deepEqual(f.exits,[1]);
+  assert.equal(f.dialogs[0].title,'启动器未能打开');
+  assert.match(f.dialogs[0].message,/启动器初始化未完成/);
+  assert.match(f.dialogs[0].message,/具体原因尚未确认/);
+  assert.match(f.dialogs[0].message,/复制下方本机日志/);
+  assert.ok(f.dialogs[0].message.includes(f.log));
+  assert.doesNotMatch(f.dialogs[0].message,/服务状态检查|网络|代理|opaque|“更多”/);
+  assert.equal(f.records.find(item=>item.event==='launcher.startup-failed').error.message,original.message);
+  assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+});
+
+test('a real non-directory cache blocks initialization without changing it or the owner record',t=>{
+  const f=startupDialogFixture(t,{prepare:({home})=>fs.writeFileSync(path.join(home,'cache'),'preserved-cache-file')});
+  const failure=f.records.find(item=>item.event==='launcher.startup-failed');
+  assert.equal(f.initialized,false);assert.equal(failure.error.code,'ENOTDIR');
+  assert.match(f.dialogs[0].message,/启动器初始化未完成/);
+  assert.match(f.dialogs[0].message,/初始化路径中的某一项不是文件夹/);
+  assert.match(f.dialogs[0].message,/复制下方本机日志/);
+  assert.doesNotMatch(f.dialogs[0].message,/服务状态检查|网络|代理|具体原因尚未确认/);
+  assert.equal(fs.readFileSync(path.join(f.home,'cache'),'utf8'),'preserved-cache-file');
+  assert.equal(fs.readFileSync(f.owner,'utf8'),JSON.stringify({schema:1,id:'fixture-owner'}));
+  assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+});
+
+test('a startup filesystem permission error keeps its cause and points to the actual local log',t=>{
+  const original=Object.assign(new Error('fixture filesystem access denied'),{code:'EACCES',syscall:'mkdir'});
+  const f=startupDialogFixture(t,{mkdirError:original});
+  const failure=f.records.find(item=>item.event==='launcher.startup-failed');
+  assert.equal(f.initialized,false);assert.deepEqual(f.exits,[1]);
+  assert.match(f.dialogs[0].message,/启动器初始化未完成/);
+  assert.match(f.dialogs[0].message,/无法访问初始化所需的文件或目录/);
+  assert.match(f.dialogs[0].message,/检查目录权限/);
+  assert.ok(f.dialogs[0].message.includes(f.log));
+  assert.doesNotMatch(f.dialogs[0].message,/服务状态检查|网络|代理|fixture filesystem/);
+  assert.equal(failure.error.message,original.message);assert.equal(failure.error.code,'EACCES');
+  assert.equal(failure.error.syscall,'mkdir');assert.match(failure.error.stack,/fixture filesystem/);
+  assert.equal(fs.readFileSync(f.owner,'utf8'),JSON.stringify({schema:1,id:'fixture-owner'}));
+  assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+});
+
+test('unparseable location and owner records remain untouched while initialization saves the real JSON error',t=>{
+  for(const kind of ['location','owner']){
+    const bytes='{"schema":1,';let record;
+    const f=startupDialogFixture(t,{prepare:({home,owner})=>{
+      record=kind==='owner'?owner:path.join(home,'installer','location.json');
+      fs.mkdirSync(path.dirname(record),{recursive:true});fs.writeFileSync(record,bytes);
+    }});
+    const failure=f.records.find(item=>item.event==='launcher.startup-failed');
+    assert.equal(f.initialized,false);assert.deepEqual(f.exits,[1]);
+    assert.equal(failure.error.name,'SyntaxError');assert.match(failure.error.stack,/JSON\.parse/);
+    assert.match(f.dialogs[0].message,/启动器初始化未完成/);
+    assert.match(f.dialogs[0].message,/具体原因尚未确认/);
+    assert.match(f.dialogs[0].message,/复制下方本机日志/);
+    assert.ok(f.dialogs[0].message.includes(f.log));
+    assert.doesNotMatch(f.dialogs[0].message,/服务状态检查|网络|代理|JSON|SyntaxError/);
+    assert.equal(fs.readFileSync(record,'utf8'),bytes);
+    assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+    if(kind==='location')assert.equal(path.dirname(f.log),path.join(path.dirname(f.home),'diagnostics'));
+  }
+});
+
+test('normal startup still initializes with the existing owner and data',t=>{
+  const f=startupDialogFixture(t);
+  assert.equal(f.initialized,true);assert.deepEqual(f.exits,[]);assert.deepEqual(f.dialogs,[]);
+  assert.equal(f.records.some(item=>item.event==='launcher.startup-failed'),false);
+  assert.equal(fs.readFileSync(f.owner,'utf8'),JSON.stringify({schema:1,id:'fixture-owner'}));
+  assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+});
+
 function mainContext(root, overrides = {}, argv = []) {
   const file = path.resolve(__dirname, '../installer/desktop/main.js');
   const localRequire = createRequire(file);
@@ -246,9 +345,9 @@ test('launcher backup commits only after the actual component transaction verifi
   fs.mkdirSync(payload);
   fs.writeFileSync(path.join(payload,'release-manifest.json'),JSON.stringify({versions:{tavern:'2.4.3'}}));
   const context=mainContext(root,{'./launcher-update':{finalize:async options=>{calls.push(options);return{status:'committed'};}}},[`--nora-self-update=${job}`]);
-  context.verified={version:'2.4.3',systemReady:true,updateVerified:false};
+  context.verified={version:'2.4.3',commit:'a'.repeat(40),systemReady:true,updateVerified:false};
   context.payload=payload;
-  context.ownedUpdate={snapshot:{handoffRef:job},observe(){}};
+  context.ownedUpdate={target:{releasePlan:{version:'2.4.3',commit:'a'.repeat(40)}},snapshot:{handoffRef:job},observe(){}};
   vm.runInContext('activeOperationContext=ownedUpdate;',context);
   vm.runInContext('findPython=()=>({command:"python-fixture"}); hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>command==="status"?{version:"2.4.2",systemReady:true}:verified;',context);
   await assert.rejects(vm.runInContext('performSystemUpdate(payload,{runId:"verify-fixture"},null)',context),/尚未通过验收/);
@@ -486,8 +585,9 @@ test('runtime worker business guidance survives a real child process boundary', 
   const worker=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
   context.command=[process.execPath,['-e',`
     const fs=require('node:fs'),vm=require('node:vm');
+    const load=require('node:module').createRequire(${JSON.stringify(worker)});
     const error=Object.assign(new Error('both extractors unavailable'),{userCode:'RUNTIME_EXTRACTOR_UNAVAILABLE',cause:Object.assign(new Error('missing'),{code:'ENOENT'})});
-    vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./operation-delegate'?{connect:async()=>({context:{operationId:'11111111-1111-4111-8111-111111111111',ownerEpoch:1},assertActive(){},close(){}})}:name==='./runtime'?{installBundledHermes:()=>{throw error;}}:{errorDetails:()=>({message:error.message})}});
+    vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./operation-delegate'?{connect:async()=>({context:{operationId:'11111111-1111-4111-8111-111111111111',ownerEpoch:1},assertActive(){},close(){}})}:name==='./runtime'?{installBundledHermes:()=>{throw error;}}:name==='./diagnostics'?{errorDetails:()=>({message:error.message})}:load(name)});
   `]];
   await assert.rejects(vm.runInContext('runProcess(...command)',context),error=>{
     assert.equal(error.code,'ENOENT');
@@ -507,9 +607,10 @@ test('runtime phase remains in bounded fault output if the worker exits before i
   const worker=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
   context.command=[process.execPath,['-e',`
     const fs=require('node:fs'),vm=require('node:vm');
+    const load=require('node:module').createRequire(${JSON.stringify(worker)});
     vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./operation-delegate'?{connect:async()=>({context:{operationId:'11111111-1111-4111-8111-111111111111',ownerEpoch:1},assertActive(){},close(){}})}:name==='./runtime'?{
       installBundledHermes(options){options.onEvent({event:'task',stage_id:'runtime_init',task:'初始化 Nora：准备配置和技能'});process.exit(9);}
-    }:{errorDetails:()=>({})}});
+    }:name==='./diagnostics'?{errorDetails:()=>({})}:load(name)});
   `]];
   await assert.rejects(vm.runInContext('runProcess(...command)',context),error=>{
     assert.equal(error.exitCode,9);

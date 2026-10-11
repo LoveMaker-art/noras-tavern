@@ -105,7 +105,7 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{}}={}){
     try{
       const env=environment(receipt);if(lifecycle)env.NORA_UPDATE_LIFECYCLE=JSON.stringify(lifecycle);
       if(readonly){
-        if(target!==receipt.resources['launcher_bridge.py'].path||!['status','operation-effects','plan-update','verify-model'].some(name=>args.includes(name)))throw fail('OPERATION_ENTRY_UNSUPPORTED');
+        if(target!==receipt.resources['launcher_bridge.py'].path||!['status','repair-preflight','operation-effects','plan-update','verify-model'].some(name=>args.includes(name)))throw fail('OPERATION_ENTRY_UNSUPPORTED');
         child=spawn(pythonFor(receipt),['-B','-u',target,...args],{env,cwd:receipt.resourcesRoot,windowsHide:true});
       }else{
         context.check();
@@ -131,7 +131,7 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{}}={}){
     const badOutput=error=>{outputError ||= error;};
     consumeLines(child.stdout,line=>observe(line,'stdout'),badOutput,{preserveBlankLines:true});
     consumeLines(child.stderr,line=>observe(line,'stderr'),badOutput,{preserveBlankLines:true});
-    const timer=setTimeout(()=>child.kill('SIGTERM'),readonly?90000:30*60*1000);timer.unref?.();
+    const timer=setTimeout(()=>child.kill('SIGTERM'),readonly?(args.some(value=>['repair-preflight','operation-effects'].includes(value))?300000:90000):30*60*1000);timer.unref?.();
     child.once('error',error=>{clearTimeout(timer);reject(evidence.attach(error));});
     child.once('close',(code,signal)=>{
       clearTimeout(timer);
@@ -142,9 +142,22 @@ function guardedRunner(receipt,{diagnostics,onEvent=()=>{}}={}){
     child.stdin.end(stdin);
   });
 }
-function workflowVerified(route,result,status,before,target){
-  return verifyWorkflowResult({action:route.kind,service:route.request.service||'all',
-    targetVersion:target?.releaseManifest?.versions?.tavern||target?.version,result,status,before});
+function workflowVerified(route,result,status,before,target,receipt){
+  const version=target?.releaseManifest?.versions?.tavern||target?.version;
+  if(!verifyWorkflowResult({action:route.kind,service:route.request.service||'all',targetVersion:version,result,status,before}))return false;
+  if(!['update','repair'].includes(route.kind))return true;
+  // Retain the executor's acceptance, bound to the fixed release and the
+  // subsequent observation of the same installation. Readiness cannot create
+  // an acceptance marker that the actual executor never returned.
+  if(result.systemReady!==true||require('./releases').compare(result.version,version)!==0
+    ||result.commit!==target.commit||status.commit!==target.commit
+    ||!['running','gatewayRunning'].every(key=>result[key]===status[key]))return false;
+  if([result.port,status.port].some(port=>port!==undefined&&(!Number.isInteger(port)||port!==receipt.port))
+    ||typeof result.clawchatConnected==='boolean'&&typeof status.clawchatConnected==='boolean'
+      &&result.clawchatConnected!==status.clawchatConnected
+    ||before.clawchatConnected===true&&(result.clawchatConnected!==true||status.clawchatConnected!==true))return false;
+  return ['noraHome','hermesHome','installRoot'].every(key=>[result[key],status[key]].every(value=>
+    typeof value==='string'&&path.isAbsolute(value)&&same(value,receipt[key],receipt.platform)));
 }
 function detailedConsent(home){
   try{
@@ -193,8 +206,19 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
       // the native lease closes the admission window. Injected guards own their
       // inspection contract in isolated tests.
       if(lock)return lease;
+      let python;
+      try{python=pythonFor(current);}
+      catch(error){
+        if(error.code!=='RESOURCE_INCOMPLETE'||!['update','repair','recover'].includes(route.kind))throw error;
+        const managed=require('./operation-policy').inspectManagedInstallation({noraHome:current.noraHome,
+          hermesHome:current.hermesHome,installRoot:current.installRoot,port:current.port,platform:current.platform});
+        if(managed?.needsRepair!==true||managed.missing.python!==true)throw error;
+        // The damaged interpreter cannot inspect its own absence. The existing
+        // native reader must still prove every outstanding executor is offline;
+        // canonical staged repair preflight remains required before any swap.
+      }
       return await acquireInspected({...options,lock:{acquire:async()=>lease,probe:params=>native.probe(params)},
-        python:pythonFor(current),script:current.resources['operation_control.py'].path,env:environment(current)});
+        python,script:current.resources['operation_control.py'].path,env:environment(current)});
     }catch(error){
       try{await lease.release();}catch(secondary){error.secondaryErrors=[...(error.secondaryErrors||[]),{operation:'release-admission',error:secondary}];}
       throw error;
@@ -202,8 +226,10 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
   }};
   const sharedPolicy=policy||require('./operation-policy').create({home:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot,bridge,
     networkFetch:fetcher,launcherVersion:receipt.launcherVersion,channel:receipt.channel,platform:receipt.platform,arch:receipt.arch,
-    runRuntime:(context,{recover,allowCommitted})=>runner(context,path.join(__dirname,'runtime-worker.js'),
-      [path.join(receipt.resourcesRoot,'payload'),receipt.noraHome,receipt.hermesHome,...(recover?['--recover-runtime']:[]),...(allowCommitted?['--allow-committed']:[])],{node:true}),
+    runRuntime:(context,{recover,allowCommitted,partialRepair,inspectPartial})=>runner(context,path.join(__dirname,'runtime-worker.js'),
+      [path.join(receipt.resourcesRoot,'payload'),receipt.noraHome,receipt.hermesHome,...(recover?['--recover-runtime']:[]),
+        ...(allowCommitted?['--allow-committed']:[]),...(partialRepair?['--repair-managed']:[]),...(inspectPartial?['--inspect-managed']:[])],
+      {node:true,stdin:partialRepair?Buffer.from(JSON.stringify(partialRepair)):Buffer.alloc(0)}),
     runLegacy:(context,request)=>runner(context,path.join(__dirname,'legacy-recovery-worker.js'),[receipt.noraHome],
       {node:true,stdin:Buffer.from(JSON.stringify(request))})});
   let telemetry,operationError;
@@ -235,6 +261,7 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
   const updateExecutor=require('./system-update-executor').create({bridge,compare:require('./releases').compare,
     finalizeLauncher:async()=>{throw fail('LAUNCHER_RECOVERY_REQUIRED','此操作涉及启动器程序替换，请打开新版启动器完成验收。原安装和程序备份已保留。');}});
   const controller=createOperationController({directory:receipt.installerDirectory,lock:guard,evidence,observeEffects:sharedPolicy.observe,recoverers,recheckers,
+    prepareEffects:context=>sharedPolicy.prepareEffects?.(context),
     captureConditions:(record,context)=>sharedPolicy.initialConditions?.(record,context),
     identifyFailureCondition:(error,record)=>sharedPolicy.identifyFailureCondition?.(error,record),
     projectResult:value=>value?.value??value});
@@ -243,7 +270,13 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
     beginTelemetry(context);
     const perform=async()=>{
       const original=context.target.releasePlan;
-      const facts=await sharedPolicy.observe(context.snapshot);
+      const managed=require('./operation-policy').inspectManagedInstallation({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,
+        installRoot:receipt.installRoot,port:receipt.port,platform:receipt.platform});
+      const ownRuntime=require('./runtime-transaction').inspect({noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,operationId:context.operationId});
+      const stagedInspection=managed?.missing.python&&['update','repair'].includes(route.kind)&&ownRuntime.effectState==='untouched'
+        &&sharedPolicy.inspectPartial?await sharedPolicy.inspectPartial(context,managed):null;
+      const facts=stagedInspection?{...stagedInspection.effects,
+        recoveryOutcome:stagedInspection.effects.recoveryOutcome||'not-required'}:await sharedPolicy.observe(context.snapshot);
       let runtimeContinuation=false;
       if(facts.canResume===true){
         if(route.kind==='install'){
@@ -256,13 +289,30 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
           runtimeContinuation=facts.effectState==='changed';
         }else if(['update','repair'].includes(route.kind)){
           const continued=await updateExecutor.resumeCommitted(context,{hasTransaction:true,port:receipt.port});
-          if(!continued)throw fail('VERIFICATION_FAILED');
-          return {verification:'confirmed',value:continued};
+          if(continued){
+            if(facts.effectState!=='changed'||facts.recoveryOutcome!=='not-required')throw fail('VERIFICATION_FAILED');
+            if(original?.schema==='nora-release-plan/1'&&(original.commit!==undefined||original.releaseManifest?.commit!==undefined)){
+              const fixed=require('./releases').validatePlan(original,{launcherVersion:receipt.launcherVersion,platform:receipt.platform,arch:receipt.arch,
+                channel:receipt.channel,mode:original.mode,operationDirectory:path.join(receipt.installerDirectory,'operations',context.operationId)});
+              const status=await bridge('status');
+              // The committed backend has verified its original service plan;
+              // bind that actual result to the original content and fresh status.
+              if(!workflowVerified(route,continued,status,continued,fixed,receipt))throw fail('VERIFICATION_FAILED');
+            }
+            await context.effect(facts.effectState);
+            return {verification:'confirmed',value:continued};
+          }
+          if(ownRuntime.partialOrigin===true)runtimeContinuation=facts.effectState==='changed';
+          else throw fail('VERIFICATION_FAILED');
         }
       }
       if(original&&original.schema!=='nora-release-plan/1')throw fail('OPERATION_ENTRY_UNSUPPORTED','此固定安装计划需要在启动器中继续。请保留原数据与操作记录，不要重新选择更新目标。');
       if(!['untouched','restored'].includes(facts.effectState)&&!runtimeContinuation)throw fail('UPDATE_RECOVERY_REQUIRED');
-      const before=await bridge('status');
+      if(route.kind==='install'&&require('./operation-policy').hasManagedRecords({hermesHome:receipt.hermesHome,installRoot:receipt.installRoot}))throw fail('MANAGED_INSTALLATION_EXISTS','此目录已有受管安装，请使用修复；现有数据已保留，未下载或覆盖程序。');
+      const partialRepair=['update','repair'].includes(route.kind)&&(managed?.needsRepair||original?.mode==='install');
+      if(partialRepair&&original&&original.mode!=='install')throw fail('RELEASE_COMPATIBILITY','原固定更新计划缺少完整修复资源，未改变已封存目标。');
+      const before=managed?.needsRepair?{installed:false,managedInstallation:true,systemReady:false,version:managed.version,
+        commit:managed.commit,running:null,gatewayRunning:null,clawchatConnected:null}:await bridge('status');
       let args=route.argv.slice(),fixedTarget=original;
       if(['install','update','repair'].includes(route.kind)){
         const releases=require('./releases');
@@ -276,14 +326,14 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
         if(original?.schema==='nora-release-plan/1'){
           fixedTarget=releases.validatePlan(original,options);
         }else{
-          const selected=await releases.selectPlan({...options,mode:route.kind==='install'?'install':'update'});
+          const selected=await releases.selectPlan({...options,mode:route.kind==='install'||partialRepair?'install':'update'});
           fixedTarget=releases.sealPlan(selected,{...options,assertOwner:()=>context.check()});
           await context.plan({request:route.request,releasePlan:fixedTarget,currentVersion:typeof before.version==='string'?before.version:null});
         }
         // A CLI cannot safely replace its own APP without the GUI handoff path.
         if(fixedTarget.launcherManifest)throw fail('RELEASE_COMPATIBILITY','目标版本需要先更新启动器。请保留数据，在启动器中检查更新后继续。');
         await context.stage('downloading');
-        payload=route.kind==='install'?await releases.prepareInstall({...options,selectedPlan:fixedTarget})
+        payload=route.kind==='install'||partialRepair?await releases.prepareInstall({...options,selectedPlan:fixedTarget})
           :await releases.prepareUpdate({...options,selectedPlan:fixedTarget,plan:releaseDir=>bridge('plan-update',{releaseDir})});
         await context.stage('prepared');
         const manifestSha=await releases.hash(path.join(payload,'release-manifest.json'));
@@ -296,6 +346,16 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
             const at=args.indexOf(flag);if(at>=0)args[at+1]=value;else args.push(flag,value);
           }
         }
+        if(partialRepair){
+          if(releases.compare(before.version,fixedTarget.releaseManifest.versions.tavern)>0)throw fail('RELEASE_COMPATIBILITY','修复目标低于当前版本，未覆盖程序。');
+          if(managed?.missing.python){
+            await context.journal(path.join(receipt.installerDirectory,'operations',context.operationId,'runtime-bootstrap.json'));
+            await runner(context,path.join(__dirname,'runtime-worker.js'),[payload,receipt.noraHome,receipt.hermesHome,'--repair-managed'],
+              {node:true,stdin:Buffer.from(JSON.stringify(managed))});
+          }
+          const originalOffline=await bridge(managed?.missing.nativeRuntime||managed?.missing.nativeLifecycle?'repair-preflight':'status');
+          Object.assign(before,originalOffline);
+        }
       }
       await context.stage('applying');
       // The journal observer proves actual effects; setting unknown first avoids
@@ -305,11 +365,18 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
         ?await updateExecutor.apply(context,{releaseDir:args[args.indexOf('--release-dir')+1],target:fixedTarget.version||fixedTarget.releaseManifest?.versions?.tavern,port:receipt.port})
         :await runner(context,route.target.path,args,{stdin:route.stdin,
         ...(['update','repair'].includes(route.kind)&&route.target.type!=='bridge'?{lifecycle:{bridge:receipt.resources['launcher_bridge.py'].path,
-          noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot,port:receipt.port,before}}:{})});
+          noraHome:receipt.noraHome,hermesHome:receipt.hermesHome,installRoot:receipt.installRoot,port:receipt.port,before,
+          ...(before.partialRepair?{partialRepair:before.partialRepair}:{})}}:{})});
       await context.stage('verifying');
       const status=await bridge('status');
-      if(!workflowVerified(route,result,status,before,fixedTarget))throw fail('VERIFICATION_FAILED','未取得明确的安装、版本或服务验收结果。请检查状态，保留安装和日志。');
-      return {verification:'confirmed',value:status};
+      if(!workflowVerified(route,result,status,before,fixedTarget,receipt))throw fail('VERIFICATION_FAILED','未取得明确的安装、版本或服务验收结果。请检查状态，保留安装和日志。');
+      if(['update','repair'].includes(route.kind)){
+        const completed=await sharedPolicy.observe(context.snapshot);
+        if(completed.effectState!=='changed'||completed.recoveryOutcome!=='not-required'||completed.canResume!==true)
+          throw fail('VERIFICATION_FAILED','更新验收后仍缺少已提交事务的完整检查结果，保留文件和备份。');
+        await context.effect(completed.effectState);
+      }
+      return {verification:'confirmed',value:['update','repair'].includes(route.kind)?result:status};
     };
     return telemetry?telemetry.scope(perform):perform();
   };

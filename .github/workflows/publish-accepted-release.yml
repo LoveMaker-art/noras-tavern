@@ -15,6 +15,11 @@ on:
         type: choice
         default: full
         options: [full, components]
+      destinations:
+        description: Fixed destinations for this publication; github does not require SourceForge
+        type: choice
+        default: all
+        options: [all, github]
       stage:
         description: seal is local only; prepare creates verified drafts; promote/all change formal channels
         type: choice
@@ -58,6 +63,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.release_tag }}
       SOURCE_RUN: ${{ inputs.source_run }}
       DELIVERY_MODE: ${{ inputs.delivery_mode }}
+      DESTINATIONS: ${{ inputs.destinations }}
       PUBLICATION_STAGE: ${{ inputs.stage }}
       STATE_SOURCE_RUN: ${{ inputs.state_source_run }}
       ASSET_MODE: ${{ inputs.asset_mode }}
@@ -141,7 +147,7 @@ jobs:
           fi
           reuse=()
           if [[ "$ASSET_MODE" == shared && -z "$STATE_SOURCE_RUN" ]]; then reuse=(--reuse-from "$RUNNER_TEMP/reuse-baseline.json"); fi
-          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage seal --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" "${resume[@]}" "${reuse[@]}"
+          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage seal --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" --destinations "$DESTINATIONS" "${resume[@]}" "${reuse[@]}"
           node -e 'const fs=require("node:fs"),p=require("node:path"),{immutableStateHashes}=require("./tooling/release/publication-source.cjs");const state=p.join(process.env.RUNNER_TEMP,"publication-state"),receipt=JSON.parse(fs.readFileSync(p.join(process.env.RUNNER_TEMP,"accepted-source/source-receipt.json"))),checkpoint=JSON.parse(fs.readFileSync(p.join(state,"publication-state.json")));fs.writeFileSync(p.join(state,"workflow-provenance.json"),JSON.stringify({schema:"nora-publication-workflow/1",tag:process.env.RELEASE_TAG,sourceCommit:process.env.SOURCE_SHA,publisherCommit:process.env.GITHUB_SHA,sourceRun:process.env.SOURCE_RUN,stateSourceRun:process.env.STATE_SOURCE_RUN||null,assetMode:process.env.ASSET_MODE,planId:checkpoint.planId,receipt,sealedStateHashes:immutableStateHashes(state)},null,2)+"\n")'
       - name: Preserve the fixed plan before beginning transfers
         uses: actions/upload-artifact@v4
@@ -151,7 +157,7 @@ jobs:
           if-no-files-found: error
           retention-days: 90
       - name: Prepare private SourceForge publishing credentials
-        if: inputs.stage != 'seal'
+        if: inputs.stage != 'seal' && inputs.destinations == 'all'
         env:
           NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
           NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
@@ -165,7 +171,7 @@ jobs:
         run: |
           set -euo pipefail
           expected_plan_id="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/publication-state/workflow-provenance.json")).planId')"
-          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage "$PUBLICATION_STAGE" --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" --resume --expected-plan-id "$expected_plan_id"
+          node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage "$PUBLICATION_STAGE" --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" --destinations "$DESTINATIONS" --resume --expected-plan-id "$expected_plan_id"
       - name: Preserve the final checkpoint and failing stage
         if: always() && github.run_attempt == 1
         uses: actions/upload-artifact@v4
@@ -175,5 +181,5 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
       - name: Remove private SourceForge publishing files
-        if: always()
+        if: always() && inputs.destinations == 'all'
         run: node tooling/release/sourceforge-credentials.mjs cleanup

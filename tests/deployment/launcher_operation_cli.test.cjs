@@ -19,6 +19,132 @@ function fixture(t){
   return {home,receipt,request,lock};
 }
 
+function updateResultFixture(t,{kind='repair',entry='bridge',resultChanges={},statusChanges={},beforeChanges={},failure,recover=false,
+  prepareEffects,observed={effectState:'changed',recoveryOutcome:'not-required',canResume:true}}={}){
+  const f=fixture(t),crypto=require('node:crypto'),vm=require('node:vm'),{createRequire}=require('node:module');
+  f.receipt.launcherVersion='2.1.2';
+  const commit='a'.repeat(40),version='2.4.5',sha=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const manifest={schema:'tavern-release/v2',commit,versions:{tavern:version},launcherVersion:'2.1.2',
+    launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2},
+    bootstrap:{managedComponents:1,minimumLauncherVersion:'2.1.2',sha256:sha('bootstrap')}};
+  const local=path.join(f.home,'release');fs.mkdirSync(local);
+  const bytes={'release-manifest.json':JSON.stringify(manifest),'tavern-updater-bootstrap.py':'bootstrap'};
+  bytes.SHA256SUMS=Object.entries(bytes).map(([name,value])=>`${sha(value)}  ${name}`).join('\n');
+  for(const [name,value] of Object.entries(bytes))fs.writeFileSync(path.join(local,name),value);
+  f.receipt.resources['bootstrap.py']={path:path.join(f.receipt.resourcesRoot,'bootstrap.py')};
+  f.receipt.managed['ops/updater/bootstrap.py']={path:path.join(f.home,'tavern/apps/tavern-ops/updater/bootstrap.py')};
+  const request=entry==='bridge'?f.request(kind,['--release-dir',local]):{schema:'nora-cli-request/1',kind,
+    argv:[f.receipt.managed['ops/updater/bootstrap.py'].path,'--nora-home',f.home,'--apply','--confirm',...(kind==='repair'?['--repair']:[]),'--release-dir',local],stdin:''};
+  const final={version,commit,systemReady:true,running:false,gatewayRunning:false,clawchatConnected:false,port:f.receipt.port,noraHome:f.home,
+    hermesHome:f.receipt.hermesHome,installRoot:f.receipt.installRoot};
+  const actual={...final,updateVerified:true,...resultChanges},post={...final,...statusChanges};let applied=false;
+  const run=async(_context,target,args)=>{
+    if(target===f.receipt.resources['launcher_bridge.py'].path){
+      const command=args[8];
+      if(command==='status')return applied?post:{...final,version:'2.4.4',commit:'b'.repeat(40),...beforeChanges};
+      if(command==='plan-update')return {version,archives:[]};
+      if(command!=='update')throw new Error(`Unexpected bridge command: ${command}`);
+    }
+    applied=true;if(failure)throw Object.assign(new Error('Actual maintenance failed'),{code:failure});return actual;
+  };
+  const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),context=vm.createContext({
+    require:createRequire(file),__filename:file,module:{exports:{}},process,Buffer,console,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  const completed=record=>context.completedSystemOperation(record);
+  return {...f,actual,post,completed,request,local,get applied(){return applied;},execute:()=>cli.execute({receiptPath:'fixture',request},{validate:async()=>f.receipt,
+    lock:f.lock,telemetry:false,run,policy:{observe:async()=>applied?observed:{effectState:'untouched',recoveryOutcome:'not-required'},
+      ...(prepareEffects?{prepareEffects:context=>prepareEffects(context,{applied,receipt:f.receipt})}:{}),
+      recover:async()=>recover?{verification:'confirmed',value:{updateRecovered:true,recoveryVerification:'confirmed'}}
+        :Promise.reject(Object.assign(new Error('Recovery has no completion proof'),{code:'UPDATE_RECOVERY_REQUIRED'}))}})};
+}
+
+for(const entry of ['bridge','bootstrap'])for(const kind of ['update','repair'])test(`CLI ${entry} ${kind} preserves actual acceptance for the unchanged uninstall completion consumer`,async t=>{
+  const f=updateResultFixture(t,{kind,entry}),operation=await f.execute();
+  assert.equal(operation.state,'succeeded');assert.equal(operation.verification,'confirmed');
+  assert.deepEqual(operation.result,f.actual,'CLI must retain the same actual executor result consumed by the GUI');
+  assert.equal(operation.result.updateVerified,f.actual.updateVerified);
+  assert.equal(operation.result.commit,f.actual.commit);assert.equal(operation.result.version,f.post.version);
+  const persisted=JSON.parse(fs.readFileSync(path.join(f.receipt.installerDirectory,'operations',operation.operationId,'operation.json')));
+  assert.equal(f.completed(persisted),true,'the real persisted result must satisfy the frozen uninstall consumer');
+  assert.deepEqual(persisted.result,operation.result);
+});
+
+for(const [name,options] of [
+  ['readiness cannot create a missing backend acceptance',{resultChanges:{updateVerified:undefined},statusChanges:{updateVerified:true}}],
+  ['a failed runner cannot become completed',{failure:'EPIPE'}],
+  ['a recovered runner remains rolled back',{failure:'EPIPE',recover:true}],
+  ['backend version belongs to another target',{resultChanges:{version:'2.4.4'},entry:'bootstrap'}],
+  ['backend commit belongs to another target',{resultChanges:{commit:'c'.repeat(40)}}],
+  ['post-status commit changed',{statusChanges:{commit:'c'.repeat(40)}}],
+  ['post-status installation changed',{statusChanges:{installRoot:'/another-owned-installation'}}],
+  ['backend services disagree with verified status',{resultChanges:{running:true}}],
+  ['backend readiness remains unconfirmed',{resultChanges:{systemReady:false},entry:'bootstrap'}],
+  ['backend installation binding is absent',{resultChanges:{noraHome:undefined}}],
+  ['post-status installation binding is absent',{statusChanges:{hermesHome:undefined}}],
+  ['post-status port drifted',{statusChanges:{port:8800}}],
+  ['backend port belongs to another instance',{resultChanges:{port:8800}}],
+  ['ClawChat connection changed after acceptance',{resultChanges:{clawchatConnected:true}}],
+  ['the original connected ClawChat was not restored',{beforeChanges:{clawchatConnected:true}}],
+  ['canonical transaction effects remain unknown',{observed:{effectState:'unknown',recoveryOutcome:'recovery-required'}}],
+  ['canonical transaction still needs recovery',{observed:{effectState:'changed',recoveryOutcome:'recovery-required',canResume:true}}],
+  ['canonical transaction was restored',{observed:{effectState:'restored',recoveryOutcome:'restored-and-verified'}}],
+  ['canonical transaction lacks committed continuation',{observed:{effectState:'changed',recoveryOutcome:'not-required',canResume:false}}],
+])test(`CLI update completion refuses ${name}`,async t=>{
+  const f=updateResultFixture(t,options),operation=await f.execute();
+  assert.notEqual(operation.state,'succeeded');assert.equal(f.completed(operation),false);
+  assert.equal(f.completed(JSON.parse(fs.readFileSync(path.join(f.receipt.installerDirectory,'operations',operation.operationId,'operation.json')))),false);
+});
+
+test('CLI retains a verified connected ClawChat and accepts older executor results without optional port or connection fields',async t=>{
+  for(const options of [{beforeChanges:{clawchatConnected:true},resultChanges:{clawchatConnected:true},statusChanges:{clawchatConnected:true}},
+    {resultChanges:{port:undefined,clawchatConnected:undefined},statusChanges:{port:undefined,clawchatConnected:undefined}}]){
+    const f=updateResultFixture(t,options),result=await f.execute();assert.equal(result.state,'succeeded');
+    assert.equal(f.completed(JSON.parse(fs.readFileSync(path.join(f.receipt.installerDirectory,'operations',result.operationId,'operation.json')))),true);
+  }
+});
+
+test('CLI runs the existing closure producer with its sealed plan under the writer before applying; rejection is not swallowed',async t=>{
+  for(const reject of [false,true]){
+    let calls=0;
+    const f=updateResultFixture(t,{prepareEffects:async(context,{applied,receipt})=>{
+      calls++;assert.equal(applied,false);
+      assert.equal(JSON.parse(fs.readFileSync(path.join(receipt.installerDirectory,'operations',context.operationId,'operation.json'))).planSelected,true);
+      assert.equal(context.target.releasePlan.schema,'nora-release-plan/1');
+      assert.equal((await f.lock.probe({directory:receipt.installerDirectory})).busy,true);
+      if(reject)throw Object.assign(new Error('Unconfirmed predecessor closure'),{code:'UPDATE_RECOVERY_REQUIRED'});
+      // This adapter test does not create physical predecessor evidence.
+    }}),result=await f.execute();
+    assert.equal(calls,1);assert.equal(f.applied,!reject);
+    assert.equal(result.state,reject?'failed':'succeeded');
+    if(reject)assert.equal(result.primaryFailure.code,'UPDATE_RECOVERY_REQUIRED');
+  }
+});
+
+test('CLI committed continuation binds the real sealed release commit even when the returned version matches',async t=>{
+  const {createOperationController}=require('../installer/desktop/operation-state'),releases=require('../installer/desktop/releases');
+  for(const changed of [false,true]){
+    const f=updateResultFixture(t,{kind:'update'}),controller=createOperationController({directory:f.receipt.installerDirectory,lock:f.lock});
+    const failed=await controller.start('update',{target:{request:{action:'update',port:f.receipt.port}},execute:async context=>{
+      const options={launcherVersion:f.receipt.launcherVersion,platform:f.receipt.platform,arch:f.receipt.arch,channel:'stable',mode:'update',
+        operationDirectory:path.join(f.receipt.installerDirectory,'operations',context.operationId),fetcher:require('../installer/desktop/local-release').createLocalRelease(f.local)};
+      await context.plan({request:{action:'update',port:f.receipt.port},releasePlan:releases.sealPlan(await releases.selectPlan(options),{...options,assertOwner:()=>context.check()}),currentVersion:'2.4.4'});
+      await context.stage('prepared');await context.effect('changed');throw Object.assign(new Error('Interrupted committed operation'),{code:'EPIPE'});
+    }},randomUUID());
+    assert.equal(failed.target.releasePlan.manifestRef.schema,'nora-operation-manifest/1');
+    const calls=[],continued={...f.actual,operationVerified:true,...(changed?{commit:'c'.repeat(40)}:{})};
+    const result=await cli.execute({receiptPath:'fixture',request:{...f.request,operationId:failed.operationId,snapshotSequence:failed.snapshotSequence}},
+      {validate:async()=>f.receipt,lock:f.lock,telemetry:false,policy:{observe:async()=>({effectState:'changed',recoveryOutcome:'not-required',canResume:true}),
+        recover:async()=>{throw Object.assign(new Error('No synthetic recovery proof'),{code:'UPDATE_RECOVERY_REQUIRED'});}},run:async(_context,_target,args)=>{
+        calls.push(args[8]);if(args[8]==='operation-effects')return {effects:{operationId:failed.operationId,status:'committed',canResume:true}};
+        if(args[8]==='resume-committed-update')return continued;if(args[8]==='status')return continued;
+        throw new Error('A committed continuation cannot select or apply again');
+      },fetcher:async()=>{throw new Error('A committed continuation cannot query latest');}});
+    assert.equal(result.operationId,failed.operationId);assert.equal(calls.includes('update'),false);
+    if(changed){assert.notEqual(result.state,'succeeded');assert.equal(result.primaryFailure.code,'EPIPE');assert.equal(result.currentFailure.code,'VERIFICATION_FAILED');}
+    else{assert.equal(result.state,'succeeded');assert.equal(result.result.commit,failed.target.releasePlan.commit);}
+  }
+});
+
 test('independent CLI version failure leaves readable request and HTTP evidence in the operation log without applying changes',async t=>{
   const f=fixture(t);let writes=0;
   const operation=await cli.execute({receiptPath:'fixture',request:f.request('update')},{validate:async()=>f.receipt,lock:f.lock,telemetry:false,

@@ -123,7 +123,13 @@ function initializeHome(home, manifest) {
       const target = path.join(home, 'skills', entry.name);
       if (!fs.existsSync(target)) {
         const source = path.join(sourceSkills, entry.name);
-        try { fs.cpSync(source, target, { recursive: true }); }
+        try {
+          // Node 22's native recursive-copy path crashes on Windows Unicode
+          // paths. An accept-all filter keeps the same files while selecting
+          // the JavaScript/libuv copy path, which handles those paths.
+          fs.cpSync(source, target, { recursive: true,
+            ...(process.platform === 'win32' ? { filter: () => true } : {}) });
+        }
         catch (error) {
           const describePath = file => {
             if (typeof file !== 'string') return {type:'unknown',length:0};

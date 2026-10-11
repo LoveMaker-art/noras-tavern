@@ -630,7 +630,7 @@
       dailyHome(restoredSuccessfully ? operation.kind === 'update' ? '更新未完成，已恢复旧版本。' : '操作已回退，恢复后的状态已核验。' : '');
       return;
     }
-    if (snapshot.installed && snapshot.systemReady === false) {
+    if ((snapshot.installed || snapshot.managedInstallation) && snapshot.systemReady === false) {
       view = 'recovery'; daily = false;
       $('status').textContent = '需要修复';
       $('main').classList.remove('welcome', 'daily', 'editing');

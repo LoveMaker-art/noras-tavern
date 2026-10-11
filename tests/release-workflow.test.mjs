@@ -104,6 +104,8 @@ test('the independent publication workflow only consumes accepted bytes and defa
   assert.deepEqual(Object.keys(publisher.on), ['workflow_dispatch']);
   assert.equal(publisher.on.workflow_dispatch.inputs.stage.default, 'seal');
   assert.equal(publisher.on.workflow_dispatch.inputs.asset_mode.default, 'legacy');
+  assert.equal(publisher.on.workflow_dispatch.inputs.destinations.default, 'all');
+  assert.deepEqual(publisher.on.workflow_dispatch.inputs.destinations.options, ['all', 'github']);
   assert.doesNotMatch(scripts(publisher), /package-release\.(?:mjs|sh)|package-hermes-runtime|npm (?:ci|install)|npm run pack/);
   const steps = publisher.jobs['publish-accepted'].steps;
   assert.ok(steps.some(step => step.run?.includes('publication-source.cjs delivery')));
@@ -128,10 +130,14 @@ test('the fixed state is durable before remote writes, final failure evidence pe
   const network = steps.findIndex(step => step.name?.startsWith('Execute only'));
   const final = steps.findIndex(step => step.with?.name === 'nora-publication-state');
   assert.ok(sealed >= 0 && credential > sealed && network > credential && final > network);
-  assert.equal(steps[credential].if, "inputs.stage != 'seal'");
+  assert.equal(steps[credential].if, "inputs.stage != 'seal' && inputs.destinations == 'all'");
   assert.match(steps[final].if, /always\(\)/);
   for (const index of [sealed, final]) assert.equal(steps[index].with.path, '${{ runner.temp }}/publication-state/**');
-  assert.equal(steps.at(-1).if, 'always()');
+  assert.equal(steps.at(-1).if, "always() && inputs.destinations == 'all'");
+  assert.equal(job.env.DESTINATIONS, '${{ inputs.destinations }}');
+  for (const step of steps.filter(step => step.run?.includes('publish-release.mjs'))) {
+    assert.match(step.run, /--destinations "\$DESTINATIONS"/);
+  }
   assert.equal(job.concurrency.group, 'nora-sourceforge-release-channels');
   assert.equal(job.concurrency['cancel-in-progress'], 'false');
 });
