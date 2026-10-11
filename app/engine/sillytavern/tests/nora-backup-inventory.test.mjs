@@ -169,13 +169,28 @@ test('legacy name collisions and partial IDs remain untrusted; invalid UTF-8 and
 });
 
 test('read-only inventory has bounded metadata and measures a 400-snapshot synthetic baseline', { timeout: 15000 }, async t => {
+    const started = performance.now();
+    const phase = (name, detail = '') => t.diagnostic(`400 snapshots phase=${name} elapsedMs=${(performance.now() - started).toFixed(1)}${detail ? ` ${detail}` : ''}`);
+    phase('fixture-start');
     const f = await storageFixture(t);
+    phase('fixture-end');
+    phase('world-start');
     const world = await f.create('scale');
+    phase('world-end');
     const source = (await f.chat(world)).map(JSON.stringify).join('\n') + '\n' + JSON.stringify({ mes: 'x'.repeat(64 * 1024) });
-    for (let i = 0; i < 400; i++) await f.backup(`chat_scale_${String(i).padStart(3, '0')}.jsonl`, source);
+    phase('writes-start', 'count=0/400');
+    for (let i = 0; i < 400; i++) {
+        await f.backup(`chat_scale_${String(i).padStart(3, '0')}.jsonl`, source);
+        if ((i + 1) % 100 === 0) phase('writes-progress', `count=${i + 1}/400`);
+    }
+    phase('writes-end', 'count=400/400');
     const durations = [];
     for (let run = 0; run < 3; run++) {
+        phase('scan-start', `sample=${run + 1}/3`);
+        const scanStarted = performance.now();
         const report = await inspectChatBackups(f.directories);
+        const wallMs = performance.now() - scanStarted;
+        phase('scan-end', `sample=${run + 1}/3 scanMs=${report.metrics.durationMs} wallMs=${wallMs.toFixed(1)} complete=${report.complete} files=${report.summary.files} duplicates=${report.summary.duplicateFiles} readBytes=${report.metrics.readBytes}`);
         assert.equal(report.complete, true);
         assert.equal(report.summary.files, 400);
         assert.equal(report.summary.duplicateFiles, 399);

@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork,
+const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, copyNetworkRuntime, checkNetwork,
   resolveWindowsCheckRuntime, verifyCheckPythonIdentity } =
   require('../tooling/checks/launcher-artifact-checks.cjs');
 const { verifyInputs, verifySource, verifyDiff } =
@@ -128,6 +128,44 @@ test('Mac discovery selects the exact APP root without executing its non-executa
   const f = macFixture(t);
   assert.deepEqual(selectApplication(f.dist, 'darwin'), { executable: f.executable, asar: f.asar });
 });
+test('network runtime copy preserves relocatable Mac framework links and excludes product resources',
+  { skip: process.platform === 'win32' && 'Mac framework symlinks require no Windows administrator permission' }, t => {
+    const f = macFixture(t), source = path.dirname(path.dirname(path.dirname(f.executable)));
+    const resources = path.dirname(f.asar), runtime = path.join(f.root, 'isolated/Nora Tavern.app');
+    const framework = 'Contents/Frameworks/Electron Framework.framework';
+    const files = ['Versions/A/Electron Framework', 'Versions/A/Resources/icudtl.dat',
+      'Versions/A/Helpers/helper', 'Versions/A/Libraries/library'];
+    for (const name of files) f.write(path.relative(f.root, path.join(source, framework, name)), `original ${name}`);
+    const links = { 'Electron Framework': 'Versions/Current/Electron Framework',
+      Helpers: 'Versions/Current/Helpers', Libraries: 'Versions/Current/Libraries',
+      Resources: 'Versions/Current/Resources', 'Versions/Current': 'A' };
+    for (const [name, target] of Object.entries(links)) fs.symlinkSync(target, path.join(source, framework, name));
+    const original = Object.fromEntries(files.map(name => [name, fs.readFileSync(path.join(source, framework, name))]));
+    const originalExecutable = fs.readFileSync(f.executable), originalAsar = fs.readFileSync(f.asar);
+    copyNetworkRuntime(source, runtime, resources);
+    assert.ok(fs.statSync(path.join(runtime, 'Contents/Resources')).isDirectory());
+    assert.deepEqual(fs.readdirSync(path.join(runtime, 'Contents/Resources')), []);
+    assert.deepEqual(fs.readFileSync(path.join(runtime, 'Contents/MacOS/Nora Tavern')), originalExecutable);
+    assert.deepEqual(fs.readFileSync(f.executable), originalExecutable);
+    assert.deepEqual(fs.readFileSync(f.asar), originalAsar);
+    for (const [name, target] of Object.entries(links)) {
+      const copied = path.join(runtime, framework, name);
+      assert.ok(fs.lstatSync(copied).isSymbolicLink());
+      assert.equal(fs.readlinkSync(copied), target);
+      assert.equal(fs.readlinkSync(path.join(source, framework, name)), target);
+      assert.ok(fs.realpathSync(copied).startsWith(fs.realpathSync(runtime) + path.sep));
+    }
+    for (const name of files) {
+      assert.deepEqual(fs.readFileSync(path.join(source, framework, name)), original[name]);
+      assert.deepEqual(fs.readFileSync(path.join(runtime, framework, name)), original[name]);
+    }
+    fs.renameSync(source, path.join(f.root, 'original moved away.app'));
+    assert.equal(fs.existsSync(source), false);
+    assert.deepEqual(fs.readFileSync(path.join(runtime, framework, 'Resources/icudtl.dat')),
+      original['Versions/A/Resources/icudtl.dat']);
+    assert.deepEqual(fs.readFileSync(path.join(runtime, framework, 'Electron Framework')),
+      original['Versions/A/Electron Framework']);
+  });
 for (const [label, extra] of [
   ['output directories', 'dist/mac/Nora.app/Contents/MacOS/Nora'],
   ['applications', 'dist/mac-arm64/Second.app/Contents/MacOS/Second'],

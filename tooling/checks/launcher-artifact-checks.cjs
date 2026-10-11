@@ -162,6 +162,11 @@ function verifyNetworkReport(file, {executable, asar, launcher, platform = proce
   for (const name of networkModules) assert.equal(value.moduleHashes[name], sha(path.join(launcher, 'desktop', name)));
   return value;
 }
+function copyNetworkRuntime(source, runtime, resources) {
+  // Framework links must remain relative to this copy for Chromium helpers.
+  fs.cpSync(source, runtime, {recursive: true, dereference: false, verbatimSymlinks: true,
+    filter: file => file === resources || !file.startsWith(resources + path.sep)});
+}
 function checkNetwork({release = selectRelease(), installed, report, platform = process.platform}) {
   const launcher = path.resolve(release, 'nora-tavern-launcher');
   const selected = selectApplication(path.join(launcher, 'desktop/dist'), platform);
@@ -181,8 +186,7 @@ function checkNetwork({release = selectRelease(), installed, report, platform = 
     // The copied runtime has the candidate's exact executable/framework bytes.
     // Its isolated app entry runs only the fixture; product code is required
     // directly from the original immutable ASAR, never rewritten or extracted.
-    fs.cpSync(source, runtime, {recursive: true, dereference: false,
-      filter: file => file === resources || !file.startsWith(resources + path.sep)});
+    copyNetworkRuntime(source, runtime, resources);
     const runtimeResources = path.join(runtime, path.relative(source, resources));
     const fixtureApp = path.join(runtimeResources, 'app');
     fs.mkdirSync(fixtureApp, {recursive: true});
@@ -267,4 +271,4 @@ if (require.main === module) {
   }
 }
 module.exports = { only, selectRelease, selectApplication, runChecked, resolveWindowsCheckRuntime, verifyCheckPythonIdentity,
-  checkWindowsPython, verifyAppReport, checkApp, verifyNetworkReport, checkNetwork, checkReplacement, checkImages };
+  checkWindowsPython, verifyAppReport, checkApp, verifyNetworkReport, copyNetworkRuntime, checkNetwork, checkReplacement, checkImages };
