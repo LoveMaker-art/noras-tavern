@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const { selectRelease, selectApplication, runChecked, verifyAppReport, checkApp, verifyNetworkReport, copyNetworkRuntime, checkNetwork,
-  resolveWindowsCheckRuntime, verifyCheckPythonIdentity } =
+  resolveWindowsCheckRuntime, verifyCheckPythonIdentity, withRestoredWindowsCheckRuntime } =
   require('../tooling/checks/launcher-artifact-checks.cjs');
 const { verifyInputs, verifySource, verifyDiff } =
   require('../tooling/checks/restore-launcher-check-package.cjs');
@@ -59,6 +59,64 @@ test('Windows QA resolves the same captured base while the original cold tree is
 test('Windows package-check without a captured cold prefix accepts only the restored fixed Python layout', t => {
   const f = pythonFixture(t, { captured: false });
   assert.equal(resolveWindowsCheckRuntime(f.env, { moved: true }).python, fs.realpathSync(f.python));
+});
+test('Windows QA temporarily restores the absolute managed Python junction for the complete synchronous gate', t => {
+  const f = pythonFixture(t, { moved: false });
+  const actual = path.join(path.dirname(f.base), 'cpython-3.11.17-windows-x86_64-none');
+  fs.renameSync(f.base, actual);
+  fs.symlinkSync(actual, f.base, process.platform === 'win32' ? 'junction' : 'dir');
+  const originalPython = fs.readFileSync(path.join(actual, 'python.exe'));
+  const moved = path.join(f.root, 'hermes-build-source');
+  fs.renameSync(f.original, moved);
+  assert.throws(() => resolveWindowsCheckRuntime(f.env, { moved: true }), error => error.code === 'ENOENT');
+  let called = 0;
+  const result = withRestoredWindowsCheckRuntime(f.env, () => {
+    called++;
+    assert.equal(fs.existsSync(moved), false);
+    const runtime = resolveWindowsCheckRuntime(f.env);
+    assert.equal(runtime.base, fs.realpathSync(actual));
+    assert.equal(verifyCheckPythonIdentity({ prefix: f.base, basePrefix: f.base,
+      executable: path.join(f.base, 'python.exe') }, runtime), true);
+    assert.deepEqual(fs.readFileSync(runtime.python), originalPython);
+    return 'completed synchronous gate';
+  });
+  assert.equal(called, 1);
+  assert.equal(result, 'completed synchronous gate');
+  assert.equal(fs.existsSync(f.original), false);
+  assert.ok(fs.existsSync(moved));
+  assert.deepEqual(fs.readFileSync(path.join(moved, path.relative(f.original, actual), 'python.exe')), originalPython);
+});
+test('Windows restored runtime scope returns the source to its moved path after a gate failure', t => {
+  const f = pythonFixture(t), failure = new Error('actual gate failed');
+  assert.throws(() => withRestoredWindowsCheckRuntime(f.env, () => {
+    assert.equal(resolveWindowsCheckRuntime(f.env).home, fs.realpathSync(f.original));
+    throw failure;
+  }), error => error === failure);
+  assert.equal(fs.existsSync(f.original), false);
+  assert.ok(fs.existsSync(f.home));
+});
+test('Windows restored fixed-layout runtime retains strict identity checks and cleanup', t => {
+  const f = pythonFixture(t, { captured: false });
+  withRestoredWindowsCheckRuntime(f.env, () => {
+    const runtime = resolveWindowsCheckRuntime(f.env);
+    assert.equal(runtime.python, fs.realpathSync(path.join(f.original, 'python/python.exe')));
+  });
+  assert.throws(() => withRestoredWindowsCheckRuntime({ ...f.env,
+    NORA_TEST_MANAGED_PYTHON_ROOT: path.join(f.root, 'foreign') }, () => resolveWindowsCheckRuntime({ ...f.env,
+      NORA_TEST_MANAGED_PYTHON_ROOT: path.join(f.root, 'foreign') })), /escapes/);
+  assert.equal(fs.existsSync(f.original), false);
+  assert.ok(fs.existsSync(f.home));
+});
+for (const [label, mutate, expected] of [
+  ['missing moved source', f => fs.rmSync(f.home, { recursive: true }), /Missing isolated test runtime/],
+  ['occupied original source', f => fs.mkdirSync(f.original), /Original runtime must remain absent/],
+  ['dangling original junction', f => fs.symlinkSync(path.join(f.root, 'missing'), f.original,
+    process.platform === 'win32' ? 'junction' : 'dir'), /Original runtime must remain absent/],
+]) test(`Windows restored runtime scope refuses ${label} before executing the gate`, t => {
+  const f = pythonFixture(t); mutate(f);
+  let called = false;
+  assert.throws(() => withRestoredWindowsCheckRuntime(f.env, () => { called = true; }), expected);
+  assert.equal(called, false);
 });
 for (const [label, change] of [
   ['missing base interpreter', f => fs.unlinkSync(f.python)],

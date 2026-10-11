@@ -104,6 +104,20 @@ function checkWindowsPython(env = process.env, { moved = false, venv = false } =
   verifyCheckPythonIdentity(JSON.parse(result.stdout), runtime, { venv });
   return python;
 }
+function withRestoredWindowsCheckRuntime(env, check) {
+  assert.ok(typeof env.RUNNER_TEMP === 'string' && path.isAbsolute(env.RUNNER_TEMP), 'An absolute runner temporary directory is required');
+  const moved = path.join(env.RUNNER_TEMP, 'hermes-build-source'), original = path.join(env.RUNNER_TEMP, 'hermes');
+  assert.ok(fs.existsSync(moved), 'Missing isolated test runtime');
+  assert.ok(!fs.existsSync(original) && !fs.lstatSync(original, { throwIfNoEntry: false }), 'Original runtime must remain absent before archive or APP checks');
+  // Managed Python minor-version junctions and the cold venv refer to the
+  // original absolute path. Keep it restored for the whole synchronous gate.
+  fs.renameSync(moved, original);
+  try {
+    return check();
+  } finally {
+    fs.renameSync(original, moved);
+  }
+}
 function verifyAppReport(file, { executable, asar, launcher, platform = process.platform, arch = process.arch }) {
   regular(file);
   const value = read(file);
@@ -215,23 +229,13 @@ function checkReplacement(release = selectRelease(), env = process.env) {
     .filter(name => name.endsWith('-update.zip')).map(name => path.join(desktop, 'dist', name)), 'launcher update archive');
   regular(archive);
   regular(path.join(desktop, 'package.json'));
-  const moved = path.join(env.RUNNER_TEMP, 'hermes-build-source'), original = path.join(env.RUNNER_TEMP, 'hermes');
-  const windows = process.platform === 'win32';
-  let py = path.join(moved, 'hermes-agent/venv/bin/python'), restored = false;
-  try {
-    if (windows) {
-      assert.ok(fs.existsSync(moved), 'Missing isolated test runtime');
-      assert.ok(!fs.existsSync(original) && !fs.lstatSync(original, { throwIfNoEntry: false }), 'Original runtime must remain absent before archive checks');
-      fs.renameSync(moved, original);
-      restored = true;
-      py = checkWindowsPython(env, { venv: true });
-    }
+  const verify = py => {
     runChecked(process.execPath, [path.join(repository, 'tooling/run.mjs'), regular(py), '-B', '-m',
       'unittest', 'tests.deployment.test_launcher_replacement', '-v'], { env: { ...env,
       NORA_TEST_LAUNCHER_ARCHIVE: path.resolve(archive), NORA_TEST_LAUNCHER_DESKTOP: desktop } });
-  } finally {
-    if (restored) fs.renameSync(original, moved);
-  }
+  };
+  if (process.platform === 'win32') withRestoredWindowsCheckRuntime(env, () => verify(checkWindowsPython(env, { venv: true })));
+  else verify(path.join(env.RUNNER_TEMP, 'hermes-build-source/hermes-agent/venv/bin/python'));
 }
 function checkImages(release = selectRelease()) {
   const dist = path.resolve(release, 'nora-tavern-launcher/desktop/dist');
@@ -252,12 +256,15 @@ if (require.main === module) {
     const [command, ...args] = process.argv.slice(2);
     if (command === 'app') {
       assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: app [--installed <directory>]');
-      const python = process.platform === 'win32' ? checkWindowsPython(process.env, { moved: true })
-        : process.env.NORA_APP_CHECK_PYTHON || path.join(process.env.RUNNER_TEMP, 'hermes-build-source/hermes-agent/venv/bin/python');
-      if (process.platform === 'win32' && Object.hasOwn(process.env, 'NORA_APP_CHECK_PYTHON')) {
-        assert.equal(fs.realpathSync(regular(process.env.NORA_APP_CHECK_PYTHON)), fs.realpathSync(python), 'APP interpreter override differs from the verified runtime');
-      }
-      checkApp({ installed: args[1], python });
+      if (process.platform === 'win32') withRestoredWindowsCheckRuntime(process.env, () => {
+        const python = checkWindowsPython(process.env);
+        if (Object.hasOwn(process.env, 'NORA_APP_CHECK_PYTHON')) {
+          assert.equal(fs.realpathSync(regular(process.env.NORA_APP_CHECK_PYTHON)), fs.realpathSync(python), 'APP interpreter override differs from the verified runtime');
+        }
+        checkApp({ installed: args[1], python });
+      });
+      else checkApp({ installed: args[1], python: process.env.NORA_APP_CHECK_PYTHON
+        || path.join(process.env.RUNNER_TEMP, 'hermes-build-source/hermes-agent/venv/bin/python') });
     } else if (command === 'network') {
       assert.ok(args.length === 0 || (args.length === 2 && args[0] === '--installed'), 'Usage: network [--installed <directory>]');
       checkNetwork({installed: args[1]});
@@ -271,4 +278,4 @@ if (require.main === module) {
   }
 }
 module.exports = { only, selectRelease, selectApplication, runChecked, resolveWindowsCheckRuntime, verifyCheckPythonIdentity,
-  checkWindowsPython, verifyAppReport, checkApp, verifyNetworkReport, copyNetworkRuntime, checkNetwork, checkReplacement, checkImages };
+  checkWindowsPython, withRestoredWindowsCheckRuntime, verifyAppReport, checkApp, verifyNetworkReport, copyNetworkRuntime, checkNetwork, checkReplacement, checkImages };
