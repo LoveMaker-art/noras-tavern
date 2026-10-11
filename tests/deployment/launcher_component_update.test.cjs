@@ -17,15 +17,15 @@ function harness(failure, running = true, gatewayRunning = true, version = '2.3.
   const home = path.resolve('/nora');
   const context = vm.createContext({
     path, hermesHome: () => path.join(home, 'hermes'), noraHome: () => home, installRoot: () => path.join(home, 'tavern'),
-    fs: { readFileSync: () => JSON.stringify({ versions: { tavern: '2.3.7' } }) },
+    fs: { readFileSync: () => JSON.stringify({ versions: { tavern: '2.3.7' },commit:'a'.repeat(40) }) },
     releases: { compare: (a, b) => a === b ? 0 : a < b ? -1 : 1 },
-    updatingSystem: false,activeOperationContext:{snapshot:{handoffRef:null}}, sendBridgeEvent() {}, diagnostics: { error() {} },
+    updatingSystem: false,activeOperationContext:{target:{releasePlan:{version:'2.3.7',commit:'a'.repeat(40)}},snapshot:{handoffRef:null}}, sendBridgeEvent() {}, diagnostics: { error() {} },
     systemUpdate: { perform: () => { throw new Error('EBUSY: rename hermes'); } },
     stopForUpdate: async () => calls.push('stop'),
     runBridge: async (action, options) => {
       calls.push([action, options?.service]);
       if (action === 'update') { if (failure) throw failure; updated = true; }
-      return { ...before, version: updated ? '2.3.7' : version, systemReady: updated || systemReady, updateVerified: updated };
+      return { ...before, version: updated ? '2.3.7' : version, commit:updated?'a'.repeat(40):'b'.repeat(40), systemReady: updated || systemReady, updateVerified: updated };
     },
   });
   context.systemUpdateExecutor=()=>require('../installer/desktop/system-update-executor').create({

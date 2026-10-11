@@ -113,16 +113,19 @@ class IncrementalUpdateTests(unittest.TestCase):
             modules = SimpleNamespace(RETIRED=[], ManagedService=SimpleNamespace(discover=lambda *_: None),
                                       prepare=lambda *_: ([], {"status": "not-installed"}),
                                       prepare_greeting=lambda *_: ([], {"status": "managed"}))
+            original_module_at = UPDATER.module_at
             replacements = {
                 "python_layout": None, "changed_roots": set(), "roots_with_unmanaged_files": set(),
                 "prepare_dependencies": {}, "prepare_skills": {}, "merged_agents": b"managed instructions",
-                "render_mcp": b"mcp_servers: {}", "module_at": modules, "prepare_host_hook_swap": None,
+                "render_mcp": b"mcp_servers: {}", "prepare_host_hook_swap": None,
                 "copy_host_backup": None, "port_open": False,
             }
             stack.enter_context(mock.patch.dict("os.environ"))
             stack.enter_context(mock.patch.dict(sys.modules, bundle=BUNDLE))
             stack.enter_context(mock.patch.object(BUNDLE, "read_bundle", return_value=manifest))
             stack.enter_context(mock.patch.object(BUNDLE, "extract_bundle", side_effect=extract))
+            stack.enter_context(mock.patch.object(UPDATER, "module_at", side_effect=lambda name, path:
+                original_module_at(name, path) if name == "tavern_update_recovery" else modules))
             for name, result in replacements.items():
                 stack.enter_context(mock.patch.object(UPDATER, name, return_value=result))
             output = io.StringIO()

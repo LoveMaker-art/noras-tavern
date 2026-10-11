@@ -39,7 +39,8 @@ test('actual first-install handler selects the latest complete release; local ca
   for (const [action, local, expected] of [['install', false, 'latest'], ['install', true, 'candidate'], ['update', false, 'online']]) {
     const calls = [];
     const context = vm.createContext({
-      payload: { action }, isUpdate: action === 'update', LOCAL_TEST: local, CHANNEL: 'stable', AbortController, process,
+      payload: { action }, isUpdate: action === 'update', managedRepair:false,
+      managedFacts:{needsRepair:false,missing:{python:false}}, LOCAL_TEST: local, CHANNEL: 'stable', AbortController, process,
       selectedPlan: null, fixedTarget: async plan => { context.selectedPlan = plan; },
       context: { stage: async () => {}, effect: async () => {} }, fs: { readFileSync: () => JSON.stringify({versions:{tavern:'2.4.2'},commit:'a'.repeat(40)}) },
       releaseAbort: null, selectedPayload: null, cancelled: false,

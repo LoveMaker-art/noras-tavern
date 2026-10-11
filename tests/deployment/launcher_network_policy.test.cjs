@@ -80,12 +80,14 @@ test('controlled HTTPS transfer reports actual bytes and survives a real primary
   execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1','-subj','/CN=127.0.0.1',
     '-addext','subjectAltName=IP:127.0.0.1','-keyout',key,'-out',cert],{stdio:'ignore'});
   const tls={key:fs.readFileSync(key),cert:fs.readFileSync(cert)},bytes=crypto.randomBytes(32768),requests=[],progress=[];
+  let primaryResponse,primaryBytesObserved=false;
   const serve=async(primary)=>{
     const service=https.createServer(tls,(request,response)=>{
       requests.push({primary,path:request.url,range:request.headers.range});
       response.writeHead(200,{'Content-Length':bytes.length,ETag:primary?'"primary"':'"backup"'});
+      if(primary)primaryResponse=response;
       response.write(bytes.subarray(0,4096));
-      setTimeout(()=>primary?response.destroy():response.end(bytes.subarray(4096)),15);
+      if(!primary)setTimeout(()=>response.end(bytes.subarray(4096)),15);
     });
     await new Promise(resolve=>service.listen(0,'127.0.0.1',resolve));
     t.after(async()=>{service.closeAllConnections();await new Promise(resolve=>service.close(resolve));});
@@ -102,9 +104,21 @@ test('controlled HTTPS transfer reports actual bytes and survives a real primary
   await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),fetcher,
     identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
     policy:{sources:{schema:1,mirrors:[{id:'primary',baseUrl:primary}]},downloadBudgetMs:3000},
-    onEvent:event=>{if(event.event==='progress')progress.push({current:event.current,total:event.total});}});
+    onEvent:event=>{if(event.event==='progress'){
+      progress.push({current:event.current,total:event.total});
+      // Interrupt the real socket only once the production reader has observed
+      // its first bytes. A wall-clock delay can fire before the client reads
+      // them when this check runs alongside other platform contracts.
+      if(!primaryBytesObserved&&event.current===4096&&primaryResponse){
+        assert.equal(requests.length,1,'the observed bytes must precede any backup request');
+        assert.equal(requests[0].primary,true);
+        assert.equal(primaryResponse.destroyed,false,'the primary socket must still be live before the injected interruption');
+        primaryBytesObserved=true;primaryResponse.destroy();
+      }
+    }}});
   assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
   assert.equal(requests.length,2);assert.equal(requests[0].path,'/releases/v2.4.2/asset.zip');assert.equal(requests[1].range,undefined);
+  assert.equal(primaryBytesObserved,true,'the interruption must follow a real primary-body read');
   assert.ok(progress.some(item=>item.current===4096&&item.total===bytes.length));
   assert.equal(progress.at(-1).current,bytes.length);assert.equal(fs.existsSync(path.join(root,'asset.zip.partial')),false);
 });
