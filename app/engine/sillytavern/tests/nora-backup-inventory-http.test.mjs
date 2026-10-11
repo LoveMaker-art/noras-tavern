@@ -12,7 +12,7 @@ setConfigFilePath(path.resolve('default/config.yaml'));
 const { router } = await import('../src/endpoints/backups.js');
 const { router: chatRouter } = await import('../src/endpoints/chats.js');
 const { createNoraWorldsV2Router } = await import('../src/endpoints/nora-worlds-v2.js');
-const { flushChatBackups, chatBackupStore, startChatBackupMaintenance } = await import('../src/chat-backup-runtime.js');
+const { flushChatBackups, chatBackupStore, chatBackupStatus, queueChatBackup, startChatBackupMaintenance } = await import('../src/chat-backup-runtime.js');
 const { router: ledgerRouter } = await import('../src/endpoints/nora-story-ledger.js');
 const { resolveStoryLedger } = await import('../src/nora-story-ledger/runtime.js');
 const { chatSessionOperations } = await import('../src/chat-session-operations.js');
@@ -641,15 +641,23 @@ test('authenticated backup inventory ignores caller paths, exposes metadata only
     assert.ok(!report.files.some(item => item.path.includes('chat_foreign')));
 });
 
-test('a blocked background backup does not delay a newer formal save or commit its stale chat bytes', { timeout: 15000 }, async t => {
+test('an admitted background capture does not delay a newer formal save or commit its stale chat bytes', { timeout: 15000 }, async t => {
+    const started = performance.now();
+    const phase = (name, detail = '') => t.diagnostic(`blocked-backup ${name} elapsedMs=${(performance.now() - started).toFixed(1)}${detail ? ` ${detail}` : ''}`);
+    phase('fixture-start');
     const f = await storageFixture(t);
+    phase('fixture-end');
+    phase('world-start');
     const world = await f.create('save-during-backup');
+    phase('world-end');
     const app = express();
     app.use(express.json({ limit: '8mb' }));
     app.use((req, _res, next) => { req.user = { directories: f.directories, profile: { handle: 'test' } }; next(); });
     app.use('/api/chats', chatRouter);
     const server = http.createServer(app);
+    phase('listen-start');
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    phase('listen-end');
     t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
     const original = await f.chat(world);
     const chat = [...original, { mes: 'x'.repeat(2 * 1024 * 1024), extra: { stat_data: { hp: 10 } } }];
@@ -667,34 +675,135 @@ test('a blocked background backup does not delay a newer formal save or commit i
         return { result, ms: performance.now() - started };
     };
     const without = [];
-    for (let i = 0; i < 3; i++) without.push((await save(true)).ms);
-    await save(false);
+    for (let i = 0; i < 3; i++) {
+        phase(`baseline-save-${i + 1}-start`);
+        without.push((await save(true)).ms);
+        phase(`baseline-save-${i + 1}-end`, `saveMs=${without.at(-1).toFixed(1)}`);
+    }
+    const filePath = path.join(f.directories.chats, path.basename(payload.avatar_url, '.png'), `${payload.file_name}.jsonl`);
     const open = fs.open;
     let entered, release;
     const checkpoint = new Promise(resolve => { entered = resolve; });
     const gate = new Promise(resolve => { release = resolve; });
     const stalled = t.mock.method(fs, 'open', async (file, flags, ...args) => {
-        if (flags === 'wx' && String(file).endsWith('.jsonl')) { entered(); await gate; }
+        if (flags === 'wx' && String(file).endsWith('.jsonl')) { phase('write-barrier-enter'); entered(); await gate; }
         return open(file, flags, ...args);
     });
-    const flush = flushChatBackups();
-    t.after(async () => { release(); stalled.mock.restore(); await flush; await flushChatBackups(); });
-    await checkpoint;
+    let capture;
+    t.after(async () => {
+        phase('cleanup-start');
+        release(); stalled.mock.restore(); await capture; await flushChatBackups();
+        phase('cleanup-end');
+    });
+    // Establish an admitted write with the production capture API. The
+    // automatic one-second admission deadline has its own test below; it must
+    // not prevent this independent concurrency scenario from being reached.
+    phase('capture-start');
+    capture = chatBackupStore(f.directories).capture({ filePath, data: chat.map(JSON.stringify).join('\n') })
+        .then(result => ({ result }), error => ({ error })).then(outcome => {
+        phase('capture-end', `status=${outcome.result?.status || 'failed'} code=${outcome.error?.code || 'none'}`);
+        return outcome;
+    });
+    phase('write-barrier-wait');
+    const reached = await Promise.race([checkpoint.then(() => true), capture.then(() => false)]);
+    assert.equal(reached, true, 'background capture ended before entering the held write; the concurrency scenario was not established');
     chat.at(-1).extra.stat_data.hp = 9;
+    phase('held-save-start');
     const during = await save(false);
+    phase('held-save-end', `saveMs=${during.ms.toFixed(1)}`);
     assert.equal(during.result.backup.status, 'queued');
     assert.ok(during.ms < 2000, 'formal save must not wait for the held backup write');
     assert.equal((await f.chat(world)).at(-1).extra.stat_data.hp, 9);
+    phase('write-barrier-release');
     release();
-    await flush;
+    const stale = await capture;
+    assert.equal(stale.error?.code, 'NORA_BACKUP_SOURCE_CHANGED');
     stalled.mock.restore();
+    phase('latest-flush-start');
     await flushChatBackups();
+    phase('latest-flush-end');
+    phase('list-start');
     const list = await chatBackupStore(f.directories).list();
+    phase('list-end', `snapshots=${list.snapshots.length} legacyFiles=${list.legacyFiles}`);
     assert.equal(list.snapshots.length, 1);
     assert.equal(list.legacyFiles, 0);
+    phase('download-start');
     const downloaded = (await chatBackupStore(f.directories).download(list.snapshots[0].id)).toString().split('\n').map(JSON.parse);
+    phase('download-end');
     assert.equal(downloaded.at(-1).extra.stat_data.hp, 9);
     t.diagnostic(`2 MiB HTTP save skip-backup ms=${without.map(value => value.toFixed(1)).join('/')} backup-held ms=${during.ms.toFixed(1)}`);
+});
+
+test('an automatic capture deadline keeps a newer HTTP save independent and never commits stale bytes', { timeout: 15000 }, async t => {
+    const started = performance.now();
+    const phase = (name, detail = '') => t.diagnostic(`automatic-backup-deadline ${name} elapsedMs=${(performance.now() - started).toFixed(1)}${detail ? ` ${detail}` : ''}`);
+    const f = await storageFixture(t), world = await f.create('automatic-backup-deadline');
+    const app = express();
+    app.use(express.json({ limit: '8mb' }));
+    app.use((req, _res, next) => { req.user = { directories: f.directories, profile: { handle: 'test' } }; next(); });
+    app.use('/api/chats', chatRouter);
+    const server = http.createServer(app);
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }));
+    const original = await f.chat(world);
+    const chat = [...original, { mes: 'x'.repeat(2 * 1024 * 1024), extra: { stat_data: { hp: 10 } } }];
+    const payload = { avatar_url: world.runtime_card.binding.avatar, file_name: world.sessions.items[0].binding.chat_id,
+        chat, nora_complete_history: true, nora_base_revision: getChatRevision(original) };
+    const filePath = path.join(f.directories.chats, path.basename(payload.avatar_url, '.png'), `${payload.file_name}.jsonl`);
+    const save = async skip_backup => {
+        const saveStarted = performance.now();
+        const response = await fetch(`http://127.0.0.1:${server.address().port}/api/chats/save`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...payload, skip_backup }),
+        });
+        assert.equal(response.status, 200);
+        const result = await response.json();
+        assert.equal(result.ok, true);
+        payload.nora_base_revision = result.revision;
+        return { result, ms: performance.now() - saveStarted };
+    };
+    await save(true);
+    const realpath = fs.realpath;
+    let entered, release, resumed, held = false;
+    const checkpoint = new Promise(resolve => { entered = resolve; });
+    const gate = new Promise(resolve => { release = resolve; });
+    const resumedIo = new Promise(resolve => { resumed = resolve; });
+    const stalled = t.mock.method(fs, 'realpath', async (file, ...args) => {
+        if (!held && String(file) === f.root) {
+            held = true; phase('io-barrier-enter'); entered(); await gate;
+            const result = await realpath(file, ...args);
+            resumed(); return result;
+        }
+        return realpath(file, ...args);
+    });
+    let flush;
+    t.after(async () => { release(); stalled.mock.restore(); await flush; await flushChatBackups(); });
+    assert.equal(queueChatBackup({ directories: f.directories, filePath, data: chat.map(JSON.stringify).join('\n') }).status, 'queued');
+    flush = flushChatBackups();
+    assert.equal(await Promise.race([checkpoint.then(() => true), flush.then(() => false)]), true,
+        'automatic capture must reach the injected I/O delay');
+    chat.at(-1).extra.stat_data.hp = 9;
+    phase('held-save-start');
+    const during = await save(false);
+    phase('held-save-end', `saveMs=${during.ms.toFixed(1)}`);
+    assert.equal(during.result.backup.status, 'queued');
+    assert.ok(during.ms < 2000, 'formal save must not wait for the automatic backup deadline');
+    assert.equal((await f.chat(world)).at(-1).extra.stat_data.hp, 9);
+    // Isolate the timed-out first attempt. The admitted-write test above
+    // separately flushes and verifies the newer queued snapshot.
+    assert.equal(queueChatBackup({ directories: f.directories, filePath, data: chat.map(JSON.stringify).join('\n'), skip: true }).status, 'skipped');
+    await flush;
+    const latest = chatBackupStatus(f.directories).recent.at(-1);
+    phase('automatic-flush-end', `status=${latest?.status} code=${latest?.code}`);
+    assert.equal(latest.status, 'failed');
+    assert.equal(latest.code, 'NORA_BACKUP_TIMEOUT');
+    release();
+    await resumedIo;
+    stalled.mock.restore();
+    const list = await chatBackupStore(f.directories).list();
+    assert.equal(list.snapshots.length, 0);
+    assert.equal(list.legacyFiles, 0);
+    assert.equal((await f.chat(world)).at(-1).extra.stat_data.hp, 9);
+    phase('verified-no-stale-snapshot');
 });
 
 test('native save produces an inventoried snapshot retaining message variables without changing save semantics', { timeout: 20000 }, async t => {
