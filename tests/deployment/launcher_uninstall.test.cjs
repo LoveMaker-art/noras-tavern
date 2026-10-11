@@ -640,7 +640,10 @@ test('committed partial successor rejects each altered baseline relation before 
   await f.inspect();
 });
 
-test('partial history rejects changed physical evidence, unfinished owners and missing direct successor proof before deletion',{timeout:30000},async t=>{
+// This aggregate performs 39 serial, real Python/Node history inspections.
+// Keep one bounded workload budget and report each rejection independently;
+// a subtest timeout would not cancel its still-running Python inspector.
+test('partial history rejects changed physical evidence, unfinished owners and missing direct successor proof before deletion',{timeout:120000},async t=>{
   const f=await restoredPartialRuntimeFixture(t),protectedRoot=f.home,crypto=require('node:crypto');
   f.plan('keep');
   const baseline=new Map(),links=[],extra=[];
@@ -702,16 +705,19 @@ test('partial history rejects changed physical evidence, unfinished owners and m
     ['changed original repair plan',()=>mutateRecord(oldRecord,value=>value.planDigest='0'.repeat(64))],
     ['missing complete install assets',()=>mutateRecord(currentRecord,value=>{delete value.target.releasePlan.systemManifest;value.planDigest=crypto.createHash('sha256').update(JSON.stringify(value.target)).digest('hex');})],
   ];
-  for(const [name,mutate] of cases){
-    mutate();const before=new Map();for(const [file] of baseline)if(fs.existsSync(file))before.set(file,fs.readFileSync(file));
-    await assert.rejects(f.cleanup('keep'),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED'||error.code==='UNINSTALL_PYTHON_INSPECTION_FAILED',name);
-    for(const [file,bytes] of before)assert.deepEqual(fs.readFileSync(file),bytes,name+' '+file);
-    assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false,name);
-    for(const file of links.splice(0)){fs.unlinkSync(file);if(fs.existsSync(file+'-preserved'))fs.renameSync(file+'-preserved',file);}
-    for(const file of extra.splice(0))fs.rmSync(file,{recursive:true});
-    if(fs.existsSync(path.join(f.backup,'state-preserved')))fs.renameSync(path.join(f.backup,'state-preserved'),path.join(f.backup,'state'));
-    for(const [file,bytes] of baseline)fs.writeFileSync(file,bytes);
-  }
+  for(const [name,mutate] of cases)await t.test(name,async()=>{
+    try{
+      mutate();const before=new Map();for(const [file] of baseline)if(fs.existsSync(file))before.set(file,fs.readFileSync(file));
+      await assert.rejects(f.cleanup('keep'),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED'||error.code==='UNINSTALL_PYTHON_INSPECTION_FAILED',name);
+      for(const [file,bytes] of before)assert.deepEqual(fs.readFileSync(file),bytes,name+' '+file);
+      assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false,name);
+    }finally{
+      for(const file of links.splice(0)){fs.unlinkSync(file);if(fs.existsSync(file+'-preserved'))fs.renameSync(file+'-preserved',file);}
+      for(const file of extra.splice(0))fs.rmSync(file,{recursive:true});
+      if(fs.existsSync(path.join(f.backup,'state-preserved')))fs.renameSync(path.join(f.backup,'state-preserved'),path.join(f.backup,'state'));
+      for(const [file,bytes] of baseline)fs.writeFileSync(file,bytes);
+    }
+  });
   await f.inspect();
 });
 
@@ -794,7 +800,8 @@ print(json.dumps(u.prune_backup_history(Path(p['root']),Path(p['backup']))))`;
  assert.equal(result.status,0,result.stderr);return JSON.parse(result.stdout);
 }
 
-test('partial rollback history remains closed across actual normal Journal replacement and production prune',{timeout:60000},async t=>{
+// Four independent fixtures each execute real Journal replacement and prune.
+test('partial rollback history remains closed across actual normal Journal replacement and production prune',{timeout:120000},async t=>{
  for(const pythonOnly of [false,true])for(const mode of ['keep','all'])await t.test(`${pythonOnly?'Python only':'native and Python'} ${mode}`,async t=>{
   const f=await restoredPartialRuntimeFixture(t,{pythonOnly});await f.inspect();
   const failed=fs.readFileSync(path.join(f.old.paths.failed,'logs/failed-repair.log')),old=fs.readFileSync(f.oldFile),chat=fs.readFileSync(path.join(f.home,'tavern/tavern-state/native/default-user/chats/chat.jsonl'));
