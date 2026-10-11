@@ -19,6 +19,13 @@ test('native and component build workflows cannot publish or access publishing c
   }
   assert.ok(full.jobs.build.needs.includes('preflight'));
   assert.ok(full.jobs.build.if.includes("needs.preflight.result == 'success'"));
+  const steps = full.jobs.build.steps;
+  const componentCheck = steps.findIndex(step => step.run === 'node --test tests/component-release.test.mjs');
+  const dependencies = steps.findIndex(step => step.name === 'Install launcher test dependencies');
+  const runtime = steps.findIndex(step => step.name === 'Prepare the verified fixed Hermes bootstrap');
+  assert.ok(componentCheck > dependencies && componentCheck < runtime, 'Component contracts must run with dependencies before the cold runtime build');
+  assert.equal(steps.filter(step => step.run?.includes('node --test tests/component-release.test.mjs')).length, 1);
+  assert.ok(steps.some(step => step.run?.includes('ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup')));
   const nativeNames = full.jobs.build.steps.map(step => step.name);
   for (const name of ['Test the actual Windows setup and installed application', 'Verify real APP production module closure and executor receipts',
     'Require chat backup safety tests', 'Test unified update and application replacement']) assert.ok(nativeNames.includes(name), `Lost product gate: ${name}`);

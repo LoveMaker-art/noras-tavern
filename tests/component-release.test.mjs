@@ -143,10 +143,13 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
         fs.copyFileSync(path.join(root, 'launcher/desktop', file), path.join(f.temporary, file));
     }
     const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.js'));
-    assert.throws(() => client.validateSystem(system, { tag_name: 'v2.3.1' }, system.platform, system.arch, '0.3.2'), /升级启动器/);
     const tag = 'v2.3.1', base = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/`;
     const release = { tag_name: tag, draft: false, prerelease: false, assets: fs.readdirSync(assetsRoot)
         .map(name => ({ name, browser_download_url: base+name })) };
+    assert.doesNotThrow(() => client.validateSystem(system, release, system.platform, system.arch, '2.1.0'));
+    assert.throws(() => client.validateSystem(system, release, system.platform, system.arch, '0.3.2'), /升级启动器/);
+    const incomplete = { ...release, assets: release.assets.filter(asset => asset.name !== system.files.SHA256SUMS.asset) };
+    assert.throws(() => client.validateSystem(system, incomplete, system.platform, system.arch, '0.3.2'), /缺少完整组件/);
     const fetched = [];
     const fetcher = async url => {
         fetched.push(url);
