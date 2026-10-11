@@ -434,7 +434,11 @@ test('a rollback successor chain requires every later runtime writer to have com
 
 async function restoredPartialRuntimeFixture(t,{kind='repair',pythonOnly=false}={}){
   const f=fixture(t),crypto=require('node:crypto'),{spawnSync}=require('node:child_process'),{once}=require('node:events');
-  f.home=fs.realpathSync(f.home);
+  // Match the updater's resolved roots before constructing cross-language
+  // records: Windows TEMP may use an 8.3 spelling that Python expands.
+  f.directory=fs.realpathSync.native(f.directory);
+  f.home=fs.realpathSync.native(f.home);
+  f.plan=mode=>makePlan({home:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),mode});
   const desktop=path.resolve(__dirname,'../installer/desktop'),installer=path.dirname(desktop),python=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON;
   assert.ok(python,'A real Python interpreter is required for the canonical system inspection');
   const transaction=require('../installer/desktop/runtime-transaction'),policy=require('../installer/desktop/operation-policy'),releases=require('../installer/desktop/releases');
@@ -818,7 +822,7 @@ test('historical closure cannot be created from absent original sources and cann
 test('closure write failure preserves the last physical source and a completed capture is idempotent under its actual owner',{timeout:30000},async t=>{
  const f=await restoredPartialRuntimeFixture(t),system=path.join(f.instance.installRoot,'tavern-updates/transaction.json'),before=fs.readFileSync(system),old=fs.readFileSync(f.oldFile);
  const originalRename=fs.renameSync;let rejected=false;
- fs.renameSync=function(source,target){if(String(target).endsWith('/partial-history.json')){rejected=true;throw Object.assign(new Error('fixture disk denied'),{code:'EACCES'});}return originalRename.call(this,source,target);};
+ fs.renameSync=function(source,target){if(path.basename(String(target))==='partial-history.json'){rejected=true;throw Object.assign(new Error('fixture disk denied'),{code:'EACCES'});}return originalRename.call(this,source,target);};
  try{await assert.rejects(advancePartialSystemFixture(f),error=>error.code==='EACCES');assert.equal(rejected,true);}
  finally{fs.renameSync=originalRename;}
  assert.deepEqual(fs.readFileSync(system),before);assert.deepEqual(fs.readFileSync(f.oldFile),old);assert.equal(fs.existsSync(f.backup),true);
