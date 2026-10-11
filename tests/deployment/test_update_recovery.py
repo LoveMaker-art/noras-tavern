@@ -418,22 +418,27 @@ class InterruptedRecoveryTests(unittest.TestCase):
         journal.mark_metadata([target]);target.write_text('owned failed configuration');journal.finish_metadata([target])
         if legacy:journal.plan.pop('metadataWrites');journal.save()
         journal.snapshot_state();journal.swap('app')
+        interruptions=[]
         if point=='move':
             replace=recovery.os.replace
             def interrupt(source,destination):
                 replace(source,destination)
-                if Path(source)==target:raise KeyboardInterrupt('metadata move completed')
+                if Path(first_install.filesystem_path(source))==Path(first_install.filesystem_path(target)):
+                    interruptions.append(point)
+                    raise KeyboardInterrupt('metadata move completed')
             context=patch.object(recovery.os,'replace',side_effect=interrupt)
         else:
             copy=recovery.shutil.copy2
             def interrupt(source,destination,*args,**kwargs):
-                if Path(source)==saved:
+                if Path(first_install.filesystem_path(source))==Path(first_install.filesystem_path(saved)):
                     if point=='copied':copy(source,destination,*args,**kwargs)
+                    interruptions.append(point)
                     raise KeyboardInterrupt('metadata copy interrupted')
                 return copy(source,destination,*args,**kwargs)
             context=patch.object(recovery.shutil,'copy2',side_effect=interrupt)
         with context:
             with self.assertRaises(KeyboardInterrupt):self.run_recover()
+        self.assertEqual(interruptions,[point])
         self.assertFalse(target.exists())
         return journal,target
 
