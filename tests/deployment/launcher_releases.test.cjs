@@ -12,6 +12,17 @@ const releases = process.env.NORA_RELEASES_SOURCE ? (() => {
 const {createTelemetry} = require('../installer/desktop/telemetry');
 const capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
 
+test('first install system metadata failure binds the fixed system version before launcher discovery',async t=>{
+  const f=fixture(t);
+  await assert.rejects(releases.selectPlan({...f.options,mode:'install',selectedRelease:f.release,
+    fetcher:async()=>new Response('unavailable',{status:503}),networkPolicy:{maxAttempts:1,totalBudgetMs:1000}}),error=>{
+    assert.equal(error.conditionResource.expectedSystemVersion,f.release.tag_name);
+    assert.equal(error.conditionResource.expectedVersion,undefined);
+    assert.equal(error.conditionResource.url,releases.assetUrl(f.release,'nora-system-darwin-arm64.json'));
+    return true;
+  });
+});
+
 test('standalone update check retains HTTP evidence and reports failure without changing its result contract', async t => {
   const f = fixture(t), sent = [];
   const client = createTelemetry({file:path.join(f.root,'telemetry.json'),launcherVersion:'1.1.2',automatic:false,

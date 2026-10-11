@@ -187,7 +187,8 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
 function validateSystemDescriptor(manifest, release, platform, arch, channel = 'stable') {
   if (manifest.schema !== 'nora-system/v1' || manifest.candidate || manifest.platform !== platform || manifest.arch !== arch ||
       (manifest.channel || 'stable') !== channel ||
-      compare(manifest.version, release ? release.tag_name : manifest.version) !== 0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '')) throw new Error('完整系统发布清单与目标版本或平台不符。');
+      compare(manifest.version, release ? release.tag_name : manifest.version) !== 0 ||
+      compare(manifest.minimumLauncherVersion,manifest.minimumLauncherVersion)!==0 || !/^[a-f0-9]{40}$/.test(manifest.commit || '')) throw new Error('完整系统发布清单与目标版本或平台不符。');
   validateCapabilities(manifest);
   validateAssetRelease(manifest,release,manifest.minimumLauncherVersion);
   const required = ['release-manifest.json', 'SHA256SUMS', 'nora-tavern-app.tar.gz', 'nora-tavern-ops.tar.gz',
@@ -392,7 +393,7 @@ async function selectPlan({fetcher = fetch,signal,launcherVersion,platform = pro
   if (!accepts(release,channel) || (tag && release.tag_name !== tag)) throw new Error('所选发布与目标渠道不符。');
   if (!['update','install'].includes(mode)) throw new Error('固定发布计划的操作类型无效。');
   const systemManifest=mode==='install' ? await requestJson(assetUrl(release,`nora-system-${platform}-${arch}.json`),fetcher,signal,
-    {metadataCache,networkPolicy,channel}) : null;
+    {metadataCache,networkPolicy,channel,conditionIdentity:{expectedSystemVersion:release.tag_name}}) : null;
   // Validate identity and routing before reading the payload. The launcher gate
   // is checked after inspecting the same target's possible launcher handoff.
   if(systemManifest) validateSystemDescriptor(systemManifest,release,platform,arch,channel);
@@ -606,4 +607,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch);
   return bundledRoot;
 }
-module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,createMetadataCache };
+module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem,validateSystemDescriptor, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,createMetadataCache };

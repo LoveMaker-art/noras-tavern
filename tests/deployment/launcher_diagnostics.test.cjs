@@ -362,7 +362,7 @@ test('successful Python configuration save followed by failed JS checkpoint pres
   context.helper=path.resolve(__dirname,'../installer/model_config.py');
   context.operationHelper=path.resolve(__dirname,'../installer/operation_control.py');
   context.managedVenv=path.dirname(path.dirname(context.python));
-  context.managedPython=path.resolve(context.managedVenv,'../../python');
+  context.managedPython=process.env.NORA_TEST_MANAGED_PYTHON_ROOT || path.resolve(context.managedVenv,'../../python');
   vm.runInContext(`spawnMaintenance=(command,args,options)=>activeOperationContext.lease.spawn(command,
     ['-B','-u',operationHelper,'--delegate-exec',...args],{...options,kind:'python-maintenance',
     managedPythonRoot:managedPython,venvHome:managedVenv});`,context);

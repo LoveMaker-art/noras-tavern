@@ -188,6 +188,66 @@ test('a successful fixed plan preserves consumed recheck proof when a new reques
   assert.equal(next.state,'succeeded');assert.equal(runs,3);assert.equal(finalCapture,1);
 });
 
+test('a reopened admitted operation retains its own verified conditions when the actual executor repeats the same fixed plan',async t=>{
+  const initial={schema:'nora-operation-conditions/1',fingerprint:'a'.repeat(64),facts:{directories:[],networkReads:[]}};
+  const consumed={schema:'nora-operation-conditions/1',fingerprint:'b'.repeat(64),facts:{directories:[],networkReads:[{identity:'c'.repeat(64),routeHash:'d'.repeat(64),readable:true}]}};
+  const target={request:{action:'install'},releasePlan:{schema:'nora-release-plan/1',mode:'install',tag:'v2.4.5',platform:'win32',arch:'x64',commit:'a'.repeat(40)}};
+  let runs=0;
+  const f=fixture(t,async context=>{
+    await context.plan(context.target);runs++;
+    throw Object.assign(new Error('original asset unavailable'),{code:'ETIMEDOUT'});
+  },{captureConditions:async()=>initial,recheckers:{install:async record=>record.conditionFingerprint===consumed.fingerprint?
+    {changed:false}:{changed:true,fingerprint:consumed.fingerprint,baseline:consumed,effectState:'untouched'}}});
+  await f.controller.start('install',{target},'fixed-original-one');
+  await f.controller.start('install',{target},'fixed-original-two');
+  const blocked=await f.controller.start('install',{target},'fixed-admission');
+  assert.equal(blocked.state,'blocked');assert.equal(runs,2);
+  const checked=await createOperationController(f.options).recheck(blocked.operationId,{snapshotSequence:blocked.snapshotSequence});
+  assert.equal(checked.attempt,0);
+  const third=await createOperationController(f.options).resume(blocked.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(third.failureCode,'ETIMEDOUT');assert.equal(third.attempt,1);assert.equal(runs,3);
+  const saved=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',third.operationId,'operation.json'),'utf8'));
+  assert.deepEqual(saved.conditionBaseline,consumed);assert.equal(saved.verifiedConditions.fingerprint,consumed.fingerprint);
+  const fourth=await createOperationController(f.options).resume(third.operationId,{snapshotSequence:third.snapshotSequence});
+  assert.equal(fourth.attempt,2);assert.equal(runs,4);
+  const fifth=await createOperationController(f.options).start('install',{target},'same-consumed-proof');
+  assert.equal(fifth.state,'blocked');assert.equal(runs,4);
+  const again=await createOperationController(f.options).recheck(fifth.operationId,{snapshotSequence:fifth.snapshotSequence});
+  assert.deepEqual(again.allowedActions,['recheck','logs']);assert.equal(runs,4);
+});
+
+test('an admitted proof cannot replace a different fixed target history when the executor selects that target',async t=>{
+  const initial={schema:'nora-operation-conditions/1',fingerprint:'a'.repeat(64),facts:{directories:[],networkReads:[]}};
+  const consumed={...initial,fingerprint:'b'.repeat(64)};
+  const target=commit=>({request:{action:'install'},releasePlan:{schema:'nora-release-plan/1',mode:'install',tag:'v2.4.5',commit}});
+  let selected,runs=0;
+  const f=fixture(t,async context=>{await context.plan(selected||context.target);runs++;throw Object.assign(new Error('offline'),{code:'ETIMEDOUT'});},
+    {captureConditions:async()=>initial,recheckers:{install:async()=>({changed:true,fingerprint:consumed.fingerprint,baseline:consumed,effectState:'untouched'})}});
+  for(const [index,commit] of ['a','a','b','b'].entries())await f.controller.start('install',{target:target(commit)},'prior-target-'+index);
+  const blocked=await f.controller.start('install',{target:target('a')},'proof-for-original');
+  const checked=await f.controller.recheck(blocked.operationId,{snapshotSequence:blocked.snapshotSequence});
+  selected=target('b');
+  const denied=await createOperationController(f.options).resume(blocked.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(denied.failureCode,'RETRY_CONDITIONS_UNCHANGED');assert.equal(runs,4);
+});
+
+test('an accepted legacy record with absent condition fields cannot impersonate a verified fixed-plan proof',async t=>{
+  const initial={schema:'nora-operation-conditions/1',fingerprint:'a'.repeat(64),facts:{directories:[],networkReads:[]}};
+  const target={request:{action:'install'},releasePlan:{schema:'nora-release-plan/1',mode:'install',tag:'v2.4.5',commit:'fixed-content'}};
+  let runs=0;
+  const f=fixture(t,async context=>{await context.plan(context.target);runs++;throw Object.assign(new Error('offline'),{code:'ETIMEDOUT'});},
+    {captureConditions:async()=>initial});
+  await f.controller.start('install',{target},'legacy-prior-one');
+  await f.controller.start('install',{target},'legacy-prior-two');
+  const blocked=await f.controller.start('install',{target},'legacy-absent-proof');
+  const file=path.join(f.directory,'operations',blocked.operationId,'operation.json'),record=JSON.parse(fs.readFileSync(file,'utf8'));
+  Object.assign(record,{state:'failed',attempt:0,primaryFailure:{code:'ETIMEDOUT'},currentFailure:{code:'ETIMEDOUT'}});
+  delete record.conditionFingerprint;delete record.conditionBaseline;delete record.verifiedConditions;
+  fs.writeFileSync(file,JSON.stringify(record));
+  const denied=await createOperationController(f.options).resume(blocked.operationId,{snapshotSequence:record.sequence});
+  assert.equal(denied.failureCode,'RETRY_CONDITIONS_UNCHANGED');assert.equal(runs,2);
+});
+
 test('release recheck identities retain only a fixed public resource and a bounded route fingerprint',async t=>{
   const resource={url:'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.0/system.zip',
     tag:'v2.4.0',asset:'system.zip',size:8192,sha256:'a'.repeat(64),routeHash:'b'.repeat(64)};
@@ -236,6 +296,27 @@ test('metadata retry conditions retain only the official release query and bound
   for(const [index,expectedVersion] of [undefined,'invalid-version'].entries()){
     target={kind:'release-metadata',resource:{url:assets+'nora-system-win32-x64.json',routeHash:'c'.repeat(64),expectedVersion},retryAt:null};
     const result=await f.controller.start('install',{target:{version:'bad-expected-'+index}},'bad-expected-'+index);
+    assert.equal(result.primaryFailure.conditionTarget,undefined);
+  }
+});
+
+test('fixed system read identities persist without a launcher minimum and reject mixed or misplaced versions',async t=>{
+  const asset='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.5/nora-system-win32-x64.json';
+  const resource={url:asset,routeHash:'c'.repeat(64),expectedSystemVersion:'v2.4.5'};
+  let condition={kind:'release-metadata',resource,retryAt:null};
+  const f=fixture(t,async()=>{throw Object.assign(new Error('system descriptor unavailable'),{code:'ETIMEDOUT'});},
+    {identifyFailureCondition:()=>condition});
+  const first=await f.controller.start('install',{target:{version:'valid-system'}},'system-proof');
+  assert.deepEqual(first.primaryFailure.conditionTarget,condition);
+  assert.deepEqual((await createOperationController(f.options).snapshot(first.operationId)).primaryFailure.conditionTarget,condition);
+  for(const [index,invalid] of [
+    {...resource,expectedSystemVersion:'v2.4.4'}, {...resource,expectedSystemVersion:'invalid'},
+    {...resource,expectedVersion:'2.1.1'}, {...resource,url:asset.replace('nora-system','nora-launcher')},
+    {...resource,url:asset.replace('nora-system-win32-x64.json','release-manifest.json')},
+    {...resource,url:'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest'},
+  ].entries()){
+    condition={kind:'release-metadata',resource:invalid,retryAt:null};
+    const result=await f.controller.start('install',{target:{version:'invalid-system-'+index}},'invalid-system-'+index);
     assert.equal(result.primaryFailure.conditionTarget,undefined);
   }
 });

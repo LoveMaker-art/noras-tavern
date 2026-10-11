@@ -174,6 +174,46 @@ function capturedInstallPolicy(t,{tag}={}){
     replaceLauncher:()=>{failedSelection=false;policy=create(policyOptions);},failAgain:()=>{failAfterSelection=true;},runs:()=>runs};
 }
 
+test('a fixed system descriptor read may prove network recovery before the launcher minimum handoff without authorizing installation',async t=>{
+  const releases=require('../installer/desktop/releases');
+  const captured=JSON.parse(require('node:zlib').brotliDecompressSync(fs.readFileSync(path.join(__dirname,'fixtures/published-v2.4.4/metadata.json.br'))));
+  const descriptor=JSON.parse(captured.files['nora-system-win32-x64.json']);
+  descriptor.minimumLauncherVersion='2.1.2';
+  const url=releases.assetUrl(captured.release,'nora-system-win32-x64.json'),resource={url,routeHash:'a'.repeat(64),expectedSystemVersion:captured.release.tag_name};
+  let current=descriptor,requests=0;
+  const f=setup(t,{launcherVersion:'2.1.1',platform:'win32',arch:'x64',networkFetch:async()=>{requests++;return Response.json(current);}});
+  Object.assign(f.record,{state:'failed',stageId:'downloading',effectState:'untouched',recoveryOutcome:'not-required',target:{request:{tag:captured.release.tag_name}}});
+  f.record.conditionBaseline=await f.policy.initialConditions(f.record);
+  f.record.conditionFingerprint=f.record.conditionBaseline.fingerprint;
+  const condition={kind:'release-metadata',resource,retryAt:null};
+  f.record.primaryFailure={code:'ETIMEDOUT',conditionTarget:condition};
+  const proved=await f.policy.recheck(f.record);
+  assert.equal(proved.changed,true);assert.equal(proved.baseline.facts.networkReads.length,1);
+  assert.equal(proved.baseline.facts.installSelections,undefined);
+  assert.throws(()=>releases.validateSystem(descriptor,null,'win32','x64','2.1.1'),/2\.1\.2/);
+  await assert.rejects(releases.selectPlan({selectedRelease:captured.release,mode:'install',launcherVersion:'2.1.1',platform:'win32',arch:'x64',
+    fetcher:async read=>read===url?Response.json(descriptor):new Response(captured.files[captured.release.assets.find(asset=>asset.browser_download_url===read)?.name])}),/2\.1\.2/);
+  f.record.conditionBaseline=proved.baseline;f.record.conditionFingerprint=proved.fingerprint;
+  assert.equal((await f.policy.recheck(f.record)).changed,false);assert.equal(requests,1);
+  for(const malformed of [
+    {...descriptor,version:'2.4.3'}, {...descriptor,platform:'darwin'}, {...descriptor,candidate:true},
+    {...descriptor,minimumLauncherVersion:'invalid'}, {...descriptor,files:{}},
+  ]){
+    current=malformed;f.record.conditionBaseline=await f.policy.initialConditions(f.record);
+    assert.equal((await f.policy.recheck(f.record)).changed,false);
+  }
+  current=descriptor;f.record.conditionBaseline=await f.policy.initialConditions(f.record);
+  for(const invalid of [
+    {...resource,expectedSystemVersion:'v2.4.3'}, {...resource,expectedVersion:'2.1.1'},
+    {...resource,url:url.replace('win32-x64','darwin-arm64')}, {...resource,url:url.replace('nora-system','nora-launcher')},
+  ])assert.equal((await f.policy.recheck(f.record,{conditionTarget:{...condition,resource:invalid}})).changed,false);
+  assert.equal((await f.policy.recheck(f.record,{conditionTarget:{...condition,resource:{url,routeHash:resource.routeHash,expectedVersion:'2.1.1'}}})).changed,false,
+    'legacy proof must retain its original launcher minimum gate');
+  current={...descriptor,minimumLauncherVersion:'2.1.1'};
+  assert.equal((await f.policy.recheck(f.record,{conditionTarget:{...condition,resource:{url,routeHash:resource.routeHash,expectedVersion:'2.1.1'}}})).changed,true,
+    'legacy proofs remain readable under their original launcher minimum');
+});
+
 test('official platform selection unblocks an untouched legacy first-install operation while preserving its identity and first failure',async t=>{
   const f=capturedInstallPolicy(t,{tag:'v2.4.4'}),controller=f.reopen();
   const first=await controller.start('install',{target:f.target},'legacy-install');

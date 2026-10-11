@@ -104,11 +104,17 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
           ||parts[0]!==encodeURIComponent(tag)||requested&&requested!==tag)return null;
         const type=asset==='release-assets.json'?'asset-index':asset==='release-manifest.json'?'release-manifest':asset===`nora-launcher-${value(platform)}-${value(arch)}.json`?'launcher-manifest'
           :asset===`nora-system-${value(platform)}-${value(arch)}.json`?'system-manifest':null;
-        if(!type||!['release-manifest','asset-index'].includes(type)&&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)!==0)return null;
+        if(!type)return null;
+        const systemVersion=resource.expectedSystemVersion;
+        if(systemVersion!==undefined){
+          if(type!=='system-manifest'||resource.expectedVersion!==undefined||systemVersion!==tag
+            ||require('./releases').compare(systemVersion,systemVersion)!==0)return null;
+        }else if(!['release-manifest','asset-index'].includes(type)&&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)!==0)return null;
         if(type==='asset-index'&&(!/^[a-f0-9]{64}$/.test(resource.sha256||'')||!Number.isSafeInteger(resource.size)||resource.size<1||resource.size>64*1024))return null;
         return {url:url.href,routeHash:resource.routeHash,tag,type,...(type==='asset-index'?{sha256:resource.sha256,size:resource.size}
-          :type!=='release-manifest'?{expectedVersion:resource.expectedVersion}:{})};
+          :systemVersion!==undefined?{expectedSystemVersion:systemVersion}:type!=='release-manifest'?{expectedVersion:resource.expectedVersion}:{})};
       }
+      if(resource.expectedSystemVersion!==undefined)return null;
       if(url.origin!=='https://api.github.com')return null;
       if(url.pathname===`${base}/latest`&&!url.search){if(requested||value(channel)!=='stable')return null;}
       else if(url.pathname.startsWith(`${base}/tags/`)&&!url.search){
@@ -146,6 +152,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
           const resource=trustedMetadata(record,current.conditionResource);
           if(resource)return {kind:'release-metadata',resource:{url:resource.url,routeHash:resource.routeHash,
             ...(resource.type==='asset-index'?{sha256:resource.sha256,size:resource.size}:{}),
+            ...(resource.expectedSystemVersion?{expectedSystemVersion:resource.expectedSystemVersion}:{}),
             ...(resource.expectedVersion?{expectedVersion:resource.expectedVersion}:{})},retryAt:current.conditionRetryAt??null};
         }
       }
@@ -206,7 +213,12 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
           releases.validateUpdate(result,{tag_name:resource.tag},result.launcherVersion||value(launcherVersion));
         }else if(resource.type==='system-manifest'){
           if(releases.compare(result.version,resource.tag)!==0)return null;
-          releases.validateSystem(result,null,value(platform),value(arch),resource.expectedVersion,value(channel));
+          if(resource.expectedSystemVersion!==undefined){
+            if(releases.compare(result.version,resource.expectedSystemVersion)!==0)return null;
+            // This original read proves metadata availability. Full selection
+            // still owns release membership and the launcher minimum handoff.
+            releases.validateSystemDescriptor(result,null,value(platform),value(arch),value(channel));
+          }else releases.validateSystem(result,null,value(platform),value(arch),resource.expectedVersion,value(channel));
         }else if(resource.type==='launcher-manifest'){
           // This verifies the original metadata and its expected version. The
           // resumed selectPlan still verifies membership in the full release.

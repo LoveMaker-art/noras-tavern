@@ -180,7 +180,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       }
       else if(target?.kind==='release-metadata'){
         const resource=target.resource,url=new URL(resource?.url),base='/repos/LoveMaker-art/noras-tavern/releases';
-        let origin='https://api.github.com',expectedVersion;
+        let origin='https://api.github.com',expectedVersion,expectedSystemVersion;
         let allowed=url.pathname===base+'/latest'&&!url.search
           ||url.pathname===base&&/^\?per_page=100&page=[1-5]$/.test(url.search);
         if(url.pathname.startsWith(base+'/tags/')&&!url.search){
@@ -194,15 +194,24 @@ function createOperationController({directory,lock,executors={},recoverers={},re
             &&encodeURIComponent(tag)===parts[5]&&require('./releases').compare(tag,tag)===0
             &&/^(?:release-manifest|nora-(?:system|launcher)-(?:darwin-(?:arm64|x64)|win32-x64))\.json$/.test(asset);
           if(allowed&&asset.startsWith('nora-')){
-            allowed=typeof resource.expectedVersion==='string'&&resource.expectedVersion.length<=240
-              &&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)===0;
-            if(allowed)expectedVersion=resource.expectedVersion;
+            if(resource.expectedSystemVersion!==undefined){
+              allowed=asset.startsWith('nora-system-')&&resource.expectedVersion===undefined
+                &&resource.expectedSystemVersion===tag&&resource.expectedSystemVersion.length<=240
+                &&require('./releases').compare(resource.expectedSystemVersion,resource.expectedSystemVersion)===0;
+              if(allowed)expectedSystemVersion=resource.expectedSystemVersion;
+            }else{
+              allowed=typeof resource.expectedVersion==='string'&&resource.expectedVersion.length<=240
+                &&require('./releases').compare(resource.expectedVersion,resource.expectedVersion)===0;
+              if(allowed)expectedVersion=resource.expectedVersion;
+            }
           }
         }
+        if(resource.expectedSystemVersion!==undefined&&expectedSystemVersion===undefined)allowed=false;
         if(allowed&&url.origin===origin&&!url.username&&!url.password&&!url.hash
           &&url.href.length<=512&&/^[a-f0-9]{64}$/.test(resource.routeHash||'')
           &&(target.retryAt===null||Number.isSafeInteger(target.retryAt)&&target.retryAt>=0))
-          detail.conditionTarget={kind:target.kind,resource:{url:url.href,routeHash:resource.routeHash,...(expectedVersion?{expectedVersion}:{})},retryAt:target.retryAt};
+          detail.conditionTarget={kind:target.kind,resource:{url:url.href,routeHash:resource.routeHash,
+            ...(expectedVersion?{expectedVersion}:{}),...(expectedSystemVersion?{expectedSystemVersion}:{})},retryAt:target.retryAt};
       }
     }catch{}
     return detail;
@@ -311,11 +320,19 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         const retryTargetDigest=retryIdentity(target);
         const prior=records().filter(value=>value.operationId!==record.operationId&&value.kind===record.kind
           &&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest).at(-1);
-        if(failedAttempt(prior)&&(initialConditions||prior.conditionBaseline!==undefined)
-          ||!initialConditions&&prior?.conditionBaseline!==undefined){
+        // A blocked fresh request may already carry the fixed plan. Its own
+        // persisted recheck proof must survive the executor's first plan call;
+        // older conditions cannot revoke it or authorize a different target.
+        const verifiedCurrent=record.target?.releasePlan?.schema==='nora-release-plan/1'
+          &&record.retryTargetDigest===retryTargetDigest&&retryIdentity(record.target)===retryTargetDigest
+          &&/^[a-f0-9]{64}$/.test(record.conditionFingerprint||'')
+          &&record.verifiedConditions?.fingerprint===record.conditionFingerprint
+          &&conditionProof(record.conditionBaseline)?.fingerprint===record.conditionFingerprint;
+        if(!verifiedCurrent&&(failedAttempt(prior)&&(initialConditions||prior.conditionBaseline!==undefined)
+          ||!initialConditions&&prior?.conditionBaseline!==undefined)){
           record.conditionBaseline=prior.conditionBaseline;
           record.conditionFingerprint=prior.conditionFingerprint||'';
-        }else if(initialConditions){
+        }else if(!verifiedCurrent&&initialConditions){
           const selectedConditions=prior?conditionProof(await captureConditions?.(record,{...options,lease,previous:prior,baseline:initialConditions}))||initialConditions:initialConditions;
           record.conditionBaseline=selectedConditions;
           record.conditionFingerprint=selectedConditions.fingerprint;
