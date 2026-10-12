@@ -259,6 +259,115 @@ test('a real sealed partial-repair downgrade never executes runtime or maintenan
  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
 });
 
+test('CLI partial runtime failure reaches shared recovery before reporting the fixed operation outcome',async t=>{
+ for(const scenario of ['restored','unknown-system-effects','recovery-failed','prepare-failed'])await t.test(scenario,async()=>{
+  const f=fixture();try{
+   const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),release=releaseFixture(),
+    bridge=path.join(f.root,'app/launcher_bridge.py'),native=path.join(f.tavern,'apps/tavern-runtime');
+   f.write('app/launcher_bridge.py','fixture bridge execution boundary');
+   f.write('tavern/apps/tavern-runtime/native-runtime.json','{}');f.write('tavern/apps/tavern-runtime/native_lifecycle.py','fixture native lifecycle');
+   f.write('tavern/tavern-state/native-runtime/config.yaml','retained native config\n');
+   f.write('tavern/tavern-updates/transaction.json',{schema:1,operationId:crypto.randomUUID(),status:'committed'});
+   const stat=fs.lstatSync(native,{bigint:true}),snapshot={...f.snapshot(),programs:{
+    app:{identity:[String(stat.dev),String(stat.ino)],digest:transaction.programDigest(native)},ops:null,'nora-mcp':null}};
+   assert.deepEqual(snapshot.missing,{nativeRuntime:false,nativeLifecycle:false,python:true});
+   const original=treeSeal(f.home),systemBefore=fs.readFileSync(path.join(f.tavern,'tavern-updates/transaction.json')),
+    protectedBytes=Object.fromEntries(['hermes/config.yaml','hermes/.env','tavern/tavern-state/chats/story.json',
+     'tavern/tavern-state/native-runtime/config.yaml'].map(name=>[name,fs.readFileSync(path.join(f.root,name))]));
+   const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
+    channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
+     'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{}};
+   let runtimeCalls=0,recoveryCalls=0,inspectionCalls=0,maintenanceCalls=0,activated=false,effectAtRuntime;
+   const unchangedSystem={effectState:'untouched',recoveryOutcome:'not-required',canRecover:false,reason:'other_operation'};
+   const offline=()=>({offline:true,running:false,gatewayRunning:false,clawchatConnected:false});
+   const proof=effects=>({partialRepair:snapshot,...offline(),effects});
+   const result=await cli.execute({receiptPath:'fixture',request:{schema:'nora-cli-request/1',kind:'repair',
+    argv:[bridge,'--nora-home',f.root,'repair'],stdin:''}},
+    {validate:async()=>receipt,lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),telemetry:false,
+     fetcher:async url=>scenario==='prepare-failed'&&url.endsWith('/nora-tavern-app.tar.gz')
+      ?new Response('bad',{headers:{'Content-Length':'3'}}):release.fetcher(url),
+     // Execute the real CLI, release sealing, controller, shared policy and
+     // filesystem transaction. Only runtime/bridge execution is a fixture;
+     // this does not certify a packaged APP, Python reader or native OS lease.
+     run:async(context,target,args,options)=>{
+      if(!options.node){
+       if(options.readonly&&args.includes('operation-effects'))return {effects:unchangedSystem};
+       maintenanceCalls++;throw Error('runtime failure must not run the system updater or old Python');
+      }
+      assert.match(target,/runtime-worker\.js$/);assert.equal(args[1],f.root);assert.equal(args[2],f.home);
+      const request=JSON.parse(options.stdin.toString('utf8'));assert.equal(request.missing.python,true);assert.deepEqual(request.bindings,snapshot.bindings);
+      if(args.includes('--inspect-managed')){
+       inspectionCalls++;
+       return proof(runtimeCalls&&scenario==='unknown-system-effects'
+        ?{effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false}:unchangedSystem);
+      }
+      const delegate={context:{operationId:context.operationId,ownerEpoch:context.ownerEpoch},active:true,assertActive:()=>context.check()};
+      const transactionOptions={...f.args,operationId:context.operationId,ownerEpoch:context.ownerEpoch,delegate};
+      if(args.includes('--recover-runtime')){
+       recoveryCalls++;assert.equal(args.includes('--allow-committed'),true);
+       if(scenario==='recovery-failed')throw Object.assign(new Error('fixture runtime recovery reader failed'),{code:'RUNTIME_RECOVERY_FAILED'});
+       await transaction.recover({...transactionOptions,allowCommitted:true,verifyOffline:async()=>offline()});
+       transaction.confirmPartialSystemProof(transactionOptions,unchangedSystem);
+       const facts=transaction.inspect(transactionOptions);assert.equal(facts.restorationVerification,'confirmed');
+       return {...facts,offlineProof:{...offline(),operationId:context.operationId,ownerEpoch:context.ownerEpoch}};
+      }
+      runtimeCalls++;effectAtRuntime=context.snapshot.effectState;
+      assert.equal(args.includes('--repair-managed'),true);const payload=args[0];
+      const descriptor=JSON.parse(fs.readFileSync(path.join(payload,'nora-hermes-runtime.json'),'utf8')),
+       manifest={...descriptor,venvPython:process.platform==='win32'?'hermes-agent/venv/Scripts/python.exe':'hermes-agent/venv/bin/python'};
+      const tools={findBundledRuntime:()=>({archive:path.join(payload,descriptor.archive),manifest,manifestPath:path.join(payload,'nora-hermes-runtime.json')}),
+       sha256File:file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
+       extractArchiveAsync:async(_,directory)=>{
+        f.write(path.relative(f.root,path.join(directory,'hermes-runtime',manifest.venvPython)),'non-executable new Python fixture');
+        f.write(path.relative(f.root,path.join(directory,'hermes-runtime/hermes-agent/program')),'new program fixture');
+       },validateRuntimeLinks(){},initializeHome(){},repairRuntimeAsync:async()=>{},relocateTextFiles(){},
+       validateRuntimeAsync:async root=>{
+        assert.equal(fs.existsSync(path.join(root,manifest.venvPython)),true);
+        if(root===f.home){activated=true;throw Object.assign(new Error('fixture fault after activated runtime validation'),{code:'RUNTIME_AFTER_ACTIVATION'});}
+        return 'fixture';
+       }};
+      return transaction.install({...transactionOptions,payloadRoot:payload,tools,partialRepair:request,
+       preflightPartial:async()=>proof(unchangedSystem),verifyOffline:async()=>offline()});
+     }});
+   const sealed=result.target.releasePlan;assert.equal(sealed.releaseManifest,undefined);assert.equal(sealed.version,'2.4.6');
+   const opDirectory=path.join(receipt.installerDirectory,'operations',result.operationId),
+    validated=releases.validatePlan(sealed,{...receipt,operationDirectory:opDirectory}),
+    persisted=JSON.parse(fs.readFileSync(path.join(opDirectory,'operation.json'),'utf8'));
+   assert.deepEqual(validated.releaseManifest,release.manifest);assert.equal(persisted.target.releasePlan.planId,sealed.planId);
+   assert.equal(persisted.operationId,result.operationId);assert.equal(maintenanceCalls,0);
+   assert.deepEqual(treeSeal(f.home),original);assert.deepEqual(transaction.partialStateMatches(snapshot,f.args),true);
+   assert.deepEqual(fs.readFileSync(path.join(f.tavern,'tavern-updates/transaction.json')),systemBefore);
+   for(const [name,bytes]of Object.entries(protectedBytes))assert.deepEqual(fs.readFileSync(path.join(f.root,name)),bytes,name);
+   if(scenario==='prepare-failed'){
+    assert.equal(runtimeCalls,0);assert.equal(recoveryCalls,0);assert.equal(activated,false);assert.equal(inspectionCalls,1);
+    assert.equal(result.state,'failed');assert.equal(result.effectState,'untouched');assert.equal(result.recoveryOutcome,'not-required');
+    assert.equal(result.verification,'unconfirmed');assert.equal(fs.existsSync(path.join(opDirectory,'runtime-bootstrap.json')),false);
+    return;
+   }
+   assert.equal(runtimeCalls,1);assert.equal(activated,true);assert.equal(result.primaryFailure.code,'RUNTIME_AFTER_ACTIVATION');
+   const journal=JSON.parse(fs.readFileSync(path.join(opDirectory,'runtime-bootstrap.json'),'utf8'));
+   assert.equal(journal.status,'rolled-back');assert.equal(journal.nextActivated,true);assert.equal(journal.previousRestored,true);
+   assert.equal(journal.operationId,result.operationId);assert.deepEqual(journal.originalPartial,snapshot);
+   assert.equal(fs.existsSync(transaction.paths({...f.args,operationId:result.operationId}).failed),true,'failed new runtime remains owned evidence');
+   if(scenario==='restored'){
+    assert.equal(result.state,'rolled-back');assert.equal(result.effectState,'restored');assert.equal(result.recoveryOutcome,'restored-and-verified');
+    assert.equal(result.verification,'confirmed');assert.equal(recoveryCalls,1);assert.equal(inspectionCalls,2);
+    assert.equal(result.result.originalState,'partial');assert.equal(result.result.runtimeReady,false);assert.equal(result.result.systemReady,false);
+    assert.equal(result.result.running,false);assert.equal(result.result.gatewayRunning,false);
+    assert.equal(journal.partialSystemProof.journalSeal.sha256,crypto.createHash('sha256').update(systemBefore).digest('hex'));
+    assert.equal(journal.partialSystemProof.stateDigest,transaction.programDigest(path.join(f.tavern,'tavern-state')));
+   }else{
+    assert.equal(result.state,'failed');assert.equal(result.effectState,'unknown');assert.equal(result.recoveryOutcome,'recovery-required');
+    assert.notEqual(result.verification,'confirmed');assert.equal(journal.partialSystemProof,undefined);
+    assert.equal(recoveryCalls,scenario==='recovery-failed'?1:0);assert.equal(inspectionCalls,2);
+    assert.ok(result.secondaryFailures.some(item=>item.operation==='recover'&&item.code===
+     (scenario==='recovery-failed'?'RUNTIME_RECOVERY_FAILED':'UPDATE_RECOVERY_REQUIRED')));
+   }
+   assert.equal(effectAtRuntime,'unknown','runtime may change directories before the system updater begins');
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+ });
+});
+
 test('CLI resumption rejects a changed real sealed manifest before reselecting or executing a partial repair',async()=>{
  const f=fixture();try{
   const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),{createOperationController}=require('../installer/desktop/operation-state'),

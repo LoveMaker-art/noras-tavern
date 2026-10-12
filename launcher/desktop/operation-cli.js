@@ -350,6 +350,7 @@ async function execute({receiptPath,request},{validate=capability.validate,lock,
           if(releases.compare(before.version,fixedTarget.version??fixedTarget.releaseManifest?.versions?.tavern)>0)throw fail('RELEASE_COMPATIBILITY','修复目标低于当前版本，未覆盖程序。');
           if(managed?.missing.python){
             await context.journal(path.join(receipt.installerDirectory,'operations',context.operationId,'runtime-bootstrap.json'));
+            await context.effect('unknown');
             await runner(context,path.join(__dirname,'runtime-worker.js'),[payload,receipt.noraHome,receipt.hermesHome,'--repair-managed'],
               {node:true,stdin:Buffer.from(JSON.stringify(managed))});
           }
