@@ -6,8 +6,26 @@ import { spawn } from 'node:child_process';
 import { createReleaseSource } from './release/release-source.mjs';
 import { readLayout, translatePath } from './layout.mjs';
 import { buildCommand } from './release/build-commands.mjs';
+import { withTestNodePath } from './checks/launcher-test-environment.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+if (process.versions.bun || Number(process.versions.node.split('.')[0]) !== 24) {
+    throw Object.assign(new Error('The source test runner requires real Node.js 24; invoke this file with that executable.'),
+        { code: 'LAUNCHER_TEST_ENVIRONMENT_INVALID' });
+}
+const sameNode = selected => {
+    if (!selected || !path.isAbsolute(selected) || !fs.existsSync(selected)) return false;
+    const expected = fs.realpathSync(process.execPath), actual = fs.realpathSync(selected);
+    return process.platform === 'win32' ? expected.toLowerCase() === actual.toLowerCase() : expected === actual;
+};
+if (Object.hasOwn(process.env, 'NORA_TEST_NODE') && !sameNode(process.env.NORA_TEST_NODE)) {
+    throw Object.assign(new Error('NORA_TEST_NODE must identify the real Node executable running this source runner.'),
+        { code: 'LAUNCHER_TEST_ENVIRONMENT_INVALID' });
+}
+if (Object.hasOwn(process.env, 'NORA_TEST_PYTHON') && !process.env.NORA_TEST_PYTHON) {
+    throw Object.assign(new Error('NORA_TEST_PYTHON is explicitly empty; select an actual interpreter or unset the override.'),
+        { code: 'LAUNCHER_TEST_ENVIRONMENT_INVALID' });
+}
 const args = process.argv.slice(2);
 const watch = args[0] === '--watch';
 if (watch) args.shift();
@@ -21,6 +39,8 @@ if (args.some(arg => /(?:^|\/)index-project\.mjs$/.test(arg))) {
     throw new Error('Use node tooling/checks/index-project.mjs directly');
 }
 const rules = readLayout(root);
+const nodeTests = executable === 'node' && args.includes('--test');
+const nodeEval = executable === 'node' && args.some(arg => ['-e', '--eval', '-p', '--print'].includes(arg));
 const { stage } = createReleaseSource(root, { candidate: true });
 const watchers = [];
 let child;
@@ -50,7 +70,11 @@ try {
         if (!fs.existsSync(path.join(root, relative))) return arg;
         const directory = fs.statSync(path.join(root, relative)).isDirectory();
         const mapped = translatePath(relative + (directory ? '/' : ''), rules).replace(/\/$/, '');
-        return fs.existsSync(path.join(stage, mapped)) ? mapped : path.join(root, relative);
+        // Windows cannot infer the cwd of another Node process from CIM. Keep
+        // test runner entries explicit so deletion admission can distinguish
+        // unrelated source tests without a testing-only safety exception.
+        const explicitNodeEntry = executable === 'node' && !nodeEval && /\.(?:cjs|mjs|js)$/.test(relative);
+        return fs.existsSync(path.join(stage, mapped)) ? (nodeTests || explicitNodeEntry ? path.join(stage, mapped) : mapped) : path.join(root, relative);
     });
     if (watch) {
         // Mirror authored files only. Electron's existing watcher reloads the UI.
@@ -67,13 +91,16 @@ try {
         }
     }
     const command = executable === 'node' ? process.execPath
-        : executable === 'python' ? (process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')) : executable;
+        : executable === 'python' ? (process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3')) : executable;
     const invocation = buildCommand(command, mappedArgs);
-    child = spawn(invocation.command, invocation.args, { cwd: stage, stdio: 'inherit', env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+    const environment = withTestNodePath({ ...process.env, NORA_TEST_NODE: process.env.NORA_TEST_NODE || process.execPath,
+        PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }, process.execPath);
+    child = spawn(invocation.command, invocation.args, { cwd: stage, stdio: 'inherit', env: environment });
     for (const [signal, handler] of signalHandlers) process.on(signal, handler);
     process.exitCode = await new Promise((resolve, reject) => {
-        child.once('error', reject);
-        child.once('exit', code => resolve(code ?? (interrupted ? 130 : 1)));
+        let failure;
+        child.once('error', error => { failure = error; });
+        child.once('close', code => failure ? reject(failure) : resolve(code ?? (interrupted ? 130 : 1)));
     });
 } finally {
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);

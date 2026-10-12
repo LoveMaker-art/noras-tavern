@@ -129,8 +129,8 @@ jobs:
           esac
       - name: Check release tooling before preparing runtimes
         run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
-          node tooling/run.mjs python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
       - name: Verify historical download identities before native builds
         if: steps.acceptance-baseline.outputs.initial_release != 'true'
         timeout-minutes: 5
@@ -212,7 +212,7 @@ jobs:
         shell: bash
         run: |
           release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$release_dir/system-assets" "$RUNNER_TEMP"
+          node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$release_dir/system-assets" "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
       - name: Recreate the expected native icon from the frozen source image
         shell: bash
@@ -344,6 +344,11 @@ jobs:
             app/engine/sillytavern/package-lock.json
             nora-mcp/npm-shrinkwrap.json
 
+      - name: Prepare the Python interpreter for native backup lock tests
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Verify embedded Story Profile before preparing runtimes
         run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
 
@@ -369,19 +374,25 @@ jobs:
         run: |
           node --test tests/release-consumer.test.mjs
           node launcher/desktop/node_modules/electron/install.js
-          node tooling/run.mjs node --test tests/deployment/launcher_electron_network.test.cjs
+          node "$PWD/tooling/checks/launcher-test-environment.mjs" chromium
+          node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_electron_network.test.cjs
 
       - name: Verify failed-install recovery and error classification before preparing runtimes
         timeout-minutes: 5
-        run: node tooling/run.mjs node --test tests/deployment/launcher_errors.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_state.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_errors.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_state.test.cjs
 
       - name: Verify cold-profile bootstrap identity before preparing runtimes
-        run: node tooling/run.mjs node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
-      - name: Prepare the Python interpreter for native backup lock tests
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+      - name: Require launcher source stability before preparing runtimes
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NORA_TEST_PYTHON="$(python -B -c 'import sys; print(sys.executable, end="")')"
+          export NORA_PYTHON="$NORA_TEST_PYTHON"
+          python -m pip install psutil==7.0.0 PyYAML==6.0.2
+          node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 
       - name: Require chat backup safety tests
         timeout-minutes: 10
@@ -473,7 +484,7 @@ jobs:
         if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: bash
         run: |
-          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
+          node "$PWD/tooling/run.mjs" node tooling/release/package-hermes-runtime.mjs \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -493,18 +504,18 @@ jobs:
       - name: Restore the exact baseline runtime
         if: inputs.runtime_source_run != ''
         shell: bash
-        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+        run: node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
 
       - name: Restore published runtime for existing installation gates
         if: inputs.launcher_baseline_tag != ''
         shell: bash
-        run: node tooling/run.mjs node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
+        run: node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
 
       - name: Reseal baseline with current ClawChat integration
         if: inputs.runtime_source_run != ''
         shell: bash
         run: |
-          node tooling/run.mjs node tooling/release/package-hermes-runtime.mjs \
+          node "$PWD/tooling/run.mjs" node tooling/release/package-hermes-runtime.mjs \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -520,25 +531,29 @@ jobs:
           python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
           node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
 
+      - name: Verify native launcher test prerequisites
+        run: node "$PWD/tooling/checks/launcher-test-environment.mjs" native
+
       - name: Verify committed installation journals before installation tests
         shell: bash
         run: |
-          node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_can_be_observed_but_never_recovered tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_tampering_still_refuses_before_stop tests.deployment.test_update_recovery.ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup
+          node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_can_be_observed_but_never_recovered tests.deployment.test_update_recovery.InterruptedRecoveryTests.test_committed_backup_tampering_still_refuses_before_stop tests.deployment.test_update_recovery.ManagedInstallRecoveryTests.test_real_install_committed_journal_keeps_sealed_metadata_after_success_cleanup
 
       - name: Test release channels and update rollback
         id: release_contracts
         continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
 
       - name: Test installation diagnostics on the target platform
         id: installation_contracts
         continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
 
       - name: Test diagnostic choices, error presentation and download waiting feedback
         id: presentation_contracts
         continue-on-error: true
-        run: node tooling/run.mjs node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_telemetry_worker.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
+        # Receiver/D1 integration is a separate receiver profile requiring NORA_LANDING_ROOT.
+        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
 
       - name: Require all platform contract checks before native acceptance
         if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success' || steps.presentation_contracts.outcome != 'success') }}
@@ -551,7 +566,7 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Verify Windows owned model and profile fixtures before long tests
         if: matrix.platform == 'win32'
@@ -561,15 +576,15 @@ jobs:
           NORA_CLAWCHAT_PLUGIN: ${{ runner.temp }}/nora-clawchat-plugin
         run: |
           "$NORA_TEST_PYTHON" -B -c 'import os; from pathlib import Path; assert all(Path(os.environ[key]).is_dir() for key in ["NORA_TEST_HERMES", "NORA_CLAWCHAT_PLUGIN"]), "Native fixture inputs must exist"'
-          node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_nora_profile.BundledProfileIntegrationTests.test_real_bundled_client_initializes_through_cli_and_preserves_customization tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_real_hermes_custom_save_passes_bridge_recheck
+          node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest -v tests.deployment.test_nora_profile.BundledProfileIntegrationTests.test_real_bundled_client_initializes_through_cli_and_preserves_customization tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key tests.deployment.test_launcher_model_status.VerifiedModelStatusTests.test_real_hermes_custom_save_passes_bridge_recheck
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
-        run: node tooling/run.mjs node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs tests/deployment/launcher_uninstall.test.cjs tests/deployment/launcher_runtime.test.cjs tests/deployment/launcher_managed_partial_repair.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs tests/deployment/launcher_uninstall.test.cjs tests/deployment/launcher_runtime.test.cjs tests/deployment/launcher_managed_partial_repair.test.cjs
 
       - name: Test native transaction and complete evidence contracts
         shell: bash
-        run: node tooling/run.mjs "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics tests.deployment.test_managed_partial_repair tests.deployment.test_update_partial_repair
+        run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics tests.deployment.test_managed_partial_repair tests.deployment.test_update_partial_repair
 
       - name: Verify runtime independently of original installation
         if: matrix.platform != 'win32'
@@ -578,15 +593,15 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Test unified update and application replacement
         shell: bash
         run: |
-          node tooling/run.mjs node --test tests/deployment/launcher_self_update.test.cjs tests/deployment/launcher_local_release.test.cjs tests/deployment/launcher_recovery_route.test.cjs tests/deployment/launcher_update_package.test.cjs
+          node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_self_update.test.cjs tests/deployment/launcher_local_release.test.cjs tests/deployment/launcher_recovery_route.test.cjs tests/deployment/launcher_update_package.test.cjs
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
 
       - name: Test Nora initialization and profile synchronization
         shell: bash
@@ -594,12 +609,12 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
           "$py" -B -m unittest tests.deployment.test_updater_skill_environment
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies
           export NORA_TEST_HERMES="$("$py" -c 'import os; from pathlib import Path; print(Path(os.environ["RUNNER_TEMP"]) / "hermes" / "hermes-agent")')"
-          node tooling/run.mjs "$py" -B -m unittest tests.deployment.test_model_provider_skill
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_model_provider_skill
 
       - name: Build release payload
         shell: bash
@@ -711,7 +726,7 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload "$release_dir/nora-tavern-launcher/payload" \
+          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload "$release_dir/nora-tavern-launcher/payload" \
             --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
             --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
@@ -736,10 +751,10 @@ jobs:
             if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
               throw 'Windows long-path test precondition was not applied'
             }
-            node tooling/run.mjs node --test tests/deployment/launcher_install_cleanup.test.cjs
+            node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_install_cleanup.test.cjs
             if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
             $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
-            node tooling/run.mjs $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
+            node "$PWD/tooling/run.mjs" $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
             if ($LASTEXITCODE -ne 0) { throw 'Windows filesystem regression tests failed' }
             Move-Item (Join-Path $env:RUNNER_TEMP 'hermes') (Join-Path $env:RUNNER_TEMP 'hermes-build-source')
             $release = Get-ChildItem release -Directory |
@@ -747,7 +762,7 @@ jobs:
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
             $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
-            node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
+            node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
             if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
             if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
               foreach ($state in @('running', 'stopped')) {

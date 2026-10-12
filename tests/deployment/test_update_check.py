@@ -15,7 +15,8 @@ import urllib.error
 
 
 ROOT = Path(__file__).resolve().parents[2]
-CHECKER = ROOT / "ops/scripts/nora-tavern-update-check.sh"
+CHECKER = ROOT / "ops/scripts/nora-tavern-update-check.py"
+POSIX_CHECKER = CHECKER.with_suffix(".sh")
 SENDER = ROOT / "ops/scripts/nora-tavern-card-send.py"
 UPDATER = ROOT / "ops/updater/update.py"
 
@@ -33,7 +34,7 @@ def load_updater():
 
 class UpdateCheckScriptTests(unittest.TestCase):
     def checker_module(self, home: Path):
-        spec = importlib.util.spec_from_file_location("tavern_mirrored_update_check", ROOT / "ops/scripts/nora-tavern-update-check.py")
+        spec = importlib.util.spec_from_file_location("tavern_mirrored_update_check", CHECKER)
         module = importlib.util.module_from_spec(spec)
         environment = {key: value for key, value in os.environ.items() if key not in {"TAVERN_RELEASE_API_URL", "TAVERN_DATA_ROOT"}}
         environment["HERMES_HOME"] = str(home)
@@ -89,13 +90,14 @@ class UpdateCheckScriptTests(unittest.TestCase):
             release.write_text(json.dumps({"tag_name": "v2.3.0"}))
             environment = {key: value for key, value in os.environ.items() if key != "TAVERN_DATA_ROOT"}
             environment.update(HERMES_HOME=str(home), TAVERN_RELEASE_API_URL=release.as_uri())
-            result = subprocess.run([sys.executable, str(ROOT / "ops/scripts/nora-tavern-update-check.py"), "--check-only"],
+            result = subprocess.run([sys.executable, "-B", str(CHECKER), "--check-only"],
                                     env=environment, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["installed"], "2.2.9")
             self.assertFalse((root / "tavern").exists())
 
-    def run_checker(self, home: Path, release: Path, *arguments: str, sender: Path | None = None):
+    def run_checker(self, home: Path, release: Path, *arguments: str,
+                    sender: Path | None = None, posix_wrapper: bool = False):
         environment = {
             **os.environ,
             "HERMES_HOME": str(home),
@@ -106,12 +108,29 @@ class UpdateCheckScriptTests(unittest.TestCase):
         if sender is not None:
             environment["TAVERN_UPDATE_SENDER"] = str(sender)
         return subprocess.run(
-            [CHECKER, *arguments],
+            [POSIX_CHECKER, *arguments] if posix_wrapper else [sys.executable, "-B", CHECKER, *arguments],
             text=True,
             capture_output=True,
             env=environment,
             check=False,
+            timeout=10,
         )
+
+    @unittest.skipUnless(os.name == "posix", "POSIX shell wrapper; the installed Python checker is tested on every platform")
+    def test_posix_wrapper_matches_the_installed_python_checker(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            home = root / "home"
+            marker = home / "apps/tavern-runtime/.tavern-release-version"
+            marker.parent.mkdir(parents=True)
+            marker.write_text("2.0.9\n", encoding="utf-8")
+            release = root / "release.json"
+            release.write_text(json.dumps({"tag_name": "v2.0.10"}), encoding="utf-8")
+            direct = self.run_checker(home, release, "--check-only")
+            wrapped = self.run_checker(home, release, "--check-only", posix_wrapper=True)
+            self.assertEqual(direct.returncode, 0, direct.stderr)
+            self.assertEqual(wrapped.returncode, 0, wrapped.stderr)
+            self.assertEqual(json.loads(wrapped.stdout), json.loads(direct.stdout))
 
     def test_check_only_compares_installed_and_latest_versions(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -213,6 +232,17 @@ class UpdateCheckScriptTests(unittest.TestCase):
         self.assertNotIn("Your data has not changed", text)
 
 
+class UpdateCheckFixtureLifecycleTests(unittest.TestCase):
+    def test_cron_fixture_preserves_an_absent_path(self):
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PATH", None)
+            fixture = UpdateCheckInstallerTests("test_install_is_idempotent_and_removes_duplicate_managed_jobs")
+            result = unittest.TestResult()
+            fixture.run(result)
+            self.assertTrue(result.wasSuccessful(), str(result.failures + result.errors))
+            self.assertNotIn("PATH", os.environ, "The fixture must restore absence as well as existing values")
+
+
 class UpdateCheckInstallerTests(unittest.TestCase):
     def test_install_is_idempotent_and_removes_duplicate_managed_jobs(self):
         updater = load_updater()
@@ -232,7 +262,7 @@ class UpdateCheckInstallerTests(unittest.TestCase):
             )
             binary = root / "bin"
             binary.mkdir()
-            hermes = binary / "hermes"
+            hermes = binary / ("hermes.exe" if os.name == "nt" else "hermes")
             hermes.write_text(
                 f"#!{sys.executable}\n"
                 "import json, os, sys\n"
@@ -256,20 +286,17 @@ class UpdateCheckInstallerTests(unittest.TestCase):
                 encoding="utf-8",
             )
             hermes.chmod(0o755)
-            old_path = os.environ.get("PATH", "")
-            os.environ["PATH"] = str(binary) + os.pathsep + old_path
-            try:
-                # This fixture tests cron deduplication using the temporary CLI,
-                # not the separate launcher-owned process capability protocol.
-                def fixture_run(command, *, env=None, capture=False, **options):
-                    return subprocess.run([str(value) for value in command], env=env, capture_output=capture,
-                                          text=True, check=True, timeout=10, **options)
-                with mock.patch.object(updater, "run", fixture_run):
+            with mock.patch.dict(os.environ, {"PATH": str(binary) + os.pathsep + os.environ.get("PATH", "")}):
+                # Bind the isolated CLI while retaining updater.run's real
+                # Python/runpy adapter. Native ownership is tested separately.
+                def fixture_run(command, **options):
+                    self.assertEqual(command[0], sys.executable)
+                    self.assertIn(str(hermes), command)
+                    return subprocess.run(command, **{**options, "timeout": options.get("timeout") or 10})
+                with mock.patch.object(updater, "hermes_command", return_value=hermes), \
+                        mock.patch.object(updater._operation_control, "managed_run", side_effect=fixture_run):
                     result = updater.install_update_check(home, ROOT / "ops")
                     again = updater.install_update_check(home, ROOT / "ops")
-            finally:
-                os.environ["PATH"] = old_path
-
             self.assertEqual(result["status"], "installed")
             self.assertEqual(again["jobId"], "keep")
             jobs = json.loads((cron / "jobs.json").read_text(encoding="utf-8"))["jobs"]
@@ -280,7 +307,13 @@ class UpdateCheckInstallerTests(unittest.TestCase):
             for name in updater.UPDATE_CHECK_FILES:
                 installed = home / "scripts" / name
                 self.assertEqual(installed.read_bytes(), (ROOT / "ops/scripts" / name).read_bytes())
-                self.assertTrue(installed.stat().st_mode & stat.S_IXUSR)
+                if os.name == "posix":
+                    self.assertTrue(installed.stat().st_mode & stat.S_IXUSR)
+                executed = subprocess.run([sys.executable, "-B", str(installed), "--help"],
+                    env={**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": str(home)},
+                    capture_output=True, text=True, timeout=10)
+                self.assertEqual(executed.returncode, 0, executed.stderr)
+                self.assertIn(installed.name, executed.stdout)
 
 
 if __name__ == "__main__":

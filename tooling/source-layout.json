@@ -15,6 +15,7 @@
     ["deployment/update/system-update.js", "ops/installer/desktop/system-update.js"],
     ["deployment/update/releases.js", "ops/installer/desktop/releases.js"],
     ["deployment/uninstall/uninstall.js", "ops/installer/desktop/uninstall.js"],
+    ["deployment/uninstall/uninstall-offline-check.js", "ops/installer/desktop/uninstall-offline-check.js"],
     ["deployment/uninstall/uninstall.nsh", "ops/installer/desktop/uninstall.nsh"],
     ["deployment/install/install-cleanup.js", "ops/installer/desktop/install-cleanup.js"],
     ["deployment/install/install-location.js", "ops/installer/desktop/install-location.js"],

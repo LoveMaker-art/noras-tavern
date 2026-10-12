@@ -8,6 +8,7 @@ const {DatabaseSync} = require('node:sqlite');
 const desktop = fs.existsSync(path.join(__dirname,'../../launcher/desktop/telemetry.js'))
   ? path.join(__dirname,'../../launcher/desktop') : path.join(__dirname,'../installer/desktop');
 const {createTelemetry} = require(path.join(desktop,'telemetry'));
+const {captureChild, stopChild} = require('./launcher_test_lifecycle.cjs');
 
 test('receiver stores ordered raw operation chunks independently of error statistics', {skip:!process.env.NORA_LANDING_ROOT}, async t => {
   const f = await integratedFixture(t);
@@ -40,16 +41,18 @@ test('real producer raw logs resume after offline restart and lost ACK without e
   const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
   const {createOperationLogDelivery}=require(path.join(desktop,'operation-log-delivery'));
   const {consumeLines}=require(path.join(desktop,'process-output'));
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-raw-log-chain-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-raw-log-chain-'));let child,delivery;
+  t.after(async()=>{await stopChild(child);delivery?.close();fs.rmSync(root,{recursive:true,force:true});});
   const id=require('node:crypto').randomUUID(),installation=require('node:crypto').randomUUID(),consentId=require('node:crypto').randomUUID();
   const file=path.join(root,'install.log'),fallback=path.join(root,'fallback.log'),blocked=path.join(root,'blocked');
   fs.mkdirSync(blocked);let unavailable=false,outputIndex=0;
   const diagnostics=createDiagnostics({primary:()=>unavailable?blocked:file,fallback});
   diagnostics.begin('real-child',{operationId:id,action:'install'});
-  const child=require('node:child_process').spawn(process.execPath,['-e',
+  child=require('node:child_process').spawn(process.execPath,['-e',
     'for(let i=0;i<360;i++)process.stderr.write("[INFO] unpack entry "+i+" "+"entry data ".repeat(120)+"\\n");process.stderr.write("ExtractError: invalid archive\\n  at unpack (archive.js:42:3)\\napi_key=fixture-private-key\\n");process.exitCode=7']);
+  const closed=captureChild(child).closed;
   consumeLines(child.stderr,line=>{unavailable=outputIndex++%3===1;diagnostics.event({event:'log',stream:'stderr',uploadScope:'maintenance',line});});
-  await new Promise((resolve,reject)=>{child.once('close',resolve);child.once('error',reject);});
+  await closed;
   unavailable=false;diagnostics.event({event:'log',line:'PRIVATE_HERMES_DAILY_OUTPUT',stream:'stdout'});
   diagnostics.finish('failed');
   let time=Date.now(),offline=true,lostAck=false,enabled=true;
@@ -57,7 +60,7 @@ test('real producer raw logs resume after offline restart and lost ACK without e
     now:()=>time,consent:()=>({enabled,id:consentId,installation}),fetcher:async(url,init)=>{
       if(offline)throw Error('offline');const result=await worker.fetch(new Request(url,init),f.env);
       if(!lostAck){lostAck=true;throw Error('lost ACK');}return result;}};
-  let delivery=createOperationLogDelivery(options);delivery.begin(id);delivery.finish(id);await delivery.flush();
+  delivery=createOperationLogDelivery(options);delivery.begin(id);delivery.finish(id);await delivery.flush();
   assert.equal(delivery.summary(id).received,0);assert.ok(delivery.summary(id).queued>1);delivery.close();
   delivery=createOperationLogDelivery(options);const relocated=path.join(root,'selected-directory/outbox.json');
   assert.equal(delivery.relocate(relocated),true);assert.equal(fs.existsSync(options.file),false);delivery.close();
@@ -129,12 +132,15 @@ async function integratedFixture(t, transport, consent = true, options = {}) {
       const response=await worker.fetch(new Request(url,options),env);
       return transport?transport(response,requests.length):response;
     }});
-  t.after(()=>{client.close();db.close();fs.rmSync(root,{recursive:true,force:true});});
+  const clients=new Set([client]),lifecycleActors=new Set();
+  t.after(async()=>{for(const actor of lifecycleActors)await actor.close();for(const active of clients)active.close();db.close();fs.rmSync(root,{recursive:true,force:true});});
   if (consent) client.setEnabled(true);
   const date=new Date(time+28800000).toISOString().slice(0,10);
-  return {client,db,env,requests,rawRequests,reopen:()=>createTelemetry({file:path.join(root,'telemetry.json'),launcherVersion:'2.0.2',automatic:false,...options,
-      fetcher:async(url,init)=>{if(url.endsWith('/logs'))rawRequests.push(JSON.parse(init.body));return worker.fetch(new Request(url,init),env);}}),
-    advance:()=>{time+=10000;},queue:()=>JSON.parse(fs.readFileSync(path.join(root,'telemetry.json'))).queue,
+  return {client,db,env,requests,rawRequests,root:fs.realpathSync(root),now:()=>time,
+    registerLifecycle:actor=>{lifecycleActors.add(actor);return actor;},
+    reopen:()=>{const reopened=createTelemetry({file:path.join(root,'telemetry.json'),launcherVersion:'2.0.2',automatic:false,...options,
+      fetcher:async(url,init)=>{if(url.endsWith('/logs'))rawRequests.push(JSON.parse(init.body));return worker.fetch(new Request(url,init),env);}});clients.add(reopened);return reopened;},
+    advance:(milliseconds=10000)=>{time+=milliseconds;},queue:()=>JSON.parse(fs.readFileSync(path.join(root,'telemetry.json'))).queue,
     stats:async()=>{const response=await worker.fetch(new Request(`https://noratavern.com/api/launcher/stats?from=${date}&to=${date}`,{headers:{Authorization:'Bearer integration-read-only'}}),env);assert.equal(response.status,200);return response.json();}};
 }
 
@@ -162,7 +168,7 @@ test('the real telemetry client uploads whole logs only after failure or interru
   assert.equal(log.installation_id,monitor.installation_id);assert.equal(log.complete,true);
   assert.match(log.chunks.map(chunk=>chunk.text).join(''),/ExtractError: update failed\n  at apply/);
   const interrupted=begin();output('interrupted native attempt');f.client.close();
-  const reopened=f.reopen();t.after(()=>reopened.close());await reopened.flush();
+  const reopened=f.reopen();await reopened.flush();
   assert.equal(f.rawRequests.at(-1).operation_id,interrupted);assert.match(f.rawRequests.at(-1).text,/interrupted native attempt/);
   assert.ok(f.db.prepare('SELECT count(*) n FROM launcher_operation_logs').get().n>=2);
 });
@@ -224,10 +230,12 @@ test('real Python bridge failure reaches Worker storage with its sanitized cause
   const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
   const {launcherError}=require(path.join(desktop,'launcher-errors'));
   const {consumeLines}=require(path.join(desktop,'process-output'));
+  let child,fixtureRoot;
+  t.after(async()=>{await stopChild(child);if(fixtureRoot)fs.rmSync(fixtureRoot,{recursive:true,force:true});});
   const f=await integratedFixture(t);
   // The bridge projects only frames owned by its ops tree. Keep this fixture
   // beside the projected tests so the real ownership filter is exercised.
-  const fixtureRoot=fs.mkdtempSync(path.join(__dirname,'.nora-python-bridge-contract-'));
+  fixtureRoot=fs.mkdtempSync(path.join(__dirname,'.nora-python-bridge-contract-'));
   const script=path.join(fixtureRoot,'bridge_fault_fixture.py');
   fs.writeFileSync(script,`import errno
 import sys
@@ -247,8 +255,6 @@ try:
 except RuntimeError as error:
     fail(str(error), error=error)
 `);
-  let child;
-  t.after(()=>{if(child?.exitCode===null)child.kill();fs.rmSync(fixtureRoot,{recursive:true,force:true});});
   const source=fs.readFileSync(path.join(desktop,'main.js'),'utf8');
   const node=parse(source,{ecmaVersion:'latest'}).body.find(n=>n.type==='FunctionDeclaration'&&n.id.name==='runBridge');
   assert.ok(node);
@@ -261,7 +267,7 @@ except RuntimeError as error:
     process,processSite:()=> 'process.start',sendBridgeEvent(){},terminateProcess:proc=>proc.kill(),
     sanitizeLine:line=>line,parseJsonLine:JSON.parse,setInterval,setTimeout,clearInterval,clearTimeout,
     activeProcess:null,activeOperationContext:{snapshot:{}},cancelled:false,
-    spawnMaintenance:(...args)=>{child=spawn(...args);return child;},spawn:(...args)=>{child=spawn(...args);return child;}};
+    spawnMaintenance:(...args)=>{child=spawn(...args);captureChild(child);return child;},spawn:(...args)=>{child=spawn(...args);captureChild(child);return child;}};
   const runBridge=vm.runInNewContext(`(${source.slice(node.start,node.end)})`,context);
   const operation=f.client.begin('start');f.client.stage('start_nora');
   const failure=await runBridge('start',{service:'nora'}).then(()=>assert.fail('fixture bridge must fail'),error=>error);
@@ -368,4 +374,100 @@ test('unknown fixed-plan facts are explicitly missing; opting out still uploads 
   const next=require('node:crypto').randomUUID();f.client.setEnabled(false);f.client.begin('update',{operationId:next});f.client.finish('failed',{code:'EPERM',message:'UNCONSENTED PROGRAM DETAIL'});f.advance();await f.client.flush();
   const row=f.db.prepare("SELECT * FROM launcher_events WHERE operation_id=? AND event='operation_finished'").get(next);assert.equal(row.fault,null);assert.equal(row.error_code,'permission_denied');
   assert.doesNotMatch(JSON.stringify(f.requests),/UNCONSENTED PROGRAM DETAIL/);assert.equal(f.client.deliverySummary(next).queued,0);
+});
+
+function lifecycleHome(f) {
+  const home=path.join(f.root,'installation'),file=path.join(home,'installer','telemetry.json');
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  fs.copyFileSync(path.join(f.root,'telemetry.json'),file);
+  return {home,file,original:fs.readFileSync(file,'utf8')};
+}
+
+test('startup and uninstall lifecycle producers roundtrip real fault and raw-log ACKs with independent identities', {skip:!process.env.NORA_LANDING_ROOT},async t=>{
+  const f=await integratedFixture(t),installation=lifecycleHome(f),requests=[];
+  const {default:worker}=await import(pathToFileURL(path.join(process.env.NORA_LANDING_ROOT,'server/worker.mjs')));
+  const {createLifecycleDiagnostics}=require(path.join(desktop,'lifecycle-diagnostics'));
+  const transport=async(url,options)=>{
+    assert.ok(['https://noratavern.com/api/launcher/events','https://noratavern.com/api/launcher/logs'].includes(url));
+    assert.equal(options.method,'POST');assert.equal(options.headers.Authorization,undefined);
+    const body=JSON.parse(options.body),response=await worker.fetch(new Request(url,options),f.env);
+    assert.equal(response.status,202);requests.push({url,body,ack:await response.clone().json()});return response;
+  };
+  const directory=path.join(f.root,'lifecycle'),actor=f.registerLifecycle(createLifecycleDiagnostics({directory,
+    launcherVersion:'2.1.3',enabled:true,fetcher:transport,now:f.now,roots:()=>[f.root]}));
+  const handles=['startup','uninstall'].map(kind=>{
+    const error=Object.assign(new Error(kind+' denied api_key=LIFECYCLE_PRIVATE_KEY https://private.example/?token=LIFECYCLE_QUERY_CANARY'),
+      {code:'EACCES',source:'launcher',site:'launcher.operation'});
+    error.stack='Error: denied\n  at '+kind+' ('+path.join(installation.home,'private-'+kind+'.js')+':41:2)';
+    const handle=actor.capture(kind,error,{home:installation.home});
+    handle.diagnostics.event({event:'log',line:'PRIVATE_LIFECYCLE_SERVICE_OUTPUT',stream:'stdout'});
+    return {kind,handle};
+  });
+  assert.notEqual(handles[0].handle.operationId,handles[1].handle.operationId);
+  const producerIds=handles.map(({handle})=>JSON.parse(fs.readFileSync(path.join(directory,handle.operationId,'events.json'),'utf8')).id);
+  assert.notEqual(producerIds[0],producerIds[1]);
+  for(const producer of producerIds)assert.notEqual(producer,f.client.settings().installationId);
+  for(const {kind,handle} of handles){
+    const receipt=await handle.flush();assert.equal(receipt.phase,'accepted');assert.equal(receipt.logs.complete,true);
+    assert.equal(receipt.summary.queued,0);assert.equal(receipt.summary.accepted,4);
+    const rows=f.db.prepare('SELECT * FROM launcher_events WHERE operation_id=? ORDER BY sequence').all(handle.operationId);
+    assert.equal(rows.length,4);assert.ok(rows.every(row=>row.action==='launcher'));
+    assert.deepEqual(rows.map(row=>row.event),['operation_started','stage_started','stage_finished','operation_finished']);
+    assert.deepEqual(rows.map(row=>row.sequence),[1,2,3,4]);assert.equal(rows.at(-1).status,'failed');
+    const fault=JSON.parse(rows.at(-1).fault);assert.equal(fault.schema,1);assert.ok(fault.errors.length>0);
+    assert.match(JSON.stringify(fault),new RegExp('private-'+kind+'\\.js:41:2'));
+    const raw=f.db.prepare('SELECT * FROM launcher_operation_logs WHERE operation_id=? ORDER BY chunk_index').all(handle.operationId);
+    assert.equal(raw.length,1);assert.equal(raw[0].final,1);assert.equal(raw[0].installation_id,rows[0].installation_id);
+    assert.match(raw[0].text,new RegExp('lifecycle\\.'+kind+'-failed'));
+    assert.ok(JSON.parse(raw[0].missing).includes('service_output_omitted'));
+    const events=requests.find(request=>request.body.events?.some(event=>event.operation_id===handle.operationId));
+    assert.deepEqual(events.ack.accepted_event_ids,events.body.events.map(event=>event.event_id));
+    const log=requests.find(request=>request.body.operation_id===handle.operationId);
+    assert.equal(log.ack.accepted,true);assert.equal(log.ack.index,log.body.index);assert.equal(log.ack.chunk_id,log.body.chunk_id);
+  }
+  assert.equal(fs.readFileSync(installation.file,'utf8'),installation.original,'lifecycle producers must preserve the GUI consent/state identity');
+  const sent=JSON.stringify({requests,rows:f.db.prepare('SELECT fault FROM launcher_events').all(),logs:f.db.prepare('SELECT text FROM launcher_operation_logs').all()});
+  for(const canary of ['LIFECYCLE_PRIVATE_KEY','LIFECYCLE_QUERY_CANARY','private.example','PRIVATE_LIFECYCLE_SERVICE_OUTPUT',f.root,installation.home])assert.equal(sent.includes(canary),false,canary);
+});
+
+test('lifecycle Worker replay resumes offline startup and uninstall faults after lost event and raw-log ACKs without duplicates', {skip:!process.env.NORA_LANDING_ROOT},async t=>{
+  for(const kind of ['startup','uninstall'])await t.test(kind,async child=>{
+    const f=await integratedFixture(child),installation=lifecycleHome(f),requests=[],lost=new Set(['events','logs']);
+    const {default:worker}=await import(pathToFileURL(path.join(process.env.NORA_LANDING_ROOT,'server/worker.mjs')));
+    const {createLifecycleDiagnostics}=require(path.join(desktop,'lifecycle-diagnostics'));
+    let offline=true;
+    const transport=async(url,options)=>{
+      assert.ok(['https://noratavern.com/api/launcher/events','https://noratavern.com/api/launcher/logs'].includes(url));
+      assert.equal(options.headers.Authorization,undefined);const endpoint=url.endsWith('/logs')?'logs':'events',body=JSON.parse(options.body);
+      requests.push({endpoint,body});if(offline)throw Error('fixture offline before Worker');
+      const response=await worker.fetch(new Request(url,options),f.env);assert.equal(response.status,202);
+      if(lost.delete(endpoint))throw Error('fixture ACK lost after Worker acceptance');return response;
+    };
+    const directory=path.join(f.root,'lifecycle'),create=()=>f.registerLifecycle(createLifecycleDiagnostics({directory,
+      launcherVersion:'2.1.3',enabled:true,fetcher:transport,now:f.now,roots:()=>[f.root]}));
+    const actor=create(),handle=actor.capture(kind,Object.assign(new Error(kind+' denied api_key=OFFLINE_LIFECYCLE_KEY'),{code:'EPERM'}),{home:installation.home});
+    const id=handle.operationId,base=path.join(directory,id),queued=JSON.parse(fs.readFileSync(path.join(base,'events.json'),'utf8')).queue.map(event=>event.event_id);
+    const first=await handle.flush();assert.equal(first.phase,'queued');assert.equal(first.summary.accepted,0);
+    assert.equal(f.db.prepare('SELECT count(*) n FROM launcher_events').get().n,0);
+    assert.equal(f.db.prepare('SELECT count(*) n FROM launcher_operation_logs').get().n,0);await actor.close();
+    offline=false;f.advance(400000);
+    const resumed=create(),unconfirmed=(await resumed.drain())[0];assert.equal(unconfirmed.phase,'queued');
+    assert.equal(unconfirmed.summary.accepted,0,'stored rows without an exact ACK must remain unconfirmed locally');
+    assert.equal(unconfirmed.logs.complete,false);
+    const eventCount=f.db.prepare('SELECT count(*) n FROM launcher_events').get().n,logCount=f.db.prepare('SELECT count(*) n FROM launcher_operation_logs').get().n;
+    assert.equal(eventCount,queued.length);assert.equal(logCount,1);assert.equal(lost.size,0);await resumed.close();
+    f.advance(400000);const replay=create(),accepted=(await replay.drain())[0];
+    assert.equal(accepted.phase,'accepted');assert.equal(accepted.summary.accepted,queued.length);assert.equal(accepted.summary.queued,0);assert.equal(accepted.logs.complete,true);
+    assert.equal(f.db.prepare('SELECT count(*) n FROM launcher_events').get().n,eventCount);
+    assert.equal(f.db.prepare('SELECT count(*) n FROM launcher_operation_logs').get().n,logCount);
+    const eventAttempts=requests.filter(request=>request.endpoint==='events');
+    assert.equal(eventAttempts.length,3);for(const attempt of eventAttempts)assert.deepEqual(attempt.body.events.map(event=>event.event_id),queued);
+    const logAttempts=requests.filter(request=>request.endpoint==='logs');assert.equal(logAttempts.length,3);
+    assert.equal(new Set(logAttempts.map(request=>request.body.chunk_id)).size,1);assert.equal(new Set(logAttempts.map(request=>request.body.log_id)).size,1);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(base,'job.json'),'utf8')).phase,'accepted');
+    assert.deepEqual(await replay.drain(),[],'accepted jobs must not be uploaded again');
+    const fault=JSON.parse(f.db.prepare("SELECT fault FROM launcher_events WHERE operation_id=? AND event='operation_finished'").get(id).fault);
+    assert.ok(fault.errors.length>0);assert.equal(fs.readFileSync(installation.file,'utf8'),installation.original);
+    assert.doesNotMatch(JSON.stringify(requests),/OFFLINE_LIFECYCLE_KEY/);
+  });
 });

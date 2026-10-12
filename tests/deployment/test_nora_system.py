@@ -84,6 +84,110 @@ class NoraSystemTests(unittest.TestCase):
         system.record_initialization(self.home, self.root, self.manifest, {name: True for name in system.PROOFS})
         first_install.write_install_receipt(self.root, self.manifest)
 
+    def assert_acceptance_rejected_without_rewriting(self):
+        paths = [self.root / 'tavern-updates' / name for name in ('nora-system.json', 'installed.json')]
+        original = {path: path.read_bytes() for path in paths}
+        for result in (system.installation_state(self.home, self.root),
+                       system.inspect(self.home, self.root, 18899)):
+            self.assertFalse(result['ready'], result)
+            self.assertFalse(result['setupCompleted'], result)
+            self.assertTrue(result['problems'], result)
+        self.assertEqual({path: path.read_bytes() for path in paths}, original)
+
+    def test_truthy_runtime_proof_values_never_count_as_confirmation(self):
+        self.initialize()
+        path = self.root / 'tavern-updates/nora-system.json'
+        original = system.read_json(path)
+        for name in system.PROOFS:
+            for value in ('not-confirmed', 'true', 1, 1.0, [True], {'confirmed': True}, False, None):
+                with self.subTest(proof=name, value=value):
+                    system.save_json(path, {**original, 'proof': {**original['proof'], name: value}})
+                    self.assert_acceptance_rejected_without_rewriting()
+                    before = path.read_bytes()
+                    with self.assertRaises(RuntimeError):
+                        system.mark_setup_complete(self.root)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_record_and_receipt_versions_and_commits_must_agree_for_both_checks(self):
+        self.initialize()
+        path = self.root / 'tavern-updates/installed.json'
+        original = system.read_json(path)
+        for field, value in (('commit', 'b' * 40), ('version', '2.2.9')):
+            with self.subTest(field=field):
+                system.save_json(path, {**original, field: value})
+                self.assert_acceptance_rejected_without_rewriting()
+
+    def test_malformed_acceptance_formats_fail_closed_in_both_checks(self):
+        self.initialize()
+        paths = {name: self.root / 'tavern-updates' / name for name in ('nora-system.json', 'installed.json')}
+        originals = {name: system.read_json(path) for name, path in paths.items()}
+        cases = (
+            ('nora-system.json', 'schema', (None, True, 1.0, '1', 0, 2)),
+            ('installed.json', 'schema', (None, True, 1.0, 2.0, '1', 0, 3)),
+            ('nora-system.json', 'setupCompleted', (None, 'false', 'true', 0, 1, [], {})),
+            ('installed.json', 'candidate', ('false', 'true', 0, 1, None, [], {})),
+        )
+        for name, field, values in cases:
+            for value in values:
+                with self.subTest(record=name, field=field, value=value):
+                    for reset_name, original in originals.items():
+                        system.save_json(paths[reset_name], original)
+                    system.save_json(paths[name], {**originals[name], field: value})
+                    self.assert_acceptance_rejected_without_rewriting()
+
+    def test_version_and_commit_formats_are_validated_before_use(self):
+        self.initialize()
+        paths = {name: self.root / 'tavern-updates' / name for name in ('nora-system.json', 'installed.json')}
+        originals = {name: system.read_json(path) for name, path in paths.items()}
+        for field, values in (
+            ('version', (None, 228, '', 'v2.2.8', '2.2', '2.2.8-alpha.1', '2.2.8\n', '２.２.８')),
+            ('commit', (None, 123, '', 'a' * 39, 'A' * 40, 'g' * 40, 'a' * 40 + '\n')),
+        ):
+            for name in paths:
+                for value in values:
+                    with self.subTest(record=name, field=field, value=value):
+                        for reset_name, original in originals.items():
+                            system.save_json(paths[reset_name], original)
+                        system.save_json(paths[name], {**originals[name], field: value})
+                        self.assert_acceptance_rejected_without_rewriting()
+            # Equal malformed values in both records must not create acceptance.
+            for value in values:
+                with self.subTest(record='both', field=field, value=value):
+                    for name, original in originals.items():
+                        system.save_json(paths[name], {**original, field: value})
+                    self.assert_acceptance_rejected_without_rewriting()
+
+    def test_supported_receipt_schemas_and_beta_versions_keep_historical_acceptance(self):
+        for version in ('2.2.8', '2.2.8-beta.1'):
+            for schema in (1, 2):
+                with self.subTest(version=version, schema=schema):
+                    self.manifest['versions']['tavern'] = version
+                    self.initialize()
+                    path = self.root / 'tavern-updates/installed.json'
+                    if schema == 2:
+                        # The updater writes schema 2; these are its acceptance-relevant fields.
+                        system.save_json(path, {'schema': 2, 'version': version,
+                            'commit': self.manifest['commit'], 'candidate': False})
+                    system.mark_setup_complete(self.root)
+                    for result in (system.installation_state(self.home, self.root),
+                                   system.inspect(self.home, self.root, 18899)):
+                        self.assertTrue(result['ready'], result)
+                        self.assertTrue(result['setupCompleted'], result)
+                        self.assertEqual(result['version'], version)
+
+    def test_setup_marking_supports_update_metadata_write_order_without_granting_readiness(self):
+        self.initialize()
+        next_manifest = {'versions': {'tavern': '2.2.9'}, 'commit': 'b' * 40}
+        # Production update records the new runtime proof before replacing the version receipt.
+        system.record_initialization(self.home, self.root, next_manifest, {name: True for name in system.PROOFS})
+        system.mark_setup_complete(self.root)
+        self.assert_acceptance_rejected_without_rewriting()
+        first_install.write_install_receipt(self.root, next_manifest)
+        for result in (system.installation_state(self.home, self.root),
+                       system.inspect(self.home, self.root, 18899)):
+            self.assertTrue(result['ready'], result)
+            self.assertTrue(result['setupCompleted'], result)
+
     def test_files_alone_are_not_a_complete_installation(self):
         result = system.inspect(self.home, self.root, 18899)
         self.assertFalse(result["ready"])

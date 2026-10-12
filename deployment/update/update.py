@@ -2,6 +2,7 @@
 """Direct Tavern updater: backup, replace, start."""
 import argparse
 from contextlib import contextmanager
+import errno
 import hashlib
 import importlib.util
 import json
@@ -11,6 +12,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -28,6 +30,8 @@ UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
 UPDATE_CHECK_SCHEDULE = "0 9 * * *"
 UPDATE_CHECK_FILES = (UPDATE_CHECK_SCRIPT, "nora-tavern-card-send.py", "nora-instance.py")
 HOST_HOOK = Path("hooks/tavern-liveware-register")
+MANAGED_BACKUP_FILES = ("SOUL.md", "SOUL.nora-tavern.example.md",
+                        "nora-installation.json", "cron/jobs.json", "clawchat-skills")
 
 
 def log(message):
@@ -39,6 +43,203 @@ def safe(path):
     if value == Path("/"):
         raise RuntimeError("拒绝使用根目录")
     return value
+
+
+def _space_error(code, message):
+    error = RuntimeError(message)
+    error.code = code
+    return error
+
+
+def _space_redirect(info):
+    # Python 3.11 on Windows has no Path.is_junction(). Junctions and other
+    # reparse points must not redirect a capacity check to another volume.
+    return stat.S_ISLNK(info.st_mode) or bool(
+        getattr(info, 'st_file_attributes', 0) & getattr(stat, 'FILE_ATTRIBUTE_REPARSE_POINT', 0x400))
+
+
+def _space_path(path):
+    path = Path(path)
+    if not path.is_absolute() or '..' in path.parts or path == Path(path.anchor):
+        raise _space_error('SPACE_PATH_UNSAFE', '空间检查路径不安全，尚未替换程序或数据。')
+    current = Path(path.anchor)
+    nearest = current
+    for index, part in enumerate(path.parts[1:]):
+        current = current / part
+        try:
+            info = Path(filesystem_path(current)).lstat()
+        except FileNotFoundError:
+            break
+        if _space_redirect(info) or (index < len(path.parts)-2 and not stat.S_ISDIR(info.st_mode)):
+            raise _space_error('SPACE_PATH_UNSAFE', '空间检查路径包含链接或非目录，尚未替换程序或数据。')
+        nearest = current
+    return path, nearest
+
+
+def _space_measure(path, links):
+    """Measure copytree's payload without reading file contents or following links."""
+    payload, entries = 0, 0
+    pending = [path]
+    while pending:
+        current = pending.pop()
+        info = Path(filesystem_path(current)).lstat()
+        entries += 1
+        if _space_redirect(info):
+            if links != 'preserve' or not stat.S_ISLNK(info.st_mode):
+                raise _space_error('SPACE_PATH_UNSAFE', '待备份目录含不安全链接，尚未替换程序或数据。')
+            # Program copytree(symlinks=True) copies the link, never its target.
+            payload += len(os.fsencode(os.readlink(filesystem_path(current))))
+        elif stat.S_ISREG(info.st_mode):
+            payload += info.st_size
+        elif stat.S_ISDIR(info.st_mode):
+            with os.scandir(filesystem_path(current)) as children:
+                pending.extend(current / child.name for child in children)
+            after = Path(filesystem_path(current)).lstat()
+            if ((info.st_dev, info.st_ino, info.st_mtime_ns) !=
+                    (after.st_dev, after.st_ino, after.st_mtime_ns) or _space_redirect(after)):
+                raise _space_error('SPACE_UNCONFIRMED', '空间检查期间目录发生变化，请重新检查；尚未替换程序或数据。')
+        else:
+            raise _space_error('SPACE_PATH_UNSAFE', '待备份目录含特殊文件，尚未替换程序或数据。')
+    return payload, entries
+
+
+def check_update_space(copies, *, disk_usage=None, volume_identity=None):
+    """Admit *future* copies per destination volume, never delete to make room.
+
+    Each task contains source (or a known in-memory byte length), destination, a safe purpose label, links
+    ('reject' for user state; 'preserve' for program copytree), and optional.
+    Already extracted candidates and old trees moved by rename are omitted by
+    the caller. Metadata restoration copies are listed on their target volume.
+    Reserve is 10% of logical payload + 4096 bytes per entry + 65536 bytes per
+    target volume for allocation rounding and transaction writes. This is a
+    conservative admission estimate, not a guarantee against concurrent writes
+    or a filesystem with unusual allocation units; actual ENOSPC still fails.
+    Calling again remeasures everything, including data added before stopping.
+    The returned/error receipt contains quantities and purpose labels only.
+    """
+    query = disk_usage or shutil.disk_usage
+    identity = volume_identity or (lambda path: Path(filesystem_path(path)).stat().st_dev)
+    volumes = {}
+    try:
+        for task in copies:
+            if (not isinstance(task, dict) or set(task) - {'source', 'bytes', 'destination', 'label', 'links', 'optional'}
+                    or not {'destination', 'label'} <= set(task)
+                    or ('source' in task) == ('bytes' in task)
+                    or ('bytes' in task and (type(task['bytes']) is not int or task['bytes'] < 0))
+                    or not isinstance(task['label'], str)
+                    or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', task['label'])
+                    or task.get('links', 'reject') not in ('reject', 'preserve')
+                    or type(task.get('optional', False)) is not bool):
+                raise _space_error('SPACE_PATH_UNSAFE', '空间检查任务无效，尚未替换程序或数据。')
+            source = _space_path(task['source'])[0] if 'source' in task else None
+            destination, ancestor = _space_path(task['destination'])
+            if source is not None and (destination == source or destination.is_relative_to(source)):
+                raise _space_error('SPACE_PATH_UNSAFE', '备份目标不能位于待备份目录中，尚未替换程序或数据。')
+            if not Path(filesystem_path(ancestor)).is_dir():
+                ancestor = ancestor.parent
+            key = identity(ancestor)
+            if key not in volumes:
+                usage = query(filesystem_path(ancestor))
+                if (any(type(getattr(usage, field, None)) is not int or getattr(usage, field) < 0
+                        for field in ('total', 'used', 'free')) or usage.free > usage.total):
+                    raise _space_error('SPACE_UNCONFIRMED', '无法确认目标磁盘可用空间，尚未替换程序或数据。')
+                volumes[key] = {'volume': len(volumes)+1, 'copyBytes': 0, 'entries': 0,
+                                'freeBytes': usage.free, 'copies': []}
+            if source is None:
+                payload, entries = task['bytes'], 1
+            else:
+                try:
+                    Path(filesystem_path(source)).lstat()
+                except FileNotFoundError:
+                    if not task.get('optional', False):
+                        raise
+                    payload, entries = 0, 0
+                else:
+                    # Once observed present, a disappearing source/child is an
+                    # unconfirmed measurement, not an optional zero-byte copy.
+                    payload, entries = _space_measure(source, task.get('links', 'reject'))
+            volume = volumes[key]
+            volume['copyBytes'] += payload
+            volume['entries'] += entries
+            volume['copies'].append({'label': task['label'], 'bytes': payload, 'entries': entries})
+    except OSError as cause:
+        raise _space_error('SPACE_UNCONFIRMED', '无法读取备份目录或确认磁盘空间，尚未替换程序或数据。') from cause
+    report = {'schema': 'nora-update-space/1', 'status': 'sufficient', 'volumes': list(volumes.values())}
+    for volume in report['volumes']:
+        volume['reserveBytes'] = (volume['copyBytes']+9)//10 + 4096*volume['entries'] + 65536
+        volume['requiredBytes'] = volume['copyBytes'] + volume['reserveBytes']
+    if any(volume['freeBytes'] < volume['requiredBytes'] for volume in report['volumes']):
+        report['status'] = 'insufficient'
+        error = OSError(errno.ENOSPC, '目标磁盘空间不足以保留完整备份和恢复临时副本；尚未替换程序或数据。')
+        error.code, error.space_report = 'ENOSPC', report
+        raise error
+    return report
+
+
+def update_space_tasks(hermes_home, install_root, backup, work, *, managed,
+                       runtime_changed, migration, restore_only=False, journal=None,
+                       service_snapshot=None):
+    """Match the actual backup copies and possible metadata restore temporaries.
+
+    Program and original-state rollback use same-volume rename. Candidates have
+    already been materialized and are reflected in disk_usage's free space.
+    Legacy preparation and failed-conversion fallback can coexist, so reserve
+    two original-state copies before conversion. Rechecking uses current sizes.
+    """
+    pairs = [(hermes_home / 'config.yaml', backup / 'host/config.yaml')]
+    pairs += [(hermes_home / name, backup / 'agents-rollback' / name)
+              for name in ('AGENTS.md', 'AGENTS.md.bak')]
+    pairs += [(install_root / 'tavern-updates' / name, backup / 'host/update-receipts' / name)
+              for name in ('installed.json', 'installed-manifest.json', 'nora-system.json')]
+    pairs.append((install_root / 'tavern-state/native-runtime/dependencies.json',
+                  backup / 'host/native-runtime/dependencies.json'))
+    if managed:
+        pairs += [(hermes_home / name, backup / 'managed/targets' / name)
+                  for name in MANAGED_BACKUP_FILES]
+        pairs += [(hermes_home / 'scripts' / name, backup / 'managed/targets/scripts' / name)
+                  for name in UPDATE_CHECK_FILES]
+    # A stopped managed cron store may have a new run timestamp. The journal
+    # seals that logical equivalent in a separate snapshot before any write.
+    tasks = []
+    if managed and not restore_only:
+        tasks.append({'source': hermes_home / 'cron/jobs.json',
+                      'destination': backup / 'runtime-state/cron-jobs.json',
+                      'label': 'cron-offline-snapshot', 'optional': True})
+    if restore_only and journal is not None:
+        pairs = [(target, journal.metadata_saved(target, saved))
+                 for target, saved in journal.metadata_items()]
+    for target, saved in pairs:
+        if not restore_only:
+            tasks.append({'source': target, 'destination': saved,
+                          'label': 'metadata-backup', 'optional': True, 'links': 'preserve'})
+        tasks.append({'source': saved if restore_only else target,
+                      'destination': target.parent / '.nora-space-restore',
+                      'label': 'metadata-restore', 'optional': True, 'links': 'preserve'})
+    if service_snapshot is not None:
+        descriptor = service_snapshot.get('descriptor') if isinstance(service_snapshot, dict) else None
+        if (not isinstance(descriptor, dict) or not isinstance(descriptor.get('file'), str)
+                or not isinstance(service_snapshot.get('text'), str)):
+            raise _space_error('SPACE_UNCONFIRMED', '无法确认受管服务配置备份和恢复空间，尚未替换安装。')
+        if not restore_only:
+            tasks.append({'bytes': len((json.dumps(service_snapshot, ensure_ascii=False, indent=2) + '\n').encode()),
+                          'destination': backup / 'host/service.json', 'label': 'service-backup'})
+        service_file = Path(descriptor['file'])
+        # Atomic service replacement/restoration needs a temporary on the
+        # service's own volume, which can differ from the installation volume.
+        tasks.append({'bytes': len(service_snapshot['text'].encode()),
+                      'destination': service_file.parent / '.nora-space-service',
+                      'label': 'service-restore'})
+    if runtime_changed:
+        state = install_root / 'tavern-state'
+        if migration:
+            tasks += [{'source': state, 'destination': work / relative,
+                       'label': label, 'links': 'reject'} for relative, label in (
+                           ('prepared/state', 'legacy-preparation'),
+                           ('prepared-fallback/state', 'legacy-fallback'))]
+        else:
+            tasks.append({'source': state, 'destination': backup / 'state',
+                          'label': 'state-snapshot', 'links': 'reject'})
+    return tasks
 
 
 def atomic(path, data, mode=0o600):
@@ -287,6 +488,138 @@ def stop_unmanaged(app):
         if pid in remaining:
             os.kill(pid, signal.SIGKILL)
     return pids
+
+
+def _legacy_proc_candidate(entry, bound):
+    if bound:
+        return True
+    try:
+        name = (entry / 'comm').read_text().strip().casefold()
+        if not name.startswith(('python', 'node', 'pypy')):
+            return False
+        try:
+            return hasattr(os, 'getuid') and entry.stat().st_uid == os.getuid()
+        except OSError:
+            # A readable runtime kind with an unreadable owner is unknown.
+            return True
+    except (FileNotFoundError, OSError):
+        return False
+
+
+def _legacy_proc_processes(app, proc):
+    rows = []
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            cwd = (entry / 'cwd').resolve(strict=True)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            cwd = None
+        bound = cwd is not None and path_is_within(cwd, app)
+        try:
+            argv = [os.fsdecode(value) for value in (entry / 'cmdline').read_bytes().split(b'\0') if value]
+        except FileNotFoundError:
+            continue
+        except OSError as error:
+            if _legacy_proc_candidate(entry, bound):
+                raise RuntimeError('旧酒馆候选进程不可读，未确认停服，原数据尚未迁移。') from error
+            continue
+        if not argv and _legacy_proc_candidate(entry, bound):
+            raise RuntimeError('旧酒馆候选进程命令为空，未确认停服，原数据尚未迁移。')
+        scripts = [value for value in argv if value.endswith(('server.py', 'server.js'))]
+        if not scripts:
+            continue
+        if cwd is None and any(not Path(value).is_absolute() for value in scripts):
+            raise RuntimeError('旧酒馆候选进程目录不可读，未确认停服，原数据尚未迁移。')
+        if any(path_is_within((Path(value) if Path(value).is_absolute() else cwd / value).resolve(), app)
+               for value in scripts):
+            rows.append({'pid': int(entry.name)})
+    return rows
+
+
+def legacy_migration_processes(app):
+    """Find only root-bound server actors; an unreadable candidate is unknown."""
+    app = Path(app).resolve()
+    try:
+        import psutil
+    except ImportError:
+        proc = Path('/proc')
+        if proc.is_dir():
+            return _legacy_proc_processes(app, proc)
+        raise RuntimeError('无法核验旧 Python 酒馆进程，原数据尚未迁移。')
+    rows = []
+    current_user = psutil.Process().username().casefold()
+    for process in psutil.process_iter(['pid', 'name']):
+        name = str(process.info.get('name') or '').casefold()
+        runtime_name = name.startswith(('python', 'node')) or name in ('pypy', 'pypy3')
+        try:
+            argv = process.cmdline()
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.AccessDenied, OSError) as error:
+            if not runtime_name:
+                continue
+            try:
+                owner = process.username().casefold()
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError):
+                owner = current_user
+            if owner == current_user:
+                raise RuntimeError('旧酒馆候选进程不可读，未确认停服，原数据尚未迁移。') from error
+            continue
+        if not argv and runtime_name:
+            try:
+                if process.status() == psutil.STATUS_ZOMBIE:
+                    continue
+                if process.username().casefold() == current_user:
+                    raise RuntimeError('旧酒馆候选进程命令为空，未确认停服，原数据尚未迁移。')
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError) as error:
+                raise RuntimeError('旧酒馆候选进程身份不可确认，原数据尚未迁移。') from error
+        scripts = [value for value in argv if value.endswith(('server.py', 'server.js'))]
+        if not scripts:
+            continue
+        cwd = None
+        if any(not Path(value).is_absolute() for value in scripts):
+            try:
+                cwd = Path(process.cwd()).resolve()
+            except psutil.NoSuchProcess:
+                continue
+            except (psutil.AccessDenied, OSError) as error:
+                raise RuntimeError('旧酒馆候选进程目录不可读，未确认停服，原数据尚未迁移。') from error
+        if not any(path_is_within((Path(value) if Path(value).is_absolute() else cwd / value).resolve(), app)
+                   for value in scripts):
+            continue
+        try:
+            if process.status() == psutil.STATUS_ZOMBIE:
+                continue
+            if process.username().casefold() != current_user:
+                raise RuntimeError('旧酒馆进程属于其他系统用户，原数据尚未迁移。')
+            rows.append({'pid': process.pid, 'argv': argv, 'created': process.create_time()})
+        except psutil.NoSuchProcess:
+            continue
+        except (psutil.AccessDenied, OSError) as error:
+            raise RuntimeError('旧酒馆进程身份不可确认，原数据尚未迁移。') from error
+    return rows
+
+
+def stop_legacy_for_migration(app, service):
+    """A legacy state copy is allowed only after its writer is confirmed closed."""
+    if service is None:
+        error = RuntimeError('旧 Python 酒馆缺少可恢复的服务管理，原数据尚未迁移。')
+        error.code = 'LEGACY_RUNTIME_UNSUPPORTED'
+        raise error
+    service.stop()
+    info = service.info()
+    if (not isinstance(info, dict) or type(info.get('pid')) is not int or info['pid'] != 0
+            or str(info.get('statename', '')).upper() not in ('STOPPED', 'EXITED')):
+        raise RuntimeError('旧酒馆服务未确认停服，原数据尚未迁移。')
+    if legacy_migration_processes(app):
+        raise RuntimeError('仍有旧酒馆进程运行，原数据尚未迁移。')
 
 
 def run(command, *, cwd=None, env=None, timeout=None, capture=False):
@@ -571,6 +904,14 @@ def migration_copy(hermes_home, install_root, source, work, layout):
         shutil.copytree(old_state, prepared, symlinks=False)
     else:
         prepared.mkdir(parents=True)
+    legacy_source = prepared / 'python-source' if (prepared / 'python-source').is_dir() else prepared
+    if not (legacy_source / 'productions').is_dir():
+        # The converter explicitly supports Python production stores only.
+        # This known input-format case may retain the entire sealed original;
+        # failed processes, dependency errors and I/O errors may not.
+        error = RuntimeError('旧数据不是受支持的 Python productions 格式，保留完整原数据。')
+        error.code = 'LEGACY_MIGRATION_UNSUPPORTED'
+        raise error
     options = {
         "hermesModel": hermes_model(hermes_home, source),
         "legacyModel": legacy_model(hermes_home),
@@ -1087,12 +1428,6 @@ def install(args):
             config_changed = not (hermes_home / "config.yaml").is_file() or (hermes_home / "config.yaml").read_bytes() != mcp_config
             migration = {"status": "not-required"}
             prepared_state = None
-            if layout:
-                log("迁移旧 Python 数据；不兼容记录只归档，不阻止更新")
-                try:
-                    prepared_state, migration = migration_copy(hermes_home, install_root, source, work, layout)
-                except Exception as error:
-                    prepared_state, migration = fallback_python_state(install_root, work, str(error))
             service_module = module_at("simple_service_manager", source / "ops/updater/service_manager.py")
             service = service_module.ManagedService.discover(install_root, old_app)
             service_snapshot = service.snapshot() if service else None
@@ -1126,7 +1461,13 @@ def install(args):
                 if target.exists():
                     swaps.append(("retired-" + retired, None, target))
             host_changed = agents_changed or config_changed
-            runtime_changed = app_changed or prepared_state is not None or bool(managed)
+            runtime_changed = app_changed or layout is not None or bool(managed)
+            if layout and not managed and not service:
+                # start_old cannot safely restart an unmanaged Python server.
+                # Reject before stopping rather than promise unavailable rollback.
+                error = RuntimeError('旧 Python 酒馆缺少可恢复的受管服务；未停止服务或修改原安装，请使用完整正式启动器处理。')
+                error.code = 'LEGACY_RUNTIME_UNSUPPORTED'
+                raise error
             if not managed and not swaps and not host_changed and prepared_state is None:
                 result = {
                     "status": "up-to-date",
@@ -1150,6 +1491,12 @@ def install(args):
                                ('systemReady', 'running', 'gatewayRunning', 'clawchatConnected'))):
                     raise RuntimeError('部分安装修复尚未核验原状态及停服证据，未修改现有安装。')
             backup = install_root / "tavern-backups" / f"{stamp}-{version}-{uuid.uuid4().hex[:8]}"
+            # Admission precedes host snapshots and shutdown. Existing backups
+            # are never deleted to manufacture free space.
+            check_update_space(update_space_tasks(
+                hermes_home, install_root, backup, work, managed=bool(managed),
+                runtime_changed=runtime_changed, migration=bool(layout),
+                service_snapshot=service_snapshot))
             Path(filesystem_path(backup)).mkdir(parents=True)
             record_backup(install_root, backup, "prepared")
             copy_host_backup(hermes_home, install_root, backup, service_snapshot)
@@ -1157,12 +1504,12 @@ def install(args):
             snapshot_agents(hermes_home, agents_backup)
             if managed:
                 helpers.snapshot_targets(hermes_home, [
-                    hermes_home / name for name in ("SOUL.md", "SOUL.nora-tavern.example.md",
-                    "nora-installation.json", "cron/jobs.json", "clawchat-skills")
+                    hermes_home / name for name in MANAGED_BACKUP_FILES
                 ] + [hermes_home / "scripts" / name for name in UPDATE_CHECK_FILES], backup / "managed")
-                setup_completed = managed.read_json(update_root / "nora-system.json").get("setupCompleted", False)
+                setup_completed = managed.read_json(update_root / "nora-system.json").get("setupCompleted") is True
                 if instance.get("missingSystemReceipt"):
-                    setup_completed = bool(before_state.get("modelConfigured") and before_state.get("clawchatProfileReady"))
+                    setup_completed = (before_state.get("modelConfigured") is True
+                                       and before_state.get("clawchatProfileReady") is True)
             applied = []
             state_swapped = False
             state_snapshot = False
@@ -1201,11 +1548,45 @@ def install(args):
                         for diagnostic in journal.metadata_diagnostics():log('[metadata-check] '+diagnostic)
                         journal.plan["phase"] = "stopped"
                         journal.save()
+                    elif layout:
+                        stop_legacy_for_migration(old_app, service)
                     elif service:
                         service.stop()
                     else:
                         stop_unmanaged(old_app)
                     runtime_stopped = True
+                    # Include the final write before stopping and use saved
+                    # metadata, whose backup already occupies disk space.
+                    check_update_space(update_space_tasks(
+                        hermes_home, install_root, backup, work, managed=bool(managed),
+                        runtime_changed=True, migration=bool(layout),
+                        restore_only=True, journal=journal, service_snapshot=service_snapshot))
+                    if layout:
+                        # Only the stopped installation is an authoritative
+                        # migration source. Preparation can take minutes while
+                        # users are still writing; copying before this boundary
+                        # would silently replace their final writes with an old
+                        # snapshot. Failed conversion uses a fresh complete
+                        # copy of the same sealed source, never its partial output.
+                        log("迁移已停服的旧 Python 数据；不兼容记录只归档，不阻止更新")
+                        try:
+                            prepared_state, migration = migration_copy(
+                                hermes_home, install_root, source, work, layout)
+                        except Exception as error:
+                            # Only an explicitly recognized input format can
+                            # become an archive. Crashes, timeout, storage and
+                            # invalid converter output keep the update failed.
+                            if getattr(error, 'code', '') != 'LEGACY_MIGRATION_UNSUPPORTED':
+                                raise
+                            prepared_state, migration = fallback_python_state(
+                                install_root, work, str(error))
+                        # Conversion output can exceed the original copy size.
+                        # It is already on disk: reserve only still-future
+                        # metadata restoration and transaction headroom here.
+                        check_update_space(update_space_tasks(
+                            hermes_home, install_root, backup, work, managed=bool(managed),
+                            runtime_changed=False, migration=False,
+                            restore_only=True, journal=journal, service_snapshot=service_snapshot))
                     if prepared_state is None:
                         # Startup can quarantine incompatible manifests. Keep the
                         # entire state, not only program/configuration backups.

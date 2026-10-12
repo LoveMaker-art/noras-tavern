@@ -315,7 +315,17 @@ async function selectedMetadataBlock(t,{legacy=false,laterUnknown=false,olderMet
   };
   const metadataFailure=async()=>{
     phase='metadata';const failed=await f.controller().start('update',{target},'original-metadata-timeout');
-    assert.equal(failed.primaryFailure.code,'TIMEOUT');assert.equal(failed.totalAttempts,1);return failed;
+    assert.equal(failed.primaryFailure.code,'TIMEOUT');assert.equal(failed.totalAttempts,1);
+    // A lost native commit ACK can leave the returned failure older than the
+    // durable record. That is not this metadata-recheck scenario: do not hide
+    // it by refreshing the snapshot or letting a later CAS failure obscure it.
+    const persisted=JSON.parse(fs.readFileSync(path.join(f.home,'installer/operations',failed.operationId,'operation.json')));
+    const guardFailures=failed.secondaryFailures.map(item=>({code:item.code,operation:item.operation}));
+    assert.deepEqual(guardFailures,[],'Metadata fixture had an unexpected native writer failure: '+JSON.stringify(guardFailures));
+    assert.deepEqual(failed.evidenceMissingReasons,[],'Metadata fixture must have a durable failure before rechecking');
+    assert.equal(failed.snapshotSequence,persisted.sequence,'Metadata fixture returned a snapshot older than its durable failure');
+    assert.equal(failed.effectState,'untouched');assert.equal(failed.currentFailure.code,'TIMEOUT');
+    return failed;
   };
   let failed=olderMetadata?await metadataFailure():null;
   phase='history';await f.controller().start('update',{target},'selected-failure-one');

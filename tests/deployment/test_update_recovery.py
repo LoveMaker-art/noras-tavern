@@ -233,7 +233,6 @@ class DigestProgressTests(unittest.TestCase):
                     recovery.digest(file,on_progress=lambda size,entries:progress.append((size,entries)))
             self.assertEqual(progress,[(0,1)])
 
-    @unittest.skipIf(os.name=='nt','Creating a Windows file symlink may require administrator privileges')
     def test_digest_progress_confirms_links_only_after_hashing_the_link_name(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);outside=root/'outside';outside.write_bytes(b'not followed')

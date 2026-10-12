@@ -5,7 +5,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
@@ -15,9 +14,13 @@ import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 ROOT = Path(__file__).resolve().parents[2]
-NODE = os.environ.get('NORA_TEST_NODE') or os.environ.get('TAVERN_NODE_EXECUTABLE') or shutil.which('node')
+NODE = resolve_node()
 
 
 def lifecycle_module():

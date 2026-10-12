@@ -14,6 +14,10 @@ import yaml
 from ops.installer import launcher_bridge as bridge, first_install
 from ops.updater import update
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / 'ops/skills/system/model-provider-config'
 
@@ -80,8 +84,7 @@ class LocalModelSkillTests(unittest.TestCase):
                         'base_url': 'https://example.invalid/v1'}
 
     def owned_run(self, script, data, *args):
-        node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
-        self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+        node = resolve_node(required=True)
         return subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix},

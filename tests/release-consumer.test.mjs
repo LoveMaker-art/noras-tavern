@@ -58,7 +58,7 @@ function zipFixture(directory,asar,target,{memberNames}={}) {
     fs.writeFileSync(source,asar);
     const names=memberNames || [target.startsWith('darwin')?'NoraFixture.app/Contents/Resources/app.asar':'resources/app.asar'];
     // Deterministic minimal ZIP container, without Electron/runtime construction.
-    execFileSync(process.env.NORA_PYTHON || (process.platform==='win32'?'python':'python3'),['-B','-c',
+    execFileSync(process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (process.platform==='win32'?'python':'python3'),['-B','-c',
         `import json,sys,zipfile
 data=open(sys.argv[1],'rb').read()
 with zipfile.ZipFile(sys.argv[2],'w') as archive:

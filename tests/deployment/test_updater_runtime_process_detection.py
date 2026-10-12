@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shlex
 import subprocess
 from pathlib import Path
 import sys
@@ -12,6 +14,38 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 UPDATER = ROOT / "ops/updater/update.py"
 SERVICE_MANAGER = ROOT / "ops/updater/service_manager.py"
+
+
+def legacy_server_source():
+    return '''import signal, time
+from pathlib import Path
+def stop(*_):
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+Path(__file__).with_suffix('.ready').write_text('ready', encoding='utf-8')
+while True:
+    time.sleep(1)
+'''
+
+
+def start_legacy_server_fixture(script, cwd):
+    source = legacy_server_source()
+    compile(source, str(script), 'exec')
+    script.write_text(source, encoding='utf-8')
+    ready = script.with_suffix('.ready')
+    ready.unlink(missing_ok=True)
+    child = subprocess.Popen([sys.executable, '-B', str(script), '--port', '8799'], cwd=cwd,
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    deadline = time.monotonic() + 3
+    while not ready.is_file() and child.poll() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not ready.is_file() or child.poll() is not None:
+        code = child.poll()
+        if code is None:
+            child.kill()
+            child.wait(timeout=3)
+        raise AssertionError(f'The legacy Python server fixture did not acknowledge startup (exit={code}).')
+    return child
 
 
 def load_updater():
@@ -36,6 +70,22 @@ def load_service_manager():
 
 
 class UpdaterRuntimeProcessDetectionTests(unittest.TestCase):
+    @unittest.skipIf(os.name == 'nt', 'This fixture check exercises POSIX SIGTERM handling')
+    def test_legacy_server_fixture_acknowledges_start_and_handles_sigterm(self):
+        # This proves the generated actor, not Linux updater process discovery.
+        with tempfile.TemporaryDirectory(prefix='tavern-legacy-actor-') as temporary:
+            root = Path(temporary)
+            child = start_legacy_server_fixture(root / 'server.py', root)
+            try:
+                self.assertTrue((root / 'server.ready').is_file())
+                self.assertIsNone(child.poll())
+                child.terminate()
+                self.assertEqual(child.wait(timeout=3), 0)
+            finally:
+                if child.poll() is None:
+                    child.kill()
+                    child.wait(timeout=3)
+
     def test_detects_legacy_python_server_when_cwd_is_outside_app(self):
         updater = load_updater()
         app = Path("/opt/data/apps/tavern-runtime")
@@ -84,24 +134,8 @@ class UpdaterRuntimeProcessDetectionTests(unittest.TestCase):
             app = root / "apps/tavern-runtime"
             app.mkdir(parents=True)
             script = app / "server.py"
-            script.write_text(
-                "import signal, time\n"
-                "signal.signal(signal.SIGTERM, lambda *_: raise SystemExit(0))\n"
-                "while True:\n"
-                "    time.sleep(1)\n",
-                encoding="utf-8",
-            )
-            child = subprocess.Popen(
-                [sys.executable, str(script), "--port", "8799"],
-                cwd=root,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            child = start_legacy_server_fixture(script, root)
             try:
-                deadline = time.monotonic() + 3
-                while time.monotonic() < deadline and child.poll() is not None:
-                    time.sleep(0.05)
                 self.assertIsNone(child.poll())
 
                 stopped = updater.stop_unmanaged(app)
@@ -126,12 +160,11 @@ class ManagedServiceDiscoveryMatchingTests(unittest.TestCase):
 
     def test_service_command_may_point_at_legacy_server_inside_app(self):
         service_manager = load_service_manager()
-
-        self.assertTrue(service_manager.service_references_app(
-            Path("/opt/data/apps/tavern-runtime"),
-            "/opt/hermes/.venv/bin/python /opt/data/apps/tavern-runtime/server.py --port 8799",
-            "/opt/data",
-        ))
+        with tempfile.TemporaryDirectory(prefix='tavern-service-command-') as temporary:
+            root = Path(temporary).resolve()
+            app = root / 'apps/tavern-runtime'
+            command = shlex.join([sys.executable, str(app / 'server.py'), '--port', '8799'])
+            self.assertTrue(service_manager.service_references_app(app, command, str(root)))
 
     def test_unrelated_service_is_ignored(self):
         service_manager = load_service_manager()

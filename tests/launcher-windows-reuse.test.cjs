@@ -9,6 +9,21 @@ function sourceFixture() {
  return {run,artifacts,jobs,options:{commit,repository:'owner/tavern',runId:'123'}};
 }
 test('only a complete same-commit native Windows-only source can be reused',()=>{const f=sourceFixture();assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);});
+test('a successful Windows run cannot be reused without the new stability gate passing',()=>{
+ for(const mode of ['missing','skipped']){
+  const f=sourceFixture(),name='Require launcher source stability before preparing runtimes';
+  assert.ok(f.jobs.jobs[0].steps.some(step=>step.name===name),'The stability step must be mandatory');
+  if(mode==='missing')f.jobs.jobs[0].steps=f.jobs.jobs[0].steps.filter(step=>step.name!==name);
+  else f.jobs.jobs[0].steps.find(step=>step.name===name).conclusion='skipped';
+  assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options),/native gate|Native gate/);
+ }
+});
+
+test('a successful Windows run cannot be reused without native test prerequisites passing',()=>{
+ const f=sourceFixture(),name='Verify native launcher test prerequisites';
+ f.jobs.jobs[0].steps=f.jobs.jobs[0].steps.filter(step=>step.name!==name);
+ assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options),/Verify native launcher test prerequisites/);
+});
 test('a same-run decision plan is verified but is not extracted over native acceptance evidence',()=>{
  const f=sourceFixture();f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:3,name:'nora-release-plan'});f.artifacts.total_count++;
  assert.deepEqual(verifySource(f.run,f.artifacts,f.jobs,f.options).map(item=>item.name),['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64']);
@@ -73,10 +88,10 @@ for(const [label,file,change] of [
 ])test(`rejects ${label} before reupload`,async t=>{const f=packageFixture(t);if(!change)f.write(f.delivery,file,'changed setup');else{const p=path.join(f.acceptance,file),value=JSON.parse(fs.readFileSync(p));change(value);f.write(f.acceptance,file,value);}await assert.rejects(verifyPackage(f.delivery,f.acceptance,commit));});
 test('archive digest mismatch fails rather than being a download warning',async t=>{const f=packageFixture(t),file=f.write(f.root,'raw.zip','raw zip');await assert.rejects(verifyArchive(file,{size_in_bytes:7,digest:'sha256:'+sha('other')}),/digest differs/);await assert.rejects(verifyArchive(file,{size_in_bytes:8,digest:'sha256:'+sha('raw zip')}),/size differs/);await verifyArchive(file,{size_in_bytes:7,digest:'sha256:'+sha('raw zip')});});
 test('safe extraction rejects path traversal, duplicate case-folded names and symbolic or special entries',t=>{
- const f=packageFixture(t);
+ const f=packageFixture(t),python=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON||(process.platform==='win32'?'python':'python3');
  for(const kind of ['traversal','duplicate','symlink','fifo','windows-absolute']) {
-  const archive=path.join(f.root,kind+'.zip');execFileSync('python3',['-c',`import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1],'w') as z:\n if sys.argv[2]=='traversal': z.writestr('../escape','bad')\n elif sys.argv[2]=='windows-absolute': z.writestr('C:/escape','bad')\n elif sys.argv[2]=='duplicate': z.writestr('file','a');z.writestr('FILE','b')\n else:\n  i=zipfile.ZipInfo('link');i.external_attr=(0o010777 if sys.argv[2]=='fifo' else 0o120777)<<16;z.writestr(i,'target')\n`,archive,kind]);
-  assert.throws(()=>execFileSync('python3',['-c',extractScript,archive,path.join(f.root,kind)],{stdio:'pipe'}));
+  const archive=path.join(f.root,kind+'.zip');execFileSync(python,['-B','-c',`import sys,zipfile\nwith zipfile.ZipFile(sys.argv[1],'w') as z:\n if sys.argv[2]=='traversal': z.writestr('../escape','bad')\n elif sys.argv[2]=='windows-absolute': z.writestr('C:/escape','bad')\n elif sys.argv[2]=='duplicate': z.writestr('file','a');z.writestr('FILE','b')\n else:\n  i=zipfile.ZipInfo('link');i.external_attr=(0o010777 if sys.argv[2]=='fifo' else 0o120777)<<16;z.writestr(i,'target')\n`,archive,kind]);
+  assert.throws(()=>execFileSync(python,['-B','-c',extractScript,archive,path.join(f.root,kind)],{stdio:'pipe'}));
  }assert.equal(fs.existsSync(path.join(f.root,'escape')),false);
 });
 const workflow=fs.readFileSync(path.join(__dirname,'../.github/workflows/build-integrated-launcher.yml'),'utf8');

@@ -9,6 +9,7 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { spawnSync } = require('node:child_process');
 const { parse } = require('../installer/desktop/node_modules/acorn');
+const {captureChild, stopChild} = require('./launcher_test_lifecycle.cjs');
 
 test('packaged code fingerprint works without build metadata and fails without blocking telemetry', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-build-fingerprint-'));
@@ -105,7 +106,7 @@ function startupDialogFixture(t, {setPathError, mkdirError, prepare=()=>{}}={}) 
   const noraHome=()=>locations.readLocation(home,'stable');
   const diagnostics=createDiagnostics({primary:()=>path.join(noraHome(),'installer','install.log'),
     fallback:path.join(directory,'diagnostics','install.log')});
-  const dialogs=[],exits=[],file=path.resolve(__dirname,'../installer/desktop/main.js');
+  const dialogs=[],exits=[],lifecycleFailures=[],file=path.resolve(__dirname,'../installer/desktop/main.js');
   const source=fs.readFileSync(file,'utf8');
   const declaration=parse(source,{ecmaVersion:'latest'}).body.find(node=>node.type==='FunctionDeclaration'&&node.id.name==='initializeLauncher');
   const context=vm.createContext({fs:{...fs,mkdirSync:(file,...args)=>{
@@ -114,12 +115,22 @@ function startupDialogFixture(t, {setPathError, mkdirError, prepare=()=>{}}={}) 
   }},path,os,process,CHANNEL:'stable',noraHome,diagnostics,
     uninstall:require('../installer/desktop/uninstall'),
     formatUserError:require('../installer/desktop/error-presentation').formatUserError,
+    queueLifecycleFailure:(kind,error)=>{lifecycleFailures.push({kind,error});},
     app:{getVersion:()=> '2.1.2',setPath(){if(setPathError)throw setPathError;},exit:code=>exits.push(code)},
     dialog:{showErrorBox:(title,message)=>dialogs.push({title,message})}});
   const initialized=vm.runInContext(source.slice(declaration.start,declaration.end)+'\ninitializeLauncher()',context,{filename:file});
   const records=fs.readFileSync(diagnostics.lastFile,'utf8').trim().split('\n').map(JSON.parse);
-  return {initialized,dialogs,exits,records,home,owner,data,log:diagnostics.lastFile};
+  return {initialized,dialogs,exits,records,home,owner,data,log:diagnostics.lastFile,lifecycleFailures};
 }
+
+test('initialization failures enter the durable diagnostic path before the app exits',t=>{
+  const error=Object.assign(new Error('fixture startup access refused'),{code:'EACCES'});
+  const f=startupDialogFixture(t,{mkdirError:error});
+  assert.equal(f.initialized,false);assert.deepEqual(f.exits,[1]);
+  assert.equal(f.lifecycleFailures.length,1);
+  assert.equal(f.lifecycleFailures[0].kind,'startup');assert.equal(f.lifecycleFailures[0].error,error);
+  assert.equal(fs.readFileSync(f.data,'utf8'),'preserved-story');
+});
 
 test('startup initialization failure identifies its phase and the actual local log without guessing a service failure',t=>{
   const original=new Error('opaque initialization fixture');
@@ -418,17 +429,25 @@ test('comparing an already current application version cannot commit launcher ba
   assert.equal(result.operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
 });
 
-test('model progress persistence failure releases its task lock and retains the original test failure', async t => {
+test('model progress cache failure releases its task lock and preserves the provider failure', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-model-state-boundary-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const stateError=Object.assign(new Error('fixture rename denied'),{code:'EPERM'});
-  const context=mainContext(root,{'node:fs':{...fs,renameSync(from,to){if(to===path.join(root,'installer/state.json')) throw stateError;return fs.renameSync(from,to);}}});
-  const handler=mainCallback(context,'nora:model-save-test');
-  await assert.rejects(handler({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>error.userCode==='INSTALLER_STATE_WRITE_FAILED');
-  assert.equal(vm.runInContext('modelBusy',context),false);
-
   const original=Object.assign(new Error('fixture provider test failure'),{code:'ECONNRESET'});
-  const secondary=mainContext(root);
+  const context=mainContext(root,{'node:fs':{...fs,renameSync(from,to){if(to===path.join(root,'installer/state.json')) throw stateError;return fs.renameSync(from,to);}}});
+  context.original=original;
+  vm.runInContext('runModelConfigHelper=async()=>{throw original;};',context);
+  const handler=mainCallback(context,'nora:model-save-test');
+  await assert.rejects(handler({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
+    assert.equal(error.code,original.code);
+    assert.equal(error.operation.primaryFailure.technical.system_code,original.code);
+    return true;
+  });
+  assert.equal(vm.runInContext('modelBusy',context),false);
+  const records=fs.readFileSync(path.join(root,'installer/install.log'),'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(records.some(item=>item.event==='state.cache-write-failed'&&item.error.cause.code==='EPERM'));
+
+  const secondary=mainContext(path.join(root,'secondary'));
   secondary.original=original;secondary.stateError=stateError;
   vm.runInContext('runModelConfigHelper=async()=>{throw original;}; recordEvent=message=>{if(message.state==="error")throw stateError;};',secondary);
   await assert.rejects(mainCallback(secondary,'nora:model-save-test')({}, {provider:'openai-api',key:'fixture-key',model:'fixture-model'}),error=>{
@@ -454,14 +473,47 @@ test('successful Python configuration save followed by failed JS checkpoint pres
   const failure=Object.assign(new Error('fixture verified checkpoint denied'),{code:'EACCES'});
   const actual=require('../installer/desktop/model-config');
   const context=mainContext(root,{'./model-config':{...actual,testProviderModel:async()=>{},writeVerifiedModel:()=>{throw failure;}}});
-  context.python=process.env.NORA_TEST_PYTHON || (process.platform==='win32'
-    ?path.join(process.env.LOCALAPPDATA || path.join(os.homedir(),'AppData','Local'),'NoraTavern/hermes/hermes-agent/venv/Scripts/python.exe')
-    :path.join(os.homedir(),'Library/NoraTavern/hermes/hermes-agent/venv/bin/python'));
-  if(!fs.existsSync(context.python)){t.skip('A managed Python fixture is required for the actual guard/venv boundary');return;}
+  const execution=require('../installer/desktop/managed-python');
+  const probeEnv={...process.env};
+  for(const name of ['PYTHONHOME','PYTHONPATH','__PYVENV_LAUNCHER__'])delete probeEnv[name];
+  const inspectPython=(command,requirePsutil=false)=>{
+    const result=spawnSync(command,['-B','-c',`${requirePsutil?'import psutil; ':''}import sys,json; print(json.dumps({'executable':sys.executable,'prefix':sys.prefix,'basePrefix':sys.base_prefix}))`],
+      {env:probeEnv,encoding:'utf8',timeout:10000});
+    assert.equal(result.status,0,'Managed Python test fixture could not inspect its interpreter: '+(result.error?.message||result.stderr));
+    return JSON.parse(result.stdout.trim());
+  };
+  const samePath=(left,right)=>{const a=fs.realpathSync(left),b=fs.realpathSync(right);return process.platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;};
+  const supplied=process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON,suppliedRoot=process.env.NORA_TEST_MANAGED_PYTHON_ROOT;
+  let reused=false;
+  if(supplied&&fs.existsSync(supplied)){
+    try{
+      const info=inspectPython(supplied),venv=path.dirname(path.dirname(supplied));
+      // A nested venv inherits base packages, not the selected venv's psutil.
+      // Reuse its actual identity instead of rebuilding and losing that input.
+      const managedRoot=suppliedRoot||info.basePrefix;
+      if(fs.existsSync(managedRoot)&&!samePath(info.prefix,info.basePrefix)&&samePath(info.prefix,venv)&&samePath(info.basePrefix,managedRoot)){
+        execution.resolveExecution(supplied,{managedPythonRoot:managedRoot,venvHome:venv,env:probeEnv});
+        context.python=supplied;context.managedVenv=venv;context.managedPython=managedRoot;reused=true;
+      }
+    }catch{ /* An unmatched supplied runtime is not a valid managed fixture. */ }
+  }
+  if(!reused){
+    const source=supplied||process.env.NORA_PYTHON||(process.platform==='win32'?'python':'python3');
+    const info=inspectPython(source),venv=path.join(root,'managed-venv');
+    const created=spawnSync(info.executable,['-B','-m','venv','--without-pip','--system-site-packages',venv],
+      {env:probeEnv,encoding:'utf8',timeout:30000});
+    assert.equal(created.status,0,'Managed Python test fixture could not create its isolated venv: '+(created.error?.message||created.stderr));
+    context.python=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
+    context.managedVenv=venv;context.managedPython=info.basePrefix;
+    assert.equal(path.dirname(context.managedVenv),root,'Only the temporary test directory may receive the fixture');
+  }
+  const managed=inspectPython(context.python,true);
+  assert.ok(!samePath(managed.prefix,managed.basePrefix),'The native guard case must use an actual virtual environment');
+  assert.ok(samePath(managed.prefix,context.managedVenv));assert.ok(samePath(managed.basePrefix,context.managedPython));
+  const resolved=execution.resolveExecution(context.python,{managedPythonRoot:context.managedPython,venvHome:context.managedVenv,env:probeEnv});
+  if(process.platform==='win32')assert.ok(samePath(resolved.command,path.join(context.managedPython,'python.exe')));
   context.helper=path.resolve(__dirname,'../installer/model_config.py');
   context.operationHelper=path.resolve(__dirname,'../installer/operation_control.py');
-  context.managedVenv=path.dirname(path.dirname(context.python));
-  context.managedPython=process.env.NORA_TEST_MANAGED_PYTHON_ROOT || path.resolve(context.managedVenv,'../../python');
   vm.runInContext(`spawnMaintenance=(command,args,options)=>activeOperationContext.lease.spawn(command,
     ['-B','-u',operationHelper,'--delegate-exec',...args],{...options,kind:'python-maintenance',
     managedPythonRoot:managedPython,venvHome:managedVenv});`,context);
@@ -543,26 +595,29 @@ function failedProgressChild(root, mode, exitCode = 0) {
     context.command=[process.execPath,['-e',context.childScript]];
     vm.runInContext('bridgeArgs=()=>({command:command[0],args:command[1]});',context);
     const task=vm.runInContext(mode==='process'?'runProcess(...command)':'runBridge('+JSON.stringify(mode)+')',context);
-    task.then(()=>{console.log(JSON.stringify({unexpectedSuccess:true}));process.exitCode=2;},error=>{
-      console.log(JSON.stringify({code:error.code,userCode:error.userCode,exitCode:error.exitCode,
-        causeCode:error.cause?.code,completed:fs.existsSync(marker),processCleared:vm.runInContext('activeProcess===null',context),
-        secondaryCodes:(error.secondaryErrors||[]).map(item=>item.error?.code)}));
-    });
+    const summary=(error,value)=>{
+      const logs=fs.readFileSync(path.join(root,'installer/install.log'),'utf8').trim().split('\\n').map(JSON.parse);
+      const warning=logs.find(item=>item.event==='state.cache-write-failed');
+      return {ok:!error,value,code:error?.code,userCode:error?.userCode,exitCode:error?.exitCode,
+        causeCode:error?.cause?.code,cacheCode:warning?.error?.cause?.code,completed:fs.existsSync(marker),
+        processCleared:vm.runInContext('activeProcess===null',context),secondaryCodes:(error?.secondaryErrors||[]).map(item=>item.error?.code)};
+    };
+    task.then(value=>console.log(JSON.stringify(summary(null,value))),error=>console.log(JSON.stringify(summary(error))));
   `;
   return spawnSync(process.execPath, ['-e', script, root, mode, String(exitCode)], { encoding: 'utf8', timeout: 5000 });
 }
 
-test('progress persistence failure is reported after child completion without interrupting managed transactions', t => {
+test('progress cache failure is diagnosed without changing successful child completion', t => {
   for (const mode of ['process', 'update', 'recover-update']) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-progress-boundary-'));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const child = failedProgressChild(root, mode);
     assert.equal(child.status, 0, child.stderr);
     const result = JSON.parse(child.stdout.trim());
-    assert.equal(result.code, 'EPERM');
-    assert.equal(result.userCode, 'INSTALLER_STATE_WRITE_FAILED');
-    assert.equal(result.causeCode, 'EPERM');
-    assert.equal(result.completed, true, 'failure cannot permit retry while the child still owns the transaction');
+    assert.equal(result.ok, true);
+    if(mode!=='process')assert.equal(result.value.systemReady,true);
+    assert.equal(result.cacheCode, 'EPERM');
+    assert.equal(result.completed, true, 'result is returned only after the child finishes its transaction');
     assert.equal(result.processCleared, true);
   }
 });
@@ -574,8 +629,10 @@ test('child failure remains primary when progress persistence also failed', t =>
   assert.equal(child.status, 0, child.stderr);
   const result = JSON.parse(child.stdout.trim());
   assert.equal(result.exitCode, 7);
+  assert.equal(result.ok, false);
   assert.equal(result.completed, true);
-  assert.ok(result.secondaryCodes.includes('EPERM'));
+  assert.equal(result.cacheCode, 'EPERM');
+  assert.equal(result.secondaryCodes.includes('EPERM'), false, 'presentation warnings do not become transaction failures');
 });
 
 test('runtime worker business guidance survives a real child process boundary', async t => {
@@ -665,8 +722,16 @@ test('operation handler logs original failure even if persisting the error state
 
 test('real main process records full child stderr, diagnostics, command, and exit without leaking pairing input', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-main-diagnostics-'));
+  const children = [];
   try {
     const context = mainContext(root,{$processOutputFixture:true});
+    const spawnFixture = context.fixtureSpawn;
+    context.fixtureSpawn = (...args) => {
+      const child = spawnFixture(...args);
+      captureChild(child); children.push(child);
+      return child;
+    };
+    vm.runInContext('spawnMaintenance=fixtureSpawn;', context);
     context.command = [process.execPath, ['-e', `
       console.log(JSON.stringify({event: 'task', task: 'copy-skills'}));
       console.log(JSON.stringify({event: 'diagnostic', error: {code: 'EPERM', syscall: 'symlink', path: 'skills/apple', stack: 'fixture-stack'}}));
@@ -688,10 +753,13 @@ test('real main process records full child stderr, diagnostics, command, and exi
     assert.ok(exit.durationMs >= 0);
     context.command = [path.join(root, 'missing-executable'), []];
     await assert.rejects(vm.runInContext('runProcess(...command)', context));
-    await new Promise(resolve => setImmediate(resolve));
+    await captureChild(children.at(-1)).closed;
     const updated = fs.readFileSync(path.join(root, 'installer/install.log'), 'utf8').trim().split('\n').map(JSON.parse);
     assert.ok(updated.some(item => item.event === 'process.error' && item.error.code === 'ENOENT' && item.error.syscall.startsWith('spawn')));
-  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    for (const child of children) await stopChild(child);
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('bridge records errors without a window and does not redact functional result URLs', async () => {

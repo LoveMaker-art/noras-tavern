@@ -1,7 +1,7 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn,execFileSync}=require('node:child_process'),{pipeline}=require('node:stream/promises');
 const names=['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64'];
-const requiredSteps=['Verify cold-profile bootstrap identity before preparing runtimes','Test release channels and update rollback',
+const requiredSteps=['Require launcher source stability before preparing runtimes','Verify native launcher test prerequisites','Verify cold-profile bootstrap identity before preparing runtimes','Test release channels and update rollback',
  'Test installation diagnostics on the target platform','Test diagnostic choices, error presentation and download waiting feedback',
  'Verify Windows runtime before long acceptance tests','Verify Windows owned model and profile fixtures before long tests',
  'Test operation ownership, evidence, bounded retry and recovery contracts','Require chat backup safety tests',

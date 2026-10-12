@@ -126,10 +126,15 @@ class FirstInstallSnapshotTests(unittest.TestCase):
             self.assertIn("`" + name + "`", template)
         self.assertTrue((ROOT / "ops/skills/creative/nora-cardforge/references/starter-stories.md").is_file())
 
-    @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES_ROOT"), "requires an installed Hermes runtime")
+    @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES"), "requires NORA_TEST_HERMES source and NORA_TEST_PYTHON")
     def test_official_hermes_loader_reads_complete_agents_not_backup(self):
-        hermes = Path(os.environ["NORA_TEST_HERMES_ROOT"]).resolve()
-        python = hermes / ("venv/Scripts/python.exe" if os.name == "nt" else "venv/bin/python3")
+        hermes = Path(os.environ["NORA_TEST_HERMES"]).resolve()
+        self.assertTrue((hermes / "agent/prompt_builder.py").is_file(),
+            "NORA_TEST_HERMES must contain the actual Hermes prompt loader")
+        self.assertTrue(os.environ.get("NORA_TEST_PYTHON"),
+            "The Hermes loader fixture requires an explicit NORA_TEST_PYTHON")
+        python = Path(os.environ["NORA_TEST_PYTHON"])
+        self.assertTrue(python.is_file(), "NORA_TEST_PYTHON must name an existing interpreter")
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary)
             MODULE.install_agents(home, (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8"))

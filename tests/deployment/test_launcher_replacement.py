@@ -14,6 +14,10 @@ from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 SOURCE = Path(__file__).resolve().parent.parent / 'installer/desktop/replace-launcher.py'
 SPEC = importlib.util.spec_from_file_location('replace_launcher', SOURCE)
 worker = importlib.util.module_from_spec(SPEC)
@@ -165,7 +169,7 @@ class ReplacementTests(unittest.TestCase):
                 self.assertEqual(len(apps), 1)
                 application = apps[0]
                 subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(application)], check=True)
-            subprocess.run([shutil.which('node'), str(Path(__file__).with_name('verify_launcher_update.cjs')),
+            subprocess.run([resolve_node(required=True), str(Path(__file__).with_name('verify_launcher_update.cjs')),
                             str(application), os.environ['NORA_TEST_LAUNCHER_DESKTOP'], sys.platform], check=True)
 
     def test_rejects_zip_escape(self):

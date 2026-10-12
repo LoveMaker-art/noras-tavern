@@ -90,7 +90,7 @@ test('real Python skill exchanges a request and result with the JS receiver', as
     noraHome: f.home, hermesHome: hermes, installRoot: path.join(f.home, 'tavern') }));
   const script = path.join(__dirname, '../skills/system/tavern-updater/scripts/update.py');
   const command = 'import importlib.util,json,sys; from pathlib import Path; s=importlib.util.spec_from_file_location("skill",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.managed_request(Path(sys.argv[2]),sys.argv[3])))';
-  const python = process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
+  const python = process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
   const errors = [];
   const timer = setInterval(() => f.receiver.tick().catch(error => errors.push(error)), 30);
   try {

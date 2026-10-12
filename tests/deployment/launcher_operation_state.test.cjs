@@ -14,6 +14,94 @@ function fixture(t, execute, overrides = {}) {
   return {directory, options, controller:createOperationController(options)};
 }
 
+async function commitAckFixture(t,{success=false,successor=false,differentTarget=false,keepWriter=false}={}){
+  const native=require('../installer/desktop/operation-lock');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-commit-ack-'));
+  let original,acquisitions=0,failedCommits=0,runs=0,recordAfterRelease;
+  t.after(async()=>{if(keepWriter&&original)await original.release();fs.rmSync(directory,{recursive:true,force:true});});
+  const lock={probe:native.probe,acquire:async options=>{
+    const lease=await native.acquire(options);
+    if(++acquisitions!==1)return lease;
+    original=lease;
+    return {...lease,commitOperation:async request=>{
+      // The native writer really commits the record and filesystem generation.
+      // Only the acknowledgement is lost; never fabricate a journal or result.
+      const committed=await lease.commitOperation(request);
+      if(request.record.state==='failed')failedCommits++;
+      if(success&&request.record.state==='succeeded'||failedCommits===2)
+        throw Object.assign(new Error('The committed record acknowledgement was lost'),{code:'COMMIT_ACK_LOST'});
+      return committed;
+    },release:async()=>{
+      if(keepWriter)throw Object.assign(new Error('The native writer has not confirmed closure'),{code:'LOCK_GUARD_LOST'});
+      await lease.release();
+      const file=path.join(directory,'operations',options.operationId,'operation.json');
+      if(successor||differentTarget){
+        const before=JSON.parse(fs.readFileSync(file)),ownerEpoch=before.ownerEpoch+(successor?1:0),
+          replacement=await native.acquire({directory,operationId:options.operationId,ownerEpoch});
+        const changedTarget=differentTarget?{...before.target,planId:'another-ack-target'}:before.target;
+        try{await replacement.commitOperation({record:{...before,ownerEpoch,sequence:before.sequence+1,target:changedTarget,
+          planDigest:require('node:crypto').createHash('sha256').update(JSON.stringify(changedTarget)).digest('hex')},
+          expected:{ownerEpoch:before.ownerEpoch,sequence:before.sequence}});}finally{await replacement.release();}
+      }
+      recordAfterRelease=fs.readFileSync(file);
+    }};
+  }};
+  const target={request:{action:'update'},planId:'immutable-ack-target'};
+  const controller=createOperationController({directory,lock,executors:{update:async context=>{
+    runs++;await context.plan(target);
+    if(success)return {verification:'confirmed',value:{updateVerified:true}};
+    throw Object.assign(new Error('Original metadata request failed'),{code:'TIMEOUT'});
+  }}});
+  const result=await controller.start('update',{target},'commit-ack-request');
+  const file=path.join(directory,'operations',result.operationId,'operation.json');
+  return {directory,result,file,target,original,native,get runs(){return runs;},get recordAfterRelease(){return recordAfterRelease;}};
+}
+
+test('a lost failure commit ACK returns the same durable snapshot after the actual native writer closes',async t=>{
+  const f=await commitAckFixture(t),saved=JSON.parse(fs.readFileSync(f.file));
+  assert.equal(f.result.state,'failed');assert.equal(f.result.verification,'unconfirmed');assert.equal(f.result.effectState,'unknown');
+  assert.equal(f.result.snapshotSequence,saved.sequence,'do not return a pre-commit snapshot as the current failure');
+  assert.equal(f.result.ownerEpoch,saved.ownerEpoch);assert.deepEqual(f.result.target,f.target);
+  assert.equal(f.result.primaryFailure.code,'TIMEOUT');assert.ok(f.result.secondaryFailures.some(item=>item.code==='COMMIT_ACK_LOST'));
+  assert.deepEqual(f.result.allowedActions,['recheck','logs']);assert.equal(f.runs,1);
+  assert.equal((await f.native.probe({directory:f.directory})).busy,false);
+  assert.deepEqual(fs.readFileSync(f.file),f.recordAfterRelease,'snapshot reconciliation must not rewrite the durable record');
+});
+
+test('a lost success and failure ACK remains a failed actor outcome even when its durable sequence is reconciled',async t=>{
+  const f=await commitAckFixture(t,{success:true}),saved=JSON.parse(fs.readFileSync(f.file));
+  assert.equal(f.result.state,'failed');assert.equal(f.result.verification,'unconfirmed');assert.equal(f.result.effectState,'unknown');
+  assert.equal(f.result.snapshotSequence,saved.sequence);assert.equal(f.result.primaryFailure.code,'COMMIT_ACK_LOST');
+  assert.deepEqual(f.result.allowedActions,['recheck','logs']);assert.equal(f.runs,1);
+  assert.deepEqual(fs.readFileSync(f.file),f.recordAfterRelease);
+});
+
+test('a lost commit ACK cannot borrow a successor epoch or rewrite its native committed record',async t=>{
+  const f=await commitAckFixture(t,{successor:true}),saved=JSON.parse(fs.readFileSync(f.file));
+  assert.ok(saved.ownerEpoch>f.result.ownerEpoch);assert.notEqual(f.result.snapshotSequence,saved.sequence);
+  assert.equal(f.result.state,'failed');assert.equal(f.result.verification,'unconfirmed');assert.equal(f.result.effectState,'unknown');
+  assert.equal(f.result.primaryFailure.code,'TIMEOUT');assert.ok(f.result.secondaryFailures.some(item=>item.code==='COMMIT_ACK_LOST'));
+  assert.ok(f.result.evidenceMissingReasons.includes('failure_snapshot_unconfirmed:OWNER_OR_TARGET_CHANGED'));
+  assert.deepEqual(fs.readFileSync(f.file),f.recordAfterRelease);
+});
+
+test('a lost commit ACK cannot borrow another fixed target even when its epoch is unchanged',async t=>{
+  const f=await commitAckFixture(t,{differentTarget:true}),saved=JSON.parse(fs.readFileSync(f.file));
+  assert.equal(saved.ownerEpoch,f.result.ownerEpoch);assert.notEqual(saved.planDigest,f.result.planDigest);
+  assert.notEqual(f.result.snapshotSequence,saved.sequence);assert.deepEqual(f.result.target,f.target);
+  assert.equal(f.result.state,'failed');assert.equal(f.result.effectState,'unknown');assert.equal(f.result.primaryFailure.code,'TIMEOUT');
+  assert.ok(f.result.evidenceMissingReasons.includes('failure_snapshot_unconfirmed:OWNER_OR_TARGET_CHANGED'));
+  assert.deepEqual(fs.readFileSync(f.file),f.recordAfterRelease);
+});
+
+test('an unclosed native writer cannot reconcile a lost ACK into a usable current snapshot',async t=>{
+  const f=await commitAckFixture(t,{keepWriter:true}),saved=JSON.parse(fs.readFileSync(f.file));
+  assert.equal((await f.native.probe({directory:f.directory})).busy,true);
+  assert.notEqual(f.result.snapshotSequence,saved.sequence);assert.equal(f.result.state,'failed');assert.equal(f.result.effectState,'unknown');
+  assert.equal(f.result.primaryFailure.code,'TIMEOUT');assert.equal(f.result.verification,'unconfirmed');
+  assert.ok(f.result.evidenceMissingReasons.includes('failure_snapshot_unconfirmed:WRITER_OR_EXECUTOR_ACTIVE'));
+});
+
 test('a repeated request after reopening returns its stored result without executing again', async t => {
   let runs = 0;
   const f = fixture(t, async context => { runs++; await context.stage('verifying'); return {installed:true}; });

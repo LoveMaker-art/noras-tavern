@@ -1,15 +1,20 @@
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import unittest
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
+
 PROBE = Path(__file__).resolve().parents[1] / 'installer/mcp_probe.mjs'
+NODE = resolve_node()
 
 
-@unittest.skipUnless(shutil.which('node'), 'requires local Node')
+@unittest.skipUnless(NODE, 'requires NORA_TEST_NODE or a local Node executable')
 class McpProbeTests(unittest.TestCase):
     def fixture(self, directory):
         package = directory / 'node_modules/@modelcontextprotocol/sdk'
@@ -35,7 +40,7 @@ exports.Client = class {
         return {'command': 'fixture-server', 'args': ['read-fixture'], 'env': {'PRIVATE_KEY': 'PRIVATE_VALUE'}}
 
     def run_probe(self, directory, value):
-        return subprocess.run([shutil.which('node'), str(PROBE)], cwd=directory,
+        return subprocess.run([NODE, str(PROBE)], cwd=directory,
             env={**os.environ, 'PROBE_CLOSE_PATH': str(directory / 'closed')},
             input=value if isinstance(value, str) else json.dumps(value), text=True, capture_output=True, timeout=15)
 

@@ -5,6 +5,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -256,22 +257,64 @@ def inventory(home):
     return files
 
 
+def valid_version(value):
+    return isinstance(value, str) and re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-beta\.[0-9]+)?", value) is not None
+
+
+def valid_commit(value):
+    return isinstance(value, str) and re.fullmatch(r"[a-f0-9]{40}", value) is not None
+
+
+def acceptance_record_problems(record):
+    """Validate historical proof, without reading or rewriting user files."""
+    problems = []
+    if type(record.get("schema")) is not int or record["schema"] != 1:
+        problems.append("Nora 初始化验收记录格式无效或尚未验证")
+    proof = record.get("proof") if isinstance(record.get("proof"), dict) else {}
+    if any(proof.get(name) is not True for name in PROOFS):
+        problems.append("缺少 Nora 实际加载检查结果")
+    if type(record.get("setupCompleted")) is not bool:
+        problems.append("Nora 首次配置完成记录格式无效")
+    if not valid_version(record.get("version")) or not valid_commit(record.get("commit")):
+        problems.append("Nora 初始化验收记录的版本或提交标识无效")
+    return problems
+
+
+def acceptance_records(root):
+    """Both readiness levels require the same supported, consistent receipts.
+
+    Schema 1 is written by first installation; schema 2 by the updater. The
+    initialization record remains schema 1. Extra historical metadata is not a
+    requirement for either level, and malformed evidence is never repaired here.
+    """
+    record = read_json(root / "tavern-updates/nora-system.json")
+    receipt = read_json(root / "tavern-updates/installed.json")
+    problems = acceptance_record_problems(record)
+    if type(receipt.get("schema")) is not int or receipt["schema"] not in (1, 2):
+        problems.append("系统版本安装记录格式无效或不受支持")
+    if not valid_version(receipt.get("version")) or not valid_commit(receipt.get("commit")):
+        problems.append("系统版本安装记录的版本或提交标识无效")
+    if "candidate" in receipt and type(receipt["candidate"]) is not bool:
+        problems.append("系统版本候选标识格式无效")
+    if record.get("version") != receipt.get("version") or record.get("commit") != receipt.get("commit"):
+        problems.append("系统版本与初始化记录不一致")
+    return record, receipt, problems
+
+
 def installation_state(home, root):
     """Read historical acceptance only; user files are not an installation lock.
 
     Used by status polling and normal startup. Delivery validation belongs to
     install/update transactions (inspect and verify_runtime), not this path.
     """
-    record = read_json(root / "tavern-updates/nora-system.json")
-    receipt = read_json(root / "tavern-updates/installed.json")
+    record, receipt, problems = acceptance_records(root)
     files = read_json(home / "nora-installation.json")
-    proof = record.get("proof") if isinstance(record.get("proof"), dict) else {}
-    accepted = record.get("schema") == 1 and all(proof.get(name) for name in PROOFS)
+    accepted = not problems
     return {
         "ready": accepted,
-        "problems": [] if accepted else ["缺少安装验收记录，安装尚未确认完成"],
+        "problems": problems,
         "version": receipt.get("version"),
-        "setupCompleted": accepted and bool(record.get("setupCompleted")),
+        "setupCompleted": accepted and record.get("setupCompleted") is True,
         "noraInstalled": files.get("schema") == 1 and bool(files.get("files")),
     }
 
@@ -279,14 +322,7 @@ def installation_state(home, root):
 def inspect(home, root, port):
     """Strict delivery acceptance for explicit installation/update, not polling."""
     import yaml
-    problems = []
-    record = read_json(root / "tavern-updates/nora-system.json")
-    receipt = read_json(root / "tavern-updates/installed.json")
-    if record.get("schema") != 1:
-        problems.append("Nora 初始化尚未验证")
-    proof = record.get("proof") if isinstance(record.get("proof"), dict) else {}
-    if not all(proof.get(name) for name in PROOFS):
-        problems.append("缺少 Nora 实际加载检查结果")
+    record, receipt, problems = acceptance_records(root)
     problems.extend(managed_problems(home, root, port))
     managed = record.get("managed") if isinstance(record.get("managed"), dict) else {}
     for name in MANAGED_FILES:
@@ -330,8 +366,6 @@ def inspect(home, root, port):
     for name in ("apps/nora-mcp/dist/server.js", "apps/tavern-runtime/native_lifecycle.py", "apps/tavern-runtime/story_profile_runtime/manifest.json"):
         if not (root / name).is_file():
             problems.append("缺少系统组件：" + name)
-    if record.get("commit") != receipt.get("commit"):
-        problems.append("系统版本与初始化记录不一致")
     runtime = read_json(home / "hermes-agent/.hermes-bootstrap-complete")
     components = read_json(home / "nora-components.json")
     if not runtime.get("sha256") or not components.get("files"):
@@ -347,7 +381,7 @@ def inspect(home, root, port):
     if not any((venv / relative).is_file() for relative in ("bin/python3", "Scripts/python.exe")):
         problems.append("Hermes Python 运行环境缺失")
     return {"ready": not problems, "problems": problems, "version": receipt.get("version"),
-            "setupCompleted": bool(record.get("setupCompleted")) and not problems}
+            "setupCompleted": record.get("setupCompleted") is True and not problems}
 
 
 def verify_runtime(home, root, port, python, env):
@@ -423,7 +457,9 @@ def record_initialization(home, root, manifest, proof, *, journal=None):
 def mark_setup_complete(root):
     file = root / "tavern-updates/nora-system.json"
     record = read_json(file)
-    proof = record.get("proof") if isinstance(record.get("proof"), dict) else {}
-    if record.get("schema") != 1 or not all(proof.get(name) for name in PROOFS):
+    # An update writes its newly verified initialization before its new version
+    # receipt. Validate this record here; readiness still requires both records
+    # to agree once the transaction finishes publishing its metadata.
+    if acceptance_record_problems(record):
         raise RuntimeError("Nora 初始化未通过验证")
     save_json(file, {**record, "setupCompleted": True})

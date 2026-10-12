@@ -313,7 +313,7 @@ async function modelConfigurationFixture(run,hermes,root) {
 }
 async function main() {
   const opts=options(process.argv.slice(2));
-  const base=opts['scratch-base']||path.join(os.tmpdir(),'nora-launcher-refactor-products-20261004');
+  const base=opts['scratch-base']||path.join(os.tmpdir(),'nora-launcher-refactor-products');
   fs.mkdirSync(base,{recursive:true,mode:0o700});
   const root=fs.realpathSync(fs.mkdtempSync(path.join(base,'products-smoke-'))),hermes=path.join(root,'hermes'),tavern=path.join(root,'tavern');
   const payload=opts.payload;const runtime=runtimePayload(opts['runtime-payload']||payload,root);

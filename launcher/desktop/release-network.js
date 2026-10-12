@@ -184,9 +184,75 @@ function sourceReadPolicy(source,index,policy,fetcher) {
   const attempts=policy.maxAttempts || (fetcher.releaseRead===true&&fetcher.releasePolicy?.maxAttempts) || 2;
   return {maxAttempts:Math.min(attempts,index===0&&source.id==='github'?2:1),networkRetriesOnly:true};
 }
+function metadataResourceKind(value) {
+  const url=new URL(value),api='/repos/LoveMaker-art/noras-tavern/releases';
+  if(url.username || url.password || url.hash)return 'unknown';
+  if(url.origin==='https://api.github.com') {
+    if(url.pathname===api && /^\?per_page=100&page=[1-5]$/.test(url.search))return 'release_list';
+    if(url.search)return 'unknown';
+    if(url.pathname===api+'/latest')return 'channel';
+    if(/^\/repos\/LoveMaker-art\/noras-tavern\/releases\/tags\/v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(url.pathname))return 'release';
+  }
+  if(url.origin==='https://github.com' && !url.search) {
+    const match=/^\/LoveMaker-art\/noras-tavern\/releases\/download\/v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?\/([A-Za-z0-9._-]+)$/.exec(url.pathname);
+    if(match) {
+      if(match[1]==='release-assets.json')return 'asset_index';
+      if(match[1]==='release-manifest.json')return 'release_manifest';
+      if(/^(?:win32-x64|darwin-(?:arm64|x64))-release-manifest\.json$/.test(match[1]))return 'platform_manifest';
+      if(/^nora-system-(?:win32-x64|darwin-(?:arm64|x64))\.json$/.test(match[1]))return 'system_index';
+      if(/^nora-launcher-(?:win32-x64|darwin-(?:arm64|x64))\.json$/.test(match[1]))return 'launcher_index';
+      if(['first-install-manifest.json','bootstrap-manifest.json'].includes(match[1]))return 'install_manifest';
+    }
+  }
+  return 'unknown';
+}
+// The raw operation-log projection retains this typed message without exposing
+// a URL, redirect query, remote address, header/body content or native message.
+// These facts describe this reader; they never change admission or its budgets.
+function metadataTrace({url,resourceKind,source,fetcher,policy,signal,budget,deadline}) {
+  const clock=policy.now || Date.now,started=clock(),maximum=4*1024*1024;
+  const elapsed=value=>Number.isFinite(value)?Math.min(2147483647,Math.max(0,Math.trunc(value))):null;
+  const parsed=new URL(url),sourceKind=source?.provider==='sourceforge'?'sourceforge':source?.mirror?'configured_mirror'
+    :['https://github.com','https://api.github.com'].includes(parsed.origin)?'github':'other';
+  const transport=policy.engine || fetcher.releasePolicy?.engine || 'fetch';
+  const engine=['chromium','node','fetch'].includes(transport)?transport:'unknown';
+  const diagnostics=policy.diagnostics || fetcher.releasePolicy?.diagnostics;
+  let response,headerAt=null,firstByteAt=null,lastByteAt=null,size=0,requestSignal;
+  function emit(event,phase,error) {
+    const current=clock(),code=error?.code || transportCode(error);
+    const abortReason=!error?'none':signal?.aborted?(signal.reason?.name==='TimeoutError'?'caller_timeout':'caller_cancelled')
+      :requestSignal?.aborted || budget<=0?(policy.deadlineAt<=started+(policy.totalBudgetMs ?? 100000)?'operation_deadline':'source_deadline')
+      :code==='TIMEOUT' || error?.name==='TimeoutError'?'transport_timeout':phase==='parse' || phase==='response'?'response_error':'transport_error';
+    let declaredBytes=null,contentEncoding='unknown';
+    try {
+      const length=response?.headers.get('content-length');
+      if(/^\d+$/.test(length || '') && Number.isSafeInteger(Number(length)) && Number(length)<=maximum)declaredBytes=Number(length);
+      if(response?.headers) {
+        const encoding=(response.headers.get('content-encoding') || 'identity').toLowerCase();
+        if(['identity','gzip','br','deflate'].includes(encoding))contentEncoding=encoding;
+      }
+    } catch {}
+    const fields={phase,resourceKind,sourceKind,engine,status:Number.isInteger(response?.status)&&response.status>=100&&response.status<=599?response.status:null,
+      elapsedMs:elapsed(current-started),headersMs:headerAt===null?null:elapsed(headerAt-started),bodyMs:headerAt===null?null:elapsed(current-headerAt),
+      firstByteMs:firstByteAt===null?null:elapsed(firstByteAt-started),lastByteMs:lastByteAt===null?null:elapsed(lastByteAt-started),
+      bytesReceived:Math.min(size,maximum+1),bytesCapped:size>maximum+1,declaredBytes,contentEncoding,
+      budgetMs:elapsed(budget),remainingMs:elapsed(deadline-current),abortReason};
+    fields.message='metadata '+Object.entries(fields).map(([key,value])=>`${key}=${value===null?'unknown':value}`).join(' ');
+    try {diagnostics?.write?.(event,fields);} catch {}
+  }
+  return {
+    signal(value){requestSignal=value;},
+    headers(value){response=value;headerAt=clock();emit('network.metadata.headers','headers');},
+    resetHeaders(){response=undefined;headerAt=null;},
+    chunk(length){size+=length;if(length){firstByteAt??=clock();lastByteAt=clock();}},
+    failed(phase,error){emit('network.metadata.failed',phase,error);},
+    complete(){emit('network.metadata.complete','complete');},
+  };
+}
 async function metadataJson(url,options={}) {
   const {fetcher=fetch,signal,policy={},channel='stable'}=options;
   const sources=sourceCandidates(url,{channel,sources:policy.sources});
+  const resourceKind=metadataResourceKind(url);
   const now=policy.now || Date.now,deadline=Math.min(policy.deadlineAt ?? Infinity,now()+(policy.totalBudgetMs ?? 100000));
   const failures=[];
   for(let index=0;index<sources.length;index++) {
@@ -195,7 +261,7 @@ async function metadataJson(url,options={}) {
     if(remaining<=0) throw await sourceFailure(launcherError('发布请求已超过有限等待预算。',
       {code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1)),url,options.conditionIdentity,fetcher,failures,sources);
     const source=sources[index],budget=sources.length>1?Math.min(remaining,policy.attemptTimeoutMs ?? 30000):remaining;
-    try {return await metadataFromSource(source.url,{...options,fetcher,source,policy:{...policy,source,deadlineAt:deadline,totalBudgetMs:budget,
+    try {return await metadataFromSource(source.url,{...options,fetcher,source,resourceKind,policy:{...policy,source,deadlineAt:deadline,totalBudgetMs:budget,
       ...(sources.length>1?sourceReadPolicy(source,index,policy,fetcher):{})}});}
     catch(error) {
       failures.push(error);
@@ -206,7 +272,7 @@ async function metadataJson(url,options={}) {
     }
   }
 }
-async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='stable',headers={},policy={},conditionIdentity,source} = {}) {
+async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='stable',headers={},policy={},conditionIdentity,source,resourceKind} = {}) {
   if(new URL(url).protocol!=='https:') throw launcherError('发布清单必须使用 HTTPS。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.request'});
   const now=metadataCache?.now || policy.now || Date.now;
   const requestHeaders=new Headers({'User-Agent':'Nora-Tavern-Launcher',Accept:'application/vnd.github+json',...headers});
@@ -222,13 +288,16 @@ async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='sta
   }
   if(cached?.etag) requestHeaders.set('If-None-Match',cached.etag);
   const budget=Math.min(policy.totalBudgetMs ?? 100000,(policy.deadlineAt ?? Infinity)-(policy.now || Date.now)());
-  if(budget<=0) throw launcherError('发布请求已超过有限等待预算。',{code:'TIMEOUT',source:'release_service',site:'release.request'});
-  const requestSignal=AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout(Math.ceil(budget))]);
   const requestDeadline=Math.min(policy.deadlineAt ?? Infinity,(policy.now || Date.now)()+budget);
+  const trace=metadataTrace({url,resourceKind,source,fetcher,policy,signal,budget,deadline:requestDeadline});
+  if(budget<=0) {const error=launcherError('发布请求已超过有限等待预算。',{code:'TIMEOUT',source:'release_service',site:'release.request'});trace.failed('before_headers',error);throw error;}
+  const requestSignal=AbortSignal.any([signal || new AbortController().signal,AbortSignal.timeout(Math.ceil(budget))]);
+  trace.signal(requestSignal);
   let response;
   try {response=await fetchRead(fetcher,url,{headers:requestHeaders,signal:requestSignal},policy);}
-  catch(error) {await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
-  try {validateSourceResponse(source,response);} catch(error) {await response.body?.cancel().catch(()=>{});throw error;}
+  catch(error) {trace.failed('before_headers',error);await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
+  trace.headers(response);
+  try {validateSourceResponse(source,response);} catch(error) {trace.failed('response',error);await response.body?.cancel().catch(()=>{});throw error;}
   let responseSource=safeSource(response.url || url);
   if(response.status===304) {
     if(cached?.etag && requestHeaders.get('If-None-Match')===cached.etag && cached.responseSource===responseSource
@@ -243,32 +312,37 @@ async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='sta
     try {metadataCache?.delete?.(key);} catch {}
     await response.body?.cancel().catch(()=>{});
     requestHeaders.delete('If-None-Match');
+    trace.resetHeaders();
     try {response=await fetchRead(fetcher,url,{headers:requestHeaders,signal:requestSignal},
       {...policy,deadlineAt:requestDeadline,maxAttempts:1});}
-    catch(error){await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
-    try {validateSourceResponse(source,response);} catch(error){await response.body?.cancel().catch(()=>{});throw error;}
+    catch(error){trace.failed('before_headers',error);await rememberFailureResource(error,url,conditionIdentity,fetcher);throw launcherError(error.message,{source:'release_service',site:'release.request'},error);}
+    trace.headers(response);
+    try {validateSourceResponse(source,response);} catch(error){trace.failed('response',error);await response.body?.cancel().catch(()=>{});throw error;}
     responseSource=safeSource(response.url || url);
-    if(response.status===304)throw launcherError('发布服务返回了无法对应缓存的条件响应。',
-      {code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});
+    if(response.status===304){const error=launcherError('发布服务返回了无法对应缓存的条件响应。',
+      {code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});trace.failed('response',error);throw error;}
   }
   if(!response.ok){
     const evidence=responseEvidence(response,now());
     try {metadataCache?.limit?.(url,evidence);} catch {}
     const error=launcherError(`无法取得发布清单（HTTP ${response.status}）。`,
       {...evidence,attempt:response.launcherAttempt,source:'release_service',site:'release.request'});
+    trace.failed('response',error);
     await rememberFailureResource(error,url,conditionIdentity,fetcher);await response.body?.cancel().catch(()=>{});throw error;
   }
   let body;
   try {
     const chunks=[];let size=0;
     for await(const chunk of Readable.fromWeb(response.body,{signal:requestSignal})) {size+=chunk.length;
+      trace.chunk(chunk.length);
       if(size>4*1024*1024) throw launcherError('发布清单过大。',{code:'RESPONSE_TOO_LARGE'});chunks.push(chunk);}
     body=Buffer.concat(chunks).toString('utf8');
-  } catch(error) {await rememberFailureResource(error,url,conditionIdentity,fetcher);
+  } catch(error) {trace.failed('body',error);await rememberFailureResource(error,url,conditionIdentity,fetcher);
     const code=requestSignal.reason?.name==='TimeoutError'?'TIMEOUT':transportCode(error);
     throw launcherError(error.message,{source:'release_service',site:'release.request',...(code?{code}:{})},error);}
   let value;
-  try {value=JSON.parse(body);} catch {throw launcherError('发布服务返回了无法识别的内容。',{code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});}
+  try {value=JSON.parse(body);} catch {const error=launcherError('发布服务返回了无法识别的内容。',{code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});trace.failed('parse',error);throw error;}
+  trace.complete();
   const evidence={body,checkedAt:new Date(now()).toISOString(),etag:response.headers.get('etag') || null,responseSource};
   try {metadataCache?.set(key,evidence);} catch {}
   return {...evidence,value,source:'network',latestConfirmed:true};

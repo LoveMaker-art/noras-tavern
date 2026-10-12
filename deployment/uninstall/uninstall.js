@@ -51,19 +51,25 @@ function own(home) {
   return value.id;
 }
 
-function makePlan({ home, hermesHome, installRoot, mode, executable = process.execPath, appPath = null }) {
+function makePlan({ home, hermesHome, installRoot, mode, executable = process.execPath, appPath = null, port = 8799, serviceMode = 'port' }) {
   if (!['keep', 'all'].includes(mode)) throw new Error('卸载方式无效。');
+  if(!['port','native-root'].includes(serviceMode)||serviceMode==='native-root'&&(mode!=='all'||port!==null))
+    throw Object.assign(new Error('卸载现场检查方式无效，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
   const root = safeRoot(home);
   if (path.resolve(executable).startsWith(root + path.sep)) throw new Error('启动器位于数据目录内，请将启动器移到独立应用目录后重试。');
   const hermes = path.relative(root, canonical(hermesHome));
   const tavern = path.relative(root, canonical(installRoot));
   contained(root, hermes); contained(root, tavern);
   if (hermes === tavern || hermes.startsWith(tavern + path.sep) || tavern.startsWith(hermes + path.sep)) throw new Error('程序目录不能互相包含。');
-  return { schema: 1, root, owner: own(root), hermes, tavern, mode, executable, appPath, parentIdentity:processIdentity(process.pid) };
+  const plan={ schema: 1, root, owner: own(root), hermes, tavern, mode, executable, appPath, port, serviceMode, parentIdentity:processIdentity(process.pid) };
+  plan.serviceCheck=require('./uninstall-offline-check').capture({root,hermesHome:contained(root,hermes),installRoot:contained(root,tavern),port,mode:serviceMode,executable,
+    entry:__dirname.endsWith('.asar')?__dirname:__filename,resourcesRoot:path.dirname(__dirname)});
+  return plan;
 }
 
 function validate(plan) {
   if (plan.schema !== 1 || !['keep', 'all'].includes(plan.mode)) throw new Error('卸载计划无效。');
+  if(plan.serviceMode==='native-root'&&(plan.mode!=='all'||plan.port!==null))throw Object.assign(new Error('卸载现场检查方式无效，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
   const root = safeRoot(plan.root);
   const owner = JSON.parse(fs.readFileSync(contained(root, OWNER), 'utf8'));
   if (owner.id !== plan.owner) throw new Error('安装目录已变化，已停止卸载。');
@@ -74,19 +80,30 @@ function validate(plan) {
 function processIdentity(pid) {
   if(!Number.isSafeInteger(pid)||pid<1)throw Object.assign(new Error('启动器进程身份无效。'),{code:'UNINSTALL_PARENT_UNCONFIRMED'});
   let result,creationTime,precisionSeconds;
+  const unconfirmed=cause=>Object.assign(new Error('无法核验启动器进程身份，未删除文件。',cause?{cause}:undefined),
+    {code:'UNINSTALL_PARENT_UNCONFIRMED',
+      ...(result?.status===null||Number.isSafeInteger(result?.status)?{exitCode:result.status}:{}),
+      ...(result?.signal===null||typeof result?.signal==='string'?{signal:result.signal}:{})});
+  try{
+    if(process.platform==='darwin'){
+      result=spawnSync('/bin/ps',['-p',String(pid),'-o','lstart='],{encoding:'utf8',env:{...process.env,LC_ALL:'C'},timeout:10000});
+    }else if(process.platform==='win32'){
+      result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+        `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($null -eq $p){'absent'}else{([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}`],
+        {encoding:'utf8',windowsHide:true,timeout:10000});
+    }
+  }catch(error){throw unconfirmed(error);}
+  if(result?.error)throw unconfirmed(result.error);
+  if(!result||result.signal||typeof result.stdout!=='string'||typeof result.stderr!=='string'||result.stderr.trim())throw unconfirmed();
+  const output=result.stdout.trim();
   if(process.platform==='darwin'){
-    result=spawnSync('/bin/ps',['-p',String(pid),'-o','lstart='],{encoding:'utf8',env:{...process.env,LC_ALL:'C'},timeout:10000});
-    if(!result.error&&result.status===1&&!result.stdout.trim())return null;
-    creationTime=Date.parse(result.stdout.trim())/1000;precisionSeconds=1;
+    if(result.status===1&&!output)return null;
+    creationTime=Date.parse(output)/1000;precisionSeconds=1;
   }else if(process.platform==='win32'){
-    result=spawnSync('powershell.exe',['-NoProfile','-NonInteractive','-Command',
-      `$p=Get-Process -Id ${pid} -ErrorAction SilentlyContinue; if($null -eq $p){'absent'}else{([DateTimeOffset]$p.StartTime.ToUniversalTime()).ToUnixTimeMilliseconds()}`],
-      {encoding:'utf8',windowsHide:true,timeout:10000});
-    if(!result.error&&result.status===0&&result.stdout.trim()==='absent')return null;
-    creationTime=Number(result.stdout.trim())/1000;precisionSeconds=0.001;
+    if(result.status===0&&output==='absent')return null;
+    creationTime=/^\d+$/.test(output)?Number(output)/1000:NaN;precisionSeconds=0.001;
   }
-  if(result?.error||result?.status!==0||!Number.isFinite(creationTime)||creationTime<=0)
-    throw Object.assign(new Error('无法核验启动器进程身份，未删除文件。'),{code:'UNINSTALL_PARENT_UNCONFIRMED'});
+  if(result.status!==0||!Number.isFinite(creationTime)||creationTime<=0)throw unconfirmed();
   return {pid,creationTime,precisionSeconds};
 }
 
@@ -94,6 +111,10 @@ const OPERATION_ID=/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9
 const recoveryRequired=cause=>Object.assign(new Error('上次文件事务尚未确认结束，请先恢复并保留日志与备份，再卸载程序。',cause?{cause}:undefined),{code:'UNINSTALL_RECOVERY_REQUIRED'});
 function localDiagnostic(error,depth=0){return {name:String(error.name||'Error').slice(0,100),code:String(error.code||'').slice(0,100),
   message:String(error.message||'').slice(0,2000),stack:String(error.stack||'').slice(0,8192),
+  ...(typeof error.syscall==='string'?{syscall:error.syscall.slice(0,200)}:{}),
+  ...(Number.isFinite(error.errno)?{errno:error.errno}:typeof error.errno==='string'?{errno:error.errno.slice(0,100)}:{}),
+  ...(error.exitCode===null||Number.isSafeInteger(error.exitCode)?{exitCode:error.exitCode}:{}),
+  ...(error.signal===null||typeof error.signal==='string'&&/^SIG[A-Z0-9]+$/.test(error.signal)?{signal:error.signal}:{}),
   ...(error.cause&&depth<3?{cause:localDiagnostic(error.cause,depth+1)}:{})};}
 function present(file){try{fs.lstatSync(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}}
 function readJournal(file,limit=4*1024*1024){
@@ -944,13 +965,18 @@ function cleanup(plan,onProgress=()=>{}) {
   try{cleanupLocked(plan,onProgress);}finally{writer.release();}
 }
 
-function cleanupLocked(plan, onProgress = () => {}) {
+function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   const root = validate(plan);
   if(present(contained(root,'installer/operations/.guards'))){
     try{readOnlyNodeCheck('inspectExecutorHistory',plan);}
     catch(error){throw Object.assign(new Error('尚未确认上次维护进程已结束，未删除文件。',{cause:error}),{code:'OPERATION_EXECUTOR_UNCONFIRMED'});}
   }
-  assertNoPendingTransaction(root,plan);
+  // KEEP must preserve an interrupted transaction's data and recovery chain.
+  // ALL deliberately deletes that entire confirmed installation, including
+  // its backups: historical proof cannot be a prerequisite for that choice.
+  // Current ownership, the held writer and executor-offline checks above still
+  // apply to both modes; no path from a historical journal grants deletion.
+  if(plan.mode==='keep')assertNoPendingTransaction(root,plan);
   // Resolve every top-level deletion before changing anything. Node rm does not
   // follow links inside a removed tree; redirected deletion roots are rejected.
   const relatives = plan.mode === 'all'
@@ -975,6 +1001,7 @@ function cleanupLocked(plan, onProgress = () => {}) {
   for (let index = 0; index < targets.length; index++) {
     onProgress({ stage: 'cleanup', current: index + 1, total: targets.length, path: targets[index] });
     remove(targets[index]);
+    onRemoved(targets[index]);
   }
   // Even all retains only the ownership record and native lock inode.
   // Unlinking the held lock would let a new installer create another owner.
@@ -1004,12 +1031,18 @@ function restoreRetained(noraHome, previous, current) {
 async function worker(planFile, showMessage = notify) {
   const directory = path.dirname(planFile);
   const resultFile = path.join(directory, 'result.json');
-  let plan,writer;
+  let plan,writer,serviceFacts,lifecycle,recordFailure,consentRemoved=false;
   const report = value => fs.writeFileSync(resultFile, JSON.stringify(value), { mode: 0o600 });
   try {
     plan = JSON.parse(fs.readFileSync(planFile, 'utf8'));
     if (path.resolve(plan.executable) !== path.resolve(process.execPath)) throw new Error('卸载程序与应用不匹配。');
     if (plan.executable.startsWith(path.resolve(plan.root) + path.sep)) throw new Error('启动器不能位于数据目录内。');
+    try{if(plan.diagnostics?.enabled===true&&plan.diagnostics.launcherVersion===require('./package.json').version){
+      // Preload the existing transport before ALL or APP deletion removes its
+      // source resources. The default store is outside the installation root.
+      lifecycle=require('./lifecycle-diagnostics').createLifecycleDiagnostics({enabled:true,
+          launcherVersion:plan.diagnostics.launcherVersion});
+    }}catch{try{await lifecycle?.close();}catch{}lifecycle=null;recordFailure=null;}
     if (process.platform === 'darwin' && plan.appPath) {
       const expected = path.resolve(process.execPath, '../../..');
       if (plan.appPath !== expected || !expected.endsWith('.app') || fs.lstatSync(expected).isSymbolicLink()) throw new Error('应用目录校验失败。');
@@ -1030,20 +1063,42 @@ async function worker(planFile, showMessage = notify) {
     const root=validate(plan);
     writer=osLock.acquire({directory:contained(root,'installer')});
     await inspectExecutorHistory(plan);
+    // The GUI released its shutdown owner before this helper took over. A
+    // service may have restarted in that gap, so prove offline under our own
+    // writer before deleting anything. This proof uses current APP resources,
+    // never historical transaction completeness or deletion paths.
+    serviceFacts=await require('./uninstall-offline-check').inspect({check:plan.serviceCheck,hermesHome:contained(root,plan.hermes),
+      expected:{root,hermesHome:contained(root,plan.hermes),installRoot:contained(root,plan.tavern),port:plan.port,mode:plan.serviceMode,
+        executable:process.execPath,entry:__dirname.endsWith('.asar')?__dirname:__filename,resourcesRoot:path.dirname(__dirname)}});
+    try{recordFailure=lifecycle?.prepare({home:root,budgetMs:1500});}catch{}
     report({ state: 'running', stage: 'cleanup' });
-    cleanupLocked(plan, progress => { report({ state: 'running', ...progress }); process.stdout.write(`清理文件 ${progress.current}/${progress.total}\n`); });
+    cleanupLocked(plan, progress => { report({ state: 'running', ...progress }); process.stdout.write(`清理文件 ${progress.current}/${progress.total}\n`); },removed=>{
+      const consent=path.join(root,'installer','telemetry.json');
+      if(plan.mode==='all'&&(process.platform==='win32'?removed.toLowerCase()===consent.toLowerCase():removed===consent))consentRemoved=true;
+    });
     if (process.platform === 'darwin' && plan.appPath) {
       report({ state: 'running', stage: 'application' });
       remove(plan.appPath);
     }
-    report({ state: 'complete', mode: plan.mode, retained: plan.mode === 'keep' ? plan.root : null });
+    report({ state: 'complete', mode: plan.mode, retained: plan.mode === 'keep' ? plan.root : null, serviceVerification:serviceFacts });
     if (process.platform === 'darwin') showMessage(plan.mode === 'keep' ? '卸载完成。用户数据已保留，可在重装后继续使用。' : '卸载完成。本地程序和数据已清理。');
   } catch (error) {
-    report({ state: 'error', code:error.code||'UNINSTALL_FAILED', error: error.message, diagnosticError:localDiagnostic(error) });
+    const result={ state: 'error', code:error.code||'UNINSTALL_FAILED', error: error.message, diagnosticError:localDiagnostic(error) };
+    report(result);
+    let handle;
+    try{
+      // A failure before cleanup reads the current choice; only confirmed
+      // removal by this worker permits the pre-cleanup snapshot for live send.
+      recordFailure ||= lifecycle?.prepare({home:plan.root,budgetMs:1500});
+      handle=recordFailure?.('uninstall',error,{consentRemoved});
+      if(handle){result.diagnosticDelivery={operationId:handle.operationId,phase:'queued'};report(result);
+        result.diagnosticDelivery=await handle.flush();report(result);}
+    }catch{result.diagnosticDelivery={phase:'unavailable'};try{report(result);}catch{}}
+    finally{try{await handle?.close();}catch{}}
     if (process.platform === 'darwin') showMessage(`卸载未完成。请保留剩余文件并重试。详情：${resultFile}`);
     process.stderr.write(`卸载未完成：${error.message}\n`);
     process.exitCode = 1;
-  }finally{writer?.release();}
+  }finally{try{await lifecycle?.close();}catch{}finally{writer?.release();}}
 }
 
 function notify(message) {

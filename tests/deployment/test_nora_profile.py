@@ -2,7 +2,6 @@ import json
 import os
 from pathlib import Path
 import subprocess
-import shutil
 import sys
 import tempfile
 import threading
@@ -14,6 +13,10 @@ from types import SimpleNamespace
 from ops.installer import nora_profile as profile
 from ops.installer.launcher_bridge import env_for
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -173,8 +176,7 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                 # The real client remains beneath the same native operation
                 # lease used by the APP; never bypass ownership for integration.
                 def owned_client():
-                    node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
-                    self.assertTrue(node, 'A real Node runtime is required for the owned client integration')
+                    node = resolve_node(required=True)
                     entry = Path(profile.__file__).resolve().parent / 'desktop/operation-lock.js'
                     actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
                     owned_env = {**env, 'NORA_TEST_VENV_HOME': sys.prefix}

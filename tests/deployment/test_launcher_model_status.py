@@ -3,7 +3,6 @@ import hashlib
 import os
 from pathlib import Path
 import subprocess
-import shutil
 import sys
 import tempfile
 import unittest
@@ -15,6 +14,10 @@ from types import SimpleNamespace
 import contextlib
 import io
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 class VerifiedModelStatusTests(unittest.TestCase):
     def test_first_start_reports_typed_setup_blocker_without_starting_a_service(self):
@@ -66,8 +69,7 @@ class VerifiedModelStatusTests(unittest.TestCase):
             def resume():
                 entry = script.parent / 'desktop/operation-lock.js'
                 actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
-                node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
-                self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+                node = resolve_node(required=True)
                 return subprocess.run([node, str(actor), str(entry), str(root), sys.executable, str(script)],
                     env={**env, 'NORA_TEST_VENV_HOME': sys.prefix}, capture_output=True,
                     text=True, timeout=20, input=json.dumps({'action': 'sync-saved-tavern', 'port': 18999}))
@@ -125,8 +127,7 @@ class VerifiedModelStatusTests(unittest.TestCase):
                    "NORA_TAVERN_HOME": str(root), "TAVERN_DATA_ROOT": str(root / 'tavern'),
                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", 'NORA_TEST_VENV_HOME': sys.prefix}
             script = Path(__file__).resolve().parents[1] / "installer/model_config.py"
-            node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
-            self.assertTrue(node, 'A real Node runtime is required for the owned model actor')
+            node = resolve_node(required=True)
             result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
                 str(script.parent / 'desktop/operation-lock.js'), str(root), sys.executable, str(script)],
                 env=env, capture_output=True, text=True,

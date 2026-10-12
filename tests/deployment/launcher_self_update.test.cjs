@@ -389,7 +389,7 @@ for byte in '恢复错误中文'.encode('utf-8'):
 sys.exit(1)
 `);
   await assert.rejects(update.finalize({ home, executable, job, helper,
-    python: process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3'),
+    python: python(),
     target: '2.4.2', version: '1.1.0', systemReady: true, updateVerified: true }),
   error => error.code === 'EACCES' && error.cause?.message === '旧启动器备份读取失败');
   assert.equal(fs.readFileSync(path.join(job, 'replace.log'), 'utf8'), '恢复错误中文');

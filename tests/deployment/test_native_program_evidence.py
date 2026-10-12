@@ -1,13 +1,12 @@
 import json
 import os
-import shutil
 import unittest
 
 from ops.installer import first_install
 from ops.tests import test_native_startup_evidence as fixtures
 
 
-@unittest.skipUnless(shutil.which('node'), 'requires a local Node executable')
+@unittest.skipUnless(fixtures.NODE, 'requires NORA_TEST_NODE or a local Node executable')
 class NativeProgramEvidenceTests(unittest.TestCase):
     def setUp(self):
         self.fixture = fixtures.NativeStartupEvidenceTests('test_real_node_exit_preserves_exit_code_and_program_locations')

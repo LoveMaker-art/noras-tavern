@@ -1,7 +1,6 @@
 import io
 import json
 import os
-import shutil
 import socket
 import subprocess
 import sys
@@ -14,6 +13,12 @@ from unittest.mock import patch
 from ops.installer import launcher_bridge as bridge
 from ops.installer import operation_cli
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
+
+NODE = resolve_node()
 
 class LauncherRecoveryTests(unittest.TestCase):
     def setUp(self):
@@ -112,13 +117,12 @@ class LauncherRecoveryTests(unittest.TestCase):
             with socket.create_connection(listener.getsockname(), timeout=1):
                 pass  # The unrelated listener remains alive.
 
-    @unittest.skipUnless(os.environ.get('NORA_TEST_NODE') or os.environ.get('TAVERN_NODE_EXECUTABLE') or shutil.which('node'), 'Node fixture requires a real executable')
+    @unittest.skipUnless(NODE, 'requires NORA_TEST_NODE or a local Node executable')
     def test_missing_controller_detects_live_native_process_before_it_listens(self):
         script = self.args.install_root / 'apps/tavern-runtime/engine/sillytavern/server.js'
         script.parent.mkdir(parents=True)
         script.write_text("process.stdout.write('fixture-ready\\n'); setInterval(() => {}, 1000);", encoding='utf-8')
-        node = os.environ.get('NORA_TEST_NODE') or os.environ.get('TAVERN_NODE_EXECUTABLE') or shutil.which('node')
-        child = subprocess.Popen([node, str(script)], cwd=script.parent,
+        child = subprocess.Popen([NODE, str(script)], cwd=script.parent,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
             self.assertEqual(child.stdout.readline().strip(), 'fixture-ready')

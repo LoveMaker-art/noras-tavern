@@ -14,6 +14,7 @@ const { launcherError, describeError } = require('./launcher-errors');
 const { formatUserError } = require('./error-presentation');
 const { createFaultPackets } = require('./fault-packet');
 let telemetry;
+let lifecycleDiagnostics;
 const trackLauncher = (action, stage, work) => telemetry ? telemetry.track(action,stage,work)
   : diagnostics.scope(require('node:crypto').randomUUID(),{action},work);
 const diagnostics = createDiagnostics({
@@ -64,6 +65,7 @@ for (const [name, value] of Object.entries(process.env)) {
 process.on('uncaughtExceptionMonitor', (error, origin) => {
   diagnostics.error('main.uncaught', error, { origin });
   telemetry?.report(error, {source:'launcher',site:'launcher.main'});
+  if(!telemetry)queueLifecycleFailure('startup',error);
 });
 const { findBundledRuntime } = require('./runtime');
 const releases = require('./releases');
@@ -201,7 +203,7 @@ async function registerCapabilities(){
   try{
     return await require('./launcher-capability').register({noraHome:noraHome(),hermesHome:hermesHome(),installRoot:installRoot(),
       executable:process.execPath,resourcesRoot:process.resourcesPath,isPackaged:true,launcherVersion:app.getVersion(),
-      port:readInstallerState().port||DEFAULT_PORT,channel:CHANNEL});
+      port:installationPort(await operations().snapshot()),channel:CHANNEL});
   }catch(error){diagnostics.error('operation.capability-registration-failed',error);return null;}
 }
 
@@ -209,10 +211,31 @@ function drainPendingOutboxes(){
   if(!app.isPackaged||ISOLATED_TEST&&!LOCAL_TEST?.telemetryEnabled||localReleaseDirectory
     ||MOCK_SCENARIO||SELF_UPDATE_JOB&&activeRun||activeRun||modelBusy||uninstalling||selectingLocation||quitting)return;
   if(outboxDrain)return outboxDrain;
-  outboxDrain=require('./operation-cli').drainOperationOutboxes({noraHome:noraHome(),launcherVersion:app.getVersion(),
-    fetcher:(url,options)=>net.fetch(url,options)})
+  outboxDrain=Promise.allSettled([getLifecycleDiagnostics().drain(),
+    require('./operation-cli').drainOperationOutboxes({noraHome:noraHome(),launcherVersion:app.getVersion(),
+      fetcher:(url,options)=>net.fetch(url,options)})]).then(results=>{
+        for(const result of results)if(result.status==='rejected')diagnostics.error('telemetry.outbox-deferred',result.reason);
+      })
     .catch(error=>diagnostics.error('telemetry.outbox-deferred',error)).finally(()=>{outboxDrain=null;});
   return outboxDrain;
+}
+function lifecycleReportingEnabled(){
+  return Boolean(app.isPackaged&&(!ISOLATED_TEST||LOCAL_TEST?.telemetryEnabled===true)&&!localReleaseDirectory);
+}
+function getLifecycleDiagnostics(){
+  return lifecycleDiagnostics ||= require('./lifecycle-diagnostics').createLifecycleDiagnostics({
+    directory:path.join(app.getPath('appData'),'NoraTavern','diagnostics','lifecycle'),
+    launcherVersion:app.getVersion(),enabled:lifecycleReportingEnabled(),
+    fetcher:(url,options)=>net.fetch(url,options),clean:diagnostics.clean,
+    roots:()=>[os.homedir()],diagnostic:code=>diagnostics.write('telemetry.lifecycle-diagnostic',{code})});
+}
+function queueLifecycleFailure(kind,error){
+  try{
+    let home=null;try{home=noraHome();}catch{}
+    const handle=getLifecycleDiagnostics().capture(kind,error,{home});
+    if(handle)void handle.flush().finally(()=>handle.close()).catch(()=>
+      diagnostics.write('telemetry.lifecycle-diagnostic',{code:'delivery_deferred'}));
+  }catch{diagnostics.write('telemetry.lifecycle-diagnostic',{code:'capture_unavailable'});}
 }
 
 async function runOwnedTask(kind,request,execute,{requestId=require('node:crypto').randomUUID(),conditionFingerprint=''}={}) {
@@ -429,31 +452,158 @@ function defaultInstallerState() {
     updatedAt: Date.now(),
     error: '',
     setupCompleted: false,
+    resumeTarget: null,
     milestones: MILESTONES.map((label, index) => ({ index, label, state: 'pending', task: '' })),
   };
 }
 
+// This file is a UI projection, not the operation journal or an installation
+// receipt. Keep the current projection in memory if its cache cannot be saved;
+// controller commits and backend acceptance still determine the outcome.
+let installerStateCache = null;
+let installerStateWarning = '';
+function normalizeInstallerState(value) {
+  const state = defaultInstallerState();
+  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schema !== 1) return state;
+  if (['idle','installing','ready','start','stop','restart','pair','update','repair','recover','error','cancelled'].includes(value.phase)) state.phase = value.phase;
+  for (const name of ['task','error']) if (typeof value[name] === 'string') state[name] = value[name];
+  if (Number.isSafeInteger(value.startedAt) && value.startedAt >= 0) state.startedAt = value.startedAt;
+  if (Number.isSafeInteger(value.updatedAt) && value.updatedAt >= 0) state.updatedAt = value.updatedAt;
+  if (typeof value.setupCompleted === 'boolean') state.setupCompleted = value.setupCompleted;
+  if (Number.isInteger(value.port) && value.port >= 1024 && value.port <= 65535) state.port = value.port;
+  if (typeof value.resumeTarget === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,99}$/.test(value.resumeTarget)) state.resumeTarget = value.resumeTarget;
+  const milestones = Array.isArray(value.milestones) ? value.milestones : [];
+  state.milestones = state.milestones.map(item => {
+    const prior = milestones.find(value => value && typeof value === 'object' && value.index === item.index);
+    return { ...item, state: ['pending','running','done','error'].includes(prior?.state) ? prior.state : 'pending',
+      task: typeof prior?.task === 'string' ? prior.task : '' };
+  });
+  const progress = value.progress;
+  if (progress && typeof progress === 'object' && !Array.isArray(progress) && Number.isFinite(progress.current) && progress.current >= 0
+    && (progress.total === undefined || Number.isFinite(progress.total) && progress.total >= 0)) {
+    state.progress = { event: 'progress', current: progress.current };
+    if (progress.total !== undefined) state.progress.total = progress.total;
+    if (Number.isFinite(progress.ratio)) state.progress.ratio = Math.max(0, Math.min(1, progress.ratio));
+    for (const name of ['task','stage','stage_id','unit']) if (typeof progress[name] === 'string') state.progress[name] = progress[name];
+  }
+  return state;
+}
+
 function readInstallerState() {
+  const target = installerStatePath();
+  if (installerStateCache?.file === target && installerStateCache.dirty) return { ...installerStateCache.value };
   try {
-    const value = JSON.parse(fs.readFileSync(installerStatePath(), 'utf8'));
-    return { ...defaultInstallerState(), ...value };
+    const stat = fs.lstatSync(target);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 64 * 1024) throw new Error('Invalid presentation cache');
+    const saved = JSON.parse(fs.readFileSync(target, 'utf8'));
+    const value = normalizeInstallerState(saved);
+    if (saved?.schema !== 1 || saved?.milestones !== undefined && !Array.isArray(saved.milestones))
+      diagnostics.write('state.cache-rebuilt', { level: 'warning' });
+    installerStateCache = { file: target, value, dirty: false };
+    return { ...value };
   } catch {
-    return defaultInstallerState();
+    return installerStateCache?.file === target ? { ...installerStateCache.value } : defaultInstallerState();
   }
 }
 
 function writeInstallerState(value) {
+  const next = { ...normalizeInstallerState(value), updatedAt: Date.now() };
+  const target = installerStatePath();
+  const temporary = `${target}.${process.pid}.${require('node:crypto').randomUUID()}.tmp`;
+  installerStateCache = { file: target, value: next, dirty: true };
   try {
     fs.mkdirSync(installerDirectory(), { recursive: true });
-    const next = { ...value, updatedAt: Date.now() };
-    const target = installerStatePath();
-    const temporary = `${target}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+    fs.writeFileSync(temporary, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
     fs.renameSync(temporary, target);
-    return next;
+    installerStateCache.dirty = false;
+    if (installerStateWarning) diagnostics.write('state.cache-restored', { level: 'info' });
+    installerStateWarning = '';
   } catch (error) {
-    throw launcherError('无法保存安装操作记录。', {userCode:'INSTALLER_STATE_WRITE_FAILED'}, error);
+    const signature = `${target}:${diagnostics.operationId}:${error.code || error.name}:${error.syscall || ''}`;
+    if (installerStateWarning !== signature) {
+      installerStateWarning = signature;
+      diagnostics.error('state.cache-write-failed', launcherError('安装进度缓存暂时无法保存；实际结果以维护记录和状态核验为准。',
+        { userCode: 'INSTALLER_STATE_WRITE_FAILED' }, error), { level: 'warning', projection: true });
+    }
+  } finally {
+    try { fs.rmSync(temporary, { force: true }); }
+    catch (error) { diagnostics.error('state.cache-cleanup-failed', error, { level: 'warning', projection: true }); }
   }
+  return next;
+}
+
+let installerPortBinding = null;
+function confirmedMaintenanceIdentity(operation) {
+  if (operation?.verification !== 'confirmed' || !['install','update','repair','recover'].includes(operation.kind)) return null;
+  const result = operation.result;
+  if (!result || typeof result !== 'object') return null;
+  let version, commit;
+  if (operation.state === 'rolled-back') {
+    if (operation.effectState !== 'restored' || operation.recoveryOutcome !== 'restored-and-verified'
+      || result.recoveryVerification !== 'confirmed') return null;
+    version = result.version; commit = result.commit;
+    // A rollback restores its original system, not the candidate plan's new
+    // version. The first failure remains immutable diagnostic evidence.
+    const original = operation.target?.currentVersion;
+    if (typeof original === 'string' && releases.compare(original, original) === 0
+      && releases.compare(version, original) !== 0) return null;
+  } else if (operation.state === 'succeeded' && operation.kind !== 'recover') {
+    if (operation.currentFailure || operation.effectState === 'unknown'
+      || ['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome)
+      || ['update','repair'].includes(operation.kind) && result.updateVerified !== true) return null;
+    const plan = operation.target?.releasePlan;
+    version = plan?.version || plan?.releaseManifest?.versions?.tavern;
+    commit = plan?.commit || plan?.releaseManifest?.commit;
+  } else return null;
+  if (typeof version !== 'string' || releases.compare(version, version) !== 0
+    || releases.compare(result.version, version) !== 0 || !/^[a-f0-9]{40}$/.test(commit || '') || result.commit !== commit) return null;
+  return { version, commit };
+}
+
+function installationPort(operation = activeOperationContext?.snapshot) {
+  const roots = { noraHome: noraHome(), hermesHome: hermesHome(), installRoot: installRoot() };
+  const identity = JSON.stringify(roots);
+  const bound = value => Object.entries(roots).every(([name, expected]) => typeof value?.[name] === 'string'
+    && path.isAbsolute(value[name]) && path.resolve(value[name]) === path.resolve(expected));
+  const validPort = value => Number.isInteger(value) && value >= 1024 && value <= 65535;
+  const invalid = cause => launcherError('当前安装的实例端口或目录记录不一致，尚未查询或修改服务；请保留现有安装和日志。',
+    { code: 'VERIFICATION_FAILED', source: 'launcher', site: 'launcher.operation' }, cause);
+  let instance;
+  const target = path.join(roots.hermesHome, 'nora-instance.json');
+  try {
+    const stat = fs.lstatSync(target);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 32 * 1024) throw new Error('Invalid instance record path or size');
+    instance = JSON.parse(fs.readFileSync(target, 'utf8'));
+    if (instance.schema !== 1 || !bound(instance) || !validPort(instance.port)
+      || instance.releaseChannel !== undefined && instance.releaseChannel !== CHANNEL) throw new Error('Invalid instance record binding');
+  } catch (error) { if (error.code !== 'ENOENT') throw invalid(error); }
+  let accepted = installerPortBinding?.identity === identity ? installerPortBinding.port : null;
+  if (confirmedMaintenanceIdentity(operation) && operation.result.systemReady === true && bound(operation.result)
+    && validPort(operation.result.port)) accepted = operation.result.port;
+  if (instance && accepted !== null && instance.port !== accepted) throw invalid(new Error('Instance and accepted maintenance ports disagree'));
+  const port = instance?.port ?? accepted;
+  if (port !== null && port !== undefined) {
+    installerPortBinding = { identity, port };
+    return port;
+  }
+  if (require('./operation-policy').hasManagedRecords(roots)) throw invalid(new Error('Managed installation has no verified instance port'));
+  const cached = readInstallerState().port;
+  return validPort(cached) ? cached : DEFAULT_PORT;
+}
+
+function reconcileInstallerState(operation, runtime, { hasRecovery = false } = {}) {
+  const state = readInstallerState();
+  const result = operation?.result, identity = confirmedMaintenanceIdentity(operation);
+  if (activeRun || hasRecovery || operation?.busy || !identity || result.systemReady !== true || runtime?.systemReady !== true
+    || releases.compare(runtime.version, identity.version) !== 0 || runtime.commit !== identity.commit) return state;
+  for (const [name, expected] of Object.entries({ noraHome: noraHome(), hermesHome: hermesHome(), installRoot: installRoot() })) {
+    if ([result[name], runtime[name]].some(value => typeof value !== 'string' || !path.isAbsolute(value)
+      || path.resolve(value) !== path.resolve(expected))) return state;
+  }
+  if (!Number.isInteger(result.port) || result.port !== runtime.port) return state;
+  const setupCompleted = typeof runtime.setupCompleted === 'boolean' ? runtime.setupCompleted : state.setupCompleted;
+  if (state.phase === 'ready' && !state.error && !state.task && !state.resumeTarget && state.setupCompleted === setupCompleted) return state;
+  return writeInstallerState({ ...state, port: runtime.port, phase: 'ready', error: '', task: '', resumeTarget: null, setupCompleted });
 }
 
 function sanitizeLine(value) {
@@ -512,7 +662,7 @@ function bridgeArgs(command, options = {}) {
       '--install-root',
       installRoot(),
       '--port',
-      String(options.port || readInstallerState().port || DEFAULT_PORT),
+      String(options.port || installationPort(options.operation)),
       command,
       ...(options.service ? ['--service', options.service] : []),
       ...(options.releaseDir ? ['--release-dir', options.releaseDir] : []),
@@ -525,13 +675,14 @@ function bridgeArgs(command, options = {}) {
   };
 }
 
-function nodeStatus(error = '') {
+function nodeStatus(error = '', operation) {
   const root = installRoot();
+  const port = installationPort(operation);
   const verifiedModel = readVerifiedModel(noraHome());
   const installed = fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native-runtime.json'))
     && fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native_lifecycle.py'));
   const managed = require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
-    installRoot:root,port:readInstallerState().port||DEFAULT_PORT});
+    installRoot:root,port});
   return {
     installed,
     systemReady: false,
@@ -546,8 +697,8 @@ function nodeStatus(error = '') {
     clawchatConnected: false,
     clawchatPaired: false,
     busy: activeRun || modelBusy,
-    port: DEFAULT_PORT,
-    url: `http://127.0.0.1:${DEFAULT_PORT}`,
+    port,
+    url: `http://127.0.0.1:${port}`,
     home: noraHome(),
     noraHome: noraHome(),
     hermesHome: hermesHome(),
@@ -1040,7 +1191,7 @@ async function finishModelSetup() {
   if (saved.tavernSyncPending) {
     recordEvent({ event: 'milestone', index: 2, state: 'running', task: '模型已验证，正在准备酒馆并同步配置' });
     try {
-      const port = readInstallerState().port || DEFAULT_PORT;
+      const port = installationPort();
       const runtime = await runBridge('start', { service: 'tavern', port });
       if (!runtime.running) throw new Error('酒馆接口尚未就绪。');
       await runModelConfigHelper({ action: 'sync-saved-tavern', port });
@@ -1145,22 +1296,39 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
   activeRun = true;
   try {
     if (statusRequest) await statusRequest.catch(() => {});
+    let port, serviceMode = 'port';
+    try { port = installationPort(); }
+    catch (error) {
+      if (mode !== 'all' || error.code !== 'VERIFICATION_FAILED') throw error;
+      port = null; serviceMode = 'native-root';
+      diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'instance-port-unconfirmed' });
+    }
     onProgress('正在停止诺拉与酒馆。');
     // Stop only services with this installation's ownership records. An error
     // aborts the uninstall rather than deleting files underneath a live service.
-    if (findPython()) await runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
-      await context.stage('applying');
-      const stopped=await runBridge('recovery-stop');
-      if(stopped.offline!==true||stopped.running!==false||stopped.gatewayRunning!==false)
-        throw launcherError('服务停止状态尚未确认，未开始卸载。',{code:'VERIFICATION_FAILED'});
-      return {verification:'confirmed',value:stopped};
-    });
-    else if (fs.existsSync(path.join(home, 'installer/gateway.json'))
-      || fs.existsSync(path.join(installRoot(), 'tavern-state/native-runtime/runs'))) {
-      throw new Error('缺少停止服务所需的运行环境。请先修复安装，再卸载；尚未删除文件。');
+    if (serviceMode === 'port' && findPython()) {
+      let stopStarted = false;
+      try {
+        await runOwnedTask('shutdown',{action:'stop',service:'all'},async context=>{
+          await context.stage('applying');
+          stopStarted = true;
+          const stopped=await runBridge('recovery-stop', { port });
+          if(stopped.offline!==true||stopped.running!==false||stopped.gatewayRunning!==false)
+            throw launcherError('服务停止状态尚未确认，未开始卸载。',{code:'VERIFICATION_FAILED'});
+          return {verification:'confirmed',value:stopped};
+        });
+      } catch (error) {
+        if (mode !== 'all' || stopStarted) throw error;
+        port = null; serviceMode = 'native-root';
+        diagnostics.error('uninstall.native-root-handoff', error, { level: 'warning', reason: 'shutdown-admission-failed' });
+      }
     }
+    // Without Python, the handoff worker proves offline ownership under its
+    // writer lock before deleting anything; residual records are not proof of
+    // a running service and must not require repairing an app just to remove it.
     const appPath = process.platform === 'darwin' ? path.resolve(process.execPath, '../../..') : null;
-    const plan = uninstall.makePlan({ home, hermesHome: hermesHome(), installRoot: installRoot(), mode, appPath, executable: process.execPath });
+    const plan = uninstall.makePlan({ home, hermesHome: hermesHome(), installRoot: installRoot(), mode, appPath, executable: process.execPath,
+      port, serviceMode });
     if (process.platform === 'darwin' && (!appPath.endsWith('.app') || appPath.startsWith('/Volumes/'))) {
       throw new Error('请先将启动器移入“应用程序”，再执行卸载。');
     }
@@ -1170,6 +1338,7 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
       planFile = path.join(directory, 'nora-uninstall.json');
       plan.parentPid = process.pid;
     }
+    plan.diagnostics={enabled:lifecycleReportingEnabled(),launcherVersion:app.getVersion()};
     fs.writeFileSync(planFile, JSON.stringify(plan), { mode: 0o600 });
     onProgress('正在退出启动器，随后清理文件。');
     if (process.platform === 'darwin') {
@@ -1217,6 +1386,7 @@ function initializeLauncher() {
     return true;
   } catch (error) {
     diagnostics.error('launcher.startup-failed', error);
+    queueLifecycleFailure('startup',error);
     const guidance=formatUserError(error,{action:'startup',logAvailable:Boolean(diagnostics.lastFile)});
     const log=diagnostics.lastFile?`本机日志：${diagnostics.lastFile}`:'本机日志未能保存。';
     try { dialog.showErrorBox('启动器未能打开', `${guidance}\n\n${log}`); }
@@ -1230,6 +1400,7 @@ const initialized=Boolean(app&&BrowserWindow&&ipcMain&&shell&&initializeLauncher
 const primaryInstance=initialized&&app.requestSingleInstanceLock();
 if(initialized&&!primaryInstance)app.quit();
 if (primaryInstance) {
+  app.on('will-quit',()=>{void lifecycleDiagnostics?.close().catch(()=>{});});
   // Start before the first renderer or Electron-as-Node guard is created.
   nativeCrashes=require('./native-crash').createNativeCrashDiagnostics({
     directory:path.join(app.getPath('userData'),'diagnostics','native-crashes'),
@@ -1306,19 +1477,22 @@ if (primaryInstance) {
     try {
       const legacyRecovery=systemUpdate.inspect(noraHome());
       if (!findPython()) {
-        const fallback = nodeStatus();
+        const fallback = nodeStatus('', operation);
         if (!fallback.installed || fallback.managedInstallation) return {...fallback,...taskCancellation(),launcherRecovery,operation};
         throw new Error('无法查询已安装的服务状态，启动器未找到可用的 Python。请保留现有安装和数据。');
       }
-      const runtime = await runBridge('status');
+      const runtime = await runBridge('status', { operation });
       if (runtime.warning && (runtime.warningCode || !/[\u3400-\u9fff]/.test(runtime.warning)))
         runtime.warning = statusErrorMessage(Object.assign(new Error(runtime.warning), {code:runtime.warningCode}));
       else lastStatusError = '';
-      if (!activeRun && !modelBusy) telemetry?.status({ ...runtime, installer: readInstallerState() });
+      const installer = ['succeeded','rolled-back'].includes(operation?.state) && ['install','update','repair','recover'].includes(operation.kind)
+        ? reconcileInstallerState(operation, runtime, { hasRecovery: Boolean(runtime.updateRecovery || legacyRecovery || launcherRecovery) })
+        : readInstallerState();
+      if (!activeRun && !modelBusy) telemetry?.status({ ...runtime, installer });
       const bundledUpgradeTarget = !LOCAL_TEST && runtime.installed ? releases.bundledUpgradeTarget({
         bundledRoot: payloadDirectory(), currentVersion: runtime.version, launcherVersion: app.getVersion(), channel: CHANNEL,
       }) : null;
-      return { ...runtime,...taskCancellation(),operation,updateRecovery:runtime.updateRecovery||legacyRecovery, bundledUpgradeTarget, installer: readInstallerState(), busy: activeRun || modelBusy, launcherRecovery, ...locationStatus() };
+      return { ...runtime,...taskCancellation(),operation,updateRecovery:runtime.updateRecovery||legacyRecovery, bundledUpgradeTarget, installer, busy: activeRun || modelBusy, launcherRecovery, ...locationStatus() };
     } catch (error) {
       // Failed inspection provides no evidence that services stopped or that
       // the installation needs repair. Let the renderer retain known facts.
@@ -1395,7 +1569,7 @@ if (primaryInstance) {
       let state = readInstallerState();
       state = writeInstallerState({
         ...state,
-        port: payload.port || state.port || DEFAULT_PORT,
+        port: payload.port || installationPort(),
         phase: payload.action === 'install' ? 'installing' : payload.action,
         startedAt: Date.now(),
         error: '',
@@ -1898,7 +2072,8 @@ if (primaryInstance) {
         if (process.platform !== 'win32' || path.basename(destination) !== 'nora-uninstall.json'
           || !destination.startsWith(path.resolve(os.tmpdir()) + path.sep)) throw new Error('系统卸载请求无效。');
         if (!await confirmUninstall(destination)) app.exit(1);
-      } catch (error) { dialog.showErrorBox('卸载未完成', error.message); app.exit(1); }
+      } catch (error) { diagnostics.error('uninstall.handoff-failed',error);queueLifecycleFailure('uninstall',error);
+        dialog.showErrorBox('卸载未完成', error.message); app.exit(1); }
     });
   }
   app.on('second-instance', () => { const win = BrowserWindow.getAllWindows()[0]; if (win) { if (win.isMinimized()) win.restore(); win.show(); win.focus(); } });

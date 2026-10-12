@@ -457,6 +457,29 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         if(!await persistFailure({release:true}))failureUnpersisted=true;
       }
     }
+    if(failureUnpersisted){
+      // A commit may have reached disk before its ACK was lost. Once the guard
+      // is confirmed closed, reconcile only our snapshot revision; the actor
+      // still failed and its original cause/secondary guard errors stay intact.
+      // A successor epoch or a changed fixed target can never lend its revision
+      // to this old actor, and reconciliation never writes or grants a retry.
+      Object.assign(record,{state:'failed',verification:'unconfirmed',effectState:'unknown',recoveryOutcome:'recovery-required'});
+      let reason='WRITER_OR_EXECUTOR_ACTIVE';
+      try{
+        const inspected=await lock.probe({directory:typeof directory==='function'?directory():directory,operationId:record.operationId});
+        if(inspected?.busy===false&&!inspected.errors?.length&&!inspected.inspectionRequired){
+          const current=read(record.operationId);
+          if(current.ownerEpoch===epoch&&current.requestId===record.requestId&&current.kind===record.kind
+            &&current.createdAt===record.createdAt&&current.sequence>=record.sequence
+            &&current.planDigest===record.planDigest&&digest(current.target)===record.planDigest&&digest(record.target)===record.planDigest){
+            record.sequence=current.sequence;reason=null;
+          }else reason='OWNER_OR_TARGET_CHANGED';
+        }
+      }catch(error){
+        record.secondaryFailures.push({...failure(error,record.kind),operation:'reconcile-failure-snapshot'});reason='SNAPSHOT_UNREADABLE';
+      }
+      if(reason)record.evidenceMissingReasons=[...new Set([...(record.evidenceMissingReasons||[]),`failure_snapshot_unconfirmed:${reason}`])];
+    }
     return dto(record,failureUnpersisted?{allowedActions:['recheck','logs']}:{});
   }
   async function start(kind,options={},requestId){

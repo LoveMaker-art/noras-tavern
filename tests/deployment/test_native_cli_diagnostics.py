@@ -13,9 +13,13 @@ import unittest
 
 from ops.installer import launcher_bridge as bridge
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 ROOT = Path(__file__).resolve().parents[2]
-NODE = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+NODE = resolve_node()
 
 
 class NativeCliDiagnosticTests(unittest.TestCase):

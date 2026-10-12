@@ -65,8 +65,8 @@ jobs:
         run: |
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
-          node tooling/run.mjs node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
-          node tooling/run.mjs python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+          node "$PWD/tooling/run.mjs" node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Require chat backup safety tests
         timeout-minutes: 10
         shell: bash

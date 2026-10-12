@@ -48,7 +48,7 @@ function updateResultFixture(t,{kind='repair',entry='bridge',resultChanges={},st
     applied=true;if(failure)throw Object.assign(new Error('Actual maintenance failed'),{code:failure});return actual;
   };
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),context=vm.createContext({
-    require:createRequire(file),__filename:file,module:{exports:{}},process,Buffer,console,setTimeout,clearTimeout,setInterval,clearInterval});
+    require:createRequire(file),__filename:file,__dirname:path.dirname(file),module:{exports:{}},process,Buffer,console,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   const completed=record=>context.completedSystemOperation(record);
   return {...f,actual,post,completed,request,local,get applied(){return applied;},execute:()=>cli.execute({receiptPath:'fixture',request},{validate:async()=>f.receipt,

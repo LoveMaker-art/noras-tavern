@@ -11,6 +11,35 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+test('the repository default Node major matches all release workflows', () => {
+  const defaultNode = fs.readFileSync(path.join(root, '.nvmrc'), 'utf8').trim();
+  assert.equal(defaultNode, '24', 'Launcher source and native checks require real Node.js 24');
+  for (const [name, workflow] of [['native', full], ['components', components], ['publisher', publisher]]) {
+    const setup = Object.values(workflow.jobs).flatMap(job => job.steps || [])
+      .filter(step => step.uses?.startsWith('actions/setup-node@'));
+    assert.ok(setup.length > 0, `${name} workflow must select its Node version`);
+    for (const step of setup) assert.equal(step.with?.['node-version'], defaultNode,
+      `${name} workflow differs from the repository default Node major`);
+  }
+});
+test('critical launcher maintenance regressions block runtime preparation on every native platform', () => {
+  const steps = full.jobs.build.steps;
+  const gateIndex = steps.findIndex(step => step.run?.includes('tooling/checks/verify-launcher-stability.mjs'));
+  const dependencies = steps.findIndex(step => step.name === 'Install launcher test dependencies');
+  const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5');
+  const firstRuntime = steps.findIndex(step => step.name === 'Download and verify unchanged published components');
+  assert.ok(gateIndex > dependencies && gateIndex > python && gateIndex < firstRuntime,
+    'Critical user-data and recovery checks must run with their dependencies before any runtime preparation');
+  const gate = steps[gateIndex];
+  assert.equal(gate.if, undefined, 'Every selected native platform must run the stability gate');
+  assert.equal(gate['continue-on-error'], undefined, 'A failed stability gate cannot become a successful build');
+  assert.equal(gate.shell, 'bash');
+  assert.match(gate.run, /set -euo pipefail/);
+  assert.match(gate.run, /export NORA_TEST_PYTHON="\$\(python -B -c/);
+  assert.match(gate.run, /python -m pip install psutil==7\.0\.0/, 'Native process inspection needs its explicit test dependency');
+  assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
+  assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
+});
 test('native and component build workflows cannot publish or access publishing credentials', () => {
   for (const workflow of [full, components]) {
     assert.equal(workflow.permissions.contents, 'read');
@@ -42,7 +71,8 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   const gate = steps.findIndex(step => step.name?.startsWith('Require a matching build decision'));
   const contracts = steps.findIndex(step => step.name?.startsWith('Check release tooling'));
   assert.ok(plan >= 0 && gate > plan && contracts > gate);
-  assert.match(steps[contracts].run, /node tooling\/run\.mjs python -B -m unittest tests\.deployment\.test_launcher_shared_logic\.SharedLogicTests\.test_desktop_starts_gateway_before_scheduling_shared_hook/);
+  assert.match(steps[contracts].run, /tests\/launcher-stability-gate\.test\.mjs/, 'Verify the source gate itself before native jobs');
+  assert.match(steps[contracts].run, /node "\$PWD\/tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_shared_logic\.SharedLogicTests\.test_desktop_starts_gateway_before_scheduling_shared_hook/);
   const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5' && step.with?.['python-version'] === '3.11');
   assert.ok(python >= 0 && python < contracts);
   assert.equal(steps.find(step => step.with?.name === 'nora-release-plan').if, 'always()');
@@ -50,6 +80,23 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   assert.match(steps[gate].run, /verification-only/);
   const componentSteps = components.jobs['build-components'].steps;
   assert.ok(componentSteps.findIndex(step => step.name === 'Require an explicitly compatible component plan') < componentSteps.findIndex(step => step.run?.includes('package-release.mjs')));
+});
+
+test('test prerequisites and absolute runner entries are mandatory before native suites', () => {
+  const steps = full.jobs.build.steps;
+  const environment = steps.findIndex(step => step.name === 'Verify native launcher test prerequisites');
+  const configured = steps.findIndex(step => step.name === 'Configure actual operation actors and native lock tests');
+  const native = steps.findIndex(step => step.name === 'Test release channels and update rollback');
+  assert.ok(configured >= 0 && environment > configured && native > environment);
+  assert.equal(steps[environment].if, undefined);
+  assert.equal(steps[environment]['continue-on-error'], undefined);
+  assert.match(steps[environment].run, /launcher-test-environment\.mjs" native/);
+  for (const workflow of [full, components]) assert.doesNotMatch(scripts(workflow), /node tooling\/run\.mjs/);
+  const chromium = steps.find(step => step.name === 'Check source networking in pinned native Chromium before preparing runtimes');
+  assert.match(chromium.run, /launcher-test-environment\.mjs" chromium/);
+  const presentation = steps.find(step => step.id === 'presentation_contracts');
+  assert.ok(!presentation.run.includes('launcher_telemetry_worker.test.cjs'),
+    'Source presentation checks must not imply that an absent receiver was tested');
 });
 test('historical acceptance selects published history and runs independently from runtime reuse', () => {
   assert.ok(full.on.workflow_dispatch.inputs.acceptance_baseline_tag);

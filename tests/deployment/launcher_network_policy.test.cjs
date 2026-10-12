@@ -696,3 +696,109 @@ test('all-source asset failure keeps the canonical identity and the primary Retr
       assert.ok(error.secondaryErrors.some(item=>item.operation==='release-source:github'));return true;
     });
 });
+
+test('metadata failure facts distinguish a real post-header stalled body from connection admission',async t=>{
+  const events=[];
+  const f=await server(t,(_request,response)=>{
+    response.writeHead(200,{'Content-Type':'application/json','Content-Length':'200'});
+    response.write('{"a":');
+  });
+  await assert.rejects(networkModule.metadataJson(latestUrl,{fetcher:f.fetcher,
+    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,totalBudgetMs:500,attemptTimeoutMs:500,
+      engine:'node',diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}}),error=>error.code==='TIMEOUT');
+  const failure=events.find(event=>event.event==='network.metadata.failed');
+  assert.ok(failure,'the metadata body timeout must emit its phase facts through the real diagnostics channel');
+  assert.equal(failure.phase,'body');assert.equal(failure.status,200);assert.equal(failure.bytesReceived,5);
+  assert.equal(failure.declaredBytes,200);assert.equal(failure.resourceKind,'channel');assert.equal(failure.sourceKind,'github');
+  assert.equal(failure.engine,'node');assert.equal(failure.abortReason,'operation_deadline');
+  assert.ok(failure.headersMs>=0);assert.ok(failure.bodyMs>0);assert.ok(failure.firstByteMs>=failure.headersMs);
+  assert.ok(failure.lastByteMs>=failure.firstByteMs);assert.ok(failure.elapsedMs>=failure.lastByteMs);
+  assert.equal(f.requests.length,1,'diagnostic facts must not introduce retries or fallback');
+});
+
+test('metadata facts preserve a valid small body and bound untrusted length and message fields',async()=>{
+  const good=JSON.stringify({tag_name:'v2.4.5'}),events=[];
+  const policy={sources:{schema:1,mirrors:[]},maxAttempts:1,diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}};
+  const result=await networkModule.metadataJson(latestUrl,{policy,fetcher:async()=>new Response(good,
+    {headers:{'Content-Length':String(Buffer.byteLength(good))}})});
+  assert.deepEqual(result.value,{tag_name:'v2.4.5'});assert.equal(result.body,good);assert.equal(result.latestConfirmed,true);
+  const complete=events.find(event=>event.event==='network.metadata.complete');
+  assert.ok(complete);assert.equal(complete.bytesReceived,Buffer.byteLength(good));
+  assert.equal(complete.declaredBytes,Buffer.byteLength(good));assert.equal(complete.abortReason,'none');
+  for(const length of ['length-canary','9007199254740992','4194305','-1']){
+    const failures=[],stream=new ReadableStream({start(controller){controller.error(new Error('BODY_CANARY https://private.example/secret?token=QUERY_CANARY'));}});
+    await assert.rejects(networkModule.metadataJson(latestUrl+'?token=QUERY_CANARY',{fetcher:async()=>{
+      const response=new Response(stream,{headers:{'Content-Length':length,'X-Private':'HEADER_CANARY'}});
+      Object.defineProperty(response,'url',{value:'https://private.example/secret?token=QUERY_CANARY'});return response;
+    },policy:{...policy,engine:'ENGINE_CANARY',diagnostics:{write:(event,fields)=>failures.push({event,...fields}),error(){}}}}));
+    const failure=failures.find(event=>event.event==='network.metadata.failed');assert.ok(failure);
+    assert.equal(failure.phase,'body');assert.equal(failure.declaredBytes,null);assert.equal(failure.resourceKind,'unknown');assert.equal(failure.engine,'unknown');
+    const serialized=JSON.stringify(failure);
+    for(const value of ['BODY_CANARY','QUERY_CANARY','HEADER_CANARY','length-canary','private.example','https://','ENGINE_CANARY'])assert.ok(!serialized.includes(value),value+' must not enter metadata diagnostic facts');
+  }
+});
+
+test('metadata caller cancellation is distinct from a source deadline after headers',async t=>{
+  for(const reason of [new DOMException('caller stopped','AbortError'),new DOMException('caller budget','TimeoutError')])await t.test(reason.name,async()=>{
+    const events=[],controller=new AbortController();let timer;
+    const stream=new ReadableStream({start(body){body.enqueue(Buffer.from('{'));timer=setTimeout(()=>controller.abort(reason),20);}});
+    try{
+      await assert.rejects(networkModule.metadataJson(latestUrl,{signal:controller.signal,fetcher:async()=>new Response(stream),
+        policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,totalBudgetMs:1000,
+          diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}}));
+      const failure=events.find(event=>event.event==='network.metadata.failed');assert.ok(failure);
+      assert.equal(failure.phase,'body');assert.equal(failure.bytesReceived,1);
+      assert.equal(failure.abortReason,reason.name==='AbortError'?'caller_cancelled':'caller_timeout');
+    }finally{clearTimeout(timer);}
+  });
+});
+
+test('metadata phase facts survive existing local console and operation-log projection without a fault schema change',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-metadata-facts-log-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const {createDiagnostics}=require(path.join(desktop,'diagnostics'));
+  const {createFaultPackets}=require(path.join(desktop,'fault-packet'));
+  const {createOperationLogDelivery}=require(path.join(desktop,'operation-log-delivery'));
+  const log=path.join(root,'install.log'),diagnostics=createDiagnostics({primary:()=>log,fallback:path.join(root,'fallback.log')});
+  const operation=crypto.randomUUID(),consent=crypto.randomUUID(),installation=crypto.randomUUID(),batches=[];
+  const packets=createFaultPackets({clean:diagnostics.clean,roots:()=>[root]});
+  const delivery=createOperationLogDelivery({file:path.join(root,'outbox.json'),read:diagnostics.readOperation,project:text=>packets.text(text,Number.MAX_SAFE_INTEGER),
+    consent:()=>({enabled:true,id:consent,installation}),fetcher:async(_url,options)=>{const batch=JSON.parse(options.body);batches.push(batch);return Response.json({accepted:true,index:batch.index,chunk_id:batch.chunk_id});}});
+  t.after(()=>delivery.close());delivery.begin(operation);
+  const product=networkModule.createReleaseNetwork({app:{whenReady:async()=>{}},diagnostics,
+    net:{fetch:async()=>new Response(new ReadableStream({start(body){body.error(new Error('net::ERR_CONNECTION_RESET'));}}))}});
+  await assert.rejects(diagnostics.scope(operation,{action:'check_update'},()=>networkModule.metadataJson(latestUrl,{fetcher:product.fetch,
+    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,totalBudgetMs:1000}})));
+  const records=diagnostics.readOperation(operation).records;
+  const line=records.find(item=>item.text.includes('metadata phase=body'));assert.ok(line,'phase facts must be visible in the existing operation console');
+  assert.ok(line.text.includes('resourceKind=channel'));assert.ok(line.text.includes('status=200'));assert.ok(line.text.includes('bytesReceived=0'));
+  delivery.finish(operation,'failed');await delivery.flush();
+  assert.ok(batches.some(batch=>batch.text.includes('metadata phase=body')&&batch.text.includes('bytesReceived=0')),
+    'the existing projected raw operation log must preserve typed facts');
+});
+
+test('metadata admission failures and per-source body deadlines retain distinct safe facts',async t=>{
+  const admission=[];
+  await assert.rejects(networkModule.metadataJson(latestUrl,{fetcher:async()=>{throw new Error('net::ERR_CONNECTION_RESET');},
+    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,
+      diagnostics:{write:(event,fields)=>admission.push({event,...fields}),error(){}}}}),error=>error.code==='ECONNRESET');
+  const before=admission.find(event=>event.event==='network.metadata.failed');assert.ok(before);
+  assert.equal(before.phase,'before_headers');assert.equal(before.status,null);assert.equal(before.headersMs,null);
+  assert.equal(before.bodyMs,null);assert.equal(before.bytesReceived,0);assert.equal(before.declaredBytes,null);
+  assert.equal(before.contentEncoding,'unknown');assert.equal(before.abortReason,'transport_error');
+  const events=[],calls=[],hold=setTimeout(()=>{},2000);t.after(()=>clearTimeout(hold));
+  const result=await networkModule.metadataJson(latestUrl,{fetcher:async url=>{
+    calls.push(url);return url.startsWith('https://primary.example/')
+      ?new Response(new ReadableStream({start(body){body.enqueue(Buffer.from('{'));}})):Response.json({tag_name:'v2.4.5'});
+  },policy:{sources,maxAttempts:1,attemptTimeoutMs:40,totalBudgetMs:1000,
+    diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}});
+  assert.equal(result.value.tag_name,'v2.4.5');assert.equal(calls.length,2);
+  const source=events.find(event=>event.event==='network.metadata.failed');assert.ok(source);
+  assert.equal(source.phase,'body');assert.equal(source.sourceKind,'configured_mirror');assert.equal(source.resourceKind,'channel');
+  assert.equal(source.bytesReceived,1);assert.equal(source.abortReason,'source_deadline');assert.ok(source.budgetMs<=40);
+});
+
+test('metadata diagnostic observer failure cannot replace a successful read',async()=>{
+  const result=await networkModule.metadataJson(latestUrl,{fetcher:async()=>Response.json({tag_name:'v2.4.5'}),
+    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,diagnostics:{write:event=>{if(event.startsWith('network.metadata.'))throw new Error('fixture logger unavailable');},error(){}}}});
+  assert.equal(result.value.tag_name,'v2.4.5');assert.equal(result.source,'network');assert.equal(result.latestConfirmed,true);
+});

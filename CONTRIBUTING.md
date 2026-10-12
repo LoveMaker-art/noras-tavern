@@ -4,8 +4,9 @@ Start with [repository navigation](docs/REPOSITORY.md). Change authored source, 
 
 ## Requirements
 
-- Node.js 24 and npm with committed lockfiles for the release pipeline.
-- Hermes' managed Python with PyYAML for deployment tests. Set `NORA_PYTHON` to its executable; otherwise the runner uses `python3` on macOS or `python` on Windows.
+- Node.js 24 and npm with committed lockfiles for the release pipeline. The repository `.nvmrc` selects the same major version as CI; with nvm, run `nvm install` and `nvm use` from this directory before launcher commands.
+- Python 3.11 or later with psutil and PyYAML for source deployment tests. Set `NORA_TEST_PYTHON` to its actual executable; it takes precedence over `NORA_PYTHON`. Source CI pins psutil 7.0.0 and PyYAML 6.0.2.
+- Native Hermes integration requires its actual checkout (`NORA_TEST_HERMES`), matching venv (`NORA_TEST_PYTHON`) and managed base (`NORA_TEST_MANAGED_PYTHON_ROOT`). An independent source-test venv does not establish that the Hermes runtime is complete.
 - Native macOS arm64, macOS x64, and Windows x64 builders for their respective Hermes runtime bundles. A Mac build does not establish Windows compatibility.
 
 Install development dependencies where they are authored:
@@ -28,6 +29,17 @@ The repository index is another source-facing command: `node tooling/checks/inde
 
 ## Tests
 
+Before launcher checks, run the matching prerequisite profile directly from the authored repository:
+
+```sh
+node "$PWD/tooling/checks/launcher-test-environment.mjs" source
+node "$PWD/tooling/checks/verify-launcher-stability.mjs"
+```
+
+Use a real Node.js 24 executable for these commands. A Bun `node` compatibility shim, an explicitly missing interpreter, wrong native binding, or unavailable file/directory symlink capability is a test-environment failure (exit 2), checked before test processes run. The runner uses absolute Node script entries, forwards the selected Node to Python fixtures, waits for actual child close, and cleans its own export after close. Failed test assertions remain failures and need evidence before being attributed to product code.
+
+Use the `native` prerequisite profile for complete Hermes actor tests. Use `chromium` after installing the lockfile-matching Electron binary for local TLS/proxy fixtures. Receiver/Worker/D1 integration requires `NORA_LANDING_ROOT` and the `receiver` profile; its source must match the launcher protocol and migrations. Without receiver input, source UI tests do not establish receiver acceptance. Platform-specific skips and unavailable final APP inputs are recorded separately from passed checks.
+
 Layout tests run directly against authored source:
 
 ```sh
@@ -37,21 +49,21 @@ node --test tests/repository-layout.test.mjs
 Deployment tests run against the layout users install:
 
 ```sh
-node tooling/run.mjs node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_uninstall.test.cjs
-node tooling/run.mjs python -B -m unittest tests.deployment.test_first_install tests.deployment.test_managed_context tests.deployment.test_incremental_update
+node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_uninstall.test.cjs
+node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_install tests.deployment.test_managed_context tests.deployment.test_incremental_update
 ```
 
 Tavern tests that import deployment helpers also use the export:
 
 ```sh
-node tooling/run.mjs node --test app/engine/sillytavern/tests/nora-release-source.test.mjs app/engine/sillytavern/tests/nora-launcher-model.test.mjs
+node "$PWD/tooling/run.mjs" node --test app/engine/sillytavern/tests/nora-release-source.test.mjs app/engine/sillytavern/tests/nora-launcher-model.test.mjs
 ```
 
 Run the engine's npm scripts in the projected tree:
 
 ```sh
-node tooling/run.mjs npm --prefix app/engine/sillytavern run test:nora
-node tooling/run.mjs npm --prefix app/engine/sillytavern run lint:owned
+node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run test:nora
+node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run lint:owned
 ```
 
 Choose focused tests before repository-wide suites. Tests establish only the workflows they exercise, not visual or real-device acceptance.
@@ -63,7 +75,7 @@ The active launcher reliability scope, acceptance gates, and phase reports live 
 The production page is `launcher/ui/index.html`. `launcher/previews/` contains design experiments, not the desktop entrypoint. Test UI and clicks without repackaging:
 
 ```sh
-node tooling/run.mjs --watch node launcher/desktop/node_modules/electron/cli.js launcher/desktop --nora-mock=uninstalled --nora-watch
+node "$PWD/tooling/run.mjs" --watch node launcher/desktop/node_modules/electron/cli.js launcher/desktop --nora-mock=uninstalled --nora-watch
 ```
 
 Use `--nora-mock=installed` for the installed state. For real installation testing omit `--nora-mock` and use the launcher's existing isolated test configuration. The runner mirrors UI/desktop source edits; Electron's existing watcher reloads them. Restart the dev command after deployment-module or dependency changes.
@@ -97,7 +109,7 @@ The packager exports source, checks Story Profile parity, builds Tavern/MCP, val
 Verify the payload separately:
 
 ```sh
-node tooling/run.mjs node tests/deployment/launcher_product_refactor_smoke.cjs --payload /absolute/path/to/release/nora-tavern-launcher/payload
+node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload /absolute/path/to/release/nora-tavern-launcher/payload
 ```
 
 The guarded product harness uses the actual native writer lease and acknowledged child actors in its own installation directory and no real model key or pairing. External routing, model-provider behavior, and desktop acceptance need additional target-environment tests. For an isolated Electron source test using a separately installed exact dependency closure, set `NORA_TEST_DESKTOP_NODE_MODULES` to that complete `node_modules` directory; the source checkout and user installation are unchanged.

@@ -177,7 +177,7 @@ test('actual no-Python status and existing UI route retain repair action; corrup
   let callback;const walk=node=>{if(!node||typeof node!=='object')return;if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:status')callback=node.arguments[1];for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);}};walk(ast);
   let bridgeCalls=0;const context=vm.createContext({fs,path,require:id=>id==='./operation-policy'?policy:require(id),DEFAULT_PORT:18899,
    installRoot:()=>f.tavern,noraHome:()=>f.root,hermesHome:()=>f.home,readVerifiedModel:()=>null,findHermes:()=>null,
-   readInstallerState:()=>({phase:'idle',port:18899}),locationStatus:()=>({noraHome:f.root}),quitting:false,uninstalling:false,selectingLocation:false,
+   readInstallerState:()=>({phase:'idle',port:18899}),installationPort:()=>18899,locationStatus:()=>({noraHome:f.root}),quitting:false,uninstalling:false,selectingLocation:false,
    modelBusy:false,activeRun:false,statusRequest:null,activeOperationContext:null,releaseAbort:null,cancelled:false,updatingSystem:false,activeProcess:null,
    readLauncherRecovery:async()=>null,operations:()=>({snapshot:async()=>null}),systemUpdate:{inspect:()=>null},findPython:()=>null,
    runBridge:async()=>{bridgeCalls++;throw Error('no old Python should execute');},statusErrorMessage:error=>error.message,LOCAL_TEST:null});
@@ -393,6 +393,91 @@ test('CLI resumption rejects a changed real sealed manifest before reselecting o
   assert.equal(result.target.releasePlan.planId,sealed.planId);assert.equal(reads,0);assert.equal(runs,0);assert.deepEqual(treeSeal(f.home),original);
   assert.deepEqual(fs.readFileSync(path.join(f.tavern,'tavern-state/chats/story.json')),story);
  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+});
+
+test('a restored partial repair retries the same sealed target, preserves failed trees and shares the real retry budget',async t=>{
+ for(const secondAttempt of ['succeeds','fails'])await t.test(secondAttempt,async()=>{
+  const f=fixture();try{
+   const cli=require('../installer/desktop/operation-cli'),releases=require('../installer/desktop/releases'),release=releaseFixture(),
+    bridge=path.join(f.root,'app/launcher_bridge.py'),native=path.join(f.tavern,'apps/tavern-runtime'),
+    lock=require('./launcher_operation_test_lock.cjs').createTestOperationLock();
+   f.write('app/launcher_bridge.py','fixture bridge execution boundary');
+   f.write('tavern/apps/tavern-runtime/native-runtime.json','{}');f.write('tavern/apps/tavern-runtime/native_lifecycle.py','fixture lifecycle');
+   f.write('tavern/tavern-updates/transaction.json',{schema:1,operationId:crypto.randomUUID(),status:'committed'});
+   const stat=fs.lstatSync(native,{bigint:true}),partial={...f.snapshot(),programs:{
+    app:{identity:[String(stat.dev),String(stat.ino)],digest:transaction.programDigest(native)},ops:null,'nora-mcp':null}},
+    original=treeSeal(f.home),protectedBytes=Object.fromEntries(['hermes/config.yaml','hermes/.env','tavern/tavern-state/chats/story.json']
+     .map(name=>[name,fs.readFileSync(path.join(f.root,name))]));
+   const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,
+    channel:'stable',launcherVersion:'2.1.3',resources:{'launcher_bridge.py':{path:bridge},'first_install.py':{path:path.join(f.root,'app/first_install.py')},
+     'bootstrap.py':{path:path.join(f.root,'app/bootstrap.py')}},managed:{}},
+    request={schema:'nora-cli-request/1',kind:'repair',argv:[bridge,'--nora-home',f.root,'repair'],stdin:''};
+   const offline={offline:true,running:false,gatewayRunning:false,clawchatConnected:false},
+    oldEffects={effectState:'untouched',recoveryOutcome:'not-required',canRecover:false,reason:'other_operation'},
+    completed={version:release.version,commit:release.commit,systemReady:true,updateVerified:true,...offline,...f.args};
+   let runtimeCalls=0,applies=0,latestReads=0,currentOperation;
+   const invoke=input=>cli.execute({receiptPath:'fixture',request:input},{validate:async()=>receipt,lock,telemetry:false,
+    fetcher:async url=>{if(url.endsWith('/releases/latest'))latestReads++;return release.fetcher(url);},
+    // Production plan producer, CLI, controller, policy, journal and directory
+    // switch are exercised together. Python results and archive extraction are
+    // fixture boundaries; this is not packaged/native installer acceptance.
+    run:async(context,target,args,options)=>{
+     if(!options.node){
+      if(args.includes('operation-effects'))return {effects:applies?{operationId:currentOperation,status:'committed',
+       effectState:'changed',recoveryOutcome:'not-required',canResume:true}:oldEffects};
+      if(options.readonly)return applies?completed:{version:'2.4.5',commit:partial.commit,systemReady:false,...offline,...f.args};
+      assert.ok(args.includes('update'));applies++;currentOperation=context.operationId;return completed;
+     }
+     assert.match(target,/runtime-worker\.js$/);const managed=JSON.parse(options.stdin.toString('utf8'));
+     assert.equal(managed.missing.python,true);
+     const proof={partialRepair:partial,...offline,effects:oldEffects};
+     if(args.includes('--inspect-managed'))return proof;
+     const delegate={context:{operationId:context.operationId,ownerEpoch:context.ownerEpoch},active:true,assertActive:()=>context.check()},
+      owned={...f.args,operationId:context.operationId,ownerEpoch:context.ownerEpoch,delegate};
+     if(args.includes('--recover-runtime')){
+      await transaction.recover({...owned,allowCommitted:true,verifyOffline:async()=>offline});transaction.confirmPartialSystemProof(owned,oldEffects);
+      return {...transaction.inspect(owned),offlineProof:{...offline,operationId:context.operationId,ownerEpoch:context.ownerEpoch}};
+     }
+     runtimeCalls++;assert.equal(context.snapshot.effectState,'unknown');
+     const payload=args[0],descriptor=JSON.parse(fs.readFileSync(path.join(payload,'nora-hermes-runtime.json'),'utf8')),
+      manifest={...descriptor,venvPython:process.platform==='win32'?'hermes-agent/venv/Scripts/python.exe':'hermes-agent/venv/bin/python'},
+      tools={findBundledRuntime:()=>({archive:path.join(payload,descriptor.archive),manifest,manifestPath:path.join(payload,'nora-hermes-runtime.json')}),
+       sha256File:file=>crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'),
+       extractArchiveAsync:async(_,directory)=>{f.write(path.relative(f.root,path.join(directory,'hermes-runtime',manifest.venvPython)),`attempt ${runtimeCalls} Python`);},
+       validateRuntimeLinks(){},initializeHome(){},repairRuntimeAsync:async()=>{},relocateTextFiles(){},
+       validateRuntimeAsync:async root=>{if(root===f.home&&(runtimeCalls===1||secondAttempt==='fails'))
+        throw Object.assign(new Error(`activated runtime attempt ${runtimeCalls} failed`),{code:'RUNTIME_AFTER_ACTIVATION'});return 'fixture';}};
+     return transaction.install({...owned,payloadRoot:payload,tools,partialRepair:managed,
+      preflightPartial:async()=>proof,verifyOffline:async()=>offline});
+    }});
+   const failed=await invoke(request);assert.equal(failed.state,'rolled-back');assert.equal(failed.verification,'confirmed');
+   assert.equal(failed.primaryFailure.code,'RUNTIME_AFTER_ACTIVATION');assert.equal(latestReads,1);assert.deepEqual(treeSeal(f.home),original);
+   const firstPlan=failed.target.releasePlan,firstJournalPath=transaction.paths({...f.args,operationId:failed.operationId}).journalReference,
+    firstJournal=JSON.parse(fs.readFileSync(firstJournalPath)),firstFailed=transaction.paths({...f.args,operationId:failed.operationId}).failed,
+    failedTreeSeal=treeSeal(firstFailed),firstJournalBytes=fs.readFileSync(firstJournalPath);
+   const retried=await invoke({...request,operationId:failed.operationId,snapshotSequence:failed.snapshotSequence});
+   assert.equal(retried.operationId,failed.operationId);assert.equal(retried.target.releasePlan.planId,firstPlan.planId);
+   assert.equal(retried.target.releasePlan.version,firstPlan.version);assert.equal(latestReads,1,'retry cannot query latest or select another version');
+   assert.equal(runtimeCalls,2);assert.equal(retried.attempt,2);assert.equal(retried.primaryFailure.code,'RUNTIME_AFTER_ACTIVATION');
+   const latestJournal=JSON.parse(fs.readFileSync(firstJournalPath));assert.equal(latestJournal.attempt,2);
+   const archived=JSON.parse(fs.readFileSync(latestJournal.precedingEvidence));assert.deepEqual(archived.journal,firstJournal);
+   assert.deepEqual(treeSeal(path.join(path.dirname(latestJournal.precedingEvidence),'tree/failed')),failedTreeSeal);
+   assert.equal(crypto.createHash('sha256').update(firstJournalBytes).digest('hex'),
+    crypto.createHash('sha256').update(JSON.stringify(archived.journal)).digest('hex'),'retained journal bytes are canonical and unchanged');
+   for(const [name,bytes]of Object.entries(protectedBytes))assert.deepEqual(fs.readFileSync(path.join(f.root,name)),bytes,name);
+   if(secondAttempt==='succeeds'){
+    assert.equal(retried.state,'succeeded');assert.equal(retried.currentFailure,null);assert.equal(retried.result.updateVerified,true);
+    assert.equal(retried.result.version,'2.4.6');assert.equal(applies,1);
+   }else{
+    assert.equal(retried.state,'rolled-back');assert.equal(retried.verification,'confirmed');assert.equal(applies,0);assert.deepEqual(treeSeal(f.home),original);
+    await assert.rejects(invoke({...request,operationId:retried.operationId,snapshotSequence:retried.snapshotSequence}),{code:'OPERATION_ACTION_UNAVAILABLE'});
+    const subsequent=await invoke(request);assert.equal(subsequent.state,'blocked');assert.equal(subsequent.currentFailure.code,'RETRY_CONDITIONS_UNCHANGED');
+    assert.equal(runtimeCalls,2,'a new request cannot evade the same-target failure budget');assert.equal(applies,0);assert.deepEqual(treeSeal(f.home),original);
+   }
+   const selected=releases.validatePlan(retried.target.releasePlan,{...receipt,operationDirectory:path.dirname(firstJournalPath)});
+   assert.deepEqual(selected.releaseManifest,release.manifest);
+  }finally{fs.rmSync(f.root,{recursive:true,force:true});}
+ });
 });
 
 test('missing Python recovery uses staged canonical effects and refuses unknown history before runtime recovery',async()=>{

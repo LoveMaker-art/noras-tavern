@@ -14,6 +14,10 @@ from unittest.mock import Mock, patch
 from ops.installer import launcher_bridge as bridge
 from ops.installer import launcher_services as services
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 class BridgeErrorDiagnosticTests(unittest.TestCase):
     def capture_fail(self, message, code=None, user_code=None, **kwargs):
@@ -211,7 +215,7 @@ for (const event of JSON.parse(fs.readFileSync(0, 'utf8'))) collector.observe(ev
 const error = collector.attach(new Error('停止服务失败。'));
 console.log(JSON.stringify(packets.packet(error, { action: 'stop', history: [] })));
 '''
-        packet = subprocess.run(['node', '-e', script,
+        packet = subprocess.run([resolve_node(required=True), '-e', script,
                                  str(Path(bridge.__file__).parent / 'desktop/fault-packet.js')],
                                 input=json.dumps(emitted + events), text=True, capture_output=True,
                                 check=True)

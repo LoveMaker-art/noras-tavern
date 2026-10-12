@@ -34,6 +34,13 @@ Operational state is classified by effect:
   Prepared files and fully restored intents have no active effect.
 - Managed release files are verified while the runtime is offline. Successful
   startup is not followed by a whole-tree inventory of mutable live code.
+- Normal status polling and startup read typed historical acceptance records;
+  they do not hash user-customized skills or configuration. Initialization schema
+  1 and installation receipt schema 1 or 2 must have literal successful proof,
+  valid versions and commits, consistent identity, and correctly typed boolean
+  fields. Invalid records are reported without silently rewriting them. This is
+  historical acceptance, not current whole-installation integrity. Explicit
+  install/update acceptance retains actual component, binding and runtime checks.
 
 Automatic failure recovery may replace the just-installed managed code tree
 even if the failed runtime wrote into it. Explicit rollback after a successful

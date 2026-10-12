@@ -7,10 +7,10 @@ const vm = require('node:vm');
 const { createRequire } = require('node:module');
 const { makePlan, cleanup, restoreRetained, worker, RETAINED } = require('../installer/desktop/uninstall');
 
-function fixture(t) {
+function fixture(t,rootName='NoraTavern') {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-uninstall-test-'));
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
-  const home = path.join(directory, 'NoraTavern');
+  const home = path.join(directory, rootName);
   const write = (relative, data = 'fixture') => {
     const file = path.join(home, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, data);
   };
@@ -25,7 +25,7 @@ function fixture(t) {
     'cache/tmp/stale', 'launcher/Local State'];
   for (const name of [...data, ...programs]) write(name);
   write('tavern/tavern-state/native-runtime/config.yaml', 'custom: retained');
-  const plan = mode => makePlan({ home, hermesHome: path.join(home, 'hermes'), installRoot: path.join(home, 'tavern'), mode });
+  const plan = (mode,options={}) => makePlan({ home, hermesHome: path.join(home, 'hermes'), installRoot: path.join(home, 'tavern'), mode,...options });
   return { directory, home, write, data, programs, plan };
 }
 
@@ -33,6 +33,11 @@ function assertLockShell(home) {
   assert.deepEqual(fs.readdirSync(home).sort(),['installer','nora-owner.json']);
   assert.deepEqual(fs.readdirSync(path.join(home,'installer')),['operations']);
   assert.deepEqual(fs.readdirSync(path.join(home,'installer/operations')),['.writer.lock']);
+}
+
+async function idlePort(){
+  const server=require('node:net').createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
 }
 
 test('keep removes programs, retains credentials, chats, config and backups; repeat is safe', t => {
@@ -61,13 +66,15 @@ test('Windows-length paths over 260 characters are removed', t => {
 });
 
 test('redirected deletion root aborts before touching any files', t => {
-  const f = fixture(t), plan = f.plan('keep'), outside = path.join(f.directory, 'outside');
-  fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'keep'), 'unrelated');
-  fs.rmSync(path.join(f.home, 'cache'), { recursive: true });
-  fs.symlinkSync(outside, path.join(f.home, 'cache'), 'junction');
-  assert.throws(() => cleanup(plan), /链接/);
-  assert.equal(fs.existsSync(path.join(f.home, f.programs[0])), true);
-  assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'unrelated');
+  for(const mode of ['keep','all']){
+    const f = fixture(t), plan = f.plan(mode), outside = path.join(f.directory, 'outside');
+    fs.mkdirSync(outside); fs.writeFileSync(path.join(outside, 'keep'), 'unrelated');
+    fs.rmSync(path.join(f.home, 'cache'), { recursive: true });
+    fs.symlinkSync(outside, path.join(f.home, 'cache'), 'junction');
+    assert.throws(() => cleanup(plan), /链接/);
+    assert.equal(fs.existsSync(path.join(f.home, f.programs[0])), true);
+    assert.equal(fs.readFileSync(path.join(outside, 'keep'), 'utf8'), 'unrelated');
+  }
 });
 
 test('nested symlinks are unlinked without following them', t => {
@@ -105,10 +112,11 @@ test('retained Hermes data overlays the new runtime, not its binaries', t => {
 
 test('standalone helper records actual completion outside the deleted root', async t => {
   const f = fixture(t), file = path.join(f.directory, 'nora-uninstall.json');
-  fs.writeFileSync(file, JSON.stringify(f.plan('all')));
+  fs.writeFileSync(file, JSON.stringify(f.plan('all',{port:await idlePort()})));
   await worker(file, () => {});
   const result = JSON.parse(fs.readFileSync(path.join(f.directory, 'result.json'), 'utf8'));
-  assert.equal(result.state, 'complete'); assertLockShell(f.home);
+  assert.equal(result.state, 'complete');assert.equal(result.serviceVerification.offline,true);
+  assert.equal(result.serviceVerification.method,'native-os');assertLockShell(f.home);
 });
 
 test('all builds include helper; NSIS upgrade path bypasses both destructive hooks', () => {
@@ -123,20 +131,22 @@ test('all builds include helper; NSIS upgrade path bypasses both destructive hoo
 
 function wizard(t, responses) {
   const f = fixture(t), dialogs = [], exits = [];
+  fs.writeFileSync(path.join(f.directory,'launcher.exe'),'confirmation-only fixture executable');
   const main = path.resolve(__dirname, '../installer/desktop/main.js');
   const localRequire = createRequire(main);
-  const electron = { app: { isPackaged: true, getPath: () => f.directory, exit: code => exits.push(code) },
+  const electron = { app: { isPackaged: true, getPath: () => f.directory, getVersion:()=> '2.1.3', exit: code => exits.push(code) },
     dialog: { showMessageBox: async options => { dialogs.push(options); return { response: responses.shift() }; } } };
   const context = vm.createContext({
     require: name => name === 'electron' ? electron : name === 'node:child_process'
       ? { spawnSync: () => ({ status: 1 }) } : localRequire(name),
     __dirname: path.dirname(main), console, setTimeout, clearTimeout,
-    process: { platform: 'win32', argv: [], on() {}, env: { NORA_TAVERN_HOME: f.home }, execPath: path.join(f.directory, 'launcher.exe') },
+    process: { platform: 'win32', argv: [], on() {}, env: { NORA_TAVERN_HOME: f.home }, pid:process.pid,
+      resourcesPath:path.resolve(path.dirname(main),'..'),execPath: path.join(f.directory, 'launcher.exe') },
   });
   vm.runInContext(fs.readFileSync(main, 'utf8'), context);
   // Wizard-only fixture: maintenance ownership is proved in the native tests.
   context.fixtureOwnedTask=async(_kind,_request,execute)=>{const result=await execute({stage:async()=>{}});assert.equal(result.verification,'confirmed');return result.value;};
-  vm.runInContext('runOwnedTask=fixtureOwnedTask;',context);
+  vm.runInContext('actualOwnedTask=runOwnedTask;runOwnedTask=fixtureOwnedTask;',context);
   const planFile = path.join(f.directory, 'nora-uninstall.json');
   context.planFile = planFile;
   return { ...f, context, dialogs, exits, planFile, run: () => vm.runInContext('confirmUninstall(planFile)', context) };
@@ -165,12 +175,46 @@ test('confirmed keep hands off exact installation paths, without deleting data i
   assert.deepEqual(f.exits, [0]);
 });
 
+test('confirmed all requires both confirmations and hands off only the displayed installation',async t=>{
+  const f=wizard(t,[2,1]);
+  const roots=vm.runInContext('({noraHome:noraHome(),hermesHome:hermesHome(),installRoot:installRoot()})',f.context);
+  f.write('hermes/nora-instance.json',JSON.stringify({schema:1,...roots,port:18888}));
+  f.write('installer/state.json',JSON.stringify({schema:1,port:17777}));
+  assert.equal(await f.run(),true);assert.equal(f.dialogs.length,2);
+  const plan=JSON.parse(fs.readFileSync(f.planFile));
+  assert.equal(plan.mode,'all');assert.equal(plan.root,fs.realpathSync(f.home));
+  assert.equal(plan.port,18888);assert.equal(plan.serviceCheck.port,18888);
+  assert.equal(fs.realpathSync(f.dialogs[1].detail),plan.root);assert.equal(f.dialogs[1].defaultId,0);
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  assert.deepEqual(f.exits,[0]);
+});
+
+test('all confirmation with unknown instance port hands off to the locked native root proof',async t=>{
+  const f=wizard(t,[2,1]);f.write('hermes/nora-instance.json','{malformed');
+  assert.equal(await f.run(),true);
+  const plan=JSON.parse(fs.readFileSync(f.planFile));assert.equal(plan.port,null);assert.equal(plan.serviceMode,'native-root');
+  assert.equal(plan.serviceCheck.mode,'native-root');assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+});
+
+test('only all hands off corrupt historical admission after the real controller refuses before stop',async t=>{
+  const f=wizard(t,[2,1]),id='11111111-1111-4111-8111-111111111111';
+  f.write(`installer/operations/${id}/operation.json`,'{malformed');
+  f.context.python=process.env.NORA_TEST_PYTHON;f.context.stopCalls=0;
+  vm.runInContext('findPython=()=>({command:python,args:[]});runOwnedTask=actualOwnedTask;runBridge=async()=>{stopCalls++;throw Error("must not reach stop");};',f.context);
+  assert.equal(await f.run(),true);assert.equal(f.context.stopCalls,0);
+  const plan=JSON.parse(fs.readFileSync(f.planFile));assert.equal(plan.serviceMode,'native-root');assert.equal(plan.port,null);
+  assert.equal(fs.readFileSync(path.join(f.home,`installer/operations/${id}/operation.json`),'utf8'),'{malformed');
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+});
+
 test('failure to stop a service prevents creation of an uninstall plan', async t => {
-  const f = wizard(t, [1]);
-  vm.runInContext('findPython = () => ({}); runBridge = async () => { throw new Error("service still running"); }', f.context);
-  await assert.rejects(f.run(), /service still running/);
-  assert.equal(fs.existsSync(f.planFile), false);
-  assert.equal(fs.existsSync(path.join(f.home, f.programs[0])), true);
+  for(const choices of [[1],[2,1]]){
+    const f = wizard(t, choices);
+    vm.runInContext('findPython = () => ({}); runBridge = async () => { throw new Error("service still running"); }', f.context);
+    await assert.rejects(f.run(), /service still running/);
+    assert.equal(fs.existsSync(f.planFile), false);
+    assert.equal(fs.existsSync(path.join(f.home, f.programs[0])), true);
+  }
 });
 
 
@@ -207,10 +251,140 @@ test('parent wait requires positive creation identity before deleting anything',
   assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
 });
 
+function parentIdentityHarness(platform, result) {
+  const file=path.resolve(__dirname,'../installer/desktop/uninstall.js');
+  const localRequire=createRequire(file),childProcess=require('node:child_process'),calls=[];
+  const context=vm.createContext({require:name=>name==='node:child_process'?{...childProcess,
+    spawnSync:(...args)=>{calls.push(args);return typeof result==='function'?result():result;}}:localRequire(name),
+    __filename:file,__dirname:path.dirname(file),module:{exports:{}},
+    process:{...process,platform,stderr:{write(){}}},console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  return {identity:context.processIdentity,worker:context.module.exports.worker,diagnostic:context.localDiagnostic,calls};
+}
+
+test('parent identity query fails closed on spawn errors and incomplete OS results',async t=>{
+  for(const platform of ['darwin','win32']){
+    for(const code of ['ENOENT','EACCES','ETIMEDOUT'])await t.test(`${platform} ${code}`,()=>{
+      const cause=Object.assign(new Error('controlled OS process query failure'),{code,syscall:'spawnSync identity-query',errno:-2,
+        stdout:'PRIVATE_PROCESS_OUTPUT',env:{PRIVATE_CONFIGURATION:'not a diagnostic field'}});
+      const harness=parentIdentityHarness(platform,{error:cause,status:null,signal:null,stdout:null,stderr:null});
+      assert.throws(()=>harness.identity(process.pid),error=>{
+        assert.equal(error.code,'UNINSTALL_PARENT_UNCONFIRMED');
+        assert.equal(error.cause,cause);assert.equal(error.cause.code,code);assert.equal(error.cause.syscall,cause.syscall);
+        const diagnostic=harness.diagnostic(error);
+        assert.equal(diagnostic.cause.code,code);assert.equal(diagnostic.cause.syscall,cause.syscall);assert.equal(diagnostic.cause.errno,cause.errno);
+        assert.doesNotMatch(JSON.stringify(diagnostic),/PRIVATE_PROCESS_OUTPUT|PRIVATE_CONFIGURATION/);
+        return true;
+      });
+    });
+    const absent=platform==='darwin'?{status:1,stdout:''}:{status:0,stdout:'absent'};
+    for(const [name,result] of [
+      ['missing stdout',{status:0,signal:null,stderr:''}],
+      ['null stdout',{status:0,signal:null,stdout:null,stderr:''}],
+      ['malformed stdout',{status:0,signal:null,stdout:'not an OS creation time',stderr:''}],
+      ['terminated query',{...absent,signal:'SIGTERM',stderr:''}],
+      ['unsuccessful query',{...absent,status:2,signal:null,stderr:'controlled query failure'}],
+      ['stderr failure on absent query',{...absent,signal:null,stderr:'controlled query failure'}],
+    ])await t.test(`${platform} ${name}`,()=>{
+      const harness=parentIdentityHarness(platform,result);
+      assert.throws(()=>harness.identity(process.pid),error=>{
+        assert.equal(error.code,'UNINSTALL_PARENT_UNCONFIRMED');
+        const diagnostic=harness.diagnostic(error);
+        assert.equal(diagnostic.exitCode,result.status);assert.equal(diagnostic.signal,result.signal);
+        return true;
+      });
+    });
+    await t.test(`${platform} synchronous query exception`,()=>{
+      const cause=Object.assign(new Error('controlled query spawn exception'),{code:'EACCES',syscall:'spawnSync identity-query'});
+      const harness=parentIdentityHarness(platform,()=>{throw cause;});
+      assert.throws(()=>harness.identity(process.pid),error=>error.code==='UNINSTALL_PARENT_UNCONFIRMED'&&error.cause===cause);
+    });
+  }
+});
+
+test('parent identity query accepts only positive absence and live creation identity',()=>{
+  const absentMac=parentIdentityHarness('darwin',{status:1,signal:null,stdout:'\n',stderr:''});
+  const absentWindows=parentIdentityHarness('win32',{status:0,signal:null,stdout:'absent\r\n',stderr:''});
+  assert.equal(absentMac.identity(process.pid),null);assert.equal(absentWindows.identity(process.pid),null);
+  const date='Mon Oct 12 13:45:00 2026';
+  const cases=[['darwin',date,Date.parse(date)/1000,1],['win32','1700000000123',1700000000.123,0.001]];
+  for(const [platform,stdout,creationTime,precisionSeconds]of cases){
+    const harness=parentIdentityHarness(platform,{status:0,signal:null,stdout:stdout+'\n',stderr:''});
+    const value=harness.identity(process.pid);
+    assert.equal(value.pid,process.pid);assert.equal(value.creationTime,creationTime);assert.equal(value.precisionSeconds,precisionSeconds);
+    assert.equal(harness.calls[0][0],platform==='darwin'?'/bin/ps':'powershell.exe');
+  }
+  for(const stdout of ['', 'NaN', 'Infinity', '1700000000.123', '0x123', '1e12']){
+    const harness=parentIdentityHarness('win32',{status:0,signal:null,stdout,stderr:''});
+    assert.throws(()=>harness.identity(process.pid),error=>error.code==='UNINSTALL_PARENT_UNCONFIRMED');
+  }
+});
+
+test('parent identity query failure preserves every uninstall file and the original local cause',async t=>{
+  for(const platform of ['darwin','win32'])await t.test(platform,async()=>{
+    const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json');
+    plan.parentPid=process.pid;fs.writeFileSync(file,JSON.stringify(plan));
+    const cause=Object.assign(new Error('controlled unavailable identity query'),{code:'ENOENT',syscall:'spawnSync identity-query'});
+    const harness=parentIdentityHarness(platform,{error:cause,status:null,signal:null,stdout:undefined,stderr:undefined});
+    await harness.worker(file,()=>{});
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_PARENT_UNCONFIRMED');
+    assert.equal(result.diagnosticError.cause.code,cause.code);
+    assert.equal(result.diagnosticError.cause.syscall,cause.syscall);
+    assert.match(result.diagnosticError.cause.message,/controlled unavailable identity query/);
+    for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture',name);
+  });
+});
+
+function uninstallDiagnosticHarness({sender,missingPackage=false,cleanupFailure}={}){
+  const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),localRequire=createRequire(file),calls=[];
+  const context=vm.createContext({require:name=>{
+    if(name==='./lifecycle-diagnostics'){calls.push('load');return {createLifecycleDiagnostics:()=>sender};}
+    if(name==='./package.json'&&missingPackage)throw Object.assign(new Error('optional package unavailable'),{code:'MODULE_NOT_FOUND'});
+    if(name==='./uninstall-offline-check')return {inspect:async()=>({offline:true})};
+    return localRequire(name);
+  },__filename:file,__dirname:path.dirname(file),module:{exports:{}},process:{...process,platform:'win32',stderr:{write(){}},stdout:{write(){}}},
+    console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  context.inspectExecutorHistory=async()=>{};
+  const cleanup=context.cleanupLocked;
+  if(cleanupFailure)context.cleanupLocked=(...args)=>{cleanup(...args);throw cleanupFailure;};
+  return {worker:context.module.exports.worker,calls};
+}
+test('post-exit uninstall failure preserves its original result even when diagnostic send and close fail',async t=>{
+  const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json'),records=[];
+  plan.diagnostics={enabled:true,launcherVersion:require('../installer/desktop/package.json').version};
+  f.write('installer/telemetry.json',JSON.stringify({schema:1,consentVersion:3,enabled:true,diagnosticConsentId:require('node:crypto').randomUUID()}));
+  fs.writeFileSync(file,JSON.stringify(plan));
+  const original=Object.assign(new Error('controlled failure after cleanup'),{code:'EACCES',syscall:'rmdir'});
+  const harness=uninstallDiagnosticHarness({cleanupFailure:original,sender:{prepare:options=>{
+    assert.equal(fs.existsSync(path.join(options.home,'installer','telemetry.json')),true,'snapshot precedes deletion');
+    return (kind,error,options)=>{records.push({kind,error,options});return {operationId:require('node:crypto').randomUUID(),
+      flush:async()=>{throw new Error('transport unavailable');},close:async()=>{throw new Error('diagnostic close failed');}}};
+  },close:async()=>{throw new Error('diagnostic lease release failed');}}});
+  await harness.worker(file,()=>{});
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json')));
+  assert.equal(result.code,'EACCES');assert.equal(result.diagnosticError.syscall,'rmdir');assert.equal(result.error,original.message);
+  assert.equal(records.length,1);assert.equal(records[0].kind,'uninstall');assert.equal(records[0].error,original);assert.equal(records[0].options.consentRemoved,true);
+  assert.equal(result.diagnosticDelivery.phase,'unavailable');assertLockShell(f.home);
+  const next=require('../installer/desktop/os-lock').acquire({directory:path.join(f.home,'installer')});next.release();
+});
+test('missing optional diagnostic resources cannot turn a valid ALL uninstall into failure',async t=>{
+  const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json');
+  plan.diagnostics={enabled:true,launcherVersion:require('../installer/desktop/package.json').version};fs.writeFileSync(file,JSON.stringify(plan));
+  await uninstallDiagnosticHarness({missingPackage:true}).worker(file,()=>{});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'))).state,'complete');assertLockShell(f.home);
+});
+test('a source test plan never starts the production diagnostic sender',async t=>{
+  const f=fixture(t),plan=f.plan('all'),file=path.join(f.directory,'nora-uninstall.json');fs.writeFileSync(file,JSON.stringify(plan));
+  const harness=uninstallDiagnosticHarness();await harness.worker(file,()=>{});assert.deepEqual(harness.calls,[]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'))).state,'complete');assertLockShell(f.home);
+});
+
 test('an orphaned executor ledger blocks uninstall until positive offline proof',async t=>{
   const f=fixture(t),file=path.join(f.directory,'nora-uninstall.json');
   f.write('installer/operations/.guards/orphan.json',JSON.stringify({schema:'nora-operation-guard/1',operationId:'orphan',jobs:[{jobId:'unknown',pid:process.pid}]}));
-  fs.writeFileSync(file,JSON.stringify(f.plan('all')));
+  fs.writeFileSync(file,JSON.stringify(f.plan('all',{port:await idlePort()})));
   const before=process.exitCode;await worker(file,()=>{});process.exitCode=before;
   const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
   assert.equal(result.state,'error');assert.equal(result.code,'OPERATION_EXECUTOR_UNCONFIRMED');
@@ -236,6 +410,224 @@ test('actual corrupt system and legacy journals block keep even without an Opera
     assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false);
     assert.equal(fs.existsSync(path.join(f.home,'tavern/tavern-state/nora-retained-config.yaml')),false);
   }
+});
+
+test('all clears incomplete recovery history inside the confirmed root while keep preserves it',async t=>{
+  const id='11111111-1111-4111-8111-111111111111';
+  const histories=[
+    [`installer/operations/${id}/operation.json`,{schema:'nora-operation/1',operationId:id,state:'failed',effectState:'changed',recoveryOutcome:'recovery-required'}],
+    [`installer/operations/${id}/runtime-bootstrap.json`,{schema:'nora-runtime-bootstrap/1',operationId:id,status:'applying'}],
+    [`installer/operations/${id}/first-install/transaction.json`,{schema:1,owner:'nora-first-install',operationId:id,status:'applying'}],
+    ['tavern/tavern-updates/transaction.json',{schema:1,status:'applying'}],
+    ['installer/system-update/journal.json',{schema:1,phase:'applying'}],
+    ['installer/launcher-update/job-interrupted/plan.json',{schema:2,version:'2.1.2'}],
+  ];
+  for(const [journal,value] of histories)await t.test(journal,()=>{
+    const f=fixture(t);f.write(journal,JSON.stringify(value));
+    assert.throws(()=>cleanup(f.plan('keep')),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED');
+    for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture',name);
+    assert.equal(fs.existsSync(path.join(f.home,RETAINED)),false);
+    cleanup(f.plan('all'));
+    assertLockShell(f.home);
+  });
+});
+
+test('all ignores forged historical deletion targets and removes only the confirmed installation',t=>{
+  const f=fixture(t),outside=path.join(f.directory,'unrelated');fs.mkdirSync(outside);
+  const keep=path.join(outside,'keep');fs.writeFileSync(keep,'unrelated');
+  f.write('tavern/tavern-updates/transaction.json',JSON.stringify({schema:1,status:'applying',
+    recoveryPlan:{targets:[{namespace:'install',relative:keep}],backup:outside}}));
+  f.write('installer/launcher-update/job-interrupted/plan.json',JSON.stringify({schema:2,home:outside,appRoot:outside}));
+  assert.throws(()=>cleanup(f.plan('keep')),error=>error.code==='UNINSTALL_RECOVERY_REQUIRED');
+  cleanup(f.plan('all'));
+  assertLockShell(f.home);assert.equal(fs.readFileSync(keep,'utf8'),'unrelated');
+});
+
+test('all with incomplete history still requires the real native writer and offline executor proof',async t=>{
+  const f=fixture(t),id='11111111-1111-4111-8111-111111111111';
+  f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,state:'failed',effectState:'unknown'}));
+  const plan=f.plan('all'),lock=require('../installer/desktop/operation-lock');
+  const lease=await lock.acquire({directory:path.join(f.home,'installer'),operationId:'uninstall-busy',ownerEpoch:1});
+  try{assert.throws(()=>cleanup(plan),error=>error.code==='OPERATION_BUSY');}
+  finally{await lease.release();}
+  f.write('installer/operations/.guards/orphan.json',JSON.stringify({schema:'nora-operation-guard/1',operationId:'orphan',
+    jobs:[{jobId:'unknown',pid:process.pid}]}));
+  assert.throws(()=>cleanup(plan),error=>error.code==='OPERATION_EXECUTOR_UNCONFIRMED');
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+});
+
+test('standalone all worker clears incomplete recovery history after native ownership checks',async t=>{
+  const f=fixture(t),file=path.join(f.directory,'nora-uninstall.json');
+  f.write('installer/system-update/journal.json',JSON.stringify({schema:1,phase:'applying'}));
+  fs.writeFileSync(file,JSON.stringify(f.plan('all',{port:await idlePort()})));
+  const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+  assert.equal(result.state,'complete');assert.equal(result.mode,'all');assertLockShell(f.home);
+});
+
+test('worker refuses a service that reappears after the UI shutdown and before helper ownership',async t=>{
+  const f=fixture(t),net=require('node:net'),server=net.createServer(socket=>socket.end());
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const file=path.join(f.directory,'nora-uninstall.json'),port=server.address().port;
+  const plan=makePlan({home:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),mode:'all',port});
+  fs.writeFileSync(file,JSON.stringify(plan));
+  const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+  assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+  for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture',name);
+});
+
+test('worker requires current resource and port bindings before deleting any files',async t=>{
+  for(const kind of ['missing binding','different port','changed resource'])await t.test(kind,async()=>{
+    const f=fixture(t),plan=f.plan('all',{port:await idlePort()}),file=path.join(f.directory,'nora-uninstall.json');
+    let restore=()=>{};
+    if(kind==='missing binding')delete plan.serviceCheck;
+    else if(kind==='different port')plan.serviceCheck.port++;
+    else {
+      const resource=plan.serviceCheck.resources['operation-budget.json'].path,before=fs.readFileSync(resource);
+      fs.writeFileSync(resource,Buffer.concat([before,Buffer.from('\n')]));restore=()=>fs.writeFileSync(resource,before);
+    }
+    const previous=process.exitCode;
+    try{fs.writeFileSync(file,JSON.stringify(plan));await worker(file,()=>{});}finally{process.exitCode=previous;restore();}
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+    for(const name of [...f.data,...f.programs])assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture',name);
+  });
+});
+
+test('without Python a real root-owned process blocks deletion even with no listener or PID hint',{timeout:30000},async t=>{
+  const f=fixture(t),{spawn}=require('node:child_process'),{once}=require('node:events');
+  const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{cwd:f.home,stdio:'ignore'});
+  const closed=once(child,'close');await once(child,'spawn');
+  try{for(const options of [{port:await idlePort()},{serviceMode:'native-root',port:null}]){
+    const plan=f.plan('all',options),file=path.join(f.directory,'nora-uninstall.json');
+    fs.writeFileSync(file,JSON.stringify(plan));
+    const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+    assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  }}finally{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await closed;}
+});
+
+test('native root proof preserves a Unicode installation while its actual process owns that directory',{timeout:30000},async t=>{
+  const f=fixture(t,'诺拉 测试'),{spawn}=require('node:child_process'),{once}=require('node:events');
+  // On Mac the absolute script is outside the root so only decoded cwd proves
+  // ownership; on Windows its root-bound Unicode argv exercises UTF-8 CIM.
+  const script=path.join(process.platform==='darwin'?f.directory:f.home,'fixture-process.cjs');
+  fs.writeFileSync(script,'setInterval(()=>{},1000);');
+  const child=spawn(process.execPath,[script],{cwd:f.home,stdio:'ignore'});
+  const closed=once(child,'close');await once(child,'spawn');
+  try{
+  const plan=f.plan('all',{serviceMode:'native-root',port:null}),file=path.join(f.directory,'nora-uninstall.json');
+  fs.writeFileSync(file,JSON.stringify(plan));
+  const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+  assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  }finally{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await closed;}
+});
+
+test('native root proof accepts a positively located absolute script from another directory',{timeout:30000},async t=>{
+  const f=fixture(t),{spawn}=require('node:child_process'),{once}=require('node:events');
+  const outside=path.join(f.directory,'other-instance');fs.mkdirSync(outside);
+  const script=path.join(outside,'fixture-process.cjs');fs.writeFileSync(script,'setInterval(()=>{},1000);');
+  const child=spawn(process.execPath,[script],{cwd:outside,stdio:'ignore'}),closed=once(child,'close');
+  await once(child,'spawn');
+  try{
+    const plan=f.plan('all',{serviceMode:'native-root',port:null}),file=path.join(f.directory,'nora-uninstall.json');
+    fs.writeFileSync(file,JSON.stringify(plan));
+    const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'complete',JSON.stringify(result));assertLockShell(f.home);
+    assert.equal(fs.readFileSync(script,'utf8'),'setInterval(()=>{},1000);');process.kill(child.pid,0);
+  }finally{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await closed;}
+});
+
+test('native root proof refuses an ambiguous Hermes module process outside the installation',{timeout:30000},async t=>{
+  const f=fixture(t),{spawn}=require('node:child_process'),{once}=require('node:events');
+  const external=path.join(f.directory,'external-runtime'),module=path.join(external,'hermes_cli');fs.mkdirSync(module,{recursive:true});
+  fs.writeFileSync(path.join(module,'__init__.py'),'');
+  fs.writeFileSync(path.join(module,'main.py'),"import time\nprint('fixture-ready',flush=True)\ntime.sleep(60)\n");
+  assert.ok(process.env.NORA_TEST_PYTHON,'A real Python fixture interpreter is required');
+  const child=spawn(process.env.NORA_TEST_PYTHON,['-B','-m','hermes_cli.main','gateway','run'],
+    {cwd:external,env:{...process.env,HERMES_HOME:f.home,PYTHONPATH:external},stdio:['ignore','pipe','pipe']});
+  const closed=once(child,'close');let startupTimer;
+  try{
+    await Promise.race([once(child.stdout,'data'),closed.then(()=>{throw new Error('Hermes-shaped fixture exited before readiness');}),
+      new Promise((_,reject)=>{startupTimer=setTimeout(()=>reject(new Error('Hermes-shaped fixture did not become ready')),5000);})]);
+    clearTimeout(startupTimer);
+    const plan=f.plan('all',{serviceMode:'native-root',port:null}),file=path.join(f.directory,'nora-uninstall.json');
+    fs.writeFileSync(file,JSON.stringify(plan));
+    const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+    assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  }finally{clearTimeout(startupTimer);if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await closed;}
+});
+
+test('native process parsers require complete snapshots and reject uncertain service ownership',()=>{
+  const {windowsProcesses,macFiles}=require('../installer/desktop/uninstall-offline-check');
+  const self={pid:42,name:'launcher.exe',executable:'C:\\App\\launcher.exe',commandLine:'"C:\\App\\launcher.exe" helper'};
+  const check=processes=>windowsProcesses(JSON.stringify({schema:'nora-uninstall-processes/1',processes}),{root:'C:\\NoraTavern',pid:42});
+  assert.throws(()=>windowsProcesses('malformed private-process-argument',{root:'C:\\NoraTavern',pid:42}),error=>
+    error.code==='UNINSTALL_SERVICES_UNCONFIRMED'&&!error.cause&&!error.message.includes('private-process-argument'));
+  check([{pid:0,name:'System Idle Process',executable:null,commandLine:null},self]);
+  for(const processes of [[],[{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node server.js'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node server.js'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node ".\\server.js"'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node --eval "setInterval(()=>{},1000)"'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node relative-worker.mjs'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node'}],
+    [self,{pid:43,name:'python.exe',executable:'C:\\Python\\python.exe',commandLine:'python'}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\Node\\node.exe',commandLine:'node --require "C:\\Other\\preload.js"'}],
+    [self,{pid:43,name:'python.exe',executable:'C:\\Python\\python.exe',commandLine:'python -m hermes_cli.main gateway run'}],
+    [self,{pid:43,name:'node.exe',executable:null,commandLine:null}],
+    [self,{pid:43,name:'node.exe',executable:'C:\\NoraTavern\\hermes\\node\\node.exe',commandLine:'node C:\\Other\\server.js'}]])
+    assert.throws(()=>check(processes),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+  check([self,{pid:43,name:'node.exe',executable:'C:\\Other\\node.exe',commandLine:'node "C:\\Other\\server.js"'}]);
+  macFiles('p43\ncnode\nfcwd\nn/Other\nftxt\nn/usr/bin/node\n',{root:'/NoraTavern',pid:43});
+  for(const text of ['p43\ncnode\nfcwd\nftxt\n','p43\ncnode\nfcwd\nn/Other\n',
+    'p43\ncnode\nftxt\nn/usr/bin/node\n','p43\ncnode\nfcwd\nn/NoraTavern/hermes\nftxt\nn/usr/bin/node\n',
+    'p43\ncnode\nfcwd\nn/\\x4eoraTavern/hermes\nftxt\nn/usr/bin/node\n',
+    'p43\ncnode\nfcwd\nn/Other/\\xff\nftxt\nn/usr/bin/node\n'])
+    assert.throws(()=>macFiles(text,{root:'/NoraTavern',pid:43}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+});
+
+test('only all can clear an offline root with malformed metadata and an unknown port',async t=>{
+  const f=fixture(t);f.write('hermes/nora-instance.json','{malformed');
+  f.write('installer/state.json','{malformed');f.write('installer/system-update/journal.json','{malformed');
+  assert.throws(()=>f.plan('keep',{serviceMode:'native-root',port:null}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+  assert.throws(()=>f.plan('all',{serviceMode:'native-root',port:8799}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+  const plan=f.plan('all',{serviceMode:'native-root',port:null}),file=path.join(f.directory,'nora-uninstall.json');
+  assert.equal(plan.port,null);assert.equal(plan.serviceCheck.port,null);assert.equal(plan.serviceCheck.mode,'native-root');
+  fs.writeFileSync(file,JSON.stringify(plan));
+  const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+  assert.equal(result.state,'complete');assert.equal(result.serviceVerification.mode,'native-root');
+  assert.equal(result.serviceVerification.method,'native-os');assertLockShell(f.home);
+});
+
+test('worker consumes a real managed Python offline result from the bound current bridge',async t=>{
+  const f=fixture(t),{spawnSync}=require('node:child_process'),python=process.env.NORA_TEST_PYTHON;
+  assert.ok(python,'The source gate requires its isolated Python test environment');
+  const source=path.dirname(path.dirname(python)),venv=path.join(f.home,'hermes/hermes-agent/venv');
+  if(fs.existsSync(path.join(source,'pyvenv.cfg')))fs.cpSync(source,venv,{recursive:true,verbatimSymlinks:true});
+  else {
+    const created=spawnSync(python,['-B','-m','venv','--system-site-packages',venv],{encoding:'utf8',timeout:30000});
+    assert.equal(created.status,0,created.stderr);
+  }
+  if(process.platform==='win32'){
+    const base=/^home\s*=\s*(.+)$/m.exec(fs.readFileSync(path.join(venv,'pyvenv.cfg'),'utf8'))?.[1].trim();
+    assert.ok(base);fs.rmSync(path.join(f.home,'hermes/python'),{recursive:true,force:true});
+    fs.symlinkSync(base,path.join(f.home,'hermes/python'),'junction');
+  }
+  const plan=f.plan('all',{port:await idlePort()}),file=path.join(f.directory,'nora-uninstall.json');
+  fs.writeFileSync(file,JSON.stringify(plan));
+  const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+  assert.equal(result.state,'complete',JSON.stringify(result));assert.equal(result.serviceVerification.method,'managed-python');
+  assertLockShell(f.home);
 });
 
 function runtimeJournal(f,id,{status='prepared',previous,next=null,recoveryStartedAt}={}){
@@ -571,7 +963,7 @@ print(json.dumps(r.effects(home,root)))`;
     [name,{path:path.join(installer,name)}]));
   const context=vm.createContext({require:name=>name==='./launcher-capability'?{validate:async()=>({...instance,launcherVersion:'2.1.2',
     platform:process.platform,arch:process.arch,channel:'stable',resources})}:name==='./managed-python'?{resolveExecution:()=>({command:python,env:{...process.env,PYTHONDONTWRITEBYTECODE:'1'}})}:localRequire(name),
-    __filename:file,module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+    __filename:file,__dirname:path.dirname(file),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   return {...f,bodies,release,worlds,instance,context,old,oldRecord,oldFile,current,currentRecord,currentFile,backup,original,systemSnapshot,
     inspect:()=>context.inspectSealedTransactions(f.plan('keep')),
@@ -948,7 +1340,7 @@ test('worker preserves the specific inspection cause and project call stack in i
   const f=fixture(t),id=require('node:crypto').randomUUID(),{value}=runtimeJournal(f,id);
   value.paths.hermesHome=path.join(f.directory,'foreign');
   f.write(`installer/operations/${id}/runtime-bootstrap.json`,JSON.stringify(value));
-  const file=path.join(f.directory,'nora-uninstall.json');fs.writeFileSync(file,JSON.stringify(f.plan('keep')));
+  const file=path.join(f.directory,'nora-uninstall.json');fs.writeFileSync(file,JSON.stringify(f.plan('keep',{port:await idlePort()})));
   const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
   const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
   assert.equal(result.code,'UNINSTALL_RECOVERY_REQUIRED');
@@ -962,7 +1354,7 @@ function pythonInspectionHarness() {
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js');
   const localRequire=createRequire(file),childProcess=require('node:child_process');let childScript;
   const context=vm.createContext({require:name=>name==='node:child_process'?{...childProcess,
-    spawn:(command,_args,options)=>childProcess.spawn(command,['-e',childScript],options)}:localRequire(name),__filename:file,module:{exports:{}},
+    spawn:(command,_args,options)=>childProcess.spawn(command,['-e',childScript],options)}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
     process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   return (script,policy)=>{childScript=script;return context.runPythonInspection({command:process.execPath,env:process.env},'{}',policy);};
@@ -1026,7 +1418,7 @@ async function systemHistoryFixture(t,{sameVersion=false,handoff=false,managedRe
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),localRequire=createRequire(file);
   const context=vm.createContext({require:name=>name==='./launcher-capability'?{validate:async()=>({noraHome:f.home,
     hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),launcherVersion:'2.1.2',platform:process.platform,arch:process.arch,channel:'stable',port:8799,resources:{}})}:
-    name==='./managed-python'?{resolveExecution:()=>({})}:localRequire(name),__filename:file,module:{exports:{}},
+    name==='./managed-python'?{resolveExecution:()=>({})}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
     process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   let inspections=0,handoffs=null;context.runPythonInspection=async()=>{inspections++;return {schema:'nora-uninstall-facts/1',safe:true,system:proof,handoffs};};

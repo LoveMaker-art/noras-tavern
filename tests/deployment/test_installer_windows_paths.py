@@ -23,7 +23,8 @@ INSTALLER = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = INSTALLER
 SPEC.loader.exec_module(INSTALLER)
 WORKER = "app/engine/sillytavern/node_modules/@jsquash/oxipng/codec/pkg-parallel/snippets/wasm-bindgen-rayon-3e04391371ad0a8e/src/workerHelpers.worker.js"
-WINDOWS_HOME = r"C:\Users\ROG\AppData\Local\NoraTavern-Tests\launcher-candidate-38e8e898aecc"
+# Preserve the reported MAX_PATH fixture length without a person's machine name.
+WINDOWS_HOME = r"C:\Users\Usr\AppData\Local\NoraTavern-Tests\launcher-candidate-000000000000"
 
 
 def dependency_fixture(directory, member=WORKER):
@@ -126,7 +127,6 @@ class InstallerPathTests(unittest.TestCase):
                 INSTALLER.extract_dependency_bundle(root / "payload", root / "source")
             self.assertFalse((root / "escape.js").exists())
 
-    @unittest.skipIf(os.name == "nt", "creating Windows symlinks may require developer mode")
     def test_workspace_rejects_a_link_outside_the_isolated_home(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

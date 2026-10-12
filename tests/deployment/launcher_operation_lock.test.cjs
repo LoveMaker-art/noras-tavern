@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const crypto = require('node:crypto');
+const {captureChild, firstJsonLine: firstLine, stopChild} = require('./launcher_test_lifecycle.cjs');
 
 const modulePath = path.resolve(__dirname, '../installer/desktop/operation-lock.js');
 const helperPath = process.env.NORA_TEST_OPERATION_HELPER || path.resolve(__dirname, '../installer/operation_control.py');
@@ -89,14 +90,13 @@ async function until(fn, timeout = 8000) {
   const end = Date.now() + timeout;
   while (!(await fn())) { if (Date.now() >= end) throw new Error('Condition was not reached'); await delay(25); }
 }
-function firstLine(proc) {
-  return new Promise((resolve, reject) => {
-    let text = '', errors = '';
-    proc.stderr.on('data', value => errors += value);
-    proc.stdout.on('data', value => { text += value; if (text.includes('\n')) resolve(JSON.parse(text.split('\n')[0])); });
-    proc.once('exit', code => { if (!text.includes('\n')) reject(new Error(`Owner exited ${code}: ${errors}`)); });
-    proc.once('error', reject);
-  });
+async function cleanupLease(lease) {
+  try {
+    let state;
+    try { state = await lease.snapshot(); }
+    catch (error) { if (error.code !== 'LOCK_GUARD_EXITED') throw error; }
+    if (state?.jobs.some(job => !job.closedAt)) await lease.cancel({signal: 'SIGKILL'});
+  } finally { await lease.release(); }
 }
 
 test('large guard history reaches the caller before a read-only probe exits', {timeout:15000}, async () => {
@@ -127,7 +127,7 @@ test('large guard history reaches the caller before a read-only probe exits', {t
     assert.equal(released.sessions.reduce((sum,value)=>sum+value.jobs.length,0),8*72);
     for(const fixture of fixtures)assert.equal(fs.readFileSync(fixture.file,'utf8'),fixture.bytes,
       'read-only status must retain every saved child fact');
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('a synchronous managed spawn failure preserves sanitized project frames through the real native guard',
@@ -154,7 +154,7 @@ test('a synchronous managed spawn failure preserves sanitized project frames thr
     assert.ok(Buffer.byteLength(projection)<=16*1024,'guard diagnostic must remain bounded');
     assert.equal((await probe({directory})).busy,true);
     await lease.release();assert.equal((await probe({directory})).busy,false);
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('product acceptance actor terminates a native guard refusal which has no close event', {timeout:10000}, async () => {
@@ -168,7 +168,7 @@ test('product acceptance actor terminates a native guard refusal which has no cl
       env:{...process.env,NORA_TAVERN_HOME:directory}});
     await assert.rejects(Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error('Harness still waiting for an impossible close')),2000);})]),{code:'ENOENT'});
     assert.equal((await lease.snapshot()).jobs.length,0,'Rejected spawn must not pretend to own a closed child');
-  }finally{clearTimeout(timer);await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  }finally{clearTimeout(timer);await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('product actor preserves a real child error and its raw output when checkpoint observation also fails',
@@ -192,7 +192,7 @@ test('product actor preserves a real child error and its raw output when checkpo
           return true;
         });
       assert.ok((await lease.snapshot()).jobs.every(job=>job.closedAt));
-    }finally{await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+    }finally{await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
   });
 
 test('guard diagnostic protocol bounds the entire error group and loads as an isolated flat delegate', async () => {
@@ -219,15 +219,16 @@ test('guard diagnostic protocol bounds the entire error group and loads as an is
   assert.equal(restored.message,'Maintenance child could not start');assert.equal(restored.code,'ENOENT');
   assert.equal(restored.remoteMessage,record.message);assert.equal(restored.cause.code,'ENOENT');
   assert.equal(restoreDiagnostic({code:'ENOENT',message:'Safe guidance',diagnostic:{...record,unexpected:secret}}).remoteMessage,undefined);
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-flat-delegate-'));
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-flat-delegate-'));let child;
   try {
     const flat=path.join(root,'operation-delegate.js');fs.copyFileSync(delegatePath,flat);
-    const child=spawn(process.execPath,['-e',"const m=require(process.argv[1]);process.stdout.write(JSON.stringify({connect:typeof m.connect,restore:typeof m.restoreDiagnostic,project:typeof m.projectDiagnostic}))",flat],
+    child=spawn(process.execPath,['-e',"const m=require(process.argv[1]);process.stdout.write(JSON.stringify({connect:typeof m.connect,restore:typeof m.restoreDiagnostic,project:typeof m.projectDiagnostic}))",flat],
       {env:{...process.env,NODE_PATH:''},stdio:['ignore','pipe','pipe']});
+    const ended=captureChild(child).closed;
     let output='',errors='';child.stdout.on('data',value=>output+=value);child.stderr.on('data',value=>errors+=value);
-    const [code]=await once(child,'close');assert.equal(code,0,errors);
+    const {code}=await ended;assert.equal(code,0,errors);
     assert.deepEqual(JSON.parse(output),{connect:'function',restore:'function',project:'function'});
-  } finally {fs.rmSync(root,{recursive:true,force:true});}
+  } finally {await stopChild(child);fs.rmSync(root,{recursive:true,force:true});}
 });
 
 test('actual native guard commit rejection retains its project origin without writing a record', {timeout:15000}, async () => {
@@ -240,7 +241,7 @@ test('actual native guard commit rejection retains its project origin without wr
     assert.equal(failure.stack.includes(directory),false);assert.equal((await probe({directory})).busy,true);
     await lease.release();assert.equal((await probe({directory})).busy,false);
     assert.equal(fs.readdirSync(path.join(directory,'operations')).filter(name=>/^[a-f0-9-]{36}$/.test(name)).length,0);
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('actual asynchronous child start error keeps safe guidance and original remote diagnostic until real close', {timeout:15000}, async () => {
@@ -258,7 +259,7 @@ test('actual asynchronous child start error keeps safe guidance and original rem
     const output=JSON.stringify({message:error.message,remoteMessage:error.remoteMessage,stack:error.stack});assert.equal(output.includes(directory),false);
     const job=(await lease.snapshot()).jobs[0];assert.equal(job.spawnErrorCode,error.code);assert.ok(job.closedAt);
     assert.equal((await probe({directory})).busy,true);await lease.release();assert.equal((await probe({directory})).busy,false);
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('unavailable source and malformed private diagnostics cannot replace the original failure', () => {
@@ -305,11 +306,12 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     })().catch(error=>{console.error(error);process.exitCode=1});`;
   const owner = spawn(process.execPath, ['-e', ownerSource, modulePath, directory, childSource, output,
     path.resolve(path.dirname(modulePath),'operation-delegate.js')], {stdio:['pipe','pipe','pipe']});
+  const ownerClosed=captureChild(owner).closed;
   let next;
   try {
     assert.equal((await firstLine(owner)).ready, true);
     owner.kill('SIGKILL');
-    await new Promise(resolve => owner.once('close', resolve));
+    await ownerClosed;
     const before = fs.statSync(output).size;
     await assert.rejects(acquire({directory,operationId:'too-early',ownerEpoch:2}), {code:'OPERATION_BUSY'});
     await delay(120);
@@ -330,9 +332,11 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     next = await acquire({directory,operationId:'after-close',ownerEpoch:2});
     assert.equal((await next.snapshot()).ownerEpoch, 2);
   } finally {
-    if (owner.exitCode === null && owner.signalCode === null) owner.kill('SIGKILL');
-    if (next) await next.release();
-    await delay(100);
+    await stopChild(owner);
+    if (next) await cleanupLease(next);
+    // A failed assertion before owner death can leave its separately guarded
+    // writer active. Its fixture has a finite deadline; wait for real closure.
+    await until(async () => !(await probe({directory})).busy);
     fs.rmSync(directory,{recursive:true,force:true});
   }
 });
@@ -343,7 +347,7 @@ test('release waits for real close and an old lease cannot release a later epoch
   const old=await acquire({directory,operationId:'old',ownerEpoch:1});let next;
   try {
     const child=old.spawn(process.execPath,['-e',"process.stdout.write('ready');setTimeout(()=>process.exit(7),300)"],{kind:'verification'});
-    await once(child.stdout,'data');const closing=once(child,'close');
+    const closing=captureChild(child).closed;await once(child.stdout,'data');
     const released=old.release();
     assert.equal((await probe({directory})).busy,true);
     await closing;await released;
@@ -352,7 +356,7 @@ test('release waits for real close and an old lease cannot release a later epoch
     await old.release();
     assert.equal((await probe({directory})).busy,true);
     assert.equal((await next.snapshot()).ownerEpoch,2);
-  } finally {await old.release();if(next)await next.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(old);if(next)await cleanupLease(next);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('the public snapshot retains actual child close facts without exposing command arguments', {timeout:15000}, async () => {
@@ -375,7 +379,7 @@ test('the public snapshot retains actual child close facts without exposing comm
     assert.equal(recorded.sessions[0].operationId,'ledger');
     assert.ok(recorded.sessions[0].jobs[0].closedAt);
     assert.equal(recorded.inspectionRequired,false);
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('a Python executor reports creation identity to its private endpoint before receiving write delegation',
@@ -398,11 +402,7 @@ print(json.dumps({'pid':identity['pid'],'creationTime':identity['creationTime'],
       managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,
       venvHome:path.dirname(path.dirname(process.env.NORA_TEST_PYTHON)),
       cwd:path.dirname(path.dirname(path.dirname(process.env.NORA_TEST_PYTHON)))});
-    const output=await new Promise((resolve,reject)=>{
-      let text='',errors='';child.stderr.on('data',value=>errors+=value);
-      child.stdout.on('data',value=>{text+=value;if(text.includes('\n'))resolve(JSON.parse(text.split('\n')[0]));});
-      child.once('error',reject);child.once('close',code=>{if(!text.includes('\n'))reject(new Error(`Python delegation failed ${code}, handle pid ${child.pid}: ${errors}`));});
-    });
+    const output=await firstLine(child);
     const job=(await lease.snapshot()).jobs.find(job=>job.jobId===child.jobId);
     assert.equal(job.delegation.identityStatus,'reported');
     assert.equal(child.pid,output.pid,'the held handle must belong to the real Python writer');
@@ -411,8 +411,7 @@ print(json.dumps({'pid':identity['pid'],'creationTime':identity['creationTime'],
     assert.equal(fs.realpathSync(output.executable),fs.realpathSync(process.env.NORA_TEST_PYTHON));
     for(const key of ['psutil','requests','hermes','ssl'])assert.ok(output[key]);
   } finally {
-    if(Number.isInteger(child?.pid) && child.exitCode===null && child.signalCode===null){const ended=once(child,'close');child.kill();await ended;}
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -436,7 +435,7 @@ test('environment values alone cannot delegate writes without the live guard ack
     let text='';child.stdout.on('data',data=>text+=data);await once(child,'close');
     assert.equal(text,'DELEGATION_REJECTED');assert.equal(fs.existsSync(output),false);
     assert.equal((await lease.snapshot()).jobs[0].delegation.identityStatus,'pending');
-  } finally {await lease.release();fs.rmSync(directory,{recursive:true,force:true});}
+  } finally {await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});}
 });
 
 test('guard hard death signals loss and retains an unresolved ledger instead of manufacturing child closure',{timeout:15000},async()=>{
@@ -493,8 +492,7 @@ test('a guard-owned nested Python writer survives its parent death and blocks ta
     assert.ok(prior.jobs.find(job=>job.jobId===ready.jobId).closedAt);
     assert.ok(prior.jobs.find(job=>job.jobId===ready.jobId).parentJobId);
   } finally {
-    if(Number.isInteger(parent?.pid) && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
-    await lease.release();if(next)await next.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);if(next)await cleanupLease(next);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -513,8 +511,7 @@ test('nested cancellation reports real close and saved child facts before releas
     assert.equal(fs.existsSync(output)?fs.statSync(output).size:0,before);
     const state=await lease.snapshot();assert.ok(state.jobs.find(job=>job.jobId===result.jobId).closedAt);
   } finally {
-    if(Number.isInteger(parent?.pid) && parent.exitCode===null && parent.signalCode===null){const ended=once(parent,'close');parent.kill();await ended;}
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -534,8 +531,7 @@ test('cancelling an operation closes every guard-owned maintenance handle includ
     const before=fs.existsSync(output)?fs.statSync(output).size:0;await delay(100);
     assert.equal(fs.existsSync(output)?fs.statSync(output).size:0,before);
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null)await lease.cancel({signal:'SIGKILL'});
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -554,8 +550,7 @@ test('the production Python delegate preserves script, module and command argume
     assert.deepEqual(await firstLine(parent),[{arg:'command',input:'hello'},{arg:'module',input:'hello'},{arg:'script',input:'hello'}]);
     const state=await lease.snapshot();assert.equal(state.jobs.length,4);assert.ok(state.jobs.slice(1).every(job=>job.closedAt));
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null)await lease.cancel({signal:'SIGKILL'});
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -578,8 +573,7 @@ test('a production ManagedPopen child remains guard-owned after its authenticate
     await until(()=>/(^|\n)done\r?\n/.test(fs.readFileSync(output,'utf8')));await releasing;
     assert.equal((await probe({directory})).inspectionRequired,false);
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null)await lease.cancel({signal:'SIGKILL'});
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 
@@ -599,7 +593,6 @@ test('production ManagedPopen runs pinned Node maintenance with identity acknowl
     assert.ok(job.closedAt);assert.equal(job.delegation.identityStatus,'reported');
     assert.equal(job.pid,job.creationIdentity.pid);assert.ok(job.executionIdentity.jobArgument);assert.ok(job.executionIdentity.argvDigest);
   } finally {
-    if(parent && parent.exitCode===null && parent.signalCode===null)await lease.cancel({signal:'SIGKILL'});
-    await lease.release();fs.rmSync(directory,{recursive:true,force:true});
+    await cleanupLease(lease);fs.rmSync(directory,{recursive:true,force:true});
   }
 });

@@ -4,7 +4,6 @@ import importlib.util
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
 import subprocess
 import sys
@@ -14,6 +13,10 @@ import types
 import unittest
 from unittest import mock
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 ROOT = Path(__file__).resolve().parents[2]
 PROCESS_MODULE = ROOT / 'ops/updater/runtime_process.py'
@@ -210,12 +213,11 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
                 self.runtime.node_command(8799, self.runtime.native_data_root)
 
     def test_real_node_child_is_reused_and_remains_running(self):
-        node = Path(os.environ.get('NORA_TEST_NODE') or shutil.which('node') or '')
-        if not node.is_file() or not self.processes.psutil:
-            self.skipTest('requires Node and psutil')
-        version = subprocess.run([str(node), '--version'], capture_output=True, text=True, timeout=5)
-        if not version.stdout.strip().startswith('v'):
-            self.skipTest('requires real Node, not a Bun shim')
+        node = resolve_node()
+        if not node:
+            self.skipTest('requires NORA_TEST_NODE or a local Node executable')
+        self.assertIsNotNone(self.processes.psutil, 'The real Node ownership fixture requires psutil')
+        node = Path(node)
         r = self.runtime
         server = r.engine_root / 'server.js'
         server.write_text("const http=require('http'); const args=process.argv; "

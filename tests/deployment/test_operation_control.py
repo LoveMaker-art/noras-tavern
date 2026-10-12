@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import socket
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -12,6 +11,11 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 SOURCE = Path(__file__).resolve().parents[1] / 'installer/operation_control.py'
 spec = importlib.util.spec_from_file_location('operation_control', SOURCE)
@@ -31,8 +35,12 @@ class Server:
         self.listener = socket.socket()
         self.listener.bind(('127.0.0.1', 0))
         self.listener.listen()
+        self.listener.settimeout(0.1)
         self.messages = []
         self.closed = threading.Event()
+        self.stopping = threading.Event()
+        self.thread_errors = []
+        self.child_threads = []
         self.env = {'NORA_OPERATION_DELEGATE_ENDPOINT': '127.0.0.1:%s' % self.listener.getsockname()[1],
                     'NORA_OPERATION_DELEGATE_TOKEN': 'a' * 64,
                     'NORA_OPERATION_JOB_ID': '11111111-1111-4111-8111-111111111111',
@@ -46,40 +54,67 @@ class Server:
         self.connection.sendall((json.dumps(value) + '\n').encode())
 
     def serve(self):
-        self.connection, _ = self.listener.accept()
-        stream = self.connection.makefile('rb')
-        identity = json.loads(stream.readline())
-        self.messages.append(identity)
-        self.send({'schema': 'nora-operation-delegation-ack/1', 'token': self.env['NORA_OPERATION_DELEGATE_TOKEN'],
-                   'jobId': self.env['NORA_OPERATION_JOB_ID'], 'operationId': self.env['NORA_OPERATION_ID'], 'ownerEpoch': 9})
-        for line in stream:
-            message = json.loads(line)
-            self.messages.append(message)
-            if self.child_error and message['type'] == 'spawn':
-                self.send({'type': 'child', 'jobId': 'child-1', 'event': 'error', 'error': self.error})
-                self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'jobId': 'child-1'}})
-                self.send({'type': 'child', 'jobId': 'child-1', 'event': 'close', 'code': -1, 'signal': None})
-                continue
-            if self.error is not None:
-                self.send({'type': 'reply', 'requestId': message['requestId'], 'error': self.error})
-                continue
-            if message['type'] == 'spawn':
-                # Events may arrive before the spawn RPC response.
-                self.send({'type': 'child', 'jobId': 'child-1', 'event': 'spawn', 'pid': 123})
-                self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'jobId': 'child-1'}})
-                self.send({'type': 'child', 'jobId': 'child-1', 'event': 'stdout', 'data': base64.b64encode(b'hello\n').decode()})
-                self.send({'type': 'child', 'jobId': 'child-1', 'event': 'exit', 'code': 0, 'signal': None})
-                def close_child():
-                    self.closed.wait(3)
-                    try:
-                        self.send({'type': 'child', 'jobId': 'child-1', 'event': 'close', 'code': 0, 'signal': None})
-                    except OSError:
-                        pass
-                threading.Thread(target=close_child, daemon=True).start()
-            else:
-                self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'sent': True}})
+        try:
+            self.serve_connection()
+        except BaseException as error:
+            if not (isinstance(error, OSError) and self.stopping.is_set()):
+                self.thread_errors.append(error)
+        finally:
+            if hasattr(self, 'connection'):
+                try:
+                    self.connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                self.connection.close()
 
-    def __exit__(self, *unused):
+    def serve_connection(self):
+        while not self.stopping.is_set():
+            try:
+                self.connection, _ = self.listener.accept()
+                break
+            except socket.timeout:
+                continue
+        else:
+            return
+        if self.stopping.is_set():
+            return
+        with self.connection.makefile('rb') as stream:
+            identity = json.loads(stream.readline())
+            self.messages.append(identity)
+            self.send({'schema': 'nora-operation-delegation-ack/1', 'token': self.env['NORA_OPERATION_DELEGATE_TOKEN'],
+                       'jobId': self.env['NORA_OPERATION_JOB_ID'], 'operationId': self.env['NORA_OPERATION_ID'], 'ownerEpoch': 9})
+            for line in stream:
+                message = json.loads(line)
+                self.messages.append(message)
+                if self.child_error and message['type'] == 'spawn':
+                    self.send({'type': 'child', 'jobId': 'child-1', 'event': 'error', 'error': self.error})
+                    self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'jobId': 'child-1'}})
+                    self.send({'type': 'child', 'jobId': 'child-1', 'event': 'close', 'code': -1, 'signal': None})
+                    continue
+                if self.error is not None:
+                    self.send({'type': 'reply', 'requestId': message['requestId'], 'error': self.error})
+                    continue
+                if message['type'] == 'spawn':
+                    # Events may arrive before the spawn RPC response.
+                    self.send({'type': 'child', 'jobId': 'child-1', 'event': 'spawn', 'pid': 123})
+                    self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'jobId': 'child-1'}})
+                    self.send({'type': 'child', 'jobId': 'child-1', 'event': 'stdout', 'data': base64.b64encode(b'hello\n').decode()})
+                    self.send({'type': 'child', 'jobId': 'child-1', 'event': 'exit', 'code': 0, 'signal': None})
+                    def close_child():
+                        self.closed.wait(3)
+                        try:
+                            self.send({'type': 'child', 'jobId': 'child-1', 'event': 'close', 'code': 0, 'signal': None})
+                        except BaseException as error:
+                            if not (isinstance(error, OSError) and self.stopping.is_set()):
+                                self.thread_errors.append(error)
+                    child_thread = threading.Thread(target=close_child, daemon=True)
+                    self.child_threads.append(child_thread)
+                    child_thread.start()
+                else:
+                    self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'sent': True}})
+
+    def __exit__(self, _type, error, _traceback):
+        self.stopping.set()
         self.closed.set()
         if hasattr(self, 'connection'):
             try:
@@ -88,7 +123,43 @@ class Server:
                 pass
             self.connection.close()
         self.listener.close()
-        self.thread.join(1)
+        deadline = time.monotonic() + 2
+        self.thread.join(max(0, deadline - time.monotonic()))
+        for child_thread in self.child_threads:
+            child_thread.join(max(0, deadline - time.monotonic()))
+        alive = [thread for thread in [self.thread, *self.child_threads] if thread.is_alive()]
+        failure = None
+        if alive:
+            failure = RuntimeError('Fixture server threads did not stop within 2 seconds')
+        elif self.thread_errors:
+            failure = RuntimeError('Fixture server failed')
+            failure.__cause__ = self.thread_errors[0]
+        if failure:
+            if error is not None:
+                error.add_note(str(failure) + ': ' + repr(failure.__cause__))
+            else:
+                raise failure
+
+
+class ServerLifecycleTests(unittest.TestCase):
+    def test_teardown_without_a_client_stops_accept_without_a_thread_exception(self):
+        failures = []
+        with patch.object(threading, 'excepthook', failures.append):
+            with Server() as server:
+                pass
+            self.assertFalse(server.thread.is_alive())
+        self.assertEqual(failures, [], 'Expected fixture teardown must not escape from its server thread')
+
+    def test_unexpected_server_error_is_reported_to_the_main_test(self):
+        failures = []
+        with patch.object(threading, 'excepthook', failures.append), \
+                patch.object(Server, 'send', side_effect=OSError('controlled fixture send failure')):
+            with self.assertRaisesRegex(RuntimeError, 'Fixture server failed'):
+                with Server() as server:
+                    with socket.create_connection(server.listener.getsockname(), timeout=1) as client:
+                        client.sendall(b'{}\n')
+                        server.thread.join(1)
+        self.assertEqual(failures, [])
 
 
 class OperationControlTests(unittest.TestCase):
@@ -190,6 +261,8 @@ class OperationControlTests(unittest.TestCase):
             with self.assertRaises(control.OperationControlError):
                 gate.assert_active()
             gate.close()
+        self.assertTrue(server.child_threads)
+        self.assertTrue(all(not thread.is_alive() for thread in server.child_threads))
 
 
 class ReviewedDiagnosticRecordTests(unittest.TestCase):
@@ -246,13 +319,12 @@ class ReviewedDiagnosticRecordTests(unittest.TestCase):
 class ActualNestedExecutorTests(unittest.TestCase):
     def run_seed_writer(self, *, extended=False, diagnostic_failure=False, asynchronous_failure=False):
         hermes = os.environ.get('NORA_TEST_HERMES')
-        node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
+        node = resolve_node()
         if not hermes or not node:
             self.skipTest('requires the read-only Hermes Python and real Node/native lease')
         hermes = Path(hermes)
         python = hermes / 'venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
-        if not python.is_file():
-            self.skipTest('requires the read-only Hermes virtual environment')
+        self.assertTrue(python.is_file(), 'NORA_TEST_HERMES must contain its read-only Python virtual environment: ' + str(python))
         root = Path(__file__).resolve().parents[2]
         identity = json.loads(subprocess.check_output([str(python), '-B', '-c',
             'import json,sys;print(json.dumps([sys.prefix,sys.base_prefix]))'], text=True))
@@ -328,7 +400,7 @@ assert Path(facts['home']).samefile(seed) and Path(facts['cwd']).samefile(seed)
 assert Path(facts['prefix']).samefile(sys.prefix) and Path(facts['base']).samefile(sys.base_prefix)
 print(json.dumps(facts),flush=True)
 ''', encoding='utf-8')
-            driver = '''const path=require('node:path'),fs=require('node:fs'),assert=require('node:assert/strict');const {once}=require('node:events');
+            driver = r'''const path=require('node:path'),fs=require('node:fs'),assert=require('node:assert/strict');const {once}=require('node:events');
 const [entry,directory,python,venv,base,control,script,seed,mode]=process.argv.slice(1);
 (async()=>{const operationId=require('node:crypto').randomUUID();const lease=await require(entry).acquire({directory,operationId,ownerEpoch:1});
 try{const child=lease.spawn(python,['-B',control,'--delegate-exec','-B',script,control,seed,mode],{kind:'python-maintenance',managedPythonRoot:base,venvHome:venv,env:process.env});

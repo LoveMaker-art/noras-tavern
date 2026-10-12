@@ -10,9 +10,12 @@ import json
 from unittest.mock import patch
 import ast
 import os
-import shutil
 import tempfile
 
+if __package__:
+    from .launcher_test_environment import resolve_node
+else:
+    from launcher_test_environment import resolve_node
 
 class LauncherTracebackTests(unittest.TestCase):
     def test_gateway_identity_failure_has_readable_json_and_permission_code_with_local_cause(self):
@@ -71,8 +74,7 @@ def main():
         for name, args, message in cases:
             with self.subTest(entrypoint=name):
                 if name == 'first_install.py':
-                    node = os.environ.get('NORA_TEST_NODE') or shutil.which('node')
-                    self.assertTrue(node, 'A real Node runtime is required for the owned install actor')
+                    node = resolve_node(required=True)
                     with tempfile.TemporaryDirectory(prefix='nora-traceback-owner-') as temporary:
                         result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
                             str(installer / 'desktop/operation-lock.js'), str(Path(temporary).resolve()),

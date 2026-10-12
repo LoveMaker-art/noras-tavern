@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-01
+- Clarified: 2026-10-12, aligning data protection with the accepted existing-instance updater contract of 2026-09-10.
 
 ## Context
 
@@ -29,12 +30,35 @@ For an existing Node installation:
 - The atomic switch compares each replaceable target with that post-stop
   snapshot. A writer that changes code after maintenance begins still aborts
   the switch.
-- User data is not parsed, copied or compared during native code updates.
+- Ordinary native program updates do not intentionally convert story content.
+  A launcher-managed system update still stops the runtime, snapshots the full
+  `tavern-state`, and checks preservation using file inventories and the existing
+  read-only WorldStore before and after startup. These checks protect against
+  startup quarantine and other runtime side effects. Damaged-installation repair
+  uses the verified candidate as the reader and requires exact preservation;
+  repair does not authorize a legacy-data conversion.
 - User-installed Tavern plugins are inventoried again after Tavern stops, so a
   plugin added after review is preserved in the replacement tree.
 
-The one-time Python migration keeps its full copied-state transaction because
-it actually transforms legacy data.
+The one-time Python migration transforms legacy data. Its authoritative copy and
+conversion start only after confirmed shutdown. The original is retained for
+rollback, including the final write before shutdown. Only a recognized unsupported
+input format can use a fresh complete archive copy; converter crashes, timeouts,
+I/O errors and invalid output fail the transaction. Individual unsupported records
+remain governed by the converter's existing explicit archive rules. A direct
+legacy installation without a service that can be restored is refused before
+shutdown; the updater does not invent a process-restart mechanism.
+
+Admission measures future backup, migration and possible metadata-restoration
+copies per destination volume before host snapshots or shutdown, and rechecks
+after shutdown with current state sizes. Migration also rechecks remaining
+restoration headroom after conversion. Existing candidate files and backups
+already consume reported free space; same-volume renames do not require another
+payload copy. The estimate reserves 10% of copied bytes, 4096 bytes per entry and
+65536 bytes per volume for allocation and transaction overhead. It is not a disk
+reservation: concurrent writers or conversion growth can still exhaust storage,
+so actual copy/write failures remain failures and recovery preserves original
+data and the available failure evidence. No backup is deleted to pass admission.
 
 ## Consequences
 
@@ -45,3 +69,7 @@ it actually transforms legacy data.
   rollback authoritative without making live code an immutable review input.
 - Release hashes are checked before startup. Generated runtime output after
   startup cannot turn a healthy installation into a checksum failure.
+- Full data protection has a time and disk cost proportional to the state tree.
+  A non-managed component-only update that replaces no runtime and performs no
+  migration can keep Tavern running; this does not establish the same promise
+  for launcher-managed system updates.
