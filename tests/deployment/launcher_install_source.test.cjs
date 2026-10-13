@@ -3,7 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const { createRequire } = require('node:module');
 const { parse } = require('../installer/desktop/node_modules/acorn');
+const { createReleaseSourceContext } = require('../installer/desktop/release-network');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
 const ast = parse(source, { ecmaVersion: 'latest' });
@@ -38,7 +40,10 @@ test('actual first-install handler selects the latest complete release; local ca
   assert.ok(selection);
   for (const [action, local, expected] of [['install', false, 'latest'], ['install', true, 'candidate'], ['update', false, 'online']]) {
     const calls = [];
+    const networkPolicy = { sourceContext: createReleaseSourceContext() };
     const context = vm.createContext({
+      networkPolicy,
+      require: createRequire(path.join(__dirname, '../installer/desktop/main.js')),
       payload: { action }, isUpdate: action === 'update', managedRepair:false,
       managedFacts:{needsRepair:false,missing:{python:false}}, LOCAL_TEST: local, CHANNEL: 'stable', AbortController, process,
       selectedPlan: null, fixedTarget: async plan => { context.selectedPlan = plan; },
@@ -55,10 +60,14 @@ test('actual first-install handler selects the latest complete release; local ca
         prepareInstall: async options => {
           assert.equal(options.fetcher, context.updateFetch);
           assert.equal(options.operationDirectory, context.operationDirectory);
+          assert.equal(options.networkPolicy, networkPolicy);
           assert.equal(typeof options.confirmBundled, 'function');
           calls.push('latest'); return '/latest';
         },
-        prepareUpdate: async () => { calls.push('online'); return '/download'; },
+        prepareUpdate: async options => {
+          assert.equal(options.networkPolicy, networkPolicy);
+          calls.push('online'); return '/download';
+        },
       },
       prepareTestPayload: async () => { calls.push('candidate'); return '/payload'; },
       diagnostics: { write() {} }, cleanupInstallTemps: () => [],

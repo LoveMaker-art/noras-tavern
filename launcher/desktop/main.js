@@ -581,6 +581,8 @@ function installationPort(operation = activeOperationContext?.snapshot) {
     installerPortBinding = { identity, port };
     return port;
   }
+  const retained=require('./retained-installation').inspect(roots.noraHome,{allowPending:true,operationId:operation?.operationId});
+  if(retained){const cached=readInstallerState().port;return retained.port||(Number.isInteger(cached)&&cached>=1024&&cached<=65535?cached:DEFAULT_PORT);}
   if (require('./operation-policy').hasManagedRecords(roots)) throw invalid(new Error('Managed installation has no verified instance port'));
   const cached = readInstallerState().port;
   return validPort(cached) ? cached : DEFAULT_PORT;
@@ -676,13 +678,15 @@ function nodeStatus(error = '', operation) {
   const verifiedModel = readVerifiedModel(noraHome());
   const installed = fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native-runtime.json'))
     && fs.existsSync(path.join(root, 'apps', 'tavern-runtime', 'native_lifecycle.py'));
-  const managed = require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
-    installRoot:root,port});
+  const retained=require('./retained-installation').inspect(noraHome(),{allowPending:true,operationId:operation?.operationId});
+  const removed=retained&&!retained.reinstalled;
+  const managed = removed?null:require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
+    installRoot:root,port,operationId:operation?.operationId});
   return {
-    installed,
+    installed:removed?false:installed,
     systemReady: false,
     setupCompleted: false,
-    hermesInstalled: Boolean(findHermes()),
+    hermesInstalled: removed?false:Boolean(findHermes()),
     modelConfigured: false,
     modelProvider: verifiedModel?.provider || '',
     modelName: verifiedModel?.model || '',
@@ -700,11 +704,21 @@ function nodeStatus(error = '', operation) {
     installRoot: root,
     warning: error || undefined,
     installer: readInstallerState(),
+    ...(removed?{retainedInstallation:true,retainedUninstallPending:retained.state==='prepared',noraInstalled:false,
+      warning:retained.state==='prepared'?'保留数据卸载尚未完成，请在更多中继续卸载。':undefined}:{}),
+    ...(retained?.cleanupPending?{retainedCompletionPending:true,warning:error||retained.warning}:{}),
     ...(managed?.needsRepair?{managedInstallation:true,needsRepair:true,version:managed.version,commit:managed.commit,
       missingPrograms:managed.missing,systemProblems:['已有安装的程序文件缺失，需要保留数据修复。'],
       running:null,gatewayRunning:null,clawchatConnected:null}:{}),
     ...locationStatus(),
   };
+}
+
+function finishRetainedInstallation(context,result){
+  const completion=require('./retained-installation').consume(noraHome(),context.operationId,{result});
+  if(!completion?.pending)return result;
+  diagnostics.write('retained.completion-pending',{operationId:context.operationId,code:completion.code});
+  return {...result,retainedCompletionPending:true,warning:[result.warning,completion.warning].filter(Boolean).join('\n')};
 }
 
 function parseJsonLine(line) {
@@ -1292,7 +1306,9 @@ async function confirmUninstall(planFile, onProgress = () => {}) {
   try {
     if (statusRequest) await statusRequest.catch(() => {});
     let port, serviceMode = 'port';
-    try { port = installationPort(); }
+    const retained=mode==='keep'?require('./retained-installation').inspect(home,{allowPending:true}):null;
+    if(retained?.state==='prepared'){port=retained.port;serviceMode='retained';}
+    try { if(serviceMode==='port')port = installationPort(); }
     catch (error) {
       if (mode !== 'all' || error.code !== 'VERIFICATION_FAILED') throw error;
       port = null; serviceMode = 'native-root';
@@ -1470,6 +1486,9 @@ if (primaryInstance) {
       const launcherRecovery=await readLauncherRecovery();
       const operation=activeOperationContext?.snapshot||await operations().snapshot();
     try {
+      const retained=require('./retained-installation').inspect(noraHome(),{allowPending:true,operationId:operation?.operationId});
+      if(retained?.state==='prepared')
+        return {...nodeStatus('',operation),...taskCancellation(),launcherRecovery,operation};
       const legacyRecovery=systemUpdate.inspect(noraHome());
       if (!findPython()) {
         const fallback = nodeStatus('', operation);
@@ -1480,6 +1499,8 @@ if (primaryInstance) {
       if (runtime.warning && (runtime.warningCode || !/[\u3400-\u9fff]/.test(runtime.warning)))
         runtime.warning = statusErrorMessage(Object.assign(new Error(runtime.warning), {code:runtime.warningCode}));
       else lastStatusError = '';
+      if(retained?.cleanupPending){runtime.retainedCompletionPending=true;
+        runtime.warning=[runtime.warning,retained.warning].filter(Boolean).join('\n');}
       const installer = ['succeeded','rolled-back'].includes(operation?.state) && ['install','update','repair','recover'].includes(operation.kind)
         ? reconcileInstallerState(operation, runtime, { hasRecovery: Boolean(runtime.updateRecovery || legacyRecovery || launcherRecovery) })
         : readInstallerState();
@@ -1541,6 +1562,10 @@ if (primaryInstance) {
   const executeAction = async (context, options = {}) => {
     const payload={...context.target.request,...options.payload};
     const operationDirectory=path.join(installerDirectory(),'operations',context.operationId);
+    // A fresh call owns source preference. Only a fully read network metadata
+    // response for the fixed tag can influence the subsequent asset reads;
+    // selection deadlines remain confined to the selector's policy clone.
+    const networkPolicy={sourceContext:require('./release-network').createReleaseSourceContext()};
     const event=options.event||{sender:null};
     payload.runId ||= options.runId||`resume-${context.operationId}`;
     activeOperationContext=context;
@@ -1553,6 +1578,12 @@ if (primaryInstance) {
     if (operationId) diagnostics.write('telemetry.operation', { telemetryOperationId:operationId });
     const work = async () => {
     try {
+      const completion=require('./retained-installation').retryCompletion(noraHome(),context);
+      if(completion?.pending){
+        diagnostics.write('retained.completion-pending',{operationId:context.operationId,code:completion.code});
+        if(['install','update','repair','recover'].includes(payload.action))
+          throw launcherError(completion.warning,{code:'RETAINED_COMPLETION_PENDING'});
+      }
       const legacyRecovery=systemUpdate.inspect(noraHome());
       if(legacyRecovery){
         await context.effect(legacyRecovery.canRecover?'changed':'unknown');
@@ -1585,14 +1616,15 @@ if (primaryInstance) {
       };
       const isUpdate=['update','repair'].includes(payload.action);
       if(payload.action==='install'&&selectedPlan){
-        const continued=await systemUpdateExecutor(payload,event.sender).resumeInstallation(context,
+        let continued=await systemUpdateExecutor(payload,event.sender).resumeInstallation(context,
           {hasTransaction:fs.existsSync(path.join(installerDirectory(),'operations',context.operationId,'first-install','transaction.json')),port:payload.port});
-        if(continued){writeInstallerState({...readInstallerState(),phase:'ready',error:'',task:'',setupCompleted:continued.setupCompleted===true});
+        if(continued){continued=finishRetainedInstallation(context,continued);
+          writeInstallerState({...readInstallerState(),phase:'ready',error:'',task:'',setupCompleted:continued.setupCompleted===true});
           diagnostics.finish('success');return {verification:'confirmed',value:continued};}
       }
       const managedFacts=require('./operation-policy').inspectManagedInstallation({noraHome:noraHome(),hermesHome:hermesHome(),
-        installRoot:installRoot(),port:payload.port||state.port||DEFAULT_PORT});
-      if(payload.action==='install'&&require('./operation-policy').hasManagedRecords({hermesHome:hermesHome(),installRoot:installRoot()}))
+        installRoot:installRoot(),port:payload.port||state.port||DEFAULT_PORT,operationId:context.operationId});
+      if(payload.action==='install'&&require('./operation-policy').hasManagedRecords({noraHome:noraHome(),hermesHome:hermesHome(),installRoot:installRoot(),operationId:context.operationId}))
         throw launcherError('此目录已有受管安装记录，请使用修复当前安装；现有数据已保留，未下载或覆盖程序。',{code:'MANAGED_INSTALLATION_EXISTS'});
       const managedRepair=isUpdate&&(managedFacts?.needsRepair||selectedPlan?.mode==='install');
       if(managedRepair){payload.partialRepair=true;
@@ -1619,12 +1651,12 @@ if (primaryInstance) {
             selectedPlan=await releases.selectPlan({fetcher:updateFetch,channel:CHANNEL,tag:payload.tag,
               mode:managedRepair?'install':'update',
               launcherVersion:app.getVersion(),signal:releaseAbort.signal,
-              metadataCache:releaseMetadataCache()});
+              metadataCache:releaseMetadataCache(),networkPolicy});
             await fixedTarget(selectedPlan,current.version);
           }
           await context.stage('downloading');
           prepared = await launcherUpdate.prepare({ fetcher: updateFetch, channel: CHANNEL, tag: payload.tag,
-            selectedPlan,operationDirectory,
+            selectedPlan,operationDirectory,networkPolicy,
             launcherVersion: app.getVersion(), cacheRoot: path.join(noraHome(), 'cache', 'releases'),
             signal: releaseAbort.signal, onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) });
         } finally { releaseAbort = null; }
@@ -1671,7 +1703,7 @@ if (primaryInstance) {
         releaseAbort = new AbortController();
         try {
           selectedPayload = managedRepair ? await releases.prepareInstall({bundledRoot:payloadDirectory(),
-            launcherVersion:app.getVersion(),selectedPlan,operationDirectory,fetcher:updateFetch,
+            launcherVersion:app.getVersion(),selectedPlan,operationDirectory,fetcher:updateFetch,networkPolicy,
             cacheRoot:path.join(noraHome(),'cache','releases'),signal:releaseAbort.signal,channel:CHANNEL,tag:payload.tag,
             onEvent:message=>sendBridgeEvent(event.sender,payload.runId,message)}) : payload.action === 'install' ? (LOCAL_TEST
             ? await prepareTestPayload(payloadDirectory(), LOCAL_TEST, app.getVersion(),
@@ -1681,7 +1713,7 @@ if (primaryInstance) {
               : await releases.prepareInstall({ bundledRoot: payloadDirectory(), launcherVersion: app.getVersion(),
               tag:payload.tag,
               ...(selectedPlan?.schema==='nora-release-plan/1'?{selectedPlan}:{}),operationDirectory,onPlan:fixedTarget,
-              fetcher: updateFetch, cacheRoot: path.join(noraHome(), 'cache', 'releases'),
+              fetcher: updateFetch, networkPolicy, cacheRoot: path.join(noraHome(), 'cache', 'releases'),
               signal: releaseAbort.signal, channel: CHANNEL,
               confirmBundled: async ({version,error}) => {
                 diagnostics.error('release.first-install-check-failed', error);
@@ -1694,7 +1726,7 @@ if (primaryInstance) {
               },
               onEvent: message => sendBridgeEvent(event.sender, payload.runId, message) }))
             : await releases.prepareUpdate({
-            fetcher: updateFetch,
+            fetcher: updateFetch, networkPolicy,
             selectedPlan,operationDirectory,
             cacheRoot: path.join(noraHome(), 'cache', 'releases'), bundledRoot: payloadDirectory(),
             launcherVersion: app.getVersion(), signal: releaseAbort.signal,
@@ -1713,6 +1745,12 @@ if (primaryInstance) {
           &&await releases.hash(path.join(selectedPayload,'release-manifest.json'))!==selectedPlan.manifestSha256)
           throw launcherError('固定的包内版本与当前安装包不一致，未修改现有安装。',{code:'RELEASE_COMPATIBILITY'});
         diagnostics.write('release.selected', { payloadRoot: selectedPayload });
+        if(payload.action==='install'){
+          const retained=require('./retained-installation');
+          let saved=retained.inspect(noraHome(),{operationId:context.operationId});
+          if(saved?.legacy)saved=await retained.upgradeLegacy(noraHome(),payload.port||state.port||DEFAULT_PORT,context);
+          if(saved){await context.effect('changed');retained.claim(noraHome(),context.operationId);}
+        }
         await context.stage('prepared');
         await context.effect('changed');
         if (cancelled) throw Object.assign(new Error('安装已取消。'),{name:'AbortError',code:'ABORT_ERR'});
@@ -1730,7 +1768,7 @@ if (primaryInstance) {
       }
       if (cancelled) throw Object.assign(new Error('安装已取消。'),{name:'AbortError',code:'ABORT_ERR'});
       await context.stage('applying');
-      const result = isUpdate
+      let result = isUpdate
         ? await performSystemUpdate(selectedPayload, payload, event.sender)
         : await runBridge(payload.action === 'recover' ? 'recover-update' : payload.action, { port: payload.port, code: payload.code, tag: payload.tag, service: payload.service,
         ...(payload.action === 'install' ? { releaseDir: selectedPayload } : {}) }, event.sender, payload.runId);
@@ -1739,6 +1777,9 @@ if (primaryInstance) {
       const targetVersion=selectedPayload?JSON.parse(fs.readFileSync(path.join(selectedPayload,'release-manifest.json'),'utf8')).versions?.tavern:undefined;
       if(!verifyWorkflowResult({action:payload.action,service:payload.service,targetVersion,result}))
         throw launcherError('后台返回的实际状态尚未满足本次操作要求，请重新检查状态。',{code:'VERIFICATION_FAILED'});
+      if(payload.action==='install')result=finishRetainedInstallation(context,result);
+      else if(completion?.pending)result={...result,retainedCompletionPending:true,
+        warning:[result.warning,completion.warning].filter(Boolean).join('\n')};
       writeInstallerState({ ...finalState, phase: result.systemReady ? 'ready' : 'idle', setupCompleted: Boolean(result.setupCompleted), error: '', task: '', resumeTarget: null });
       telemetry?.status({ ...result, installer: { phase: result.systemReady ? 'ready' : 'idle' } });
       diagnostics.finish('success');

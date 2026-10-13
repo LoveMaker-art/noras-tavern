@@ -640,12 +640,17 @@ test('runtime worker business guidance survives a real child process boundary', 
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const context=mainContext(root,{$processOutputFixture:true});
   const worker=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
-  context.command=[process.execPath,['-e',`
+  const childEntry=path.join(root,'runtime-worker-guidance.cjs'),payload=path.join(root,'payload'),hermes=path.join(root,'hermes');
+  fs.mkdirSync(payload);fs.mkdirSync(hermes);
+  fs.writeFileSync(childEntry,`
     const fs=require('node:fs'),vm=require('node:vm');
     const load=require('node:module').createRequire(${JSON.stringify(worker)});
     const error=Object.assign(new Error('both extractors unavailable'),{userCode:'RUNTIME_EXTRACTOR_UNAVAILABLE',cause:Object.assign(new Error('missing'),{code:'ENOENT'})});
     vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./operation-delegate'?{connect:async()=>({context:{operationId:'11111111-1111-4111-8111-111111111111',ownerEpoch:1},assertActive(){},close(){}})}:name==='./runtime'?{installBundledHermes:()=>{throw error;}}:name==='./diagnostics'?{errorDetails:()=>({message:error.message})}:load(name)});
-  `]];
+  `);
+  // Use the production CLI shape and real remaining modules. In particular,
+  // retained.inspect must see this private Nora root rather than undefined.
+  context.command=[process.execPath,[childEntry,payload,root,hermes]];
   await assert.rejects(vm.runInContext('runProcess(...command)',context),error=>{
     assert.equal(error.code,'ENOENT');
     assert.equal(error.userCode,'RUNTIME_EXTRACTOR_UNAVAILABLE');
@@ -662,13 +667,16 @@ test('runtime phase remains in bounded fault output if the worker exits before i
   context.testTelemetry={settings:()=>({enabled:true}),observe(){}};
   vm.runInContext('telemetry=testTelemetry; writeInstallerState({...readInstallerState(),phase:"installing"});',context);
   const worker=path.resolve(__dirname,'../installer/desktop/runtime-worker.js');
-  context.command=[process.execPath,['-e',`
+  const childEntry=path.join(root,'runtime-worker-phase.cjs'),payload=path.join(root,'payload'),hermes=path.join(root,'hermes');
+  fs.mkdirSync(payload);fs.mkdirSync(hermes);
+  fs.writeFileSync(childEntry,`
     const fs=require('node:fs'),vm=require('node:vm');
     const load=require('node:module').createRequire(${JSON.stringify(worker)});
     vm.runInNewContext(fs.readFileSync(${JSON.stringify(worker)},'utf8'),{process,require:name=>name==='./operation-delegate'?{connect:async()=>({context:{operationId:'11111111-1111-4111-8111-111111111111',ownerEpoch:1},assertActive(){},close(){}})}:name==='./runtime'?{
       installBundledHermes(options){options.onEvent({event:'task',stage_id:'runtime_init',task:'初始化 Nora：准备配置和技能'});process.exit(9);}
     }:name==='./diagnostics'?{errorDetails:()=>({})}:load(name)});
-  `]];
+  `);
+  context.command=[process.execPath,[childEntry,payload,root,hermes]];
   await assert.rejects(vm.runInContext('runProcess(...command)',context),error=>{
     assert.equal(error.exitCode,9);
     assert.ok(error.launcherEvidence.output.some(line=>line.includes('runtime_init')),'owned runtime phase is retained as reviewed technical evidence');

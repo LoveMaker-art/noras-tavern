@@ -142,6 +142,7 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
   const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
   let status;
   const context = vm.createContext({ handle: (_name, fn) => { status = fn; },
+    require: require('node:module').createRequire(path.join(__dirname, '../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,
     quitting: false, uninstalling: false, selectingLocation: false, modelBusy: false,
     statusRequest: null, activeRun: false, activeOperationContext:null, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,

@@ -16,13 +16,15 @@ const conditionFingerprint=facts=>crypto.createHash('sha256').update(JSON.string
 
 // These are historical ownership facts, not service health. The physical
 // repair executor rechecks configuration, program trees and offline ownership.
-function inspectManagedInstallation({noraHome,hermesHome,installRoot,port,platform=process.platform}){
+function inspectManagedInstallation({noraHome,hermesHome,installRoot,port,platform=process.platform,operationId}){
   const root=path.resolve(noraHome),hermes=path.resolve(hermesHome),tavern=path.resolve(installRoot);
   const same=(a,b)=>platform==='win32'?a.toLowerCase()===b.toLowerCase():a===b;
   const records={instance:path.join(hermes,'nora-instance.json'),system:path.join(tavern,'tavern-updates/nora-system.json'),
     receipt:path.join(tavern,'tavern-updates/installed.json'),manifest:path.join(tavern,'tavern-updates/installed-manifest.json')};
   const exists=file=>{try{fs.lstatSync(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}};
   if(!Object.values(records).some(exists))return null;
+  const retained=require('./retained-installation').inspect(root,{operationId});
+  if(retained?.legacy||!retained?.reinstalled&&retained?.reinstallOperationId===operationId&&operationId)return null;
   const filePresent=file=>{try{return fs.statSync(file).isFile();}catch(error){if(error.code==='ENOENT')return false;throw error;}};
   const nativeRoot=path.join(tavern,'apps/tavern-runtime');
   const pythonPaths=platform==='win32'?['Scripts/python.exe']:['bin/python3','bin/python'];
@@ -65,7 +67,9 @@ function inspectManagedInstallation({noraHome,hermesHome,installRoot,port,platfo
   return {managedInstallation:true,version,commit,port:instance.port,bindings,missing,needsRepair:Object.values(missing).some(Boolean)};
 }
 
-function hasManagedRecords({hermesHome,installRoot}){
+function hasManagedRecords({noraHome=path.dirname(hermesHome),hermesHome,installRoot,operationId}){
+  const retained=require('./retained-installation').inspect(noraHome,{operationId});
+  if(retained?.legacy||!retained?.reinstalled&&retained?.reinstallOperationId===operationId&&operationId)return false;
   return [path.join(hermesHome,'nora-instance.json'),...['nora-system.json','installed.json','installed-manifest.json'].map(name=>path.join(installRoot,'tavern-updates',name))]
     .some(file=>{try{fs.lstatSync(file);return true;}catch(error){if(error.code==='ENOENT')return false;throw error;}});
 }
@@ -413,6 +417,13 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         running:false,gatewayRunning:false,clawchatConnected:false,clawchatPaired:false,clawchatProfileReady:false,
         modelConfigured:false,modelSyncPending:false,port,home:value(home),noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot)};
     }
+    const retained=require('./retained-installation').inspect(value(home),{operationId:context.operationId});
+    if(retained?.reinstallOperationId===context.operationId&&require('./retained-installation').absentPrograms(value(home),retained)){
+      require('./retained-installation').release(value(home),context.operationId);
+      return {installed:false,hermesInstalled:false,noraInstalled:false,systemReady:false,setupCompleted:false,
+        running:false,gatewayRunning:false,clawchatConnected:false,clawchatPaired:false,modelConfigured:false,
+        port,home:value(home),noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot)};
+    }
     if(present(value(hermesHome)))return bridge('status',{port},context);
     // A first-install rollback can remove Python itself. Its positive stop
     // proof and confirmed directory rollback are already held by this writer;
@@ -478,7 +489,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       recoveryOutcome:'restored-and-verified',canRecover:false,canResume:false,reason:'retired-partial-confirmed'};
     if(restored.originalState==='partial')return partialSystemFacts(record,restored)
       ||{effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false,reason:'partial-system-restoration-unconfirmed'};
-    const managed=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port:record.target?.request?.port});
+    const managed=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port:record.target?.request?.port,operationId:record.operationId});
     if(managed?.missing.python&&restored.canRecover===true)return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:true,
       reason:'partial-python-inspection-required'};
     const result=await bridge('operation-effects',{operationId:record.operationId,kind:record.kind==='install'?'install':'update'},null);
@@ -562,7 +573,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       return {effectState:'restored',filesRestored:true,verification:'failed',value:{...restored,originalServiceState:'unrecorded'}};
     }
     let systemResult,stagedSystemFacts;
-    const currentManaged=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port});
+    const currentManaged=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port,operationId:record.operationId});
     if(currentManaged?.missing.python&&present(systemJournal()))stagedSystemFacts=(await inspectPartial(context,currentManaged)).effects;
     if(present(firstJournal(record.operationId))||present(systemJournal())){
       const facts=stagedSystemFacts||await system(record);
@@ -593,7 +604,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     if(runtimePending){
       // Stop proof comes from the owned backend, not from a saved PID or a
       // best-effort false status. Its actual child closes before tree recovery.
-      const managed=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port});
+      const managed=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port,operationId:record.operationId});
       if(runtimeFacts.partialOrigin||managed?.missing.python){
         runtimeResult=await runRuntime(context,{recover:true,allowCommitted:true,partialRepair:{...managed,port:port||managed?.port}});
       }else{
@@ -606,7 +617,8 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
       if(!safe.has(after.effectState)||after.recoveryOutcome==='recovery-required')
         throw failure('UPDATE_RECOVERY_REQUIRED','诺拉核心恢复后仍有未确认的目录或运行检查。');
     }
-    if(runtimePending||record.recoveryOutcome==='files-restored-start-failed')
+    const retained=require('./retained-installation').inspect(value(home),{operationId:context.operationId});
+    if(runtimePending||record.recoveryOutcome==='files-restored-start-failed'||retained?.reinstallOperationId===context.operationId)
       return finishRuntimeRecovery(context,record,systemResult,port,runtimeResult?.offlineProof);
     return {effectState:runtimeFacts.effectState==='untouched'&&!systemResult?'untouched':'restored',
       verification:'confirmed',value:{...(systemResult||{}),recoveryVerification:'confirmed'}};

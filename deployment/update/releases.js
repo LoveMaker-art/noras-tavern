@@ -3,7 +3,9 @@ const { launcherError } = require('./launcher-errors');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const semver = require('semver');
-const {metadataJson,createMetadataCache,downloadAsset} = require('./release-network');
+const {metadataJson,createMetadataCache,createReleaseSourceContext,downloadAsset} = require('./release-network');
+const operationNetworkPolicy = policy => ({...policy,
+  sourceContext:policy?.sourceContext || createReleaseSourceContext()});
 
 const REPO = 'LoveMaker-art/noras-tavern';
 const API = `https://api.github.com/repos/${REPO}/releases/latest`;
@@ -161,6 +163,7 @@ function accepts(release, channel) {
     : !release.prerelease && !pre;
 }
 async function latest(fetcher = fetch, signal, channel = 'stable', tag, options = {}) {
+  options={...options,networkPolicy:operationNetworkPolicy(options.networkPolicy)};
   let release;
   const evidence=[];
   const read=async url=>{const item=await requestJson(url,fetcher,signal,{...options,channel,withEvidence:true});evidence.push(item);return item.value;};
@@ -179,6 +182,7 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
   } else release = await read(API);
   if (!release || !accepts(release, channel)) throw new Error(channel === 'beta' ? '尚未发布可用的 Beta 测试版本。' : '没有找到有效的正式发布版本。');
   if (tag && release.tag_name !== tag) throw new Error('目标发布与所选版本不一致。');
+  options.networkPolicy.sourceContext.bindTarget(release.tag_name);
   release = await withAssetReferences(release,fetcher,signal,{...options,channel},evidence);
   return options.withEvidence ? {release,checkedAt:evidence.map(item=>item.checkedAt).sort()[0],
     source:evidence.some(item=>item.source==='cache')?'cache':evidence.some(item=>item.source==='revalidated')?'revalidated':'network',
@@ -279,6 +283,10 @@ function releaseSnapshot(release){
     assets:release.assets.map(item=>({name:item.name,browser_download_url:item.browser_download_url,
       ...(release.assetIndexText !== undefined ? {state:item.state,digest:item.digest,...(item.asset_release_tag ? {asset_release_tag:item.asset_release_tag} : {})} : {}),
       ...(Number.isSafeInteger(item.size)?{size:item.size}:{})}))};
+}
+function fixedPlanSourceEvidence(fixed){
+  return {url:releaseManifestAsset(fixed.release,{mode:fixed.mode,systemManifest:fixed.systemManifest,platform:fixed.platform,arch:fixed.arch}),
+    sha256:bytesHash(fixed.releaseManifestText),size:Buffer.byteLength(fixed.releaseManifestText)};
 }
 function planDigest(plan) {
   if(plan.schema!=='nora-release-plan/1'){const {planId,...content}=plan;return bytesHash(canonical(content));}
@@ -386,12 +394,13 @@ function validatePlan(plan, {launcherVersion,platform = process.platform,arch = 
   return freezePlan(JSON.parse(JSON.stringify(plan)));
 }
 async function selectPlan({fetcher = fetch,signal,launcherVersion,platform = process.platform,arch = process.arch,channel = 'stable',tag,mode = 'update',selectedRelease,releaseEvidence,metadataCache,networkPolicy}) {
-  networkPolicy={...networkPolicy,deadlineAt:networkPolicy?.deadlineAt ?? (networkPolicy?.now || Date.now)()+(networkPolicy?.totalBudgetMs ?? 100000)};
+  networkPolicy={...operationNetworkPolicy(networkPolicy),deadlineAt:networkPolicy?.deadlineAt ?? (networkPolicy?.now || Date.now)()+(networkPolicy?.totalBudgetMs ?? 100000)};
   const lookup=releaseEvidence || (selectedRelease ? {release:selectedRelease,checkedAt:new Date().toISOString(),source:'selected',latestConfirmed:false}
     : await latest(fetcher,signal,channel,tag,{metadataCache,networkPolicy,withEvidence:true}));
   const release = lookup.release;
   if (!accepts(release,channel) || (tag && release.tag_name !== tag)) throw new Error('所选发布与目标渠道不符。');
   if (!['update','install'].includes(mode)) throw new Error('固定发布计划的操作类型无效。');
+  networkPolicy.sourceContext.bindTarget(release.tag_name);
   const systemManifest=mode==='install' ? await requestJson(assetUrl(release,`nora-system-${platform}-${arch}.json`),fetcher,signal,
     {metadataCache,networkPolicy,channel,conditionIdentity:{expectedSystemVersion:release.tag_name}}) : null;
   // Validate identity and routing before reading the payload. The launcher gate
@@ -413,6 +422,7 @@ async function selectPlan({fetcher = fetch,signal,launcherVersion,platform = pro
   return validatePlan(plan,{launcherVersion,platform,arch,channel,tag,mode});
 }
 async function check({ installRoot, launcherVersion, fetcher = fetch, platform, arch, channel = 'stable',metadataCache,networkPolicy,signal }) {
+  networkPolicy=operationNetworkPolicy(networkPolicy);
   const installed = installedVersion(installRoot);
   const current = installed.version;
   const retryAt=error=>{
@@ -452,9 +462,11 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
 }
 async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, signal, onEvent = () => {},
   channel = 'stable', tag, plan, selectedPlan, operationDirectory,platform = process.platform, arch = process.arch,metadataCache,networkPolicy }) {
+  networkPolicy=operationNetworkPolicy(networkPolicy);
   onEvent({ event: 'task', stage_id: 'release_check', task: '检查更新清单' });
   const fixed = selectedPlan ? validatePlan(selectedPlan,{launcherVersion,platform,arch,channel,tag,operationDirectory})
     : await selectPlan({fetcher,signal,launcherVersion,platform,arch,channel,tag,metadataCache,networkPolicy});
+  networkPolicy.sourceContext.bindTarget(fixed.tag);
   const release = await resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPolicy,onEvent});
   const manifest = validateUpdate(fixed.releaseManifest,release,launcherVersion);
   const root = path.join(cacheRoot, `components-${release.tag_name}-${manifest.commit.slice(0, 12)}`);
@@ -466,7 +478,7 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
     onEvent({ event: 'task', stage_id: 'verify', task: `校验缓存：${name}` });
     const size=release.assets.find(item=>item.name===name)?.size;
     await downloadAsset({url:assetUrl(release,name),target,identity:{tag:release.tag_name,asset:name,sha256:expected,...(size ? {size}: {})},
-      fetcher,signal,onEvent,policy:networkPolicy,task:`准备 ${release.tag_name}：${name}`,maxSize:expected ? 2*1024**3 : 4*1024*1024});
+      fetcher,signal,onEvent,policy:networkPolicy,fixedPlanSourceEvidence:fixedPlanSourceEvidence(fixed),task:`准备 ${release.tag_name}：${name}`,maxSize:expected ? 2*1024**3 : 4*1024*1024});
   };
   await download('SHA256SUMS');
   const sums = new Map();
@@ -502,12 +514,14 @@ async function prepareUpdate({ cacheRoot, launcherVersion, fetcher = fetch, sign
 }
 async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = process.platform, arch = process.arch,
   fetcher = fetch, signal, onEvent = () => {}, channel = 'stable', tag, selectedRelease,selectedPlan,operationDirectory,metadataCache,networkPolicy }) {
+  networkPolicy=operationNetworkPolicy(networkPolicy);
   onEvent({ event: 'task', stage_id: 'release_check', task: `确认 GitHub ${channel === 'beta' ? 'Beta 测试' : '正式'}完整版本` });
   signal?.throwIfAborted();
   const fixed=selectedPlan ? validatePlan(selectedPlan,{launcherVersion,platform,arch,channel,tag,mode:'install',operationDirectory}) : null;
   const release = fixed ? await resolvePlanAssets(fixed,{fetcher,signal,metadataCache,networkPolicy,onEvent})
     : selectedRelease || await latest(fetcher, signal, channel, tag,{metadataCache,networkPolicy});
   if (!accepts(release, channel) || tag && release.tag_name!==tag) throw new Error('所选发布与安装渠道或固定目标不符。');
+  networkPolicy.sourceContext.bindTarget(release.tag_name);
   const system = fixed?.systemManifest || await systemFor(release, { platform, arch, launcherVersion, fetcher, signal, channel,metadataCache,networkPolicy });
   if(!system) throw new Error('完整安装计划缺少系统清单。');
   validateSystem(system,release,platform,arch,launcherVersion,channel);
@@ -523,7 +537,7 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
     else if(name==='release-manifest.json' && fixed && crypto.createHash('sha256').update(fixed.releaseManifestText).digest('hex')===item.sha256)
       fs.writeFileSync(target,fixed.releaseManifestText,{mode:0o600});
     else await downloadAsset({url:assetUrl(release,item.asset),target,identity:{tag:release.tag_name,asset:item.asset,sha256:item.sha256,size:item.size},
-      fetcher,signal,policy:networkPolicy,task:`下载：${name}`,onEvent:event=>onEvent({...event,...(event.event==='progress'?{ratio:event.total ? event.current/event.total:0}:{})})});
+      fetcher,signal,policy:networkPolicy,...(fixed?{fixedPlanSourceEvidence:fixedPlanSourceEvidence(fixed)}:{}),task:`下载：${name}`,onEvent:event=>onEvent({...event,...(event.event==='progress'?{ratio:event.total ? event.current/event.total:0}:{})})});
   }
   validatePayload(root, system, platform, arch);
   fs.writeFileSync(path.join(root, 'nora-system.json'), JSON.stringify(system, null, 2), { mode: 0o600 });
@@ -531,10 +545,12 @@ async function prepare({ cacheRoot, bundledRoot, launcherVersion, platform = pro
 }
 
 async function prepareInstall(options) {
+  options={...options,networkPolicy:operationNetworkPolicy(options.networkPolicy)};
   const { fetcher = fetch, signal, channel = 'stable', onEvent = () => {}, onPlan = () => {}, confirmBundled } = options;
   signal?.throwIfAborted();
   if(options.selectedPlan) {
     const plan=validatePlan(options.selectedPlan,{...options,mode:'install'});
+    options.networkPolicy.sourceContext.bindTarget(plan.tag);
     await onPlan(plan);signal?.throwIfAborted();
     return prepare({...options,selectedPlan:plan});
   }
@@ -607,4 +623,4 @@ async function prepareBundled({ bundledRoot, launcherVersion, platform = process
   validatePayload(bundledRoot, system, platform, arch);
   return bundledRoot;
 }
-module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem,validateSystemDescriptor, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,createMetadataCache };
+module.exports = { compare, check, prepare, prepareInstall, prepareUpdate, prepareBundled, bundledUpgradeTarget, validateSystem,validateSystemDescriptor, validateUpdate,validateCapabilities, hash, latest, accepts, requestJson, assetUrl,validateAssetIndex,validateAssetReferences,validateAssetIntegrity,selectPlan,validatePlan,sealPlan,fixedPlanSourceEvidence,createMetadataCache };

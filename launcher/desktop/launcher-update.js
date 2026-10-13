@@ -3,7 +3,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const { launcherError,programError } = require('./launcher-errors');
-const {downloadAsset} = require('./release-network');
+const {downloadAsset,createReleaseSourceContext} = require('./release-network');
 const releases = () => require('./releases');
 
 function validateManifest(item,{release,manifest,platform = process.platform,arch = process.arch}) {
@@ -25,9 +25,12 @@ async function inspect({ release, manifest, launcherVersion, fetcher, signal, pl
 }
 
 async function prepare(options) {
+  options={...options,networkPolicy:{...options.networkPolicy,
+    sourceContext:options.networkPolicy?.sourceContext || createReleaseSourceContext()}};
   const r = releases();
   options.onEvent?.({ event: 'task', stage_id: 'release_check', task: '检查最新版本与更新清单' });
   const selectedPlan = options.selectedPlan ? r.validatePlan(options.selectedPlan,options) : await r.selectPlan(options);
+  options.networkPolicy.sourceContext.bindTarget(selectedPlan.tag);
   const release = selectedPlan.release, manifest = selectedPlan.releaseManifest;
   const item = await inspect({ ...options, release, manifest,launcherManifest:selectedPlan.launcherManifest });
   r.validateUpdate(manifest, release, item?.version || options.launcherVersion,
@@ -38,7 +41,7 @@ async function prepare(options) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const archive = path.join(root, item.asset);
   await downloadAsset({url:r.assetUrl(release,item.asset),target:archive,identity:{tag:release.tag_name,asset:item.asset,sha256:item.sha256,size:item.size},
-    fetcher:options.fetcher,signal:options.signal,policy:options.networkPolicy,task:'正在下载启动器更新',
+    fetcher:options.fetcher,signal:options.signal,policy:options.networkPolicy,fixedPlanSourceEvidence:r.fixedPlanSourceEvidence(selectedPlan),task:'正在下载启动器更新',
     onEvent:event=>options.onEvent?.({...event,...(event.event==='progress'?{ratio:event.total ? event.current/event.total:0}:{})})});
   return { tag: release.tag_name, manifest, launcher: { ...item, archive },releasePlan:selectedPlan };
 }

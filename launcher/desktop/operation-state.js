@@ -102,6 +102,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(typeof lease?.commitOperation!=='function')throw fail('OPERATION_COMMIT_REQUIRED','The native writer must commit operation records');
     const proposed={...record,updatedAt:now(),sequence:record.sequence+1};
     if(Buffer.byteLength(JSON.stringify(proposed))>256*1024)throw fail('OPERATION_RECORD_INVALID','Operation record is too large');
+    const previousGeneration=generation();
+    if(!previousGeneration||cachedGeneration!==previousGeneration){cachedRecords=null;cachedGeneration=null;}
     const committed=await lease.commitOperation({record:JSON.parse(JSON.stringify(proposed)),expected,
       evidence:capture?.snapshot?.(),archive});
     Object.assign(record,committed.record);const id=committed.generation;
@@ -393,6 +395,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       record.verification=filesOnly?'failed':'confirmed';
       if(recoveryMode){record.effectState=result?.effectState==='untouched'?'untouched':'restored';
         record.recoveryOutcome=record.effectState==='untouched'?'not-required':filesOnly?'files-restored-start-failed':'restored-and-verified';}
+      else record.recoveryOutcome='not-required';
       if(Array.isArray(result?.secondaryErrors)){
         record.secondaryFailures.push(...result.secondaryErrors.map(item=>({...failure(item.error,record.kind),operation:item.operation||'recover'})));
         saved?.freeze({secondaryErrors:result.secondaryErrors});

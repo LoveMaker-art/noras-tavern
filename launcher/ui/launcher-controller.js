@@ -316,7 +316,7 @@
         if (typeof value.busy === 'boolean') snapshot.busy = value.busy;
         launcherRecoveryConfirmed = value.busy === false && value.launcherRecovery?.canRecover === true;
       }
-      if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled))
+      if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending))
         throw new Error(value.warning || '暂时无法查询后台状态。');
       syncState(value); statusUnknown = false; lastStatusError = ''; lastStatusAt = Date.now();
       return value;
@@ -325,9 +325,9 @@
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
     const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery || snapshot.launcherRecovery);
-    const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.operation && !snapshot.installer?.startedAt
+    const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation && !snapshot.operation && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
-    $('management').hidden = freshInstall || recoveryView || view === 'error' || view !== 'daily' && (busy || Boolean(snapshot.busy));
+    $('management').hidden = freshInstall || recoveryView || view === 'error' && !snapshot.retainedUninstallPending || view !== 'daily' && (busy || Boolean(snapshot.busy));
     if (freshInstall) hideMenu();
     document.querySelectorAll('#management [data-action]').forEach(control => {
       control.hidden = !complete() && !['uninstall', 'logs'].includes(control.dataset.action);
@@ -371,7 +371,7 @@
     });
     const submit = $('inline').querySelector('button[type="submit"]');
     if (submit) {
-      submit.disabled = busy || Boolean(snapshot.busy) || statusUnknown || submit.dataset.unavailable === 'true';
+      submit.disabled = busy || Boolean(snapshot.busy) || statusUnknown || Boolean(snapshot.retainedUninstallPending) || submit.dataset.unavailable === 'true';
       submit.classList.toggle('primary', !statusUnknown && submit.dataset.unavailable !== 'true');
     }
     const modelQuery = $('inline').querySelector('#modelStatusRecheck');
@@ -539,6 +539,13 @@
       if (hasLogs()) $('inline').append(button('查看日志', openLogs, false));
       controls();
       return;
+    }
+    if(snapshot.retainedUninstallPending){
+      view='error';daily=false;clearInline();$('steps').hidden=true;
+      $('main').classList.remove('welcome','daily','editing','update-recovery');
+      say('保留数据卸载尚未完成。',snapshot.warning||'请在“更多→卸载”继续保留数据卸载。现有数据和记录已保留。');
+      if(hasLogs())$('inline').append(button('查看日志',openLogs,false));
+      controls();return;
     }
     if (snapshot.updateRecovery || snapshot.launcherRecovery) {
       view = 'recovery'; daily = false; clearInline();

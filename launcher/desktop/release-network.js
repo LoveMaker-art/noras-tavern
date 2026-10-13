@@ -6,6 +6,42 @@ const {Readable} = require('node:stream');
 const {launcherError} = require('./launcher-errors');
 const {sourceCandidates,validateSourceResponse,readSource} = require('./release-sources');
 const digest = value => crypto.createHash('sha256').update(value).digest('hex');
+const RELEASE_USER_AGENT = 'Nora-Tavern-Launcher';
+
+// A caller owns this context for one operation. It is not a health cache or
+// release-plan field: neither API responses nor old metadata can seed it.
+function createReleaseSourceContext({tag} = {}) {
+  let target=null,preferred=null,probeAttempted=false;
+  const valid=value=>typeof value==='string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
+  const assetTag=value=>{
+    try {
+      const url=new URL(value);
+      if(url.origin!=='https://github.com' || url.username || url.password || url.search || url.hash)return null;
+      const prefix='/LoveMaker-art/noras-tavern/releases/download/';
+      if(!url.pathname.startsWith(prefix))return null;
+      const [candidate,name,...rest]=url.pathname.slice(prefix.length).split('/').map(decodeURIComponent);
+      return !rest.length && valid(candidate) && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name || '')?candidate:null;
+    } catch {return null;}
+  };
+  const context={
+    bindTarget(value){
+      if(!valid(value) || target!==null && target!==value)
+        throw launcherError('资源来源上下文与固定目标不一致，未改变更新计划。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+      target=value;return context;
+    },
+    preferredSource(url){return target!==null && assetTag(url)===target?preferred:null;},
+    rememberAssetResponse(url,id){if(target!==null && assetTag(url)===target && typeof id==='string')preferred=id;},
+    isTargetAsset(url){return target!==null && assetTag(url)===target;},
+    beginFixedPlanProbe(url){if(!context.isTargetAsset(url)||probeAttempted)return false;probeAttempted=true;return true;},
+  };
+  if(tag!=null)context.bindTarget(tag);
+  return Object.freeze(context);
+}
+function operationSources(url,options,context){
+  const candidates=sourceCandidates(url,options).map((source,index)=>({...source,retryIndex:index}));
+  const id=context?.preferredSource?.(url),preferred=candidates.find(source=>source.id===id);
+  return preferred?[preferred,...candidates.filter(source=>source!==preferred)]:candidates;
+}
 
 async function rememberFailureResource(error,url,identity,fetcher){
   try{
@@ -50,6 +86,8 @@ function transportCode(error) {
     :['UND_ERR_CONNECT_TIMEOUT','UND_ERR_HEADERS_TIMEOUT','UND_ERR_BODY_TIMEOUT'].includes(code)?'TIMEOUT':undefined);
 }
 async function fetchRead(fetcher, url, options = {}, policy = {}) {
+  const headers=new Headers(options.headers);headers.set('User-Agent',RELEASE_USER_AGENT);
+  options={...options,headers};
   // Unwrap our transport so the caller's source/operation budget owns retries.
   if (fetcher.releaseRead === true) {
     if(!fetcher.readOnce) return fetcher(url,options);
@@ -182,6 +220,7 @@ async function sourceFailure(error,url,identity,fetcher,failures,sources) {
 }
 function sourceReadPolicy(source,index,policy,fetcher) {
   const attempts=policy.maxAttempts || (fetcher.releaseRead===true&&fetcher.releasePolicy?.maxAttempts) || 2;
+  index=source.retryIndex ?? index;
   return {maxAttempts:Math.min(attempts,index===0&&source.id==='github'?2:1),networkRetriesOnly:true};
 }
 function metadataResourceKind(value) {
@@ -251,7 +290,7 @@ function metadataTrace({url,resourceKind,source,fetcher,policy,signal,budget,dea
 }
 async function metadataJson(url,options={}) {
   const {fetcher=fetch,signal,policy={},channel='stable'}=options;
-  const sources=sourceCandidates(url,{channel,sources:policy.sources});
+  const sources=operationSources(url,{channel,sources:policy.sources},policy.sourceContext);
   const resourceKind=metadataResourceKind(url);
   const now=policy.now || Date.now,deadline=Math.min(policy.deadlineAt ?? Infinity,now()+(policy.totalBudgetMs ?? 100000));
   const failures=[];
@@ -261,7 +300,7 @@ async function metadataJson(url,options={}) {
     if(remaining<=0) throw await sourceFailure(launcherError('发布请求已超过有限等待预算。',
       {code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1)),url,options.conditionIdentity,fetcher,failures,sources);
     const source=sources[index],budget=sources.length>1?Math.min(remaining,policy.attemptTimeoutMs ?? 30000):remaining;
-    try {return await metadataFromSource(source.url,{...options,fetcher,source,resourceKind,policy:{...policy,source,deadlineAt:deadline,totalBudgetMs:budget,
+    try {return await metadataFromSource(source.url,{...options,fetcher,source,resourceKind,policy:{...policy,source,canonicalUrl:url,deadlineAt:deadline,totalBudgetMs:budget,
       ...(sources.length>1?sourceReadPolicy(source,index,policy,fetcher):{})}});}
     catch(error) {
       failures.push(error);
@@ -275,7 +314,8 @@ async function metadataJson(url,options={}) {
 async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='stable',headers={},policy={},conditionIdentity,source,resourceKind} = {}) {
   if(new URL(url).protocol!=='https:') throw launcherError('发布清单必须使用 HTTPS。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.request'});
   const now=metadataCache?.now || policy.now || Date.now;
-  const requestHeaders=new Headers({'User-Agent':'Nora-Tavern-Launcher',Accept:'application/vnd.github+json',...headers});
+  const requestHeaders=new Headers({'User-Agent':RELEASE_USER_AGENT,Accept:'application/vnd.github+json',...headers});
+  requestHeaders.set('User-Agent',RELEASE_USER_AGENT);
   const key=digest(JSON.stringify([String(url),channel,[...requestHeaders].sort()]));
   const cached=metadataCache?.get(key);
   signal?.throwIfAborted();
@@ -343,6 +383,11 @@ async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='sta
   let value;
   try {value=JSON.parse(body);} catch {const error=launcherError('发布服务返回了无法识别的内容。',{code:'INVALID_RESPONSE',source:'release_service',site:'release.request'});trace.failed('parse',error);throw error;}
   trace.complete();
+  // Domain validators still own acceptance. A known byte identity must agree
+  // before even this scheduling hint may be learned; cache/304 paths never do.
+  if((conditionIdentity?.sha256==null || digest(body)===conditionIdentity.sha256)
+    && (conditionIdentity?.size==null || Buffer.byteLength(body)===conditionIdentity.size))
+    policy.sourceContext?.rememberAssetResponse?.(policy.canonicalUrl || url,source.id);
   const evidence={body,checkedAt:new Date(now()).toISOString(),etag:response.headers.get('etag') || null,responseSource};
   try {metadataCache?.set(key,evidence);} catch {}
   return {...evidence,value,source:'network',latestConfirmed:true};
@@ -356,6 +401,38 @@ function regularFile(file) {
   if(stat && !stat.isFile()) throw launcherError('下载缓存不是有效的普通文件。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
   return stat;
 }
+function validateDownloadRequest({url,identity,maxSize=2*1024**3}) {
+  if(new URL(url).protocol!=='https:' || !identity || typeof identity.tag!=='string' || typeof identity.asset!=='string'
+    || identity.sha256!=null && !/^[a-f0-9]{64}$/.test(identity.sha256)
+    || identity.size!=null && (!Number.isSafeInteger(identity.size) || identity.size<1 || identity.size>maxSize))
+    throw launcherError('发布资源身份或校验信息无效。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+}
+async function verifiedDownload(file,identity) {
+  const stat=regularFile(file);return Boolean(stat && (!identity.size || stat.size===identity.size)
+    && identity.sha256 && await fileHash(file)===identity.sha256);
+}
+async function refreshFixedPlanSource({url,identity,fetcher,signal,policy,onEvent,fixedPlanSourceEvidence:evidence}) {
+  const context=policy.sourceContext;
+  if(!evidence || !context?.isTargetAsset?.(url) || context.preferredSource(url))return;
+  const invalid=()=>launcherError('固定发布来源证据与原计划不符，未下载或修改安装。',
+    {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+  if(!context.isTargetAsset(evidence.url) || !/^[a-f0-9]{64}$/.test(evidence.sha256 || '')
+    || !Number.isSafeInteger(evidence.size) || evidence.size<1 || evidence.size>4*1024*1024)throw invalid();
+  if(!context.beginFixedPlanProbe(evidence.url))return;
+  const now=policy.now || Date.now,probePolicy={...policy,deadlineAt:Math.min(policy.deadlineAt ?? Infinity,now()+(policy.totalBudgetMs ?? 100000))};
+  try {
+    // Fresh full bytes at the already sealed URL: no latest lookup, TTL cache
+    // or conditional 304 may establish evidence for a resumed execution.
+    const result=await metadataJson(evidence.url,{fetcher,signal,policy:probePolicy,
+      conditionIdentity:{sha256:evidence.sha256,size:evidence.size}});
+    if(Buffer.byteLength(result.body)!==evidence.size || digest(result.body)!==evidence.sha256)throw invalid();
+  }catch(error){
+    if(signal?.aborted || !maySwitchSource(error))throw error;
+    const fields={code:error.code,status:error.status,message:'暂时未确认下载源，继续按已选版本下载。'};
+    try{(policy.diagnostics || fetcher.releasePolicy?.diagnostics)?.write('network.plan_source.unavailable',fields);}catch{}
+    onEvent?.({event:'log',level:'warning',uploadScope:'maintenance',line:`[WARNING] ${fields.message}`});
+  }
+}
 function strongETag(value) {return typeof value==='string' && value.length<=256 && /^"[\x21\x23-\x7e]*"$/.test(value);}
 function safeSource(url) {const parsed=new URL(url);return parsed.origin+parsed.pathname;}
 function atomicJson(file,value) {
@@ -367,7 +444,12 @@ function cleanupDownload(files,primary) {
 }
 async function downloadAsset(options) {
   const {url,fetcher=fetch,signal,policy={},onEvent=()=>{}}=options;
-  const sources=sourceCandidates(url,{sources:policy.sources}),now=policy.now || Date.now;
+  validateDownloadRequest(options);signal?.throwIfAborted();
+  // Preserve build-owned source admission even when no network is needed.
+  sourceCandidates(url,{sources:policy.sources});
+  if(await verifiedDownload(options.target,options.identity))return {file:options.target,cached:true};
+  await refreshFixedPlanSource({...options,fetcher,signal,policy,onEvent});
+  const sources=operationSources(url,{sources:policy.sources},policy.sourceContext),now=policy.now || Date.now;
   const eligiblePartials=new Set(sources.map(source=>digest(JSON.stringify([source.url,options.identity]))));
   const deadline=Math.min(policy.deadlineAt ?? Infinity,now()+(policy.downloadBudgetMs ?? 1800000));
   const failures=[];
@@ -393,13 +475,9 @@ async function downloadAsset(options) {
   }
 }
 async function downloadFromSource({url,target,identity,fetcher,signal,onEvent=()=>{},policy={},source:sourceCandidate,eligiblePartials,task='正在下载发布资源',maxSize=2*1024**3}) {
-  if(new URL(url).protocol!=='https:' || !identity || typeof identity.tag!=='string' || typeof identity.asset!=='string'
-    || identity.sha256!=null && !/^[a-f0-9]{64}$/.test(identity.sha256)
-    || identity.size!=null && (!Number.isSafeInteger(identity.size) || identity.size<1 || identity.size>maxSize))
-    throw launcherError('发布资源身份或校验信息无效。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+  validateDownloadRequest({url,identity,maxSize});
   signal?.throwIfAborted();
-  const verified=async file=>{const stat=regularFile(file);return Boolean(stat && (!identity.size || stat.size===identity.size)
-    && identity.sha256 && await fileHash(file)===identity.sha256);};
+  const verified=file=>verifiedDownload(file,identity);
   if(await verified(target)) return {file:target,cached:true};
   const partial=target+'.partial',record=partial+'.json',expected=digest(JSON.stringify([url,identity]));
   let saved=null;
@@ -412,7 +490,7 @@ async function downloadFromSource({url,target,identity,fetcher,signal,onEvent=()
     if(saved.expected===expected)start=stat.size;else foreignPartial=true;
   }
   else {cleanupDownload([partial,record]);saved=null;}
-  const headers=new Headers({'Accept-Encoding':'identity'});
+  const headers=new Headers({'User-Agent':RELEASE_USER_AGENT,'Accept-Encoding':'identity'});
   if(start) {headers.set('Range',`bytes=${start}-`);headers.set('If-Range',saved.etag);}
   onEvent({event:'task',stage_id:'download',task});onEvent({event:'progress',stage_id:'download',current:start,total:identity.size || 0});
   const idle=new AbortController();let idleTimer;
@@ -589,4 +667,4 @@ function createReleaseNetwork({ app, net, diagnostics, onRetry = () => {}, polic
   return { fetch: fetchRelease, readOnce, compare };
 }
 
-module.exports = { createReleaseNetwork,fetchRead,responseEvidence,createMetadataCache,metadataJson,downloadAsset };
+module.exports = { createReleaseNetwork,createReleaseSourceContext,fetchRead,responseEvidence,createMetadataCache,metadataJson,downloadAsset };

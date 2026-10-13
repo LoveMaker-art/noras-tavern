@@ -34,14 +34,14 @@ function descriptor(file){
   cache.set(resolved,{fingerprint,value});return {...value};
 }
 function capture({root,hermesHome,installRoot,port,mode='port',executable,entry,resourcesRoot}){
-  if(!['port','native-root'].includes(mode)||(mode==='native-root'?port!==null:!Number.isInteger(port)||port<1024||port>65535))
+  if(!['port','native-root','retained'].includes(mode)||(mode==='native-root'?port!==null:!Number.isInteger(port)||port<1024||port>65535))
     throw failed('卸载端口绑定无效，未删除文件。');
   const moduleFile=entry.endsWith('.asar')?entry:__filename;
   return {schema:SCHEMA,root,hermesHome,installRoot,port,mode,executable:descriptor(executable),entry:descriptor(entry),
     module:descriptor(moduleFile),resources:Object.fromEntries(resources.map(name=>[name,descriptor(resourceFile(name,{resourcesRoot,entry}))]))};
 }
 function verify(check,expected){
-  if(!check||check.schema!==SCHEMA||!['port','native-root'].includes(check.mode)||check.mode!==expected.mode
+  if(!check||check.schema!==SCHEMA||!['port','native-root','retained'].includes(check.mode)||check.mode!==expected.mode
     ||(check.mode==='native-root'?check.port!==null:!Number.isInteger(check.port)||check.port<1024||check.port>65535)
     ||!['root','hermesHome','installRoot'].every(key=>same(check[key]||'',expected[key]))
     ||check.port!==expected.port||!check.resources||Object.keys(check.resources).sort().join(',')!==[...resources].sort().join(','))
@@ -191,7 +191,7 @@ function nativeOffline({root}){
   }
 }
 async function inspect({check,expected,hermesHome}){
-  verify(check,expected);if(check.mode==='port')await portOffline(check.port);
+  verify(check,expected);if(check.mode!=='native-root')await portOffline(check.port);
   const venv=path.join(hermesHome,'hermes-agent','venv');
   const command=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
   if(check.mode==='port'&&fs.existsSync(command)){
@@ -204,7 +204,7 @@ async function inspect({check,expected,hermesHome}){
     if(results.length!==1||results[0].offline!==true||results[0].running!==false||results[0].gatewayRunning!==false)
       throw failed('服务离线状态尚未确认，未删除文件。');
   }else nativeOffline({root:check.root});
-  verify(check,expected);if(check.mode==='port')await portOffline(check.port);
+  verify(check,expected);if(check.mode!=='native-root')await portOffline(check.port);
   return {offline:true,mode:check.mode,method:check.mode==='port'&&fs.existsSync(command)?'managed-python':'native-os'};
 }
 module.exports={capture,inspect,windowsProcesses,macFiles,nativeOffline,portOffline,SCHEMA};

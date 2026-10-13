@@ -48,6 +48,7 @@
       "install-location.js",
       "uninstall.js",
       "uninstall-offline-check.js",
+      "retained-installation.js",
       "runtime-worker.js",
       "diagnostics.js",
       "lifecycle-diagnostics.js",

@@ -14,6 +14,37 @@ function fixture(t, execute, overrides = {}) {
   return {directory, options, controller:createOperationController(options)};
 }
 
+test('KEEP archival invalidates the same controller active history before its next commit and request lookup',async t=>{
+  for(const mode of ['capacity','request'])await t.test(mode,async t=>{
+    const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-retained-history-cache-')));
+    t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+    const directory=path.join(home,'installer'),lock=createTestOperationLock(),retained=require('../installer/desktop/retained-installation');
+    const uninstall=require('../installer/desktop/uninstall');uninstall.own(home);
+    const native=require('../installer/desktop/os-lock').acquire({directory});native.release();
+    const lockFile=path.join(directory,'operations/.writer.lock'),writer=fs.statSync(lockFile,{bigint:true});
+    const controller=createOperationController({directory,lock,retention:{fullRecords:2,facts:4,stopReserve:0}});
+    const original=await controller.start('stop',{target:{request:{action:'stop'}},execute:async()=>({verification:'confirmed'})},'retired-request');
+    const originalFile=path.join(directory,'operations',original.operationId,'operation.json'),originalBytes=fs.readFileSync(originalFile);
+    fs.writeFileSync(path.join(home,'nora-retained.json'),JSON.stringify({schema:1,hermes:'hermes'}));
+    const install=await controller.start('install',{target:{request:{action:'install'},fixture:'first'},execute:async context=>{
+      await context.plan(context.target);retained.legacyHistory(home,context.operationId);
+      // The actual owner-bound receipt and rename are exercised; this unit
+      // isolates registry lifetime, and makes no native-offline/install claim.
+      const plan={root:home,hermes:'hermes',tavern:'tavern',port:18889};
+      retained.complete(plan,retained.begin(plan,{excludeOperationId:context.operationId}));
+      await context.stage('prepared');return {verification:'confirmed'};
+    }},'keep-reinstall-request');
+    assert.equal(install.state,'succeeded');
+    assert.deepEqual(fs.readdirSync(path.join(directory,'operations')).filter(name=>/^[a-f0-9-]{36}$/i.test(name)),[install.operationId]);
+    const receipt=retained.inspect(home),history=path.join(home,receipt.archive,'history/installer/operations',original.operationId,'operation.json');
+    assert.deepEqual(fs.readFileSync(history),originalBytes);
+    const target=mode==='request'?{request:{action:'stop'}}:{request:{action:'install'},fixture:'next'};
+    const next=await controller.start(mode==='request'?'stop':'install',{target,execute:async()=>({verification:'confirmed'})},mode==='request'?'retired-request':'new-request');
+    assert.equal(next.state,'succeeded');assert.notEqual(next.operationId,original.operationId);
+    assert.equal(fs.statSync(lockFile,{bigint:true}).ino,writer.ino);
+  });
+});
+
 async function commitAckFixture(t,{success=false,successor=false,differentTarget=false,keepWriter=false}={}){
   const native=require('../installer/desktop/operation-lock');
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-commit-ack-'));

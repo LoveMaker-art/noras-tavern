@@ -385,7 +385,7 @@ jobs:
         run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
 
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: 10
+        timeout-minutes: ${{ runner.os == 'Windows' && 15 || 10 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -522,6 +522,18 @@ jobs:
             --platform "${{ matrix.platform }}" \
             --arch "${{ matrix.arch }}"
 
+      - name: Restore the freshly sealed runtime for native acceptance
+        if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          test ! -e "$RUNNER_TEMP/hermes-bootstrap-source"
+          test ! -e "$RUNNER_TEMP/hermes-sealed-build"
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-bootstrap-source"
+          mv "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP/hermes-sealed-build"
+          node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/hermes-sealed-build" "$RUNNER_TEMP"
+
       - name: Configure actual operation actors and native lock tests
         shell: bash
         run: |
@@ -580,7 +592,7 @@ jobs:
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
-        run: node "$PWD/tooling/run.mjs" node --test --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs tests/deployment/launcher_uninstall.test.cjs tests/deployment/launcher_runtime.test.cjs tests/deployment/launcher_managed_partial_repair.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs tests/deployment/launcher_uninstall.test.cjs tests/deployment/launcher_runtime.test.cjs tests/deployment/launcher_managed_partial_repair.test.cjs
 
       - name: Test native transaction and complete evidence contracts
         shell: bash

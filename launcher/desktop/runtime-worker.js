@@ -30,6 +30,8 @@ try {
     let bytes=0,parts=[];for await(const part of process.stdin){bytes+=part.length;if(bytes>64*1024)throw new Error('修复输入过大');parts.push(part);}
     request=JSON.parse(Buffer.concat(parts).toString('utf8'));
   }
+  const retained=require('./retained-installation').inspect(noraHome,{operationId});
+  if(retained?.reinstallOperationId===operationId)request.port??=retained.port;
   const bridge=path.join(process.cwd(),'launcher_bridge.py');
   const preflight=async(root,manifest,offlineOnly=false,effects=false)=>{
     const stat=fs.lstatSync(bridge);if(!stat.isFile()||stat.isSymbolicLink())throw new Error('无法核验受管修复检查组件。');
@@ -47,6 +49,11 @@ try {
   let inspector;
   const verifyOffline=async()=>{
     if(inspector&&fs.existsSync(inspector.root))return preflight(inspector.root,inspector.manifest,true);
+    const saved=require('./retained-installation').inspect(noraHome,{operationId});
+    if(saved?.reinstallOperationId===operationId&&require('./retained-installation').absentPrograms(noraHome,saved)){
+      const offline=require('./uninstall-offline-check');await offline.portOffline(saved.port);offline.nativeOffline({root:noraHome});await offline.portOffline(saved.port);
+      return {offline:true,running:false,gatewayRunning:false,clawchatConnected:false};
+    }
     const bundle=runtime.findBundledRuntime(payloadRoot);return preflight(hermesHome,bundle.manifest,true);
   };
   const transaction=require('./runtime-transaction');let result;
@@ -102,6 +109,7 @@ try {
     }else result=await transaction.recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,
       allowCommitted:options.includes('--allow-committed'),onEvent,verifyOffline});
   }else result=await installBundledHermes({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,delegate,onEvent,
+    ...(retained?.reinstallOperationId===operationId?{verifyOffline}:{}),
     ...(options.includes('--repair-managed')?{partialRepair:request,
       preflightPartial:async(root,manifest)=>{inspector={root,manifest};return preflight(root,manifest);},verifyOffline}:{} )});
   process.stdout.write(JSON.stringify({event:'result',...(result||{})})+'\n');

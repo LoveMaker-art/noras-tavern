@@ -138,15 +138,15 @@ function releaseFixture(t) {
       return Response.json(release);
     }
     const name=url.split('/').at(-1);
-    if(forbidMetadata && ['release-manifest.json','nora-launcher-win32-x64.json'].includes(name))
-      throw new Error('selected metadata must not be queried again');
+    if(forbidMetadata && name==='nora-launcher-win32-x64.json')
+      throw new Error('selected launcher metadata must not be queried again');
     return new Response(bytes[name],{headers:{ETag:'"fixture-v1"','Content-Length':String(Buffer.byteLength(bytes[name]))}});
   };
   return {root,manifest,item,release,bytes,fetcher,forbidMetadata(){forbidMetadata=true;},
     options:{cacheRoot:path.join(root,'cache'),installRoot:root,launcherVersion:'2.0.0',platform:'win32',arch:'x64',fetcher}};
 }
 
-test('a selected release survives latest changing and prepares the exact launcher without re-querying metadata',async t=>{
+test('a selected release survives latest changing and prepares the exact launcher without re-selecting metadata',async t=>{
   const f=releaseFixture(t);
   const checked=await releases.check(f.options);
   assert.equal(checked.state,'available');
@@ -196,13 +196,14 @@ function platformInstallFixture(t) {
   refreshFullFixture(f);return f;
 }
 
-test('platform installation consumes its sealed manifest without fetching metadata again',async t=>{
+test('platform installation uses sealed bytes and only refreshes the exact fixed manifest as source evidence',async t=>{
   const f=platformInstallFixture(t),selectedPlan=await releases.selectPlan({...f.options,mode:'install'});
-  const forbidden=new Set(['release-manifest.json','win32-x64-release-manifest.json','nora-system-win32-x64.json','nora-launcher-win32-x64.json']);
+  const forbidden=new Set(['release-manifest.json','nora-system-win32-x64.json','nora-launcher-win32-x64.json']),manifestReads=[];
   const directory=await releases.prepareInstall({...f.options,bundledRoot:path.join(f.root,'no-bundle'),selectedPlan,
-    fetcher:async url=>{assert.ok(!url.includes('api.github.com')&&!forbidden.has(url.split('/').at(-1)));return f.fetcher(url);}});
+    fetcher:async url=>{assert.ok(!url.includes('api.github.com')&&!forbidden.has(url.split('/').at(-1)));if(url.endsWith('/win32-x64-release-manifest.json'))manifestReads.push(url);return f.fetcher(url);}});
   assert.equal(fs.readFileSync(path.join(directory,'release-manifest.json'),'utf8'),selectedPlan.releaseManifestText);
   assert.notEqual(selectedPlan.releaseManifestText,f.bytes['release-manifest.json']);
+  assert.equal(manifestReads.length,1,'a new execution refreshes source evidence once, without replacing its sealed payload');
 });
 
 test('system identity and control-asset routing reject substitution before reading the install payload',async t=>{
@@ -311,7 +312,8 @@ for(const flow of ['install','components','launcher'])test(`${flow} preparation 
   }
   assert.equal(fs.readFileSync(path.join(f.root,'apps/current/marker'),'utf8'),'old installation');
   assert.ok(requests.every(url=>url.includes('/releases/v2.4.2/')||url.includes('/releases/download/v2.4.2/')));
-  assert.equal(requests.filter(url=>url.startsWith('https://primary.example/')).length,requests.filter(url=>url.startsWith('https://github.com/')).length);
+  assert.equal(requests.filter(url=>url.startsWith('https://primary.example/')).length,1,'the fixed-manifest probe encounters the unavailable source only once');
+  assert.ok(requests.slice(1).every(url=>url.startsWith('https://github.com/')),'the remaining assets reuse this execution’s fully received fixed-manifest source');
 });
 
 test('release and manifest selection share one total metadata budget',async t=>{
@@ -330,6 +332,96 @@ test('first installation shares the release lookup budget with manifest selectio
   assert.equal(requests.length,2,'the latest lookup must not grant manifest selection another full budget');
   assert.ok(requests[0].endsWith('/releases/latest'));assert.ok(requests[1].endsWith('/nora-system-win32-x64.json'));
   assert.equal(fs.existsSync(f.options.cacheRoot),false,'no asset transfer starts without a complete fixed plan');
+});
+
+for(const flow of ['install','components','launcher'])test(`${flow} keeps the operation source hint while metadata deadlines do not bound full downloads`,async t=>{
+  const f=fullInstallFixture(t),network=require(path.join(modules,'release-network'));
+  const sourceContext=network.createReleaseSourceContext(),requests=[];
+  const sources={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
+  let clock=1000,assetRead=false;
+  const policy={sourceContext,sources,now:()=>clock,backoffMs:[0,0]};
+  const metadataNames=new Set(['nora-system-win32-x64.json','release-manifest.json','nora-launcher-win32-x64.json']);
+  const fetcher=async(url,options)=>{
+    requests.push(url);
+    if(url.includes('api.github.com/')){clock+=10000;return f.fetcher(url,options);}
+    const name=url.split('/').at(-1);
+    if(metadataNames.has(name)){
+      clock+=10000;
+      if(url.startsWith('https://github.com/'))return new Response('not reachable',{status:503});
+    }else{
+      assetRead=true;
+      assert.ok(url.startsWith('https://downloads.sourceforge.net/'),'a full network metadata success must influence the same operation');
+    }
+    return new Response(f.bytes[name],{headers:{ETag:'"fixture-v1"','Content-Length':String(Buffer.byteLength(f.bytes[name]))}});
+  };
+  const options={...f.options,fetcher,networkPolicy:policy,
+    onEvent:event=>{if(event.stage_id==='download')clock=Math.max(clock,200001);}};
+  if(flow==='install'){
+    const root=await releases.prepareInstall({...options,bundledRoot:path.join(f.root,'absent-bundle')});
+    assert.equal(fs.readFileSync(path.join(root,'runtime.tar.gz'),'utf8'),'runtime');
+  }else if(flow==='components'){
+    const root=await releases.prepareUpdate({...options,launcherVersion:'2.0.2',
+      plan:async()=>({version:'2.4.2',archives:[{name:'app.tar.gz',sha256:sha('app')}]})});
+    assert.equal(fs.readFileSync(path.join(root,'app.tar.gz'),'utf8'),'app');
+  }else{
+    const prepared=await launcher.prepare(options);
+    assert.equal(fs.readFileSync(prepared.launcher.archive,'utf8'),'archive');
+  }
+  assert.ok(assetRead);assert.ok(clock>101000,'the transfer is exercised after the original shared 100-second metadata deadline');
+  assert.equal(policy.deadlineAt,undefined,'selection must not mutate the base operation policy');
+  assert.equal(policy.sourceContext,sourceContext);
+  assert.equal(sourceContext.preferredSource(f.release.assets.find(asset=>asset.name===f.item.asset).browser_download_url),'sourceforge');
+  assert.equal(requests.filter(url=>url.startsWith('https://github.com/')).length,1,'later metadata and full assets share the already successful existing source');
+});
+
+test('main creates one fresh source context per execution and passes it to every selection and preparation path',()=>{
+  const vm=require('node:vm'),{parse}=require(path.join(source,'node_modules/acorn'));
+  const text=fs.readFileSync(path.join(source,'main.js'),'utf8'),tree=parse(text,{ecmaVersion:'latest'}),nodes=[];
+  const walk=node=>{if(!node||typeof node!=='object')return;if(node.type)nodes.push(node);for(const value of Object.values(node))if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);};walk(tree);
+  const execute=nodes.find(node=>node.type==='VariableDeclarator'&&node.id.name==='executeAction').init;
+  const inner=[];const collect=node=>{if(!node||typeof node!=='object')return;if(node.type)inner.push(node);for(const value of Object.values(node))if(Array.isArray(value))value.forEach(collect);else if(value&&typeof value==='object')collect(value);};collect(execute);
+  const declaration=inner.filter(node=>node.type==='VariableDeclarator'&&node.id.name==='networkPolicy');assert.equal(declaration.length,1);
+  const network=require(path.join(modules,'release-network'));
+  const initializer='('+text.slice(declaration[0].init.start,declaration[0].init.end)+')';
+  const first=vm.runInNewContext(initializer,{require:name=>{assert.equal(name,'./release-network');return network;}});
+  const second=vm.runInNewContext(initializer,{require:()=>network});
+  assert.notEqual(first.sourceContext,second.sourceContext,'resumed/handoff executions do not inherit a previous source preference');
+  const expected=new Map([['releases.selectPlan',1],['launcherUpdate.prepare',1],['releases.prepareInstall',2],['releases.prepareUpdate',1]]);
+  for(const [callee,count]of expected){
+    const calls=inner.filter(node=>node.type==='CallExpression'&&node.callee.type==='MemberExpression'&&`${node.callee.object.name}.${node.callee.property.name}`===callee);
+    assert.equal(calls.length,count,callee);
+    for(const call of calls){const property=call.arguments[0].properties.find(p=>p.key?.name==='networkPolicy');assert.equal(property?.value?.name,'networkPolicy',`${callee} must receive the one execution-owned policy`);}
+  }
+  assert.equal(inner.filter(node=>node.type==='AssignmentExpression'&&node.left.object?.name==='networkPolicy').length,0,'main does not install a selector deadline on the execution policy');
+});
+
+for(const flow of ['install','components','launcher'])test(`${flow} resumed sealed plan establishes fresh exact source evidence without looking up latest`,async t=>{
+  const f=fullInstallFixture(t),network=require(path.join(modules,'release-network'));
+  const metadataCache=releases.createMetadataCache({ttlMs:60000});
+  const selected=await releases.selectPlan({...f.options,metadataCache,mode:flow==='install'?'install':'update'});
+  const operationDirectory=path.join(f.root,'operations',crypto.randomUUID());fs.mkdirSync(operationDirectory,{recursive:true});
+  const saved=releases.sealPlan(selected,{...f.options,operationDirectory,assertOwner:()=>{}}),requests=[];
+  const options={...f.options,metadataCache,operationDirectory,selectedPlan:JSON.parse(JSON.stringify(saved)),
+    networkPolicy:{sourceContext:network.createReleaseSourceContext(),sources:{schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]}},
+    fetcher:async(url,request)=>{
+      requests.push(url);assert.ok(!url.includes('api.github.com'),'the sealed target must survive latest changing');
+      const name=url.split('/').at(-1);assert.notEqual(name,'nora-launcher-win32-x64.json');
+      assert.equal(new Headers(request.headers).get('if-none-match'),null,'fixed source proof is fresh full bytes, not a TTL/304 shortcut');
+      if(url.startsWith('https://github.com/')){assert.equal(name,'release-manifest.json');return new Response('unavailable',{status:503});}
+      return new Response(f.bytes[name],{headers:{'Content-Length':String(Buffer.byteLength(f.bytes[name]))}});
+    }};
+  let result;
+  if(flow==='install')result=await releases.prepareInstall({...options,bundledRoot:path.join(f.root,'no-bundle')});
+  else if(flow==='components')result=await releases.prepareUpdate({...options,launcherVersion:'2.0.2',plan:async()=>({version:'2.4.2',archives:[{name:'app.tar.gz',sha256:sha('app')}]})});
+  else result=await launcher.prepare(options);
+  assert.deepEqual(requests.slice(0,2),['https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/release-manifest.json','https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/release-manifest.json']);
+  assert.ok(requests.slice(2).every(url=>url.startsWith('https://downloads.sourceforge.net/')));
+  assert.equal(requests.filter(url=>url.endsWith('/release-manifest.json')).length,2,'the source probe is attempted once for this execution');
+  if(flow!=='components'){
+    const cached={...options,networkPolicy:{...options.networkPolicy,sourceContext:network.createReleaseSourceContext()},fetcher:async()=>{throw Error('complete verified cache must remain usable offline');}};
+    if(flow==='install')assert.equal(await releases.prepareInstall(cached),result);
+    else assert.equal((await launcher.prepare(cached)).launcher.archive,result.launcher.archive);
+  }
 });
 
 test('cached version checks keep the prior check time and do not claim a fresh latest lookup',async t=>{

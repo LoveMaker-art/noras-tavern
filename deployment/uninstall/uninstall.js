@@ -22,7 +22,9 @@ function canonical(file) {
 
 function safeRoot(home) {
   if (fs.existsSync(home) && fs.lstatSync(home).isSymbolicLink()) throw new Error('隔离目录不能是符号链接。');
-  const root = canonical(home), userHome = canonical(os.homedir());
+  // Bootstrap children deliberately use an isolated HOME beneath Nora. That
+  // environment profile is not the operating-system account's deletion boundary.
+  const root = canonical(home), userHome = canonical(os.userInfo().homedir);
   if (root === path.parse(root).root || root === userHome
     || userHome.startsWith(root + path.sep)) throw new Error('不能卸载用户目录或磁盘根目录。');
   return root;
@@ -53,7 +55,7 @@ function own(home) {
 
 function makePlan({ home, hermesHome, installRoot, mode, executable = process.execPath, appPath = null, port = 8799, serviceMode = 'port' }) {
   if (!['keep', 'all'].includes(mode)) throw new Error('卸载方式无效。');
-  if(!['port','native-root'].includes(serviceMode)||serviceMode==='native-root'&&(mode!=='all'||port!==null))
+  if(!['port','native-root','retained'].includes(serviceMode)||serviceMode==='native-root'&&(mode!=='all'||port!==null))
     throw Object.assign(new Error('卸载现场检查方式无效，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
   const root = safeRoot(home);
   if (path.resolve(executable).startsWith(root + path.sep)) throw new Error('启动器位于数据目录内，请将启动器移到独立应用目录后重试。');
@@ -62,6 +64,7 @@ function makePlan({ home, hermesHome, installRoot, mode, executable = process.ex
   contained(root, hermes); contained(root, tavern);
   if (hermes === tavern || hermes.startsWith(tavern + path.sep) || tavern.startsWith(hermes + path.sep)) throw new Error('程序目录不能互相包含。');
   const plan={ schema: 1, root, owner: own(root), hermes, tavern, mode, executable, appPath, port, serviceMode, parentIdentity:processIdentity(process.pid) };
+  if(serviceMode==='retained')plan.retainedId=validateRetainedRetry(plan,true);
   plan.serviceCheck=require('./uninstall-offline-check').capture({root,hermesHome:contained(root,hermes),installRoot:contained(root,tavern),port,mode:serviceMode,executable,
     entry:__dirname.endsWith('.asar')?__dirname:__filename,resourcesRoot:path.dirname(__dirname)});
   return plan;
@@ -74,7 +77,16 @@ function validate(plan) {
   const owner = JSON.parse(fs.readFileSync(contained(root, OWNER), 'utf8'));
   if (owner.id !== plan.owner) throw new Error('安装目录已变化，已停止卸载。');
   contained(root, plan.hermes); contained(root, plan.tavern);
+  if(plan.serviceMode==='retained')validateRetainedRetry(plan);
   return root;
+}
+
+function validateRetainedRetry(plan,capture=false){
+  const saved=require('./retained-installation').inspect(plan.root,{allowPending:true});
+  if(plan.mode!=='keep'||saved?.schema!==2||saved.state!=='prepared'||saved.port!==plan.port
+    ||saved.owner!==plan.owner||saved.hermes!==plan.hermes||saved.tavern!==plan.tavern||!capture&&plan.retainedId!==saved.id)
+    throw Object.assign(new Error('保留数据卸载重试无法绑定原现场，未删除文件。'),{code:'UNINSTALL_SERVICES_UNCONFIRMED'});
+  return saved.id;
 }
 
 function processIdentity(pid) {
@@ -967,6 +979,9 @@ function cleanup(plan,onProgress=()=>{}) {
 
 function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   const root = validate(plan);
+  const retained=require('./retained-installation');
+  const retainedState=plan.mode==='keep'?retained.inspect(root,{allowPending:true}):null;
+  if(retainedState?.legacy)retained.legacyHistory(root);
   if(present(contained(root,'installer/operations/.guards'))){
     try{readOnlyNodeCheck('inspectExecutorHistory',plan);}
     catch(error){throw Object.assign(new Error('尚未确认上次维护进程已结束，未删除文件。',{cause:error}),{code:'OPERATION_EXECUTOR_UNCONFIRMED'});}
@@ -976,7 +991,7 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
   // its backups: historical proof cannot be a prerequisite for that choice.
   // Current ownership, the held writer and executor-offline checks above still
   // apply to both modes; no path from a historical journal grants deletion.
-  if(plan.mode==='keep')assertNoPendingTransaction(root,plan);
+  if(plan.mode==='keep'&&retainedState?.state!=='prepared'&&!retainedState?.legacy)assertNoPendingTransaction(root,plan);
   // Resolve every top-level deletion before changing anything. Node rm does not
   // follow links inside a removed tree; redirected deletion roots are rejected.
   const relatives = plan.mode === 'all'
@@ -995,14 +1010,14 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
     const config = contained(root, path.join(plan.tavern, 'tavern-state/native-runtime/config.yaml'));
     const retainedConfig = contained(root, path.join(plan.tavern, 'tavern-state/nora-retained-config.yaml'));
     if (fs.existsSync(config)) fs.copyFileSync(config, retainedConfig);
-    // This receipt enables a subsequent runtime extraction to merge retained data.
-    fs.writeFileSync(contained(root, RETAINED), JSON.stringify({ schema: 1, hermes: plan.hermes }), { mode: 0o600 });
   }
+  const keepJournal=plan.mode==='keep'?retained.begin(plan):null;
   for (let index = 0; index < targets.length; index++) {
     onProgress({ stage: 'cleanup', current: index + 1, total: targets.length, path: targets[index] });
     remove(targets[index]);
     onRemoved(targets[index]);
   }
+  if(keepJournal)retained.complete(plan,keepJournal);
   // Even all retains only the ownership record and native lock inode.
   // Unlinking the held lock would let a new installer create another owner.
 }
@@ -1010,8 +1025,8 @@ function cleanupLocked(plan, onProgress = () => {}, onRemoved = () => {}) {
 function restoreRetained(noraHome, previous, current) {
   const receipt = path.join(noraHome, RETAINED);
   if (!fs.existsSync(receipt)) return false;
-  const value = JSON.parse(fs.readFileSync(receipt, 'utf8'));
-  if (value.schema !== 1 || path.resolve(noraHome, value.hermes) !== path.resolve(current)) throw new Error('保留数据目录不匹配。');
+  const value = require('./retained-installation').inspect(safeRoot(noraHome),{allowProgramTree:true});
+  if (!value || path.resolve(noraHome, value.hermes) !== path.resolve(current)) throw new Error('保留数据目录不匹配。');
   // Program folders were removed during uninstall. Only retained files are
   // overlaid; never replace fresh runtime binaries with an old backup.
   const excluded = PROGRAMS.map(name => name.split('/').join(path.sep));

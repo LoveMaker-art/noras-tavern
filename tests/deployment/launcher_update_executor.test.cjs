@@ -7,7 +7,7 @@ const {createHash}=require('node:crypto');
 const {create}=require('../installer/desktop/system-update-executor');
 const operationId='df489037-5361-4b6a-b02a-8c6cf6cb256e';
 const fixture=()=>({operationId,target:{releasePlan:{releaseManifest:{versions:{tavern:'2.4.0'}}}},
-  snapshot:{handoffRef:'/owned/job'},stage:async()=>{}});
+  snapshot:{handoffRef:'/owned/job'},stage:async()=>{},effectStates:[],effect:async function(state){this.effectStates.push(state);}});
 
 async function sealedFixture(t){
   const releases=require('../installer/desktop/releases'),{createLocalRelease}=require('../installer/desktop/local-release');
@@ -137,17 +137,21 @@ test('committed first installation verifies the original fixed target without in
       {effects:{operationId,status:'committed',canResume:true,version:'2.4.0'}}:
       {operationVerified:true,firstInstallVerified:true,systemReady:true,version:'2.4.0'};
   },finalizeLauncher:async()=>{throw new Error('first installation must not retire APP backups');}});
-  assert.equal((await executor.resumeInstallation(fixture(),{hasTransaction:true})).version,'2.4.0');
+  const context=fixture();context.effect=async state=>{assert.equal(calls.length,2,'effects must remain unknown until current acceptance succeeds');context.effectStates.push(state);};
+  assert.equal((await executor.resumeInstallation(context,{hasTransaction:true})).version,'2.4.0');
   assert.deepEqual(calls,[['operation-effects',operationId],['resume-committed-install',operationId]]);
+  assert.deepEqual(context.effectStates,['changed']);
 });
 
 test('a foreign or mismatched first-install commit never runs acceptance against a different target',async()=>{
   for(const facts of [{operationId:'foreign',status:'committed',canResume:true,version:'2.4.0'},
     {operationId,status:'committed',canResume:true,version:'2.3.0'}]){
     const calls=[];const executor=create({compare:(a,b)=>a===b?0:-1,bridge:async command=>{calls.push(command);return {effects:facts};}});
-    if(facts.operationId==='foreign')assert.equal(await executor.resumeInstallation(fixture(),{hasTransaction:true}),null);
-    else await assert.rejects(executor.resumeInstallation(fixture(),{hasTransaction:true}),{code:'VERIFICATION_FAILED'});
+    const context=fixture();
+    if(facts.operationId==='foreign')assert.equal(await executor.resumeInstallation(context,{hasTransaction:true}),null);
+    else await assert.rejects(executor.resumeInstallation(context,{hasTransaction:true}),{code:'VERIFICATION_FAILED'});
     assert.deepEqual(calls,['operation-effects']);
+    assert.deepEqual(context.effectStates,[]);
   }
 });
 
@@ -156,6 +160,7 @@ test('a first-install process success without runtime proof cannot complete the 
   const executor=create({compare:()=>0,bridge:async command=>{calls.push(command);return command==='operation-effects'?
     {effects:{operationId,status:'committed',canResume:true,version:'2.4.0'}}:
     {operationVerified:true,firstInstallVerified:true,systemReady:false,version:'2.4.0'};}});
-  await assert.rejects(executor.resumeInstallation(fixture(),{hasTransaction:true}),{code:'VERIFICATION_FAILED'});
+  const context=fixture();await assert.rejects(executor.resumeInstallation(context,{hasTransaction:true}),{code:'VERIFICATION_FAILED'});
   assert.deepEqual(calls,['operation-effects','resume-committed-install']);
+  assert.deepEqual(context.effectStates,[]);
 });

@@ -5,11 +5,15 @@ import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import { createRequire } from 'node:module';
 import { storageFixture } from './nora-storage-fixture.mjs';
 import { createChatBackupStore } from '../src/chat-backup-store.js';
-import atomic from 'write-file-atomic';
 import { ledgerAfterRestore } from '../src/nora-story-ledger/state-file.js';
 import { chatSessionOperations } from '../src/chat-session-operations.js';
+
+// Upstream Jest installs a separate transitive atomic writer under tests/.
+// Fault injection must target the exact dependency used by production code.
+const atomic = createRequire(new URL('../src/chat-file-write.js', import.meta.url))('write-file-atomic');
 
 async function savedChat(f, world, hp = 10) {
     const filePath = path.join(f.directories.chats, path.basename(world.runtime_card.binding.avatar, '.png'),
@@ -53,6 +57,117 @@ test('list exposes bounded message summaries without changing metadata, snapshot
     assert.equal((await store.download(saved.id)).toString(), input.data);
     assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
     assert.equal(JSON.parse(before).messageCount, undefined, 'summary is not a migration of old metadata');
+});
+
+test('unchanged inventory reuses verified summaries across request stores while capture and download still read full bytes', async t => {
+    const f = await storageFixture(t), world = await f.create('inventory-verified-summary');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const saved = await store.capture(input);
+    const original = await store.list();
+    const snapshot = await fs.realpath(path.join(f.directories.backups, `chat_nora1_${saved.id}.jsonl`));
+    const open = fs.open;
+    let snapshotReads = 0;
+    const observe = t.mock.method(fs, 'open', async (file, ...args) => {
+        if (path.resolve(String(file)) === snapshot) snapshotReads++;
+        return open(file, ...args);
+    });
+    for (let request = 0; request < 3; request++) {
+        const fresh = createChatBackupStore({ directories: f.directories });
+        assert.deepEqual(await fresh.list(), original);
+    }
+    assert.equal(snapshotReads, 0, 'unchanged read-only inventory need not hash or parse the same verified bytes again');
+    assert.equal((await store.capture(input)).status, 'unchanged');
+    assert.ok(snapshotReads > 0, 'a capture decision still verifies every managed snapshot');
+    snapshotReads = 0;
+    assert.equal((await store.download(saved.id)).toString(), input.data);
+    assert.equal(snapshotReads, 1, 'download verifies current bytes rather than returning cached data');
+    observe.mock.restore();
+});
+
+test('verified inventory invalidates same-size edits with restored mtime, replacements, bad records and parent symlinks', async t => {
+    for (const change of ['same-size', 'replacement', 'record', 'broken-record', 'parent-replacement', 'parent-symlink']) {
+        await t.test(change, async t => {
+            const f = await storageFixture(t), world = await f.create(`inventory-invalidate-${change}`);
+            const store = createChatBackupStore({ directories: f.directories });
+            const input = await savedChat(f, world);
+            const saved = await store.capture(input);
+            await store.list();
+            const snapshot = path.join(f.directories.backups, `chat_nora1_${saved.id}.jsonl`);
+            const metadata = path.join(f.directories.backups, '.nora-chat', `${saved.id}.json`);
+            const stat = await fs.stat(snapshot);
+            const changed = input.data.replace('Same prose', 'Wrong data');
+            assert.equal(Buffer.byteLength(changed), Buffer.byteLength(input.data));
+            if (change === 'same-size') {
+                await fs.writeFile(snapshot, changed);
+                await fs.utimes(snapshot, stat.atime, stat.mtime);
+            } else if (change === 'replacement') {
+                const replacement = `${snapshot}.replacement`;
+                await fs.writeFile(replacement, changed);
+                await fs.utimes(replacement, stat.atime, stat.mtime);
+                await fs.rename(replacement, snapshot);
+            } else if (change === 'record' || change === 'broken-record') {
+                const before = await fs.stat(metadata);
+                const value = JSON.parse(await fs.readFile(metadata, 'utf8'));
+                value.sha256 = '0'.repeat(64);
+                await fs.writeFile(metadata, change === 'broken-record' ? '{' : JSON.stringify(value));
+                await fs.utimes(metadata, before.atime, before.mtime);
+            } else {
+                const old = `${f.directories.backups}-original`;
+                await fs.rename(f.directories.backups, old);
+                t.after(() => fs.rm(old, { recursive: true, force: true }));
+                if (change === 'parent-symlink') {
+                    await fs.symlink(old, f.directories.backups, 'junction');
+                    await assert.rejects(createChatBackupStore({ directories: f.directories }).list(), { code: 'NORA_BACKUP_UNSAFE_PATH' });
+                    assert.equal(await fs.readFile(path.join(old, path.basename(snapshot)), 'utf8'), input.data);
+                    return;
+                }
+                await fs.cp(old, f.directories.backups, { recursive: true });
+                await fs.writeFile(snapshot, changed);
+            }
+            const result = await createChatBackupStore({ directories: f.directories }).list();
+            assert.equal(result.snapshots.length, 0, 'a previously verified entry cannot hide a changed file or parent');
+            assert.equal(result.legacyFiles, 1);
+            assert.equal(result.warnings[0].code, change === 'broken-record' ? 'NORA_BACKUP_INVALID_RECORD' : 'NORA_BACKUP_CHANGED');
+            assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
+            assert.ok(await fs.stat(snapshot), 'invalidated bytes remain intact');
+        });
+    }
+});
+
+test('inventory rejects a parent replacement during a cached read and never shares mutable metadata with its cache', async t => {
+    const f = await storageFixture(t), world = await f.create('inventory-parent-mid-scan');
+    const store = createChatBackupStore({ directories: f.directories });
+    const input = await savedChat(f, world);
+    const saved = await store.capture(input);
+    const metadata = path.join(f.directories.backups, '.nora-chat', `${saved.id}.json`);
+    const value = JSON.parse(await fs.readFile(metadata, 'utf8'));
+    value.userAnnotation = { labels: ['original'] };
+    await fs.writeFile(metadata, JSON.stringify(value));
+    const first = await store.list();
+    first.snapshots[0].userAnnotation.labels.push('caller-only');
+    assert.deepEqual((await createChatBackupStore({ directories: f.directories }).list()).snapshots[0].userAnnotation,
+        { labels: ['original'] }, 'return values cannot change or inflate the private verified cache');
+    const original = await fs.realpath(f.directories.backups);
+    const moved = `${original}-during-read`;
+    t.after(() => fs.rm(moved, { recursive: true, force: true }));
+    let swapped = false;
+    const lstat = fs.lstat;
+    const replacement = t.mock.method(fs, 'lstat', async (file, ...args) => {
+        const stat = await lstat(file, ...args);
+        if (!swapped && path.basename(String(file)) === `chat_nora1_${saved.id}.jsonl`) {
+            swapped = true;
+            await fs.rename(original, moved);
+            await fs.cp(moved, original, { recursive: true });
+        }
+        return stat;
+    });
+    await assert.rejects(store.list(), { code: 'NORA_BACKUP_CHANGED' });
+    replacement.mock.restore();
+    assert.equal(swapped, true);
+    assert.equal((await createChatBackupStore({ directories: f.directories }).list()).snapshots.length, 1);
+    assert.equal(await fs.readFile(path.join(moved, `chat_nora1_${saved.id}.jsonl`), 'utf8'), input.data);
+    assert.equal(await fs.readFile(input.filePath, 'utf8'), input.data);
 });
 
 test('summaries truncate long messages and do not turn unreadable content into a fabricated count', async t => {

@@ -40,16 +40,21 @@ const python = [
     'test_manual_acceptance',
 ];
 
-export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment } = {}) {
+export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,
+    platform = process.platform } = {}) {
     const { environment } = checkEnvironment({ root, profile: 'source' });
-    for (const [scope, args] of [
+    // The complete serial JS group spawns real Python recovery actors. Hosted
+    // Windows exceeded its former four-minute batch deadline before TAP ended;
+    // give that group eight minutes without changing cases or Python's limit.
+    const javascriptTimeout = platform === 'win32' ? 480000 : 240000;
+    for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',
-            ...javascript.map(name => `tests/deployment/${name}`)]],
+            ...javascript.map(name => `tests/deployment/${name}`)], javascriptTimeout],
         ['installation and system transaction recovery', ['python', '-B', '-m', 'unittest',
-            ...python.map(name => `tests.deployment.${name}`)]],
+            ...python.map(name => `tests.deployment.${name}`)], 240000],
     ]) {
         const result = run(process.execPath, [path.join(root, 'tooling/run.mjs'), ...args], {
-            cwd: root, stdio: 'inherit', timeout: 240000,
+            cwd: root, stdio: 'inherit', timeout,
             env: environment,
         });
         if (result.error) throw new Error(`Launcher source stability failed (${scope}): ${result.error.message}`, { cause: result.error });

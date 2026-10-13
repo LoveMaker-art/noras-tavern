@@ -11,6 +11,7 @@ async function dailyInteractionPage(browser,viewport,options={}){
     window.state={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
       modelConfigured:true,clawchatPaired:true,clawchatProfileReady:true,clawchatConnected:true,gatewayRunning:true,running:true,
       noraHome:'/isolated/NoraTavern',version:'2.4.2',port:8799,url:'http://127.0.0.1:8799',installer:{setupCompleted:true}};
+    Object.assign(window.state,options.initialState||{});
     window.calls=[];window.statusReads=0;
     const action=name=>options=>{window.calls.push({name,service:options.service});return new Promise((resolve,reject)=>{
       window.finishAction=(patch,error)=>{Object.assign(window.state,patch);error?reject(new Error(error)):resolve({...window.state});};
@@ -26,10 +27,26 @@ async function dailyInteractionPage(browser,viewport,options={}){
       openExternal:async()=>{window.calls.push({name:'external'});},
       openClawChatApp:async()=>({ok:true}),openClawChat:async()=>{},uninstall:async()=>{window.calls.push({name:'uninstall'});return new Promise(resolve=>{window.finishUninstall=resolve;});}};
   },options);
-  await page.goto(url);await page.locator('.services').waitFor();
+  await page.goto(url);await page.locator(options.initialState?.retainedUninstallPending?'#copy':'.services').waitFor();
   await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
   return page;
 }
+
+test('an interrupted KEEP offers its existing uninstall entry and logs while blocking installation',{timeout:15000},async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM});
+  try{
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{installed:false,hermesInstalled:false,noraInstalled:false,
+      systemReady:false,setupCompleted:false,running:false,gatewayRunning:false,clawchatConnected:false,
+      retainedInstallation:true,retainedUninstallPending:true,warning:'保留数据卸载尚未完成，请在更多中继续卸载。'}});
+    await page.getByText('保留数据卸载尚未完成。',{exact:true}).waitFor();
+    assert.equal(await page.getByRole('button',{name:'安装酒馆',exact:true}).count(),0);
+    assert.equal(await page.getByRole('button',{name:'继续安装',exact:true}).count(),0);
+    assert.equal(await page.locator('#moreButton').isEnabled(),true);
+    await page.locator('#moreButton').click();assert.equal(await page.locator('[data-action="uninstall"]').isVisible(),true);
+    await page.locator('[data-action="uninstall"]').click();await page.waitForFunction(()=>window.calls.some(item=>item.name==='uninstall'));
+    assert.deepEqual(await page.evaluate(()=>window.calls),[{name:'uninstall'}]);assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
 async function dailyAnchors(page){
   return page.evaluate(()=>Object.fromEntries(['#copy','.services','#management','#launch','#telemetryNotice']
     .map(selector=>{const e=document.querySelector(selector),r=e.getBoundingClientRect();return [selector,{x:r.x,y:r.y}];})));

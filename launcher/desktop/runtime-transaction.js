@@ -171,7 +171,7 @@ function update(journal,location,delegate,ownerEpoch,fields){
   write(location.journalReference,journal);
 }
 function report(onEvent,phase,task){onEvent({event:'task',stage_id:'runtime_init',milestone:0,current:2,total:3,phase,task});}
-function verifyPrevious(location,target){
+function verifyPrevious(location,target,operationId){
   if(!fs.existsSync(location.hermesHome))return;
   if(fs.readdirSync(location.hermesHome).length===0)return;
   let marker,retained;
@@ -180,8 +180,8 @@ function verifyPrevious(location,target){
       &&marker.platform===target.platform&&marker.arch===target.arch)return {platform:marker.platform,arch:marker.arch,
         venvPython:marker.platform==='win32'?'hermes-agent/venv/Scripts/python.exe':'hermes-agent/venv/bin/python',
         nodeBin:marker.platform==='win32'?'node':'node/bin',componentProbe:'nora-clawchat-check.py'};
-  try{retained=JSON.parse(fs.readFileSync(path.join(location.noraHome,'nora-retained.json'),'utf8'));}catch{}
-  if(retained?.schema===1&&equal(path.resolve(location.noraHome,retained.hermes||''),location.hermesHome))return;
+  retained=require('./retained-installation').inspect(location.noraHome,{operationId});
+  if(retained?.state==='complete'&&equal(path.resolve(location.noraHome,retained.hermes||''),location.hermesHome))return;
   throw fail('RUNTIME_PARTIAL_UNCONFIRMED','上次 Nora 核心安装记录不完整。现有数据已保留，请先恢复上次操作或查看日志；重复安装不会覆盖这些文件。');
 }
 function copyUserData(previous,stage){
@@ -212,7 +212,10 @@ async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allo
       throw fail('RUNTIME_PARTIAL_UNCONFIRMED','历史恢复后的原树、记录或缺失集合无法一致核验，保留所有现场。');
     update(journal,location,delegate,ownerEpoch,{originalPartial:originalPartialCandidate,partialPort});
   }
-  if(journal.originalPartial){
+  if(journal.originalPartial||journal.originalRetained){
+    if(journal.originalRetained){const saved=require('./retained-installation').inspect(location.noraHome,{operationId});
+      if(saved?.state!=='complete'||saved.id!==journal.originalRetained.id||saved.owner!==journal.originalRetained.owner
+        ||saved.reinstallOperationId!==operationId)throw fail('RUNTIME_PARTIAL_UNCONFIRMED','原保留数据卸载归属发生变化，未恢复或覆盖文件。');}
     const proof=await verifyOffline?.();requireDelegate(delegate,operationId,ownerEpoch);
     if(proof?.offline!==true||proof.running!==false||proof.gatewayRunning!==false)
       throw fail('RUNTIME_OFFLINE_UNCONFIRMED','未取得本次执行的实际离线证明，保留当前安装。');
@@ -240,7 +243,11 @@ async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allo
   }
   const restored=journal.identities.previous?sameIdentity(identity(location.hermesHome),journal.identities.previous):!identity(location.hermesHome);
   if(!restored)throw fail('RUNTIME_IDENTITY_UNKNOWN','恢复结果尚未确认，请保留现场。');
-  if(journal.originalPartial){
+  if(journal.originalRetained){
+    if(!sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
+      ||!require('./retained-installation').absentPrograms(location.noraHome,journal.originalRetained))
+      throw fail('RUNTIME_PARTIAL_UNCONFIRMED','原保留数据树或程序缺失状态未精确恢复，保留现场。');
+  }else if(journal.originalPartial){
     if(!sameSeal(journal.previousSeal,treeSeal(location.hermesHome))
       ||!partialStateMatches(journal.originalPartial,{...location,port:journal.partialPort}))
       throw fail('RUNTIME_PARTIAL_UNCONFIRMED','恢复后原数据树或程序缺失集合发生变化，保留现场。');
@@ -248,7 +255,7 @@ async function recover({noraHome,hermesHome,operationId,ownerEpoch,delegate,allo
     report(onEvent,'runtime.verify-previous','检查恢复后的 Nora 核心');
     await (tools||require('./runtime')).validateRuntimeAsync(location.hermesHome,journal.previousRuntimeSpec,delegate);
   }
-  update(journal,location,delegate,ownerEpoch,{status:'rolled-back',recoveryVerification:journal.originalPartial?'original-partial-confirmed':journal.previousRuntimeSpec?'confirmed':'files-restored',recoveryCompletedAt:new Date().toISOString()});
+  update(journal,location,delegate,ownerEpoch,{status:'rolled-back',recoveryVerification:journal.originalRetained?'retained-data-confirmed':journal.originalPartial?'original-partial-confirmed':journal.previousRuntimeSpec?'confirmed':'files-restored',recoveryCompletedAt:new Date().toISOString()});
   return {...facts(journal,location),journalReference:location.journalReference};
 }
 function archiveAttempt({noraHome,hermesHome,operationId,ownerEpoch,delegate,bundle}){
@@ -282,11 +289,14 @@ async function install({payloadRoot,noraHome,hermesHome,operationId,ownerEpoch,d
   // and helpers; an ancestor alias must not become a different runtime scope.
   noraHome=location.noraHome;hermesHome=location.hermesHome;
   const preceding=archiveAttempt({noraHome,hermesHome,operationId,ownerEpoch,delegate,bundle});
-  const previousRuntimeSpec=verifyPrevious(location,bundle.manifest);
+  const previousRuntimeSpec=verifyPrevious(location,bundle.manifest,operationId);
+  const retained=require('./retained-installation').inspect(noraHome,{operationId});
+  const originalRetained=retained?.reinstallOperationId===operationId?{id:retained.id,owner:retained.owner,
+    hermes:retained.hermes,tavern:retained.tavern,port:retained.port}:undefined;
   fs.mkdirSync(location.directory,{recursive:true,mode:0o700});
   const journal={schema:SCHEMA,operationId,ownerEpoch,sequence:0,status:'staging',attempt:preceding?.attempt||1,
     precedingEvidence:preceding?.evidenceReference,createdAt:new Date().toISOString(),
-    previousRuntimeSpec,
+    previousRuntimeSpec,originalRetained,
     paths:location,target:{sha256:bundle.manifest.sha256,platform:bundle.manifest.platform,arch:bundle.manifest.arch,
       manifestDigest:crypto.createHash('sha256').update(fs.readFileSync(bundle.manifestPath)).digest('hex')},
     identities:{previous:identity(hermesHome),next:null}};

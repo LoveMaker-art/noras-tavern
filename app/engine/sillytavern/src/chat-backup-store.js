@@ -13,6 +13,12 @@ import { prefixText } from '../public/scripts/nora-story-ledger/history.js';
 
 const locks = new KeyedLock();
 const automaticTasks = new Map();
+// Request handlers construct fresh stores. Keep only bounded, verified read
+// projections across those instances; mutation paths never consume this cache.
+const verifiedInventory = new Map();
+const MAX_VERIFIED_RECORDS = 1024;
+const MAX_VERIFIED_BYTES = 4 * 1024 * 1024;
+let verifiedBytes = 0;
 export const BACKUP_ATTEMPT_TIMEOUT_MS = 1000;
 const ID = /^[a-f0-9-]{36}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
@@ -21,7 +27,9 @@ const MAX_ENTRIES = 10000;
 const MVU_STATES = new Set(['unverified', 'pending', 'incomplete', 'confirmed']);
 const digest = data => crypto.createHash('sha256').update(data).digest('hex');
 const fail = code => Object.assign(new Error(code), { code });
-const equalStat = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+const equalStat = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+const fileStat = stat => ({ dev: stat.dev, ino: stat.ino, size: Number(stat.size), mtimeNs: stat.mtimeNs, ctimeNs: stat.ctimeNs,
+    isFile: () => stat.isFile(), isDirectory: () => stat.isDirectory(), isSymbolicLink: () => stat.isSymbolicLink() });
 const newest = (a, b) => b.createdAt - a.createdAt || b.sequence - a.sequence || a.id.localeCompare(b.id);
 // Display-only excerpt. Original messages, downloads and restore bytes stay intact.
 function backupExcerpt(text) {
@@ -57,11 +65,11 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         root ??= await fs.realpath(configuredRoot);
         if (path.isAbsolute(relative) || relative.split(path.sep).includes('..')) throw fail('NORA_BACKUP_UNSAFE_PATH');
         let file = root;
-        let stat = await fs.lstat(file);
+        let stat = fileStat(await fs.lstat(file, { bigint: true }));
         for (const part of relative.split(path.sep).filter(Boolean)) {
             if (!stat.isDirectory() || stat.isSymbolicLink()) throw fail('NORA_BACKUP_UNSAFE_PATH');
             file = path.join(file, part);
-            stat = await fs.lstat(file);
+            stat = fileStat(await fs.lstat(file, { bigint: true }));
         }
         if (stat.isSymbolicLink()) throw fail('NORA_BACKUP_UNSAFE_PATH');
         return { file, stat };
@@ -72,13 +80,13 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
     const dataRelative = id => path.join(backupRelative, `chat_nora1_${id}.jsonl`);
     const recordRelative = id => path.join(recordsRelative, `${id}.json`);
 
-    async function read(relative, maxBytes = MAX_FILE, keepData = true, expectedBytes = null) {
-        const before = await checked(relative);
+    async function read(relative, maxBytes = MAX_FILE, keepData = true, expectedBytes = null, check = checked) {
+        const before = await check(relative);
         if (!before.stat.isFile() || before.stat.size > maxBytes) throw fail('NORA_BACKUP_UNSAFE_FILE');
         if (expectedBytes !== null && before.stat.size !== expectedBytes) throw fail('NORA_BACKUP_CHANGED');
         const handle = await fs.open(before.file, constants.O_RDONLY | (constants.O_NOFOLLOW || 0) | (constants.O_NONBLOCK || 0));
         try {
-            if (!equalStat(before.stat, await handle.stat())) throw fail('NORA_BACKUP_CHANGED');
+            if (!equalStat(before.stat, fileStat(await handle.stat({ bigint: true })))) throw fail('NORA_BACKUP_CHANGED');
             const data = Buffer.alloc(keepData ? before.stat.size : Math.min(before.stat.size, STORAGE_READ_BUFFER_BYTES));
             const hash = crypto.createHash('sha256');
             let offset = 0;
@@ -90,13 +98,13 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
                 hash.update(data.subarray(bufferOffset, bufferOffset + bytesRead));
                 offset += bytesRead;
             }
-            if (!equalStat(before.stat, await handle.stat()) || !equalStat(before.stat, (await checked(relative)).stat)) throw fail('NORA_BACKUP_CHANGED');
+            if (!equalStat(before.stat, fileStat(await handle.stat({ bigint: true }))) || !equalStat(before.stat, (await check(relative)).stat)) throw fail('NORA_BACKUP_CHANGED');
             return { data: keepData ? data : null, sha256: hash.digest('hex'), stat: before.stat };
         } finally { await handle.close(); }
     }
 
-    async function entries(relative) {
-        const dir = await checked(relative);
+    async function entries(relative, check = checked) {
+        const dir = await check(relative);
         if (!dir.stat.isDirectory()) throw fail('NORA_BACKUP_UNSAFE_PATH');
         const result = [];
         for await (const entry of await fs.opendir(dir.file)) {
@@ -106,9 +114,44 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
         return result;
     }
 
-    async function record(id, { summary = false, inventoryOnly = false } = {}) {
+    const cacheKey = id => JSON.stringify([root, recordRelative(id), dataRelative(id)]);
+    function forgetVerified(key) {
+        const previous = verifiedInventory.get(key);
+        if (previous) { verifiedBytes -= previous.cacheBytes; verifiedInventory.delete(key); }
+    }
+    function rememberVerified(id, value) {
+        const key = cacheKey(id);
+        const cacheBytes = Buffer.byteLength(JSON.stringify(value.value)) + Buffer.byteLength(JSON.stringify(value.summary || {})) + 512;
+        forgetVerified(key);
+        if (cacheBytes > MAX_VERIFIED_BYTES) return;
+        verifiedInventory.set(key, { ...value, value: structuredClone(value.value), cacheBytes });
+        verifiedBytes += cacheBytes;
+        while (verifiedInventory.size > MAX_VERIFIED_RECORDS || verifiedBytes > MAX_VERIFIED_BYTES) forgetVerified(verifiedInventory.keys().next().value);
+    }
+    function snapshotSummary(snapshot) {
+        if (!snapshot.data) return {};
+        try {
+            const messages = parseRestoreChat(snapshot.data).slice(1);
+            return { messageCount: messages.length, preview: backupExcerpt(messages.at(-1)?.mes || '') };
+        } catch { return { messageCount: null, preview: '' }; }
+    }
+
+    async function record(id, { summary = false, inventoryOnly = false, reuseVerified = false, check = checked } = {}) {
         if (!ID.test(id)) throw fail('NORA_BACKUP_INVALID_ID');
-        const { data, stat } = await read(recordRelative(id), 65536);
+        const key = cacheKey(id), cached = reuseVerified ? verifiedInventory.get(key) : null;
+        if (cached && (!summary || cached.summary !== undefined || cached.value.bytes > 16 * 1024 * 1024)) {
+            const metadata = await check(recordRelative(id)), snapshot = await check(dataRelative(id));
+            if (metadata.stat.isFile() && snapshot.stat.isFile()
+                && equalStat(metadata.stat, cached.metadataStat) && equalStat(snapshot.stat, cached.snapshot.stat)
+                && equalStat(metadata.stat, (await check(recordRelative(id))).stat)
+                && equalStat(snapshot.stat, (await check(dataRelative(id))).stat)) {
+                verifiedInventory.delete(key);
+                verifiedInventory.set(key, cached);
+                return { ...cached, value: structuredClone(cached.value), snapshot: { ...cached.snapshot, data: null } };
+            }
+        }
+        forgetVerified(key);
+        const { data, stat } = await read(recordRelative(id), 65536, true, null, check);
         const value = JSON.parse(data.toString('utf8'));
         value.mvuState ??= 'unverified';
         if (value.version !== 1 || value.id !== id || !DIGEST.test(value.sha256) || !DIGEST.test(value.sessionKey)
@@ -117,53 +160,90 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             || !Number.isSafeInteger(value.createdAt) || value.createdAt < 0
             || typeof value.protected !== 'boolean' || value.consistency !== 'chat-only' || !MVU_STATES.has(value.mvuState)
             || ![value.worldId, value.sessionId].every(v => v === null || typeof v === 'string')) throw fail('NORA_BACKUP_INVALID_RECORD');
-        const snapshot = await read(dataRelative(id), MAX_FILE, !inventoryOnly || summary && value.bytes <= 16 * 1024 * 1024, value.bytes);
+        const snapshot = await read(dataRelative(id), MAX_FILE, !inventoryOnly || summary && value.bytes <= 16 * 1024 * 1024, value.bytes, check);
         if (snapshot.stat.size !== value.bytes || snapshot.sha256 !== value.sha256) throw fail('NORA_BACKUP_CHANGED');
-        return { value, metadataStat: stat, metadataSha256: digest(data), snapshot };
+        const result = { value, metadataStat: stat, metadataSha256: digest(data), snapshot,
+            summary: summary ? snapshotSummary(snapshot) : undefined };
+        rememberVerified(id, { ...result, snapshot: { ...snapshot, data: null } });
+        return result;
     }
 
-    async function inventory(includeSummary = false) {
-        const snapshots = [], warnings = [];
-        let names;
-        try { names = await entries(recordsRelative); } catch (error) { if (error.code !== 'ENOENT') throw error; names = []; }
-        const ids = names.map(name => name.endsWith('.json') ? name.slice(0, -5) : '').filter(id => ID.test(id));
-        const records = await mapStorageReads(ids, async id => {
+    async function inventoryScope() {
+        const parents = new Map();
+        for (const relative of ['', backupRelative, recordsRelative]) {
             try {
-                const { value, snapshot } = await record(id, { inventoryOnly: true, summary: includeSummary });
-                let summary = {};
-                // List summaries are read-only projections, never written into old metadata.
-                if (includeSummary && snapshot.data) {
-                    try {
-                        const messages = parseRestoreChat(snapshot.data).slice(1);
-                        summary = { messageCount: messages.length,
-                            preview: backupExcerpt(messages.at(-1)?.mes || '') };
-                    } catch { summary = { messageCount: null, preview: '' }; }
-                }
-                return { snapshot: { ...value, ...summary } };
-            } catch (error) { return { warning: { id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' } }; }
-        });
-        for (const item of records) { if (item.snapshot) snapshots.push(item.snapshot); else warnings.push(item.warning); }
-        const managed = new Set(snapshots.map(item => `chat_nora1_${item.id}.jsonl`));
-        let totalBytes = 0, legacyFiles = 0;
-        const fileNames = (await entries(backupRelative)).filter(name => name.startsWith('chat_') && name.endsWith('.jsonl'));
-        for (const { name, stat } of await mapStorageReads(fileNames, async name => {
-            const { stat } = await checked(path.join(backupRelative, name));
-            if (!stat.isFile()) throw fail('NORA_BACKUP_UNSAFE_FILE');
-            return { name, stat };
-        })) {
-            totalBytes += stat.size;
-            if (!managed.has(name)) legacyFiles++;
+                const parent = await checked(relative);
+                if (!parent.stat.isDirectory()) throw fail('NORA_BACKUP_UNSAFE_PATH');
+                parents.set(relative, parent);
+            } catch (error) {
+                if (relative !== recordsRelative || error.code !== 'ENOENT') throw error;
+                parents.set(relative, null);
+            }
         }
-        const protectedCopies = snapshots.filter(item => item.protected);
-        const protectedBytes = protectedCopies.reduce((sum, item) => sum + item.bytes, 0);
-        const protectedCounts = new Map();
-        for (const item of protectedCopies) protectedCounts.set(item.sessionKey, (protectedCounts.get(item.sessionKey) || 0) + 1);
-        // The rolling count is a cleanup reminder for manual keeps, not a cap.
-        const protectedCountExceeded = [...protectedCounts.values()].some(count => count > policy.maxPerSession);
-        return { snapshots: snapshots.sort(newest), totalBytes, legacyFiles, warnings, policy,
-            capacity: { protectedCount: protectedCopies.length, protectedBytes,
-                protectedCountExceeded, protectedLimitReached: protectedCountExceeded || protectedBytes >= policy.maxBytes },
-            overBudget: totalBytes > policy.maxBytes };
+        return {
+            async checked(relative) {
+                if (parents.has(relative)) {
+                    const parent = parents.get(relative);
+                    if (!parent) throw Object.assign(new Error('Missing backup records'), { code: 'ENOENT' });
+                    return parent;
+                }
+                const parent = parents.get(path.dirname(relative));
+                if (!parent || path.basename(relative) === '..' || path.isAbsolute(relative)) throw fail('NORA_BACKUP_UNSAFE_PATH');
+                const file = path.join(parent.file, path.basename(relative));
+                const stat = fileStat(await fs.lstat(file, { bigint: true }));
+                if (stat.isSymbolicLink()) throw fail('NORA_BACKUP_UNSAFE_PATH');
+                return { file, stat };
+            },
+            async verify() {
+                if (await fs.realpath(configuredRoot) !== root) throw fail('NORA_BACKUP_UNSAFE_PATH');
+                for (const [relative, parent] of parents) {
+                    if (!parent) {
+                        try { await checked(relative); } catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+                        throw fail('NORA_BACKUP_CHANGED');
+                    }
+                    const current = await checked(relative);
+                    if (!current.stat.isDirectory() || !equalStat(parent.stat, current.stat)) throw fail('NORA_BACKUP_CHANGED');
+                }
+            },
+        };
+    }
+
+    async function inventory(includeSummary = false, reuseVerified = false) {
+        const scope = await inventoryScope();
+        try {
+            const snapshots = [], warnings = [];
+            let names;
+            try { names = await entries(recordsRelative, scope.checked); } catch (error) { if (error.code !== 'ENOENT') throw error; names = []; }
+            const ids = names.map(name => name.endsWith('.json') ? name.slice(0, -5) : '').filter(id => ID.test(id));
+            const records = await mapStorageReads(ids, async id => {
+                try {
+                    const { value, summary } = await record(id, { inventoryOnly: true, summary: includeSummary, reuseVerified, check: scope.checked });
+                    return { snapshot: { ...value, ...(includeSummary ? summary : {}) } };
+                } catch (error) { return { warning: { id, code: error.code || 'NORA_BACKUP_INVALID_RECORD' } }; }
+            });
+            for (const item of records) { if (item.snapshot) snapshots.push(item.snapshot); else warnings.push(item.warning); }
+            const managed = new Set(snapshots.map(item => `chat_nora1_${item.id}.jsonl`));
+            let totalBytes = 0, legacyFiles = 0;
+            const fileNames = (await entries(backupRelative, scope.checked)).filter(name => name.startsWith('chat_') && name.endsWith('.jsonl'));
+            for (const { name, stat } of await mapStorageReads(fileNames, async name => {
+                const { stat } = await scope.checked(path.join(backupRelative, name));
+                if (!stat.isFile()) throw fail('NORA_BACKUP_UNSAFE_FILE');
+                return { name, stat };
+            })) {
+                totalBytes += stat.size;
+                if (!managed.has(name)) legacyFiles++;
+            }
+            const protectedCopies = snapshots.filter(item => item.protected);
+            const protectedBytes = protectedCopies.reduce((sum, item) => sum + item.bytes, 0);
+            const protectedCounts = new Map();
+            for (const item of protectedCopies) protectedCounts.set(item.sessionKey, (protectedCounts.get(item.sessionKey) || 0) + 1);
+            // The rolling count is a cleanup reminder for manual keeps, not a cap.
+            const protectedCountExceeded = [...protectedCounts.values()].some(count => count > policy.maxPerSession);
+            return { snapshots: snapshots.sort(newest), totalBytes, legacyFiles, warnings, policy,
+                capacity: { protectedCount: protectedCopies.length, protectedBytes,
+                    protectedCountExceeded, protectedLimitReached: protectedCountExceeded || protectedBytes >= policy.maxBytes },
+                overBudget: totalBytes > policy.maxBytes };
+        } finally { await scope.verify(); }
     }
 
     async function source(filePath, data) {
@@ -200,7 +280,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             await handle.writeFile(data);
             signal?.throwIfAborted();
             await handle.sync();
-        } catch (error) { failure = error; written = await handle.stat().catch(() => null); } finally { await handle.close(); }
+        } catch (error) { failure = error; written = await handle.stat({ bigint: true }).then(fileStat).catch(() => null); } finally { await handle.close(); }
         if (failure) {
             // This operation created the file exclusively. Do not remove a
             // replacement made by another writer while handling the failure.
@@ -284,7 +364,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
             target = path.join(target, part);
             if (fsSync.lstatSync(target).isSymbolicLink()) throw fail('NORA_BACKUP_UNSAFE_PATH');
         }
-        if (!equalStat(fsSync.lstatSync(target), expected)) throw fail('NORA_BACKUP_CHANGED');
+        if (!equalStat(fileStat(fsSync.lstatSync(target, { bigint: true })), expected)) throw fail('NORA_BACKUP_CHANGED');
         return target;
     }
 
@@ -620,7 +700,7 @@ export function createChatBackupStore({ directories, now = Date.now, policy = DE
     }
 
     return Object.freeze({
-        list: () => run(() => inventory(true)),
+        list: () => run(() => inventory(true, true)),
         upgradeLegacy: () => run(upgradeLegacy),
         previewRestore: input => run(async () => (await inspectRestore(input)).preview),
         restore: (input, options) => run(() => restore(input, options)),

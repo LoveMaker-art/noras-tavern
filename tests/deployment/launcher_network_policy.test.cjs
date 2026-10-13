@@ -28,6 +28,132 @@ const sources={schema:1,mirrors:[{id:'primary',baseUrl:'https://primary.example/
 const latestUrl='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
 const assetUrl='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/asset.zip';
 
+test('asset transfers identify the same product as metadata, including resumed requests',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-product-agent-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('complete-product-resource'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},seen=[];
+  const isolated={schema:1,primary:'github',mirrors:[]};const etag='"fixed-product-resource"';let interrupted=true;
+  const fetcher=async(url,options)=>{const headers=new Headers(options.headers);seen.push({range:headers.get('range'),agent:headers.get('user-agent')});
+    assert.equal(headers.get('user-agent'),'Nora-Tavern-Launcher');
+    if(interrupted){interrupted=false;return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,8));setTimeout(()=>controller.error(Object.assign(new Error('socket interrupted'),{code:'ECONNRESET'})),20);}}),{headers:{'Content-Length':String(bytes.length),ETag:etag}});}
+    return new Response(bytes.subarray(8),{status:206,headers:{'Content-Length':String(bytes.length-8),'Content-Range':`bytes 8-${bytes.length-1}/${bytes.length}`,ETag:etag}});
+  };
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,fetcher,policy:{sources:isolated,maxAttempts:1}}),error=>error.code==='ECONNRESET');
+  const result=await networkModule.downloadAsset({url:assetUrl,target,identity,fetcher,policy:{sources:isolated,maxAttempts:1}});
+  assert.equal(result.resumed,true);assert.deepEqual(seen,[{range:null,agent:'Nora-Tavern-Launcher'},{range:'bytes=8-',agent:'Nora-Tavern-Launcher'}]);assert.equal(sha(fs.readFileSync(target)),identity.sha256);
+});
+
+test('one fixed operation uses its fully received asset metadata source for the following complete asset',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-source-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=crypto.randomBytes(16384),metadataUrl=assetUrl.replace('asset.zip','release-manifest.json'),calls=[];
+  const sf={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
+  const context=networkModule.createReleaseSourceContext?.({tag:'v2.4.2'}),policy={sources:sf,maxAttempts:1,sourceContext:context};
+  const local=await server(t,(request,response)=>{calls.push(request.url);if(request.url.startsWith('/LoveMaker-art/')){response.writeHead(503);response.end('unavailable');}
+    else if(request.url.endsWith('/release-manifest.json')){response.setHeader('Content-Type','application/json');response.end(JSON.stringify({tag:'v2.4.2',size:bytes.length,sha256:sha(bytes)}));}
+    else{response.setHeader('Content-Length',String(bytes.length));response.end(bytes);}});
+  const metadata=await networkModule.metadataJson(metadataUrl,{fetcher:local.fetcher,policy});assert.equal(metadata.value.sha256,sha(bytes));
+  // API success must not erase the asset provider just established in this operation.
+  await networkModule.metadataJson(latestUrl,{fetcher:async()=>Response.json({tag_name:'v2.4.2'}),policy});
+  const target=path.join(root,'asset.zip');await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},fetcher:local.fetcher,policy});
+  assert.equal(sha(fs.readFileSync(target)),sha(bytes));
+  assert.deepEqual(calls,[new URL(metadataUrl).pathname,'/project/nora-tavern/v2.4.2/release-manifest.json','/project/nora-tavern/v2.4.2/asset.zip']);
+});
+
+test('source preference is isolated by target and operation, and cache or revalidation cannot seed it',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-source-isolation-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const url=assetUrl.replace('asset.zip','release-manifest.json'),sf={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
+  let clock=Date.now();const file=path.join(root,'cache.json'),cache=networkModule.createMetadataCache({file,now:()=>clock});
+  const first=networkModule.createReleaseSourceContext({tag:'v2.4.2'}),policy={sources:sf,maxAttempts:1,sourceContext:first};
+  const fetcher=async value=>value.startsWith('https://github.com/')?new Response('offline',{status:503}):Response.json({tag:'v2.4.2'},{headers:{ETag:'"fixed"'}});
+  await networkModule.metadataJson(url,{fetcher,metadataCache:cache,policy});assert.equal(first.preferredSource(assetUrl),'sourceforge');
+  assert.equal(first.preferredSource(assetUrl.replace('v2.4.2','v2.4.3')),null);assert.equal(first.preferredSource(latestUrl),null);
+  assert.throws(()=>first.bindTarget('v2.4.3'),error=>error.code==='VERIFICATION_FAILED');
+  const next=networkModule.createReleaseSourceContext({tag:'v2.4.2'});
+  const cached=await networkModule.metadataJson(url,{fetcher,metadataCache:cache,policy:{...policy,sourceContext:next}});
+  assert.equal(cached.source,'cache');assert.equal(next.preferredSource(assetUrl),null);
+  clock+=cache.ttlMs+1;
+  const revalidated=await networkModule.metadataJson(url,{metadataCache:cache,policy:{...policy,sourceContext:next},fetcher:async value=>
+    value.startsWith('https://github.com/')?new Response('offline',{status:503}):new Response(null,{status:304,headers:{ETag:'"fixed"'}})});
+  assert.equal(revalidated.source,'revalidated');assert.equal(next.preferredSource(assetUrl),null);
+  assert.equal(JSON.stringify(first),'{}');assert.doesNotMatch(fs.readFileSync(file,'utf8'),/sourceContext|preferredSource/);
+});
+
+test('invalid metadata or a mismatched byte identity does not promote an asset source',async t=>{
+  const sf={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]},url=assetUrl.replace('asset.zip','release-manifest.json');
+  for(const failure of ['invalid-json','certificate','identity'])await t.test(failure,async()=>{
+    const context=networkModule.createReleaseSourceContext({tag:'v2.4.2'}),policy={sources:sf,maxAttempts:1,sourceContext:context};
+    const fetcher=async value=>{if(value.startsWith('https://github.com/')){if(failure==='certificate')throw Object.assign(new Error('untrusted certificate'),{code:'ERR_CERT_AUTHORITY_INVALID'});return new Response('offline',{status:503});}
+      return new Response(failure==='invalid-json'?'not JSON':'{}');};
+    const call=networkModule.metadataJson(url,{fetcher,policy,...(failure==='identity'?{conditionIdentity:{sha256:'0'.repeat(64),size:2}}:{})});
+    if(failure==='identity')await call;else await assert.rejects(call);
+    assert.equal(context.preferredSource(assetUrl),null);
+  });
+});
+
+test('a preferred source does not weaken integrity or the original GitHub retry allowance',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-preferred-fallback-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('full-checked-bytes'),url=assetUrl.replace('asset.zip','release-manifest.json'),sf={schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
+  const context=networkModule.createReleaseSourceContext({tag:'v2.4.2'}),policy={sources:sf,sourceContext:context,sleep:async()=>{},downloadBudgetMs:10000};
+  await networkModule.metadataJson(url,{policy,fetcher:async value=>value.startsWith('https://github.com/')?new Response('missing',{status:404}):Response.json({tag:'v2.4.2'})});
+  const calls=[];let github=0;
+  await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},policy,fetcher:async value=>{
+    calls.push(value);if(value.startsWith('https://downloads.sourceforge.net/'))return new Response('offline',{status:503});
+    if(++github===1)throw Object.assign(new Error('connection reset'),{code:'ECONNRESET'});return new Response(bytes);
+  }});
+  assert.deepEqual(calls,['https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip',assetUrl,assetUrl]);assert.equal(sha(fs.readFileSync(path.join(root,'asset.zip'))),sha(bytes));
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target:path.join(root,'invalid.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},policy,
+    fetcher:async()=>new Response(Buffer.alloc(bytes.length))}),error=>error.code==='VERIFICATION_FAILED');
+  assert.equal(fs.existsSync(path.join(root,'invalid.zip')),false);
+});
+
+test('release HEAD requests use the same product user agent without losing conditional headers',async()=>{
+  const fetcher=async(_url,options)=>{
+    assert.equal(options.method,'HEAD');const headers=new Headers(options.headers);
+    assert.equal(headers.get('user-agent'),'Nora-Tavern-Launcher');assert.equal(headers.get('if-none-match'),'"fixed"');return new Response(null);
+  };
+  const options={method:'HEAD',headers:{'User-Agent':'browser-default','If-None-Match':'"fixed"'}};
+  await networkModule.fetchRead(fetcher,assetUrl,options,{maxAttempts:1});
+  fetcher.releaseRead=true;await networkModule.fetchRead(fetcher,assetUrl,options,{maxAttempts:1});
+});
+
+test('an unavailable fixed source probe preserves the sealed download and is attempted only once per operation',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-fixed-source-offline-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const proof='{"fixed":true}',proofUrl=assetUrl.replace('asset.zip','release-manifest.json'),bytes=Buffer.from('fixed-content'),requests=[],events=[];
+  const policy={sourceContext:networkModule.createReleaseSourceContext({tag:'v2.4.2'}),maxAttempts:1,sources:{schema:1,primary:'github',mirrors:[]}};
+  const fetcher=async url=>{requests.push(url);if(url===proofUrl)return new Response('temporarily unavailable',{status:503});return new Response(bytes);};
+  for(const name of ['asset.zip','second.zip'])await networkModule.downloadAsset({url:assetUrl.replace('asset.zip',name),target:path.join(root,name),identity:{tag:'v2.4.2',asset:name,size:bytes.length,sha256:sha(bytes)},fetcher,policy,onEvent:event=>events.push(event),fixedPlanSourceEvidence:{url:proofUrl,size:proof.length,sha256:sha(proof)}});
+  assert.equal(requests.filter(url=>url===proofUrl).length,1);assert.equal(events.filter(event=>event.event==='log').length,1);
+  assert.equal(sha(fs.readFileSync(path.join(root,'second.zip'))),sha(bytes));
+});
+
+test('fresh fixed source evidence cannot downgrade invalid bytes, JSON or certificates to an asset download',async t=>{
+  const proof='{"fixed":true}',proofUrl=assetUrl.replace('asset.zip','release-manifest.json');
+  for(const fault of ['sha256','size','json','certificate'])await t.test(fault,async()=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-fixed-source-reject-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));let assets=0;
+    await assert.rejects(networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:4,sha256:sha('data')},
+      policy:{sourceContext:networkModule.createReleaseSourceContext({tag:'v2.4.2'}),maxAttempts:1,sources:{schema:1,primary:'github',mirrors:[]}},fixedPlanSourceEvidence:{url:proofUrl,size:proof.length,sha256:sha(proof)},
+      fetcher:async url=>{if(url!==proofUrl){assets++;return new Response('data');}if(fault==='certificate')throw Object.assign(new Error('certificate rejected'),{code:'ERR_CERT_AUTHORITY_INVALID'});return new Response(fault==='json'?'not-json':fault==='sha256'?'{"fixed":false}':fault==='size'?proof+' ':proof);}}),error=>['VERIFICATION_FAILED','INVALID_RESPONSE','ERR_CERT_AUTHORITY_INVALID'].includes(error.code));
+    assert.equal(assets,0);assert.equal(fs.existsSync(path.join(root,'asset.zip')),false);
+  });
+});
+
+test('a fresh fixed-plan source deadline is confined to its full metadata probe',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-fixed-source-budget-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const proof='{"fixed":true}',proofUrl=assetUrl.replace('asset.zip','release-manifest.json');let clock=1000;
+  const policy={now:()=>clock,sourceContext:networkModule.createReleaseSourceContext({tag:'v2.4.2'}),maxAttempts:1,sources:{schema:1,primary:'github',mirrors:[]}};
+  const result=await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:4,sha256:sha('data')},policy,
+    fixedPlanSourceEvidence:{url:proofUrl,size:proof.length,sha256:sha(proof)},onEvent:event=>{if(event.stage_id==='download')clock=200001;},
+    fetcher:async url=>{if(url===proofUrl){clock=90000;return new Response(proof);}assert.ok(clock>101000);return new Response('data');}});
+  assert.equal(sha(fs.readFileSync(result.file)),sha('data'));assert.equal(policy.deadlineAt,undefined);
+});
+
+test('a fully verified cached asset still rejects invalid build source configuration before any request',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-cache-source-admission-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const target=path.join(root,'asset.zip');fs.writeFileSync(target,'data');let requests=0;
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:4,sha256:sha('data')},
+    policy:{sources:{schema:2,mirrors:[]}},fetcher:async()=>{requests++;return new Response('data');}}),error=>error.code==='VERIFICATION_FAILED');
+  assert.equal(requests,0);assert.equal(fs.readFileSync(target,'utf8'),'data');
+});
+
 test('metadata rate-limit cooldown survives reopening and expires before querying again',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-metadata-cooldown-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));

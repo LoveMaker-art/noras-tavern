@@ -7,6 +7,7 @@ const crypto=require('node:crypto');
 const policy=require('../installer/desktop/operation-policy');
 const transaction=require('../installer/desktop/runtime-transaction');
 const {treeSeal}=require('../installer/desktop/tree-integrity');
+const desktopRequire=require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js'));
 function fixture(){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-partial-managed-'))),home=path.join(root,'hermes'),tavern=path.join(root,'tavern');
  const write=(relative,value)=>{const file=path.join(root,relative);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,typeof value==='string'?value:JSON.stringify(value));};
@@ -113,7 +114,7 @@ test('a rejected private readonly inspection cleans only its new stage so stoppe
    const proc={argv:['node','runtime-worker.js','fixture-payload',f.root,f.home,'--inspect-managed','--repair-managed'],env:process.env,
     stdin:Readable.from([Buffer.from(JSON.stringify(f.facts()))]),cwd:()=>app,stdout:{write:text=>{output+=text;}},stderr:{write(){}},exitCode:0};
    const context=vm.createContext({require:id=>id==='./runtime'?runtime:id==='./operation-delegate'?{connect:async()=>delegate}:
-    id==='./diagnostics'?{errorDetails:error=>({message:error.message})}:id==='./runtime-transaction'?transaction:require(id),process:proc,Buffer});
+    id==='./diagnostics'?{errorDetails:error=>({message:error.message})}:id==='./runtime-transaction'?transaction:desktopRequire(id),process:proc,Buffer});
    vm.runInContext(fs.readFileSync(path.join(__dirname,'../installer/desktop/runtime-worker.js'),'utf8'),context);await done;return {code:proc.exitCode,output};
   };
   const refused=await invoke(false);assert.equal(refused.code,1);assert.ok(refused.output.includes('service still running'));assert.equal(fs.existsSync(stage),false);
@@ -136,7 +137,7 @@ test('actual private inspector and recovery reject redirected stage ancestors be
    const proc={argv:['node','runtime-worker.js','fixture-payload',f.root,f.home,mode,'--repair-managed'],env:process.env,
     stdin:Readable.from([Buffer.from(JSON.stringify(f.facts()))]),cwd:()=>app,stdout:{write:text=>{output+=text;}},stderr:{write(){}},exitCode:0};
    const context=vm.createContext({require:id=>id==='./runtime'?runtime:id==='./operation-delegate'?{connect:async()=>delegate}:
-    id==='./diagnostics'?{errorDetails:error=>({message:error.message})}:id==='./runtime-transaction'?transaction:require(id),process:proc,Buffer});
+    id==='./diagnostics'?{errorDetails:error=>({message:error.message})}:id==='./runtime-transaction'?transaction:desktopRequire(id),process:proc,Buffer});
    vm.runInContext(fs.readFileSync(path.join(__dirname,'../installer/desktop/runtime-worker.js'),'utf8'),context);await done;
    assert.equal(proc.exitCode,1);assert.equal(extractions,0);assert.equal(helpers,0);assert.ok(!output.includes('"event":"result"'));
    assert.deepEqual(fs.readdirSync(outside),[],'redirected target remains untouched');
@@ -175,7 +176,7 @@ test('actual no-Python status and existing UI route retain repair action; corrup
   const main=fs.readFileSync(path.join(desktop,'main.js'),'utf8'),ast=parse(main,{ecmaVersion:'latest'});
   const definition=name=>{const node=ast.body.find(node=>node.type==='FunctionDeclaration'&&node.id.name===name);return main.slice(node.start,node.end);};
   let callback;const walk=node=>{if(!node||typeof node!=='object')return;if(node.type==='CallExpression'&&node.callee.name==='handle'&&node.arguments[0]?.value==='nora:status')callback=node.arguments[1];for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==='object')walk(value);}};walk(ast);
-  let bridgeCalls=0;const context=vm.createContext({fs,path,require:id=>id==='./operation-policy'?policy:require(id),DEFAULT_PORT:18899,
+  let bridgeCalls=0;const context=vm.createContext({fs,path,require:id=>id==='./operation-policy'?policy:desktopRequire(id),DEFAULT_PORT:18899,
    installRoot:()=>f.tavern,noraHome:()=>f.root,hermesHome:()=>f.home,readVerifiedModel:()=>null,findHermes:()=>null,
    readInstallerState:()=>({phase:'idle',port:18899}),installationPort:()=>18899,locationStatus:()=>({noraHome:f.root}),quitting:false,uninstalling:false,selectingLocation:false,
    modelBusy:false,activeRun:false,statusRequest:null,activeOperationContext:null,releaseAbort:null,cancelled:false,updatingSystem:false,activeProcess:null,

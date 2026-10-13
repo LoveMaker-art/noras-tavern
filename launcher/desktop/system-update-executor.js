@@ -45,6 +45,9 @@ function create({bridge,compare,finalizeLauncher=async()=>{}}){
     const result=await bridge('resume-committed-install',{operationId:context.operationId,port},context);
     if(result?.operationVerified!==true||result.firstInstallVerified!==true||result.systemReady!==true||compare(result.version,target)!==0)
       throw failure('首装文件已提交，但程序和连接尚未通过实际验收；未重复安装。');
+    // A prior guard/ACK gap can leave operation effects unknown. Only the
+    // committed owner and successful current acceptance resolve that fact.
+    await context.effect('changed');
     return result;
   }
   return {resumeCommitted,resumeInstallation,apply};

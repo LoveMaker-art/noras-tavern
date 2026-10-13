@@ -98,6 +98,16 @@ test('test prerequisites and absolute runner entries are mandatory before native
   assert.ok(!presentation.run.includes('launcher_telemetry_worker.test.cjs'),
     'Source presentation checks must not imply that an absent receiver was tested');
 });
+test('whole machine deletion proofs cannot overlap another suite\'s unclassifiable process fixtures', () => {
+  const step = full.jobs.build.steps.find(step => step.name === 'Test operation ownership, evidence, bounded retry and recovery contracts');
+  assert.ok(step);
+  assert.match(step.run, /node --test --test-concurrency=1/,
+    'An ownership fixture can legitimately use an inline actor; deletion suites must observe the machine after that fixture closes');
+  for (const file of ['launcher_operation_lock.test.cjs', 'launcher_runtime_transaction.test.cjs', 'launcher_uninstall.test.cjs'])
+    assert.ok(step.run.includes(`tests/deployment/${file}`), `Required native proof lost: ${file}`);
+  assert.doesNotMatch(step.run, /--test-name-pattern|--skip/);
+  assert.equal(step['continue-on-error'], undefined);
+});
 test('historical acceptance selects published history and runs independently from runtime reuse', () => {
   assert.ok(full.on.workflow_dispatch.inputs.acceptance_baseline_tag);
   const selection = full.jobs.preflight.steps.find(step => step.id === 'acceptance-baseline');
@@ -146,6 +156,24 @@ test('fresh Hermes builds pin both installers and repository before native runti
   assert.match(windows, /foreach \(\$stage in \$stages\)[\s\S]*-Commit \$revision -ForceCommit/);
   assert.match(windows, /'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv'/);
   assert.doesNotMatch(mac + windows, /https:\/\/hermes-agent\.nousresearch\.com\/install\.(?:sh|ps1)/);
+});
+test('cold native acceptance uses the sealed portable runtime instead of the bootstrap interpreter', () => {
+  const steps = full.jobs.build.steps;
+  const built = steps.findIndex(step => step.name === 'Build integrated runtime');
+  const restored = steps.findIndex(step => step.name === 'Restore the freshly sealed runtime for native acceptance');
+  const configured = steps.findIndex(step => step.name === 'Configure actual operation actors and native lock tests');
+  const prerequisites = steps.findIndex(step => step.name === 'Verify native launcher test prerequisites');
+  assert.ok(built >= 0 && restored > built && configured > restored && prerequisites > configured,
+    'Cold builds must restore their sealed archive before selecting the native test interpreter');
+  const step = steps[restored];
+  assert.equal(step.if, "inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''");
+  assert.equal(step['continue-on-error'], undefined);
+  assert.match(step.run, /set -euo pipefail/);
+  assert.match(step.run, /mv "\$RUNNER_TEMP\/hermes" "\$RUNNER_TEMP\/hermes-bootstrap-source"/);
+  assert.match(step.run, /mv "\$RUNNER_TEMP\/hermes-runtime" "\$RUNNER_TEMP\/hermes-sealed-build"/);
+  assert.match(step.run, /node "\$PWD\/tooling\/run\.mjs" node tooling\/release\/restore-launcher-runtime\.cjs "\$RUNNER_TEMP\/hermes-sealed-build" "\$RUNNER_TEMP"/);
+  assert.doesNotMatch(step.run, /hermes-build-source|\|\|\s*true|launcher-test-environment/,
+    'Keep the later acceptance backup name available and retain mandatory prerequisite checks');
 });
 test('the independent publication workflow only consumes accepted bytes and defaults to a local seal', () => {
   assert.deepEqual(Object.keys(publisher.on), ['workflow_dispatch']);

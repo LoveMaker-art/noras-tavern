@@ -35,6 +35,14 @@ function assertLockShell(home) {
   assert.deepEqual(fs.readdirSync(path.join(home,'installer/operations')),['.writer.lock']);
 }
 
+function preservedHistory(home,file){
+  const root=fs.realpathSync(home),relative=path.relative(root,require('../installer/desktop/uninstall').safeRoot(file)).split(path.sep).join('/');
+  const saved=require('../installer/desktop/retained-installation').inspect(root);
+  const entry=saved.entries.find(item=>relative===item.from||relative.startsWith(item.from+'/'));
+  assert.ok(entry,`original evidence ${relative} must be preserved by the KEEP receipt`);
+  return path.join(root,entry.to,relative.slice(entry.from.length));
+}
+
 async function idlePort(){
   const server=require('node:net').createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   const port=server.address().port;await new Promise(resolve=>server.close(resolve));return port;
@@ -49,6 +57,141 @@ test('keep removes programs, retains credentials, chats, config and backups; rep
   assert.ok(events.length > 0); assert.equal(events.at(-1).current, events.at(-1).total);
   cleanup(plan);
   assert.equal(fs.existsSync(path.join(f.home, RETAINED)), true);
+});
+
+test('a completed keep uninstall is eligible for reinstall without presenting removed programs as damaged installation', t => {
+  const f=fixture(t),root=fs.realpathSync(f.home),hermes=path.join(root,'hermes'),tavern=path.join(root,'tavern');
+  const version='2.4.5',commit='a'.repeat(40);
+  f.write('hermes/nora-instance.json',JSON.stringify({schema:1,noraHome:root,hermesHome:hermes,installRoot:tavern,port:18879,releaseChannel:'stable'}));
+  f.write('hermes/nora-installation.json',JSON.stringify({schema:1,version,commit,setupCompleted:false}));
+  f.write('tavern/tavern-updates/installed.json',JSON.stringify({schema:2,version,commit}));
+  f.write('tavern/tavern-updates/installed-manifest.json',JSON.stringify({schema:'tavern-release/v2',commit,versions:{tavern:version}}));
+  f.write('tavern/tavern-updates/nora-system.json',JSON.stringify({schema:1,version,commit,proof:Object.fromEntries(
+    ['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration'].map(name=>[name,true]))}));
+  const policy=require('../installer/desktop/operation-policy'),roots={noraHome:root,hermesHome:hermes,installRoot:tavern,port:18879};
+  assert.equal(policy.hasManagedRecords(roots),true);
+  const saved=new Map(f.data.map(relative=>[relative,fs.readFileSync(path.join(root,relative))]));
+  cleanup(f.plan('keep'));
+  assert.equal(policy.hasManagedRecords(roots),false,'The supported KEEP result must not request damaged-install repair');
+  assert.equal(policy.inspectManagedInstallation(roots),null);
+  for(const [relative,bytes]of saved)assert.deepEqual(fs.readFileSync(path.join(root,relative)),bytes);
+});
+
+test('KEEP resumes an interrupted deletion and interrupted history rename without changing the native lock inode',t=>{
+  for(const interruption of ['deletion','history','completion']){
+    const f=fixture(t),plan=f.plan('keep'),retained=require('../installer/desktop/retained-installation');
+    f.write('tavern/tavern-updates/installed.json','{"schema":2}');
+    const metadata=fs.readFileSync(path.join(f.home,'tavern/tavern-updates/installed.json'));
+    const rename=fs.renameSync;let reached=false;
+    fs.renameSync=function(from,to){
+      if(interruption==='history'&&!reached&&String(to).includes('/history/')){rename.call(this,from,to);reached=true;throw Error('interrupted after history rename');}
+      if(interruption==='completion'&&!reached&&String(to).endsWith('nora-retained.json')&&JSON.parse(fs.readFileSync(from)).state==='complete'){
+        reached=true;throw Error('interrupted before completion rename');
+      }
+      return rename.call(this,from,to);
+    };
+    try{assert.throws(()=>cleanup(plan,event=>{if(interruption==='deletion'&&event.current===3){reached=true;throw Error('interrupted deletion');}}),/interrupted/);}
+    finally{fs.renameSync=rename;}
+    assert.equal(reached,true);
+    const pending=retained.inspect(f.home,{allowPending:true}),lockFile=path.join(f.home,'installer/operations/.writer.lock'),lock=fs.statSync(lockFile,{bigint:true});
+    assert.equal(pending.state,'prepared');assert.throws(()=>retained.inspect(f.home),error=>error.code==='RETAINED_UNINSTALL_INCOMPLETE');
+    cleanup(plan);
+    const done=retained.inspect(f.home),after=fs.statSync(lockFile,{bigint:true});assert.equal(done.id,pending.id);assert.equal(done.state,'complete');
+    assert.equal(after.ino,lock.ino);assert.equal(after.dev,lock.dev);
+    for(const name of f.data)assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture');
+    assert.deepEqual(fs.readFileSync(path.join(f.home,done.archive,'history/tavern/tavern-updates/installed.json')),metadata);
+  }
+});
+
+test('retained receipts reject foreign paths, ownership, duplicated targets and a replacement program tree',t=>{
+  for(const change of ['path','owner','duplicate','program']){
+    const f=fixture(t),plan=f.plan('keep'),retained=require('../installer/desktop/retained-installation');
+    f.write('tavern/tavern-updates/installed.json','{"schema":2}');
+    assert.throws(()=>cleanup(plan,()=>{throw Error('interrupted');}),/interrupted/);
+    const file=path.join(f.home,RETAINED),pending=JSON.parse(fs.readFileSync(file));
+    if(change==='path'){pending.entries[0].from='installer/model.json';pending.entries[0].to=pending.archive+'/history/installer/model.json';}
+    if(change==='owner')pending.owner='foreign';
+    if(change==='duplicate')pending.targets[1]=pending.targets[0];
+    if(change==='program'){fs.renameSync(path.join(f.home,'hermes/hermes-agent'),path.join(f.directory,'old-program'));f.write('hermes/hermes-agent/replaced','new tree');}
+    fs.writeFileSync(file,JSON.stringify(pending));
+    assert.throws(()=>retained.inspect(f.home,{allowPending:true}),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+    assert.throws(()=>cleanup(plan),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+    assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  }
+});
+
+test('KEEP consume does not retire its claim for an unfinished install even when the caller supplies readiness labels',t=>{
+  const f=fixture(t),retained=require('../installer/desktop/retained-installation'),crypto=require('node:crypto');cleanup(f.plan('keep'));
+  const root=fs.realpathSync(f.home),id=crypto.randomUUID(),target={request:{action:'install'},releasePlan:{schema:'nora-bundled-plan/1',mode:'install',tag:'v2.4.6',commit:'a'.repeat(40)}};
+  f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,kind:'install',state:'verifying',effectState:'changed',
+    planSelected:true,target,planDigest:crypto.createHash('sha256').update(JSON.stringify(target)).digest('hex')}));
+  retained.claim(root,id);f.write('hermes/hermes-agent/program','incomplete program');
+  const receipt=fs.readFileSync(path.join(root,'nora-retained.json')),result={systemReady:true,version:'2.4.6',commit:'a'.repeat(40),
+    noraHome:root,hermesHome:path.join(root,'hermes'),installRoot:path.join(root,'tavern'),port:8799};
+  assert.throws(()=>retained.consume(root,id,{result}),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+  assert.deepEqual(fs.readFileSync(path.join(root,'nora-retained.json')),receipt);
+});
+
+test('a reinstall claim requires this installation active install operation and can release only after original program removal',t=>{
+  const f=fixture(t),retained=require('../installer/desktop/retained-installation');cleanup(f.plan('keep'));
+  const id=require('node:crypto').randomUUID();assert.throws(()=>retained.claim(f.home,id),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+  f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,kind:'update',state:'applying'}));
+  assert.throws(()=>retained.claim(f.home,id),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+  f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,kind:'install',state:'applying'}));
+  retained.claim(f.home,id);assert.equal(retained.inspect(f.home,{operationId:id}).reinstallOperationId,id);
+  f.write('hermes/hermes-agent/reinstalled','new');assert.throws(()=>retained.release(f.home,id),error=>error.code==='RETAINED_INSTALLATION_UNCONFIRMED');
+  fs.rmSync(path.join(f.home,'hermes/hermes-agent'),{recursive:true});retained.release(f.home,id);
+  assert.equal(retained.inspect(f.home).reinstallOperationId,undefined);
+});
+
+test('legacy KEEP requires actual program absence and refuses incomplete or foreign history before archiving any data',t=>{
+  for(const change of ['missing-owner','program','incomplete-runtime','foreign-first','partial-receipts','legacy-update']){
+    const f=fixture(t),retained=require('../installer/desktop/retained-installation');cleanup(f.plan('keep'));
+    const plan=f.plan('keep');f.write(RETAINED,JSON.stringify({schema:1,hermes:'hermes'}));
+    const id=require('node:crypto').randomUUID();
+    if(change==='missing-owner')fs.rmSync(path.join(f.home,'nora-owner.json'));
+    if(change==='program')f.write('hermes/hermes-agent/remains','incomplete KEEP');
+    if(change==='incomplete-runtime'){
+      f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,kind:'install',state:'failed',effectState:'changed',recoveryOutcome:'recovery-required'}));
+      f.write(`installer/operations/${id}/runtime-bootstrap.json`,JSON.stringify({schema:'nora-runtime-bootstrap/1',operationId:id,status:'applying'}));
+    }
+    if(change==='foreign-first'){
+      f.write(`installer/operations/${id}/operation.json`,JSON.stringify({schema:'nora-operation/1',operationId:id,kind:'install',state:'succeeded',effectState:'changed',verification:'confirmed'}));
+      f.write(`installer/operations/${id}/first-install/transaction.json`,JSON.stringify({schema:1,owner:'nora-first-install',operationId:id,status:'installed',noraHome:f.directory,roots:{hermes:path.join(f.home,'hermes'),tavern:path.join(f.home,'tavern')},targetDigest:'a'.repeat(64),targets:[],unrestored:[]}));
+    }
+    if(change==='partial-receipts')f.write('tavern/tavern-updates/installed.json','{"schema":2}');
+    if(change==='legacy-update')f.write('installer/launcher-update/job-unknown/plan.json','{}');
+    const before=fs.readFileSync(path.join(f.home,'hermes/.env')),receipt=fs.readFileSync(path.join(f.home,RETAINED));
+    assert.throws(()=>cleanup(plan),/./,change);
+    assert.deepEqual(fs.readFileSync(path.join(f.home,'hermes/.env')),before);assert.deepEqual(fs.readFileSync(path.join(f.home,RETAINED)),receipt);
+    if(!['missing-owner','program'].includes(change))assert.equal(retained.inspect(f.home).legacy,true,'legacy shape alone grants no history retirement');
+  }
+});
+
+test('an owned legacy KEEP with coherent receipts upgrades without consuming data or the native lock inode',t=>{
+  const f=fixture(t),retained=require('../installer/desktop/retained-installation');cleanup(f.plan('keep'));
+  const file=path.join(f.home,RETAINED),lock=fs.statSync(path.join(f.home,'installer/operations/.writer.lock'),{bigint:true});
+  f.write(RETAINED,JSON.stringify({schema:1,hermes:'hermes'}));
+  const version='2.4.5',commit='a'.repeat(40),proof=Object.fromEntries(['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration'].map(key=>[key,true]));
+  f.write('tavern/tavern-updates/installed.json',JSON.stringify({schema:2,version,commit}));
+  f.write('tavern/tavern-updates/installed-manifest.json',JSON.stringify({schema:'tavern-release/v2',commit,versions:{tavern:version}}));
+  f.write('tavern/tavern-updates/nora-system.json',JSON.stringify({schema:1,version,commit,proof}));
+  const receipts=['installed.json','installed-manifest.json','nora-system.json'].map(name=>path.join(f.home,'tavern/tavern-updates',name));
+  const original=receipts.map(file=>fs.readFileSync(file));cleanup(f.plan('keep'));
+  const upgraded=retained.inspect(f.home);assert.equal(upgraded.schema,2);assert.equal(upgraded.state,'complete');
+  for(let i=0;i<receipts.length;i++)assert.deepEqual(fs.readFileSync(preservedHistory(f.home,receipts[i])),original[i]);
+  for(const name of f.data)assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture');
+  assert.equal(fs.statSync(path.join(f.home,'installer/operations/.writer.lock'),{bigint:true}).ino,lock.ino);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(f.home,upgraded.archive,'previous-retained.json'))),{schema:1,hermes:'hermes'});
+});
+
+test('account home lookup failure refuses safe-root admission instead of trusting a private environment profile',t=>{
+  const f=fixture(t),file=path.resolve(__dirname,'../installer/desktop/uninstall.js'),localRequire=createRequire(file);
+  const context=vm.createContext({require:name=>name==='node:os'?{...os,userInfo:()=>{throw Error('OS account lookup failed');}}:localRequire(name),
+    __filename:file,__dirname:path.dirname(file),module:{exports:{}},process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
+  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  assert.throws(()=>context.module.exports.safeRoot(f.home),/OS account lookup failed/);
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
 });
 
 test('complete uninstall retains only the stable writer lock and owner, never adjacent Hermes', t => {
@@ -173,6 +316,31 @@ test('confirmed keep hands off exact installation paths, without deleting data i
   assert.equal(plan.mode, 'keep'); assert.equal(plan.root, fs.realpathSync(f.home));
   assert.equal(fs.existsSync(path.join(f.home, 'hermes/.env')), true);
   assert.deepEqual(f.exits, [0]);
+});
+
+test('the original KEEP confirmation resumes only its prepared uninstall through a port-bound native proof',async t=>{
+  const f=wizard(t,[1]),plan=f.plan('keep',{port:18888});
+  assert.throws(()=>cleanup(plan,event=>{if(event.current===3)throw Error('interrupted');}),/interrupted/);
+  f.context.findPython=()=>{throw Error('partial Python must never be executed for a prepared KEEP retry');};
+  assert.equal(await f.run(),true);
+  const retry=JSON.parse(fs.readFileSync(f.planFile));assert.equal(retry.serviceMode,'retained');assert.equal(retry.port,18888);
+  assert.equal(retry.serviceCheck.mode,'retained');assert.equal(retry.serviceCheck.port,18888);
+  assert.equal(retry.retainedId,require('../installer/desktop/retained-installation').inspect(f.home,{allowPending:true}).id);
+  assert.throws(()=>cleanup({...retry,retainedId:require('node:crypto').randomUUID()}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+  assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
+  assert.throws(()=>makePlan({home:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern'),mode:'keep',port:18889,serviceMode:'retained'}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+});
+
+test('prepared KEEP still refuses a listening service before cleanup',async t=>{
+  const f=fixture(t),net=require('node:net'),server=net.createServer();await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  t.after(()=>new Promise(resolve=>server.close(resolve)));
+  const port=server.address().port,plan=f.plan('keep',{port});assert.throws(()=>cleanup(plan,()=>{throw Error('interrupted');}),/interrupted/);
+  const retry=f.plan('keep',{port,serviceMode:'retained'}),file=path.join(f.directory,'nora-uninstall.json');fs.writeFileSync(file,JSON.stringify(retry));
+  const before=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=before;}
+  const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json')));
+  assert.equal(result.state,'error');assert.equal(result.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+  for(const name of f.programs)assert.equal(fs.existsSync(path.join(f.home,name)),true);
+  assert.equal(require('../installer/desktop/retained-installation').inspect(f.home,{allowPending:true}).state,'prepared');
 });
 
 test('confirmed all requires both confirmations and hands off only the displayed installation',async t=>{
@@ -617,11 +785,28 @@ test('worker consumes a real managed Python offline result from the bound curren
     const created=spawnSync(python,['-B','-m','venv','--system-site-packages',venv],{encoding:'utf8',timeout:30000});
     assert.equal(created.status,0,created.stderr);
   }
-  if(process.platform==='win32'){
-    const base=/^home\s*=\s*(.+)$/m.exec(fs.readFileSync(path.join(venv,'pyvenv.cfg'),'utf8'))?.[1].trim();
-    assert.ok(base);fs.rmSync(path.join(f.home,'hermes/python'),{recursive:true,force:true});
-    fs.symlinkSync(base,path.join(f.home,'hermes/python'),'junction');
+  const config=path.join(venv,'pyvenv.cfg'),base=/^home\s*=\s*(.+)$/m.exec(fs.readFileSync(config,'utf8'))?.[1].trim();
+  assert.ok(base,'the copied venv must retain its actual base interpreter binding');
+  const sourcePython=path.join(source,process.platform==='win32'?'Scripts/python.exe':'bin/python');
+  const sealed=process.env.NORA_TEST_MANAGED_PYTHON_ROOT||(fs.existsSync(sourcePython)&&fs.lstatSync(sourcePython).isSymbolicLink()
+    &&!path.isAbsolute(fs.readlinkSync(sourcePython))?(process.platform==='win32'?base:path.dirname(base)):null);
+  if(sealed){
+    // A sealed runtime's venv uses relative links into its adjacent CPython.
+    // Clone that managed base too, and rebase the cfg via the production token
+    // interface; copying only venv makes its python link dangling on native CI.
+    const managed=path.join(f.home,'hermes/python');fs.rmSync(managed,{recursive:true,force:true});
+    fs.cpSync(sealed,managed,{recursive:true,verbatimSymlinks:true,...(process.platform==='win32'?{filter:()=>true}:{})});
+    fs.writeFileSync(config,fs.readFileSync(config,'utf8').replace(/^home\s*=\s*.+$/m,
+      `home = @@NORA_PYTHON_HOME@@${process.platform==='win32'?'':'/bin'}`));
+    const runtime=require('../installer/desktop/runtime'),manifest={platform:process.platform,
+      venvPython:'hermes-agent/venv/'+(process.platform==='win32'?'Scripts/python.exe':'bin/python'),relocatableFiles:['hermes-agent/venv/pyvenv.cfg']};
+    if(process.platform==='win32')runtime.relocateFiles(path.join(f.home,'hermes'),manifest);
+    else runtime.relocateTextFiles(path.join(f.home,'hermes'),manifest);
+  }else if(process.platform==='win32'){
+    fs.rmSync(path.join(f.home,'hermes/python'),{recursive:true,force:true});fs.symlinkSync(base,path.join(f.home,'hermes/python'),'junction');
   }
+  const executable=path.join(venv,process.platform==='win32'?'Scripts/python.exe':'bin/python');
+  assert.ok(fs.existsSync(executable),'managed Python positive fixture must be runnable rather than fall back to native OS');
   const plan=f.plan('all',{port:await idlePort()}),file=path.join(f.directory,'nora-uninstall.json');
   fs.writeFileSync(file,JSON.stringify(plan));
   const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
@@ -655,7 +840,7 @@ test('stale applying labels cannot block actually untouched staged or restored r
     cleanup(f.plan('keep'));
     assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
     assert.equal(fs.existsSync(path.join(f.home,f.programs[0])),false);
-    assert.equal(fs.existsSync(path.join(f.home,'installer/operations',id,'runtime-bootstrap.json')),true);
+    assert.equal(fs.existsSync(preservedHistory(f.home,path.join(f.home,'installer/operations',id,'runtime-bootstrap.json'))),true);
   }
 });
 
@@ -693,8 +878,8 @@ test('a historical committed runtime is allowed only with a sealed successor and
   cleanup(f.plan('keep'));
   assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'preserved');
   assert.equal(fs.existsSync(path.join(f.home,'hermes/hermes-agent')),false);
-  assert.equal(fs.readFileSync(path.join(previous,'.env'),'utf8'),'fixture');
-  assert.equal(fs.existsSync(path.join(f.home,'installer/operations',oldId,'runtime-bootstrap.json')),true);
+  assert.equal(fs.readFileSync(preservedHistory(f.home,path.join(previous,'.env')),'utf8'),'fixture');
+  assert.equal(fs.existsSync(preservedHistory(f.home,path.join(f.home,'installer/operations',oldId,'runtime-bootstrap.json'))),true);
 });
 
 async function restoredAbsentRuntimeFixture(t,{replaceAgain=false}={}){
@@ -761,8 +946,8 @@ test('uninstall accepts an actual absent-root rollback followed by a committed r
     cleanup(f.plan('keep'));
     assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'retained fixture settings');
     assert.equal(fs.existsSync(path.join(f.home,'hermes/hermes-agent')),false);
-    assert.deepEqual(fs.readFileSync(f.old.paths.journalReference),oldJournal);
-    assert.deepEqual(fs.readFileSync(path.join(f.old.paths.failed,'logs/failed-install.log')),failure);
+    assert.deepEqual(fs.readFileSync(preservedHistory(f.home,f.old.paths.journalReference)),oldJournal);
+    assert.deepEqual(fs.readFileSync(preservedHistory(f.home,path.join(f.old.paths.failed,'logs/failed-install.log'))),failure);
   }
 });
 
@@ -986,8 +1171,8 @@ test('an actual confirmed partial rollback can be consumed after its direct heal
     if(kind==='repair'){
       assert.equal(fs.readFileSync(path.join(f.home,'hermes/.env'),'utf8'),'fixture');
       assert.equal(fs.readFileSync(path.join(f.home,'hermes/config.yaml'),'utf8'),'retained configuration\n');
-      assert.deepEqual(fs.readFileSync(f.oldFile),before);
-      assert.deepEqual(fs.readFileSync(path.join(f.old.paths.failed,'logs/failed-repair.log')),failed);
+      assert.deepEqual(fs.readFileSync(preservedHistory(f.home,f.oldFile)),before);
+      assert.deepEqual(fs.readFileSync(preservedHistory(f.home,path.join(f.old.paths.failed,'logs/failed-repair.log'))),failed);
       assert.equal(fs.existsSync(path.join(f.home,'tavern/apps')),false);
     }else assertLockShell(f.home);
   }
@@ -1207,7 +1392,7 @@ test('partial rollback history remains closed across actual normal Journal repla
   assert.deepEqual(fs.readFileSync(f.oldFile),old);assert.deepEqual(fs.readFileSync(path.join(f.old.paths.failed,'logs/failed-repair.log')),failed);
   await f.cleanup(mode);
   if(mode==='keep'){assert.deepEqual(fs.readFileSync(path.join(f.home,'tavern/tavern-state/native/default-user/chats/chat.jsonl')),chat);
-   assert.deepEqual(fs.readFileSync(f.oldFile),old);assert.deepEqual(fs.readFileSync(path.join(f.old.paths.failed,'logs/failed-repair.log')),failed);}
+   assert.deepEqual(fs.readFileSync(preservedHistory(f.home,f.oldFile)),old);assert.deepEqual(fs.readFileSync(preservedHistory(f.home,path.join(f.old.paths.failed,'logs/failed-repair.log'))),failed);}
   else assertLockShell(f.home);
  });
 });
