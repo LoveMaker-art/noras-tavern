@@ -315,7 +315,7 @@ test('cancelled launcher operations are not counted as failures',async t=>{
   const endings=f.requests[0].data.events.filter(e=>e.event==='operation_finished');
   assert.equal(endings.length,2);assert.ok(endings.every(e=>e.status==='cancelled'&&e.error_code==='none'&&e.error_site===''));
 });
-test('upgrade preserves queued v1 events alongside v2 and refuses private detail fields in a tampered queue',async t=>{
+test('upgrade preserves queued v1 events alongside v3 and refuses private detail fields in a tampered queue',async t=>{
   const f=fixture(t);const saved=f.read();
   const old={...saved.queue[0],schema_version:1};for(const key of [...contract.detailFields,'fault'])delete old[key];
   saved.queue=[old];fs.writeFileSync(f.file,JSON.stringify(saved));
