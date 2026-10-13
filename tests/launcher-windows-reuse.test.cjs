@@ -49,7 +49,7 @@ for(const [label,change] of [
 ])test(`rejects ${label}`,()=>{const f=sourceFixture();change(f);assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options));});
 function modeFixture() {return {GITHUB_EVENT_NAME:'workflow_dispatch',GITHUB_REF_TYPE:'branch',GITHUB_RUN_ID:'124',NORA_BUILD_TARGET:'all',NORA_PUBLISH_SOURCE_RUN:'',NORA_LAUNCHER_BASELINE_TAG:'',NORA_PRODUCTION_MODE:'true',NORA_VERIFIED_WINDOWS_RUN:'123'};}
 test('final assembly requires all-platform mode and an independent source run',()=>{verifyModes(modeFixture());});
-for(const [label,field,value] of [['Windows-only reuse','NORA_BUILD_TARGET','win32-x64'],['bootstrap reuse','NORA_BUILD_TARGET','win32-bootstrap'],['publish-source conflict','NORA_PUBLISH_SOURCE_RUN','125'],['baseline conflict','NORA_LAUNCHER_BASELINE_TAG','v2.4.2'],['candidate branch','NORA_PRODUCTION_MODE','false'],['self-reuse','NORA_VERIFIED_WINDOWS_RUN','124'],['invalid source ID','NORA_VERIFIED_WINDOWS_RUN','123;echo bad']])test(`rejects ${label}`,()=>{const env=modeFixture();env[field]=value;assert.throws(()=>verifyModes(env));});
+for(const [label,field,value] of [['Windows-only reuse','NORA_BUILD_TARGET','win32-x64'],['Intel-only reuse','NORA_BUILD_TARGET','darwin-x64'],['ARM-only reuse','NORA_BUILD_TARGET','darwin-arm64'],['bootstrap reuse','NORA_BUILD_TARGET','win32-bootstrap'],['publish-source conflict','NORA_PUBLISH_SOURCE_RUN','125'],['baseline conflict','NORA_LAUNCHER_BASELINE_TAG','v2.4.2'],['candidate branch','NORA_PRODUCTION_MODE','false'],['self-reuse','NORA_VERIFIED_WINDOWS_RUN','124'],['invalid source ID','NORA_VERIFIED_WINDOWS_RUN','123;echo bad']])test(`rejects ${label}`,()=>{const env=modeFixture();env[field]=value;assert.throws(()=>verifyModes(env));});
 function packageFixture(t) {
  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-win-reuse-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
  const delivery=path.join(root,'delivery'),acceptance=path.join(root,'acceptance');fs.mkdirSync(delivery);fs.mkdirSync(acceptance);
@@ -102,19 +102,39 @@ const matrixExpression=buildWorkflow.match(/\$\{\{ fromJSON\(([\s\S]*?)\) \}\}/)
 test('actual build workflow routes package diagnostics independently, gates native work and never publishes',()=>{
  assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: \[preflight, reuse-windows\]/);
  assert.doesNotMatch(workflow,/^  (?:bootstrap-contract|replacement-contract|gui-exit-contract|publish-release):/m);
- for(const [target,reuse,packageSource,ref,expectedBuild,count] of [
-  ['all','','','branch',true,3],['win32-x64','','','branch',true,1],
-  ['all','','','tag',true,3],['all','123','','branch',true,2],['all','123','','tag',true,2],
-  ['win32-package-check','','123','branch',false,3],['all','','123','branch',false,3],
-  ['win32-x64','','123','branch',false,1],['all','123','125','tag',false,2],
+ const tuples={
+  'darwin-arm64':{runner:'macos-15',platform:'darwin',arch:'arm64',package_script:'pack:mac:arm64'},
+  'darwin-x64':{runner:'macos-15-intel',platform:'darwin',arch:'x64',package_script:'pack:mac:x64'},
+  'win32-x64':{runner:'windows-latest',platform:'win32',arch:'x64',package_script:'pack:win:x64'},
+ },all=['darwin-arm64','darwin-x64','win32-x64'],macs=['darwin-arm64','darwin-x64'];
+ for(const [target,reuse,packageSource,ref,expectedBuild,expectedTargets] of [
+  ['all','','','branch',true,all],['win32-x64','','','branch',true,['win32-x64']],
+  ['darwin-x64','','','branch',true,['darwin-x64']],['darwin-arm64','','','branch',true,['darwin-arm64']],
+  ['darwin-x64','','','tag',true,['darwin-x64']],['darwin-arm64','','','tag',true,['darwin-arm64']],
+  ['all','','','tag',true,all],['all','123','','branch',true,macs],['all','123','','tag',true,macs],
+  ['win32-package-check','','123','branch',false,all],['all','','123','branch',false,all],
+  ['win32-x64','','123','branch',false,['win32-x64']],['all','123','125','tag',false,macs],
+  ['darwin-x64','','123','branch',false,['darwin-x64']],['darwin-arm64','','123','branch',false,['darwin-arm64']],
+  ['unknown-target','','','branch',false,all],
  ]) {
   const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success'},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),target==='win32-package-check'||packageSource!=='');
   assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),reuse!==''&&packageSource==='');
-  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);assert.equal(JSON.parse(evaluate(matrixExpression,inputs,github)).length,count);
+  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);
+  assert.deepEqual(JSON.parse(evaluate(matrixExpression,inputs,github)),expectedTargets.map(target=>tuples[target]));
   for(const result of ['failure','cancelled']) {needs.preflight.result=result;assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);}
   needs.preflight.result='success';assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs,true)),false);
  }
+ for(const target of ['all','win32-x64','darwin-x64','darwin-arm64']) {
+  const inputs={target,verified_windows_run:'123',package_source_run:''},github={event_name:'workflow_dispatch',ref_type:'branch'};
+  for(const result of ['failure','cancelled']) {
+   const needs={preflight:{result:'success'},'reuse-windows':{result}};
+   assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);
+  }
+ }
+ const betaInputs={target:'',verified_windows_run:'',package_source_run:''},beta={event_name:'push',ref_type:'tag'},needs={preflight:{result:'success'},'reuse-windows':{result:'skipped'}};
+ assert.equal(Boolean(evaluate(condition('build'),betaInputs,beta,needs)),true);
+ assert.deepEqual(JSON.parse(evaluate(matrixExpression,betaInputs,beta)),all.map(target=>tuples[target]));
 });
 
 // Pure stream/process seams: no gh, APP, native actor or public request is executed.

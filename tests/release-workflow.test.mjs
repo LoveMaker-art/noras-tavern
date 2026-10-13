@@ -11,6 +11,18 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+test('native platform selectors preserve diagnostic, concurrency and publication boundaries', () => {
+  const target = full.on.workflow_dispatch.inputs.target;
+  assert.equal(target.default, 'all');
+  assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check']);
+  assert.deepEqual(full.concurrency, {
+    group: 'nora-release-${{ github.ref }}',
+    'cancel-in-progress': "${{ github.ref_type != 'tag' }}",
+  });
+  assert.deepEqual(full.permissions, { contents: 'read', actions: 'read' });
+  const shared = full.jobs.build.steps.find(step => step.name === 'Upload shared updater assets');
+  assert.equal(shared.if, "matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)");
+});
 test('the repository default Node major matches all release workflows', () => {
   const defaultNode = fs.readFileSync(path.join(root, '.nvmrc'), 'utf8').trim();
   assert.equal(defaultNode, '24', 'Launcher source and native checks require real Node.js 24');

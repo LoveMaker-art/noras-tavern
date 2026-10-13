@@ -10,6 +10,8 @@ on:
         options:
           - all
           - win32-x64
+          - darwin-x64
+          - darwin-arm64
           - win32-package-check
       package_source_run:
         description: Diagnostic only - run whose saved Windows package is checked without rebuilding
@@ -310,7 +312,7 @@ jobs:
 
   build:
     needs: [preflight, reuse-windows]
-    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64')
+    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
     strategy:
       fail-fast: false
       matrix:
@@ -318,6 +320,10 @@ jobs:
         include: >-
           ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
             && '[{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]'
+            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-x64'
+            && '[{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
+            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-arm64'
+            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"}]'
             || inputs.verified_windows_run != ''
             && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
             || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
