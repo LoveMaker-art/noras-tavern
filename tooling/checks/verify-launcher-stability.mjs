@@ -43,16 +43,17 @@ const python = [
 export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,
     platform = process.platform, arch = process.arch } = {}) {
     const { environment } = checkEnvironment({ root, profile: 'source' });
-    // The complete serial JS group spawns real Python recovery actors. Hosted
-    // Windows completed in 361.49s and Intel Mac reached the old four-minute
-    // deadline before TAP ended. Keep finite, separate group budgets and all
-    // authored cases; ARM and Linux retain their established four-minute limit.
-    const javascriptTimeout = platform === 'win32' || platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
+    // Hosted Windows finished the full serial JS group in 469.55s, then its
+    // Python group was cut off by the 240s parent budget. The Windows Python
+    // limit is a finite candidate pending complete native timing evidence.
+    // Keep every case and the established Intel, ARM and Linux group limits.
+    const javascriptTimeout = platform === 'win32' ? 600000 : platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
+    const pythonTimeout = platform === 'win32' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',
             ...javascript.map(name => path.join(root, 'tests/deployment', name))], javascriptTimeout],
         ['installation and system transaction recovery', ['python', '-B', '-m', 'unittest',
-            ...python.map(name => `tests.deployment.${name}`)], 240000],
+            ...python.map(name => `tests.deployment.${name}`)], pythonTimeout],
     ]) {
         const result = run(process.execPath, [path.join(root, 'tooling/run.mjs'), ...args], {
             cwd: root, stdio: 'inherit', timeout,

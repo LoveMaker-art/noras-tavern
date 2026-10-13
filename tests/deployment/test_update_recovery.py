@@ -1,10 +1,12 @@
 import json
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager, redirect_stdout
+import io
 import importlib.util
 import multiprocessing
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -14,6 +16,8 @@ from unittest.mock import patch
 from ops.installer import update_recovery as recovery
 from ops.installer import first_install
 from ops.installer import nora_system
+from ops.installer import launcher_bridge as bridge
+from ops.tests import test_nora_system as system_fixture
 from ops.updater import bundle
 
 
@@ -81,6 +85,7 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
         seed_clawchat_skills=lambda *_:None,record_files_ready=lambda *_:None,
         verify_runtime=lambda *_:{name:True for name in nora_system.PROOFS},
         record_initialization=nora_system.record_initialization,
+        acceptance_record_problems=nora_system.acceptance_record_problems,
         mark_setup_complete=nora_system.mark_setup_complete)
     modules={'update_nora_system':managed,'update_install_helpers':helpers,
              'simple_service_manager':SimpleNamespace(ManagedService=SimpleNamespace(discover=lambda *_:None)),
@@ -206,6 +211,244 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'old program')
             self.assertEqual((root/'tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
             self.assertEqual((home/'SOUL.md').read_text(),'old soul')
+
+
+class SetupMetadataRecoveryTests(unittest.TestCase):
+    @contextmanager
+    def fixture(self, *, setup=False, gateway=True, running=True):
+        """Actual bridge/receipt/journal; only external service/account leaves vary."""
+        fixture = system_fixture.NoraSystemTests()
+        temporary = tempfile.TemporaryDirectory(prefix='nora-update-setup-seal-')
+        self.addCleanup(temporary.cleanup)
+        holder = SimpleNamespace(name=str(Path(temporary.name).resolve()), cleanup=lambda: None)
+        # Bind fixture-written MCP argv to the physical root from the outset;
+        # macOS /var and Windows short TMP aliases are not product path changes.
+        with patch.object(system_fixture.tempfile, 'TemporaryDirectory', return_value=holder):
+            fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        home, root = fixture.home.resolve(), fixture.root.resolve()
+        base = home.parent
+        updater = load_updater()
+        fixture.manifest = {'versions': {'tavern': '2.4.5'}, 'commit': 'a' * 40}
+        fixture.initialize()
+        (root/'apps/tavern-runtime/native-runtime.json').write_text('{}')
+        if setup:
+            nora_system.mark_setup_complete(root)
+        for relative in ('plugins/clawchat/clawchat_cli.py', 'plugins/clawchat/plugin.yaml',
+                         'nora-clawchat-check.py', 'clawchat/liveware/liveware'):
+            target = home/relative; target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text('public controlled external fixture\n')
+        lock = root/'apps/tavern-ops/updater/runtime_lock.py'
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(updater.__file__).with_name('runtime_lock.py'), lock)
+        (root/'tavern-state').mkdir()
+        (home/'hermes-agent/venv/bin'/('hermes.exe' if os.name == 'nt' else 'hermes')).write_text('public fixture\n')
+        sentinel = home/'memories/qa-retained.txt'
+        sentinel.parent.mkdir(); sentinel.write_bytes(b'owned user data\n')
+        state = {'running': running, 'gatewayRunning': gateway}
+        calls = []
+        def stream(command, **_kwargs):
+            calls.append('external-process')
+            if any(str(item).endswith('native_lifecycle.py') for item in command):
+                state['running'] = 'start' in command
+        def stop_gateway(*_args, **_kwargs): state['gatewayRunning'] = False
+        def start_gateway(*_args, **_kwargs): state['gatewayRunning'] = True
+        def runtime_status(*_args, **_kwargs):
+            return {'health': {'ok': state['running']}, 'port': 18899,
+                    'native_pid': 111 if state['running'] else None}
+        def gateway_status(*_args, **_kwargs):
+            return {'gatewayRunning': state['gatewayRunning'], 'clawchatConnected': state['gatewayRunning']}
+        def maintenance(command, **_kwargs):
+            calls.append('external-mcp-probe')
+            return subprocess.CompletedProcess(command, 0, stdout='', stderr='')
+        with ExitStack() as stack:
+            stack.enter_context(redirect_stdout(io.StringIO()))
+            stack.enter_context(patch.object(bridge, 'run_stream', side_effect=stream))
+            stack.enter_context(patch.object(bridge, 'run_json', side_effect=runtime_status))
+            stack.enter_context(patch.object(bridge, 'stop_gateway', side_effect=stop_gateway))
+            stack.enter_context(patch.object(bridge, 'start_gateway', side_effect=start_gateway))
+            stack.enter_context(patch.object(bridge, 'stop_liveware', return_value=None))
+            stack.enter_context(patch.object(bridge, 'gateway_status', side_effect=gateway_status))
+            stack.enter_context(patch.object(bridge, 'check_gateway_control', return_value=None))
+            stack.enter_context(patch.object(bridge, 'read_verified_model', return_value={'model': 'public fixture'}))
+            stack.enter_context(patch.object(bridge, 'clawchat_paired', return_value=True))
+            stack.enter_context(patch.object(bridge.nora_profile, 'ready', return_value=True))
+            stack.enter_context(patch.object(nora_system, 'maintenance_run', side_effect=maintenance))
+            acceptance = nora_system.inspect(home, root, 18899)
+            self.assertTrue(acceptance['ready'], acceptance)
+            before = bridge.status_payload(base, home, root, 18899)
+            self.assertIs(before['setupCompleted'], setup)
+            self.assertIs(before['gatewayRunning'], gateway)
+            self.assertIs(before['running'], running)
+            self.assertTrue(before['systemReady'])
+            plan = {'noraHome': str(base), 'hermesHome': str(home), 'installRoot': str(root),
+                    'port': 18899, 'before': before, 'bridge': str(Path(bridge.__file__))}
+            args = SimpleNamespace(nora_home=base, hermes_home=home, install_root=root,
+                                   port=18899, command='update-lifecycle')
+            bridge.command_update_lifecycle(args, {**plan, 'phase': 'preflight', 'version': '2.4.6'})
+            backup = root/'tavern-backups/setup-seal'; backup.mkdir(parents=True)
+            updater.record_backup(root, backup, 'prepared')
+            updater.copy_host_backup(home, root, backup, {})
+            updater.snapshot_agents(home, backup/'agents-rollback')
+            journal = recovery.Journal.create(home, root, backup, [], version='2.4.6',
+                                              before=before, lifecycle=plan)
+            manifest = {'versions': {'tavern': '2.4.6'}, 'commit': 'b' * 40}
+            target = root/'tavern-updates/nora-system.json'
+            journal.mark_metadata([target])
+            nora_system.record_initialization(home, root, manifest, {name: True for name in nora_system.PROOFS})
+            if setup:
+                nora_system.mark_setup_complete(root)
+            journal.finish_metadata([target])
+            receipts = [root/'tavern-updates'/name for name in ('installed.json', 'installed-manifest.json')]
+            journal.mark_metadata(receipts)
+            updater.json_write(receipts[0], {'schema': 2, 'version': '2.4.6', 'commit': 'b' * 40, 'candidate': False})
+            updater.json_write(receipts[1], manifest); journal.finish_metadata(receipts)
+            key = 'install:tavern-updates/nora-system.json'
+            yield SimpleNamespace(updater=updater, journal=journal, manifest=manifest, root=root,
+                target=target, args=args, plan=plan, sentinel=sentinel, calls=calls, key=key,
+                verify=lambda: bridge.command_update_lifecycle(args, {**plan, 'phase': 'verify', 'version': '2.4.6'}))
+            self.assertEqual(sentinel.read_bytes(), b'owned user data\n')
+
+    def test_actual_first_setup_during_update_is_sealed_and_real_metadata_rollback_succeeds(self):
+        with self.fixture() as case:
+            original = case.journal.plan['metadataWrites'][case.key]['after']
+            with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                case.verify()
+            self.assertTrue(nora_system.read_json(case.target)['setupCompleted'])
+            sealed = case.journal.plan['metadataWrites'][case.key]['after']
+            self.assertNotEqual(sealed, original)
+            self.assertEqual(sealed, recovery.digest(case.target))
+            self.assertEqual(recovery.load(case.journal.home, case.root).plan['metadataWrites'][case.key]['after'], sealed)
+            self.assertIn('external-mcp-probe', case.calls)
+            case.journal.restore_metadata()
+            self.assertEqual(nora_system.read_json(case.target)['version'], '2.4.5')
+            self.assertFalse(nora_system.read_json(case.target)['setupCompleted'])
+
+    def test_existing_setup_and_tavern_only_restore_do_not_invent_first_setup(self):
+        for setup, gateway in ((True, True), (False, False)):
+            with self.subTest(setup=setup, gateway=gateway), self.fixture(setup=setup, gateway=gateway) as case:
+                sealed = case.journal.plan['metadataWrites'][case.key]['after']
+                with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                    case.verify()
+                self.assertIs(nora_system.read_json(case.target)['setupCompleted'], setup)
+                self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
+                self.assertEqual(recovery.digest(case.target), sealed)
+                case.journal.restore_metadata()
+
+    def test_real_bridge_failure_after_mark_keeps_primary_and_seals_owned_write_for_rollback(self):
+        with self.fixture() as case:
+            primary = RuntimeError('later external status failed')
+            actual_status = bridge.status_payload
+            def status(*args, **kwargs):
+                if nora_system.read_json(case.target)['setupCompleted'] is True:
+                    raise primary
+                return actual_status(*args, **kwargs)
+            with patch.object(bridge, 'status_payload', side_effect=status):
+                with self.assertRaises(RuntimeError) as caught:
+                    with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                        case.verify()
+            self.assertIs(caught.exception, primary)
+            self.assertFalse(getattr(primary, 'secondary_errors', []))
+            self.assertTrue(nora_system.read_json(case.target)['setupCompleted'])
+            self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], recovery.digest(case.target))
+            case.journal.restore_metadata()
+
+    def test_other_fields_and_types_never_gain_owned_metadata_authority(self):
+        mutations = ({'version': '2.4.7'}, {'commit': 'c' * 40}, {'schema': 1.0},
+                     {'setupCompleted': 1}, {'skills': {}}, {'unexpected': True})
+        for mutation in mutations:
+            with self.subTest(mutation=mutation), self.fixture() as case:
+                sealed = case.journal.plan['metadataWrites'][case.key]['after']
+                with self.assertRaises(RuntimeError) as caught:
+                    with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                        case.verify()
+                        nora_system.save_json(case.target, {**nora_system.read_json(case.target), **mutation})
+                self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
+                self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
+                changed = case.target.read_bytes()
+                with self.assertRaises(RuntimeError): case.journal.restore_metadata()
+                self.assertEqual(case.target.read_bytes(), changed)
+
+    def test_no_gateway_or_truthy_gateway_flag_cannot_authorize_setup_marker(self):
+        for gateway in (False, 1):
+            with self.subTest(gateway=gateway), self.fixture(gateway=False) as case:
+                if gateway == 1:
+                    case.journal.plan['before']['gatewayRunning'] = 1
+                    case.journal.plan['lifecycle']['before']['gatewayRunning'] = 1
+                with self.assertRaises(RuntimeError) as caught:
+                    with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                        nora_system.mark_setup_complete(case.root)
+                self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
+
+    def test_nora_only_restore_leaves_setup_false_and_cannot_authorize_an_external_toggle(self):
+        with self.fixture(running=False, gateway=True) as case:
+            sealed = case.journal.plan['metadataWrites'][case.key]['after']
+            with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                case.verify()
+            self.assertFalse(nora_system.read_json(case.target)['setupCompleted'])
+            self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
+            with self.assertRaises(RuntimeError) as caught:
+                with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                    nora_system.mark_setup_complete(case.root)
+            self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
+            self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
+
+    def test_secondary_unowned_change_preserves_primary_error_and_current_file(self):
+        with self.fixture() as case:
+            primary = RuntimeError('external service failed'); previous = RuntimeError('prior leaf failure')
+            primary.secondary_errors = [previous]
+            sealed = case.journal.plan['metadataWrites'][case.key]['after']
+            with self.assertRaises(RuntimeError) as caught:
+                with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                    nora_system.save_json(case.target, {**nora_system.read_json(case.target), 'unexpected': True})
+                    raise primary
+            self.assertIs(caught.exception, primary)
+            self.assertIs(primary.secondary_errors[0], previous)
+            self.assertEqual(primary.secondary_errors[1].code, 'CONDITIONS_CHANGED')
+            self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
+            changed = case.target.read_bytes()
+            with self.assertRaises(RuntimeError): case.journal.restore_metadata()
+            self.assertEqual(case.target.read_bytes(), changed)
+
+    def test_entry_requires_same_completed_postimage_and_existing_transaction_binding(self):
+        for change in ('postimage', 'phase', 'completed', 'intent', 'root'):
+            with self.subTest(change=change), self.fixture() as case:
+                if change == 'postimage': case.journal.plan['metadataWrites'][case.key]['after'] = 'd' * 64
+                if change == 'phase': case.journal.plan['metadataPhase'] = 'pending'
+                if change == 'completed': case.journal.plan['metadataWrites'][case.key]['completed'] = False
+                if change == 'intent': case.journal.plan['metadataIntents'].remove(case.key)
+                if change == 'root': case.journal.plan['installRoot'] = str(case.root.parent)
+                untouched = case.target.read_bytes()
+                with self.assertRaises(RuntimeError) as caught:
+                    with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                        self.fail('invalid transaction must not enter verifier')
+                self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
+                self.assertEqual(case.target.read_bytes(), untouched)
+
+    def test_failed_checkpoint_keeps_durable_journal_and_preserves_current_metadata(self):
+        for primary_failure in (False, True):
+            with self.subTest(primary_failure=primary_failure), self.fixture() as case:
+                durable = recovery.load(case.journal.home, case.root)
+                original = durable.plan['metadataWrites'][case.key]['after']
+                primary = RuntimeError('service check failed')
+                storage = OSError('checkpoint storage unavailable')
+                with patch.object(case.journal, 'save', side_effect=storage):
+                    with self.assertRaises((RuntimeError, OSError)) as caught:
+                        with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                            case.verify()
+                            if primary_failure:
+                                raise primary
+                self.assertIs(caught.exception, primary if primary_failure else storage)
+                if primary_failure:
+                    self.assertEqual(primary.secondary_errors, [storage])
+                current = case.target.read_bytes()
+                self.assertTrue(nora_system.read_json(case.target)['setupCompleted'])
+                loaded = recovery.load(case.journal.home, case.root)
+                self.assertEqual(loaded.plan['metadataWrites'][case.key]['after'], original)
+                with self.assertRaises(RuntimeError):
+                    loaded.restore_metadata()
+                self.assertEqual(case.target.read_bytes(), current)
+                self.assertTrue(loaded.backup.is_dir())
 
 
 class DigestProgressTests(unittest.TestCase):

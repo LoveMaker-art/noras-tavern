@@ -150,6 +150,7 @@ class MigrationInstallFixture:
             seed_clawchat_skills=lambda *_:None, record_files_ready=lambda *_:None,
             verify_runtime=lambda *_:{name:True for name in nora_system.PROOFS},
             record_initialization=nora_system.record_initialization,
+            acceptance_record_problems=nora_system.acceptance_record_problems,
             mark_setup_complete=nora_system.mark_setup_complete)
         modules = {'update_nora_system':managed_module, 'update_install_helpers':helpers,
             'simple_service_manager':SimpleNamespace(ManagedService=SimpleNamespace(

@@ -1345,6 +1345,104 @@ def managed_lifecycle(phase, home, root, version):
     return {key: value for key, value in state.items() if key != "event"}
 
 
+@contextmanager
+def reconcile_setup_metadata(journal, managed, root, manifest):
+    """Seal only the first-setup write made by the existing service verifier.
+
+    Initialization is already sealed before services start. A successful first
+    start can change only setupCompleted; capture that owned postimage even when
+    a later service check fails, so ordinary rollback can restore it safely.
+    """
+    helper = recovery_module()
+    relative = 'tavern-updates/nora-system.json'
+    key = 'install:' + relative
+
+    def reject(cause=None):
+        error = RuntimeError('服务检查期间初始化记录出现未归属的变化，当前记录已保留。 '
+                             '[path=install:tavern-updates/nora-system.json; owner=nora-updater]')
+        error.code = 'CONDITIONS_CHANGED'
+        if cause is not None:
+            raise error from cause
+        raise error
+
+    def capture():
+        # Parse and hash the same bounded bytes, never two reads of a live file.
+        try:
+            target = helper.safe_path(journal.root, relative)
+            file = Path(filesystem_path(target))
+            before = file.lstat()
+            if helper.linked(target) or not stat.S_ISREG(before.st_mode) or before.st_size > 2 * 1024 * 1024:
+                reject()
+            with os.fdopen(os.open(file, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)), 'rb') as stream:
+                opened = os.fstat(stream.fileno())
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    reject()
+                data = stream.read(2 * 1024 * 1024 + 1)
+                read = os.fstat(stream.fileno())
+            after = Path(filesystem_path(helper.safe_path(journal.root, relative))).lstat()
+            signature = lambda value: (value.st_dev, value.st_ino, value.st_size,
+                                        value.st_mtime_ns, value.st_ctime_ns)
+            if len(data) != before.st_size or signature(before) != signature(read) or signature(read) != signature(after):
+                reject()
+            record = json.loads(data.decode('utf-8'))
+            if (not isinstance(record, dict) or managed.acceptance_record_problems(record)
+                    or record.get('version') != manifest.get('versions', {}).get('tavern')
+                    or record.get('commit') != manifest.get('commit')):
+                reject()
+            return record, hashlib.sha256(b'F\0' + data).hexdigest()
+        except (OSError, ValueError, TypeError) as error:
+            reject(error)
+
+    if (journal is None or Path(root).resolve() != journal.root
+            or journal.plan.get('installRoot') != str(journal.root)
+            or journal.plan.get('metadataPhase') != 'applying'
+            or key not in journal.plan.get('metadataIntents', [])
+            or journal.metadata_key(helper.safe_path(journal.root, relative)) != key):
+        reject()
+    entry = journal.plan.get('metadataWrites', {}).get(key)
+    before = journal.plan.get('before')
+    lifecycle = journal.plan.get('lifecycle')
+    if (not isinstance(entry, dict) or entry.get('completed') is not True
+            or not isinstance(entry.get('after'), str)
+            or not isinstance(before, dict) or not isinstance(lifecycle, dict)
+            or not isinstance(lifecycle.get('before'), dict)
+            or any(type(before.get(name)) is not bool
+                   or type(lifecycle['before'].get(name)) is not bool
+                   or before[name] != lifecycle['before'][name]
+                   for name in ('running', 'gatewayRunning'))):
+        reject()
+    original, sealed = capture()
+    if sealed != entry['after']:
+        reject()
+
+    def reconcile():
+        current, current_digest = capture()
+        if current_digest == sealed:
+            return
+        expected = {**original, 'setupCompleted': True}
+        if (original.get('setupCompleted') is not False
+                or before['running'] is not True or before['gatewayRunning'] is not True
+                or current.get('setupCompleted') is not True
+                or json.dumps(current, sort_keys=True, allow_nan=False) !=
+                   json.dumps(expected, sort_keys=True, allow_nan=False)):
+            reject()
+        # The existing receipt gains this captured, validated postimage only.
+        # Unrelated metadata and generic recovery ownership rules stay strict.
+        entry['after'] = current_digest
+        journal.save()
+
+    try:
+        yield
+    except BaseException as primary:
+        try:
+            reconcile()
+        except BaseException as secondary:
+            primary.secondary_errors = [*getattr(primary, 'secondary_errors', []), secondary]
+        raise
+    else:
+        reconcile()
+
+
 def install(args):
     managed_home = getattr(args, "managed_home", None)
     def resolve(*, validate_partial=True):
@@ -1737,7 +1835,11 @@ def install(args):
                 json_write(update_root / "installed.json", installed)
                 json_write(update_root / "installed-manifest.json", manifest)
                 if journal is not None:journal.finish_metadata([update_root/'installed.json',update_root/'installed-manifest.json'])
-                verified_state = managed_lifecycle("verify", hermes_home, install_root, version) if managed else None
+                if managed:
+                    with reconcile_setup_metadata(journal, managed, install_root, manifest):
+                        verified_state = managed_lifecycle("verify", hermes_home, install_root, version)
+                else:
+                    verified_state = None
                 verify_partial_configuration(hermes_home, install_root, partial)
                 if managed and state_snapshot:
                     verify_preserved_worlds(install_root / "apps/tavern-runtime",

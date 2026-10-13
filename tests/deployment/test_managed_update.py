@@ -24,6 +24,9 @@ class ManagedUpdateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary, ExitStack() as stack:
             root = Path(temporary).resolve() / "custom Nora directory"
             home, tavern = root / "hermes", root / "tavern"
+            # Synthetic, distinct commit IDs bind this transaction fixture's
+            # receipts; they do not identify downloaded historical releases.
+            source_commit, target_commit = "a" * 40, "b" * 40
             def write(file, content):
                 file.parent.mkdir(parents=True, exist_ok=True)
                 file.write_text(content, encoding="utf-8")
@@ -31,14 +34,19 @@ class ManagedUpdateTests(unittest.TestCase):
                         "installRoot": str(tavern), "port": 18899, "releaseChannel": "beta"}
             write(home / "nora-instance.json", json.dumps(instance))
             write(tavern / "tavern-updates/installed.json", json.dumps({"schema": receipt_schema,
-                  "version": source_version, "commit": "old"}))
-            write(tavern / "tavern-updates/nora-system.json", '{"schema":1,"commit":"old","setupCompleted":true}')
+                  "version": source_version, "commit": source_commit}))
+            write(tavern / "tavern-updates/nora-system.json", json.dumps({
+                  "schema": 1, "version": source_version, "commit": source_commit,
+                  "proof": {name: True for name in nora_system.PROOFS}, "setupCompleted": True}))
             if missing_receipt:
                 (tavern / "tavern-updates/nora-system.json").unlink()
                 write(tavern / "tavern-updates/installed.json", json.dumps({"schema": receipt_schema,
-                      "version": source_version, "commit": "a" * 40}))
+                      "version": source_version, "commit": source_commit}))
                 write(tavern / "tavern-updates/installed-manifest.json", json.dumps({
-                      "schema": "tavern-release/v2", "versions": {"tavern": source_version}, "commit": "a" * 40}))
+                      "schema": "tavern-release/v2", "versions": {"tavern": source_version}, "commit": source_commit}))
+            # Exercise the production historical-receipt contract against real
+            # files. External runtime probes below remain explicit unit seams.
+            self.assertEqual(nora_system.installation_state(home, tavern)["ready"], not missing_receipt)
             write(tavern / "apps/tavern-runtime/native-runtime.json", '{"old":true}')
             story = tavern / "tavern-state/native/default-user/nora-world-core/worlds/story.json"
             chat = tavern / "tavern-state/native/default-user/chats/story/chat.jsonl"
@@ -98,7 +106,7 @@ class ManagedUpdateTests(unittest.TestCase):
                 write(home / relative, "old managed file")
             old_config = update.render_mcp(home, tavern, 18899)
             (home / "config.yaml").write_bytes(old_config)
-            manifest = {"versions": {"tavern": target_version}, "commit": "new", "artifacts": {}}
+            manifest = {"versions": {"tavern": target_version}, "commit": target_commit, "artifacts": {}}
             if same_version:
                 manifest["versions"]["tavern"] = source_version
             before = {p: p.read_bytes() for p in home.rglob("*") if p.is_file()}
@@ -245,7 +253,7 @@ class ManagedUpdateTests(unittest.TestCase):
                 for relative in nora_system.SKILLS:
                     self.assertEqual((home / "skills" / relative / "SKILL.md").read_text(), "new skill")
                 receipt = json.loads((tavern / "tavern-updates/nora-system.json").read_text())
-                self.assertEqual(receipt["commit"], "new")
+                self.assertEqual(receipt["commit"], target_commit)
                 self.assertTrue(receipt["setupCompleted"])
                 self.assertEqual(receipt["skills"], nora_system.inventory(home))
                 self.assertTrue(nora_system.files_ready(home))

@@ -108,6 +108,33 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   assert.ok(componentSteps.findIndex(step => step.name === 'Require an explicitly compatible component plan') < componentSteps.findIndex(step => step.run?.includes('package-release.mjs')));
 });
 
+test('mandatory backup workflow contracts run in preflight with finite installation dependencies', () => {
+  const steps = full.jobs.preflight.steps;
+  const decision = steps.findIndex(step => step.name?.startsWith('Require a matching build decision'));
+  const dependencies = steps.findIndex(step => step.name === 'Install mandatory backup workflow contract dependencies');
+  const contracts = steps.findIndex(step => step.name === 'Check release tooling before preparing runtimes');
+  assert.ok(decision >= 0 && dependencies > decision && contracts > dependencies,
+    'Install the Node YAML dependency after the build decision and before its complete backup workflow contracts');
+  const install = steps[dependencies], check = steps[contracts];
+  assert.equal(install.if, undefined);
+  assert.equal(install['continue-on-error'], undefined);
+  assert.equal(install['timeout-minutes'], '5');
+  assert.equal(install.shell, 'bash');
+  assert.match(install.run, /set -euo pipefail/);
+  assert.match(install.run, /npm ci --prefix app\/engine\/sillytavern --ignore-scripts --no-audit --no-fund/);
+  assert.doesNotMatch(install.run, /\|\|\s*true/);
+  assert.equal(check.if, undefined);
+  assert.equal(check['continue-on-error'], undefined);
+  assert.equal([...check.run.matchAll(/tests\/backup-safety-gate\.test\.mjs/g)].length, 1);
+  assert.doesNotMatch(check.run, /--test-name-pattern|--skip|\|\|\s*true/);
+  const nativeBackup = full.jobs.build.steps.find(step => step.name === 'Require chat backup safety tests');
+  assert.equal(nativeBackup.if, undefined);
+  assert.equal(nativeBackup['continue-on-error'], undefined);
+  assert.match(nativeBackup.run, /node "\$PWD\/tooling\/checks\/verify-backup-safety\.mjs"/);
+  assert.match(nativeBackup.run, /npm ci --prefix app\/engine\/sillytavern/);
+  assert.match(nativeBackup.run, /npm ci --prefix nora-mcp/);
+});
+
 test('test prerequisites and absolute runner entries are mandatory before native suites', () => {
   const steps = full.jobs.build.steps;
   const environment = steps.findIndex(step => step.name === 'Verify native launcher test prerequisites');

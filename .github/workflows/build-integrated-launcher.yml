@@ -127,9 +127,15 @@ jobs:
             verification-only) echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1 ;;
             *) exit 1 ;;
           esac
+      - name: Install mandatory backup workflow contract dependencies
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
       - name: Check release tooling before preparing runtimes
         run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/backup-safety-gate.test.mjs
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
       - name: Verify historical download identities before native builds
         if: steps.acceptance-baseline.outputs.initial_release != 'true'
@@ -385,7 +391,7 @@ jobs:
         run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" "$PWD/tests/deployment/launcher_operation_lock.test.cjs"
 
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: ${{ (runner.os == 'Windows' || (runner.os == 'macOS' && matrix.arch == 'x64')) && 15 || 10 }}
+        timeout-minutes: ${{ runner.os == 'Windows' && 20 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}
         shell: bash
         run: |
           set -euo pipefail
