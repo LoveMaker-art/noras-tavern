@@ -83,7 +83,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install the workflow contract parser
-        run: python -m pip install PyYAML==6.0.2
+        run: python -m pip install PyYAML==6.0.2 psutil==7.0.0
       - name: Select a published acceptance baseline independently of environment reuse
         id: acceptance-baseline
         shell: bash
@@ -133,10 +133,13 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
+          npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
       - name: Check release tooling before preparing runtimes
         run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/backup-safety-gate.test.mjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/backup-safety-gate.test.mjs tests/shared-assets-frozen-client.test.mjs tests/jihulab-credentials.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-transport.test.mjs tests/release-sources-embedding.test.mjs tests/docs-navigation.test.cjs tests/launcher-publish-source.test.cjs
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
+          node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_jihulab_sources.test.cjs" "$PWD/tests/deployment/launcher_static_catalogue.test.cjs" "$PWD/tests/deployment/launcher_shared_assets.test.cjs" "$PWD/tests/deployment/launcher_jihulab_publication.test.cjs"
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_updater_runtime_process_detection
       - name: Verify historical download identities before native builds
         if: steps.acceptance-baseline.outputs.initial_release != 'true'
         timeout-minutes: 5
@@ -403,12 +406,15 @@ jobs:
       - name: Check release source contracts before preparing runtimes
         timeout-minutes: 5
         shell: bash
-        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_releases.test.cjs" "$PWD/tests/deployment/launcher_bundle_contract.test.cjs" "$PWD/tests/deployment/launcher_system_update.test.cjs" "$PWD/tests/deployment/launcher_install_cleanup.test.cjs" "$PWD/tests/deployment/launcher_copy.test.cjs" "$PWD/tests/deployment/launcher_location.test.cjs" "$PWD/tests/deployment/launcher_model_recheck.test.cjs" "$PWD/tests/deployment/launcher_publish.test.cjs"
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_releases.test.cjs" "$PWD/tests/deployment/launcher_bundle_contract.test.cjs" "$PWD/tests/deployment/launcher_system_update.test.cjs" "$PWD/tests/deployment/launcher_install_cleanup.test.cjs" "$PWD/tests/deployment/launcher_copy.test.cjs" "$PWD/tests/deployment/launcher_location.test.cjs" "$PWD/tests/deployment/launcher_model_recheck.test.cjs" "$PWD/tests/deployment/launcher_publish.test.cjs"
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_download_sources tests.deployment.test_standalone_release_sources tests.deployment.test_first_install_bootstrap_entry tests.deployment.test_first_install_shared_assets tests.deployment.test_update_shared_assets tests.deployment.test_update_check tests.deployment.test_clawchat_bundle tests.deployment.test_liveware_cache_release tests.deployment.test_managed_context tests.deployment.test_native_lifecycle_locking tests.deployment.test_native_ownership_recovery tests.deployment.test_nora_instance tests.deployment.test_updater_host_hook tests.deployment.test_updater_runtime_process_detection
 
       - name: Check installation source contracts before preparing runtimes
         timeout-minutes: 5
         shell: bash
-        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs"
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs" "$PWD/tests/deployment/launcher_console.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs" "$PWD/tests/deployment/launcher_test_build.test.cjs" "$PWD/tests/deployment/launcher_windows_extract.test.cjs"
 
       - name: Check presentation source contracts before preparing runtimes
         timeout-minutes: 5
@@ -580,7 +586,7 @@ jobs:
       - name: Test installation diagnostics on the target platform
         id: installation_contracts
         continue-on-error: true
-        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs"
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs" "$PWD/tests/deployment/launcher_console.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs" "$PWD/tests/deployment/launcher_test_build.test.cjs" "$PWD/tests/deployment/launcher_windows_extract.test.cjs"
 
       - name: Test diagnostic choices, error presentation and download waiting feedback
         id: presentation_contracts
@@ -617,7 +623,7 @@ jobs:
 
       - name: Test native transaction and complete evidence contracts
         shell: bash
-        run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics tests.deployment.test_managed_partial_repair tests.deployment.test_update_partial_repair
+        run: node "$PWD/tooling/run.mjs" "$NORA_TEST_PYTHON" -B -m unittest tests.deployment.test_operation_control tests.deployment.test_operation_cli tests.deployment.test_operation_evidence tests.deployment.test_native_program_evidence tests.deployment.test_native_install_policy tests.deployment.test_first_install_transaction tests.deployment.test_update_operation_safety tests.deployment.test_mcp_probe tests.deployment.test_model_diagnostics tests.deployment.test_managed_partial_repair tests.deployment.test_update_partial_repair tests.deployment.test_native_lifecycle_locking
 
       - name: Verify runtime independently of original installation
         if: matrix.platform != 'win32'
@@ -642,7 +648,7 @@ jobs:
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           export NORA_CLAWCHAT_PLUGIN="$RUNNER_TEMP/nora-clawchat-plugin"
-          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence
+          node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_nora_system tests.deployment.test_nora_profile tests.deployment.test_launcher_services tests.deployment.test_first_install tests.deployment.test_launcher_refinement tests.deployment.test_installer_windows_paths tests.deployment.test_launcher_model_status tests.deployment.test_launcher_tavern_model tests.deployment.test_liveware_independent_startup tests.deployment.test_liveware_greeting_order tests.deployment.test_launcher_shared_logic tests.deployment.test_greeting_template tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_managed_update tests.deployment.test_update_lifecycle tests.deployment.test_incremental_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_launcher_hermes_config
           "$py" -B -m unittest tests.deployment.test_updater_skill_environment
           node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_tracebacks tests.deployment.test_bridge_error_diagnostics tests.deployment.test_native_cli_diagnostics
           node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_native_lifecycle_dependencies

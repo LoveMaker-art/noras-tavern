@@ -3,9 +3,8 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { spawn, execFileSync } = require('node:child_process');
-const { pipeline } = require('node:stream/promises');
-const { verifyArchive, extractScript } = require('../release/reuse-windows-build.cjs');
+const { execFileSync } = require('node:child_process');
+const { verifyArchive, extractScript, downloadArchive } = require('../release/reuse-windows-build.cjs');
 
 const repository = path.resolve(__dirname, '../..');
 const artifactName = 'nora-windows-failed-packaging-diagnostic';
@@ -14,6 +13,7 @@ const allowedChanges = new Set([
   'tooling/checks/launcher-artifact-checks.cjs',
   'tooling/checks/launcher-installed-check.ps1',
   'tooling/checks/restore-launcher-check-package.cjs',
+  'tooling/release/reuse-windows-build.cjs',
   'tooling/checks/verify-launcher-replacement.sh',
   'tests/launcher-artifact-checks.test.cjs',
   'tests/launcher-windows-reuse.test.cjs',
@@ -198,17 +198,7 @@ async function restore(env = process.env) {
     fs.writeFileSync(path.join(root, `source-${name}.json`), JSON.stringify(value, null, 2) + '\n', { flag: 'wx' });
   }
   const archive = path.join(root, 'source-artifact.zip');
-  const child = spawn('gh', ['api', `repos/${env.GITHUB_REPOSITORY}/actions/artifacts/${item.id}/zip`],
-    { env, stdio: ['ignore', 'pipe', 'inherit'], windowsHide: true });
-  const closed = new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('close', (code, signal) => code === 0 && signal === null
-      ? resolve() : reject(new Error(`Artifact download exited ${signal || code}`)));
-  });
-  const timer = setTimeout(() => child.kill(), 600000);
-  try { await Promise.all([pipeline(child.stdout, fs.createWriteStream(archive, { flags: 'wx' })), closed]); }
-  catch (error) { child.kill(); throw error; }
-  finally { clearTimeout(timer); }
+  await downloadArchive(item, env.GITHUB_REPOSITORY, archive, { env });
   await verifyArchive(archive, item);
   const outerRoot = path.join(root, 'outer');
   extract(archive, outerRoot, env.NORA_CHECK_PYTHON);

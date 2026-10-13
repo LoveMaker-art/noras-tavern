@@ -16,8 +16,10 @@ from ops.updater import update
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / 'ops/skills/system/model-provider-config'
 
@@ -49,9 +51,10 @@ class SkillDistributionTests(unittest.TestCase):
 @unittest.skipUnless(os.environ.get('NORA_TEST_HERMES'), 'Read-only installed Hermes source required')
 class LocalModelSkillTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix='nora-model-skill-')
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name).resolve()
+        context = owned_fixture_directory(prefix='nora-model-skill-')
+        self.fixture = context.__enter__()
+        self.addCleanup(context.__exit__, None, None, None)
+        self.root = self.fixture.root
         self.home = self.root / 'hermes'
         self.tavern = self.root / 'tavern'
         self.home.mkdir()
@@ -85,10 +88,13 @@ class LocalModelSkillTests(unittest.TestCase):
 
     def owned_run(self, script, data, *args):
         node = resolve_node(required=True)
-        return subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
+        self.fixture.closed = False
+        result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
             str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(self.root),
             sys.executable, str(script), *map(str, args)], env={**self.env, 'NORA_TEST_VENV_HOME': sys.prefix},
             input=json.dumps(data), capture_output=True, text=True, timeout=60)
+        require_fixture_closure(self.fixture, result.stderr)
+        return result
 
     def invoke(self, data=None):
         result = self.owned_run(self.entry, data or self.request)

@@ -15,8 +15,10 @@ from ops.installer import launcher_bridge as bridge
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure, CLOSURE_PREFIX
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = resolve_node()
@@ -57,8 +59,8 @@ telemetry.close();
 
     @unittest.skipUnless(NODE, 'requires a local Node executable')
     def test_real_native_cli_node_failure_reaches_fault_without_service_output(self):
-        with tempfile.TemporaryDirectory(prefix='nora-native-cli-') as temporary:
-            root = Path(temporary)
+        with owned_fixture_directory(prefix='nora-native-cli-') as fixture:
+            root = fixture.root
             app = root / 'apps/tavern-runtime'
             app.mkdir(parents=True)
             shutil.copy2(ROOT / 'app/native_lifecycle.py', app / 'native_lifecycle.py')
@@ -92,11 +94,17 @@ telemetry.close();
                    'TAVERN_STATE_DIR': str(root / 'tavern-state'),
                    'HERMES_HOME': str(root / 'hermes'), 'NORA_TAVERN_HOME': str(root),
                    'NORA_TEST_VENV_HOME': sys.prefix, 'TAVERN_NODE_EXECUTABLE': NODE}
+            fixture.closed = False
             events = self.collect([NODE, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
                                    str(ROOT / 'ops/installer/desktop/operation-lock.js'), str(root.resolve()),
                                    sys.executable, str(app / 'native_lifecycle.py'),
                                    'start', '--run-id', 'fixture', '--port', str(port)],
                                   env=env, native_cli=True)
+            # The real bridge keeps the combined stderr untouched as log events.
+            # Validate its test-only receipt without filtering any diagnostics.
+            closure_output = '\n'.join(event.get('line', '') for event in events
+                                       if event.get('event') == 'log' and event.get('line', '').startswith(CLOSURE_PREFIX))
+            require_fixture_closure(fixture, closure_output)
             diagnostics = [event['error'] for event in events
                            if event.get('event') == 'diagnostic' and event.get('component') == 'bridge']
             native = diagnostics[0]

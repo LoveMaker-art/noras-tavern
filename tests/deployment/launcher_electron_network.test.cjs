@@ -68,7 +68,7 @@ async function chromiumGate() {
     const certificate = new crypto.X509Certificate(fs.readFileSync(cert));
     const allowed = new Set(['jihulab.com', 'api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
     const bytes = Buffer.alloc(512 * 1024, 0x5a);
-    let transferFinished = false, stalledClosed = false, conditionalResponses = 0;
+    let transferFinished = false, stalledClosed = false, conditionalResponses = 0, releaseStream;
     origin = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, (request, response) => {
       report.requests.push({host: request.headers.host, path: request.url, method: request.method});
       if (['jihulab.com','api.github.com', 'github.com'].includes(request.headers.host)) {response.writeHead(503); response.end('fixture unavailable'); return;}
@@ -81,7 +81,11 @@ async function chromiumGate() {
         response.writeHead(200, {'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, ETag: '"fixture-archive"'});
         response.write(bytes.subarray(0, 4096));
         if (!request.url.includes('/stream.zip')) {response.once('close', () => {stalledClosed = true;}); return;}
-        setTimeout(() => {transferFinished = true; response.end(bytes.subarray(4096));}, 50);
+        // Keep the suffix unsent until the actual downloader has reported the
+        // prefix. A fixed 50 ms origin timer races file I/O on slower runners.
+        const release=()=>{transferFinished=true;response.end(bytes.subarray(4096));};
+        releaseStream=release;
+        response.once('close',()=>{if(releaseStream===release)releaseStream=null;});
         return;
       }
       if (request.url === '/bodyless-204.json' || request.url === '/bodyless-304.json') {
@@ -118,6 +122,19 @@ async function chromiumGate() {
     });
     await new Promise(resolve => proxy.listen(0, '127.0.0.1', resolve));
     await app.whenReady();
+    // A fresh Windows profile may fetch spellcheck dictionaries. This fixture
+    // admits only its release requests, so disable that unrelated session work.
+    session.defaultSession.setSpellCheckerEnabled(false);
+    assert.equal(session.defaultSession.isSpellCheckerEnabled(),false);
+    report.assertions.fixtureSpellcheckerDisabled=true;
+    if(process.platform==='win32'){
+      assert.equal(typeof session.defaultSession.setSpellCheckerLanguages,'function');
+      assert.equal(typeof session.defaultSession.getSpellCheckerLanguages,'function');
+      session.defaultSession.setSpellCheckerLanguages([]);
+      report.fixtureSpellcheckerLanguages=session.defaultSession.getSpellCheckerLanguages();
+      assert.deepEqual(report.fixtureSpellcheckerLanguages,[]);
+      report.assertions.fixtureSpellcheckerLanguagesCleared=true;
+    }
     // Trust only this test's certificate in this isolated session. Production
     // certificate handling and all product source validators remain unchanged.
     session.defaultSession.setCertificateVerifyProc((details, callback) => callback(
@@ -141,13 +158,30 @@ async function chromiumGate() {
     const identity = asset => ({tag: 'v2.4.4', asset, size: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex')});
     const progress = [];
-    await network.downloadAsset({url: assetUrl('stream.zip'), fetcher: product.fetch,
+    report.progress=progress;
+    // Delay consumer admission after real Chromium headers. Streaming must not
+    // depend on the relative speed of the hosted runner and the origin timer.
+    const delayedStreamFetch=Object.assign((...args)=>product.fetch(...args),product.fetch);
+    delayedStreamFetch.readOnce=async(...args)=>{
+      const response=await product.readOnce(...args);
+      if(response.status===200&&new URL(args[0]).pathname.endsWith('/stream.zip'))
+        await new Promise(resolve=>setTimeout(resolve,125));
+      return response;
+    };
+    await network.downloadAsset({url: assetUrl('stream.zip'), fetcher: delayedStreamFetch,
       target: path.join(directory, 'stream.zip'), identity: identity('stream.zip'),
       policy: {downloadBudgetMs: 5000, attemptTimeoutMs: 1000}, onEvent: event => {
-        if (event.event === 'progress' && event.current > 0) progress.push({current: event.current, transferFinished});
+        if (event.event === 'progress' && event.current > 0) {
+          progress.push({current:event.current,transferFinished});
+          if(event.current===4096&&!transferFinished&&releaseStream){
+            report.assertions.streamingAcknowledged=true;
+            const release=releaseStream;releaseStream=null;release();
+          }
+        }
       }});
     assert.equal(hash(path.join(directory, 'stream.zip')), identity('stream.zip').sha256);
     assert.ok(progress.some(event => event.current === 4096 && !event.transferFinished), 'Progress must arrive while the archive is still streaming');
+    assert.equal(report.assertions.streamingAcknowledged,true,'Only an actual intermediate client progress event may release the suffix');
     assert.ok(report.requests.some(request => request.host === 'zenlayer.dl.sourceforge.net' && request.path.includes('/stream.zip')));
     report.assertions.streaming = true;
     const before = report.requests.length;

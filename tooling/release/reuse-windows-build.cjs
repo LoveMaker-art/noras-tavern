@@ -103,21 +103,62 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
    target.parent.mkdir(parents=True,exist_ok=True)
    with archive.open(item) as source, target.open('xb') as output: shutil.copyfileobj(source,output,1024*1024)
 `;
+// A held gh child must close before its archive is inspected or reused. A
+// timeout is evidence of failure, never evidence that the remote/process exited.
+async function downloadArchive(item,repository,archive,{env=process.env,timeout=600000,idleTimeout=300000,
+ killGrace=2000,closeTimeout=10000,spawnProcess=spawn}={}) {
+ for(const value of [timeout,idleTimeout,killGrace,closeTimeout])assert.ok(Number.isSafeInteger(value)&&value>0,'Finite download lifecycle budgets required');
+ assert.ok(closeTimeout>killGrace,'Held close budget must allow force escalation');
+ const child=spawnProcess('gh',['api',`repos/${repository}/actions/artifacts/${item.id}/zip`],
+  {env,stdio:['ignore','pipe','inherit'],windowsHide:true});
+ let didClose=false,closedResult,closeResolve,failReject,total,idle,force,closeTimer,output;
+ const closed=new Promise(resolve=>{closeResolve=resolve;});
+ const failed=new Promise((_,reject)=>{failReject=reject;});
+ const onClose=(code,signal)=>{didClose=true;closedResult={code,signal};child.removeListener('error',onError);closeResolve(closedResult);};
+ const onError=error=>failReject(error);
+ child.once('close',onClose);child.on('error',onError);
+ const expire=reason=>failReject(Object.assign(new Error(`Artifact ${item.name} download ${reason}`),{code:'ETIMEDOUT'}));
+ const resetIdle=()=>{clearTimeout(idle);idle=setTimeout(()=>expire('idle deadline exceeded'),idleTimeout);};
+ child.stdout?.on('data',resetIdle);resetIdle();total=setTimeout(()=>expire('total deadline exceeded'),timeout);
+ try {
+  output=fs.createWriteStream(archive,{flags:'wx'});
+  await Promise.race([Promise.all([pipeline(child.stdout,output),closed.then(({code,signal})=>{
+   if(code!==0||signal)throw new Error(`Artifact download exited ${signal||code}`);
+  })]),failed]);
+ } catch(error) {
+  clearTimeout(total);clearTimeout(idle);
+  const kill=signal=>{if(didClose)return;try{child.kill(signal);}catch(cause){error.stopError=String(cause.message||cause);}};
+  if(!didClose){kill('SIGTERM');force=setTimeout(()=>kill('SIGKILL'),killGrace);}
+  child.stdout?.destroy();output?.destroy();
+  await Promise.race([closed,new Promise(resolve=>{closeTimer=setTimeout(resolve,closeTimeout);})]);
+  error.closeConfirmed=didClose;error.childIdentity={pid:child.pid};error.childClose=closedResult||null;
+  error.archivePath=archive;error.preserveArchive=true;
+  if(!didClose){
+   error.cleanupFailure='Held artifact child close remains unconfirmed; preserve the archive and process evidence';
+   child.unref?.();error.childClosurePending=true;
+  }
+  throw error;
+ } finally {
+  for(const timer of [total,idle,force,closeTimer])clearTimeout(timer);
+  child.stdout?.removeListener('data',resetIdle);if(didClose)child.removeListener('error',onError);
+  // Keep the close listener attached when closure remains pending. It does not
+  // turn a bounded failure into a fabricated successful process receipt.
+ }
+ return closedResult;
+}
 async function materialize(run,artifacts,jobs,options,root) {
  const accepted=verifySource(run,artifacts,jobs,options);assert.ok(!fs.existsSync(root),'Assembly directory already exists');fs.mkdirSync(root,{recursive:true});
  const proof={schema:'nora-verified-windows-reuse/1',sourceRun:run.id,commit:options.commit,artifacts:[]};
  for(const item of accepted) {
   const archive=path.join(root,item.name+'.zip'),output=path.join(root,item.name===names[0]?'delivery':'acceptance');
-  const child=spawn('gh',['api',`repos/${options.repository}/actions/artifacts/${item.id}/zip`],{stdio:['ignore','pipe','inherit']});
-  const closed=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',code=>code===0?resolve():reject(new Error(`Artifact download exited ${code}`)));});
-  await Promise.all([pipeline(child.stdout,fs.createWriteStream(archive,{flags:'wx'})),closed]);await verifyArchive(archive,item);
+  await downloadArchive(item,options.repository,archive);await verifyArchive(archive,item);
   execFileSync('python3',['-c',extractScript,archive,output],{stdio:'inherit'});proof.artifacts.push({id:item.id,name:item.name,size:item.size_in_bytes,digest:item.digest});
  }
  proof.files=await verifyPackage(path.join(root,'delivery'),path.join(root,'acceptance'),options.commit);
  const provenance=path.join(root,'acceptance','nora-verified-windows-reuse.json');assert.ok(!fs.existsSync(provenance),'Source already contains reuse provenance');
  fs.writeFileSync(provenance,JSON.stringify(proof,null,2)+'\n');console.log(`Verified unchanged native Windows package from run ${run.id} at ${options.commit}.`);
 }
-module.exports={verifyModes,verifySource,verifyArchive,verifyPackage,materialize,requiredSteps,extractScript};
+module.exports={verifyModes,verifySource,verifyArchive,verifyPackage,downloadArchive,materialize,requiredSteps,extractScript};
 if(require.main===module) {
  verifyModes(process.env);const [runFile,artifactsFile,jobsFile,commit,repository,runId,root]=process.argv.slice(2);
  materialize(read(runFile),read(artifactsFile),read(jobsFile),{commit,repository,runId},root).catch(error=>{console.error(error);process.exitCode=1;});

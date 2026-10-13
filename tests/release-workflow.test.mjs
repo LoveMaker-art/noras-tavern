@@ -56,6 +56,22 @@ test('all release, installation and presentation source contracts block cold bui
     assert.doesNotMatch(source.run,/--test-name-pattern|--skip|\|\|\s*true/);
   }
 });
+test('standalone download source contracts run before runtime preparation without a native Hermes dependency',()=>{
+  const steps=full.jobs.build.steps;
+  const index=steps.findIndex(step=>step.name==='Check release source contracts before preparing runtimes');
+  const runtime=steps.findIndex(step=>step.name==='Download and verify unchanged published components');
+  assert.ok(index>=0&&index<runtime);
+  const gate=steps[index];
+  assert.equal(gate.if,undefined);assert.equal(gate['continue-on-error'],undefined);
+  assert.match(gate.run,/set -euo pipefail/);
+  assert.match(gate.run,/node "\$PWD\/tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_update_download_sources(?:\s|$)/);
+  for(const module of ['test_standalone_release_sources','test_first_install_bootstrap_entry',
+    'test_first_install_shared_assets','test_update_shared_assets','test_update_check','test_clawchat_bundle',
+    'test_liveware_cache_release','test_managed_context','test_native_lifecycle_locking','test_native_ownership_recovery',
+    'test_nora_instance','test_updater_host_hook','test_updater_runtime_process_detection'])
+    assert.ok(gate.run.includes('tests.deployment.'+module),`Standalone source contract omitted: ${module}`);
+  assert.doesNotMatch(gate.run,/\|\|\s*true|--test-name-pattern|--skip/);
+});
 test('maintenance wrappers and historical smoke forward only absolute script paths',()=>{
   const steps=full.jobs.build.steps;
   for(const step of steps){
@@ -98,6 +114,22 @@ test('the plan and quick contracts gate expensive builds, and failing plans rema
   const contracts = steps.findIndex(step => step.name?.startsWith('Check release tooling'));
   assert.ok(plan >= 0 && gate > plan && contracts > gate);
   assert.match(steps[contracts].run, /tests\/launcher-stability-gate\.test\.mjs/, 'Verify the source gate itself before native jobs');
+  assert.match(steps[contracts].run, /tests\/shared-assets-frozen-client\.test\.mjs/, 'Exercise unchanged historical client bytes against current source contracts before native jobs');
+  for(const file of ['jihulab-credentials.test.mjs','jihulab-provider.test.mjs','jihulab-publisher-config.test.mjs',
+    'jihulab-transport.test.mjs','release-sources-embedding.test.mjs','launcher_jihulab_sources.test.cjs',
+    'launcher_static_catalogue.test.cjs','launcher_shared_assets.test.cjs','launcher_jihulab_publication.test.cjs',
+    'docs-navigation.test.cjs','launcher-publish-source.test.cjs'])
+    assert.ok(steps[contracts].run.includes(file),`Current distribution contract omitted: ${file}`);
+  assert.match(steps.find(step=>step.name==='Install the workflow contract parser').run,/psutil==7\.0\.0/);
+  assert.match(steps[contracts].run,/tests\.deployment\.test_updater_runtime_process_detection/,
+    'Exercise /proc discovery on Linux rather than calling the macOS and Windows skip a pass');
+  const initialization=full.jobs.build.steps.find(step=>step.name==='Test Nora initialization and profile synchronization');
+  assert.match(initialization.run,/tests\.deployment\.test_launcher_hermes_config/);
+  const nativeLifecycle=full.jobs.build.steps.find(step=>step.name==='Test native transaction and complete evidence contracts');
+  assert.match(nativeLifecycle.run,/tests\.deployment\.test_native_lifecycle_locking/,
+    'The qualified real CLI case must also run with an actual managed runtime, not only source admission refusals');
+  assert.equal(steps.find(step => step.uses === 'actions/checkout@v4').with['fetch-depth'], '0',
+    'The frozen client must load its exact historical commit, not a reconstructed current client');
   assert.match(steps[contracts].run, /node "\$PWD\/tooling\/run\.mjs" python -B -m unittest tests\.deployment\.test_launcher_shared_logic\.SharedLogicTests\.test_desktop_starts_gateway_before_scheduling_shared_hook/);
   const python = steps.findIndex(step => step.uses === 'actions/setup-python@v5' && step.with?.['python-version'] === '3.11');
   assert.ok(python >= 0 && python < contracts);
@@ -122,6 +154,8 @@ test('mandatory backup workflow contracts run in preflight with finite installat
   assert.equal(install.shell, 'bash');
   assert.match(install.run, /set -euo pipefail/);
   assert.match(install.run, /npm ci --prefix app\/engine\/sillytavern --ignore-scripts --no-audit --no-fund/);
+  assert.match(install.run, /npm ci --prefix launcher\/desktop --ignore-scripts --no-audit --no-fund/,
+    'Static domestic fixtures need the locked desktop semver modules in a clean preflight checkout');
   assert.doesNotMatch(install.run, /\|\|\s*true/);
   assert.equal(check.if, undefined);
   assert.equal(check['continue-on-error'], undefined);

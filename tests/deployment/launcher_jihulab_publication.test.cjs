@@ -6,13 +6,17 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const {pathToFileURL} = require('node:url');
 const {spawn} = require('node:child_process');
+const {captureChild, firstJsonLine, stopChild} = require('./launcher_test_lifecycle.cjs');
 const {snapshotBeforeTransfer}=require('../../tooling/release/publication-source.cjs');
 const stateModule = () => import(pathToFileURL(path.resolve(__dirname, '../../tooling/release/publication-state.mjs')));
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
-async function sealed(t) {
+async function sealed(t, children = []) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-domestic-publication-'));
-  t.after(() => fs.rmSync(directory, {recursive:true, force:true}));
+  t.after(async () => {
+    for (const child of children) await stopChild(child);
+    fs.rmSync(directory, {recursive:true, force:true});
+  });
   const root = path.join(directory, 'assets'), stateDir = path.join(directory, 'state');
   fs.mkdirSync(root); fs.mkdirSync(stateDir);
   const tag = 'v2.4.6', commit = 'a'.repeat(40), repository = 'LoveMaker-art/noras-tavern';
@@ -117,21 +121,16 @@ test('an unknown Jihu PUT intent survives repeated state reloads and prevents a 
 });
 
 test('a killed publisher leaves its pre-PUT intent durable and resume cannot re-PUT the missing key', async t => {
-  const publication=await sealed(t),asset=publication.plan.objects[0];
+  const children=[],publication=await sealed(t,children),asset=publication.plan.objects[0];
   const moduleUrl=pathToFileURL(path.resolve(__dirname,'../../tooling/release/publication-state.mjs')).href;
   const code=`import {loadPublication,executePublication} from ${JSON.stringify(moduleUrl)};
     const p=await loadPublication(${JSON.stringify({root:publication.root,stateDir:publication.stateDir})});
     const noop={async begin(){},async inspect(){return 'matching';},async upload(){},async verify(){},async assertReady(){},async checkPromotion(){},async promote(){},async verifyPromotion(){}};
-    await executePublication(p,{stage:'prepare',log(){},verifyConsumers:async()=>({scope:'killed-intent-fixture'}),providers:{github:noop,jihulab:{...noop,async inspect(){return 'missing';},async upload(object,p){p.recordJihuUploadIntent(object);process.stdout.write('intent durable\\n');await new Promise(()=>{setInterval(()=>{},1000);});}}}});`;
+    await executePublication(p,{stage:'prepare',log(){},verifyConsumers:async()=>({scope:'killed-intent-fixture'}),providers:{github:noop,jihulab:{...noop,async inspect(){return 'missing';},async upload(object,p){p.recordJihuUploadIntent(object);process.stdout.write(JSON.stringify({intentDurable:true})+'\\n');await new Promise(()=>{setInterval(()=>{},1000);});}}}});`;
   const child=spawn(process.execPath,['--input-type=module','-e',code],{stdio:['ignore','pipe','pipe']});
-  t.after(()=>child.kill('SIGKILL'));let output='',errors='';child.stderr.on('data',bytes=>{errors+=bytes;});
-  await new Promise((resolve,reject)=>{
-    const timeout=setTimeout(()=>{child.kill('SIGKILL');reject(Error('child did not persist intent: '+errors));},3000);
-    child.stdout.on('data',bytes=>{output+=bytes;if(output.includes('intent durable')){clearTimeout(timeout);resolve();}});
-    child.once('error',error=>{clearTimeout(timeout);reject(error);});
-    child.once('exit',code=>{clearTimeout(timeout);if(!output.includes('intent durable'))reject(Error('child exited '+code+': '+errors));});
-  });
-  const exited=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGKILL');await exited;
+  captureChild(child);children.push(child);
+  assert.equal((await firstJsonLine(child,{timeoutMs:3000})).intentDurable,true);
+  assert.equal((await stopChild(child,{signal:'SIGKILL'})).signal,'SIGKILL');
   const resumed=await (await stateModule()).loadPublication({root:publication.root,stateDir:publication.stateDir});
   assert.ok(resumed.state.sources.jihulab.uploadIntents[asset.key]);let uploads=0;
   await assert.rejects(execute(resumed,inertProvider({async inspect(){return 'missing';},async upload(){uploads++;}})),/preparation failed/);

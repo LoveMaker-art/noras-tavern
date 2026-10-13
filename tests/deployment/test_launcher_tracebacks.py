@@ -14,8 +14,10 @@ import tempfile
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 class LauncherTracebackTests(unittest.TestCase):
     def test_gateway_identity_failure_has_readable_json_and_permission_code_with_local_cause(self):
@@ -75,12 +77,14 @@ def main():
             with self.subTest(entrypoint=name):
                 if name == 'first_install.py':
                     node = resolve_node(required=True)
-                    with tempfile.TemporaryDirectory(prefix='nora-traceback-owner-') as temporary:
+                    with owned_fixture_directory(prefix='nora-traceback-owner-') as fixture:
+                        fixture.closed = False
                         result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
-                            str(installer / 'desktop/operation-lock.js'), str(Path(temporary).resolve()),
+                            str(installer / 'desktop/operation-lock.js'), str(fixture.root),
                             sys.executable, str(installer / name), *args],
                             env={**os.environ, 'NORA_TEST_VENV_HOME': sys.prefix},
                             capture_output=True, text=True, timeout=20, input='')
+                        require_fixture_closure(fixture, result.stderr)
                 else:
                     result = subprocess.run([sys.executable, "-B", str(installer / name), *args],
                                             capture_output=True, text=True, timeout=20)

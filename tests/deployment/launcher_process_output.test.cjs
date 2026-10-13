@@ -10,6 +10,7 @@ const { spawn } = require('node:child_process');
 const { createRequire } = require('node:module');
 const { pathToFileURL } = require('node:url');
 const { createTestOperationLock } = require('./launcher_operation_test_lock.cjs');
+const { captureChild, stopChild } = require('./launcher_test_lifecycle.cjs');
 
 // Exercise the actual main-process IPC handler, output consumers and durable
 // controller. Only Electron and the native lock/process adapter are replaced;
@@ -47,6 +48,7 @@ function launcherFixture(t, { output, commitFailure, cacheFailureAt, cacheWriteD
       // here uses a real Node child with the same stdout/stderr/close contract.
       if (options.kind === 'python-maintenance') args = args.slice(4);
       const child = spawn(command, args, { ...options, stdio: ['pipe', 'pipe', 'pipe'] });
+      captureChild(child);
       spawned += 1; children.push(child); return child;
     };
     lease.commitOperation = async request => {
@@ -89,9 +91,13 @@ function launcherFixture(t, { output, commitFailure, cacheFailureAt, cacheWriteD
     bridgeArgs=(command,options)=>{fixtureSpecs.push(fixtureOriginalBridgeArgs(command,options));
       return {command:process.execPath,args:[fixtureChild,fixtureRows]};};
   `, context);
-  t.after(() => {
+  t.after(async () => {
     for (const timer of intervals) clearInterval(timer);
-    for (const child of children) if (child.exitCode === null) child.kill();
+    // Retain the directory if closure cannot be confirmed; kill is not proof
+    // that the child has released its output pipes and writable files.
+    const results = await Promise.allSettled(children.map(child => stopChild(child)));
+    const failures = results.filter(result => result.status === 'rejected');
+    if (failures.length) throw new AggregateError(failures.map(result => result.reason), `Fixture directory retained: ${directory}`);
     fs.rmSync(directory, { recursive: true, force: true });
   });
   return { home, context, events, get spawned() { return spawned; },

@@ -3,8 +3,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
-const { once } = require('node:events');
+const { spawn, spawnSync } = require('node:child_process');
+const { once, EventEmitter } = require('node:events');
+const { PassThrough, Readable } = require('node:stream');
 const crypto = require('node:crypto');
 const {captureChild, firstJsonLine: firstLine, stopChild} = require('./launcher_test_lifecycle.cjs');
 
@@ -90,6 +91,86 @@ async function until(fn, timeout = 8000) {
   const end = Date.now() + timeout;
   while (!(await fn())) { if (Date.now() >= end) throw new Error('Condition was not reached'); await delay(25); }
 }
+function fixtureProcessActive(identity) {
+  assert.ok(Number.isInteger(identity?.pid)&&identity.pid>0&&identity.creationTime>0,
+    'Cleanup requires the actual acknowledged process birth');
+  const python=process.env.NORA_TEST_PYTHON;
+  assert.ok(python&&path.isAbsolute(python),'Birth-bound offline inspection requires the pinned native Python');
+  const source=`import json,psutil,sys
+try:
+ p=psutil.Process(int(sys.argv[1]))
+ active=p.is_running() and p.status()!=psutil.STATUS_ZOMBIE and abs(p.create_time()-float(sys.argv[2]))<=float(sys.argv[3])
+except (psutil.NoSuchProcess,psutil.ZombieProcess): active=False
+print(json.dumps(active))`;
+  const result=spawnSync(python,['-B','-c',source,String(identity.pid),String(identity.creationTime),
+    String(identity.precisionSeconds||0.001)],{encoding:'utf8',timeout:2000,killSignal:'SIGKILL'});
+  if(result.error)throw result.error;
+  assert.equal(result.status,0,result.stderr);
+  const active=JSON.parse(result.stdout.trim());assert.equal(typeof active,'boolean');return active;
+}
+async function waitFixtureOffline(identity,{inspect=fixtureProcessActive,timeout=8000}={}) {
+  await until(async()=>!(await inspect(identity)),timeout);
+}
+
+test('birth-bound fixture cleanup waits for offline instead of assuming a completion marker means exit',async()=>{
+  const identity={pid:123,creationTime:456.25,precisionSeconds:0.001};let checks=0;
+  await waitFixtureOffline(identity,{inspect:actual=>{assert.equal(actual,identity);return ++checks<3;},timeout:200});
+  assert.equal(checks,3);
+  await assert.rejects(waitFixtureOffline(identity,{inspect:()=>true,timeout:25}),/Condition was not reached/);
+});
+
+test('owned fixture helper bounds a hung actor and preserves cancellation failure separately',async()=>{
+  const {runOwnedActor,EXECUTION_BUDGET_MS,CLEANUP_BUDGET_MS}=require('./launcher_owned_test_actor.cjs');
+  assert.ok(EXECUTION_BUDGET_MS+CLEANUP_BUDGET_MS<20000,'The helper must finish before its shortest 20 s caller');
+  for(const cancellationHangs of [false,true]) {
+    const child=new EventEmitter();Object.assign(child,{pid:123,jobId:'fixture',stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough()});
+    const job={jobId:'fixture',delegation:{identityStatus:'reported'}};let released=false,probed=false;
+    const lease={spawn:()=>child,snapshot:async()=>({jobs:[job]}),release:async()=>{released=true;},
+      cancel:()=>cancellationHangs?new Promise(()=>{}):Promise.resolve().then(()=>{job.closedAt='actual-close';child.emit('close',null,'SIGKILL');})};
+    const lock={acquire:async()=>lease,probe:async()=>{probed=true;return {busy:false};}};
+    const streams={stdin:Readable.from([]),stdout:new PassThrough(),stderr:new PassThrough()};
+    const started=Date.now();let original;
+    try {await runOwnedActor({entry:'/fixture/lock.cjs',root:'/fixture/root',python:'/fixture/python',script:'/fixture/script.py',lock,streams,executionMs:25,cleanupMs:50});}
+    catch(error){original=error;}
+    assert.equal(original?.code,'FIXTURE_ACTOR_TIMEOUT');assert.ok(Date.now()-started<1000);
+    assert.equal(original.fixtureClosureConfirmed,!cancellationHangs);
+    assert.equal(released,!cancellationHangs);assert.equal(probed,!cancellationHangs);
+    if(cancellationHangs)assert.equal(original.cleanupFailure.code,'FIXTURE_ACTOR_CANCEL_UNCONFIRMED');
+    else assert.equal(original.cleanupFailure,undefined);
+    child.stdin.destroy();child.stdout.destroy();child.stderr.destroy();streams.stdout.destroy();streams.stderr.destroy();
+  }
+});
+
+test('owned fixture helper distinguishes refused spawn from an actual child missing close',async()=>{
+  const {runOwnedActor}=require('./launcher_owned_test_actor.cjs');
+  for(const started of [false,true]) {
+    const child=new EventEmitter();Object.assign(child,{pid:started?123:undefined,jobId:'fixture',stdin:new PassThrough(),stdout:new PassThrough(),stderr:new PassThrough()});
+    const original=Object.assign(new Error('actual spawn fault'),{code:'ENOENT'});
+    const job={jobId:'fixture',...(started?{closedAt:'ledger alone cannot replace close'}:{spawnFailedAt:'refused before spawn'})};let released=false;
+    const lease={spawn:()=>{queueMicrotask(()=>child.emit('error',original));return child;},cancel:async()=>{},
+      snapshot:async()=>({jobs:[job]}),release:async()=>{released=true;}};
+    const lock={acquire:async()=>lease,probe:async()=>({busy:false})};
+    const streams={stdin:Readable.from([]),stdout:new PassThrough(),stderr:new PassThrough()};
+    await assert.rejects(runOwnedActor({entry:'/fixture/lock.cjs',root:'/fixture/root',python:'/fixture/python',script:'/fixture/script.py',
+      lock,streams,executionMs:50,cleanupMs:25}),error=>error===original&&error.fixtureClosureConfirmed===!started);
+    assert.equal(released,!started);
+    if(started)assert.equal(original.cleanupFailure.code,'FIXTURE_ACTOR_CLOSE_UNCONFIRMED');
+    child.stdin.destroy();child.stdout.destroy();child.stderr.destroy();streams.stdout.destroy();streams.stderr.destroy();
+  }
+});
+
+test('owned fixture helper closes a late empty admission and bounds a missing admission',async()=>{
+  const {runOwnedActor}=require('./launcher_owned_test_actor.cjs');
+  for(const missing of [false,true]) {
+    let released=false,spawned=false;
+    const lease={spawn:()=>{spawned=true;},snapshot:async()=>({jobs:[]}),release:async()=>{released=true;}};
+    const admission=missing?new Promise(()=>{}):new Promise(resolve=>setTimeout(()=>resolve(lease),20));
+    const lock={acquire:()=>admission,probe:async()=>({busy:false})};
+    await assert.rejects(runOwnedActor({entry:'/fixture/lock.cjs',root:'/fixture/root',python:'/fixture/python',script:'/fixture/script.py',
+      lock,executionMs:5,cleanupMs:30}),error=>error.code==='FIXTURE_ACTOR_ADMISSION_TIMEOUT'&&error.fixtureClosureConfirmed===!missing);
+    assert.equal(spawned,false);assert.equal(released,!missing);
+  }
+});
 async function cleanupLease(lease) {
   try {
     let state;
@@ -294,8 +375,12 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     const {connect}=require(process.argv[2]);
     (async()=>{const delegation=await connect();
       const out=process.argv[1];fs.appendFileSync(out,'started\\n');process.stdout.write('started\\n');
-      const timer=setInterval(()=>fs.appendFileSync(out,'write\\n'),30);
-      setTimeout(()=>{clearInterval(timer);fs.appendFileSync(out,'done\\n');delegation.close();},1500);
+      const end=Date.now()+12000;
+      const timer=setInterval(()=>{
+        if(fs.existsSync(out+'.finish')) {clearInterval(timer);fs.appendFileSync(out,'done\\n');delegation.close();}
+        else if(Date.now()>=end) {clearInterval(timer);fs.appendFileSync(out,'fixture-deadline\\n');process.exitCode=3;delegation.close();}
+        else fs.appendFileSync(out,'write\\n');
+      },30);
     })().catch(error=>{console.error(error);process.exitCode=1});`;
   const ownerSource = `
     const {acquire}=require(process.argv[1]);
@@ -314,8 +399,9 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     await ownerClosed;
     const before = fs.statSync(output).size;
     await assert.rejects(acquire({directory,operationId:'too-early',ownerEpoch:2}), {code:'OPERATION_BUSY'});
-    await delay(120);
+    await until(()=>fs.statSync(output).size>before);
     assert.ok(fs.statSync(output).size > before, 'the original child must still be writing');
+    fs.writeFileSync(output+'.finish','finish',{flag:'wx'});
     await until(() => fs.readFileSync(output,'utf8').includes('done\n'));
     // Final output precedes delegation/socket and real process closure. The
     // guard must retain exclusion until those events arrive on every platform.
@@ -332,10 +418,11 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
     next = await acquire({directory,operationId:'after-close',ownerEpoch:2});
     assert.equal((await next.snapshot()).ownerEpoch, 2);
   } finally {
+    fs.writeFileSync(output+'.finish','finish');
     await stopChild(owner);
     if (next) await cleanupLease(next);
     // A failed assertion before owner death can leave its separately guarded
-    // writer active. Its fixture has a finite deadline; wait for real closure.
+    // writer active. Request its explicit ACK, then wait for real closure.
     await until(async () => !(await probe({directory})).busy);
     fs.rmSync(directory,{recursive:true,force:true});
   }
@@ -442,7 +529,7 @@ test('guard hard death signals loss and retains an unresolved ledger instead of 
   const {acquire,probe}=require(modulePath);
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-guard-death-'));
   const output=path.join(directory,'guard-lost');
-  const lease=await acquire({directory,operationId:'guard-death',ownerEpoch:1});let child,guardKilled=false,closed=false;
+  const lease=await acquire({directory,operationId:'guard-death',ownerEpoch:1});let child,guardKilled=false,closed=false,identity;
   const source=`const {connect}=require(process.argv[1]);
     (async()=>{const delegation=await connect();process.stdout.write('ready');
       delegation.once('lost',()=>{require('node:fs').writeFileSync(process.argv[2],'EOF');process.exit(23);});
@@ -451,6 +538,8 @@ test('guard hard death signals loss and retains an unresolved ledger instead of 
     child=lease.spawn(process.execPath,['-e',source,path.join(path.dirname(modulePath),'operation-delegate.js'),output],{kind:'verification'});
     await once(child.stdout,'data');child.on('close',()=>closed=true);
     const lost=once(lease,'guard-lost');const state=await lease.snapshot();
+    identity=state.jobs.find(job=>job.jobId===child.jobId)?.creationIdentity;
+    assert.equal(identity?.pid,child.pid);assert.ok(identity.creationTime>0);
     process.kill(state.guardPid,'SIGKILL');guardKilled=true;await lost;
     if(process.platform==='win32') {
       // libuv's Windows job may terminate the child with its killed guard. The
@@ -464,8 +553,12 @@ test('guard hard death signals loss and retains an unresolved ledger instead of 
     assert.equal(retained.sessions[0].jobs[0].delegation.identityStatus,'reported');
     await assert.rejects(lease.release(),{code:'LOCK_GUARD_EXITED'});
   } finally {
-    if(!guardKilled){if(child){const ended=once(child,'close');child.kill();await ended;}await lease.release();}
-    await delay(100);fs.rmSync(directory,{recursive:true,force:true});
+    if(!guardKilled)await cleanupLease(lease);
+    // EOF is written before process.exit and guard death deliberately removes
+    // the close observer. Only the original OS process birth proves it is gone.
+    if(identity)await waitFixtureOffline(identity);
+    else if(guardKilled)throw new Error('Retaining guard-death fixture: process birth was not captured');
+    fs.rmSync(directory,{recursive:true,force:true});
   }
 });
 

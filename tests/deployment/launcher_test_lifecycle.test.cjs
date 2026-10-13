@@ -87,3 +87,11 @@ test('cleanup escalates a held fixture that ignores termination and waits for cl
   assert.notEqual(result.code, 0);
   if (process.platform !== 'win32') assert.equal(result.signal, 'SIGKILL');
 });
+
+test('an intentional crash keeps its requested SIGKILL and confirms actual pipe close', async t => {
+  const child=fixture(t,"process.stdout.write('{\"ready\":true}\\n');setInterval(()=>{},1000);");
+  await firstJsonLine(child);
+  const result=await stopChild(child,{signal:'SIGKILL'});
+  assert.equal(result.signal,'SIGKILL');assert.equal(result.code,null);
+  assert.equal(captureChild(child).didClose,true);
+});

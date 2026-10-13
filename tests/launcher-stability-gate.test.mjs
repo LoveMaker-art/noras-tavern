@@ -64,6 +64,10 @@ test('Windows and Intel Mac give complete serial source groups separate bounded 
             return { status: 0 };
         } });
         assert.deepEqual(calls.map(call => call.options.timeout), [expectedJavascript, expectedPython]);
+        assert.deepEqual(calls.map(call => call.args.slice(1,3)),
+            [['--timeout-ms',String(expectedJavascript-15000)],['--timeout-ms',String(expectedPython-15000)]],
+            'An internal timer leaves forced-close time before the Windows hard outer deadline');
+        assert.ok(calls.every(call => call.options.killSignal === 'SIGTERM'), 'Give the bounded projection runner its child-close and export-preservation path');
         assert.equal(calls[0].args.filter(arg => arg.endsWith('.test.cjs')).length, 17);
         assert.equal(calls[1].args.filter(arg => arg.startsWith('tests.deployment.')).length, 10);
     }

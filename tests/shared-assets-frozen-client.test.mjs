@@ -24,7 +24,8 @@ function client(directory,commit) {
     fs.writeFileSync(path.join(directory,path.basename(source)),bytes);
   }
   if(commit) assert.equal(sha(fs.readFileSync(path.join(directory,'releases.js'))),'676e4c99ad76555355f324b2ccbc304baa52d00ebf922e28e3890c912b38f0c7');
-  return {releases:require(path.join(directory,'releases.js')),launcher:require(path.join(directory,'launcher-update.js'))};
+  return {releases:require(path.join(directory,'releases.js')),launcher:require(path.join(directory,'launcher-update.js')),
+    sourceCandidates:require(path.join(directory,'release-sources.js')).sourceCandidates};
 }
 function fixture(t) {
   const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'nora-frozen-211-shared-'));
@@ -51,22 +52,33 @@ function fixture(t) {
     asset:zip,sha256:sha(files[zip]),size:Buffer.byteLength(files[zip])});
   const index={schema:'nora-release-assets/1',repository:'LoveMaker-art/noras-tavern',tag,commit,minimumLauncherVersion:'2.1.2',
     assets:Object.entries(shared).map(([name,bytes])=>({name,asset_release_tag:baseline,sha256:sha(bytes),size:Buffer.byteLength(bytes)}))};
-  const release={tag_name:tag,draft:false,prerelease:false,assets:[]},requests=[];
-  const reseal=()=>{files['release-assets.json']=JSON.stringify(index);release.assets=Object.entries(files).map(([name,bytes])=>
-    ({name,state:'uploaded',size:Buffer.byteLength(bytes),digest:`sha256:${sha(bytes)}`,browser_download_url:url(name)}));};
+  const release={tag_name:tag,draft:false,prerelease:false,assets:[]},requests=[],routes=new Map();
+  const addRoute=(canonical,resource)=>{
+    for(const reader of [old,current])for(const source of reader.sourceCandidates(canonical)) {
+      if(routes.has(source.url))assert.deepEqual(routes.get(source.url),resource,'A physical fixture URL cannot alias two logical resources');
+      routes.set(source.url,resource);
+    }
+  };
+  const reseal=()=>{
+    files['release-assets.json']=JSON.stringify(index);release.assets=Object.entries(files).map(([name,bytes])=>
+      ({name,state:'uploaded',size:Buffer.byteLength(bytes),digest:`sha256:${sha(bytes)}`,browser_download_url:url(name)}));
+    routes.clear();
+    const api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/';
+    addRoute(api+'latest',{kind:'catalogue'});addRoute(api+'tags/'+tag,{kind:'catalogue'});
+    for(const name of Object.keys(files))addRoute(url(name),{kind:'asset',tag,name});
+    for(const name of Object.keys(shared))addRoute(url(name,baseline),{kind:'asset',tag:baseline,name});
+  };
   reseal();
   const fetcher=async value=>{
-    requests.push(String(value));
-    const parsed=new URL(value);
-    if(parsed.hostname==='api.github.com')return new Response(JSON.stringify(release));
-    const name=parsed.pathname.split('/').pop(),version=parsed.pathname.split('/').at(-2);
-    assert.ok([tag,baseline].includes(version),`Unexpected release target ${value}`);
-    const bytes=version===baseline?shared[name]:files[name];assert.notEqual(bytes,undefined);
-    return new Response(bytes);
+    const address=String(value);requests.push(address);
+    const resource=routes.get(address);assert.ok(resource,`Unplanned fixture resource ${address}`);
+    const bytes=resource.kind==='catalogue'?JSON.stringify(release)
+      :resource.tag===baseline?shared[resource.name]:files[resource.name];assert.notEqual(bytes,undefined);
+    const response=new Response(bytes);Object.defineProperty(response,'url',{value:address});return response;
   };
   const operationDirectory=path.join(temporary,'installer','operations','65b02921-823c-48cd-bd57-3c5b55406bf8');fs.mkdirSync(operationDirectory,{recursive:true});
   const options={cacheRoot:path.join(temporary,'cache'),fetcher,platform:'win32',arch:'x64',channel:'stable',operationDirectory};
-  return {temporary,old,current,tag,baseline,commit,zip,url,shared,files,manifest,module,index,release,requests,reseal,options};
+  return {temporary,old,current,tag,baseline,commit,zip,url,shared,files,manifest,module,index,release,requests,routes,reseal,options};
 }
 
 test('actual frozen 2.1.1 selects and downloads current bridge ZIP; new client resumes the identical sealed operation using refs',async t=>{
@@ -86,8 +98,12 @@ test('actual frozen 2.1.1 selects and downloads current bridge ZIP; new client r
   assert.equal(fs.readFileSync(path.join(newRoot,'release-manifest.json'),'utf8'),plan.releaseManifestText);
   assert.equal(JSON.stringify(sealed),original);
   assert.equal(sha(JSON.stringify({releasePlan:sealed})),operationDigest);
-  assert.deepEqual(f.requests.slice(handoffRequests).filter(url=>url.includes('api.github.com')),
-    [`https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/${f.tag}`]);
+  const primary=f.current.sourceCandidates(`https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/${f.tag}`)[0];
+  assert.equal(primary.provider,'jihulab');
+  const resumedRequests=f.requests.slice(handoffRequests);
+  assert.deepEqual(resumedRequests.filter(url=>f.routes.get(url).kind==='catalogue'),[primary.url]);
+  assert.equal(resumedRequests[0],primary.url);
+  assert.ok(resumedRequests.every(url=>new URL(url).origin===new URL(primary.url).origin),'A healthy current primary must serve the fixed handoff');
   assert.ok(events.some(event=>event.event==='log'&&event.line.includes(sealed.planId)&&event.line.includes(sha(f.files['release-assets.json']))));
 });
 
@@ -99,17 +115,28 @@ test('actual frozen 2.1.1 rejects old-tag URL and cannot cold-install a shared e
 });
 
 test('old sealed handoff cannot change physical catalogue, original commit, minimum or consumed ref byte contract',async t=>{
-  for(const change of [f=>{f.files['unexpected.json']='{}';f.reseal();},
-    f=>{f.index.commit='c'.repeat(40);f.reseal();},
-    f=>{f.index.minimumLauncherVersion='2.1.3';f.reseal();},
-    f=>{f.index.assets[0].size++;f.reseal();},
-    f=>{f.index.assets[0].sha256='c'.repeat(64);f.reseal();}]) {
+  const rejected=[],expected=[];
+  for(const [name,change,reason] of [
+    ['physical catalogue',f=>{f.files['unexpected.json']='{}';f.reseal();},'原固定发布的物理资产集合已变化，未重新选择目标。'],
+    ['original commit',f=>{f.index.commit='c'.repeat(40);f.reseal();},'共享索引与原固定发布的提交或兼容门槛不符。'],
+    ['minimum launcher',f=>{f.index.minimumLauncherVersion='2.1.3';f.reseal();},'共享索引与原固定发布的提交或兼容门槛不符。'],
+    ['reference size',f=>{f.index.assets[0].size++;f.reseal();},'共享资产引用与组件校验信息不一致。'],
+    ['reference SHA',f=>{f.index.assets[0].sha256='c'.repeat(64);f.reseal();},'共享资产引用与组件校验信息不一致。']]) {
     const f=fixture(t),plan=await f.old.releases.selectPlan({...f.options,launcherVersion:'2.1.1'});
     const sealed=f.old.releases.sealPlan(plan,{...f.options,launcherVersion:'2.1.1',assertOwner(){}}),original=JSON.stringify(sealed);
+    const operationDigest=sha(JSON.stringify({releasePlan:sealed}));
     change(f);f.requests.length=0;
     await assert.rejects(f.current.releases.prepareUpdate({...f.options,launcherVersion:'2.1.2',selectedPlan:sealed,
-      plan:async()=>{assert.fail('Invalid hydration must stop before updater execution');}}));
+      plan:async()=>{assert.fail('Invalid hydration must stop before updater execution');}}),error=>{
+      const failure={case:name,reason:error.message,requests:[...f.requests]};
+      t.diagnostic(JSON.stringify({...failure,code:error.code||null}));rejected.push(failure);return true;
+    });
+    expected.push({case:name,reason,requests:[
+      f.current.sourceCandidates(`https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/${f.tag}`)[0].url,
+      f.current.sourceCandidates(f.url('release-assets.json'))[0].url]});
     assert.equal(JSON.stringify(sealed),original);
+    assert.equal(sha(JSON.stringify({releasePlan:sealed})),operationDigest);
     assert.ok(!f.requests.some(url=>url.endsWith('.tar.gz')));
   }
+  assert.deepEqual(rejected,expected,'Every refusal must reach its fixed-tag hydration check after reading the catalogue and verified index');
 });

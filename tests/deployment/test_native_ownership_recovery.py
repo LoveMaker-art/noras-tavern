@@ -3,6 +3,7 @@ import contextlib
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import socket
 import subprocess
@@ -17,6 +18,11 @@ if __package__:
     from .launcher_test_environment import resolve_node
 else:
     from launcher_test_environment import resolve_node
+
+if __package__:
+    from .test_launcher_update_recovery import close_fixture_child
+else:
+    from test_launcher_update_recovery import close_fixture_child
 
 ROOT = Path(__file__).resolve().parents[2]
 PROCESS_MODULE = ROOT / 'ops/updater/runtime_process.py'
@@ -34,9 +40,9 @@ def load(name, path):
 
 class NativeOwnershipRecoveryTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix='nora-owned-node-')
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name)
+        root = self.fixture_root = Path(tempfile.mkdtemp(prefix='nora-owned-node-'))
+        self.fixture_children = []
+        self.addCleanup(self.cleanup_fixture)
         self.lifecycle = load('native_ownership_lifecycle_test', ROOT / 'app/native_lifecycle.py')
         self.processes = load('native_ownership_process_test', PROCESS_MODULE)
         r = self.runtime = self.lifecycle.NativeRuntime.__new__(self.lifecycle.NativeRuntime)
@@ -84,6 +90,17 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
         r.process_module = mock.Mock(return_value=self.operations)
         r.health = mock.Mock(return_value={'ok': True, 'checks': {'native': True}})
         r.spawn = mock.Mock(side_effect=AssertionError('recovery spawned a duplicate'))
+
+    def cleanup_fixture(self):
+        failures = []
+        for child in self.fixture_children:
+            try:
+                close_fixture_child(child)
+            except Exception as error:
+                failures.append(error)
+        if failures:
+            raise RuntimeError(f'Retaining fixture with unconfirmed child closure: {self.fixture_root}') from failures[0]
+        shutil.rmtree(self.fixture_root)
 
     def write_metadata(self):
         (self.run / 'run.json').write_text(json.dumps(self.metadata, indent=2) + '\n')
@@ -230,11 +247,7 @@ class NativeOwnershipRecoveryTests(unittest.TestCase):
         args = [str(node), str(server), '--configPath', str(r.config_path), '--port', str(port),
                 '--dataRoot', str(r.native_data_root), '--listen', 'false', '--whitelist', 'false']
         child = subprocess.Popen(args, cwd=r.engine_root, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        def cleanup():
-            if child.poll() is None:
-                child.terminate()
-            child.wait(timeout=5)
-        self.addCleanup(cleanup)
+        self.fixture_children.append(child)
         self.metadata['port'] = port
         self.metadata['process']['argv'] = [str(self.node.parent / 'bun'), *args[1:]]
         self.write_metadata()

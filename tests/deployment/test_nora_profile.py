@@ -15,8 +15,10 @@ from ops.installer.launcher_bridge import env_for
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 class NoraProfileTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
@@ -161,8 +163,8 @@ class BundledProfileIntegrationTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with tempfile.TemporaryDirectory() as directory:
-                root = Path(directory)
+            with owned_fixture_directory(prefix='nora-owned-profile-') as fixture:
+                root = fixture.root
                 home = root / 'hermes'
                 (home / 'plugins').mkdir(parents=True)
                 (home / 'plugins/clawchat').symlink_to(Path(os.environ['NORA_CLAWCHAT_PLUGIN']).resolve(), target_is_directory=True)
@@ -180,8 +182,11 @@ class BundledProfileIntegrationTests(unittest.TestCase):
                     entry = Path(profile.__file__).resolve().parent / 'desktop/operation-lock.js'
                     actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
                     owned_env = {**env, 'NORA_TEST_VENV_HOME': sys.prefix}
-                    return subprocess.run([node, str(actor), str(entry), str(root), *command[:1], *command[2:]],
+                    fixture.closed = False
+                    result = subprocess.run([node, str(actor), str(entry), str(root), *command[:1], *command[2:]],
                                           env=owned_env, text=True, capture_output=True, timeout=30)
+                    require_fixture_closure(fixture, result.stderr)
+                    return result
                 result = owned_client()
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertTrue(json.loads(result.stdout)['ok'], result.stdout)

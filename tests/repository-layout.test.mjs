@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync, spawn } from 'node:child_process';
 import { test } from 'node:test';
 import { readLayout, translatePath, deliveryEntries, projectDelivery } from '../tooling/layout.mjs';
 import { createReleaseSource, digest, assertNoraSystemArtifacts } from '../tooling/release/release-source.mjs';
 import { RELEASE_SOURCE_ENTRY_PATHS } from '../tooling/release/embed-release-sources.mjs';
+import {captureChild, firstJsonLine, stopChild} from './deployment/launcher_test_lifecycle.cjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rules = readLayout(root);
@@ -190,3 +191,70 @@ for (const mode of ['success', 'failure', 'watch', 'absolute']) {
         assert.ok(fs.existsSync(path.join(root, 'nora/SOUL.md')));
     });
 }
+
+test('cancelling a TERM-resistant source test waits for forced child close before removing its export',
+    {timeout:20000, skip:process.platform === 'win32'}, async t => {
+    const code=`process.on('SIGTERM',()=>{}); console.log(JSON.stringify({stage:process.cwd(),pid:process.pid})); setInterval(()=>{},1000);`;
+    const child=spawn(process.execPath,['tooling/run.mjs','node','-e',code],{cwd:root,stdio:['ignore','pipe','pipe']});
+    const captured=captureChild(child);
+    t.after(async()=>{await stopChild(child,{graceMs:6000,timeoutMs:12000});});
+    const facts=await firstJsonLine(child);
+    assert.notEqual(facts.stage,root);assert.ok(fs.existsSync(facts.stage));
+    assert.equal(child.kill('SIGTERM'),true);
+    let timer;
+    try {
+        const result=await Promise.race([captured.closed,new Promise((_,reject)=>{
+            timer=setTimeout(()=>reject(Error('Source runner cancellation did not close')),12000);
+        })]);
+        assert.equal(result.code,130);assert.equal(result.signal,null);
+        assert.equal(captured.didClose,true);assert.equal(fs.existsSync(facts.stage),false,captured.stderr);
+    } finally {clearTimeout(timer);}
+});
+
+test('a source child that accepts cancellation and exits zero cannot make an interrupted runner pass',
+    {timeout:15000,skip:process.platform==='win32'},async t=>{
+    const code=`process.on('SIGTERM',()=>process.exit(0));console.log(JSON.stringify({stage:process.cwd()}));setInterval(()=>{},1000);`;
+    const child=spawn(process.execPath,['tooling/run.mjs','node','-e',code],{cwd:root,stdio:['ignore','pipe','pipe']});
+    const captured=captureChild(child);t.after(()=>stopChild(child,{graceMs:6000,timeoutMs:12000}));
+    const {stage}=await firstJsonLine(child);child.kill('SIGTERM');
+    let timer;
+    try {
+        const result=await Promise.race([captured.closed,new Promise((_,reject)=>{
+            timer=setTimeout(()=>reject(Error('Cooperative source cancellation did not close')),12000);
+        })]);
+        assert.equal(result.code,130);assert.equal(result.signal,null);assert.equal(fs.existsSync(stage),false);
+    } finally {clearTimeout(timer);}
+});
+
+test('the internal test deadline cancels a held child and retains the export on every platform',
+    {timeout:35000},async t=>{
+    const code=`process.on('SIGTERM',()=>{});console.log(JSON.stringify({stage:process.cwd()}));setInterval(()=>{},1000);`;
+    const child=spawn(process.execPath,['tooling/run.mjs','--timeout-ms','15000','node','-e',code],{cwd:root,stdio:['ignore','pipe','pipe']});
+    const captured=captureChild(child);let stage;
+    t.after(async()=>{
+        await stopChild(child,{graceMs:8000,timeoutMs:12000});
+        // This controlled child cannot fork; after the wrapper confirms close
+        // its intentionally retained export is safe to remove for this test.
+        if(stage&&captured.didClose&&captured.result.code===130&&captured.stderr.includes('held child closed=true'))
+            fs.rmSync(stage,{recursive:true,force:true});
+    });
+    ({stage}=await firstJsonLine(child,{timeoutMs:20000}));
+    let timer;
+    try {
+        const result=await Promise.race([captured.closed,new Promise((_,reject)=>{
+            timer=setTimeout(()=>reject(Error('Internal source deadline did not close')),30000);
+        })]);
+        assert.equal(result.code,130);assert.equal(result.signal,null);
+        assert.match(captured.stderr,/Source test deadline exceeded/);assert.match(captured.stderr,/held child closed=true/);
+        assert.equal(fs.existsSync(stage),true,'A deadline cannot prove all possible descendant actors closed');
+    } finally {clearTimeout(timer);}
+});
+
+test('invalid or overflowing internal timeouts fail before a projected worker is created',()=>{
+    for(const value of ['0','invalid','2147483648']){
+        const result=spawnSync(process.execPath,['tooling/run.mjs','--timeout-ms',value,'node','-e',
+            "console.log('unexpected-worker')"],{cwd:root,encoding:'utf8',timeout:10000,killSignal:'SIGKILL'});
+        assert.notEqual(result.status,0);assert.match(result.stderr,/within 1\.\.2147483647 ms/);
+        assert.equal(result.stdout,'');assert.doesNotMatch(result.stderr,/TimeoutOverflowWarning/);
+    }
+});

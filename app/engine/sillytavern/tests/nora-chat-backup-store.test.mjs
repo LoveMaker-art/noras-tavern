@@ -4,12 +4,62 @@ import fs from 'node:fs/promises';
 import fsSync from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
-import { once } from 'node:events';
+import { EventEmitter } from 'node:events';
+import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { storageFixture } from './nora-storage-fixture.mjs';
 import { createChatBackupStore } from '../src/chat-backup-store.js';
 import { ledgerAfterRestore } from '../src/nora-story-ledger/state-file.js';
 import { chatSessionOperations } from '../src/chat-session-operations.js';
+import { captureChild, firstJsonLine, stopChild } from '../../../../tests/deployment/launcher_test_lifecycle.cjs';
+import { bounded } from '../../../../tests/deployment/launcher_owned_test_actor.cjs';
+
+// These crash fixtures hold real raw children. Their original storage cleanup
+// must run only after actual close, including failed assertions and timeouts.
+async function closeBackupFixture(child, remove, { timeoutMs = 2000 } = {}) {
+    await stopChild(child, { signal: 'SIGKILL', timeoutMs });
+    await remove();
+}
+const crashFixtureDeadline = `const fixtureExpiry = setTimeout(() => {
+    console.error('Backup crash fixture deadline expired; parent acknowledgement missing');
+    process.exit(78);
+}, 7000);`;
+
+test('backup fixture cleanup preserves storage when exit arrives without actual close', async () => {
+    const child = new EventEmitter();
+    Object.assign(child, { pid: 4242, exitCode: 0, signalCode: null });
+    let removed = false;
+    child.kill = () => { throw new Error('Do not kill an already exited process'); };
+    const held = captureChild(child);
+    child.emit('exit', 0, null);
+    await assert.rejects(closeBackupFixture(child, async () => { removed = true; }, { timeoutMs: 25 }),
+        { code: 'FIXTURE_CLOSE_TIMEOUT' });
+    assert.equal(held.didClose, false);
+    assert.equal(removed, false);
+});
+
+test('backup fixture cleanup removes storage only after its held child actually closes', async () => {
+    const child = new EventEmitter();
+    Object.assign(child, { pid: 4242, exitCode: null, signalCode: null });
+    const held = captureChild(child);
+    child.kill = signal => { child.signalCode = signal; child.emit('close', null, signal); return true; };
+    let removed = false;
+    await closeBackupFixture(child, async () => { assert.equal(held.didClose, true); removed = true; });
+    assert.equal(removed, true);
+    assert.equal(held.result.signal, 'SIGKILL');
+});
+
+test('backup freeze fixture has its own finite failing deadline below the enclosing gate', () => {
+    let expires, duration, exitCode;
+    vm.runInNewContext(crashFixtureDeadline, {
+        setTimeout(callback, timeout) { expires = callback; duration = timeout; },
+        console: { error() {} }, process: { exit(code) { exitCode = code; } },
+    });
+    assert.equal(duration, 7000);
+    assert.ok(duration < 480000);
+    expires();
+    assert.equal(exitCode, 78, 'Missing parent acknowledgement must fail, never manufacture crash acceptance');
+});
 
 // Upstream Jest installs a separate transitive atomic writer under tests/.
 // Fault injection must target the exact dependency used by production code.
@@ -502,7 +552,9 @@ test('failed restore replacement retains canonical bytes and its completed prote
 });
 
 test('process exit immediately after atomic restore is recoverable without resurrecting the old ledger', { timeout: 10000 }, async t => {
-    const f = await storageFixture(t), world = await f.create('restore-crash');
+    let child;
+    const f = await storageFixture({ after: remove => t.after(() => closeBackupFixture(child, remove)) });
+    const world = await f.create('restore-crash');
     const store = createChatBackupStore({ directories: f.directories });
     const original = await savedChat(f, world, 10);
     const selected = await store.capture(original);
@@ -510,22 +562,26 @@ test('process exit immediately after atomic restore is recoverable without resur
     const scope = { id: selected.id, worldId: world.world_id, sessionId: world.sessions.default_session_id };
     const preview = await store.previewRestore(scope);
     const input = { ...scope, expectedRevision: preview.current.revision, sha256: preview.snapshot.sha256 };
-    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    child = spawn(process.execPath, ['--input-type=module', '-e', `
         import atomic from 'write-file-atomic';
         import { createChatBackupStore } from ${JSON.stringify(new URL('../src/chat-backup-store.js', import.meta.url).href)};
+        ${crashFixtureDeadline}
         let raw = ''; for await (const chunk of process.stdin) raw += chunk;
         const { directories, input, filePath } = JSON.parse(raw);
         const write = atomic.sync;
         atomic.sync = (file, ...args) => { write(file, ...args); if (file === filePath) process.exit(77); };
         await createChatBackupStore({ directories }).restore(input);
+        clearTimeout(fixtureExpiry);
     `], { cwd: new URL('../', import.meta.url), stdio: ['pipe', 'pipe', 'pipe'] });
-    const exited = once(child, 'exit');
-    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; });
+    const held = captureChild(child);
     let errors = '';
     child.stderr.on('data', chunk => { errors += chunk; });
     child.stdin.end(JSON.stringify({ directories: f.directories, input, filePath: await fs.realpath(latest.filePath) }));
-    const [code] = await exited;
-    assert.equal(code, 77, errors);
+    const result = await bounded(held.closed, Date.now() + 7000, 'BACKUP_RESTORE_CLOSE_TIMEOUT');
+    if (held.error) throw held.error;
+    assert.equal(result.code, 77, errors);
+    assert.equal(result.signal, null, errors);
+    assert.equal(held.didClose, true);
     const restored = await f.chat(world);
     assert.deepEqual(restored.slice(1), original.data.split('\n').map(JSON.parse).slice(1));
     assert.equal(ledgerAfterRestore({ active: { id: 'old' } }, restored[0].chat_metadata).active, null);
@@ -814,40 +870,35 @@ test('explicit keep is committed with capture and reuses unchanged bytes outside
 });
 
 test('a killed writer leaves the previous snapshot usable and an uncommitted file untouched after restart', { timeout: 15000 }, async t => {
-    const f = await storageFixture(t);
+    let child;
+    const f = await storageFixture({ after: remove => t.after(() => closeBackupFixture(child, remove)) });
     const world = await f.create('crash');
     const store = createChatBackupStore({ directories: f.directories, policy: { maxPerSession: 1 } });
     const original = await savedChat(f, world);
     const first = await store.capture(original);
     const changed = await savedChat(f, world, 6);
-    const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    child = spawn(process.execPath, ['--input-type=module', '-e', `
         import fs from 'node:fs/promises';
         import { createChatBackupStore } from ${JSON.stringify(new URL('../src/chat-backup-store.js', import.meta.url).href)};
+        ${crashFixtureDeadline}
         let input = ''; for await (const chunk of process.stdin) input += chunk;
         const { directories, filePath, data } = JSON.parse(input);
         const open = fs.open;
         fs.open = async (file, flags, ...args) => {
             if (flags === 'wx' && String(file).endsWith('.json')) {
-                process.stdout.write('before-metadata');
+                process.stdout.write(JSON.stringify({ checkpoint: 'before-metadata' }) + '\\n');
                 await new Promise(() => { setInterval(() => {}, 1000); });
             }
             return open(file, flags, ...args);
         };
         await createChatBackupStore({ directories, policy: { maxPerSession: 1 } }).capture({ filePath, data });
     `], { stdio: ['pipe', 'pipe', 'pipe'] });
-    const exited = once(child, 'exit');
-    t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await exited; });
-    let output = '', errors = '';
-    child.stderr.on('data', chunk => { errors += chunk; });
-    const reached = new Promise((resolve, reject) => {
-        child.stdout.on('data', chunk => { output += chunk; if (output.includes('before-metadata')) resolve(); });
-        child.once('error', reject);
-        child.once('exit', () => reject(new Error(`writer exited before checkpoint: ${errors}`)));
-    });
+    const held = captureChild(child);
     child.stdin.end(JSON.stringify({ directories: f.directories, ...changed }));
-    await reached;
-    child.kill('SIGKILL');
-    await exited;
+    assert.deepEqual(await firstJsonLine(child, { timeoutMs: 5000 }), { checkpoint: 'before-metadata' });
+    const result = await stopChild(child, { signal: 'SIGKILL', timeoutMs: 2000 });
+    assert.equal(held.didClose, true);
+    assert.equal(result.signal, 'SIGKILL', held.stderr);
     const restarted = createChatBackupStore({ directories: f.directories, policy: { maxPerSession: 1 } });
     await restarted.maintain();
     assert.deepEqual((await restarted.list()).snapshots.map(item => item.id), [first.id]);

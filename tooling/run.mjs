@@ -29,8 +29,14 @@ if (Object.hasOwn(process.env, 'NORA_TEST_PYTHON') && !process.env.NORA_TEST_PYT
 const args = process.argv.slice(2);
 const watch = args[0] === '--watch';
 if (watch) args.shift();
+let internalTimeout;
+if (args[0] === '--timeout-ms') {
+    args.shift(); internalTimeout = Number(args.shift());
+    if (!Number.isSafeInteger(internalTimeout) || internalTimeout < 1 || internalTimeout > 2147483647)
+        throw new Error('A source test timeout within 1..2147483647 ms is required');
+}
 const executable = args.shift();
-if (!executable) throw new Error('Usage: node tooling/run.mjs [--watch] <node|python|executable> <arguments...>');
+if (!executable) throw new Error('Usage: node tooling/run.mjs [--watch] [--timeout-ms milliseconds] <node|python|executable> <arguments...>');
 // Packaging must read Git from the authored tree, not from a projected export.
 if (args.some(arg => /(?:^|\/)package-release\.(?:mjs|sh)$/.test(arg))) {
     throw new Error('Use node tooling/release/package-release.mjs directly');
@@ -39,15 +45,24 @@ if (args.some(arg => /(?:^|\/)index-project\.mjs$/.test(arg))) {
     throw new Error('Use node tooling/checks/index-project.mjs directly');
 }
 const rules = readLayout(root);
+const internalDeadline = internalTimeout === undefined ? null : Date.now() + internalTimeout;
 const nodeTests = executable === 'node' && args.includes('--test');
 const nodeEval = executable === 'node' && args.some(arg => ['-e', '--eval', '-p', '--print'].includes(arg));
 const { stage } = createReleaseSource(root, { candidate: true });
 const watchers = [];
 let child;
 let interrupted = false;
+let deadlineExpired = false;
+let childClosed = false, forceTimer, closeTimer, deadlineTimer, rejectClose;
 const stop = signal => {
     interrupted = true;
     child?.kill(signal);
+    if (child && !childClosed && !forceTimer) {
+        forceTimer = setTimeout(() => { if (!childClosed) child.kill('SIGKILL'); }, 5000);
+        closeTimer = setTimeout(() => rejectClose?.(Object.assign(new Error(
+            `Source test child did not close after cancellation; projected files retained at ${stage}`),
+        { code: 'SOURCE_TEST_CLOSE_UNCONFIRMED' })), 10000);
+    }
 };
 const signalHandlers = new Map(['SIGINT', 'SIGTERM'].map(signal => [signal, () => stop(signal)]));
 try {
@@ -101,13 +116,27 @@ try {
         PYTHONDONTWRITEBYTECODE: '1', PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' }, process.execPath);
     child = spawn(invocation.command, invocation.args, { cwd: stage, stdio: 'inherit', env: environment });
     for (const [signal, handler] of signalHandlers) process.on(signal, handler);
+    if (internalDeadline !== null) deadlineTimer = setTimeout(() => {
+        deadlineExpired = true;
+        process.stderr.write('Source test deadline exceeded; cancel held child and preserve the projected export\n');
+        stop('SIGTERM');
+    }, Math.max(1, internalDeadline - Date.now()));
     process.exitCode = await new Promise((resolve, reject) => {
+        rejectClose = reject;
         let failure;
         child.once('error', error => { failure = error; });
-        child.once('close', code => failure ? reject(failure) : resolve(code ?? (interrupted ? 130 : 1)));
+        child.once('close', code => {
+            childClosed = true;
+            failure ? reject(failure) : resolve(interrupted ? 130 : (code ?? 1));
+        });
     });
 } finally {
+    clearTimeout(forceTimer); clearTimeout(closeTimer); clearTimeout(deadlineTimer);
     for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     for (const watcher of watchers) watcher.close();
-    fs.rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    if ((!child || childClosed) && !deadlineExpired) fs.rmSync(stage, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    else {
+        process.stderr.write(`Source test export retained at ${stage}; held child closed=${childClosed}, deadline exceeded=${deadlineExpired}\n`);
+        child?.unref();
+    }
 }

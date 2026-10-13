@@ -25,10 +25,16 @@ class ClawchatBundleTests(unittest.TestCase):
     def test_missing_plugin_is_actionable_and_never_downloads(self):
         with tempfile.TemporaryDirectory() as tmp, patch.object(launcher_bridge, 'run_stream') as run:
             output = io.StringIO()
-            with contextlib.redirect_stdout(output), self.assertRaises(SystemExit):
+            with contextlib.redirect_stdout(output), self.assertRaises(SystemExit) as stopped:
                 launcher_bridge.require_bundled_clawchat(Path(tmp))
             run.assert_not_called()
-            self.assertIn('新版完整安装包', json.loads(output.getvalue())['message'])
+            self.assertEqual(stopped.exception.code, 1)
+            events = [json.loads(line) for line in output.getvalue().splitlines() if line]
+            self.assertEqual([event['event'] for event in events], ['diagnostic', 'error'])
+            self.assertEqual(events[0]['component'], 'bridge')
+            self.assertEqual(events[0]['error']['name'], 'RuntimeError')
+            self.assertIn('新版完整安装包', events[-1]['message'])
+            self.assertEqual(list(Path(tmp).iterdir()), [])
 
     def test_probe_rejects_missing_file(self):
         with tempfile.TemporaryDirectory() as tmp:

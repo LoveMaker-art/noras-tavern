@@ -55,8 +55,10 @@ export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, ch
         ['installation and system transaction recovery', ['python', '-B', '-m', 'unittest',
             ...python.map(name => `tests.deployment.${name}`)], pythonTimeout],
     ]) {
-        const result = run(process.execPath, [path.join(root, 'tooling/run.mjs'), ...args], {
-            cwd: root, stdio: 'inherit', timeout,
+        const result = run(process.execPath, [path.join(root, 'tooling/run.mjs'), '--timeout-ms', String(timeout - 15000), ...args], {
+            // Windows TERM kills the wrapper itself. The earlier internal
+            // deadline closes its held child without depending on OS signals.
+            cwd: root, stdio: 'inherit', timeout, killSignal: 'SIGTERM',
             env: environment,
         });
         if (result.error) throw new Error(`Launcher source stability failed (${scope}): ${result.error.message}`, { cause: result.error });

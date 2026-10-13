@@ -130,7 +130,8 @@ class ManagedContextTests(unittest.TestCase):
         (source / "app").mkdir(parents=True)
         (source / "nora-mcp").mkdir()
         (source / "app/.tavern-release-version").write_text("2.2.10")
-        for name in ("ops/updater/managed_context.py", "ops/updater/clawchat_greeting_patch.py",
+        for name in ("app/native_lifecycle.py", "app/native-runtime.json",
+                     "ops/updater/managed_context.py", "ops/updater/clawchat_greeting_patch.py",
                      "ops/installer/templates/greeting.md", "ops/installer/templates/SOUL.md",
                      "ops/skills/agents-tavern.md", "ops/scripts/nora-instance.py",
                      "ops/hooks/tavern-liveware-register/HOOK.yaml", "ops/hooks/tavern-liveware-register/handler.py",
@@ -138,6 +139,9 @@ class ManagedContextTests(unittest.TestCase):
             target = source / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(ROOT / name, target)
+        engine = source / "app/engine/sillytavern"
+        engine.mkdir(parents=True)
+        (engine / "package.json").write_text(json.dumps({"dependencies": {}}))
         (self.home / "config.yaml").write_text("unrelated: preserve\n")
         (self.home / "AGENTS.md").write_bytes(b"old rules")
         (self.home / "AGENTS.md.bak").write_bytes(b"previous rules")
@@ -145,7 +149,7 @@ class ManagedContextTests(unittest.TestCase):
         (self.home / "USER.md").write_bytes(b"user memory")
         return SimpleNamespace(apply=True, confirm=True, hermes_home=self.home,
                                source_root=source, force_first_install=True, replace_soul=False,
-                               nora_home=self.home, install_root=self.home, dedicated_nora=False,
+                               nora_home=self.root, install_root=self.home, dedicated_nora=False,
                                port=18765, skip_liveware=True)
 
     def test_first_install_success_and_retry_do_not_duplicate_rules_or_backups(self):
@@ -169,9 +173,11 @@ class ManagedContextTests(unittest.TestCase):
         with patch.object(INSTALLER, "prepare_skills", return_value={}), \
              patch.object(INSTALLER, "start_tavern", side_effect=RuntimeError("failed startup")), \
              patch.object(INSTALLER, "install_update_check", return_value={"status": "installed"}), \
-             patch.object(INSTALLER, "stop_install_runtime"):
-            with self.assertRaisesRegex(RuntimeError, "failed startup"):
+             patch.object(INSTALLER, "stop_install_runtime", return_value={"offline": True}) as stop:
+            with self.assertRaisesRegex(RuntimeError, "failed startup") as failure:
                 INSTALLER.install(args)
+        stop.assert_called_once_with(args.install_root)
+        self.assertEqual(failure.exception.first_install_recovery["status"], "restored")
         self.assertEqual((self.home / "AGENTS.md").read_bytes(), b"old rules")
         self.assertEqual((self.home / "AGENTS.md.bak").read_bytes(), b"previous rules")
         self.assertEqual((self.home / "SOUL.md").read_bytes(), b"custom soul")

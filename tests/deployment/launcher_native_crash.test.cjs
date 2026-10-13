@@ -4,6 +4,7 @@ const os=require('node:os');
 const path=require('node:path');
 const {test}=require('node:test');
 const vm=require('node:vm');
+const {captureChild,stopChild}=require('./launcher_test_lifecycle.cjs');
 const {parse}=require('../installer/desktop/node_modules/acorn');
 
 function dumpFixture(){
@@ -105,7 +106,16 @@ test('the real crash callback sends reason and location through the existing fau
 
 test('real Electron main, renderer and guarded Node crashes survive restart as safe local evidence',
   {skip:!process.env.NORA_TEST_ELECTRON,timeout:30000},async t=>{
-    const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-electron-crash-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-electron-crash-'))),children=[];
+    t.after(async()=>{
+      const results=await Promise.allSettled(children.map(child=>stopChild(child,{signal:'SIGKILL'})));
+      const failed=results.filter(result=>result.status==='rejected');
+      // Crashpad and renderer closure requires the separate native census.
+      // Parent close alone cannot authorize deleting their dump directory.
+      t.diagnostic(JSON.stringify({fixtureRoot:root,retained:true,parentCloseConfirmed:failed.length===0,
+        nativeDescendantClosure:'not-assessed',nativeFullCleanupAccepted:false}));
+      if(failed.length)throw new AggregateError(failed.map(result=>result.reason),'Crash fixture closure is unconfirmed; preserve '+root);
+    });
     const fixture=path.join(root,'fixture');fs.mkdirSync(fixture);
     fs.writeFileSync(path.join(fixture,'package.json'),JSON.stringify({name:'nora-native-crash-fixture',version:'1.0.0',main:'main.cjs'}));
     fs.writeFileSync(path.join(fixture,'child.cjs'),"global.fixtureSecret='PRIVATE_CRASH_MEMORY_CANARY';setTimeout(()=>process.crash(),100);");
@@ -128,12 +138,23 @@ test('real Electron main, renderer and guarded Node crashes survive restart as s
         else {await collector.collect();app.exit(0);}
       });`);
     const {spawn}=require('node:child_process');
-    const run=(mode,directory)=>new Promise((resolve,reject)=>{
+    const run=async(mode,directory)=>{
       fs.mkdirSync(directory,{recursive:true});
       const env={...process.env,NORA_CRASH_MODE:mode,NORA_CRASH_FIXTURE:directory};delete env.ELECTRON_RUN_AS_NODE;
-      const child=spawn(process.env.NORA_TEST_ELECTRON,[fixture],{env,stdio:'ignore'}),timer=setTimeout(()=>child.kill('SIGKILL'),8000);
-      child.once('error',error=>{clearTimeout(timer);reject(error);});child.once('close',(code,signal)=>{clearTimeout(timer);resolve({code,signal});});
-    });
+      const child=spawn(process.env.NORA_TEST_ELECTRON,[fixture],{env,stdio:'ignore'}),state=captureChild(child);children.push(child);
+      let timer;
+      try {
+        const result=await Promise.race([state.closed,new Promise((_,reject)=>{
+          timer=setTimeout(()=>reject(Object.assign(new Error('Native crash fixture deadline exceeded: '+mode),
+            {code:'FIXTURE_CRASH_TIMEOUT'})),8000);
+        })]);
+        if(state.error)throw state.error;
+        return result;
+      }catch(error){
+        try{await stopChild(child,{signal:'SIGKILL'});}catch(cleanupFailure){error.cleanupFailure=cleanupFailure;}
+        throw error;
+      }finally{clearTimeout(timer);}
+    };
     for(const mode of ['main','renderer','guard']){
       const directory=path.join(root,mode),crash=await run(mode,directory);
       if(mode==='main')assert.ok(crash.signal||crash.code!==0);else assert.equal(crash.code,0,JSON.stringify(crash));

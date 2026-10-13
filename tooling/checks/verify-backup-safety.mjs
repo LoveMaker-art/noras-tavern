@@ -30,6 +30,7 @@ export function verifyBackupSafety({ root = sourceRoot, run = spawnSync } = {}) 
         { cwd: path.join(root, 'nora-mcp'), args: ['--test', 'tests/backups.test.mjs', 'tests/integration/backups.test.mjs'] },
     ]) {
         const result = run(process.execPath, invocation.args, { cwd: invocation.cwd, stdio: 'inherit', timeout: invocation.timeout ?? 240000,
+            killSignal: 'SIGKILL',
             env: { ...process.env, NORA_TAVERN_SOURCE: engine } });
         if (result.error) throw result.error;
         if (result.status !== 0) throw new Error(`Backup safety gate failed: ${result.signal || result.status}`);

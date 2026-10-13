@@ -51,6 +51,7 @@ test('the backup gate blocks failing tests, killed workers and timeouts', () => 
     assert.ok(commands[2][1].includes('tests/integration/backups.test.mjs'));
     assert.equal(commands[1][2].timeout, 240000);
     assert.equal(commands[2][2].timeout, 240000);
+    assert.ok(commands.every(command => command[2].killSignal === 'SIGKILL'));
     assert.equal(commands[2][2].env.NORA_TAVERN_SOURCE, command[2].cwd);
     let called = 0;
     assert.throws(() => verifyBackupSafety({ run: () => ({ status: ++called === 2 ? 1 : 0 }) }));

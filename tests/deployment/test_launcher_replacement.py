@@ -18,6 +18,10 @@ if __package__:
     from .launcher_test_environment import resolve_node
 else:
     from launcher_test_environment import resolve_node
+if __package__:
+    from .test_launcher_update_recovery import close_fixture_child
+else:
+    from test_launcher_update_recovery import close_fixture_child
 SOURCE = Path(__file__).resolve().parent.parent / 'installer/desktop/replace-launcher.py'
 SPEC = importlib.util.spec_from_file_location('replace_launcher', SOURCE)
 worker = importlib.util.module_from_spec(SPEC)
@@ -271,9 +275,8 @@ class DurableReplacementTests(unittest.TestCase):
     double-click acceptance with a real installed launcher.
     """
     def fixture(self, *, fail=False, long=False):
-        temporary = tempfile.TemporaryDirectory(prefix='nora recovery 中文 &%!() ')
-        self.addCleanup(temporary.cleanup)
-        root = Path(temporary.name).resolve()
+        base = Path(tempfile.mkdtemp(prefix='nora recovery 中文 &%!() ')).resolve()
+        root = base
         if long:
             root = root.joinpath(*(['long-directory-0123456789'] * 12))
             worker.io_path(root).mkdir(parents=True)
@@ -299,20 +302,20 @@ class DurableReplacementTests(unittest.TestCase):
         worker.write_json(job / 'plan.json', plan)
         # The launcher child records its actual PID, acknowledges only the new
         # executable, and exits. No .exe, GUI, installer, service or network runs.
-        launcher = Path(temporary.name).resolve() / 'fixture-launcher.py'
-        launcher.write_text('''import json,os,sys,time
+        launcher = base / 'fixture-launcher.py'
+        launcher.write_text('''import json,os,psutil,sys,time
 from pathlib import Path
 job=Path(sys.argv[1]);kind=sys.argv[2]
 if os.name=='nt': job=Path(chr(92)*2+'?'+chr(92)+str(job))
 with (job/'children.jsonl').open('a',encoding='utf-8') as file:
- file.write(json.dumps({'pid':os.getpid(),'kind':kind})+'\\n')
+ file.write(json.dumps({'pid':os.getpid(),'creationTime':psutil.Process().create_time(),'kind':kind})+'\\n')
 if kind=='new' and sys.argv[3]=='fail': sys.exit(3)
 if kind=='new':
  plan=json.loads((job/'plan.json').read_text(encoding='utf-8'))
  (job/'ready.json').write_text(json.dumps({'token':plan['token'],'version':plan['version']}),encoding='utf-8')
 time.sleep(0.15)
 ''')
-        runner = Path(temporary.name).resolve() / 'fixture-worker.py'
+        runner = base / 'fixture-worker.py'
         runner.write_text('''import importlib.util,os,subprocess,sys
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('replace_worker',sys.argv[1]);w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
@@ -338,18 +341,36 @@ w.os.replace=rename
 if mode=='run': w.run(job,allow_legacy=True)
 else: w.recover(job,allow_legacy=True)
 ''')
-        result = {'root': root, 'home': home, 'app': app, 'job': job, 'plan': plan,
+        result = {'base': base, 'held_children': [], 'root': root, 'home': home, 'app': app, 'job': job, 'plan': plan,
                   'runner': runner, 'launcher': launcher, 'fail': 'fail' if fail else 'ok'}
-        self.addCleanup(self.wait_children, result)
+        self.addCleanup(self.cleanup_fixture, result)
         return result
+
+    def cleanup_fixture(self, f):
+        failures = []
+        for child in f['held_children']:
+            try:
+                close_fixture_child(child)
+            except Exception as error:
+                failures.append(error)
+        try:
+            self.wait_children(f)
+        except Exception as error:
+            failures.append(error)
+        if failures:
+            raise RuntimeError(f'Retaining replacement fixture with unconfirmed children: {f["base"]}') from failures[0]
+        shutil.rmtree(f['base'])
 
     def wait_children(self, f):
         import psutil
         for child in self.children(f):
             try:
                 process = psutil.Process(child['pid'])
-                if str(f['launcher']) in process.cmdline():
-                    process.wait(timeout=5)
+                if abs(process.create_time() - child['creationTime']) > 0.001:
+                    continue  # The original fixture birth is gone; never touch a reused PID.
+                if str(f['launcher']) not in process.cmdline():
+                    raise RuntimeError('Original launcher child has unknown command ownership; retaining fixture')
+                process.wait(timeout=5)
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
                 pass
 
@@ -483,8 +504,8 @@ else: w.recover(job,allow_legacy=True)
 class OperationReplacementTests(unittest.TestCase):
     def fixture(self):
         owner = DurableReplacementTests('test_real_ack_retains_backup_until_verified_combined_commit')
-        self.addCleanup(owner.doCleanups)
         f = owner.fixture()
+        self.addCleanup(owner.cleanup_fixture, f)
         import psutil
         plan = f['plan']
         plan.update(schema=2, operationId=str(uuid.uuid4()), ownerEpoch=1, planDigest='a' * 64,
@@ -599,6 +620,7 @@ class OperationReplacementTests(unittest.TestCase):
         if os.name == 'nt': environment['__PYVENV_LAUNCHER__'] = sys.executable
         child = subprocess.Popen([executable, '-B', str(f['runner']), str(SOURCE), str(f['job']),
             'run', '', 'ok', str(f['launcher'])], env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        f['held_children'].append(child)
         try:
             deadline = time.monotonic() + 5
             while time.monotonic() < deadline:
@@ -611,7 +633,7 @@ class OperationReplacementTests(unittest.TestCase):
             self.assertEqual((f['app'] / 'launcher.exe').read_text(), 'old')
             with self.assertRaises(RuntimeError): worker.prepare_recovery(f['job'], parent_pid=os.getpid(), parent_creation_time=f['plan']['parentCreationTime'])
         finally:
-            child.terminate(); child.communicate(timeout=5)
+            close_fixture_child(child)
         state = worker.assess(f['job']); self.assertFalse(state['busy']); self.assertTrue(state['workerOffline'])
         self.assertTrue(worker.recover(f['job'])['untouched'])
 
@@ -661,8 +683,8 @@ class OperationReplacementTests(unittest.TestCase):
         self.assertFalse(worker.exists(worker.context(f['job'])['backup']))
 
     def test_schema_one_changed_program_has_no_implicit_cross_protocol_rollback(self):
-        owner = DurableReplacementTests('test_real_ack_retains_backup_until_verified_combined_commit'); self.addCleanup(owner.doCleanups)
-        f = owner.fixture(); owner.execute(f)
+        owner = DurableReplacementTests('test_real_ack_retains_backup_until_verified_combined_commit')
+        f = owner.fixture(); self.addCleanup(owner.cleanup_fixture, f); owner.execute(f)
         before = (f['job'] / 'recovery.json').read_bytes()
         with self.assertRaisesRegex(ValueError, '协议未知'): worker.recover(f['job'])
         self.assertEqual((f['job'] / 'recovery.json').read_bytes(), before)

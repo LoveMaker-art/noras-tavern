@@ -3,6 +3,7 @@ from __future__ import annotations
 from contextlib import contextmanager, redirect_stdout
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -12,6 +13,13 @@ import time
 import types
 import unittest
 from unittest import mock
+
+if __package__:
+    from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
+else:
+    from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -49,8 +57,17 @@ class FakeRuntime:
         self.state_root = self.data_root / "state"
         self.lock = NonReentrantLock()
         self.calls = []
+        # This seam admits only the unit transaction; the real CLI case below
+        # obtains a real native lease instead of bypassing the capability gate.
+        self.admission = mock.Mock(side_effect=self.admit_unit_cli)
+
+    def admit_unit_cli(self, kind, *, nora_home):
+        if kind != "native" or self.lock.active or self.calls:
+            raise AssertionError("unit admission must precede the lifecycle transaction")
 
     def operations_module(self, name):
+        if name == "operation_cli":
+            return types.SimpleNamespace(ensure_operation=self.admission)
         if name != "runtime_lock":
             raise AssertionError(name)
         return types.SimpleNamespace(installation_lock=self.lock.installation_lock)
@@ -94,6 +111,7 @@ class NativeLifecycleLockTests(unittest.TestCase):
             redirect_stdout(output),
         ):
             lifecycle.main(list(arguments))
+        runtime.admission.assert_called_once_with("native", nora_home=os.environ.get("NORA_TAVERN_HOME"))
         return runtime, output.getvalue()
 
     def test_production_logging_config_disables_request_and_debug_noise(self):
@@ -285,34 +303,79 @@ class NativeLifecycleLockTests(unittest.TestCase):
         child.wait.assert_called_once_with(timeout=3)
         self.assertNotIn(123, runtime._children)
 
-    def test_real_start_cli_fails_fast_instead_of_waiting_on_its_own_lock(self):
+    def test_unqualified_start_cli_rejects_before_lock_or_modification(self):
+        lifecycle = load_lifecycle()
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            bin_dir = root / "bin"
-            bin_dir.mkdir()
-            npm = bin_dir / "npm"
-            npm.write_text("#!/bin/sh\nexit 23\n", encoding="utf-8")
-            npm.chmod(0o755)
+            root = Path(temporary).resolve()
+            environment = {name: value for name, value in os.environ.items()
+                           if not name.startswith("NORA_OPERATION_")}
+            environment.update({"HERMES_HOME": str(root), "NORA_TAVERN_HOME": str(root),
+                                "TAVERN_DATA_ROOT": str(root), "TAVERN_APP_DIR": str(ROOT / "app"),
+                                "TAVERN_STATE_DIR": str(root / "state")})
+            with mock.patch.dict(os.environ, environment, clear=True), \
+                 mock.patch.object(sys, "_nora_operation_delegate", None, create=True), \
+                 mock.patch.object(lifecycle.NativeRuntime, "_start") as start:
+                runtime = lifecycle.NativeRuntime.from_environment()
+                cli = runtime.operations_module("operation_cli")
+                lock = runtime.operations_module("runtime_lock")
+                with mock.patch.object(lock, "installation_lock") as acquire, \
+                     self.assertRaises(cli.OperationCliError) as refused:
+                    lifecycle.main(["start"])
+                self.assertEqual(refused.exception.code, "OPERATION_ENTRY_UNSUPPORTED")
+                acquire.assert_not_called()
+                start.assert_not_called()
+            self.assertEqual(list(root.iterdir()), [])
+
+    @unittest.skipUnless(all(os.environ.get(name) for name in
+                             ("NORA_TEST_PYTHON", "NORA_TEST_MANAGED_PYTHON_ROOT", "NORA_TEST_HERMES")),
+                         "no actual managed runtime; qualified CLI requires the native transaction gate")
+    def test_real_start_cli_fails_fast_instead_of_waiting_on_its_own_lock(self):
+        self.assertTrue(Path(sys.executable).samefile(os.environ["NORA_TEST_PYTHON"]))
+        self.assertTrue(Path(sys.base_prefix).samefile(os.environ["NORA_TEST_MANAGED_PYTHON_ROOT"]))
+        self.assertTrue((Path(sys.prefix) / "pyvenv.cfg").is_file())
+        self.assertTrue(Path(sys.prefix).parent.samefile(os.environ["NORA_TEST_HERMES"]))
+        with owned_fixture_directory(prefix="nora-qualified-native-start-") as fixture:
+            root = fixture.root
+            (root / "installer").mkdir()
             environment = {
                 **os.environ,
+                "NORA_TAVERN_HOME": str(root),
                 "HERMES_HOME": str(root),
                 "TAVERN_DATA_ROOT": str(root),
                 "TAVERN_APP_DIR": str(ROOT / "app"),
                 "TAVERN_STATE_DIR": str(root / "state"),
-                "PATH": str(bin_dir) + os.pathsep + os.environ.get("PATH", ""),
+                "NORA_TEST_MANAGED_PYTHON_ROOT": sys.base_prefix,
+                "NORA_TEST_VENV_HOME": sys.prefix,
             }
-
+            actor = Path(__file__).with_name("launcher_owned_test_actor.cjs")
+            adapter = root / "qualified-start.cjs"
+            adapter.write_text(
+                "const {runOwnedActor,CLOSURE_PREFIX}=require(" + json.dumps(str(actor)) + ");\n"
+                "const [entry,root,python,script]=process.argv.slice(2);\n"
+                "const receipt=closed=>console.error(CLOSURE_PREFIX+JSON.stringify({schema:'nora-fixture-closure/1',root,closed}));\n"
+                "runOwnedActor({entry,root,python,script,args:['start'],executionMs:2000,cleanupMs:4000})"
+                ".then(()=>receipt(true)).catch(error=>{console.error(error);receipt(error.fixtureClosureConfirmed===true);"
+                "if(error.fixtureClosureConfirmed===false)process.exit(1);else process.exitCode=1;});\n",
+                encoding="utf-8")
+            # Preserve the original 2 s execution requirement. The caller also
+            # allows 4 s for owned close/release and 2 s for the Node adapter.
+            fixture.closed = False
             result = subprocess.run(
-                [sys.executable, "-B", str(LIFECYCLE), "start"],
+                [resolve_node(required=True), str(adapter),
+                 str(Path(__file__).resolve().parents[1] / "installer/desktop/operation-lock.js"),
+                 str(root), sys.executable, str(LIFECYCLE)],
                 env=environment,
                 text=True,
                 capture_output=True,
-                timeout=2,
+                timeout=8,
                 check=False,
             )
+            require_fixture_closure(fixture, result.stderr)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("configuration is missing", result.stderr.lower())
+        self.assertNotIn("OPERATION_ENTRY_UNSUPPORTED", result.stderr)
+        self.assertNotIn("FIXTURE_ACTOR_TIMEOUT", result.stderr)
 
 
 if __name__ == "__main__":

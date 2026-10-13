@@ -1109,7 +1109,12 @@ test('a control file without an independent SHA cannot create a resumable conten
 
 test('process death before and after a durable checkpoint recovers only committed bytes',async t=>{
   for(const mode of ['before','after'])await t.test(mode,async childTest=>{
-    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-process-checkpoint-'));childTest.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const {captureChild,stopChild}=require('./launcher_test_lifecycle.cjs');
+    let processChild;
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-process-checkpoint-'));childTest.after(async()=>{
+      await stopChild(processChild);
+      fs.rmSync(root,{recursive:true,force:true});
+    });
     const target=path.join(root,'asset.zip'),bytes=Buffer.from('abcdefghij'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
     let firstResponse;
     const f=await server(childTest,(request,response,count)=>{
@@ -1128,14 +1133,14 @@ test('process death before and after a durable checkpoint recovers only committe
           Object.defineProperty(response,'url',{value:url});return response;},
         onEvent:event=>{if(${JSON.stringify(mode)}==='after'&&event.event==='progress'&&event.current===4)process.send({ready:true});}
       }).catch(error=>{process.send({failure:String(error)});process.exitCode=1;});`;
-    const processChild=spawn(process.execPath,['-e',script],{stdio:['ignore','ignore','pipe','ipc']});
-    childTest.after(()=>{if(processChild.exitCode===null)processChild.kill('SIGKILL');});
+    processChild=spawn(process.execPath,['-e',script],{stdio:['ignore','ignore','pipe','ipc']});
+    const captured=captureChild(processChild);
     let errors='';processChild.stderr.on('data',chunk=>{errors+=chunk;});
-    const exited=new Promise((resolve,reject)=>{processChild.once('error',reject);processChild.once('exit',(code,signal)=>resolve({code,signal}));});
     await new Promise((resolve,reject)=>{
       const timeout=setTimeout(()=>reject(new Error('checkpoint child did not reach the controlled crash boundary: '+errors)),5000);
       processChild.once('message',message=>{clearTimeout(timeout);message.ready?resolve():reject(new Error(message.failure || 'unexpected child message'));});
-      processChild.once('exit',()=>{clearTimeout(timeout);reject(new Error('checkpoint child exited early: '+errors));});
+      processChild.once('close',()=>{clearTimeout(timeout);reject(new Error('checkpoint child closed early: '+errors));});
+      processChild.once('error',error=>{clearTimeout(timeout);reject(error);});
     });
     const partial=target+'.partial',record=partial+'.json';assert.equal(fs.statSync(partial).size,4);
     if(mode==='after') {
@@ -1145,7 +1150,8 @@ test('process death before and after a durable checkpoint recovers only committe
       assert.equal(fs.statSync(partial).size,6,'uncommitted bytes must reach disk before the process is killed');
       assert.equal(JSON.parse(fs.readFileSync(record)).size,4);
     }else assert.equal(fs.existsSync(record),false);
-    processChild.kill('SIGKILL');assert.equal((await exited).signal,'SIGKILL');
+    assert.equal((await stopChild(processChild,{signal:'SIGKILL'})).signal,'SIGKILL');
+    assert.equal(captured.didClose,true);
     await networkModule.downloadAsset({url:assetUrl,target,identity,fetcher:f.fetcher,policy:{sources:{schema:1,mirrors:[]}}});
     assert.deepEqual(fs.readFileSync(target),bytes);assert.equal(f.requests.length,2);
   });

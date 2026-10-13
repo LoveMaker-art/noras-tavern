@@ -16,8 +16,10 @@ import io
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import owned_fixture_directory, require_fixture_closure
 
 class VerifiedModelStatusTests(unittest.TestCase):
     def test_first_start_reports_typed_setup_blocker_without_starting_a_service(self):
@@ -41,8 +43,8 @@ class VerifiedModelStatusTests(unittest.TestCase):
             self.assertIn('command_start', str(events[0]['error']))
 
     def test_pending_sync_resumes_with_saved_credentials_and_rejects_changed_key(self):
-        with tempfile.TemporaryDirectory(prefix='nora-model-resume-') as temporary:
-            root = Path(temporary)
+        with owned_fixture_directory(prefix='nora-model-resume-') as fixture:
+            root = fixture.root
             home = root / 'hermes'; home.mkdir()
             (root / 'installer').mkdir()
             key = 'nora-local-no-auth'
@@ -70,9 +72,12 @@ class VerifiedModelStatusTests(unittest.TestCase):
                 entry = script.parent / 'desktop/operation-lock.js'
                 actor = Path(__file__).with_name('launcher_owned_test_actor.cjs')
                 node = resolve_node(required=True)
-                return subprocess.run([node, str(actor), str(entry), str(root), sys.executable, str(script)],
+                fixture.closed = False
+                result = subprocess.run([node, str(actor), str(entry), str(root), sys.executable, str(script)],
                     env={**env, 'NORA_TEST_VENV_HOME': sys.prefix}, capture_output=True,
                     text=True, timeout=20, input=json.dumps({'action': 'sync-saved-tavern', 'port': 18999}))
+                require_fixture_closure(fixture, result.stderr)
+                return result
             result = resume()
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue(json.loads(result.stdout)['ok'])
@@ -117,8 +122,8 @@ class VerifiedModelStatusTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("NORA_TEST_HERMES"), "requires a clean Hermes runtime")
     def test_real_hermes_custom_save_passes_bridge_recheck(self):
-        with tempfile.TemporaryDirectory(prefix="nora-custom-save-") as temporary:
-            root = Path(temporary)
+        with owned_fixture_directory(prefix="nora-custom-save-") as fixture:
+            root = fixture.root
             hermes = root / "hermes"
             hermes.mkdir()
             (root / "installer").mkdir()
@@ -128,11 +133,13 @@ class VerifiedModelStatusTests(unittest.TestCase):
                    "PYTHONDONTWRITEBYTECODE": "1", "PYTHONNOUSERSITE": "1", 'NORA_TEST_VENV_HOME': sys.prefix}
             script = Path(__file__).resolve().parents[1] / "installer/model_config.py"
             node = resolve_node(required=True)
+            fixture.closed = False
             result = subprocess.run([node, str(Path(__file__).with_name('launcher_owned_test_actor.cjs')),
                 str(script.parent / 'desktop/operation-lock.js'), str(root), sys.executable, str(script)],
                 env=env, capture_output=True, text=True,
                 input=json.dumps({"action": "save", "provider": "custom", "model": "local-fixture-model.gguf",
                                   "keyEnv": "", "key": "fixture-only", "baseUrl": "http://127.0.0.1:8080/v1"}), timeout=60)
+            require_fixture_closure(fixture, result.stderr)
             self.assertEqual(result.returncode, 0, (result.stdout + result.stderr).replace("fixture-only", "<redacted>"))
             saved = json.loads(result.stdout.strip().splitlines()[-1])
             self.assertTrue(saved["provider"] == "custom" or saved["provider"].startswith("custom:"))

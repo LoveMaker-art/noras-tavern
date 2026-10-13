@@ -72,15 +72,15 @@ function firstJsonLine(child, {timeoutMs = 8000} = {}) {
 
 // Only for real fixture ChildProcesses held by the caller. Guard-owned jobs
 // must be cancelled through their existing lease instead of this function.
-async function stopChild(child, {graceMs = 1000, timeoutMs = 5000} = {}) {
+async function stopChild(child, {graceMs = 1000, timeoutMs = 5000, signal = 'SIGTERM'} = {}) {
   if (!child) return;
   const state = captureChild(child);
   if (state.didClose) return state.result;
   let force, deadline;
   try {
     if (Number.isInteger(child.pid) && child.exitCode === null && child.signalCode === null) {
-      child.kill('SIGTERM');
-      force = setTimeout(() => child.kill('SIGKILL'), graceMs);
+      child.kill(signal);
+      if (signal !== 'SIGKILL') force = setTimeout(() => child.kill('SIGKILL'), graceMs);
     }
     return await Promise.race([state.closed, new Promise((_, reject) => {
       deadline = setTimeout(() => reject(Object.assign(new Error(

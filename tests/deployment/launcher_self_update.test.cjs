@@ -6,6 +6,8 @@ const os = require('node:os');
 const crypto = require('node:crypto');
 const vm = require('node:vm');
 const { spawn, execFileSync } = require('node:child_process');
+const { createRequire } = require('node:module');
+const { captureChild, stopChild } = require('./launcher_test_lifecycle.cjs');
 const releases = require('../installer/desktop/releases');
 const update = require('../installer/desktop/launcher-update');
 const capability = require('../installer/desktop/launcher-capability');
@@ -13,7 +15,11 @@ const { createLocalRelease } = require('../installer/desktop/local-release');
 
 function fixture(t, {platform = 'win32', arch = 'x64'} = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nora-self-update-')));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const children=[];
+  t.after(async () => {
+    for (const child of children) await stopChild(child);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
   const sha = value => crypto.createHash('sha256').update(value).digest('hex');
   const manifest = { schema: 'tavern-release/v2', commit: 'a'.repeat(40),launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}, versions: { tavern: '2.4.0' }, launcherVersion: '1.1.0',
     bootstrap: { sha256: sha('bootstrap'), managedComponents: 1, minimumLauncherVersion: '1.1.0' } };
@@ -25,8 +31,31 @@ function fixture(t, {platform = 'win32', arch = 'x64'} = {}) {
   const installRoot = path.join(root, 'tavern');
   fs.mkdirSync(path.join(installRoot, 'tavern-updates'), { recursive: true });
   fs.writeFileSync(path.join(installRoot, 'tavern-updates/installed.json'), JSON.stringify({ version: '2.4.0' }));
-  return { root, item, installRoot, options: { platform, arch, launcherVersion: '1.0.0',
+  return { root, item, installRoot, children, options: { platform, arch, launcherVersion: '1.0.0',
     fetcher: createLocalRelease(root), cacheRoot: path.join(root, 'cache'), channel: 'stable' } };
+}
+
+// Load the unchanged production module with its actual native spawn, retaining
+// only the returned handles so this fixture can prove pipe closure before rm.
+function heldIndependentUpdate(f) {
+  const file=path.resolve(__dirname,'../installer/desktop/launcher-update.js'),localRequire=createRequire(file),loaded={exports:{}};
+  vm.runInNewContext(fs.readFileSync(file,'utf8'),{module:loaded,process,setTimeout,
+    require:name=>name==='node:child_process'?{...localRequire(name),spawn:(...args)=>{
+      const child=spawn(...args);captureChild(child);f.children.push(child);return child;
+    }}:localRequire(name)}, {filename:file});
+  return loaded.exports;
+}
+async function completedHelper(f,job) {
+  const child=f.children.at(-1);assert.ok(child?.pid,'retain the actual independent helper handle');
+  const state=captureChild(child);
+  fs.writeFileSync(path.join(job,'fixture-complete'),'acknowledged');
+  let timer;
+  try {
+    const result=await Promise.race([state.closed,new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Error('Independent fixture helper did not close; directory retained for cleanup')),5000);
+    })]);
+    assert.equal(result.code,0);assert.equal(result.signal,null);assert.equal(state.didClose,true);
+  } finally {clearTimeout(timer);}
 }
 let actualPython;
 const python = () => actualPython ||= execFileSync(process.env.NORA_TEST_PYTHON||process.env.NORA_PYTHON||
@@ -249,6 +278,7 @@ elif '--prepare' in sys.argv:
 
 test('independent replacement helper uses its job directory and never inherits the occupied application directory', async t => {
   const f=await handoffFixture(t),job=await update.prepareHandoff(f.handoff);
+  const held=heldIndependentUpdate(f);
   assert.equal(fs.readFileSync(path.join(job,'operation-budget.json'),'utf8'),
     fs.readFileSync(path.join(f.resourcesRoot,'operation-budget.json'),'utf8'));
   f.write(path.join(job,'replace.py'),`import sys,json,os,time
@@ -256,13 +286,16 @@ from pathlib import Path
 job=Path(sys.argv[1])
 (job/'worker-facts.json').write_text(json.dumps({'cwd':os.getcwd(),'gate':os.environ.get('NORA_OPERATION_ID')}))
 (job/'status.json').write_text(json.dumps({'status':'waiting-parent','workerPid':os.getpid()}))
-time.sleep(.3)
+deadline=time.monotonic()+10
+while not (job/'fixture-complete').exists():
+    if time.monotonic()>deadline: raise RuntimeError('fixture completion acknowledgement missing')
+    time.sleep(.01)
 `);
-  await update.launchHandoff({home:f.home,executable:f.executable,job,python:python(),...pythonRoots(),env:{...process.env,NORA_OPERATION_ID:f.operation.operationId}});
+  await held.launchHandoff({home:f.home,executable:f.executable,job,python:python(),...pythonRoots(),env:{...process.env,NORA_OPERATION_ID:f.operation.operationId}});
   const facts=JSON.parse(fs.readFileSync(path.join(job,'worker-facts.json')));
   assert.equal(facts.cwd,job);assert.equal(facts.gate,null);
   assert.ok(!facts.cwd.startsWith(update.applicationRoot(f.executable)+path.sep));
-  await new Promise(resolve=>setTimeout(resolve,350));
+  await completedHelper(f,job);
 });
 
 test('desktop handoff and recovery keep the desktop profile in real independent Python helpers',
@@ -277,6 +310,7 @@ test('desktop handoff and recovery keep the desktop profile in real independent 
     t.skip('This real profile test requires the complete Hermes-shaped Python runtime');return;
   }
   const f=await handoffFixture(t),job=await update.prepareHandoff(f.handoff);
+  const held=heldIndependentUpdate(f);
   const profile=path.join(f.root,'desktop-profile'),temp=path.join(f.root,'desktop-temp');
   fs.mkdirSync(profile);fs.mkdirSync(temp);
   const desktopEnv={...process.env,HOME:profile,USERPROFILE:profile,
@@ -293,15 +327,19 @@ else:
     fields=('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TMPDIR','TEMP','TMP')
     (job/'desktop-environment.json').write_text(json.dumps({'environment':{name:os.environ.get(name) for name in fields},'prefix':sys.prefix,'pid':os.getpid(),'creationTime':psutil.Process().create_time()}))
     (job/'status.json').write_text(json.dumps({'status':'restored' if '--recover' in sys.argv else 'waiting-parent','workerPid':os.getpid()}))
-    time.sleep(.3)
+    deadline=time.monotonic()+10
+    while not (job/'fixture-complete').exists():
+        if time.monotonic()>deadline: raise RuntimeError('fixture completion acknowledgement missing')
+        time.sleep(.01)
 `);
   for(const method of ['launchHandoff','recover']){
     fs.rmSync(path.join(job,'status.json'),{force:true});
+    fs.rmSync(path.join(job,'fixture-complete'),{force:true});
     // Replay the actual desktop's independent process call with a real managed
     // Python. Full packaged APP lifecycle is covered by artifact acceptance.
     const start=main.indexOf(`await launcherUpdate.${method}(`);
     assert.ok(start>=0);const expression=main.slice(start,main.indexOf(');',start)+2);
-    await vm.runInNewContext(`(async()=>{${expression}})()`,{path,process:{env:desktopEnv},launcherUpdate:update,
+    await vm.runInNewContext(`(async()=>{${expression}})()`,{path,process:{env:desktopEnv},launcherUpdate:held,
       launcherRecoveryOptions:()=>({home:f.home,executable:f.executable,python:python(),helper:path.join(job,'replace.py')}),
       hermesHome:()=>managedHome,launcherEnv:()=>maintenanceEnv,pending:{job},
       operation:{handoffRef:job,result:{parentCreationTime:1}},diagnostics:{event(){}}});
@@ -310,7 +348,8 @@ else:
       assert.equal(facts.environment[name],desktopEnv[name],`${method} changed ${name} to the maintenance profile`);
     assert.ok(facts.pid>0&&facts.creationTime>0);
     assert.equal(normalized(fs.realpathSync.native(facts.prefix)),normalized(venvHome));
-    await new Promise(resolve=>setTimeout(resolve,350));
+    assert.equal(facts.pid,f.children.at(-1).pid,'facts must belong to the held independent helper');
+    await completedHelper(f,job);
   }
 });
 
