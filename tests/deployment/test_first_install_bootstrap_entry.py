@@ -4,7 +4,7 @@ import importlib.util
 import io
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 import subprocess
 import sys
 import tarfile
@@ -65,6 +65,37 @@ class FirstBootstrapEntry(unittest.TestCase):
         return subprocess.run(self.command(), cwd=self.entry.parent, env=environment,
             input='', capture_output=True, text=True, timeout=10)
 
+    def assert_managed_installer_command(self, command, verified_installer):
+        self.assertEqual(command[:3], [sys.executable, '-u', '-B'])
+        self.assertIsInstance(command[3], str)
+        installer = type(verified_installer)(command[3])
+        self.assertTrue(installer.is_absolute())
+        self.assertEqual(installer, verified_installer)
+        self.assertEqual(installer.parts[-3:], ('ops', 'installer', 'first_install.py'))
+
+    def test_managed_installer_path_contract_accepts_native_separators_and_keeps_exact_target(self):
+        for path_type, root in [(PurePosixPath, '/verified/runner'),
+                                (PureWindowsPath, 'C:/verified/runner')]:
+            expected = path_type(root) / 'ops/installer/first_install.py'
+            command = [sys.executable, '-u', '-B', str(expected)]
+            with self.subTest(path_type=path_type.__name__):
+                self.assert_managed_installer_command(command, expected)
+            for invalid in [path_type('ops/installer/first_install.py'),
+                            path_type(root) / 'other/installer/first_install.py',
+                            path_type(root) / 'ops/installer/other.py',
+                            path_type(root).parent / 'other/ops/installer/first_install.py']:
+                with self.subTest(path_type=path_type.__name__, invalid=str(invalid)), \
+                        self.assertRaises(AssertionError):
+                    self.assert_managed_installer_command(command[:3] + [str(invalid)], expected)
+            for wrong_extraction in [path_type(root) / 'other/installer/first_install.py',
+                                     path_type(root) / 'ops/installer/other.py']:
+                with self.subTest(path_type=path_type.__name__, wrong_extraction=str(wrong_extraction)), \
+                        self.assertRaises(AssertionError):
+                    self.assert_managed_installer_command(command[:3] + [str(wrong_extraction)], wrong_extraction)
+            with self.subTest(path_type=path_type.__name__, invalid='missing isolation flag'), \
+                    self.assertRaises(AssertionError):
+                self.assert_managed_installer_command([sys.executable, '-u', '-c', str(expected)], expected)
+
     def test_standalone_entry_reaches_verified_existing_guard_before_any_install_write(self):
         result = self.execute()
         self.assertEqual(result.returncode, 1)
@@ -85,6 +116,7 @@ class FirstBootstrapEntry(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         events = []
+        verified_installers = []
         class Process:
             returncode = 0
             def communicate(self, **kwargs):
@@ -98,6 +130,7 @@ class FirstBootstrapEntry(unittest.TestCase):
         original_extract = module.extract_ops_runner
         def extract(*args):
             installer = original_extract(*args)
+            verified_installers.append(installer)
             events.append('verified extraction')
             return installer
         with patch.object(sys, 'argv', self.command()[2:]), patch.dict(sys.modules, {'operation_cli': None}), \
@@ -108,8 +141,8 @@ class FirstBootstrapEntry(unittest.TestCase):
         self.assertEqual(result.exception.code, 0)
         self.assertEqual(events[:3], ['verified extraction', 'guard', 'guard'])
         command = events[3][1]
-        self.assertEqual(command[0], sys.executable)
-        self.assertTrue(command[3].endswith('ops/installer/first_install.py'))
+        self.assertEqual(len(verified_installers), 1)
+        self.assert_managed_installer_command(command, verified_installers[0])
         self.assertIn('--manifest-sha256', command)
         self.assertFalse(self.home.exists())
 
