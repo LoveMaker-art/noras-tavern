@@ -15,7 +15,6 @@ nora/                  诺拉是谁、如何工作
 launcher/              用户打开的桌面启动器
   desktop/             Electron 主进程、preload、后台任务
   ui/                  正式界面、控制器、诺拉图片
-  previews/            历史设计预览，不是正式入口
   bridge.py            UI 操作到部署逻辑的桥接
 
 deployment/            安装后本地系统的生命周期
@@ -39,7 +38,29 @@ docs/                  用户文档、当前导航、历史记录
 - Story Profile 在 `story-profile/` 修改，生成 `app/story_profile_runtime/` 运行快照；快照不是第二套可独立编辑的源码。
 - Nora 内容只在 `nora/` 维护。安装器和更新器读取同一份发布内容。
 - `deployment/shared/managed_context.py` 统一 AGENTS 与问候文件策略；`model_config.py` 通过已有模型配置逻辑工作。首次模型同步不等于永久绑定 Hermes、酒馆和 MVU 的模型。
-- 主界面只有 `launcher/ui/index.html`。保留预览文件供设计回溯，但发布入口不能指向预览。
+- 主界面只有 `launcher/ui/index.html`。已退出使用的设计预览通过 Git 历史回溯。
+
+## 当前代码职责与入口
+
+| 职责 | 维护入口 | 文件保留依据 |
+| --- | --- | --- |
+| 启动器页面与通信 | `launcher/ui/index.html`、`launcher-controller.js`、`desktop/preload.js` | 正式页面、交互状态和 IPC |
+| 桌面编排 | `launcher/desktop/main.js` | 实例路径、窗口、启动退出和维护操作派发 |
+| 操作资格、证据与恢复 | `operation-state/result/policy/inspection/history`、`operation-lock/worker/delegate`、`os-lock`、`evidence-store`；Python `operation_control/cli/evidence` | 维护锁、执行身份、结果核对、重试和恢复权限 |
+| 首装与运行时准备 | `runtime.js`、`runtime-worker.js`、`runtime-transaction.js`、`deployment/install/bootstrap.py`、`first_install.py` | 运行时闭包、首次安装和 `FirstInstallJournal` 恢复；旧测试专用恢复 helper 已退出 |
+| 系统更新与恢复 | `system-update-executor.js` → `launcher/bridge.py` → `deployment/update/bootstrap.py` → `update.py`、`recovery.py` | 同一受管实例的停服、备份、替换、验收和恢复 |
+| 桌面应用更新 | `launcher-update.js`、`replace-launcher.py` | 替换 APP、验证交接及保留本地系统数据 |
+| 历史安装兼容 | `legacy-recovery-worker.js`、`deployment/update/system-update.js`、`prepare-state.mjs`、`python-*` | 实际历史事务恢复和旧数据迁移入口 |
+| 状态与配置 | `deployment/shared/nora_system.py`、`nora_profile.py`、模型配置、`managed_context.py`、Liveware 模块 | 历史验收、严格验收、模型与内容配置 |
+| 服务与进程归属 | `app/native_lifecycle.py`、`deployment/shared/runtime_process.py`、`runtime_lock.py`、`service_manager.py`、`services.py` | 实际服务生命周期、归属和关闭证明；存在动态调用 |
+| 卸载 | `deployment/uninstall/uninstall.js`、`uninstall-offline-check.js`、`uninstall.nsh` | 保留／彻底清理、数据范围和 Windows 安装器入口 |
+| 下载与故障诊断 | `release-network.js`、`release-sources.js/json`、`local-release.js`；`diagnostics`、`telemetry`、`fault-packet`、`lifecycle-diagnostics`、`operation-log-delivery` | 来源和字节校验、持久故障队列、授权与接收确认 |
+| 酒馆后端与界面 | `app/engine/sillytavern/src/nora-world-core/`、Nora HTTP endpoints、`public/scripts/nora-*`、`app/native-extensions/nora-ui/` | 唯一 World／Story Session 业务、HTTP 接口、界面与兼容绑定 |
+| Agent 工具接口 | `nora-mcp/src/server.ts`、`nora-control-plane.ts`、`st/inspection-plane.ts`、共享 HTTP 客户端 | 注册 MCP 工具并调用已有后端；旧 ST 索引器和无人消费的错误类已退出 |
+| 档案、内容与兼容运行时 | `story-profile/`、`nora/`、受管 Helper／EJS／MVU | 手写档案与内容源、经过校验的交付副本、现有卡片和脚本运行能力 |
+| 构建、验收与发行 | `tooling/source-layout.json`、`layout.mjs`、`run.mjs`、`tooling/release/`、`tooling/runtime/`、`tests/` | 唯一源码投影、固定制品身份和各自独立的验收合同；启动器依赖只维护 npm 锁 |
+
+当前逐文件索引由仓库根目录的 `node tooling/checks/index-project.mjs` 生成，输出为忽略的 `.codebase-memory/project-index.json`。该索引记录路径、职责、状态和摘要；引用调查仍需覆盖动态调用、交付映射、CLI、构建以及外部兼容用途。
 
 ## 安装、启动、更新、卸载
 

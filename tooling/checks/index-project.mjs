@@ -56,7 +56,6 @@ function classifyRole(path) {
     if (path.startsWith('nora/skills/')) return 'hermes-skill-source';
     if (path.startsWith('nora/hooks/')) return 'nora-hook-source';
     if (path.startsWith('nora/')) return 'nora-definition';
-    if (path.startsWith('launcher/previews/')) return 'launcher-design-preview';
     if (path.startsWith('launcher/ui/')) return 'launcher-ui-source';
     if (path.startsWith('launcher/')) return 'launcher-desktop-source';
     if (path.startsWith('deployment/')) return `deployment-${path.split('/')[1]}`;

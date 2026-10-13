@@ -130,7 +130,7 @@ nora.session.read 返回 1–100 条消息及整个历史的 expectedSignature�
 
 旧 ST 任意资源写入、源码改写、运行命令、通用快照/回滚和运行时桥接实现已从 nora-mcp 源码移除，不再以“存在但不注册”的方式保留。产品写入统一通过 World Core、账本接口或 `nora.control.execute` 的固定动作；插件安装和文件维护不属于日常 MCP 能力。
 
-docs/upstream-st-index.* 和旧索引脚本是 ST 1.18 的历史参考，不是当前 Nora 完整代码索引；不会随运行包交付。nora.local_index 只是当前实例文件统计，也不是代码理解/架构索引。
+当前代码索引统一在仓库根目录执行 `node tooling/checks/index-project.mjs`，输出到忽略的 `.codebase-memory/project-index.json`。旧 `docs/upstream-st-index.*` 仅是 ST 1.18 的历史参考，不随运行包交付；对应的旧索引脚本已移除。nora.local_index 只是当前实例文件统计，也不是代码理解/架构索引。
 
 ## 验证
 

@@ -9,8 +9,6 @@
     ["launcher/ui/index.html", "ops/installer/launcher-conversation-prototype.html"],
     ["launcher/ui/launcher-controller.js", "ops/installer/launcher-controller.js"],
     ["launcher/ui/assets/", "ops/installer/assets/"],
-    ["launcher/previews/legacy.html", "ops/installer/launcher-ui-prototype.html"],
-    ["launcher/previews/refinement.html", "ops/installer/launcher-refinement-preview.html"],
     ["launcher/bridge.py", "ops/installer/launcher_bridge.py"],
     ["deployment/update/system-update.js", "ops/installer/desktop/system-update.js"],
     ["deployment/update/releases.js", "ops/installer/desktop/releases.js"],

@@ -11,6 +11,19 @@ import { createReleaseSource, digest, assertNoraSystemArtifacts } from '../tooli
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const rules = readLayout(root);
 
+test('desktop dependency manager is determined by one npm lockfile', () => {
+    const desktop = path.join(root, 'launcher/desktop');
+    const managerLocks = new Set(['package-lock.json', 'npm-shrinkwrap.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lock', 'bun.lockb']);
+    assert.deepEqual(fs.readdirSync(desktop).filter(name => managerLocks.has(name)).sort(), ['package-lock.json']);
+    const pkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json'), 'utf8'));
+    const lock = JSON.parse(fs.readFileSync(path.join(desktop, 'package-lock.json'), 'utf8'));
+    assert.equal(lock.lockfileVersion, 3);
+    assert.equal(lock.packages[''].name, pkg.name);
+    assert.equal(lock.packages[''].version, pkg.version);
+    assert.deepEqual(lock.packages[''].dependencies, pkg.dependencies);
+    assert.deepEqual(lock.packages[''].devDependencies, pkg.devDependencies);
+});
+
 test('source ownership maps to the existing delivery protocol in both directions', () => {
     for (const [source, delivery] of rules) {
         const suffix = source.endsWith('/') ? 'fixture.py' : '';

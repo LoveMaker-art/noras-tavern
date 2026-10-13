@@ -47,33 +47,44 @@ class FirstInstallSnapshotTests(unittest.TestCase):
         template = (ROOT / "ops/skills/agents-tavern.md").read_text(encoding="utf-8")
         originals = (None, b"personal instructions\r\n", b"before\n<!-- BEGIN TAVERN SKILLS -->\nold\n<!-- END TAVERN SKILLS -->\nafter\n")
         for original in originals:
-            with self.subTest(original=original), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
-                home, backup = root / "hermes", root / "backup"
-                home.mkdir()
-                agents = home / "AGENTS.md"
-                if original is not None:
-                    agents.write_bytes(original)
-                (home / "SOUL.md").write_bytes(b"personal soul")
-                (home / ".env").write_bytes(b"TEST_ONLY_SENTINEL=preserve")
-                previous = home / "AGENTS.md.bak"
-                records = MODULE.snapshot_targets(home, [agents, previous], backup)
-                MODULE.install_agents(home, template)
-                self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
-                MODULE.install_agents(home, template)
-                self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
-                if original is not None:
-                    self.assertEqual(previous.read_bytes(), original)
-                    MODULE.install_agents(home, "next version\n")
-                    self.assertEqual(previous.read_bytes(), template.encode("utf-8"))
-                    self.assertEqual(sorted(p.name for p in home.glob("AGENTS*")), ["AGENTS.md", "AGENTS.md.bak"])
-                else:
-                    self.assertFalse(previous.exists())
-                self.assertEqual((home / "SOUL.md").read_bytes(), b"personal soul")
-                self.assertEqual((home / ".env").read_bytes(), b"TEST_ONLY_SENTINEL=preserve")
-                MODULE.restore_targets(home, records, backup)
-                self.assertEqual(agents.read_bytes() if agents.exists() else None, original)
-                self.assertFalse(previous.exists())
+            for previous_original in (None, b"older instructions\r\n"):
+                with self.subTest(original=original, previous=previous_original), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary).resolve()
+                    home, tavern = root / "hermes", root / "tavern"
+                    home.mkdir()
+                    agents, previous = home / "AGENTS.md", home / "AGENTS.md.bak"
+                    if original is not None:
+                        agents.write_bytes(original)
+                    if previous_original is not None:
+                        previous.write_bytes(previous_original)
+                    (home / "SOUL.md").write_bytes(b"personal soul")
+                    (home / ".env").write_bytes(b"TEST_ONLY_SENTINEL=preserve")
+                    with patch.dict(os.environ, {"NORA_INSTALLER_DIRECTORY": str(root / "installer")}):
+                        journal = MODULE.FirstInstallJournal.create(root, home, tavern)
+                        journal.prepare({"hermes": [agents, previous]}, manifest={})
+                        snapshots = journal.directory / "backups/hermes"
+                        journal.checkpoint("apply", "intent")
+                        MODULE.install_agents(home, template, journal)
+                        self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
+                        MODULE.install_agents(home, template, journal)
+                        self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
+                        if original is not None:
+                            self.assertEqual(previous.read_bytes(), original)
+                            MODULE.install_agents(home, "next version\n", journal)
+                            self.assertEqual(previous.read_bytes(), template.encode("utf-8"))
+                            self.assertEqual(sorted(p.name for p in home.glob("AGENTS*")), ["AGENTS.md", "AGENTS.md.bak"])
+                        else:
+                            self.assertEqual(previous.read_bytes() if previous.exists() else None, previous_original)
+                        self.assertEqual((home / "SOUL.md").read_bytes(), b"personal soul")
+                        self.assertEqual((home / ".env").read_bytes(), b"TEST_ONLY_SENTINEL=preserve")
+                        result = MODULE.resume_first_install(journal.file, stop=lambda: {"offline": True})
+                        self.assertEqual(result["status"], "restored")
+                        self.assertEqual(MODULE.resume_first_install(journal.file, stop=lambda: {"offline": True})["status"], "restored")
+                    for path, content in ((agents, original), (previous, previous_original)):
+                        self.assertEqual(path.read_bytes() if path.exists() else None, content)
+                        snapshot = snapshots / path.name
+                        self.assertEqual(snapshot.read_bytes() if snapshot.exists() else None, content,
+                            "restoration must preserve the original source snapshot")
 
     def test_agents_backup_failure_leaves_current_instructions_intact(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -319,26 +330,47 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
 
     def test_restores_existing_targets_and_removes_targets_created_after_snapshot(self):
         with tempfile.TemporaryDirectory(prefix="nora-first-install-test-") as temporary:
-            home = Path(temporary) / "home"
-            backup = Path(temporary) / "backup"
+            root = Path(temporary).resolve()
+            home, tavern = root / "hermes", root / "tavern"
             existing_file = home / "config.yaml"
             existing_tree = home / "skills/creative/tavern"
-            new_tree = home / "apps/tavern-runtime"
+            new_tree = tavern / "apps/tavern-runtime"
             existing_tree.mkdir(parents=True)
             existing_file.write_text("original: true\n", encoding="utf-8")
             (existing_tree / "SKILL.md").write_text("original skill\n", encoding="utf-8")
+            original_config = existing_file.read_bytes()
+            original_skill = (existing_tree / "SKILL.md").read_bytes()
+            prepared_config = root / "prepared-config.yaml"
+            prepared_config.write_text("changed: true\n", encoding="utf-8")
+            prepared_skill, prepared_runtime = root / "prepared-skill", root / "prepared-runtime"
+            prepared_skill.mkdir()
+            (prepared_skill / "SKILL.md").write_text("changed skill\n", encoding="utf-8")
+            prepared_runtime.mkdir()
+            (prepared_runtime / "server.js").write_text("new runtime\n", encoding="utf-8")
+            candidate_config = prepared_config.read_bytes()
+            candidate_skill = (prepared_skill / "SKILL.md").read_bytes()
+            candidate_runtime = (prepared_runtime / "server.js").read_bytes()
 
-            records = MODULE.snapshot_targets(home, [existing_file, existing_tree, new_tree], backup)
-            existing_file.write_text("changed: true\n", encoding="utf-8")
-            (existing_tree / "SKILL.md").write_text("changed skill\n", encoding="utf-8")
-            new_tree.mkdir(parents=True)
-            (new_tree / "server.js").write_text("new runtime\n", encoding="utf-8")
+            with patch.dict(os.environ, {"NORA_INSTALLER_DIRECTORY": str(root / "installer")}):
+                journal = MODULE.FirstInstallJournal.create(root, home, tavern)
+                journal.prepare({"hermes": [existing_file, existing_tree], "tavern": [new_tree]}, manifest={})
+                journal.checkpoint("apply", "intent")
+                journal.apply_bytes(existing_file, candidate_config)
+                journal.apply(prepared_skill, existing_tree)
+                journal.apply(prepared_runtime, new_tree)
+                self.assertEqual(existing_file.read_bytes(), candidate_config)
+                self.assertEqual((existing_tree / "SKILL.md").read_bytes(), candidate_skill)
+                self.assertEqual((new_tree / "server.js").read_bytes(), candidate_runtime)
+                result = MODULE.resume_first_install(journal.file, stop=lambda: {"offline": True})
+                self.assertEqual(result["status"], "restored")
 
-            MODULE.restore_targets(home, records, backup)
-
-            self.assertEqual(existing_file.read_text(encoding="utf-8"), "original: true\n")
-            self.assertEqual((existing_tree / "SKILL.md").read_text(encoding="utf-8"), "original skill\n")
+            self.assertEqual(existing_file.read_bytes(), original_config)
+            self.assertEqual((existing_tree / "SKILL.md").read_bytes(), original_skill)
             self.assertFalse(new_tree.exists())
+            self.assertEqual((journal.directory / "backups/hermes/config.yaml").read_bytes(), original_config)
+            self.assertEqual((journal.directory / "backups/hermes/skills/creative/tavern/SKILL.md").read_bytes(), original_skill)
+            self.assertTrue(any(path.read_bytes() == candidate_runtime
+                for path in (journal.directory / "failed-new").rglob("server.js")), "failed candidate must be retained outside the active runtime")
 
     def test_installs_the_runtime_hook_at_the_path_hermes_executes(self):
         with tempfile.TemporaryDirectory(prefix="nora-first-install-hook-") as temporary:

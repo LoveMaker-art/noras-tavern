@@ -153,14 +153,22 @@ class InstallerPathTests(unittest.TestCase):
                     worker = target / WORKER.removeprefix("app/")
                     self.assertGreater(len(str(worker)), 260)
                     INSTALLER.copy_tree(source / "app", target)
-                    backup = home / "backups/first-install/tavern"
-                    records = INSTALLER.snapshot_targets(home, [target], backup)
-                    Path(INSTALLER.filesystem_path(worker)).write_bytes(b"changed")
-                    INSTALLER.restore_targets(home, records, backup)
-                    self.assertEqual(Path(INSTALLER.filesystem_path(worker)).read_bytes(), b"worker fixture")
-                    context = INSTALLER.module_at("windows_managed_context", ROOT / "ops/updater/managed_context.py")
                     hermes = home / "hermes"
                     hermes.mkdir()
+                    with patch.dict(os.environ, {"NORA_INSTALLER_DIRECTORY": str(root / "installer")}):
+                        journal = INSTALLER.FirstInstallJournal.create(home, hermes, home / "tavern")
+                        journal.prepare({"tavern": [target]}, manifest={})
+                        saved_worker = journal.directory / "backups/tavern/apps/tavern-runtime" / WORKER.removeprefix("app/")
+                        self.assertGreater(len(str(saved_worker)), 260, "the actual journal backup must exercise long paths")
+                        journal.checkpoint("apply", "intent")
+                        Path(INSTALLER.filesystem_path(worker)).write_bytes(b"changed")
+                        journal.checkpoint("apply", "failed")
+                        result = INSTALLER.resume_first_install(journal.file, stop=lambda: {"offline": True})
+                        self.assertEqual(result["status"], "restored")
+                    self.assertEqual(Path(INSTALLER.filesystem_path(saved_worker)).read_bytes(), b"worker fixture",
+                        "restoration must preserve the journal's source snapshot")
+                    self.assertEqual(Path(INSTALLER.filesystem_path(worker)).read_bytes(), b"worker fixture")
+                    context = INSTALLER.module_at("windows_managed_context", ROOT / "ops/updater/managed_context.py")
                     (hermes / "AGENTS.md").write_bytes(b"old rules")
                     (hermes / "AGENTS.md.bak").write_bytes(b"previous rules")
                     agents_backup = Path(INSTALLER.filesystem_path(

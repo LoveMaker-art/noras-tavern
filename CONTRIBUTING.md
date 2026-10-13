@@ -5,6 +5,7 @@ Start with [repository navigation](docs/REPOSITORY.md). Change authored source, 
 ## Requirements
 
 - Node.js 24 and npm with committed lockfiles for the release pipeline. The repository `.nvmrc` selects the same major version as CI; with nvm, run `nvm install` and `nvm use` from this directory before launcher commands.
+- The desktop launcher uses npm and `launcher/desktop/package-lock.json` as its only dependency lockfile. Additional package-manager locks make Electron Builder fall back to environment-dependent manager detection.
 - Python 3.11 or later with psutil and PyYAML for source deployment tests. Set `NORA_TEST_PYTHON` to its actual executable; it takes precedence over `NORA_PYTHON`. Source CI pins psutil 7.0.0 and PyYAML 6.0.2.
 - Native Hermes integration requires its actual checkout (`NORA_TEST_HERMES`), matching venv (`NORA_TEST_PYTHON`) and managed base (`NORA_TEST_MANAGED_PYTHON_ROOT`). An independent source-test venv does not establish that the Hermes runtime is complete.
 - Native macOS arm64, macOS x64, and Windows x64 builders for their respective Hermes runtime bundles. A Mac build does not establish Windows compatibility.
@@ -72,7 +73,7 @@ Choose focused tests before repository-wide suites. Tests establish only the wor
 
 The active launcher reliability scope, acceptance gates, and phase reports live in [one delivery plan](docs/launcher-reliability-plan.md). Keep unique regression tests and necessary evidence; delete obsolete one-off drivers, duplicate snapshots and outdated plans. Commands are indexed in [deployment test navigation](tests/deployment/README-nora-acceptance.md). Do not maintain a second mutable progress plan or start another test instance before the current one has closed.
 
-The production page is `launcher/ui/index.html`. `launcher/previews/` contains design experiments, not the desktop entrypoint. Test UI and clicks without repackaging:
+The production page is `launcher/ui/index.html`. Retired design experiments remain available in Git history. Test the current UI and clicks without repackaging:
 
 ```sh
 node "$PWD/tooling/run.mjs" --watch node launcher/desktop/node_modules/electron/cli.js launcher/desktop --nora-mock=uninstalled --nora-watch

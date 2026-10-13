@@ -955,25 +955,6 @@ def snapshot_targets(home: Path, targets: list[Path], backup: Path) -> list[dict
     return records
 
 
-def restore_targets(home: Path, records: list[dict], backup: Path) -> None:
-    root = Path(filesystem_path(backup / "targets"))
-    for record in sorted(records, key=lambda item: len(Path(item["path"]).parts), reverse=True):
-        relative = Path(record["path"])
-        target = Path(filesystem_path(home / relative))
-        if target.is_dir():
-            shutil.rmtree(target)
-        elif target.exists() or target.is_symlink():
-            target.unlink()
-        if not record["existed"]:
-            continue
-        source = root / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_dir():
-            shutil.copytree(source, target, symlinks=True)
-        else:
-            shutil.copy2(source, target)
-
-
 def prepare_skills(source: Path, work: Path) -> dict[str, Path]:
     installer = module_at("nora_tavern_skill_installer", source / "ops/scripts/install-hermes-skills.py")
     return installer.prepare_skill_trees(source, work / "prepared-skills", local=True)

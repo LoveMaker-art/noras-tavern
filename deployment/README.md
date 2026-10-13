@@ -10,9 +10,9 @@
 
 ## 更新对象
 
-- `update/system-update.js`：启动器管理的完整本地系统事务，备份 Hermes 与 Tavern，调用初始化/校验，失败回滚。
+- `update/system-update.js`：识别和安全恢复受支持的旧 JS 系统更新事务。
 - `update/releases.js`：发布渠道、版本和本平台清单校验。
-- `update/update.py`：旧独立部署的 Tavern 更新和迁移；拒绝冒充完整系统更新。
+- `update/update.py` 与 `update/recovery.py`：执行当前完整系统更新，以及适用的独立 Tavern 更新、旧数据迁移与恢复。完整系统路径由 `launcher/desktop/system-update-executor.js` 经 `launcher/bridge.py` 和 `update/bootstrap.py` 调用，绑定托管实例并恢复更新前服务状态；独立更新入口拒绝覆盖托管完整系统。
 - 桌面程序升级：替换平台启动器应用，保留系统安装根目录，不由上述事务自替换。
 
 用户操作见 [更新说明](../docs/update-nora-tavern.md)。

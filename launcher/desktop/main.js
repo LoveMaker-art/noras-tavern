@@ -1,5 +1,5 @@
 const { app, BrowserWindow, dialog, ipcMain, shell, net, session, crashReporter } = require('electron');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -395,11 +395,6 @@ function launcherEnv() {
     env.XDG_DATA_HOME = path.join(noraHome(), 'data');
   }
   return env;
-}
-
-function checkCommand(command, args = []) {
-  const result = spawnSync(command, args, { env: launcherEnv(), stdio: 'ignore', timeout: 15000, windowsHide: true });
-  return result.status === 0 ? { command, args } : null;
 }
 
 function findPython() {
