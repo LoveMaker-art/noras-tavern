@@ -10,6 +10,15 @@ const releases = process.env.NORA_RELEASES_SOURCE ? (() => {
   candidate._compile(fs.readFileSync(process.env.NORA_RELEASES_SOURCE,'utf8'),file);return candidate.exports;
 })() : require('../installer/desktop/releases');
 const {createTelemetry} = require('../installer/desktop/telemetry');
+const {sourceCandidates} = require('../installer/desktop/release-sources');
+const sourceConfiguration = require('../installer/desktop/release-sources.json');
+const githubOnly = {schema:1,primary:'github',mirrors:[]};
+const latestUrl = 'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
+function fixtureResponse(body,url,options) {
+  const response = new Response(body,options);
+  Object.defineProperty(response,'url',{value:String(url)});
+  return response;
+}
 const capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
 
 test('first install system metadata failure binds the fixed system version before launcher discovery',async t=>{
@@ -41,8 +50,8 @@ test('manifest request failures remain technical errors while version guards car
   const f = fixture(t);
   for (const evidence of ['http','timeout']) {
     const result = await releases.check({...f.options,fetcher:async url=>{
-      if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(f.release));
-      if (evidence === 'http') return new Response('private manifest reply',{status:403});
+      if (f.resource(url).kind === 'catalogue') return fixtureResponse(JSON.stringify(f.release),url);
+      if (evidence === 'http') return fixtureResponse('private manifest reply',url,{status:403});
       throw Object.assign(new Error('private timeout fixture'),{code:'TIMEOUT'});
     }});
     assert.equal(result.state,'unavailable');
@@ -84,16 +93,63 @@ function fixture(t) {
   const names = ['release-manifest.json', 'nora-system-darwin-arm64.json', ...Object.values(system.files).map(i => i.asset)];
   const release = { tag_name: 'v2.2.8', assets: names.map(name => ({ name, browser_download_url: `https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.2.8/${name}` })) };
   const requested = [];
+  const resource = address => {
+    const routes = new Map();
+    const admit = (canonical,identity) => {
+      for (const source of sourceCandidates(canonical)) {
+        assert.ok(!routes.has(source.url),'Fixture resources must not share a physical URL');
+        routes.set(source.url,{...identity,canonical});
+      }
+    };
+    admit(latestUrl,{kind:'catalogue'});
+    admit(`https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/${encodeURIComponent(release.tag_name)}`,{kind:'tag'});
+    for (const asset of release.assets) {
+      assert.match(asset.name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
+      const canonical = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
+      assert.equal(asset.browser_download_url,canonical,'Fixture assets belong to the selected repository and tag');
+      admit(canonical,{kind:'asset',asset:asset.name});
+    }
+    const result = routes.get(String(address));
+    assert.ok(result,'Unexpected untrusted fixture resource: '+String(address));
+    return result;
+  };
   const fetcher = async url => {
     requested.push(url);
-    if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(release));
-    if (url.endsWith('/nora-system-darwin-arm64.json')) return new Response(JSON.stringify(system));
-    const name = url.split('/').pop().replace(/^darwin-arm64-/, '');
-    return new Response(data[name] || 'missing', { status: name in data ? 200 : 404 });
+    const identity = resource(url);
+    if (['catalogue','tag'].includes(identity.kind)) return fixtureResponse(JSON.stringify(release),url);
+    if (identity.asset === 'nora-system-darwin-arm64.json') return fixtureResponse(JSON.stringify(system),url);
+    const name = Object.entries(system.files).find(([,item])=>item.asset===identity.asset)?.[0] || identity.asset;
+    assert.ok(Object.hasOwn(data,name),'Fixture asset must have exact owned bytes: '+identity.asset);
+    return fixtureResponse(data[name],url);
   };
-  return { root, bundledRoot, system, release, requested, data, options: { bundledRoot, cacheRoot: path.join(root, 'cache'), installRoot: root,
+  return { root, bundledRoot, system, release, requested, data, resource, options: { bundledRoot, cacheRoot: path.join(root, 'cache'), installRoot: root,
     launcherVersion: '0.1.0', platform: 'darwin', arch: 'arm64', fetcher } };
 }
+
+test('default Jihu first install and explicit tag use exact channel and fixed publication metadata without GitHub fallback',async t=>{
+  const f=fixture(t),primary=sourceConfiguration.mirrors.find(item=>item.id===sourceConfiguration.primary);
+  assert.equal(primary.provider,'jihulab');
+  const target=await releases.prepare(f.options);
+  assert.deepEqual(f.requested,[new URL('channels/stable.json',primary.channelBaseUrl).href,
+    new URL('v2.2.8/nora-system-darwin-arm64.json',primary.baseUrl).href]);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target,'nora-system.json'))).commit,f.system.commit);
+  assert.equal(fs.readFileSync(path.join(target,'nora-tavern-app.tar.gz'),'utf8'),'app');
+  f.requested.length=0;
+  const selected=await releases.latest(f.options.fetcher,undefined,'stable','v2.2.8');
+  assert.equal(selected.tag_name,'v2.2.8');
+  assert.deepEqual(f.requested,[new URL('v2.2.8/release.json',primary.baseUrl).href]);
+});
+
+test('release fixture rejects unconfigured hosts, projects, tags and query or fragment variants despite matching asset basenames',async t=>{
+  const f=fixture(t),url=sourceCandidates(releases.assetUrl(f.release,'nora-system-darwin-arm64.json'))[0].url;
+  const project=/\/projects\/([0-9]+)\//.exec(new URL(url).pathname);assert.ok(project);
+  for(const address of [url.replace('jihulab.com','untrusted.example'),
+    url.replace(`/projects/${project[1]}/`,`/projects/${project[1]==='1'?'2':'1'}/`),
+    url.replace('/generic/nora-tavern/','/generic/other/'),url.replace('/v2.2.8/','/v2.2.9/'),
+    url+'?external=1',url+'#external',url.replace('/nora-system-darwin-arm64.json','/unknown.json'),
+    releases.assetUrl(f.release,'nora-system-darwin-arm64.json').replace('LoveMaker-art','untrusted-owner')])
+    await assert.rejects(f.options.fetcher(address),/Unexpected untrusted fixture resource/);
+});
 
 test('actual check-update entry shares in-flight work and uses its persisted metadata cache',async t=>{
   const f=fixture(t),vm=require('node:vm');
@@ -121,7 +177,7 @@ test('actual check-update entry shares in-flight work and uses its persisted met
   const [one,two]=await Promise.all([query(),query()]);
   assert.equal(tracked,1,'background and manual checks must share the same operation log');
   assert.equal(one.latest,two.latest);
-  assert.equal(f.requested.filter(url=>url.endsWith('/releases/latest')).length,1);
+  assert.equal(f.requested.filter(url=>f.resource(url).canonical===latestUrl).length,1);
   const count=f.requested.length;const repeat=await query();
   assert.equal(f.requested.length,count,'a short-interval check must reuse validated metadata');
   assert.equal(repeat.latestConfirmed,false);
@@ -148,7 +204,7 @@ test('full and offline preparation reject missing or changed executor capability
     fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
     await assert.rejects(releases.prepare(f.options),{userCode:'RELEASE_EXECUTOR_INCOMPATIBLE'});
     await assert.rejects(releases.prepareBundled(f.options),{userCode:'RELEASE_EXECUTOR_INCOMPATIBLE'});
-    assert.equal(f.requested.some(url=>url.includes('/download/')&&!url.endsWith('nora-system-darwin-arm64.json')),false);
+    assert.equal(f.requested.some(url=>f.resource(url).kind==='asset'&&f.resource(url).asset!=='nora-system-darwin-arm64.json'),false);
     assert.equal(fs.existsSync(f.options.cacheRoot),false);
   }
 });
@@ -171,8 +227,8 @@ test('first install pins latest once and downloads only the component that diffe
   const target = await releases.prepareInstall({...f.options, confirmBundled: () => { confirmations++; return true; }});
   assert.equal(JSON.parse(fs.readFileSync(path.join(target,'nora-system.json'))).version,'2.2.8');
   assert.equal(fs.readFileSync(path.join(target,'nora-tavern-app.tar.gz'),'utf8'),'app');
-  assert.equal(f.requested.filter(url => url.endsWith('/releases/latest')).length,1);
-  assert.deepEqual(f.requested.filter(url => url.includes('/download/') && !url.endsWith('nora-system-darwin-arm64.json')).map(url=>url.split('/').at(-1)),
+  assert.equal(f.requested.filter(url => f.resource(url).canonical===latestUrl).length,1);
+  assert.deepEqual(f.requested.map(url=>f.resource(url)).filter(item=>item.kind==='asset'&&item.asset!=='nora-system-darwin-arm64.json').map(item=>item.asset),
     ['darwin-arm64-release-manifest.json','darwin-arm64-nora-tavern-app.tar.gz']);
   assert.equal(confirmations,0);
 });
@@ -180,7 +236,7 @@ test('first install awaits one immutable selected plan before starting payload t
   const f = fixture(t); fs.writeFileSync(path.join(f.bundledRoot,'nora-tavern-app.tar.gz'),'old app');
   let selected, calls=0, frozen=false;
   const fetcher=async(url,options)=>{
-    if(url.endsWith('/darwin-arm64-nora-tavern-app.tar.gz')) assert.equal(frozen,true,'plan callback finishes before transfer');
+    if(f.resource(url).asset==='darwin-arm64-nora-tavern-app.tar.gz') assert.equal(frozen,true,'plan callback finishes before transfer');
     return f.options.fetcher(url,options);
   };
   await releases.prepareInstall({...f.options,fetcher,onPlan:async plan=>{calls++; selected=plan;
@@ -188,7 +244,7 @@ test('first install awaits one immutable selected plan before starting payload t
     await Promise.resolve(); frozen=true;
   }});
   assert.equal(calls,1);assert.equal(selected.commit,f.system.commit);
-  assert.equal(f.requested.filter(url=>url.endsWith('/releases/latest')).length,1);
+  assert.equal(f.requested.filter(url=>f.resource(url).canonical===latestUrl).length,1);
 });
 test('offline consent freezes verified local target without calling it latest, decline never selects', async t => {
   const f=fixture(t);fs.writeFileSync(path.join(f.bundledRoot,'nora-system.json'),JSON.stringify(f.system));
@@ -330,7 +386,8 @@ test('older packaged component is replaced from the pinned release, never latest
   const f = fixture(t); fs.writeFileSync(path.join(f.bundledRoot, 'nora-tavern-app.tar.gz'), 'old');
   const target = await releases.prepare(f.options);
   assert.equal(fs.readFileSync(path.join(target, 'nora-tavern-app.tar.gz'), 'utf8'), 'app');
-  assert.ok(f.requested.at(-1).includes('/download/v2.2.8/'));
+  assert.equal(f.resource(f.requested.at(-1)).canonical,releases.assetUrl(f.release,'darwin-arm64-nora-tavern-app.tar.gz'));
+  assert.equal(f.requested.at(-1),sourceCandidates(releases.assetUrl(f.release,'darwin-arm64-nora-tavern-app.tar.gz'))[0].url);
 });
 test('missing platform package stops before creating install cache', async t => {
   const f = fixture(t); f.release.assets = [];
@@ -423,11 +480,22 @@ test('beta discovery selects semantic latest beta, excluding stable, drafts and 
     { tag_name: 'v2.2.9-beta.10', prerelease: true },
   ];
   const fetched = [];
-  const value = await releases.latest(async url => { fetched.push(url); return new Response(JSON.stringify(rows)); }, undefined, 'beta');
+  const value = await releases.latest(async url => { fetched.push(url); return fixtureResponse(JSON.stringify(rows),url); }, undefined, 'beta',undefined,
+    {networkPolicy:{sources:githubOnly}});
   assert.equal(value.tag_name, 'v2.2.9-beta.10');
   assert.ok(fetched[0].includes('/releases?'));
   assert.equal(releases.accepts(value, 'stable'), false);
   assert.equal(releases.compare('2.2.9-beta.10', '2.2.9-beta.2'), 1);
+});
+test('default Jihu beta discovery reads only its exact complete channel catalogue',async()=>{
+  const primary=sourceConfiguration.mirrors.find(item=>item.id===sourceConfiguration.primary),requested=[];
+  assert.equal(primary.provider,'jihulab');
+  const expected=new URL('channels/beta.json',primary.channelBaseUrl).href;
+  const rows=[{tag_name:'v2.2.9-beta.2',prerelease:true},{tag_name:'v2.2.9-beta.10',prerelease:true},
+    {tag_name:'v9.0.0',prerelease:false},{tag_name:'v2.2.9-beta.20',prerelease:true,draft:true}];
+  const value=await releases.latest(async url=>{requested.push(url);assert.equal(url,expected);
+    return fixtureResponse(JSON.stringify(rows),url);},undefined,'beta');
+  assert.equal(value.tag_name,'v2.2.9-beta.10');assert.deepEqual(requested,[expected]);
 });
 test('beta download keeps release verification and rejects stable or candidate substitution', async t => {
   const f = fixture(t);
@@ -466,14 +534,16 @@ test('partial cleanup failure does not replace the first download callback failu
 });
 test('an explicitly rechecked first-install target is pinned instead of resolving latest again',async t=>{
   const f=fixture(t), requested=[];
-  const fetcher=async(url,options)=>{requested.push(url);if(url.endsWith('/releases/tags/v2.2.8'))return Response.json(f.release);return f.options.fetcher(url,options);};
-  await releases.prepareInstall({...f.options,tag:'v2.2.8',fetcher});assert.equal(requested.filter(url=>url.endsWith('/releases/tags/v2.2.8')).length,1);assert.equal(requested.some(url=>url.endsWith('/releases/latest')),false);
+  const fetcher=async(url,options)=>{requested.push(url);return f.options.fetcher(url,options);};
+  await releases.prepareInstall({...f.options,tag:'v2.2.8',fetcher});
+  assert.equal(requested.filter(url=>f.resource(url).kind==='tag').length,1);
+  assert.equal(requested.some(url=>f.resource(url).canonical===latestUrl),false);
 });
 test('component transfer throttles chunk progress and preserves exact zero and terminal byte facts',async t=>{
   const f=fixture(t), progress=[];t.mock.method(Date,'now',()=>1000);
   fs.writeFileSync(path.join(f.bundledRoot,'nora-tavern-app.tar.gz'),'old bytes');
-  const fetcher=async(url,options)=>url.endsWith('/darwin-arm64-nora-tavern-app.tar.gz')
-    ?new Response(new ReadableStream({start(controller){for(const byte of [97,112,112])controller.enqueue(Uint8Array.of(byte));controller.close();}}),{headers:{'content-length':'3'}})
+  const fetcher=async(url,options)=>f.resource(url).asset==='darwin-arm64-nora-tavern-app.tar.gz'
+    ?fixtureResponse(new ReadableStream({start(controller){for(const byte of [97,112,112])controller.enqueue(Uint8Array.of(byte));controller.close();}}),url,{headers:{'content-length':'3'}})
     :f.options.fetcher(url,options);
   await releases.prepare({...f.options,fetcher,onEvent:event=>{if(event.event==='progress')progress.push(event);}});
   assert.ok(progress.length<=3,'rapid chunks are throttled');assert.equal(progress[0].current,0);assert.equal(progress.at(-1).current,3);assert.equal(progress.at(-1).total,3);assert.equal(progress.at(-1).ratio,1);

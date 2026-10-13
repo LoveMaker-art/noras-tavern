@@ -65,7 +65,11 @@ test('release transport and trusted roots load from the declared package without
   assert.equal(typeof require(path.join(root,'release-network')).downloadAsset,'function');
   const {sourceCandidates}=require(path.join(root,'release-sources'));
   const candidates=sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest');
-  assert.equal(candidates[0].id,'github');
+  assert.equal(candidates[0].id,'jihulab');
+  assert.equal(candidates[0].provider,'jihulab');
+  assert.equal(candidates[0].url,new URL('channels/stable.json',require(path.join(root,'release-sources.json')).mirrors
+    .find(item=>item.id==='jihulab').channelBaseUrl).href);
+  assert.equal(candidates[1].id,'github');
   assert.equal(candidates.at(-1).id,'sourceforge');
   assert.ok(!candidates.some(item=>/example/.test(item.url)));
 });

@@ -729,12 +729,66 @@ test('a lost guard cannot let the ordinary executor catch overwrite a recovered 
   assert.equal(result.state,'failed');assert.deepEqual(result.allowedActions,['recheck','logs']);
 });
 
+async function closeCommitFaultFixture({directory,marker,prior,native,acquiredLease,guardPid,running,settlementMs=5000}){
+    let closed=false;
+    try{
+      // A timeout can leave the fixture guard paused inside the rename hook.
+      // Unblock that hook before asking its existing lease to close.
+      fs.writeFileSync(marker+'.resume','resume');
+      if(acquiredLease){
+        try{await acquiredLease.cancel({signal:'SIGKILL'});}catch(error){if(error.code!=='LOCK_GUARD_EXITED')throw error;}
+        try{await acquiredLease.release();}catch(error){if(error.code!=='LOCK_GUARD_EXITED')throw error;}
+      }
+      if(running){
+        let settlementTimer;
+        try{
+          await Promise.race([running.catch(()=>{}),new Promise((_,reject)=>{
+            settlementTimer=setTimeout(()=>reject(Object.assign(new Error(`Fixture operation did not settle within ${settlementMs} ms; its root was preserved`),
+              {code:'FIXTURE_OPERATION_SETTLEMENT_TIMEOUT'})),settlementMs);
+          })]);
+        }finally{clearTimeout(settlementTimer);}
+      }
+      const deadline=Date.now()+5000;
+      while(guardPid){
+        try{process.kill(guardPid,0);}catch(error){if(error.code==='ESRCH')break;throw error;}
+        if(Date.now()>deadline)throw new Error('Fixture guard did not close; its root was preserved');
+        await new Promise(resolve=>setTimeout(resolve,10));
+      }
+      assert.equal((await native.probe({directory})).busy,false,'Fixture guards must close before removing their root');
+      closed=true;
+    }finally{
+      for(const [key,value]of Object.entries(prior))if(value===undefined)delete process.env[key];else process.env[key]=value;
+      if(closed)fs.rmSync(directory,{recursive:true,force:true});
+    }
+}
+
+test('CAS fault cleanup bounds an unsettled operation, restores its environment and preserves its root',{timeout:2000},async t=>{
+  const native=require('../installer/desktop/operation-lock');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-commit-unsettled-')),marker=path.join(directory,'commit-marker');
+  const prior={NODE_OPTIONS:process.env.NODE_OPTIONS,NORA_TEST_COMMIT_FAULT_MARKER:process.env.NORA_TEST_COMMIT_FAULT_MARKER,NORA_TEST_COMMIT_FAULT_PHASE:process.env.NORA_TEST_COMMIT_FAULT_PHASE};
+  t.after(()=>{for(const [key,value]of Object.entries(prior))if(value===undefined)delete process.env[key];else process.env[key]=value;
+    fs.rmSync(directory,{recursive:true,force:true});});
+  const sentinel=path.join(directory,'preserved');fs.writeFileSync(sentinel,'original fixture bytes');
+  process.env.NODE_OPTIONS='--trace-warnings';process.env.NORA_TEST_COMMIT_FAULT_MARKER=marker;process.env.NORA_TEST_COMMIT_FAULT_PHASE='before';
+  let deadline;
+  try{
+    await assert.rejects(Promise.race([
+      closeCommitFaultFixture({directory,marker,prior,native,running:new Promise(()=>{}),settlementMs:50}),
+      new Promise((_,reject)=>{deadline=setTimeout(()=>reject(Object.assign(new Error('Fixture cleanup did not enforce its settlement budget'),
+        {code:'FIXTURE_TEST_SETTLEMENT_DEADLINE'})),500);})]),{code:'FIXTURE_OPERATION_SETTLEMENT_TIMEOUT'});
+  }finally{clearTimeout(deadline);}
+  for(const [key,value]of Object.entries(prior))assert.equal(process.env[key],value,'Cleanup must restore '+key);
+  assert.equal(fs.readFileSync(marker+'.resume','utf8'),'resume');
+  assert.equal(fs.readFileSync(sentinel,'utf8'),'original fixture bytes','Unsettled fixture roots must remain available for inspection');
+});
+
 for(const phase of ['before','after'])test(`native CAS commit survives guard death ${phase} record rename without a stale overwrite`, {timeout:20000}, async t=>{
   const native=require('../installer/desktop/operation-lock');
   const {createEvidenceStore}=require('../installer/desktop/evidence-store');
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),`nora-commit-${phase}-`)),marker=path.join(directory,'commit-marker'),preload=path.join(directory,'fault-preload.cjs');
   const prior={NODE_OPTIONS:process.env.NODE_OPTIONS,NORA_TEST_COMMIT_FAULT_MARKER:process.env.NORA_TEST_COMMIT_FAULT_MARKER,NORA_TEST_COMMIT_FAULT_PHASE:process.env.NORA_TEST_COMMIT_FAULT_PHASE};
-  t.after(()=>{for(const [key,value]of Object.entries(prior))if(value===undefined)delete process.env[key];else process.env[key]=value;fs.rmSync(directory,{recursive:true,force:true});});
+  let acquiredLease,guardPid,running;
+  t.after(()=>closeCommitFaultFixture({directory,marker,prior,native,acquiredLease,guardPid,running}));
   // This preloader instruments only a fixture guard's synchronous record rename.
   // It creates a real lock-held window on either side of the actual syscall.
   fs.writeFileSync(preload,`const fs=require('node:fs'),path=require('node:path');
@@ -754,7 +808,9 @@ fs.renameSync=(source,target)=>{let record;
     observeEffects:async()=>({effectState:'changed',recoveryOutcome:'recovery-required',canRecover:true}),
     recoverers:{update:async()=>({verification:'confirmed',effectState:'restored'})}});
   const old=createOperationController({directory,lock:native,evidence,executors:{update:async context=>{
+    acquiredLease=context.lease;
     await context.effect('changed');const guard=await context.lease.snapshot();
+    guardPid=guard.guardPid;
     const applying=context.stage('applying');applying.catch(()=>{});
     const deadline=Date.now()+5000;while(!fs.existsSync(marker)){if(Date.now()>deadline)throw new Error('Guard did not reach the rename window');await new Promise(resolve=>setTimeout(resolve,10));}
     assert.equal((await native.probe({directory})).busy,true);
@@ -765,7 +821,7 @@ fs.renameSync=(source,target)=>{let record;
     successorRecord=fs.readFileSync(path.join(root,'operation.json'));successorEvidence=fs.readFileSync(path.join(root,'evidence','metadata.json'));
     throw commitError;
   }}});
-  const result=await old.start('update',{},'commit-fault'),root=path.join(directory,'operations',result.operationId);
+  const result=await(running=old.start('update',{},'commit-fault')),root=path.join(directory,'operations',result.operationId);
   assert.equal(takeover.state,'rolled-back');assert.ok(takeover.ownerEpoch>result.ownerEpoch);
   assert.ok(fs.readFileSync(path.join(root,'operation.json')).equals(successorRecord));
   assert.ok(fs.readFileSync(path.join(root,'evidence','metadata.json')).equals(successorEvidence));

@@ -212,7 +212,7 @@ function checkNetwork({release = selectRelease(), installed, report, platform = 
       NORA_ELECTRON_NETWORK_DESKTOP: selected.asar, NORA_ELECTRON_NETWORK_ASAR: selected.asar,
       NORA_ELECTRON_NETWORK_ORIGINAL_EXECUTABLE: selected.executable};
     delete env.ELECTRON_RUN_AS_NODE;
-    runChecked(executable, [], {env, timeout: 40000});
+    runChecked(executable, [], {env, timeout: 40000, killSignal:'SIGKILL'});
     const candidateReport = path.join(directory, 'report.json');
     verifyNetworkReport(candidateReport, {...selected, launcher, platform});
     fs.copyFileSync(candidateReport, report, fs.constants.COPYFILE_EXCL);

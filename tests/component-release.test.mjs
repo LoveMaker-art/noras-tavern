@@ -143,6 +143,7 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
         fs.copyFileSync(path.join(root, 'launcher/desktop', file), path.join(f.temporary, file));
     }
     const client = createRequire(import.meta.url)(path.join(f.temporary, 'releases.js'));
+    const {sourceCandidates} = createRequire(import.meta.url)(path.join(f.temporary, 'release-sources.js'));
     const tag = 'v2.3.1', base = `https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/`;
     const release = { tag_name: tag, draft: false, prerelease: false, assets: fs.readdirSync(assetsRoot)
         .map(name => ({ name, browser_download_url: base+name })) };
@@ -151,13 +152,28 @@ for (const platform of PLATFORMS) test(`${platform}: new system identity keeps b
     const incomplete = { ...release, assets: release.assets.filter(asset => asset.name !== system.files.SHA256SUMS.asset) };
     assert.throws(() => client.validateSystem(system, incomplete, system.platform, system.arch, '0.3.2'), /缺少完整组件/);
     const fetched = [];
+    const latest = 'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
+    const catalogueUrls = new Set(sourceCandidates(latest).map(source => source.url));
+    const assetUrls = new Map(release.assets.flatMap(asset => sourceCandidates(asset.browser_download_url)
+        .map(source => [source.url, asset.name])));
     const fetcher = async url => {
         fetched.push(url);
-        return new Response(url.endsWith('/releases/latest') ? JSON.stringify(release) : fs.readFileSync(path.join(assetsRoot, url.split('/').pop())));
+        let body;
+        if(catalogueUrls.has(url)) body = JSON.stringify(release);
+        else {
+            const name = assetUrls.get(url);
+            assert.ok(name && release.assets.some(asset => asset.name === name),
+                `Unexpected unowned asset or source: ${url}`);
+            body = fs.readFileSync(path.join(assetsRoot, name));
+        }
+        const response = new Response(body);
+        Object.defineProperty(response, 'url', {value:url});
+        return response;
     };
     const prepared = await client.prepare({ cacheRoot: path.join(f.temporary, 'cache'), bundledRoot: f.baselineRoot,
         launcherVersion: '2.1.0', platform: system.platform, arch: system.arch, fetcher });
     assert.equal(JSON.parse(fs.readFileSync(path.join(prepared, 'nora-system.json'))).version, '2.3.1');
+    assert.equal(fetched[0], sourceCandidates(latest)[0].url);
     assert.ok(!fetched.some(url => url.endsWith('-hermes.tar.gz') || url.endsWith('-deps.tar.gz')), 'Matching bundled environments should not download again');
     release.assets = release.assets.filter(a => a.name !== system.files['hermes.tar.gz'].asset);
     await assert.rejects(client.prepare({ cacheRoot: path.join(f.temporary, 'empty-cache'), bundledRoot: f.baselineRoot,

@@ -172,7 +172,10 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
     fetcher: (url, options) => { urls.push(url); return fetcher(url, options); } });
   assert.equal(prepared.tag, 'v2.3.13');
   assert.equal(prepared.launcher, null);
-  assert.ok(urls.some(url => url.endsWith('/releases/tags/v2.3.13')));
+  const candidates=require('../installer/desktop/release-sources').sourceCandidates(
+    'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.3.13');
+  assert.equal(urls[0],candidates[0].url);
+  assert.equal(urls.filter(url=>candidates.some(source=>source.url===url)).length,1);
   assert.equal(urls.some(url => url.includes('v2.3.2')), false);
   assert.equal(fs.existsSync(path.join(f.root, 'cache')), false);
 });

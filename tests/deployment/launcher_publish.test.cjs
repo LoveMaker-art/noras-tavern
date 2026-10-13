@@ -169,11 +169,20 @@ test('shared publication references identical older assets while current metadat
   assert.ok(refs.every(item=>!result.release.assets.some(asset=>asset.name===path.basename(item.key))));
   assert.ok(result.release.assets.every(item=>item.browser_download_url.includes('/v2.2.11/')));
   const client=require('../installer/desktop/releases');
+  const {sourceCandidates}=require('../installer/desktop/release-sources');
+  const latest='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
+  const catalogueUrls=new Set(sourceCandidates(latest).map(source=>source.url));
+  const assetUrls=new Map(result.release.assets.flatMap(asset=>sourceCandidates(asset.browser_download_url)
+    .map(source=>[source.url,result.plan.objects.find(item=>item.key===`releases/v2.2.11/${asset.name}`)])));
+  const requests=[];
   const expanded=await client.latest(async url=>{
-    if(new URL(url).hostname==='api.github.com')return Response.json(result.release);
-    const key='releases/'+new URL(url).pathname.split('/releases/download/')[1];
-    const object=result.plan.objects.find(item=>item.key===key);assert.ok(object,`Unplanned client request ${url}`);return new Response(fs.readFileSync(object.file));
+    requests.push(url);
+    const object=assetUrls.get(url);
+    assert.ok(catalogueUrls.has(url)||object,`Unplanned client request ${url}`);
+    const response=catalogueUrls.has(url)?Response.json(result.release):new Response(fs.readFileSync(object.file));
+    Object.defineProperty(response,'url',{value:url});return response;
   });
+  assert.equal(requests[0],sourceCandidates(latest)[0].url);
   assert.equal(client.validateAssetReferences(expanded).commit,f.commit);
   for(const object of refs)assert.equal(client.assetUrl(expanded,path.basename(object.key)),`https://github.com/${f.repository}/releases/download/v2.2.10/${path.basename(object.key)}`);
   const stateModule=await import(pathToFileURL(path.resolve(__dirname,'../../tooling/release/publication-state.mjs')));

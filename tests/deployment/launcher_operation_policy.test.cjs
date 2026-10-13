@@ -6,6 +6,7 @@ const path=require('node:path');
 const {create}=require('../installer/desktop/operation-policy');
 const {createOperationController}=require('../installer/desktop/operation-state');
 const {createTestOperationLock}=require('./launcher_operation_test_lock.cjs');
+const {sourceCandidates}=require('../installer/desktop/release-sources');
 const id='22aa0935-996f-4f0d-bfbb-567502e850c5';
 function setup(t,overrides={}){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-policy-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
@@ -140,18 +141,35 @@ test('a first healthy measurement without a failure-bound baseline cannot grant 
   assert.equal((await f.policy.recheck(f.record)).changed,false);
 });
 
+function capturedMetadataRoutes(captured){
+  const routes=new Map(),api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases';
+  const add=(canonical,name=null)=>{
+    for(const source of sourceCandidates(canonical)){
+      assert.ok(!routes.has(source.url)||routes.get(source.url).canonical===canonical,'Captured route must have one logical identity');
+      routes.set(source.url,{canonical,name});
+    }
+  };
+  add(api+'/latest');add(api+'/tags/'+encodeURIComponent(captured.release.tag_name));
+  for(const asset of captured.release.assets){
+    if(!Object.hasOwn(captured.files,asset.name))continue;
+    const canonical=`https://github.com/LoveMaker-art/noras-tavern/releases/download/${encodeURIComponent(captured.release.tag_name)}/${asset.name}`;
+    assert.equal(asset.browser_download_url,canonical);add(canonical,asset.name);
+  }
+  return routes;
+}
+function capturedMetadataResponse(captured,routes,input,overrides={}){
+  const url=String(input),route=routes.get(url);assert.ok(route,`Only captured metadata at an exact configured source can be read: ${url}`);
+  const body=route.name?(Object.hasOwn(overrides,route.name)?overrides[route.name]:captured.files[route.name]):JSON.stringify(captured.release);
+  assert.equal(typeof body,'string');
+  const response=new Response(body,{headers:{'Content-Type':'application/json'}});Object.defineProperty(response,'url',{value:url});return response;
+}
 function capturedInstallPolicy(t,{tag}={}){
   const captured=JSON.parse(require('node:zlib').brotliDecompressSync(fs.readFileSync(path.join(__dirname,'fixtures/published-v2.4.4/metadata.json.br'))));
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-install-recheck-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
   const directory=path.join(home,'installer');fs.mkdirSync(directory);
-  const requests=[];
+  const requests=[],routes=capturedMetadataRoutes(captured);
   const networkFetch=async url=>{
-    requests.push(url);
-    if(url==='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest'
-      ||url==='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.4')return Response.json(captured.release);
-    const asset=captured.release.assets.find(item=>item.browser_download_url===url);
-    assert.ok(asset&&captured.files[asset.name],`Only captured official metadata can be read: ${url}`);
-    return new Response(captured.files[asset.name],{headers:{'Content-Type':'application/json'}});
+    requests.push(String(url));return capturedMetadataResponse(captured,routes,url);
   };
   const policyOptions={home,hermesHome:path.join(home,'hermes'),installRoot:path.join(home,'tavern'),
     bridge:async()=>{throw new Error('Untouched selection must not call the system writer');},
@@ -170,9 +188,24 @@ function capturedInstallPolicy(t,{tag}={}){
       return {verification:'confirmed'};
     }}};
   const target={request:{action:'install',...(tag?{tag}:{})}};
-  return {home,directory,requests,options,target,policyOptions,reopen:()=>createOperationController(options),
+  return {home,directory,requests,routes,captured,options,target,policyOptions,reopen:()=>createOperationController(options),
     replaceLauncher:()=>{failedSelection=false;policy=create(policyOptions);},failAgain:()=>{failAfterSelection=true;},runs:()=>runs};
 }
+
+test('captured selection metadata uses exact configured routes and refuses foreign project, tag and query identities',async t=>{
+  const f=capturedInstallPolicy(t),name='win32-x64-release-manifest.json';
+  const canonical=`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.4/${name}`;
+  const sources=sourceCandidates(canonical),primary=sources[0];assert.equal(primary.provider,'jihulab');
+  for(const source of sources){
+    const response=await f.policyOptions.networkFetch(source.url);
+    assert.equal(response.url,source.url);assert.equal(await response.text(),f.captured.files[name]);
+  }
+  const project=/\/projects\/([0-9]+)\//.exec(new URL(primary.url).pathname);assert.ok(project);
+  const foreign=primary.url.replace(`/projects/${project[1]}/`,`/projects/${project[1]==='1'?'2':'1'}/`);
+  for(const url of [foreign,primary.url.replace('/v2.4.4/','/v2.4.5/'),primary.url+'?external=1',
+    primary.url+'#external',primary.url.replace('jihulab.com','untrusted.example'),canonical.replace('/v2.4.4/','/v2.4.5/')])
+    await assert.rejects(f.policyOptions.networkFetch(url),/Only captured metadata at an exact configured source/);
+});
 
 test('a fixed system descriptor read may prove network recovery before the launcher minimum handoff without authorizing installation',async t=>{
   const releases=require('../installer/desktop/releases');
@@ -180,8 +213,12 @@ test('a fixed system descriptor read may prove network recovery before the launc
   const descriptor=JSON.parse(captured.files['nora-system-win32-x64.json']);
   descriptor.minimumLauncherVersion='2.1.2';
   const url=releases.assetUrl(captured.release,'nora-system-win32-x64.json'),resource={url,routeHash:'a'.repeat(64),expectedSystemVersion:captured.release.tag_name};
+  const routes=capturedMetadataRoutes(captured),descriptorSources=sourceCandidates(url);
   let current=descriptor,requests=0;
-  const f=setup(t,{launcherVersion:'2.1.1',platform:'win32',arch:'x64',networkFetch:async()=>{requests++;return Response.json(current);}});
+  const f=setup(t,{launcherVersion:'2.1.1',platform:'win32',arch:'x64',networkFetch:async read=>{
+    assert.ok(descriptorSources.some(source=>source.url===String(read)),'Recheck may read only the fixed descriptor');requests++;
+    return capturedMetadataResponse(captured,routes,read,{'nora-system-win32-x64.json':JSON.stringify(current)});
+  }});
   Object.assign(f.record,{state:'failed',stageId:'downloading',effectState:'untouched',recoveryOutcome:'not-required',target:{request:{tag:captured.release.tag_name}}});
   f.record.conditionBaseline=await f.policy.initialConditions(f.record);
   f.record.conditionFingerprint=f.record.conditionBaseline.fingerprint;
@@ -192,7 +229,7 @@ test('a fixed system descriptor read may prove network recovery before the launc
   assert.equal(proved.baseline.facts.installSelections,undefined);
   assert.throws(()=>releases.validateSystem(descriptor,null,'win32','x64','2.1.1'),/2\.1\.2/);
   await assert.rejects(releases.selectPlan({selectedRelease:captured.release,mode:'install',launcherVersion:'2.1.1',platform:'win32',arch:'x64',
-    fetcher:async read=>read===url?Response.json(descriptor):new Response(captured.files[captured.release.assets.find(asset=>asset.browser_download_url===read)?.name])}),/2\.1\.2/);
+    fetcher:async read=>capturedMetadataResponse(captured,routes,read,{'nora-system-win32-x64.json':JSON.stringify(descriptor)})}),/2\.1\.2/);
   f.record.conditionBaseline=proved.baseline;f.record.conditionFingerprint=proved.fingerprint;
   assert.equal((await f.policy.recheck(f.record)).changed,false);assert.equal(requests,1);
   for(const malformed of [
@@ -224,7 +261,10 @@ test('official platform selection unblocks an untouched legacy first-install ope
   const checked=await f.reopen().recheck(repeated.operationId,{snapshotSequence:repeated.snapshotSequence});
   assert.equal(checked.operationId,repeated.operationId);assert.deepEqual(checked.primaryFailure,repeated.primaryFailure);
   assert.ok(checked.allowedActions.includes('retry'));
-  assert.ok(f.requests.includes('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.4'));
+  const fixedQuery='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.4';
+  assert.equal(f.requests[0],sourceCandidates(fixedQuery)[0].url);
+  assert.ok(f.requests.includes(sourceCandidates(fixedQuery)[0].url));
+  assert.ok(f.requests.every(url=>sourceCandidates(f.routes.get(url).canonical)[0].url===url),'Healthy configured primary must serve every captured selection read');
   assert.ok(f.requests.some(url=>url.endsWith('/win32-x64-release-manifest.json')));
   assert.equal(f.requests.some(url=>url.endsWith('/release-manifest.json')),false);
   const record=JSON.parse(fs.readFileSync(path.join(f.directory,'operations',first.operationId,'operation.json')));
@@ -314,15 +354,18 @@ test('first-install verification cannot grant attempts when a journal appears du
 test('failed official platform metadata verification preserves the blocked operation without granting attempts',async t=>{
   const f=capturedInstallPolicy(t),first=await f.reopen().start('install',{target:f.target},'invalid-official');
   const twice=await f.reopen().resume(first.operationId,{snapshotSequence:first.snapshotSequence});f.replaceLauncher();
-  const fetch=f.policyOptions.networkFetch;
+  const fetch=f.policyOptions.networkFetch;let malformedReads=0;
   f.policyOptions.networkFetch=async(...args)=>{
     const response=await fetch(...args);
-    return args[0].endsWith('/win32-x64-release-manifest.json')?new Response((await response.text())+' ',{headers:{'Content-Type':'application/json'}}):response;
+    if(!String(args[0]).endsWith('/win32-x64-release-manifest.json'))return response;
+    malformedReads++;const malformed=new Response((await response.text())+' ',{headers:{'Content-Type':'application/json'}});
+    Object.defineProperty(malformed,'url',{value:response.url});return malformed;
   };
   f.options.recheckers.install=(record,context)=>create(f.policyOptions).recheck(record,context);
   const file=path.join(f.directory,'operations',first.operationId,'operation.json'),before=fs.readFileSync(file);
   const checked=await f.reopen().recheck(twice.operationId,{snapshotSequence:twice.snapshotSequence});
   assert.deepEqual(checked.allowedActions,['recheck','logs']);assert.deepEqual(fs.readFileSync(file),before);
+  assert.equal(malformedReads,1,'The fixed platform bytes must actually reach SHA/size rejection');
 });
 
 test('directory repair preserves consumed first-install selection identities, including an exhausted eight-entry history',async t=>{

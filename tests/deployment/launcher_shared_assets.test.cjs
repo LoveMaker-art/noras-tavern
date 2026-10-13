@@ -11,6 +11,10 @@ const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const repository = 'LoveMaker-art/noras-tavern';
 const capabilities = {operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
 const clone = value => JSON.parse(JSON.stringify(value));
+function fixtureResponse(bytes,url,status=200) {
+  const response=new Response(bytes,{status,headers:{'Content-Length':String(Buffer.byteLength(bytes))}});
+  Object.defineProperty(response,'url',{value:String(url)});return response;
+}
 
 function fixture(t,platform='win32',arch='x64') {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),'nora-shared-assets-'));
@@ -39,23 +43,32 @@ function fixture(t,platform='win32',arch='x64') {
   const index = {schema:'nora-release-assets/1',repository,tag,commit,minimumLauncherVersion:'2.1.2',
     assets:Object.entries(oldFiles).map(([name,bytes]) => ({name,asset_release_tag:baseline,size:Buffer.byteLength(bytes),sha256:sha(bytes)}))};
   const release = {tag_name:tag,draft:false,prerelease:false,assets:[]};
+  const routes=new Map(),api=`https://api.github.com/repos/${repository}/releases`;
+  const add=(canonical,resource)=>{
+    for(const source of sourceCandidates(canonical)){
+      assert.ok(!routes.has(source.url)||routes.get(source.url).canonical===canonical,'Fixture route must have one logical resource');
+      routes.set(source.url,{...resource,canonical});
+    }
+  };
   function reseal() {
     files['release-assets.json'] = JSON.stringify(index)+'\n';
     release.assets = Object.entries(files).map(([name,bytes]) => ({name,state:'uploaded',size:Buffer.byteLength(bytes),
       digest:`sha256:${sha(bytes)}`,browser_download_url:url(name)}));
+    routes.clear();add(api+'/latest',{kind:'release'});add(api+'/tags/'+encodeURIComponent(tag),{kind:'release'});
+    for(const name of Object.keys(files))add(url(name),{kind:'asset',name,tag});
+    for(const name of Object.keys(oldFiles))add(url(name,baseline),{kind:'asset',name,tag:baseline});
   }
   reseal();
   const requests = [];
   const fetcher = async value => {
-    const parsed = new URL(value);requests.push(String(value));
-    if (parsed.hostname === 'api.github.com') return new Response(JSON.stringify(release));
-    const name = parsed.pathname.split('/').pop();
-    const source = parsed.pathname.split('/').at(-2);
-    const bytes = source === baseline ? oldFiles[name] : source === tag ? files[name] : undefined;
+    const requested=String(value);requests.push(requested);const resource=routes.get(requested);
+    assert.ok(resource,`Unplanned download: ${value}`);
+    if(resource.kind==='release')return fixtureResponse(JSON.stringify(release),requested);
+    const bytes = resource.tag === baseline ? oldFiles[resource.name] : files[resource.name];
     assert.notEqual(bytes,undefined,`Unplanned download: ${value}`);
-    return new Response(bytes);
+    return fixtureResponse(bytes,requested);
   };
-  return {root,tag,baseline,commit,url,zip,files,oldFiles,manifest,system,index,release,reseal,requests,fetcher,
+  return {root,tag,baseline,commit,url,zip,files,oldFiles,manifest,system,index,release,reseal,requests,routes,fetcher,
     options:{cacheRoot:path.join(root,'cache'),launcherVersion:'2.1.2',platform,arch,fetcher}};
 }
 
@@ -67,18 +80,22 @@ test('legacy URL validation stays strict; only a verified current release index 
   assert.equal(selected.latestConfirmed,true);
   assert.equal(releases.assetUrl(selected.release,name),f.url(name,f.baseline));
   assert.equal(releases.validateAssetReferences(selected.release).commit,f.commit);
-  assert.deepEqual(f.requests,[`https://api.github.com/repos/${repository}/releases/latest`,f.url('release-assets.json')]);
+  assert.deepEqual(f.requests,[sourceCandidates(`https://api.github.com/repos/${repository}/releases/latest`)[0].url,
+    sourceCandidates(f.url('release-assets.json'))[0].url]);
   const legacy = {...f.release,assets:f.release.assets.filter(item=>item.name!=='release-assets.json')};
-  const current = await releases.latest(async()=>new Response(JSON.stringify(legacy)));
+  const current = await releases.latest(async url=>{
+    assert.equal(f.routes.get(String(url))?.kind,'release');return fixtureResponse(JSON.stringify(legacy),url);
+  });
   assert.equal(current.assetIndexText,undefined);
   assert.equal(releases.assetUrl(current,'release-manifest.json'),f.url('release-manifest.json'));
 });
 
 test('shared update freezes the new version while fetching the same verified old asset through SourceForge',async t => {
   const f = fixture(t),name='nora-tavern-module-changed.tar.gz',oldURL=f.url(name,f.baseline);
+  const oldSources=sourceCandidates(oldURL),blocked=new Set(oldSources.filter(source=>source.provider!=='sourceforge').map(source=>source.url));
   const notices = [];
   const fetcher = async (url,options) => {
-    if (url===oldURL) {f.requests.push(url);return new Response('forbidden',{status:403});}
+    if (blocked.has(String(url))) {f.requests.push(String(url));return fixtureResponse('forbidden',url,403);}
     return f.fetcher(url,options);
   };
   const root = await releases.prepareUpdate({...f.options,fetcher,onEvent:event=>notices.push(event),
@@ -89,9 +106,25 @@ test('shared update freezes the new version while fetching the same verified old
   assert.equal(fs.readFileSync(path.join(root,name),'utf8'),f.oldFiles[name]);
   assert.equal(JSON.parse(fs.readFileSync(path.join(root,'release-manifest.json'))).commit,f.commit);
   assert.ok(f.requests.includes(oldURL));
+  assert.ok(f.requests.includes(oldSources[0].url),'The primary must fail before the fixed old object falls back');
   assert.ok(f.requests.includes(`https://downloads.sourceforge.net/project/nora-tavern/${f.baseline}/${name}`));
   assert.ok(!f.requests.some(url=>url.endsWith('/hermes.tar.gz')||url.endsWith('/deps.tar.gz')));
   assert.ok(notices.some(event=>event.event==='log'&&event.line.includes('sourceforge')));
+});
+
+test('the configured Jihu shared object keeps its referenced tag and exact project, path and query identity',async t=>{
+  const f=fixture(t),source=sourceCandidates(f.url('hermes.tar.gz',f.baseline))[0];assert.equal(source.provider,'jihulab');
+  const response=await f.fetcher(source.url);assert.equal(response.url,source.url);
+  assert.equal(await response.text(),f.oldFiles['hermes.tar.gz']);validateSourceResponse(source,response);
+  const project=/\/projects\/([0-9]+)\//.exec(new URL(source.url).pathname);assert.ok(project);
+  const foreign=source.url.replace(`/projects/${project[1]}/`,`/projects/${project[1]==='1'?'2':'1'}/`);
+  for(const url of [foreign,source.url.replace(`/${f.baseline}/`,`/${f.tag}/`),
+    source.url.replace('hermes.tar.gz','other.tar.gz'),source.url.replace('jihulab.com','untrusted.example'),
+    source.url+'?external=1',source.url+'#external']){
+    await assert.rejects(f.fetcher(url),/Unplanned download/);
+    assert.throws(()=>validateSourceResponse(source,{url}),/偏离受信任/);
+  }
+  await assert.rejects(f.fetcher('https://api.github.com/repos/other/repository/releases/latest'),/Unplanned download/);
 });
 
 for (const [platform,arch] of [['win32','x64'],['darwin','arm64'],['darwin','x64']])
@@ -101,8 +134,8 @@ for (const [platform,arch] of [['win32','x64'],['darwin','arm64'],['darwin','x64
     assert.equal(fs.readFileSync(path.join(prepared,'hermes.tar.gz'),'utf8'),f.oldFiles['hermes.tar.gz']);
     const identity = JSON.parse(fs.readFileSync(path.join(prepared,'nora-system.json')));
     assert.equal(identity.version,f.tag.slice(1));assert.equal(identity.commit,f.commit);
-    assert.ok(f.requests.includes(f.url('hermes.tar.gz',f.baseline)));
-    assert.ok(f.requests.includes(f.url('deps.tar.gz',f.baseline)));
+    assert.ok(f.requests.includes(sourceCandidates(f.url('hermes.tar.gz',f.baseline))[0].url));
+    assert.ok(f.requests.includes(sourceCandidates(f.url('deps.tar.gz',f.baseline))[0].url));
   });
 
 test('compatible bundled environment bytes are reused without a remote environment transfer',async t => {
@@ -156,7 +189,8 @@ test('tampered bytes, duplicate or colliding references, arbitrary URLs and unsa
   for (const change of changes) {
     const f = fixture(t);change(f);
     await assert.rejects(releases.latest(f.fetcher));
-    assert.ok(f.requests.length<=2,'An invalid index must not start payload requests');
+    assert.deepEqual(f.requests,[sourceCandidates(`https://api.github.com/repos/${repository}/releases/latest`)[0].url,
+      sourceCandidates(f.url('release-assets.json'))[0].url],'Invalid index bytes must actually be read and rejected before payload requests');
   }
 });
 
@@ -184,10 +218,13 @@ test('sealed plans retain the index original bytes and reject changed references
 test('index network recovery retains its original size and hash and accepts only those exact JSON bytes',async t => {
   const f=fixture(t),{create}=require('../installer/desktop/operation-policy');
   const hermesHome=path.join(f.root,'hermes'),installRoot=path.join(f.root,'tavern');fs.mkdirSync(hermesHome);fs.mkdirSync(installRoot);
-  const bytes=f.files['release-assets.json'];let body=bytes;
+  const bytes=f.files['release-assets.json'],sources=sourceCandidates(f.url('release-assets.json')),requests=[];let body=bytes;
   const policy=create({home:f.root,hermesHome,installRoot,launcherVersion:'2.1.2',platform:'win32',arch:'x64',channel:'stable',
     bridge:async()=>({}),runRuntime:async()=>{},inspectRuntime:()=>({effectState:'untouched',recoveryOutcome:'not-required'}),inspectLegacy:()=>null,
-    networkFetch:async url=>{assert.equal(url,f.url('release-assets.json'));return new Response(body);}});
+    networkFetch:async url=>{
+      assert.ok(sources.some(source=>source.url===String(url)),'Only the exact fixed index source may prove recovery');requests.push(String(url));
+      return fixtureResponse(body,url);
+    }});
   const record={operationId:'57c32353-9ed1-46a0-b0ce-f76b9b381c41',kind:'install',target:{request:{tag:f.tag}}};
   const error=Object.assign(new Error('original index unavailable'),{status:503,source:'release_service',site:'release.request',
     conditionResource:{url:f.url('release-assets.json'),sha256:sha(bytes),size:Buffer.byteLength(bytes),routeHash:sha('direct-node')}});
@@ -196,11 +233,13 @@ test('index network recovery retains its original size and hash and accepts only
   assert.equal(condition.resource.size,Buffer.byteLength(bytes));
   record.conditionBaseline=await policy.initialConditions(record);
   assert.ok(record.conditionBaseline);
-  body=bytes.replace(f.baseline,'v2.4.4');
-  assert.equal((await policy.recheck(record,{conditionTarget:condition})).changed,false);
+  for(const altered of [bytes+' ',bytes.replace(f.baseline,'v2.4.4')]){
+    body=altered;assert.equal((await policy.recheck(record,{conditionTarget:condition})).changed,false);
+  }
   body=bytes;
   const verified=await policy.recheck(record,{conditionTarget:condition});
   assert.equal(verified.changed,true);assert.equal(verified.baseline.facts.networkReads.length,1);
   record.conditionBaseline=verified.baseline;
   assert.equal((await policy.recheck(record,{conditionTarget:condition})).changed,false,'The consumed proof cannot grant more retries');
+  assert.deepEqual(requests,[sources[0].url,sources[0].url,sources[0].url],'Wrong size, same-sized wrong hash and fresh exact bytes each require the original primary read; consumed proof cannot read again');
 });

@@ -5,7 +5,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
-const {spawnSync, execFileSync} = require('node:child_process');
+const {spawn, execFileSync} = require('node:child_process');
 const desktop = process.env.NORA_ELECTRON_NETWORK_DESKTOP || (fs.existsSync(path.resolve(__dirname, '../../launcher/desktop/release-network.js'))
   ? path.resolve(__dirname, '../../launcher/desktop') : path.resolve(__dirname, '../installer/desktop'));
 const hash = file => crypto.createHash('sha256').update(
@@ -36,8 +36,10 @@ async function chromiumGate() {
       .map(name => [name, hash(path.join(desktop, name))])), actualChromiumNet: true,
     requests: [], tunnels: [], assertions: {}};
   const liveSockets = new Set();
-  let origin, proxy;
+  let origin, proxy, finishing=false;
   const finish = async (error) => {
+    if(finishing)return;
+    finishing=true;
     if (error) report.failure = {message: error.message, code: error.code, stack: error.stack};
     clearTimeout(deadline);
     for (const socket of liveSockets) socket.destroy();
@@ -49,20 +51,27 @@ async function chromiumGate() {
   };
   const deadline = setTimeout(() => finish(new Error('The real Electron network gate exceeded 30 seconds')), 30000);
   try {
+    if(process.env.NORA_ELECTRON_NETWORK_TEST_FAULT==='ignore-term'){
+      await app.whenReady();
+      process.on('SIGTERM',()=>{});
+      console.log(JSON.stringify({fixture:'ignore-term',ready:true,pid:process.pid}));
+      await new Promise(()=>{});
+      return;
+    }
     assert.ok(process.versions.electron, 'Chromium must be active');
     assert.equal(report.runtimeExecutable.sha256, report.executable.sha256, 'The executed native runtime must have the exact candidate executable bytes');
     const key = path.join(directory, 'key.pem'), cert = path.join(directory, 'cert.pem');
     execFileSync('openssl', ['req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
       '-subj', '/CN=nora-network-fixture', '-addext',
-      'subjectAltName=DNS:api.github.com,DNS:github.com,DNS:downloads.sourceforge.net,DNS:zenlayer.dl.sourceforge.net',
+      'subjectAltName=DNS:jihulab.com,DNS:api.github.com,DNS:github.com,DNS:downloads.sourceforge.net,DNS:zenlayer.dl.sourceforge.net',
       '-keyout', key, '-out', cert], {stdio: 'ignore'});
     const certificate = new crypto.X509Certificate(fs.readFileSync(cert));
-    const allowed = new Set(['api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
+    const allowed = new Set(['jihulab.com', 'api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
     const bytes = Buffer.alloc(512 * 1024, 0x5a);
     let transferFinished = false, stalledClosed = false, conditionalResponses = 0;
     origin = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, (request, response) => {
       report.requests.push({host: request.headers.host, path: request.url, method: request.method});
-      if (['api.github.com', 'github.com'].includes(request.headers.host)) {response.writeHead(503); response.end('fixture unavailable'); return;}
+      if (['jihulab.com','api.github.com', 'github.com'].includes(request.headers.host)) {response.writeHead(503); response.end('fixture unavailable'); return;}
       if (request.headers.host === 'downloads.sourceforge.net') {
         response.writeHead(302, {Location: request.url.endsWith('/bad.zip') ? 'https://untrusted.example' + request.url
           : 'https://zenlayer.dl.sourceforge.net' + request.url + '?viasf=1'});
@@ -89,7 +98,16 @@ async function chromiumGate() {
     proxy = http.createServer((_request, response) => {response.writeHead(502); response.end();});
     proxy.on('connect', (request, socket, head) => {
       report.tunnels.push(request.url);
-      assert.ok(allowed.has(request.url.split(':')[0]), 'The fixture must never connect to another host');
+      const host=request.url.split(':')[0];
+      try {
+        assert.ok(allowed.has(host), 'The fixture must never connect to another host');
+        if(process.env.NORA_ELECTRON_NETWORK_TEST_FAULT==='proxy-callback')
+          throw Object.assign(new Error('Injected native proxy callback failure'),{code:'FIXTURE_PROXY_CALLBACK'});
+      }catch(error){
+        socket.destroy();
+        finish(error).catch(failure=>{console.error(failure.stack);app.exit(1);});
+        return;
+      }
       const upstream = sockets.connect(origin.address().port, '127.0.0.1', () => {
         socket.write('HTTP/1.1 200 Connection Established\r\n\r\n');
         if (head.length) upstream.write(head);
@@ -112,7 +130,7 @@ async function chromiumGate() {
     const result = await network.metadataJson('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest', {
       fetcher: product.fetch, policy: {maxAttempts: 1, totalBudgetMs: 5000, attemptTimeoutMs: 2000}});
     assert.equal(result.value.tag_name, 'v2.4.4');
-    assert.deepEqual(report.requests.map(request => request.host), ['api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
+    assert.deepEqual(report.requests.map(request => request.host), ['jihulab.com','api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
     assert.equal(result.responseSource, 'https://zenlayer.dl.sourceforge.net/project/nora-tavern/channels/stable.json');
     report.assertions.sourceFallback = true;
     report.assertions.manualRedirect = true;
@@ -136,7 +154,7 @@ async function chromiumGate() {
     await assert.rejects(network.downloadAsset({url: assetUrl('bad.zip'), fetcher: product.fetch,
       target: path.join(directory, 'bad.zip'), identity: identity('bad.zip'), policy: {downloadBudgetMs: 3000}}),
       error => error.code === 'VERIFICATION_FAILED');
-    assert.equal(report.requests.slice(before).length, 2, 'An untrusted destination must be refused before its request');
+    assert.equal(report.requests.slice(before).length, 3, 'The two unavailable sources precede SourceForge; an untrusted destination is refused before its request');
     assert.ok(!report.tunnels.some(value => value.startsWith('untrusted.example')));
     report.assertions.untrustedRedirectRefused = true;
     const controller = new AbortController();
@@ -182,7 +200,8 @@ if (process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE) {
   chromiumGate().catch(error => {console.error(error.stack);require('electron').app.exit(1);});
 } else {
   const {test} = require('node:test');
-  test('real Electron uses the checked SourceForge redirect through its session proxy without a window', {timeout: 45000}, () => {
+  const {captureChild,firstJsonLine,stopChild}=require('./launcher_test_lifecycle.cjs');
+  async function executeGate({fault}={}) {
     const executable = process.env.NORA_ELECTRON || (() => {
       try {return require(path.join(desktop, 'node_modules/electron'));} catch {return null;}
     })();
@@ -190,15 +209,46 @@ if (process.versions.electron && !process.env.ELECTRON_RUN_AS_NODE) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-electron-network-'));
     const env = {...process.env, NORA_ELECTRON_NETWORK_HOME: directory};
     delete env.ELECTRON_RUN_AS_NODE;
+    delete env.NORA_ELECTRON_NETWORK_TEST_FAULT;
+    if(fault)env.NORA_ELECTRON_NETWORK_TEST_FAULT=fault;
+    const child=spawn(executable,[__filename],{env,stdio:['ignore','pipe','pipe'],windowsHide:true});
+    const captured=captureChild(child);
+    let deadline;
     try {
-      const result = spawnSync(executable, [__filename], {env, encoding: 'utf8', timeout: 35000, windowsHide: true});
+      if(fault==='ignore-term'){
+        const ready=await firstJsonLine(child);
+        assert.equal(ready.fixture,'ignore-term');assert.equal(ready.ready,true);assert.equal(ready.pid,child.pid);
+      }
+      const closed=await Promise.race([captured.closed,new Promise(resolve=>{deadline=setTimeout(()=>resolve(null),fault==='ignore-term'?100:35000);})]);
+      const result=closed||await stopChild(child,{graceMs:500,timeoutMs:5000});
       const report = fs.existsSync(path.join(directory, 'report.json')) ? JSON.parse(fs.readFileSync(path.join(directory, 'report.json'), 'utf8')) : null;
-      if (report && process.env.NORA_ELECTRON_NETWORK_REPORT) fs.copyFileSync(path.join(directory, 'report.json'), process.env.NORA_ELECTRON_NETWORK_REPORT);
-      assert.equal(result.signal, null, `Electron terminated with ${result.signal}: ${result.stderr}`);
-      assert.equal(result.status, 0, report?.failure?.stack || result.stderr || result.error?.message);
+      if (report && !fault && process.env.NORA_ELECTRON_NETWORK_REPORT) fs.copyFileSync(path.join(directory, 'report.json'), process.env.NORA_ELECTRON_NETWORK_REPORT);
+      if(captured.error)throw captured.error;
+      if(fault!=='ignore-term')assert.equal(result.signal, null, `Electron terminated with ${result.signal}: ${captured.stderr}`);
+      return {result,report,stderr:captured.stderr};
+    } finally {
+      clearTimeout(deadline);
+      await stopChild(child,{graceMs:500,timeoutMs:5000});
+      if(captured.didClose)fs.rmSync(directory,{recursive:true,force:true});
+    }
+  }
+  test('real Electron uses the checked SourceForge redirect through its session proxy without a window', {timeout: 45000}, async () => {
+      const {result,report,stderr}=await executeGate();
+      assert.equal(result.code, 0, report?.failure?.stack || stderr);
       assert.equal(report.windowCount, 0);
       assert.equal(report.actualChromiumNet, true);
       for (const field of ['manualRedirect', 'sourceFallback', 'untrustedRedirectRefused', 'abort', 'sessionProxy', 'streaming', 'deadline']) assert.equal(report.assertions[field], true, field);
-    } finally {fs.rmSync(directory, {recursive: true, force: true});}
   });
+  test('a native proxy callback failure retains its original error and closes without a blocking dialog', {timeout:45000}, async()=>{
+    const {result,report,stderr}=await executeGate({fault:'proxy-callback'});
+    assert.equal(result.code,1,stderr);
+    assert.equal(report.failure.code,'FIXTURE_PROXY_CALLBACK');
+    assert.match(report.failure.message,/Injected native proxy callback failure/);
+    assert.equal(report.windowCount,0);
+  });
+  test('the native parent deadline waits for forced child closure when SIGTERM is ignored',
+    {timeout:20000,skip:process.platform==='win32'?'Windows does not deliver a catchable POSIX SIGTERM':false},async()=>{
+      const {result}=await executeGate({fault:'ignore-term'});
+      assert.equal(result.signal,'SIGKILL');assert.equal(result.code,null);
+    });
 }

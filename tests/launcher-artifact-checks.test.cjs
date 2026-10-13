@@ -264,6 +264,15 @@ test('runChecked rejects timeout before late evidence can be created', t => {
     error => error.code === 'ETIMEDOUT');
   assert.equal(fs.existsSync(marker), false);
 });
+test('a network fixture timeout closes a native child that ignores SIGTERM',
+  {skip:process.platform==='win32'?'Windows does not deliver a catchable POSIX SIGTERM':false},t=>{
+  const f=fixture(t),marker=path.join(f.root,'native-ready.json');
+  const script=f.write('ignore-term.js',
+    'process.on("SIGTERM",()=>{});require("node:fs").writeFileSync(process.argv[2],"ready");setInterval(()=>{},1000);');
+  assert.throws(()=>runChecked(process.execPath,[script,marker],{stdio:'pipe',timeout:1000,killSignal:'SIGKILL'}),
+    error=>error.code==='ETIMEDOUT');
+  assert.equal(fs.readFileSync(marker,'utf8'),'ready');
+});
 test('runChecked rejects a missing native binary instead of accepting an absent exit status', t => {
   const f = fixture(t);
   assert.throws(() => runChecked(path.join(f.root, 'missing.exe'), [], { stdio: 'pipe' }),
