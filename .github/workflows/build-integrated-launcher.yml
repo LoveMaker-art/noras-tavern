@@ -92,7 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/nora-acceptance-published-releases.json"
-          node tooling/release/publication-source.cjs baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "v$(cat app/.tavern-release-version)" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
+          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "v$(cat app/.tavern-release-version)" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
       - name: Plan committed changes before native builds
         id: plan
         shell: bash
@@ -102,7 +102,7 @@ jobs:
           acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
           if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
           if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
-          node tooling/release/release-plan.mjs --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
+          node "$PWD/tooling/release/release-plan.mjs" --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
       - name: Require a matching build decision and explicit review of unknown inputs
         shell: bash
         env:
@@ -140,7 +140,7 @@ jobs:
         run: |
           set -euo pipefail
           for platform in darwin-arm64 darwin-x64 win32-x64; do
-            node tooling/release/acceptance-baseline.mjs --tag "$ACCEPTANCE_BASELINE_TAG" --platform "$platform" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-preflight/$platform" --identity-only
+            node "$PWD/tooling/release/acceptance-baseline.mjs" --tag "$ACCEPTANCE_BASELINE_TAG" --platform "$platform" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-preflight/$platform" --identity-only
           done
       - name: Preserve the change plan even when preflight rejects the build
         if: always()
@@ -180,7 +180,7 @@ jobs:
         with:
           node-version: 24
       - name: Reject publishing or rebuilding in package-check mode
-        run: node tooling/checks/restore-launcher-check-package.cjs modes
+        run: node "$PWD/tooling/checks/restore-launcher-check-package.cjs" modes
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -200,28 +200,28 @@ jobs:
           node --test tests/launcher-artifact-checks.test.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Artifact check runner tests failed' }
       - name: Restore sealed diagnostic package with exact source and API digest checks
-        run: node tooling/checks/restore-launcher-check-package.cjs
+        run: node "$PWD/tooling/checks/restore-launcher-check-package.cjs"
       - name: Install the frozen package inspection dependencies
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm ci --ignore-scripts --no-audit --no-fund
           node -e 'const fs=require("node:fs"),path=require("node:path");fs.appendFileSync(process.env.GITHUB_ENV,"NORA_TEST_DESKTOP_NODE_MODULES="+path.resolve("node_modules")+"\n")'
       - name: Restore the packaged native test interpreter
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$release_dir/system-assets" "$RUNNER_TEMP"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$release_dir/system-assets" "$RUNNER_TEMP"
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
       - name: Recreate the expected native icon from the frozen source image
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
           node -e 'const p=require("node:path"),desktop=p.resolve(process.argv[1],"nora-tavern-launcher/desktop"),t=require(p.join(desktop,"node_modules/app-builder-lib/out/toolsets/icons.js"));t.runIconsTool({inputFile:p.resolve(desktop,"../assets/nora-launcher-portrait.png"),outputFormat:"ico",outDir:p.join(desktop,"dist/.icon-ico")}).catch(e=>{console.error(e);process.exitCode=1})' "$release_dir"
       - name: Verify actual lightweight update archive
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs replacement
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" replacement
       - name: Test the actual Windows setup and installed application
         timeout-minutes: 10
         shell: pwsh
@@ -229,14 +229,14 @@ jobs:
       - name: Verify real APP production module closure and executor receipts
         timeout-minutes: 10
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs app
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" app
       - name: Verify packaged network modules in native Chromium
         timeout-minutes: 5
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs network
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" network
       - name: Verify packaged Nora images and instructions
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs images
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" images
       - name: Preserve diagnostic evidence without creating release assets
         if: always()
         uses: actions/upload-artifact@v4
@@ -280,7 +280,7 @@ jobs:
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/artifacts?per_page=100" > source-artifacts.json
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$NORA_VERIFIED_WINDOWS_RUN/jobs?per_page=100" > source-jobs.json
           node --test tests/launcher-windows-reuse.test.cjs
-          node tooling/release/reuse-windows-build.cjs source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
+          node "$PWD/tooling/release/reuse-windows-build.cjs" source-run.json source-artifacts.json source-jobs.json "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$NORA_VERIFIED_WINDOWS_RUN" "$RUNNER_TEMP/accepted-windows"
       - name: Preserve accepted Windows delivery without rebuilding
         uses: actions/upload-artifact@v4
         with:
@@ -375,17 +375,17 @@ jobs:
           node --test tests/release-consumer.test.mjs
           node launcher/desktop/node_modules/electron/install.js
           node "$PWD/tooling/checks/launcher-test-environment.mjs" chromium
-          node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_electron_network.test.cjs
+          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_electron_network.test.cjs"
 
       - name: Verify failed-install recovery and error classification before preparing runtimes
         timeout-minutes: 5
-        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_errors.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_state.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_errors.test.cjs" "$PWD/tests/deployment/launcher_operation_policy.test.cjs" "$PWD/tests/deployment/launcher_operation_state.test.cjs"
 
       - name: Verify cold-profile bootstrap identity before preparing runtimes
-        run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" tests/deployment/launcher_operation_lock.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" "$PWD/tests/deployment/launcher_operation_lock.test.cjs"
 
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: ${{ runner.os == 'Windows' && 15 || 10 }}
+        timeout-minutes: ${{ (runner.os == 'Windows' || (runner.os == 'macOS' && matrix.arch == 'x64')) && 15 || 10 }}
         shell: bash
         run: |
           set -euo pipefail
@@ -393,6 +393,21 @@ jobs:
           export NORA_PYTHON="$NORA_TEST_PYTHON"
           python -m pip install psutil==7.0.0 PyYAML==6.0.2
           node "$PWD/tooling/checks/verify-launcher-stability.mjs"
+
+      - name: Check release source contracts before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_releases.test.cjs" "$PWD/tests/deployment/launcher_bundle_contract.test.cjs" "$PWD/tests/deployment/launcher_system_update.test.cjs" "$PWD/tests/deployment/launcher_install_cleanup.test.cjs" "$PWD/tests/deployment/launcher_copy.test.cjs" "$PWD/tests/deployment/launcher_location.test.cjs" "$PWD/tests/deployment/launcher_model_recheck.test.cjs" "$PWD/tests/deployment/launcher_publish.test.cjs"
+
+      - name: Check installation source contracts before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs"
+
+      - name: Check presentation source contracts before preparing runtimes
+        timeout-minutes: 5
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_telemetry.test.cjs" "$PWD/tests/deployment/launcher_error_presentation.test.cjs" "$PWD/tests/deployment/launcher_ui_feedback.test.cjs" "$PWD/tests/deployment/launcher_task_progress.test.cjs"
 
       - name: Require chat backup safety tests
         timeout-minutes: 10
@@ -403,7 +418,7 @@ jobs:
           npm ci --prefix app/engine/sillytavern --ignore-scripts --no-audit --no-fund
           npm ci --prefix nora-mcp --ignore-scripts --no-audit --no-fund
           node --test tests/backup-safety-gate.test.mjs
-          node tooling/checks/verify-backup-safety.mjs
+          node "$PWD/tooling/checks/verify-backup-safety.mjs"
 
       - name: Download and verify unchanged published components
         if: inputs.launcher_baseline_tag != ''
@@ -411,7 +426,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
         shell: bash
-        run: node tooling/release/launcher-build-baseline.mjs "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
+        run: node "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
 
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
@@ -430,7 +445,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node tooling/runtime/prepare-hermes-bootstrap.mjs --prepare --platform "${{ matrix.platform }}" --output "$RUNNER_TEMP/hermes-bootstrap"
+          node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --prepare --platform "${{ matrix.platform }}" --output "$RUNNER_TEMP/hermes-bootstrap"
 
       - name: Install Hermes core without browser components (macOS)
         if: runner.os == 'macOS' && inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
@@ -441,7 +456,7 @@ jobs:
           export UV_MANAGED_PYTHON=1
           export UV_PYTHON_INSTALL_DIR="$RUNNER_TEMP/nora-python"
           export UV_PYTHON_INSTALL_BIN=0
-          revision="$(node tooling/runtime/prepare-hermes-bootstrap.mjs --revision)"
+          revision="$(node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --revision)"
           bash "$RUNNER_TEMP/hermes-bootstrap/install.sh" \
             --dir "$HERMES_HOME/hermes-agent" \
             --hermes-home "$HERMES_HOME" \
@@ -459,7 +474,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $env:HERMES_HOME = Join-Path $env:RUNNER_TEMP 'hermes'
           $installer = Join-Path $env:RUNNER_TEMP 'hermes-bootstrap/install.ps1'
-          $revision = node tooling/runtime/prepare-hermes-bootstrap.mjs --revision
+          $revision = node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --revision
           if ($LASTEXITCODE -ne 0) { throw 'Fixed Hermes revision is unavailable' }
           $stages = @(
             'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv',
@@ -478,13 +493,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          node tooling/runtime/prepare-hermes-bootstrap.mjs --verify --hermes-home "$RUNNER_TEMP/hermes" --platform "${{ matrix.platform }}"
+          node "$PWD/tooling/runtime/prepare-hermes-bootstrap.mjs" --verify --hermes-home "$RUNNER_TEMP/hermes" --platform "${{ matrix.platform }}"
 
       - name: Build integrated runtime
         if: inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''
         shell: bash
         run: |
-          node "$PWD/tooling/run.mjs" node tooling/release/package-hermes-runtime.mjs \
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/package-hermes-runtime.mjs" \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -504,18 +519,18 @@ jobs:
       - name: Restore the exact baseline runtime
         if: inputs.runtime_source_run != ''
         shell: bash
-        run: node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/nora-baseline-artifacts" "$RUNNER_TEMP"
 
       - name: Restore published runtime for existing installation gates
         if: inputs.launcher_baseline_tag != ''
         shell: bash
-        run: node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/launcher-baseline" "$RUNNER_TEMP"
 
       - name: Reseal baseline with current ClawChat integration
         if: inputs.runtime_source_run != ''
         shell: bash
         run: |
-          node "$PWD/tooling/run.mjs" node tooling/release/package-hermes-runtime.mjs \
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/package-hermes-runtime.mjs" \
             --hermes-home "$RUNNER_TEMP/hermes" \
             --output "$RUNNER_TEMP/hermes-runtime" \
             --clawchat-source "$RUNNER_TEMP/nora-clawchat-plugin" \
@@ -532,7 +547,7 @@ jobs:
           test ! -e "$RUNNER_TEMP/hermes-sealed-build"
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-bootstrap-source"
           mv "$RUNNER_TEMP/hermes-runtime" "$RUNNER_TEMP/hermes-sealed-build"
-          node "$PWD/tooling/run.mjs" node tooling/release/restore-launcher-runtime.cjs "$RUNNER_TEMP/hermes-sealed-build" "$RUNNER_TEMP"
+          node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/hermes-sealed-build" "$RUNNER_TEMP"
 
       - name: Configure actual operation actors and native lock tests
         shell: bash
@@ -554,18 +569,18 @@ jobs:
       - name: Test release channels and update rollback
         id: release_contracts
         continue-on-error: true
-        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_releases.test.cjs tests/deployment/launcher_bundle_contract.test.cjs tests/deployment/launcher_system_update.test.cjs tests/deployment/launcher_install_cleanup.test.cjs tests/deployment/launcher_copy.test.cjs tests/deployment/launcher_location.test.cjs tests/deployment/launcher_model_recheck.test.cjs tests/deployment/launcher_publish.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_releases.test.cjs" "$PWD/tests/deployment/launcher_bundle_contract.test.cjs" "$PWD/tests/deployment/launcher_system_update.test.cjs" "$PWD/tests/deployment/launcher_install_cleanup.test.cjs" "$PWD/tests/deployment/launcher_copy.test.cjs" "$PWD/tests/deployment/launcher_location.test.cjs" "$PWD/tests/deployment/launcher_model_recheck.test.cjs" "$PWD/tests/deployment/launcher_publish.test.cjs"
 
       - name: Test installation diagnostics on the target platform
         id: installation_contracts
         continue-on-error: true
-        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_diagnostics.test.cjs tests/deployment/launcher_process_output.test.cjs tests/deployment/launcher_network.test.cjs tests/deployment/launcher_install_source.test.cjs tests/deployment/launcher_component_update.test.cjs tests/deployment/launcher_skill_update.test.cjs tests/deployment/launcher_shutdown.test.cjs tests/deployment/launcher_model_config.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_diagnostics.test.cjs" "$PWD/tests/deployment/launcher_process_output.test.cjs" "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_install_source.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs"
 
       - name: Test diagnostic choices, error presentation and download waiting feedback
         id: presentation_contracts
         continue-on-error: true
         # Receiver/D1 integration is a separate receiver profile requiring NORA_LANDING_ROOT.
-        run: node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_telemetry.test.cjs tests/deployment/launcher_error_presentation.test.cjs tests/deployment/launcher_ui_feedback.test.cjs tests/deployment/launcher_task_progress.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_telemetry.test.cjs" "$PWD/tests/deployment/launcher_error_presentation.test.cjs" "$PWD/tests/deployment/launcher_ui_feedback.test.cjs" "$PWD/tests/deployment/launcher_task_progress.test.cjs"
 
       - name: Require all platform contract checks before native acceptance
         if: ${{ !cancelled() && (steps.release_contracts.outcome != 'success' || steps.installation_contracts.outcome != 'success' || steps.presentation_contracts.outcome != 'success') }}
@@ -578,7 +593,7 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Verify Windows owned model and profile fixtures before long tests
         if: matrix.platform == 'win32'
@@ -592,7 +607,7 @@ jobs:
 
       - name: Test operation ownership, evidence, bounded retry and recovery contracts
         timeout-minutes: 10
-        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 --test-reporter=tap tests/deployment/launcher_operation_lock.test.cjs tests/deployment/launcher_operation_state.test.cjs tests/deployment/launcher_operation_inspection.test.cjs tests/deployment/launcher_operation_policy.test.cjs tests/deployment/launcher_operation_result.test.cjs tests/deployment/launcher_operation_cli.test.cjs tests/deployment/launcher_cli_capability.test.cjs tests/deployment/launcher_runtime_transaction.test.cjs tests/deployment/launcher_restore_runtime.test.cjs tests/deployment/launcher_location_admission.test.cjs tests/deployment/launcher_evidence_store.test.cjs tests/deployment/launcher_fault_packet.test.cjs tests/deployment/launcher_diagnostics_operation.test.cjs tests/deployment/launcher_network_policy.test.cjs tests/deployment/launcher_retry_conditions.test.cjs tests/deployment/launcher_release_plan.test.cjs tests/deployment/launcher_update_executor.test.cjs tests/deployment/launcher_guidance_flow.test.cjs tests/deployment/launcher_status_readonly.test.cjs tests/deployment/launcher_uninstall.test.cjs tests/deployment/launcher_runtime.test.cjs tests/deployment/launcher_managed_partial_repair.test.cjs
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 --test-reporter=tap "$PWD/tests/deployment/launcher_operation_lock.test.cjs" "$PWD/tests/deployment/launcher_operation_state.test.cjs" "$PWD/tests/deployment/launcher_operation_inspection.test.cjs" "$PWD/tests/deployment/launcher_operation_policy.test.cjs" "$PWD/tests/deployment/launcher_operation_result.test.cjs" "$PWD/tests/deployment/launcher_operation_cli.test.cjs" "$PWD/tests/deployment/launcher_cli_capability.test.cjs" "$PWD/tests/deployment/launcher_runtime_transaction.test.cjs" "$PWD/tests/deployment/launcher_restore_runtime.test.cjs" "$PWD/tests/deployment/launcher_location_admission.test.cjs" "$PWD/tests/deployment/launcher_evidence_store.test.cjs" "$PWD/tests/deployment/launcher_fault_packet.test.cjs" "$PWD/tests/deployment/launcher_diagnostics_operation.test.cjs" "$PWD/tests/deployment/launcher_network_policy.test.cjs" "$PWD/tests/deployment/launcher_retry_conditions.test.cjs" "$PWD/tests/deployment/launcher_release_plan.test.cjs" "$PWD/tests/deployment/launcher_update_executor.test.cjs" "$PWD/tests/deployment/launcher_guidance_flow.test.cjs" "$PWD/tests/deployment/launcher_status_readonly.test.cjs" "$PWD/tests/deployment/launcher_uninstall.test.cjs" "$PWD/tests/deployment/launcher_runtime.test.cjs" "$PWD/tests/deployment/launcher_managed_partial_repair.test.cjs"
 
       - name: Test native transaction and complete evidence contracts
         shell: bash
@@ -605,12 +620,12 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           trap 'mv "$RUNNER_TEMP/hermes-build-source" "$RUNNER_TEMP/hermes"' EXIT
-          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --runtime-payload "$RUNNER_TEMP/hermes-runtime" --runtime-only --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
       - name: Test unified update and application replacement
         shell: bash
         run: |
-          node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_self_update.test.cjs tests/deployment/launcher_local_release.test.cjs tests/deployment/launcher_recovery_route.test.cjs tests/deployment/launcher_update_package.test.cjs
+          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_self_update.test.cjs" "$PWD/tests/deployment/launcher_local_release.test.cjs" "$PWD/tests/deployment/launcher_recovery_route.test.cjs" "$PWD/tests/deployment/launcher_update_package.test.cjs"
           py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
           if [[ "$RUNNER_OS" == "Windows" ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
           node "$PWD/tooling/run.mjs" "$py" -B -m unittest tests.deployment.test_launcher_replacement -v
@@ -637,9 +652,9 @@ jobs:
           mode=--candidate
           if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
           if [[ -n "$LAUNCHER_BASELINE" ]]; then
-            node tooling/release/package-release.mjs $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+            node "$PWD/tooling/release/package-release.mjs" $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
           else
-            node tooling/release/package-release.mjs $mode \
+            node "$PWD/tooling/release/package-release.mjs" $mode \
               --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
           fi
 
@@ -651,7 +666,7 @@ jobs:
           ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
         run: |
           set -euo pipefail
-          node tooling/release/acceptance-baseline.mjs --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ matrix.platform }}-${{ matrix.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline"
+          node "$PWD/tooling/release/acceptance-baseline.mjs" --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ matrix.platform }}-${{ matrix.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline"
 
       - name: Freeze verified historical payload for version migration acceptance
         if: needs.preflight.outputs.initial_release != 'true'
@@ -659,7 +674,7 @@ jobs:
         env:
           ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
           export NORA_UPGRADE_PAYLOAD="$release_dir/nora-tavern-launcher/payload"
           node <<'NODE'
           const fs=require('node:fs'),path=require('node:path'),assert=require('node:assert/strict'),crypto=require('node:crypto');
@@ -710,7 +725,7 @@ jobs:
             const proof=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'nora-upgrade-baseline-acceptance.json'),'utf8'));
             assert.equal(proof.acceptance,'version-transition-required');assert.equal(proof.platform,`${process.platform}-${process.arch}`);
             const base=path.join(process.env.RUNNER_TEMP,'nora-operation-acceptance',`upgrade-${state}`);
-            execFileSync(process.execPath,['tooling/run.mjs','node','tests/deployment/launcher_product_refactor_smoke.cjs',
+            execFileSync(process.execPath,[path.resolve('tooling/run.mjs'),'node',path.resolve('tests/deployment/launcher_product_refactor_smoke.cjs'),
               '--payload',process.env.NORA_UPGRADE_PAYLOAD,'--baseline-release',process.env.NORA_UPGRADE_BASELINE,
               '--update-release',process.env.NORA_UPGRADE_PAYLOAD,'--start-state',state,'--scratch-base',base,'--keep'],{stdio:'inherit'});
             const matches=fs.readdirSync(base,{recursive:true}).filter(name=>path.basename(name)==='harness-result.json');
@@ -737,8 +752,8 @@ jobs:
         shell: bash
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload "$release_dir/nora-tavern-launcher/payload" \
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --payload "$release_dir/nora-tavern-launcher/payload" \
             --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
             --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
@@ -763,7 +778,7 @@ jobs:
             if ((Get-ItemPropertyValue -Path $registry -Name LongPathsEnabled) -ne 0) {
               throw 'Windows long-path test precondition was not applied'
             }
-            node "$PWD/tooling/run.mjs" node --test tests/deployment/launcher_install_cleanup.test.cjs
+            node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/launcher_install_cleanup.test.cjs"
             if ($LASTEXITCODE -ne 0) { throw 'Windows retry cleanup failed with LongPathsEnabled=0' }
             $python = Join-Path $env:RUNNER_TEMP 'hermes/hermes-agent/venv/Scripts/python.exe'
             node "$PWD/tooling/run.mjs" $python -B -m unittest tests.deployment.test_installer_windows_paths tests.deployment.test_update_recovery -v
@@ -774,7 +789,7 @@ jobs:
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
             $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
-            node "$PWD/tooling/run.mjs" node tests/deployment/launcher_product_refactor_smoke.cjs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
+            node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
             if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
             if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
               foreach ($state in @('running', 'stopped')) {
@@ -793,24 +808,24 @@ jobs:
       - name: Install desktop packaging dependencies
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm ci --no-audit --no-fund
 
       - name: Build lightweight launcher replacement
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
-          node tooling/release/package-launcher-update.cjs "$release_dir/nora-tavern-launcher/desktop" "${{ matrix.platform }}" "${{ matrix.arch }}"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/release/package-launcher-update.cjs" "$release_dir/nora-tavern-launcher/desktop" "${{ matrix.platform }}" "${{ matrix.arch }}"
 
       - name: Verify actual lightweight update archive
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs replacement
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" replacement
 
       - name: Assemble full installers from the same verified payload
         shell: bash
         run: |
-          release_dir="$(node tooling/checks/launcher-artifact-checks.cjs release)"
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
           cd "$release_dir/nora-tavern-launcher/desktop"
           npm run "${{ matrix.package_script }}"
 
@@ -823,12 +838,12 @@ jobs:
       - name: Verify real APP production module closure and executor receipts
         timeout-minutes: 10
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs app
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" app
 
       - name: Verify packaged network modules in native Chromium
         timeout-minutes: 5
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs network
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" network
 
       - name: Preserve isolated operation acceptance evidence
         if: always()
@@ -850,7 +865,7 @@ jobs:
 
       - name: Verify packaged Nora images and instructions
         shell: bash
-        run: node tooling/checks/launcher-artifact-checks.cjs images
+        run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" images
 
       - name: Upload launcher
         uses: actions/upload-artifact@v4

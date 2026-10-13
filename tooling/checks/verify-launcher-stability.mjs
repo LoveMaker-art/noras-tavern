@@ -41,15 +41,16 @@ const python = [
 ];
 
 export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,
-    platform = process.platform } = {}) {
+    platform = process.platform, arch = process.arch } = {}) {
     const { environment } = checkEnvironment({ root, profile: 'source' });
     // The complete serial JS group spawns real Python recovery actors. Hosted
-    // Windows exceeded its former four-minute batch deadline before TAP ended;
-    // give that group eight minutes without changing cases or Python's limit.
-    const javascriptTimeout = platform === 'win32' ? 480000 : 240000;
+    // Windows completed in 361.49s and Intel Mac reached the old four-minute
+    // deadline before TAP ended. Keep finite, separate group budgets and all
+    // authored cases; ARM and Linux retain their established four-minute limit.
+    const javascriptTimeout = platform === 'win32' || platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',
-            ...javascript.map(name => `tests/deployment/${name}`)], javascriptTimeout],
+            ...javascript.map(name => path.join(root, 'tests/deployment', name))], javascriptTimeout],
         ['installation and system transaction recovery', ['python', '-B', '-m', 'unittest',
             ...python.map(name => `tests.deployment.${name}`)], 240000],
     ]) {

@@ -65,8 +65,12 @@ try {
     }
     const mappedArgs = args.map(arg => {
         if (arg.startsWith('tests.deployment.')) return arg.replace('tests.deployment.', 'ops.tests.');
-        if (arg.startsWith('-') || path.isAbsolute(arg)) return arg;
-        const relative = arg.replaceAll('\\', '/').replace(/^\.\//, '');
+        if (arg.startsWith('-')) return arg;
+        const relative = (path.isAbsolute(arg) ? path.relative(root, arg) : arg).replaceAll('\\', '/').replace(/^\.\//, '');
+        // Absolute authored inputs must use the same export as relative ones.
+        // Windows deletion admission can then see an absolute wrapper entry
+        // and absolute forwarded script arguments without weakening its census.
+        if (path.isAbsolute(arg) && (path.isAbsolute(relative) || relative === '..' || relative.startsWith('../'))) return arg;
         if (!fs.existsSync(path.join(root, relative))) return arg;
         const directory = fs.statSync(path.join(root, relative)).isDirectory();
         const mapped = translatePath(relative + (directory ? '/' : ''), rules).replace(/\/$/, '');

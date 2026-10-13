@@ -40,6 +40,32 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
 });
+test('all release, installation and presentation source contracts block cold builds before their native repeat', () => {
+  const steps=full.jobs.build.steps;
+  const runtime=steps.findIndex(step=>step.name==='Download and verify unchanged published components');
+  for(const [group,id] of [['release','release_contracts'],['installation','installation_contracts'],['presentation','presentation_contracts']]){
+    const index=steps.findIndex(step=>step.name===`Check ${group} source contracts before preparing runtimes`);
+    assert.ok(index>=0&&index<runtime,`${group} contracts must precede all runtime preparation`);
+    const source=steps[index],native=steps.find(step=>step.id===id);
+    assert.equal(source['continue-on-error'],undefined);
+    assert.equal(source.if,undefined);
+    assert.equal(source['timeout-minutes'],'5');
+    assert.match(source.run,/--test-concurrency=1/);
+    const files=command=>[...command.matchAll(/tests\/deployment\/([\w.-]+\.test\.cjs)/g)].map(match=>match[1]).sort();
+    assert.deepEqual(files(source.run),files(native.run),`${group} cannot omit any later native contract file`);
+    assert.doesNotMatch(source.run,/--test-name-pattern|--skip|\|\|\s*true/);
+  }
+});
+test('maintenance wrappers and historical smoke forward only absolute script paths',()=>{
+  const steps=full.jobs.build.steps;
+  for(const step of steps){
+    for(const line of (step.run||'').split('\n').filter(line=>line.includes('node "$PWD/tooling/run.mjs" node'))){
+      assert.doesNotMatch(line,/(?:^|\s)(?:tests\/deployment|tooling)\/[\w./-]+\.(?:mjs|cjs)(?:\s|$)/,step.name);
+    }
+  }
+  const history=steps.find(step=>step.name?.startsWith('Freeze verified historical'));
+  assert.match(history.run,/\[path\.resolve\('tooling\/run\.mjs'\),'node',path\.resolve\('tests\/deployment\/launcher_product_refactor_smoke\.cjs'\)/);
+});
 test('native and component build workflows cannot publish or access publishing credentials', () => {
   for (const workflow of [full, components]) {
     assert.equal(workflow.permissions.contents, 'read');
@@ -145,13 +171,13 @@ test('fresh Hermes builds pin both installers and repository before native runti
   const fresh = "inputs.runtime_source_run == '' && inputs.launcher_baseline_tag == ''";
   assert.equal(steps[prepareIndex].if, fresh);
   assert.equal(steps[verifyIndex].if, fresh);
-  assert.match(steps[prepareIndex].run, /prepare-hermes-bootstrap\.mjs --prepare --platform "\$\{\{ matrix\.platform \}\}" --output "\$RUNNER_TEMP\/hermes-bootstrap"/);
-  assert.match(steps[verifyIndex].run, /prepare-hermes-bootstrap\.mjs --verify --hermes-home "\$RUNNER_TEMP\/hermes" --platform "\$\{\{ matrix\.platform \}\}"/);
+  assert.match(steps[prepareIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --prepare --platform "\$\{\{ matrix\.platform \}\}" --output "\$RUNNER_TEMP\/hermes-bootstrap"/);
+  assert.match(steps[verifyIndex].run, /"\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --verify --hermes-home "\$RUNNER_TEMP\/hermes" --platform "\$\{\{ matrix\.platform \}\}"/);
   const mac = steps[macIndex].run, windows = steps[windowsIndex].run;
-  assert.match(mac, /revision="\$\(node tooling\/runtime\/prepare-hermes-bootstrap\.mjs --revision\)"/);
+  assert.match(mac, /revision="\$\(node "\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --revision\)"/);
   assert.match(mac, /bash "\$RUNNER_TEMP\/hermes-bootstrap\/install\.sh"/);
   assert.match(mac, /--commit "\$revision"\s*\\\n\s*--force-commit/);
-  assert.match(windows, /\$revision = node tooling\/runtime\/prepare-hermes-bootstrap\.mjs --revision/);
+  assert.match(windows, /\$revision = node "\$PWD\/tooling\/runtime\/prepare-hermes-bootstrap\.mjs" --revision/);
   assert.match(windows, /hermes-bootstrap\/install\.ps1/);
   assert.match(windows, /foreach \(\$stage in \$stages\)[\s\S]*-Commit \$revision -ForceCommit/);
   assert.match(windows, /'uv', 'git', 'node', 'system-packages', 'repository', 'python', 'venv'/);
@@ -171,7 +197,7 @@ test('cold native acceptance uses the sealed portable runtime instead of the boo
   assert.match(step.run, /set -euo pipefail/);
   assert.match(step.run, /mv "\$RUNNER_TEMP\/hermes" "\$RUNNER_TEMP\/hermes-bootstrap-source"/);
   assert.match(step.run, /mv "\$RUNNER_TEMP\/hermes-runtime" "\$RUNNER_TEMP\/hermes-sealed-build"/);
-  assert.match(step.run, /node "\$PWD\/tooling\/run\.mjs" node tooling\/release\/restore-launcher-runtime\.cjs "\$RUNNER_TEMP\/hermes-sealed-build" "\$RUNNER_TEMP"/);
+  assert.match(step.run, /node "\$PWD\/tooling\/run\.mjs" node "\$PWD\/tooling\/release\/restore-launcher-runtime\.cjs" "\$RUNNER_TEMP\/hermes-sealed-build" "\$RUNNER_TEMP"/);
   assert.doesNotMatch(step.run, /hermes-build-source|\|\|\s*true|launcher-test-environment/,
     'Keep the later acceptance backup name available and retain mandatory prerequisite checks');
 });

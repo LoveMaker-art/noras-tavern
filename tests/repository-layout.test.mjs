@@ -112,7 +112,7 @@ test('projection rejects a collision before changing the source tree', t => {
     assert.equal(fs.readFileSync(path.join(fixture, 'a'), 'utf8'), 'first');
 });
 
-for (const mode of ['success', 'failure', 'watch']) {
+for (const mode of ['success', 'failure', 'watch', 'absolute']) {
     test(`developer runner maps source arguments and cleans its own export: ${mode}`, () => {
         const code = `
             const fs = require('node:fs');
@@ -122,7 +122,7 @@ for (const mode of ['success', 'failure', 'watch']) {
             process.exit(${mode === 'failure' ? 17 : 0});
         `;
         const result = spawnSync(process.execPath, ['tooling/run.mjs', ...(mode === 'watch' ? ['--watch'] : []),
-            'node', '-e', code, 'launcher/desktop'], { cwd: root, encoding: 'utf8', timeout: 30000 });
+            'node', '-e', code, mode === 'absolute' ? path.join(root, 'launcher/desktop') : 'launcher/desktop'], { cwd: root, encoding: 'utf8', timeout: 30000 });
         assert.equal(result.status, mode === 'failure' ? 17 : 0, result.stderr);
         const { stage } = JSON.parse(result.stdout.trim());
         assert.notEqual(stage, root);

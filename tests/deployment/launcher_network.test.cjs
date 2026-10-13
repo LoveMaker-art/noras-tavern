@@ -35,7 +35,9 @@ test('release requests use Chromium and preserve streaming, cancellation and hea
   assert.equal(await response.text(), 'payload');
   assert.ok(options.signal instanceof AbortSignal);
   assert.equal(options.signal.aborted,false);
-  assert.equal(options.headers, headers);
+  assert.equal(options.headers.get('Accept'), headers.Accept);
+  assert.equal(options.headers.get('User-Agent'), 'Nora-Tavern-Launcher');
+  assert.deepEqual(headers, { Accept: 'application/json' }, 'the release transport must not mutate caller headers');
   assert.equal(options.credentials, 'omit');
   assert.equal(options.bypassCustomProtocolHandlers, true);
   assert.ok(!JSON.stringify(f.events).includes('hidden'));

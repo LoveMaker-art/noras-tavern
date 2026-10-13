@@ -1,12 +1,18 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
-const { test } = require('node:test');
+const { createRequire } = require('node:module');
+const { test, after } = require('node:test');
 const { parse } = require('../installer/desktop/node_modules/acorn');
 const { modelCredential,configurationFingerprint } = require('../installer/desktop/model-config');
 
-const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
+const mainPath = path.join(__dirname, '../installer/desktop/main.js');
+const mainRequire = createRequire(mainPath);
+const source = fs.readFileSync(mainPath, 'utf8');
+const fixtureHomes = new Set();
+after(() => { for (const home of fixtureHomes) fs.rmSync(home, { recursive: true, force: true }); });
 const nodes = {};
 function visit(node) {
   if (!node || typeof node !== 'object') return;
@@ -21,7 +27,11 @@ visit(parse(source, { ecmaVersion: 'latest' }));
 
 function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null } = {}) {
   const order = [], events = [];
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-recheck-'));
+  fixtureHomes.add(home);
   const context = vm.createContext({
+    fs, path, require: mainRequire, CHANNEL: 'stable', releases: mainRequire('./releases'),
+    activeOperationContext: null, installerPortBinding: null,
     telemetry: undefined, launcherError: require('../installer/desktop/launcher-errors').launcherError,
     diagnostics: { addSecret() {}, error() {}, clean: value => value }, modelCredential,configurationFingerprint,
     uninstall:{own:()=> 'isolated-installation-identity'},
@@ -38,22 +48,27 @@ function fixture({ setupCompleted = false, running = true, syncFails = false, ru
     recordFailureEvent(){},recordEvent: event => { events.push(event); order.push(event.state); },
     runModelConfigHelper: async value => {
       order.push(value.action);
+      if (value.action === 'sync-saved-tavern') assert.equal(value.port, 18999);
       if (value.action === 'sync-saved-tavern' && syncFails) throw new Error('fixture sync failure');
       if (value.action === 'verify-runtime' && runtimeFails) throw new Error('实际模型服务与新配置不一致');
       return { ok: true, provider: 'custom:local', model: 'fixture-model', baseUrl: 'http://127.0.0.1:8080/v1' };
     },
     testCustomModel: async () => { order.push('test'); },
     readInstallerState: () => ({ setupCompleted, port: 18999 }),
-    noraHome: () => '/fixture', DEFAULT_PORT: 8799,
+    noraHome: () => home, hermesHome: () => path.join(home, 'hermes'), installRoot: () => path.join(home, 'tavern'), DEFAULT_PORT: 8799,
     readVerifiedModel: () => marker,
     writeVerifiedModel: (_home, value) => { marker = value; order.push('save-marker'); },
     runBridge: async (command, options) => {
       order.push(command);
-      if (command === 'start') { assert.equal(options.service, 'tavern'); return { running }; }
+      if (command === 'start') { assert.equal(options.service, 'tavern'); assert.equal(options.port, 18999); return { running }; }
       assert.equal(command, 'verify-model'); return { ok: recheck, error: '模型配置复核未通过' };
     },
   });
   const load = name => vm.runInContext(`(${source.slice(nodes[name].start, nodes[name].end)})`, context);
+  // Use the production port and retained-record checks before exercising model
+  // ordering; the isolated empty root permits the real pre-install fallback.
+  context.confirmedMaintenanceIdentity = load('confirmedMaintenanceIdentity');
+  context.installationPort = load('installationPort');
   context.finishModelSetup = load('finishModelSetup');
   return { context, order, events, marker: () => marker, save: load('nora:model-save-test'), resume: load('nora:model-resume') };
 }

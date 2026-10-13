@@ -84,7 +84,8 @@ test('KEEP resumes an interrupted deletion and interrupted history rename withou
     const metadata=fs.readFileSync(path.join(f.home,'tavern/tavern-updates/installed.json'));
     const rename=fs.renameSync;let reached=false;
     fs.renameSync=function(from,to){
-      if(interruption==='history'&&!reached&&String(to).includes('/history/')){rename.call(this,from,to);reached=true;throw Error('interrupted after history rename');}
+      if(interruption==='history'&&!reached&&path.relative(plan.root,String(to)).split(path.sep)[3]==='history'){
+        rename.call(this,from,to);reached=true;throw Error('interrupted after history rename');}
       if(interruption==='completion'&&!reached&&String(to).endsWith('nora-retained.json')&&JSON.parse(fs.readFileSync(from)).state==='complete'){
         reached=true;throw Error('interrupted before completion rename');
       }

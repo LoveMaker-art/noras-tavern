@@ -13,7 +13,9 @@ const desktop=path.resolve(__dirname,'../installer/desktop');
 // These fixtures verify physical swap/recovery effects and real extraction
 // process ownership. They deliberately do not claim a complete Hermes build.
 function fixture(){
-  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-transaction-'));
+  // Windows TEMP may be a DOS 8.3 alias. The real Python journal resolves it
+  // to its native long path, so bind every fixture actor to that same root.
+  const root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-transaction-')));
   const payload=path.join(root,'payload'),home=path.join(root,'home'),hermes=path.join(home,'hermes');
   const source=path.join(root,'source/hermes-runtime');fs.mkdirSync(path.join(source,'hermes-agent'),{recursive:true});
   fs.mkdirSync(path.join(source,'logs'));fs.writeFileSync(path.join(source,'logs/new-stage.log'),'new failure evidence');
@@ -136,7 +138,8 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
     }walk(ast);assert.equal(calls.length,2,'normal and committed-resume success paths must use the same owner-bound completion');
     let observedId,result;
     const rename=fs.renameSync;let injected=0;
-    fs.renameSync=function(from,to){if(path.resolve(String(from))===path.join(f.home,'nora-retained.json')&&String(to).endsWith('.json')&&String(to).includes('/reinstalled-')){
+    fs.renameSync=function(from,to){if(path.resolve(String(from))===path.join(f.home,'nora-retained.json')
+      &&path.resolve(String(to))===path.join(f.home,keep.archive,'reinstalled-'+observedId+'.json')){
       injected++;throw Object.assign(Error('controlled receipt archive denied'),{code});}return rename.call(this,from,to);};
     let committed;
     const execute=async operation=>{

@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const {createRequire} = require('node:module');
 const test = require('node:test');
 const {parse} = require('../installer/desktop/node_modules/acorn');
 const source = fs.readFileSync(path.join(__dirname,'../installer/launcher-controller.js'),'utf8');
@@ -144,7 +146,9 @@ test('unknown state cannot trigger an automatic service start or bundled update 
   }
 });
 
-const mainSource = fs.readFileSync(path.join(__dirname,'../installer/desktop/main.js'),'utf8');
+const mainPath = path.join(__dirname,'../installer/desktop/main.js');
+const mainRequire = createRequire(mainPath);
+const mainSource = fs.readFileSync(mainPath,'utf8');
 function mainHandler(channel, values) {
   let callback;
   function visit(node) {
@@ -155,15 +159,17 @@ function mainHandler(channel, values) {
   const ast = parse(mainSource,{ecmaVersion:'latest'}); visit(ast);
   const cancellation = ast.body.find(n=>n.id?.name==='taskCancellation');
   return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n(${mainSource.slice(callback.start,callback.end)})`,
-    {updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,...values});
+    {require:mainRequire,updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,...values});
 }
 
-test('main status failures return unavailable instead of invented stopped or broken-installation facts', async () => {
+test('main status failures return unavailable instead of invented stopped or broken-installation facts', async t => {
   for(const mode of ['bridge-failed','missing-python','empty-install','healthy']) {
+    const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-ui-status-'));
+    t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
     const failures=[], original=new Error('raw status fixture');
     const status=mainHandler('nora:status',{
       quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,activeRun:false,statusRequest:null,readLauncherRecovery:async()=>null,
-      lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},operations:()=>({snapshot:async()=>null}),noraHome:()=>'/fixture',
+      lastStatusError:'',activeOperationContext:null,systemUpdate:{pending:()=>false,inspect:()=>null},operations:()=>({snapshot:async()=>null}),noraHome:()=>home,
       readInstallerState:()=>({phase:'ready'}),findPython:()=>!['missing-python','empty-install'].includes(mode),
       nodeStatus:()=>({installed:mode!=='empty-install',running:false,systemReady:false}),
       runBridge:async()=>{if(mode==='bridge-failed')throw original;return {installed:true,running:true,systemReady:true};},
