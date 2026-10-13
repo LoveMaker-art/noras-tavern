@@ -118,7 +118,7 @@ class UpdateCheckScriptTests(unittest.TestCase):
             environment = {key: value for key, value in os.environ.items() if key != "TAVERN_DATA_ROOT"}
             environment.update(HERMES_HOME=str(home), TAVERN_RELEASE_API_URL=release.as_uri())
             result = subprocess.run([sys.executable, "-B", str(CHECKER), "--check-only"],
-                                    env=environment, capture_output=True, text=True)
+                                    env=environment, capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout)["installed"], "2.2.9")
             self.assertFalse((root / "tavern").exists())
@@ -249,6 +249,7 @@ class UpdateCheckScriptTests(unittest.TestCase):
             text=True,
             capture_output=True,
             check=False,
+            timeout=60,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -107,13 +107,34 @@ test('local service refusal points to model service, not an invalid key', async 
 
 for (const action of ['list', 'test']) test(`an interrupted ${action} response becomes a request failure without crashing the launcher`, () => {
   const script = `
+    const assert = require('node:assert/strict');
     const http = require('node:http');
+    const partial = '{"partial":';
+    let serverResponse, consumed = '', requestCount = 0, resetCount = 0;
+    const method = ${JSON.stringify(action === 'list' ? 'get' : 'request')};
+    const original = http[method];
+    http[method] = (url, options, onResponse) => original.call(http, url, options, response => {
+      // Register the unchanged product's body/error handlers first. This ACK
+      // then observes actual client data, rather than assuming a 10 ms read.
+      onResponse(response);
+      response.on('data', chunk => {
+        consumed += chunk;
+        if (consumed.length < partial.length) return;
+        assert.equal(consumed, partial);
+        assert.equal(response.statusCode, 200);
+        assert.equal(requestCount, 1);
+        assert.equal(resetCount, 0);
+        assert.equal(serverResponse.destroyed, false);
+        resetCount++;
+        serverResponse.destroy();
+      });
+    });
     const model = require(process.argv[1]);
     const server = http.createServer((request, response) => {
+      requestCount++; serverResponse = response;
       request.resume();
       response.writeHead(200, {'Content-Type':'application/json'});
-      response.write('{"partial":');
-      setTimeout(() => response.destroy(), 10);
+      response.write(partial);
     });
     const deadline = setTimeout(() => process.exit(3), 2000);
     server.listen(0, '127.0.0.1', async () => {
@@ -125,15 +146,28 @@ for (const action of ['list', 'test']) test(`an interrupted ${action} response b
         process.exitCode = 2;
       } catch (error) {
         if (error.code !== 'ECONNRESET' || error.source !== 'model_service'
-            || error.site !== ${JSON.stringify(action === 'list' ? 'model.list' : 'model.test')}) process.exitCode = 4;
-        else process.stdout.write('REQUEST_FAILURE_CAPTURED\\n');
-      } finally { clearTimeout(deadline); server.close(); }
+            || error.site !== ${JSON.stringify(action === 'list' ? 'model.list' : 'model.test')}
+            || consumed !== partial || requestCount !== 1 || resetCount !== 1) process.exitCode = 4;
+        else {
+          process.stdout.write('REQUEST_FAILURE_CAPTURED\\n');
+          process.stdout.write('BODY_ACK ' + JSON.stringify({bytes:Buffer.byteLength(consumed),requestCount,resetCount}) + '\\n');
+        }
+      } finally {
+        http[method] = original;
+        server.closeAllConnections();
+        server.close(() => { clearTimeout(deadline); process.stdout.write('LOOPBACK_SERVER_CLOSED\\n'); });
+      }
     });
   `;
   const result = spawnSync(process.execPath, ['-e', script, require.resolve('../installer/desktop/model-config')],
     {encoding:'utf8', timeout:5000});
   assert.equal(result.status, 0, result.stderr || `fixture exit ${result.status}`);
+  assert.equal(result.signal, null);
   assert.match(result.stdout, /REQUEST_FAILURE_CAPTURED/);
+  const ack = /^BODY_ACK (.+)$/m.exec(result.stdout);
+  assert.ok(ack, 'The real client must consume the partial body before reset');
+  assert.deepEqual(JSON.parse(ack[1]), {bytes:Buffer.byteLength('{"partial":'),requestCount:1,resetCount:1});
+  assert.match(result.stdout, /LOOPBACK_SERVER_CLOSED/);
 });
 
 test('response interruption handling preserves the model response size limit', async () => {

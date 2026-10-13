@@ -1536,11 +1536,17 @@ test('worker preserves the specific inspection cause and project call stack in i
   assert.equal(fs.readFileSync(path.join(f.home,f.programs[0]),'utf8'),'fixture');
 });
 
-function pythonInspectionHarness() {
+function pythonInspectionHarness({now,onChild,ipc=false}={}) {
   const file=path.resolve(__dirname,'../installer/desktop/uninstall.js');
-  const localRequire=createRequire(file),childProcess=require('node:child_process');let childScript;
+  const localRequire=createRequire(file),childProcess=require('node:child_process');let childScript,readingProgress=false;
   const context=vm.createContext({require:name=>name==='node:child_process'?{...childProcess,
-    spawn:(command,_args,options)=>childProcess.spawn(command,['-e',childScript],options)}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
+    spawn:(command,_args,options)=>{
+      const child=childProcess.spawn(command,['-e',childScript],ipc?{...options,stdio:[...options.stdio,'ipc']}:options);onChild?.(child);
+      if(now)child.stderr.on('data',()=>{
+        readingProgress=true;queueMicrotask(()=>{readingProgress=false;});
+      });
+      return child;
+    }}:name==='node:perf_hooks'&&now?{...localRequire(name),performance:{now:()=>now(readingProgress)}}:localRequire(name),__filename:file,__dirname:path.dirname(file),module:{exports:{}},
     process,console,Buffer,setTimeout,clearTimeout,setInterval,clearInterval});
   vm.runInContext(fs.readFileSync(file,'utf8'),context);
   return (script,policy)=>{childScript=script;return context.runPythonInspection({command:process.execPath,env:process.env},'{}',policy);};
@@ -1793,9 +1799,38 @@ print('actual launcher successor boundaries passed')
 });
 
 test('active inspection exceeds the former fixed deadline and requires final safe proof',async()=>{
-  const run=pythonInspectionHarness(),frame=inspectionFrame.toString();
-  const script=`const frame=${frame};let n=0;const timer=setInterval(()=>{process.stderr.write(frame(++n,n*1048576,n));if(n===7){clearInterval(timer);process.stdout.write(JSON.stringify({schema:'nora-uninstall-facts/1',safe:true}));}},35);`;
-  await run(script,{idleMs:150,maxMs:1000,pollMs:5});
+  const {captureChild,stopChild}=require('./launcher_test_lifecycle.cjs');
+  let clock=0,child,held,timer,primary,finishSent=false;const acknowledged=[],polls=[];
+  const run=pythonInspectionHarness({ipc:true,onChild:value=>{child=value;held=captureChild(child);},now:progress=>{
+    // The real parser reads this clock only after accepting advancing counters.
+    // Startup/scheduling time is outside this positive progress-protocol check.
+    if(progress)acknowledged.push(clock+=35);
+    else if(child){
+      polls.push(clock);
+      if(clock===245&&!finishSent){finishSent=true;child.send('fixture-final-safe');}
+    }
+    return clock;
+  }}),frame=inspectionFrame.toString();
+  // Final facts require a real poll ACK; both this IPC wait and caller cleanup
+  // have independent real deadlines while the inspection clock is controlled.
+  const script=`const frame=${frame};const deadline=setTimeout(()=>{process.stderr.write('fixture self deadline');process.exit(78);},4000);let n=0;process.on('message',message=>{if(message==='fixture-final-safe'&&n===7){clearTimeout(deadline);process.stdout.write(JSON.stringify({schema:'nora-uninstall-facts/1',safe:true}));process.disconnect();}});const timer=setInterval(()=>{process.stderr.write(frame(++n,n*1048576,n));if(n===7)clearInterval(timer);},35);`;
+  try{
+    const facts=await Promise.race([run(script,{idleMs:150,maxMs:1000,pollMs:5}),new Promise((_,reject)=>{
+      timer=setTimeout(()=>reject(Object.assign(new Error('Active inspection fixture exceeded its real execution deadline'),{code:'FIXTURE_INSPECTION_TIMEOUT'})),5000);
+    })]);
+    assert.equal(facts.schema,'nora-uninstall-facts/1');assert.equal(facts.safe,true);
+    assert.deepEqual(acknowledged,[35,70,105,140,175,210,245]);assert.ok(clock>150);
+    assert.ok(polls.some(value=>value>150),'a real policy poll must inspect progress past the former fixed deadline');
+    assert.equal(finishSent,true);assert.equal(polls.at(-1),245);
+    assert.deepEqual(held.stderr.trim().split('\n').map(line=>JSON.parse(line)),Array.from({length:7},(_,index)=>({
+      schema:'nora-uninstall-progress/1',sequence:index+1,bytes:(index+1)*1048576,entries:index+1})));
+    assert.equal(held.didClose,true);assert.deepEqual(held.result,{code:0,signal:null});
+  }catch(error){primary=error;throw error;}
+  finally{
+    clearTimeout(timer);
+    try{await stopChild(child,{signal:'SIGKILL',timeoutMs:1000});}
+    catch(error){if(primary)primary.cleanupFailure=error;else throw error;}
+  }
 });
 
 test('stalled inspection terminates its actual child before reporting failure',async t=>{

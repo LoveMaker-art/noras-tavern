@@ -63,7 +63,7 @@ class InstanceTests(unittest.TestCase):
             (home / "nora-instance.json").write_text(json.dumps(config))
             result = subprocess.run([sys.executable, "-B", str(ROOT / "ops/scripts/nora-instance.py"), "check"],
                 env={**os.environ, "HERMES_HOME": str(home), "TAVERN_DATA_ROOT": "/unrelated"},
-                capture_output=True, text=True)
+                capture_output=True, text=True, timeout=60)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"ok": True, "port": 18899})
             config["installRoot"] = str(root.parent / "other")

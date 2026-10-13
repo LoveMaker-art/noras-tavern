@@ -2,6 +2,8 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
+const { once } = require('node:events');
+const { captureChild, stopChild } = require('./deployment/launcher_test_lifecycle.cjs');
 const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
@@ -241,13 +243,41 @@ test('actual full source CLI forwards the release tag and preserves the independ
   assert.notEqual(bad.status, 0); assert.match(bad.stderr, /historical stable release now disproves/);
   assert.equal(fs.existsSync(path.join(rejected, 'source-receipt.json')), false, 'A new published baseline must prevent accepting obsolete first-release evidence');
 });
-for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000, 150]]) test(`artifact ${name} deadline closes an actual child that ignores graceful termination`, async t => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-timeout-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
-  let child;
-  const spawnProcess = (_, __, options) => (child = spawn(process.execPath, ['-e', 'process.on("SIGTERM",()=>{});process.stdout.write("ready");setInterval(()=>{},1000)'], options));
+for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000, 150]]) test(`artifact ${name} deadline closes an actual child that ignores graceful termination`, {timeout:10000}, async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-timeout-'));
+  const script = 'process.on("SIGTERM",()=>{process.stderr.write("term ignored\\n")});process.on("message",value=>{if(value==="download")process.stdout.write("ready")});setInterval(()=>{},1000);process.send({ready:true,pid:process.pid,termHandlerInstalled:true});';
+  const child = spawn(process.execPath, ['-e', script], {stdio:['ignore','pipe','pipe','ipc']}), state = captureChild(child), signals = [];
+  const kill = child.kill.bind(child);
+  t.mock.method(child, 'kill', signal => {signals.push(signal);return kill(signal);});
+  t.after(async () => {
+    try { await stopChild(child, {graceMs:25,timeoutMs:5000}); }
+    finally {
+      if(state.didClose)fs.rmSync(root, {recursive:true,force:true});
+      else t.diagnostic(`Preserved artifact fixture with unconfirmed child closure: ${root}`);
+    }
+  });
+  const readyController = new AbortController(), readyTimer = setTimeout(() => readyController.abort(new Error('Artifact child readiness timed out')), 5000);
+  try {
+    const [ready] = await Promise.race([once(child, 'message', {signal:readyController.signal}),
+      state.closed.then(() => {throw new Error('Artifact child closed before readiness: '+state.stderr);})]);
+    assert.deepEqual(ready, {ready:true,pid:child.pid,termHandlerInstalled:true});assert.equal(state.didClose,false);
+  } finally {clearTimeout(readyTimer);readyController.abort();}
+  let spawned = 0;
+  const spawnProcess = (program, args, options) => {
+    assert.equal(program,'gh');assert.deepEqual(args,['api','repos/owner/tavern/actions/artifacts/1/zip']);
+    assert.deepEqual(options.stdio,['ignore','pipe','inherit']);assert.equal(++spawned,1);
+    child.send('download');return child;
+  };
   await assert.rejects(downloadArchive({ id: 1, name: 'fixture', size_in_bytes: 5, digest: 'sha256:' + hash('ready') },
     'owner/tavern', path.join(root, 'partial.zip'), { timeout, idleTimeout, killGrace: 25, spawnProcess }), error => error.code === 'ETIMEDOUT');
-  assert.ok(child.exitCode !== null || child.signalCode !== null, 'Downloader must wait for actual child closure');
+  assert.equal(spawned,1);assert.equal(state.didClose,true,'Downloader must wait for actual child close');
+  assert.equal(signals[0],'SIGTERM');
+  if(process.platform!=='win32'){
+    assert.deepEqual(signals,['SIGTERM','SIGKILL']);assert.equal(state.result.signal,'SIGKILL');assert.match(state.stderr,/term ignored/);
+  }else t.diagnostic('Windows SIGTERM terminates the native child; POSIX handler execution and force escalation are not Windows evidence.');
+  assert.equal(fs.readFileSync(path.join(root,'partial.zip'),'utf8'),'ready','Readiness must not be archive bytes; only download-start may write the original five bytes');
+  t.diagnostic(JSON.stringify({evidence:'ready-artifact-child-deadline',kind:name,pid:child.pid,readyAck:true,
+    timeout,idleTimeout,killGrace:25,signals,actualClose:state.didClose,...state.result}));
 });
 function nativeFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-native-report-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));

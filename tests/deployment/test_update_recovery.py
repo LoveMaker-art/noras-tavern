@@ -129,6 +129,47 @@ def install_fixture(base,*,interrupt=False,success=False,cron_mutation=None):
     return phases
 
 
+@contextmanager
+def interrupted_install_fixture():
+    base = Path(tempfile.mkdtemp(prefix='nora-managed-update-interrupted-')).resolve()
+    process = None
+    primary = None
+    start_attempted = False
+    started = False
+    try:
+        process = multiprocessing.get_context('spawn').Process(
+            target=install_fixture, args=(str(base),), kwargs={'interrupt': True})
+        start_attempted = True
+        process.start()
+        started = True
+        yield base, process
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            if start_attempted and not started and process.pid is None:
+                raise RuntimeError('Interrupted worker startup has no confirmed child identity')
+            if process is not None and process.pid is not None:
+                if process.is_alive():
+                    process.terminate()
+                process.join(2)
+                if process.is_alive():
+                    process.kill()
+                    process.join(2)
+                if process.is_alive() or process.exitcode is None:
+                    raise RuntimeError('Held update fixture process closure remains unconfirmed')
+            if process is not None:
+                process.close()
+            # A started process must be joined and closed before deleting data.
+            shutil.rmtree(base)
+        except BaseException as error:
+            message = f'Update fixture cleanup failed; retained: {base}; cause: {error}'
+            if primary is None:
+                raise RuntimeError(message) from error
+            primary.add_note(message)
+
+
 class ManagedInstallRecoveryTests(unittest.TestCase):
     def test_real_install_allows_offline_cron_bookkeeping_and_commits_verified_version(self):
         with tempfile.TemporaryDirectory(prefix='nora-managed-update-cron-') as temporary:
@@ -195,11 +236,9 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual(json.loads((root/'tavern-updates/installed.json').read_text())['version'],'2.3.17')
 
     def test_real_install_process_death_after_new_rename_can_restore_from_journal(self):
-        with tempfile.TemporaryDirectory(prefix='nora-managed-update-interrupted-') as temporary:
-            base=Path(temporary).resolve()
-            process=multiprocessing.get_context('spawn').Process(target=install_fixture,args=(str(base),),kwargs={'interrupt':True})
-            process.start();process.join(20)
-            if process.is_alive():process.terminate();process.join();self.fail('isolated update worker did not finish')
+        with interrupted_install_fixture() as (base, process):
+            process.join(20)
+            if process.is_alive():self.fail('isolated update worker did not finish')
             self.assertEqual(process.exitcode,91)
             root=base/'tavern';home=base/'hermes'
             transaction=json.loads((root/'tavern-updates/transaction.json').read_text())
@@ -212,6 +251,54 @@ class ManagedInstallRecoveryTests(unittest.TestCase):
             self.assertEqual((root/'apps/tavern-runtime/program.txt').read_text(),'old program')
             self.assertEqual((root/'tavern-state/native/default-user/chats/story.jsonl').read_text(),'old story')
             self.assertEqual((home/'SOUL.md').read_text(),'old soul')
+
+    def test_unconfirmed_update_worker_preserves_root_and_primary_failure(self):
+        calls = []
+        child = SimpleNamespace(pid=123, exitcode=None, start=lambda: None,
+            is_alive=lambda: True, terminate=lambda: calls.append('terminate'),
+            kill=lambda: calls.append('kill'), join=lambda timeout: calls.append(('join', timeout)),
+            close=lambda: calls.append('close'))
+        primary = ValueError('original fixture failure')
+        base = None
+        try:
+            with patch.object(multiprocessing, 'get_context',
+                    return_value=SimpleNamespace(Process=lambda **_: child)):
+                with self.assertRaises(ValueError) as failure:
+                    with interrupted_install_fixture() as (base, _process):
+                        (base/'evidence').write_text('retain until actual closure')
+                        raise primary
+            self.assertIs(failure.exception, primary)
+            self.assertEqual(calls, ['terminate', ('join', 2), 'kill', ('join', 2)])
+            self.assertEqual((base/'evidence').read_text(), 'retain until actual closure')
+            self.assertIn(str(base), '\n'.join(primary.__notes__))
+        finally:
+            if base is not None:
+                # This negative uses only the fake child above, never a PID.
+                shutil.rmtree(base)
+
+    def test_interrupted_worker_startup_keeps_unconfirmed_root(self):
+        primary = KeyboardInterrupt('interrupted while starting worker')
+        roots = []
+        def create_process(**options):
+            roots.append(Path(options['args'][0]))
+            def start():
+                raise primary
+            return SimpleNamespace(pid=None, start=start,
+                close=lambda: self.fail('Unconfirmed startup cannot authorize directory cleanup'))
+        try:
+            with patch.object(multiprocessing, 'get_context',
+                    return_value=SimpleNamespace(Process=create_process)):
+                with self.assertRaises(KeyboardInterrupt) as failure:
+                    with interrupted_install_fixture():
+                        self.fail('Interrupted startup must not enter the fixture body')
+            self.assertIs(failure.exception, primary)
+            self.assertEqual(len(roots), 1)
+            self.assertTrue(roots[0].is_dir())
+            self.assertIn(str(roots[0]), '\n'.join(primary.__notes__))
+        finally:
+            for root in roots:
+                # The factory above never starts a real process.
+                shutil.rmtree(root)
 
 
 class SetupMetadataRecoveryTests(unittest.TestCase):
@@ -1246,7 +1333,7 @@ class InterruptedRecoveryTests(unittest.TestCase):
         linked=managed/'targets/clawchat-skills/external'
         if os.name=='nt':
             import subprocess
-            subprocess.run(['cmd.exe','/c','mklink','/J',str(linked),str(outside)],check=True,capture_output=True)
+            subprocess.run(['cmd.exe','/c','mklink','/J',str(linked),str(outside)],check=True,capture_output=True,timeout=30)
         else:linked.symlink_to(outside,target_is_directory=True)
         with self.assertRaisesRegex(RuntimeError,'链接'):
             self.journal()

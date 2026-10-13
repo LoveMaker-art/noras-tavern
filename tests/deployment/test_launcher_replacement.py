@@ -172,9 +172,9 @@ class ReplacementTests(unittest.TestCase):
                 apps = list(root.glob('*.app'))
                 self.assertEqual(len(apps), 1)
                 application = apps[0]
-                subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(application)], check=True)
+                subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(application)], check=True, timeout=60)
             subprocess.run([resolve_node(required=True), str(Path(__file__).with_name('verify_launcher_update.cjs')),
-                            str(application), os.environ['NORA_TEST_LAUNCHER_DESKTOP'], sys.platform], check=True)
+                            str(application), os.environ['NORA_TEST_LAUNCHER_DESKTOP'], sys.platform], check=True, timeout=30)
 
     def test_rejects_zip_escape(self):
         for name in ('../outside', '/outside', 'C:/outside', 'safe/../../outside', 'safe\\outside'):
@@ -592,7 +592,8 @@ class OperationReplacementTests(unittest.TestCase):
     def test_native_writer_lock_blocks_independent_mutation_and_gate_preparation_does_not_relock(self):
         f = self.fixture()
         with worker.writer_lock(worker.context(f['job'])):
-            result = subprocess.run([sys.executable, '-B', str(SOURCE), '--prepare', str(f['job'])], capture_output=True, text=True)
+            result = subprocess.run([sys.executable, '-B', str(SOURCE), '--prepare', str(f['job'])],
+                                    capture_output=True, text=True, timeout=10)
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse((f['job'] / 'recovery.json').exists())
             gate = SimpleNamespace(assert_active=lambda: None)

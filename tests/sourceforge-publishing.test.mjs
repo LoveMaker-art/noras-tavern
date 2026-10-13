@@ -135,17 +135,40 @@ test('untrusted redirects, wrong paths and TLS trust errors never retry or follo
   assert.equal(calls,1);
 });
 
-test('headers, stream idle, attempt and overall deadlines terminate pending requests',async()=>{
+test('headers, stream idle, attempt and overall deadlines terminate pending requests',{timeout:5000},async t=>{
   const {readPublic,verifyDistributionObject}=await import('../tooling/release/publish-release.mjs');
-  let calls=0;
-  await assert.rejects(readPublic(fixedObject.key,async()=>{calls++;return new Promise(()=>{});},200,{...quiet,headerTimeout:5,maxAttempts:2}),/headers deadline/);
-  assert.equal(calls,2);
-  calls=0;await assert.rejects(verifyDistributionObject(fixedObject,{...quiet,totalTimeout:40,attemptTimeout:100,headerTimeout:100,fetcher:async()=>{calls++;return new Promise(()=>{});}}),/public read deadline/);
-  assert.equal(calls,1);
-  calls=0;await assert.rejects(verifyDistributionObject(fixedObject,{...quiet,totalTimeout:200,attemptTimeout:5,idleTimeout:100,maxAttempts:2,fetcher:async()=>{calls++;return new Response(new ReadableStream({start(){}}));}}),/public attempt deadline/);
-  assert.equal(calls,2);
-  calls=0;await assert.rejects(verifyDistributionObject(fixedObject,{...quiet,totalTimeout:200,idleTimeout:5,maxAttempts:2,fetcher:async()=>{calls++;return new Response(new ReadableStream({start(){}}));}}),/verification stalled/);
-  assert.equal(calls,2);
+  for(const phase of ['headers','overall','attempt','idle'])await t.test(phase,{timeout:5000},async t=>{
+    t.mock.timers.enable({apis:['Date','setTimeout','setInterval'],now:1000});
+    let calls=0;const acknowledged=[],signals=[];
+    const expire=(signal,ms,code)=>queueMicrotask(()=>{
+      // This ACK comes from actual fetch admission or consumer pull, after
+      // the product has armed the relevant timer, never from machine speed.
+      acknowledged.push(calls);assert.equal(signal.aborted,false);
+      t.mock.timers.tick(ms-1);assert.equal(signal.aborted,false);
+      t.mock.timers.tick(1);
+      if(code==='SF_PUBLIC_IDLE_TIMEOUT')assert.equal(signal.aborted,false);
+      else{assert.equal(signal.aborted,true);assert.equal(signal.reason.code,code);}
+    });
+    const options={...quiet,log:()=>queueMicrotask(()=>t.mock.timers.tick(0))};
+    const fetcher=async(_url,{signal})=>{
+      calls++;signals.push(signal);
+      if(phase==='headers'||phase==='overall'){
+        expire(signal,phase==='headers'?5:40,phase==='headers'?'SF_PUBLIC_HEADERS_TIMEOUT':'SF_PUBLIC_TOTAL_TIMEOUT');
+        return new Promise(()=>{});
+      }
+      return new Response(new ReadableStream({pull(){
+        expire(signal,5,phase==='attempt'?'SF_PUBLIC_ATTEMPT_TIMEOUT':'SF_PUBLIC_IDLE_TIMEOUT');
+        return new Promise(()=>{});
+      }},{highWaterMark:0}));
+    };
+    if(phase==='headers')await assert.rejects(readPublic(fixedObject.key,fetcher,200,{...options,headerTimeout:5,maxAttempts:2}),/headers deadline/);
+    else if(phase==='overall')await assert.rejects(verifyDistributionObject(fixedObject,{...options,totalTimeout:40,attemptTimeout:100,headerTimeout:100,fetcher}),/public read deadline/);
+    else if(phase==='attempt')await assert.rejects(verifyDistributionObject(fixedObject,{...options,totalTimeout:200,attemptTimeout:5,idleTimeout:100,maxAttempts:2,fetcher}),/public attempt deadline/);
+    else await assert.rejects(verifyDistributionObject(fixedObject,{...options,totalTimeout:200,idleTimeout:5,maxAttempts:2,fetcher}),/verification stalled/);
+    const count=phase==='overall'?1:2;assert.equal(calls,count);
+    assert.deepEqual(acknowledged,Array.from({length:count},(_,index)=>index+1));
+    assert.equal(signals.length,count);
+  });
 });
 
 test('operator cancellation prevents further retry and network fetches',async()=>{

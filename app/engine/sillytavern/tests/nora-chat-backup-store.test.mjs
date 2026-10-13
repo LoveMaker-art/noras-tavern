@@ -9,6 +9,7 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 import { storageFixture } from './nora-storage-fixture.mjs';
 import { createChatBackupStore } from '../src/chat-backup-store.js';
+import { KeyedLock } from '../src/nora-world-core/locks.js';
 import { ledgerAfterRestore } from '../src/nora-story-ledger/state-file.js';
 import { chatSessionOperations } from '../src/chat-session-operations.js';
 import { captureChild, firstJsonLine, stopChild } from '../../../../tests/deployment/launcher_test_lifecycle.cjs';
@@ -938,40 +939,77 @@ test('inactive maintenance and a second store instance cannot interleave a parti
     assert.equal((await store.download(created.id)).toString(), input.data);
 });
 
-test('two path spellings of the same user root share backup serialization', async t => {
-    const f = await storageFixture(t);
-    const outside = await storageFixture(t);
+test('two path spellings of the same user root share backup serialization', { timeout: 15000 }, async t => {
+    const removals = [], fixtureContext = { after: remove => removals.push(remove) };
+    let first, second, primary, release = () => {}, f, outside;
+    t.after(async () => {
+        release();
+        try {
+            await bounded(Promise.allSettled([first, second].filter(Boolean)), Date.now() + 4000,
+                'BACKUP_SERIALIZATION_FIXTURE_SETTLEMENT_TIMEOUT');
+            for (const remove of removals) await remove();
+        } catch (error) {
+            error.fixtureRoots = [f?.root, outside?.root].filter(Boolean);
+            if (primary) primary.cleanupFailure = error;
+            else throw error;
+        }
+    });
+    f = await storageFixture(fixtureContext);
+    outside = await storageFixture(fixtureContext);
     const alias = path.join(outside.root, 'user-alias');
     await fs.symlink(f.root, alias, 'junction');
     const directories = Object.fromEntries(Object.entries(f.directories).map(([key, value]) => [key, path.join(alias, path.relative(f.root, value))]));
     const store = createChatBackupStore({ directories: f.directories });
     const other = createChatBackupStore({ directories });
     const input = await savedChat(f, await f.create('root-alias'));
-    const open = fs.open;
-    let release, reached;
+    const open = fs.open, run = KeyedLock.prototype.run, canonicalRoot = await fs.realpath(f.root);
+    let reached, queued, secondSettled = false;
     const gate = new Promise(resolve => { release = resolve; });
     const checkpoint = new Promise(resolve => { reached = resolve; });
-    t.after(() => release());
-    let held = false;
-    t.mock.method(fs, 'open', async (file, flags, ...args) => {
-        if (!held && flags === 'wx' && String(file).endsWith('.json')) {
-            held = true;
-            reached();
-            await gate;
-        }
-        return open(file, flags, ...args);
+    const competition = new Promise(resolve => { queued = resolve; });
+    const keys = [], operationEntered = [], deadline = Date.now() + 10000;
+    const observer = t.mock.method(KeyedLock.prototype, 'run', function (key, operation) {
+        const index = keys.length;
+        keys.push(key); operationEntered.push(false);
+        // Observe the real queue after its unchanged implementation registers
+        // this operation. Never substitute a test lock or an extra queue.
+        const pending = run.call(this, key, () => {
+            operationEntered[index] = true;
+            return operation();
+        });
+        if (index === 1) queued();
+        return pending;
     });
-    const first = store.capture(input);
-    await checkpoint;
-    const second = other.capture({ ...input, filePath: path.join(alias, path.relative(f.root, input.filePath)) });
-    // Give the other instance enough time to reach the held commit. Without
-    // canonical locking it sees no metadata and commits a duplicate snapshot.
-    const early = await Promise.race([second.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 100))]);
-    release();
-    const [a, b] = await Promise.all([first, second]);
-    assert.equal(early, false);
-    assert.equal(a.id, b.id);
-    assert.equal((await other.list()).snapshots.length, 1);
+    try {
+        let held = false;
+        t.mock.method(fs, 'open', async (file, flags, ...args) => {
+            if (!held && flags === 'wx' && String(file).endsWith('.json')) {
+                held = true;
+                reached();
+                await gate;
+            }
+            return open(file, flags, ...args);
+        });
+        first = store.capture(input); first.catch(() => {});
+        await bounded(Promise.race([checkpoint, first.then(() => {
+            throw new Error('First capture completed before its held metadata write');
+        })]), deadline, 'BACKUP_SERIALIZATION_FIRST_ACK_TIMEOUT');
+        second = other.capture({ ...input, filePath: path.join(alias, path.relative(f.root, input.filePath)) });
+        second.then(() => { secondSettled = true; }, () => { secondSettled = true; });
+        await bounded(Promise.race([competition, second.then(() => {
+            throw new Error('Second capture completed without entering the real backup queue');
+        })]), deadline, 'BACKUP_SERIALIZATION_SECOND_ACK_TIMEOUT');
+        assert.deepEqual(keys, [canonicalRoot, canonicalRoot]);
+        assert.deepEqual(operationEntered, [true, false]);
+        const early = secondSettled;
+        release();
+        const [a, b] = await bounded(Promise.all([first, second]), deadline, 'BACKUP_SERIALIZATION_CAPTURE_TIMEOUT');
+        assert.equal(early, false);
+        assert.deepEqual(operationEntered, [true, true]);
+        assert.equal(a.id, b.id);
+        assert.equal((await bounded(other.list(), deadline, 'BACKUP_SERIALIZATION_LIST_TIMEOUT')).snapshots.length, 1);
+    } catch (error) { primary = error; throw error; }
+    finally { release(); observer.mock.restore(); }
 });
 
 test('a twenty-snapshot, forty-MiB fixture has bounded listing latency and does not return chat bodies', { timeout: 30000 }, async t => {

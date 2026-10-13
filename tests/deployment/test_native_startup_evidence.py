@@ -5,19 +5,23 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
 if __package__:
     from .launcher_test_environment import resolve_node
+    from .test_launcher_update_recovery import close_fixture_child, require_fixture_closure
 else:
     from launcher_test_environment import resolve_node
+    from test_launcher_update_recovery import close_fixture_child, require_fixture_closure
 
 ROOT = Path(__file__).resolve().parents[2]
 NODE = resolve_node()
@@ -34,9 +38,11 @@ def lifecycle_module():
 @unittest.skipUnless(NODE, 'requires a local Node executable')
 class NativeStartupEvidenceTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='nora-startup-evidence-')
-        self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
+        self.base = Path(tempfile.mkdtemp(prefix='nora-startup-evidence-')).resolve()
+        self.fixture_children = []
+        self.guard_closure_confirmed = True
+        self.fixture_removed = False
+        self.addCleanup(self.cleanup_fixture)
         self.lifecycle = lifecycle_module()
         pinned = mock.patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': NODE})
         pinned.start(); self.addCleanup(pinned.stop)
@@ -44,6 +50,12 @@ class NativeStartupEvidenceTests(unittest.TestCase):
         (app / 'engine').mkdir(parents=True)
         contract = self.lifecycle.RuntimeContract('https://github.com/SillyTavern/SillyTavern', 'test', 'a' * 40, 20, 'engine')
         self.runtime = self.lifecycle.NativeRuntime(self.base, app, self.base / 'state', contract)
+        original_spawn = self.runtime.spawn
+        def tracked_spawn(*args, **kwargs):
+            child = original_spawn(*args, **kwargs)
+            self.fixture_children.append(child)
+            return child
+        self.runtime.spawn = tracked_spawn
         self.runtime.config_path.parent.mkdir(parents=True)
         self.runtime.config_path.write_text('fixture config', encoding='utf-8')
         self.runtime.managed_service = lambda: None
@@ -53,6 +65,47 @@ class NativeStartupEvidenceTests(unittest.TestCase):
         self.original_wait = self.runtime.wait_for_health
         # Keep the red run short while exercising the real start/health path.
         self.runtime.wait_for_health = lambda port, **kwargs: self.original_wait(port, timeout=0.5, **kwargs)
+
+    def close_fixture_children(self):
+        primary = sys.exc_info()[1]
+        failures = []
+        runtime = getattr(self, 'runtime', None)
+        children = self.fixture_children + list(getattr(runtime, '_children', {}).values())
+        seen = set()
+        for child in children:
+            if id(child) in seen:
+                continue
+            seen.add(id(child))
+            try:
+                close_fixture_child(child)
+                self.runtime.close_startup_log(child)
+            except BaseException as error:
+                failures.append(error)
+        if failures:
+            message = f'Native startup fixture child closure unconfirmed; retained: {self.base}; cause: {failures[0]}'
+            if primary is not None:
+                primary.add_note(message)
+            else:
+                raise RuntimeError(message) from failures[0]
+        return not failures
+
+    def cleanup_fixture(self):
+        if self.fixture_removed:
+            return
+        primary = sys.exc_info()[1]
+        try:
+            if not self.close_fixture_children():
+                raise RuntimeError('Native startup held child is not closed')
+            if not self.guard_closure_confirmed:
+                raise RuntimeError('Native fixture delegate or guard closure remains unconfirmed')
+            shutil.rmtree(self.base)
+            self.fixture_removed = True
+        except BaseException as error:
+            message = f'Native startup fixture cleanup failed; retained: {self.base}; cause: {error}'
+            if primary is not None:
+                primary.add_note(message)
+            else:
+                raise RuntimeError(message) from error
 
     def script(self, source):
         (self.runtime.engine_root / 'server.js').write_text(source, encoding='utf-8')
@@ -184,45 +237,70 @@ from ops.tests.test_native_startup_evidence import NativeStartupEvidenceTests
 from ops.tests.test_update_error_diagnostics import UpdateErrorDiagnosticTests
 case = NativeStartupEvidenceTests('test_real_node_exit_preserves_exit_code_and_program_locations')
 case.setUp()
+primary = None
 try:
     case.script("setTimeout(() => { require('nora-intentionally-missing-test-module'); }, 150);\\n")
     case.runtime.wait_for_health = lambda port, **kwargs: case.original_wait(port, timeout=2, **kwargs)
     events, local = UpdateErrorDiagnosticTests().entrypoint(first_install, lambda: case.runtime.start(port=case.port))
     assert not case.runtime._children or all(child.poll() is not None for child in case.runtime._children.values())
     print(json.dumps({'events': events, 'nativeClosed': True, 'localStderr': local}))
+except BaseException as error:
+    primary = error
+    raise
 finally:
-    case.doCleanups()
+    case.cleanup_fixture()
+    if not case.doCleanups():
+        if primary is not None: primary.add_note('native fixture cleanup failed; root retained')
+        else: raise RuntimeError('native fixture cleanup failed; root retained')
 ''', encoding='utf-8')
         driver = self.base / 'guarded-failure.cjs'
         driver.write_text('''
-const path=require('node:path'),crypto=require('node:crypto'),assert=require('node:assert/strict');
+const path=require('node:path'),assert=require('node:assert/strict'),{PassThrough}=require('node:stream');
 const [root,directory,python,basePython,venv,runner]=process.argv.slice(2);
 const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
+const {runOwnedActor,CLOSURE_PREFIX}=require(path.join(root,'ops/tests/launcher_owned_test_actor.cjs'));
+const fixtureRoot=path.dirname(directory);
+const receipt=closed=>console.error(CLOSURE_PREFIX+JSON.stringify({schema:'nora-fixture-closure/1',root:fixtureRoot,closed}));
+process.env.NORA_TEST_MANAGED_PYTHON_ROOT=basePython;process.env.NORA_TEST_VENV_HOME=venv;
+let child,lastFacts;
+const observedLock={...lock,acquire:async options=>{
+ const lease=await lock.acquire(options),spawn=lease.spawn.bind(lease),snapshot=lease.snapshot.bind(lease);
+ lease.spawn=(command,args,options)=>{child=spawn(command,args,{...options,cwd:root});return child;};
+ lease.snapshot=async(...args)=>{const facts=await snapshot(...args);lastFacts=facts;return facts;};
+ return lease;
+}};
 (async()=>{
- const lease=await lock.acquire({directory,operationId:crypto.randomUUID(),ownerEpoch:1});
- let output,proof;
+ const stdin=new PassThrough(),stdout=new PassThrough(),stderr=new PassThrough();stdin.end();
+ let text='',diagnostic='';stdout.on('data',value=>text+=value);stderr.on('data',value=>diagnostic+=value);
+ let closed=false;
  try {
-  const child=lease.spawn(python,['-B','-u',path.join(root,'ops/installer/operation_control.py'),'--delegate-exec',runner],
-   {kind:'python-maintenance',managedPythonRoot:basePython,venvHome:venv,cwd:root,env:process.env});
-  output=await new Promise((resolve,reject)=>{
-   let stdout='',stderr='';child.stdout.on('data',value=>stdout+=value);child.stderr.on('data',value=>stderr+=value);
-   child.once('error',reject);child.once('close',code=>code===0?resolve(JSON.parse(stdout)):
-    reject(new Error(`Guarded fixture exited ${code}: ${stderr}`)));
-  });
-  const facts=await lease.snapshot(),job=facts.jobs.find(value=>value.jobId===child.jobId);
+  await runOwnedActor({entry:path.join(root,'ops/installer/desktop/operation-lock.js'),root:fixtureRoot,
+   python,script:path.join(root,'ops/installer/operation_control.py'),args:['--delegate-exec',runner],
+   lock:observedLock,streams:{stdin,stdout,stderr},executionMs:14000,cleanupMs:4000});
+  closed=true;
+  const job=lastFacts.jobs.find(value=>value.jobId===child.jobId);
   assert.equal(job.delegation.identityStatus,'reported');assert.ok(job.closedAt);
   assert.equal(job.creationIdentity.pid,child.pid);assert.ok(job.creationIdentity.creationTime>0);
-  proof={actualPid:child.pid,identityStatus:job.delegation.identityStatus,closed:true};
- } finally {await lease.release();}
- assert.equal((await lock.probe({directory})).busy,false);
- process.stdout.write(JSON.stringify({output,executor:proof,released:true}));
-})().catch(error=>{process.stderr.write(error.stack);process.exitCode=1;});
+  const output=JSON.parse(text),proof={actualPid:child.pid,identityStatus:job.delegation.identityStatus,closed:true};
+  process.stdout.write(JSON.stringify({output,executor:proof,released:true}));
+ }catch(error){
+  if(diagnostic)console.error(diagnostic);
+  closed=closed||error.fixtureClosureConfirmed===true;
+  error.fixtureClosureConfirmed=closed;throw error;
+ }finally{receipt(closed);}
+})().catch(error=>{process.stderr.write(error.stack);if(error.fixtureClosureConfirmed!==true)process.exit(1);else process.exitCode=1;});
 ''', encoding='utf-8')
         env = {**os.environ, 'PYTHONPATH': os.pathsep.join([str(ROOT), os.environ.get('PYTHONPATH', '')]),
             **{key: str(profile) for key in ('HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP', 'TMPDIR')},
             'PYTHONDONTWRITEBYTECODE': '1'}
-        result = json.loads(subprocess.run([NODE, str(driver), str(ROOT), str(self.base / 'installer'), sys.executable,
-            sys.base_prefix, sys.prefix, str(runner)], env=env, capture_output=True, text=True, check=True, timeout=30).stdout)
+        self.guard_closure_confirmed = False
+        completed = subprocess.run([NODE, str(driver), str(ROOT), str(self.base / 'installer'), sys.executable,
+            sys.base_prefix, sys.prefix, str(runner)], env=env, capture_output=True, text=True, check=False, timeout=30)
+        closure = SimpleNamespace(root=self.base, closed=False)
+        require_fixture_closure(closure, completed.stderr)
+        self.guard_closure_confirmed = closure.closed
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        result = json.loads(completed.stdout)
         self.assertEqual(result['executor']['identityStatus'], 'reported')
         self.assertTrue(result['executor']['closed']); self.assertTrue(result['released'])
         self.assertTrue(result['output']['nativeClosed'])
@@ -284,9 +362,7 @@ const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
             self.assertIs(error.secondary_errors[-1], cleanup_error)
             self.assertNotEqual(error.code, 'TAVERN_PROCESS_EXITED')
         finally:
-            for child in self.runtime._children.values():
-                if child.poll() is None: child.terminate()
-                child.wait(timeout=5)
+            self.close_fixture_children()
 
     def test_non_integer_poll_result_is_not_reported_as_process_exit(self):
         for result in (True, mock.Mock()):
@@ -314,9 +390,7 @@ const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
                 result = self.runtime.start(port=self.port)
             self.assertTrue(result['health']['ok'])
         finally:
-            for child in self.runtime._children.values():
-                if child.poll() is None: child.terminate()
-                child.wait(timeout=5)
+            self.close_fixture_children()
 
     def test_success_closes_evidence_handle_while_child_keeps_running(self):
         self.script("setInterval(() => {}, 1000);\n")
@@ -338,9 +412,7 @@ const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
             self.assertIsNotNone(children[0][1])
             self.assertTrue(children[0][1][0].closed)
         finally:
-            for child, _cursor in children:
-                if child.poll() is None: child.terminate()
-                child.wait(timeout=5)
+            self.close_fixture_children()
 
     def test_metadata_write_failure_closes_reader_without_changing_stop_semantics(self):
         self.script("setInterval(() => {}, 1000);\n")
@@ -361,9 +433,60 @@ const lock=require(path.join(root,'ops/installer/desktop/operation-lock.js'));
             self.assertIsNone(children[0][0].poll())
             self.assertTrue(children[0][1][0].closed)
         finally:
-            for child, _cursor in children:
-                if child.poll() is None: child.terminate()
-                child.wait(timeout=5)
+            self.close_fixture_children()
+
+
+class NativeFixtureCleanupTests(unittest.TestCase):
+    def fixture(self, child=None, *, guard_closed=True):
+        # These handles are pure fakes; no PID or actor exists to remove later.
+        case = NativeStartupEvidenceTests('test_real_node_exit_preserves_exit_code_and_program_locations')
+        case.base = Path(tempfile.mkdtemp(prefix='nora-startup-cleanup-seam-')).resolve()
+        self.addCleanup(shutil.rmtree, case.base, ignore_errors=True)
+        case.fixture_children = [child] if child is not None else []
+        case.guard_closure_confirmed = guard_closed
+        case.fixture_removed = False
+        case.runtime = SimpleNamespace(_children={}, close_startup_log=lambda _child: None)
+        return case
+
+    def test_unconfirmed_raw_child_retains_root_and_original_error(self):
+        calls = []
+        def waiting(timeout):
+            calls.append(('wait', timeout))
+            raise subprocess.TimeoutExpired('pure fixture handle', timeout)
+        child = SimpleNamespace(stdin=None, stdout=None, stderr=None, poll=lambda: None,
+            terminate=lambda: calls.append('term'), kill=lambda: calls.append('kill'), wait=waiting)
+        case = self.fixture(child)
+        primary = ValueError('original body error')
+        with self.assertRaises(ValueError) as failure:
+            try:
+                raise primary
+            finally:
+                case.cleanup_fixture()
+        self.assertIs(failure.exception, primary)
+        self.assertEqual(calls, ['term', ('wait', 2), 'kill', ('wait', 2)])
+        self.assertTrue(case.base.is_dir())
+        self.assertIn(str(case.base), '\n'.join(primary.__notes__))
+
+    def test_unconfirmed_guard_retains_root_even_without_raw_children(self):
+        case = self.fixture(guard_closed=False)
+        with self.assertRaisesRegex(RuntimeError, 'guard closure remains unconfirmed'):
+            case.cleanup_fixture()
+        self.assertTrue(case.base.is_dir())
+
+    def test_known_child_close_allows_cleanup_without_replacing_body_failure(self):
+        calls = []
+        child = SimpleNamespace(stdin=None, stdout=None, stderr=None, poll=lambda: 9,
+            wait=lambda timeout: calls.append(('actual-wait', timeout)) or 9)
+        case = self.fixture(child)
+        primary = ValueError('expected body failure')
+        with self.assertRaises(ValueError) as failure:
+            try:
+                raise primary
+            finally:
+                case.cleanup_fixture()
+        self.assertIs(failure.exception, primary)
+        self.assertEqual(calls, [('actual-wait', 2)])
+        self.assertFalse(case.base.exists())
 
 
 if __name__ == '__main__':

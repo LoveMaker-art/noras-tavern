@@ -68,7 +68,9 @@ async function chromiumGate() {
     const certificate = new crypto.X509Certificate(fs.readFileSync(cert));
     const allowed = new Set(['jihulab.com', 'api.github.com', 'downloads.sourceforge.net', 'zenlayer.dl.sourceforge.net']);
     const bytes = Buffer.alloc(512 * 1024, 0x5a);
-    let transferFinished = false, stalledClosed = false, conditionalResponses = 0, releaseStream;
+    let transferFinished = false, stalledClosed = false, conditionalResponses = 0, releaseStream, stalledSocket;
+    let acknowledgeStalledSocketClose;
+    const stalledSocketClosed = new Promise(resolve => {acknowledgeStalledSocketClose=resolve;});
     origin = https.createServer({key: fs.readFileSync(key), cert: fs.readFileSync(cert)}, (request, response) => {
       report.requests.push({host: request.headers.host, path: request.url, method: request.method});
       if (['jihulab.com','api.github.com', 'github.com'].includes(request.headers.host)) {response.writeHead(503); response.end('fixture unavailable'); return;}
@@ -80,7 +82,13 @@ async function chromiumGate() {
       if (request.url.includes('/stream.zip') || request.url.includes('/stall.zip') || request.url.includes('/idle.zip')) {
         response.writeHead(200, {'Content-Type': 'application/octet-stream', 'Content-Length': bytes.length, ETag: '"fixture-archive"'});
         response.write(bytes.subarray(0, 4096));
-        if (!request.url.includes('/stream.zip')) {response.once('close', () => {stalledClosed = true;}); return;}
+        if (!request.url.includes('/stream.zip')) {
+          if(request.url.includes('/stall.zip')){
+            stalledSocket=request.socket;
+            stalledSocket.once('close',()=>{stalledClosed=true;acknowledgeStalledSocketClose();});
+          }
+          return;
+        }
         // Keep the suffix unsent until the actual downloader has reported the
         // prefix. A fixed 50 ms origin timer races file I/O on slower runners.
         const release=()=>{transferFinished=true;response.end(bytes.subarray(4096));};
@@ -196,8 +204,15 @@ async function chromiumGate() {
       target: path.join(directory, 'stall.zip'), identity: identity('stall.zip'), policy: {downloadBudgetMs: 3000},
       onEvent: event => {if (event.event === 'progress' && event.current > 0) controller.abort();}}),
       error => error.name === 'AbortError' || error.cause?.name === 'AbortError');
-    await new Promise(resolve => setTimeout(resolve, 30));
+    assert.ok(stalledSocket,'The cancelled transfer must reach its actual owned origin socket');
+    let closeDeadline;
+    try{
+      await Promise.race([stalledSocketClosed,new Promise((_,reject)=>{
+        closeDeadline=setTimeout(()=>reject(new Error('The cancelled Chromium request did not close its owned socket within 1000 ms')),1000);
+      })]);
+    }finally{clearTimeout(closeDeadline);}
     assert.equal(stalledClosed, true, 'Cancellation must close the actual Chromium request');
+    assert.equal(stalledSocket.destroyed,true,'A response event alone cannot prove the owned socket closed');
     report.assertions.abort = true;
     const started = Date.now();
     await assert.rejects(network.downloadAsset({url: assetUrl('idle.zip'), fetcher: product.fetch,

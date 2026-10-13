@@ -28,34 +28,63 @@ const sources={schema:1,mirrors:[{id:'primary',baseUrl:'https://primary.example/
 const latestUrl='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
 const assetUrl='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/asset.zip';
 
-test('a timed-out 80% transfer keeps its bytes when SourceForge answers with a different ETag',async t=>{
+test('a timed-out 80% transfer keeps its bytes when SourceForge answers with a different ETag',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-timeout-cross-source-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('abcdefghij'),requests=[];
-  const result=await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),
+  const bytes=Buffer.from('abcdefghij'),requests=[],target=path.join(root,'asset.zip');
+  let clock=1000,primarySignal,expiredAfterCheckpoint=false;
+  // Test the timeout/resume protocol, rather than requiring NTFS/fsync to
+  // finish the backup transfer within 100 ms of a real timer callback.
+  t.mock.timers.enable({apis:['setTimeout']});
+  const assertPrefix=()=>{
+    assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,8));
+    const saved=JSON.parse(fs.readFileSync(target+'.partial.json','utf8'));
+    assert.equal(saved.size,8);assert.equal(saved.prefixSha256,sha(bytes.subarray(0,8)));
+    assert.equal(saved.etag,'"github-representation"');
+  };
+  const result=await networkModule.downloadAsset({url:assetUrl,target,
     identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
-    policy:{downloadBudgetMs:250,backupBudgetMs:100,maxAttempts:1,sources:{schema:1,primary:'github',
+    policy:{now:()=>clock,downloadBudgetMs:250,backupBudgetMs:100,maxAttempts:1,sources:{schema:1,primary:'github',
       mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]}},
+    onEvent:event=>{
+      if(event.event!=='progress'||event.current!==8||expiredAfterCheckpoint)return;
+      assertPrefix();assert.equal(requests.length,1);
+      clock+=149;t.mock.timers.tick(149);
+      assert.equal(primarySignal.aborted,false);assert.equal(requests.length,1);
+      clock++;t.mock.timers.tick(1);
+      assert.equal(primarySignal.aborted,true);assert.equal(primarySignal.reason.name,'TimeoutError');
+      expiredAfterCheckpoint=true;
+    },
     fetcher:async(url,options)=>{
       const headers=new Headers(options.headers);requests.push({url,range:headers.get('range'),validator:headers.get('if-range')});
-      if(url.startsWith('https://github.com/'))return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,8));}}),
-        {headers:{ETag:'"github-representation"','Content-Length':'10'}});
+      if(url.startsWith('https://github.com/')){
+        primarySignal=options.signal;
+        return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,8));}}),
+          {headers:{ETag:'"github-representation"','Content-Length':'10'}});
+      }
+      assert.equal(expiredAfterCheckpoint,true);assertPrefix();assert.equal(clock,1150);
       assert.equal(headers.get('range'),'bytes=8-','a source switch must keep the downloaded prefix');
       assert.equal(headers.get('if-range'),null,'a source-specific validator must not be sent to another origin');
       return new Response(bytes.subarray(8),{status:206,headers:{ETag:'"sourceforge-representation"','Content-Length':'2','Content-Range':'bytes 8-9/10'}});
     }});
-  assert.equal(result.resumed,true);assert.equal(requests.length,2);assert.deepEqual(fs.readFileSync(result.file),bytes);
+  assert.equal(expiredAfterCheckpoint,true);assert.equal(result.resumed,true);assert.equal(requests.length,2);
+  assert.deepEqual(fs.readFileSync(result.file),bytes);assert.equal(sha(fs.readFileSync(result.file)),sha(bytes));
 });
 
-test('asset transfers identify the same product as metadata, including resumed requests',async t=>{
+test('asset transfers identify the same product as metadata, including resumed requests',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-product-agent-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const bytes=Buffer.from('complete-product-resource'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},seen=[];
-  const isolated={schema:1,primary:'github',mirrors:[]};const etag='"fixed-product-resource"';let interrupted=true;
+  const isolated={schema:1,primary:'github',mirrors:[]};const etag='"fixed-product-resource"';let interrupted=true,body;
   const fetcher=async(url,options)=>{const headers=new Headers(options.headers);seen.push({range:headers.get('range'),agent:headers.get('user-agent')});
     assert.equal(headers.get('user-agent'),'Nora-Tavern-Launcher');
-    if(interrupted){interrupted=false;return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,8));setTimeout(()=>controller.error(Object.assign(new Error('socket interrupted'),{code:'ECONNRESET'})),20);}}),{headers:{'Content-Length':String(bytes.length),ETag:etag}});}
+    if(interrupted){interrupted=false;return new Response(new ReadableStream({start(controller){body=controller;controller.enqueue(bytes.subarray(0,8));}}),{headers:{'Content-Length':String(bytes.length),ETag:etag}});}
     return new Response(bytes.subarray(8),{status:206,headers:{'Content-Length':String(bytes.length-8),'Content-Range':`bytes 8-${bytes.length-1}/${bytes.length}`,ETag:etag}});
   };
-  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,fetcher,policy:{sources:isolated,maxAttempts:1}}),error=>error.code==='ECONNRESET');
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,fetcher,policy:{sources:isolated,maxAttempts:1},
+    onEvent:event=>{if(body&&event.event==='progress'&&event.current===8){
+      assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,8));
+      assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json','utf8')).size,8);
+      const consumed=body;body=null;consumed.error(Object.assign(new Error('socket interrupted'),{code:'ECONNRESET'}));
+    }}}),error=>error.code==='ECONNRESET');
   const result=await networkModule.downloadAsset({url:assetUrl,target,identity,fetcher,policy:{sources:isolated,maxAttempts:1}});
   assert.equal(result.resumed,true);assert.deepEqual(seen,[{range:null,agent:'Nora-Tavern-Launcher'},{range:'bytes=8-',agent:'Nora-Tavern-Launcher'}]);assert.equal(sha(fs.readFileSync(target)),identity.sha256);
 });
@@ -267,15 +296,24 @@ test('controlled HTTPS transfer reports actual bytes and survives a real primary
   assert.equal(progress.at(-1).current,bytes.length);assert.equal(fs.existsSync(path.join(root,'asset.zip.partial')),false);
 });
 
-test('a stalled primary body leaves time for the backup instead of consuming the whole download budget',async t=>{
+test('a stalled primary body leaves time for the backup instead of consuming the whole download budget',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-idle-source-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('verified'),requests=[];
-  await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
-    policy:{sources,downloadIdleTimeoutMs:25,downloadBudgetMs:500},fetcher:async url=>{
+  const bytes=Buffer.from('verified'),requests=[],target=path.join(root,'asset.zip');let advanced=false,primarySignal;
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
+  await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+    policy:{sources,now:()=>Date.now(),downloadIdleTimeoutMs:25,downloadBudgetMs:500},
+    onEvent:event=>{
+      if(event.event!=='progress'||event.current!==2||advanced)return;
+      assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,2));assert.equal(requests.length,1);
+      t.mock.timers.tick(24);assert.equal(primarySignal.aborted,false);
+      t.mock.timers.tick(1);assert.equal(primarySignal.aborted,true);assert.equal(primarySignal.reason.name,'TimeoutError');advanced=true;
+    },fetcher:async(url,options)=>{
+      if(url.startsWith('https://primary.example/'))primarySignal=options.signal;
+      else{assert.equal(advanced,true);assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).size,2);}
       requests.push(url);return new Response(url.startsWith('https://primary.example/')?new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,2));}}):bytes,
         {headers:{ETag:'"fixture"','Content-Length':String(bytes.length)}});
     }});
-  assert.equal(requests.length,2);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
+  assert.equal(advanced,true);assert.equal(requests.length,2);assert.deepEqual(fs.readFileSync(target),bytes);
 });
 
 test('source switching never masks certificate, malformed or corrupt responses',async t=>{
@@ -472,22 +510,27 @@ test('a failed GitHub asset downloads the same frozen bytes from SourceForge wit
   assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
   assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')));
 });
-test('a retried, continuously slow GitHub body cannot consume the backup download window',async t=>{
+test('a retried, continuously slow GitHub body cannot consume the backup download window',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-slow-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[];let timer,activeUrl,primaryCancelled=false,switched=false;
+  const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[],target=path.join(root,'asset.zip');let timer,activeUrl,primarySignal,primaryCancelled=false,switched=false;
   const backupUrl='https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip';
+  t.mock.timers.enable({apis:['setTimeout','setInterval','Date'],now:1000});
   t.after(()=>clearInterval(timer));
-  await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
-    // Keep the same ratios while allowing actual file writes, sync and hashing on a busy runner.
-    // The 625ms byte cadence remains below idle timeout, and cannot overrun the eight-byte identity.
-    policy:{sources:sfSources,backoffMs:[0,0],downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
+  await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+    // Advance each625ms cadence only after the previous byte was actually written.
+    policy:{sources:sfSources,now:()=>Date.now(),sleep:async ms=>assert.equal(ms,0),backoffMs:[0,0],downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
     onEvent:event=>{events.push(event);if(event.event==='log'&&event.line.includes('切换'))switched=true;
-      if(!switched&&activeUrl===assetUrl&&event.event==='progress'&&event.current>0)primaryProgress.push(event.current);},
-    fetcher:async url=>{
+      if(!switched&&activeUrl===assetUrl&&event.event==='progress'&&event.current>0){
+        assert.equal(fs.statSync(target+'.partial').size,event.current);primaryProgress.push(event.current);t.mock.timers.tick(625);
+      }},
+    fetcher:async(url,options)=>{
       calls.push(url);activeUrl=url;
       if(url!==assetUrl){assert.equal(url,backupUrl);assert.equal(primaryCancelled,true);return new Response(bytes);}
       if(calls.length===1)throw new Error('net::ERR_CONNECTION_RESET');
-      return new Response(new ReadableStream({start(controller){timer=setInterval(()=>controller.enqueue(Buffer.from('v')),625);},
+      primarySignal=options.signal;
+      return new Response(new ReadableStream({start(controller){
+        timer=setInterval(()=>{if(!primarySignal.aborted)controller.enqueue(Buffer.from('v'));},625);t.mock.timers.tick(625);
+      },
         cancel(){primaryCancelled=true;clearInterval(timer);}}));
     }});
   assert.deepEqual(calls,[assetUrl,assetUrl,backupUrl]);assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
@@ -720,19 +763,47 @@ test('Chromium source reads do not multiply retries or renew the total deadline'
   assert.equal(calls,1);
 });
 
-test('metadata body timeout switches source while keeping validators isolated',async()=>{
-  let primaryAvailable=true;const requests=[];
-  const cache=networkModule.createMetadataCache({ttlMs:0});
+test('metadata body timeout switches source while keeping validators isolated',{timeout:5000},async t=>{
+  let primaryAvailable=true,clock=1000,stalledBody,primaryDeadline,bodyAcknowledged=false;
+  const requests=[],deadlines=[];
+  t.mock.timers.enable({apis:['setTimeout']});
+  // Native AbortSignal.timeout is not controlled by mock setTimeout. Keep its
+  // requested budget and drive this local deadline only after a real body read.
+  t.mock.method(AbortSignal,'timeout',ms=>{
+    const controller=new AbortController();
+    setTimeout(()=>controller.abort(new DOMException('fixture source deadline','TimeoutError')),ms);
+    deadlines.push({ms,controller});return controller.signal;
+  });
+  const fromWeb=Readable.fromWeb;
+  t.mock.method(Readable,'fromWeb',(body,options)=>{
+    const reader=fromWeb.call(Readable,body,options);
+    if(body!==stalledBody)return reader;
+    return (async function*(){for await(const chunk of reader){
+      yield chunk; // The metadata loop processes this chunk before next().
+      assert.equal(chunk.length,1);assert.equal(bodyAcknowledged,false);
+      bodyAcknowledged=true;assert.equal(primaryDeadline.ms,30);
+      clock+=29;t.mock.timers.tick(29);assert.equal(primaryDeadline.controller.signal.aborted,false);
+      clock++;t.mock.timers.tick(1);assert.equal(primaryDeadline.controller.signal.aborted,true);
+      assert.equal(primaryDeadline.controller.signal.reason.name,'TimeoutError');
+    }})();
+  });
+  const cache=networkModule.createMetadataCache({ttlMs:0,now:()=>clock});
   const fetcher=async(url,options)=>{
     requests.push({url,etag:new Headers(options.headers).get('If-None-Match')});
-    if(url.startsWith('https://primary.example/')&&!primaryAvailable)return new Response(new ReadableStream({start(){}}));
+    if(url.startsWith('https://primary.example/')&&!primaryAvailable){
+      primaryDeadline=deadlines.at(-1);assert.equal(primaryDeadline.ms,30);
+      stalledBody=new ReadableStream({start(controller){controller.enqueue(Buffer.from('{'));}});
+      return new Response(stalledBody);
+    }
+    if(!primaryAvailable){assert.equal(bodyAcknowledged,true);assert.equal(clock,1030);}
     return Response.json({tag_name:'v2.4.2'},{headers:{ETag:url.startsWith('https://primary.example/')?'"primary"':'"github"'}});
   };
-  await networkModule.metadataJson(latestUrl,{fetcher,metadataCache:cache,policy:{sources,attemptTimeoutMs:30}});
+  await networkModule.metadataJson(latestUrl,{fetcher,metadataCache:cache,policy:{sources,now:()=>clock,attemptTimeoutMs:30}});
   primaryAvailable=false;
-  const result=await networkModule.metadataJson(latestUrl,{fetcher,metadataCache:cache,policy:{sources,attemptTimeoutMs:30,totalBudgetMs:500}});
+  const result=await networkModule.metadataJson(latestUrl,{fetcher,metadataCache:cache,policy:{sources,now:()=>clock,attemptTimeoutMs:30,totalBudgetMs:500}});
   assert.equal(result.value.tag_name,'v2.4.2');assert.equal(requests.length,3);
   assert.equal(requests[1].etag,'"primary"');assert.equal(requests[2].etag,null);
+  assert.equal(bodyAcknowledged,true);assert.deepEqual(deadlines.map(value=>value.ms),[30,30,30]);
 });
 
 test('configured primary metadata fails over once to Github within the same lookup budget',async()=>{
@@ -922,61 +993,100 @@ test('a changed fixed plan identity starts a new full request',async t=>{
   assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
 });
 
-test('transient body resets retry the same source with a finite checked Range request',async t=>{
+test('transient body resets retry the same source with a finite checked Range request',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-body-retry-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('abcdefghij'),requests=[];let timer;
-  t.after(()=>clearTimeout(timer));
-  const result=await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),
+  const bytes=Buffer.from('abcdefghij'),requests=[],target=path.join(root,'asset.zip');let body;
+  const result=await networkModule.downloadAsset({url:assetUrl,target,
     identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},
     policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0]},
+    onEvent:event=>{if(body&&event.event==='progress'&&event.current===4){
+      assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
+      assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json','utf8')).size,4);
+      const consumed=body;body=null;consumed.error(Object.assign(new Error('body reset'),{code:'ECONNRESET'}));
+    }},
     fetcher:async(_url,options)=>{
       const headers=new Headers(options.headers);requests.push({range:headers.get('range'),etag:headers.get('if-range')});
-      if(requests.length===1)return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,4));
-        timer=setTimeout(()=>controller.error(Object.assign(new Error('body reset'),{code:'ECONNRESET'})),30);}}),
+      if(requests.length===1)return new Response(new ReadableStream({start(controller){body=controller;controller.enqueue(bytes.subarray(0,4));}}),
         {headers:{ETag:'"fixed"','Content-Length':'10'}});
       return new Response(bytes.subarray(4),{status:206,headers:{ETag:'"fixed"','Content-Range':'bytes 4-9/10','Content-Length':'6'}});
     }});
   assert.deepEqual(requests,[{range:null,etag:null},{range:'bytes=4-',etag:'"fixed"'}]);
-  assert.equal(result.resumed,true);assert.deepEqual(fs.readFileSync(result.file),bytes);
+  assert.equal(result.resumed,true);assert.deepEqual(fs.readFileSync(result.file),bytes);assert.equal(sha(fs.readFileSync(result.file)),sha(bytes));
 });
 
-test('repeated same-source body resets cannot renew the operation budget or retry indefinitely',async t=>{
+test('repeated same-source body resets stop at the attempt cap without discarding committed bytes',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-body-bounded-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('abcdefghij'),requests=[],timers=[];t.after(()=>timers.forEach(clearTimeout));
-  const target=path.join(root,'asset.zip');
+  const bytes=Buffer.from('abcdefghij'),requests=[],target=path.join(root,'asset.zip');let clock=1000,body,endpoint;
+  t.mock.timers.enable({apis:['setTimeout']});
   await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,
     identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},
-    policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0],downloadBudgetMs:1000},
+    policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0],downloadBudgetMs:1000,
+      downloadCheckpointBytes:1,now:()=>clock,sleep:async ms=>assert.equal(ms,0)},
+    onEvent:event=>{if(body&&event.event==='progress'&&event.current===endpoint){
+      assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,endpoint));
+      assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json','utf8')).size,endpoint);
+      clock+=250;t.mock.timers.tick(250);
+      const consumed=body;body=null;consumed.error(Object.assign(new Error('reset again'),{code:'ECONNRESET'}));
+    }},
     fetcher:async(_url,options)=>{
       const range=new Headers(options.headers).get('range');requests.push(range);
-      return new Response(new ReadableStream({start(controller){controller.enqueue(range?bytes.subarray(4,6):bytes.subarray(0,4));
-        timers.push(setTimeout(()=>controller.error(Object.assign(new Error('reset again'),{code:'ECONNRESET'})),30));}}),
+      endpoint=range?6:4;
+      return new Response(new ReadableStream({start(controller){body=controller;controller.enqueue(range?bytes.subarray(4,6):bytes.subarray(0,4));}}),
         {status:range?206:200,headers:{ETag:'"fixed"','Content-Length':range?'6':'10',...(range?{'Content-Range':'bytes 4-9/10'}:{})}});
     }}),error=>error.code==='ECONNRESET');
+  assert.equal(clock,1500);
   assert.deepEqual(requests,[null,'bytes=4-']);assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).size,6);
   assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,6));assert.equal(fs.existsSync(target),false);
 });
 
-test('checkpoint hashing and the resumed body share the original absolute download deadline',async t=>{
+test('a stalled body cannot reopen a fresh retry budget after the original absolute deadline',{timeout:5000},async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-body-absolute-budget-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),requests=[];let clock=1000,signal,expired=false;
+  t.mock.timers.enable({apis:['setTimeout']});
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},
+    policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0],downloadBudgetMs:1000,
+      now:()=>clock,sleep:async ms=>assert.equal(ms,0)},
+    onEvent:event=>{if(!expired&&event.event==='progress'&&event.current===4){
+      assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
+      assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json','utf8')).size,4);
+      clock+=1000;t.mock.timers.tick(1000);expired=true;
+      assert.equal(signal.aborted,true);assert.equal(signal.reason.name,'TimeoutError');
+    }},
+    fetcher:async(_url,options)=>{requests.push(new Headers(options.headers).get('range'));signal=options.signal;
+      return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,4));}}),
+        {headers:{ETag:'"fixed"','Content-Length':'10'}});}
+  }),error=>error.code==='TIMEOUT'&&error.downloadPhaseExpired===true);
+  assert.equal(expired,true);assert.deepEqual(requests,[null]);assert.equal(clock,2000);
+  assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
+  assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json','utf8')).size,4);assert.equal(fs.existsSync(target),false);
+});
+
+test('checkpoint hashing and the resumed body share the original absolute download deadline',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-checkpoint-deadline-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
   fs.writeFileSync(target+'.partial',bytes.subarray(0,4));
   fs.writeFileSync(target+'.partial.json',JSON.stringify({schema:'nora-download-partial/2',plan:sha(JSON.stringify(identity)),
     content:sha(JSON.stringify([identity.sha256,identity.size])),requestUrl:assetUrl,source:assetUrl,etag:'"fixed"',encoding:'identity',
     size:4,prefixSha256:sha(bytes.subarray(0,4))}));
-  const original=fs.createReadStream;let delayed=false,timer;
+  const original=fs.createReadStream;let delayed=false,timer,rangeFetched=false,bodyRead=false;
+  t.mock.timers.enable({apis:['setTimeout','Date'],now:1000});
   t.after(()=>clearTimeout(timer));
-  t.mock.method(fs,'createReadStream',(file,...args)=>{
+  t.mock.method(fs,'createReadStream',(file,options,...args)=>{
     if(file===target+'.partial'&&!delayed){delayed=true;return Readable.from((async function*(){
-      await new Promise(resolve=>setTimeout(resolve,150));yield bytes.subarray(0,4);
-    })());}
-    return original(file,...args);
+      const ready=new Promise(resolve=>setTimeout(resolve,150));t.mock.timers.tick(150);await ready;yield bytes.subarray(0,4);
+    })(),{signal:options.signal,highWaterMark:0});}
+    return original(file,options,...args);
   });
   await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,
-    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,downloadBudgetMs:200},fetcher:async()=>new Response(new ReadableStream({start(controller){
-      timer=setTimeout(()=>{controller.enqueue(bytes.subarray(4));controller.close();},100);
-    },cancel(){clearTimeout(timer);}}),{status:206,headers:{ETag:'"fixed"','Content-Length':'6','Content-Range':'bytes 4-9/10'}})}),error=>error.code==='TIMEOUT');
-  assert.equal(delayed,true);assert.equal(fs.existsSync(target),false);assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
+    policy:{sources:{schema:1,mirrors:[]},now:()=>Date.now(),maxAttempts:1,downloadBudgetMs:200},fetcher:async(url,options)=>{
+      assert.equal(url,assetUrl);assert.equal(new Headers(options.headers).get('Range'),'bytes=4-');assert.equal(Date.now(),1150);rangeFetched=true;
+      return new Response(new ReadableStream({pull(controller){
+        bodyRead=true;timer=setTimeout(()=>{if(!options.signal.aborted){controller.enqueue(bytes.subarray(4));controller.close();}},100);t.mock.timers.tick(100);
+      },cancel(){clearTimeout(timer);}} ,{highWaterMark:0}),{status:206,headers:{ETag:'"fixed"','Content-Length':'6','Content-Range':'bytes 4-9/10'}});
+    }}),error=>error.code==='TIMEOUT');
+  assert.equal(delayed,true);assert.equal(rangeFetched,true,'prefix hashing must finish and enter the actual Range4 fetch');assert.equal(bodyRead,true);
+  assert.equal(fs.existsSync(target),false);assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
 });
 
 test('an absolute deadline expiring during prefix or final hashing prevents network or commit',async t=>{
@@ -1016,24 +1126,29 @@ test('a rejected HTTP 200 replacement cannot delete the untouched original check
   });
 });
 
-test('a backup that ignores Range and resets preserves the original larger checkpoint',async t=>{
+test('a backup that ignores Range and resets preserves the original larger checkpoint',{timeout:5000},async t=>{
   const bytes=Buffer.from('abcdefghij'),requests=[];let backups=0;
   const f=await interrupted(t,(req,res)=>{requests.push(req.headers.range);res.writeHead(503);res.end();},{prefix:8,url:assetUrl});
-  const before=fs.readFileSync(f.options.target+'.partial.json');let timer;t.after(()=>clearTimeout(timer));
+  const before=fs.readFileSync(f.options.target+'.partial.json');let body,replacementObserved=false;
   await assert.rejects(networkModule.downloadAsset({...f.options,policy:{sources,maxAttempts:1},
+    onEvent:event=>{if(body&&event.event==='progress'&&event.current===2){
+      assert.deepEqual(fs.readFileSync(f.options.target+'.partial.replacement'),bytes.subarray(0,2));
+      assert.deepEqual(fs.readFileSync(f.options.target+'.partial'),bytes.subarray(0,8));
+      assert.deepEqual(fs.readFileSync(f.options.target+'.partial.json'),before);replacementObserved=true;
+      const consumed=body;body=null;consumed.error(Object.assign(new Error('replacement reset'),{code:'ECONNRESET'}));
+    }},
     fetcher:async(url,options)=>{
       if(url.startsWith('https://primary.example/')) {
         backups++;
         assert.equal(new Headers(options.headers).get('range'),'bytes=8-');assert.equal(new Headers(options.headers).get('if-range'),null);
-        return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,2));
-          timer=setTimeout(()=>controller.error(Object.assign(new Error('replacement reset'),{code:'ECONNRESET'})),25);}}),
+        return new Response(new ReadableStream({start(controller){body=controller;controller.enqueue(bytes.subarray(0,2));}}),
           {headers:{ETag:'"backup"','Content-Length':'10'}});
       }
       return f.fetcher(url,options);
     }}),error=>error.code==='ECONNRESET' || error.status===503);
   assert.deepEqual(fs.readFileSync(f.options.target+'.partial'),bytes.subarray(0,8));
   assert.deepEqual(fs.readFileSync(f.options.target+'.partial.json'),before);
-  assert.equal(backups,1);assert.equal(requests.length,1);assert.equal(requests[0],'bytes=8-');
+  assert.equal(replacementObserved,true);assert.equal(backups,1);assert.equal(requests.length,1);assert.equal(requests[0],'bytes=8-');
   assert.equal(fs.existsSync(f.options.target+'.partial.replacement'),false);assert.equal(fs.existsSync(f.options.target),false);
 });
 
@@ -1357,17 +1472,35 @@ test('metadata facts preserve a valid small body and bound untrusted length and 
 });
 
 test('metadata caller cancellation is distinct from a source deadline after headers',async t=>{
-  for(const reason of [new DOMException('caller stopped','AbortError'),new DOMException('caller budget','TimeoutError')])await t.test(reason.name,async()=>{
-    const events=[],controller=new AbortController();let timer;
-    const stream=new ReadableStream({start(body){body.enqueue(Buffer.from('{'));timer=setTimeout(()=>controller.abort(reason),20);}});
-    try{
-      await assert.rejects(networkModule.metadataJson(latestUrl,{signal:controller.signal,fetcher:async()=>new Response(stream),
-        policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,totalBudgetMs:1000,
-          diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}}));
-      const failure=events.find(event=>event.event==='network.metadata.failed');assert.ok(failure);
-      assert.equal(failure.phase,'body');assert.equal(failure.bytesReceived,1);
-      assert.equal(failure.abortReason,reason.name==='AbortError'?'caller_cancelled':'caller_timeout');
-    }finally{clearTimeout(timer);}
+  for(const reason of [new DOMException('caller stopped','AbortError'),new DOMException('caller budget','TimeoutError')])await t.test(reason.name,{timeout:5000},async child=>{
+    const events=[],controller=new AbortController(),deadlines=[];let clock=1000,bodyAcknowledged=false;
+    const stream=new ReadableStream({start(body){body.enqueue(Buffer.from('{'));}});
+    child.mock.timers.enable({apis:['setTimeout']});
+    child.mock.method(AbortSignal,'timeout',ms=>{
+      const deadline=new AbortController();
+      setTimeout(()=>deadline.abort(new DOMException('fixture operation deadline','TimeoutError')),ms);
+      deadlines.push({ms,controller:deadline});return deadline.signal;
+    });
+    const fromWeb=Readable.fromWeb;
+    child.mock.method(Readable,'fromWeb',(body,options)=>{
+      const reader=fromWeb.call(Readable,body,options);
+      if(body!==stream)return reader;
+      return (async function*(){for await(const chunk of reader){
+        yield chunk;
+        assert.equal(chunk.length,1);assert.equal(bodyAcknowledged,false);bodyAcknowledged=true;
+        clock++;child.mock.timers.tick(1);
+        assert.equal(deadlines[0].controller.signal.aborted,false);
+        controller.abort(reason);
+      }})();
+    });
+    await assert.rejects(networkModule.metadataJson(latestUrl,{signal:controller.signal,fetcher:async()=>new Response(stream),
+      policy:{sources:{schema:1,mirrors:[]},now:()=>clock,maxAttempts:1,totalBudgetMs:1000,
+        diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}}));
+    const failure=events.find(event=>event.event==='network.metadata.failed');assert.ok(failure);
+    assert.equal(failure.phase,'body');assert.equal(failure.bytesReceived,1);
+    assert.equal(failure.abortReason,reason.name==='AbortError'?'caller_cancelled':'caller_timeout');
+    assert.equal(bodyAcknowledged,true);assert.equal(controller.signal.reason,reason);
+    assert.deepEqual(deadlines.map(value=>value.ms),[1000]);assert.equal(deadlines[0].controller.signal.aborted,false);
   });
 });
 
@@ -1394,7 +1527,7 @@ test('metadata phase facts survive existing local console and operation-log proj
     'the existing projected raw operation log must preserve typed facts');
 });
 
-test('metadata admission failures and per-source body deadlines retain distinct safe facts',async t=>{
+test('metadata admission failures and per-source body deadlines retain distinct safe facts',{timeout:5000},async t=>{
   const admission=[];
   await assert.rejects(networkModule.metadataJson(latestUrl,{fetcher:async()=>{throw new Error('net::ERR_CONNECTION_RESET');},
     policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,
@@ -1403,16 +1536,42 @@ test('metadata admission failures and per-source body deadlines retain distinct 
   assert.equal(before.phase,'before_headers');assert.equal(before.status,null);assert.equal(before.headersMs,null);
   assert.equal(before.bodyMs,null);assert.equal(before.bytesReceived,0);assert.equal(before.declaredBytes,null);
   assert.equal(before.contentEncoding,'unknown');assert.equal(before.abortReason,'transport_error');
-  const events=[],calls=[],hold=setTimeout(()=>{},2000);t.after(()=>clearTimeout(hold));
+  let clock=1000,stalledBody,primaryDeadline,bodyAcknowledged=false;
+  const events=[],calls=[],deadlines=[];
+  t.mock.timers.enable({apis:['setTimeout']});
+  const hold=setTimeout(()=>{},2000);t.after(()=>clearTimeout(hold));
+  t.mock.method(AbortSignal,'timeout',ms=>{
+    const controller=new AbortController();
+    setTimeout(()=>controller.abort(new DOMException('fixture source deadline','TimeoutError')),ms);
+    deadlines.push({ms,controller});return controller.signal;
+  });
+  const fromWeb=Readable.fromWeb;
+  t.mock.method(Readable,'fromWeb',(body,options)=>{
+    const reader=fromWeb.call(Readable,body,options);
+    if(body!==stalledBody)return reader;
+    return (async function*(){for await(const chunk of reader){
+      yield chunk;
+      assert.equal(chunk.length,1);assert.equal(bodyAcknowledged,false);bodyAcknowledged=true;
+      assert.equal(primaryDeadline.ms,40);
+      clock+=39;t.mock.timers.tick(39);assert.equal(primaryDeadline.controller.signal.aborted,false);
+      clock++;t.mock.timers.tick(1);assert.equal(primaryDeadline.controller.signal.aborted,true);
+      assert.equal(primaryDeadline.controller.signal.reason.name,'TimeoutError');
+    }})();
+  });
   const result=await networkModule.metadataJson(latestUrl,{fetcher:async url=>{
-    calls.push(url);return url.startsWith('https://primary.example/')
-      ?new Response(new ReadableStream({start(body){body.enqueue(Buffer.from('{'));}})):Response.json({tag_name:'v2.4.5'});
-  },policy:{sources,maxAttempts:1,attemptTimeoutMs:40,totalBudgetMs:1000,
+    calls.push(url);
+    if(url.startsWith('https://primary.example/')){
+      primaryDeadline=deadlines.at(-1);assert.equal(primaryDeadline.ms,40);
+      stalledBody=new ReadableStream({start(body){body.enqueue(Buffer.from('{'));}});return new Response(stalledBody);
+    }
+    assert.equal(bodyAcknowledged,true);assert.equal(clock,1040);return Response.json({tag_name:'v2.4.5'});
+  },policy:{sources,now:()=>clock,maxAttempts:1,attemptTimeoutMs:40,totalBudgetMs:1000,
     diagnostics:{write:(event,fields)=>events.push({event,...fields}),error(){}}}});
   assert.equal(result.value.tag_name,'v2.4.5');assert.equal(calls.length,2);
   const source=events.find(event=>event.event==='network.metadata.failed');assert.ok(source);
   assert.equal(source.phase,'body');assert.equal(source.sourceKind,'configured_mirror');assert.equal(source.resourceKind,'channel');
   assert.equal(source.bytesReceived,1);assert.equal(source.abortReason,'source_deadline');assert.ok(source.budgetMs<=40);
+  assert.equal(bodyAcknowledged,true);assert.deepEqual(deadlines.map(value=>value.ms),[40,40]);
 });
 
 test('metadata diagnostic observer failure cannot replace a successful read',async()=>{

@@ -218,7 +218,7 @@ console.log(JSON.stringify(packets.packet(error, { action: 'stop', history: [] }
         packet = subprocess.run([resolve_node(required=True), '-e', script,
                                  str(Path(bridge.__file__).parent / 'desktop/fault-packet.js')],
                                 input=json.dumps(emitted + events), text=True, capture_output=True,
-                                check=True)
+                                check=True, timeout=30)
         fault = json.loads(packet.stdout)
         self.assertTrue(any(message in item['message'] for item in fault['errors']))
         self.assertEqual(fault['output'], [])

@@ -119,14 +119,81 @@ test('actual build workflow routes package diagnostics independently, gates nati
 
 // Pure stream/process seams: no gh, APP, native actor or public request is executed.
 const {EventEmitter}=require('node:events'),{PassThrough}=require('node:stream');
-function downloadFixture(t,mode){const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-held-download-fake-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));const child=new EventEmitter();child.pid=4242;child.stdout=new PassThrough();child.exitCode=null;child.signalCode=null;const signals=[];let pulse;
- child.kill=signal=>{signals.push(signal);if(signal==='SIGKILL'&&mode!=='unclosed'){clearInterval(pulse);setTimeout(()=>{child.stdout.end();child.emit('close',null,'SIGKILL');},8);}return true;};
- const spawnProcess=(command,args,options)=>{assert.equal(command,'gh');assert.deepEqual(args,['api','repos/owner/repo/actions/artifacts/1/zip']);assert.equal(options.env.FIXTURE,'only');setTimeout(()=>{if(mode==='spawn-error'){child.emit('error',Object.assign(Error('spawn failed'),{code:'ENOENT'}));setTimeout(()=>child.emit('close',null,null),8);}else if(mode==='success'){child.stdout.end('ready');setTimeout(()=>child.emit('close',0,null),8);}else if(mode==='pipes-after-close'){child.stdout.write('ready');child.emit('close',0,null);}else{child.stdout.write('ready');if(mode==='total')pulse=setInterval(()=>child.stdout.write('x'),3);}},1);return child;};
- t.after(()=>{clearInterval(pulse);child.stdout.destroy();child.emit('close',null,'SIGKILL');});return {root,archive:path.join(root,'archive.zip'),child,signals,spawnProcess};}
+const fixtureSetTimeout=setTimeout,fixtureClearTimeout=clearTimeout;
+function downloadFixture(t,mode){
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-held-download-fake-')),outputs=[];
+ t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
+ const child=new EventEmitter();child.pid=4242;child.stdout=new PassThrough();child.exitCode=null;child.signalCode=null;
+ const signals=[];let startedResolve,termResolve,createdResolve,closed=false;
+ const started=new Promise(resolve=>{startedResolve=resolve;}),terminated=new Promise(resolve=>{termResolve=resolve;}),created=new Promise(resolve=>{createdResolve=resolve;});
+ const finish=(code,signal)=>{if(closed)return;closed=true;child.stdout.end();child.emit('close',code,signal);};
+ child.kill=signal=>{signals.push(signal);if(signal==='SIGTERM')termResolve();
+  if(signal==='SIGKILL'&&mode!=='unclosed')queueMicrotask(()=>finish(null,'SIGKILL'));return true;};
+ const spawnProcess=(command,args,options)=>{
+  assert.equal(command,'gh');assert.deepEqual(args,['api','repos/owner/repo/actions/artifacts/1/zip']);assert.equal(options.env.FIXTURE,'only');
+  // Product listeners are installed before this explicit fake-child ACK.
+  queueMicrotask(()=>{if(mode==='spawn-error')child.emit('error',Object.assign(Error('spawn failed'),{code:'ENOENT'}));
+   else if(mode==='success')child.stdout.end('ready');
+   else{child.stdout.write('ready');if(mode==='pipes-after-close'){closed=true;child.emit('close',0,null);}}
+   startedResolve();});return child;
+ };
+ t.after(async()=>{
+  let deadline;
+  try{
+   child.stdout.destroy();finish(null,'SIGKILL');
+   for(const output of outputs)if(!output.didClose)output.stream.destroy();
+   await Promise.race([Promise.all(outputs.map(output=>output.closed)),new Promise((_,reject)=>{
+    deadline=fixtureSetTimeout(()=>reject(Object.assign(Error('Fixture output closure unconfirmed; retain '+root),{fixtureRoot:root})),2000);
+   })]);
+   assert.equal(closed,true);assert.ok(outputs.every(output=>output.didClose));
+   fs.rmSync(root,{recursive:true,force:true});
+  }finally{fixtureClearTimeout(deadline);}
+ });
+ return {root,archive:path.join(root,'archive.zip'),child,signals,spawnProcess,started,terminated,created,finish,
+  download:(...args)=>{const original=fs.createWriteStream;fs.createWriteStream=function(file,...options){const stream=original.call(this,file,...options);if(file===args[2]){
+    const output={stream,didClose:false};output.closed=new Promise(resolve=>stream.once('close',()=>{output.didClose=true;resolve();}));outputs.push(output);
+    stream.once('open',()=>createdResolve(true));stream.once('error',()=>createdResolve(false));
+   }return stream;};
+   try{return downloadArchive(...args);}finally{fs.createWriteStream=original;}},
+  tick:ms=>t.mock.timers.tick(ms)};
+}
 const downloadPolicy=f=>({env:{FIXTURE:'only'},timeout:35,idleTimeout:100,killGrace:5,closeTimeout:45,spawnProcess:f.spawnProcess});
-test('success waits held close and preserves the independent exact digest gate',async t=>{const f=downloadFixture(t,'success');assert.deepEqual(await downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),{code:0,signal:null});const digest=sha('ready');await verifyArchive(f.archive,{size_in_bytes:5,digest:'sha256:'+digest});await assert.rejects(verifyArchive(f.archive,{size_in_bytes:5,digest:'sha256:'+'a'.repeat(64)}),/digest/);assert.deepEqual(f.signals,[]);});
-for(const mode of ['total','idle'])test(mode+' timeout escalates and awaits the held fake close',async t=>{const f=downloadFixture(t,mode),options=downloadPolicy(f);if(mode==='idle'){options.timeout=100;options.idleTimeout=10;}await assert.rejects(downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,options),e=>e.code==='ETIMEDOUT'&&e.closeConfirmed===true&&e.childClose.signal==='SIGKILL');assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);assert.equal(fs.existsSync(f.archive),true);});
-test('pipeline failure retains primary EEXIST and waits held fake close',async t=>{const f=downloadFixture(t,'idle');fs.writeFileSync(f.archive,'original');await assert.rejects(downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='EEXIST'&&e.closeConfirmed===true);assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);assert.equal(fs.readFileSync(f.archive,'utf8'),'original');});
-test('spawn error retains its original failure and still awaits close',async t=>{const f=downloadFixture(t,'spawn-error');await assert.rejects(downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='ENOENT'&&e.closeConfirmed===true);});
-test('unconfirmed close is finite and is reported pending without deleting output',async t=>{const f=downloadFixture(t,'unclosed'),began=Date.now();await assert.rejects(downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.closeConfirmed===false&&e.childClose===null&&e.preserveArchive===true&&/unconfirmed/.test(e.cleanupFailure));assert.ok(Date.now()-began<500);assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);assert.equal(fs.existsSync(f.archive),true);});
-test('exit with an open pipe is bounded without killing an already closed child',async t=>{const f=downloadFixture(t,'pipes-after-close');await assert.rejects(downloadArchive({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='ETIMEDOUT'&&e.closeConfirmed===true);assert.deepEqual(f.signals,[]);});
+test('success waits held close and preserves the independent exact digest gate',{timeout:5000},async t=>{
+ const f=downloadFixture(t,'success'),original=fs.createWriteStream;let output,outputClosed,settled=false,pending;
+ fs.createWriteStream=function(file,...args){const stream=original.call(this,file,...args);if(file===f.archive){output=stream;outputClosed=new Promise(resolve=>stream.once('close',resolve));}return stream;};
+ try{pending=f.download({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f));pending.then(()=>{settled=true;},()=>{settled=true;});}
+ finally{fs.createWriteStream=original;}
+ await f.started;await outputClosed;assert.equal(output.writableFinished,true);assert.equal(settled,false,'real file completion must still wait for the held child close');
+ assert.deepEqual(f.signals,[]);f.finish(0,null);assert.deepEqual(await pending,{code:0,signal:null});
+ const digest=sha('ready');await verifyArchive(f.archive,{size_in_bytes:5,digest:'sha256:'+digest});
+ await assert.rejects(verifyArchive(f.archive,{size_in_bytes:5,digest:'sha256:'+'a'.repeat(64)}),/digest/);assert.deepEqual(f.signals,[]);
+});
+for(const mode of ['total','idle'])test(mode+' timeout escalates and awaits the held fake close',{timeout:5000},async t=>{
+ const f=downloadFixture(t,mode),options=downloadPolicy(f);if(mode==='idle'){options.timeout=100;options.idleTimeout=10;}
+ const pending=assert.rejects(f.download({id:1,name:'fixture'},'owner/repo',f.archive,options),e=>e.code==='ETIMEDOUT'&&e.closeConfirmed===true&&e.childClose.signal==='SIGKILL');
+ await f.started;assert.equal(await f.created,true);
+ if(mode==='total'){for(let n=0;n<3;n++){f.tick(10);f.child.stdout.write('x');}f.tick(4);assert.deepEqual(f.signals,[]);f.tick(1);}
+ else{f.tick(9);assert.deepEqual(f.signals,[]);f.tick(1);}
+ await f.terminated;assert.deepEqual(f.signals,['SIGTERM']);f.tick(4);assert.deepEqual(f.signals,['SIGTERM']);f.tick(1);
+ await pending;assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);assert.equal(fs.existsSync(f.archive),true);
+});
+test('pipeline failure retains primary EEXIST and waits held fake close',{timeout:5000},async t=>{
+ const f=downloadFixture(t,'idle');fs.writeFileSync(f.archive,'original');
+ const pending=assert.rejects(f.download({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='EEXIST'&&e.closeConfirmed===true);
+ await f.terminated;f.tick(5);await pending;assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);assert.equal(fs.readFileSync(f.archive,'utf8'),'original');
+});
+test('spawn error retains its original failure and still awaits close',{timeout:5000},async t=>{
+ const f=downloadFixture(t,'spawn-error');let settled=false;
+ const pending=assert.rejects(f.download({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='ENOENT'&&e.closeConfirmed===true);
+ pending.then(()=>{settled=true;},()=>{settled=true;});await f.terminated;assert.equal(settled,false);f.finish(null,null);await pending;
+});
+test('unconfirmed close is finite and is reported pending without deleting output',{timeout:5000},async t=>{
+ const f=downloadFixture(t,'unclosed'),began=Date.now();
+ const pending=assert.rejects(f.download({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.closeConfirmed===false&&e.childClose===null&&e.preserveArchive===true&&/unconfirmed/.test(e.cleanupFailure));
+ await f.started;assert.equal(await f.created,true);f.tick(35);await f.terminated;f.tick(5);assert.deepEqual(f.signals,['SIGTERM','SIGKILL']);f.tick(40);await pending;
+ assert.ok(Date.now()-began<500);assert.equal(fs.existsSync(f.archive),true);
+});
+test('exit with an open pipe is bounded without killing an already closed child',{timeout:5000},async t=>{
+ const f=downloadFixture(t,'pipes-after-close');const pending=assert.rejects(f.download({id:1,name:'fixture'},'owner/repo',f.archive,downloadPolicy(f)),e=>e.code==='ETIMEDOUT'&&e.closeConfirmed===true);
+ await f.started;assert.equal(await f.created,true);f.tick(35);await pending;assert.deepEqual(f.signals,[]);
+});

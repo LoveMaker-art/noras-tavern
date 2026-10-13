@@ -47,7 +47,7 @@ class NativeLifecycleDependencyTests(unittest.TestCase):
         if os.name == "nt":
             subprocess.run(
                 ["cmd.exe", "/c", "mklink", "/J", str(link), str(source)],
-                check=True, capture_output=True,
+                check=True, capture_output=True, timeout=30,
             )
             self.assertEqual(link.lstat().st_reparse_tag, 0xA0000003)
             self.assertFalse(link.is_symlink())

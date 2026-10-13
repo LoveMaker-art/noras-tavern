@@ -265,7 +265,7 @@ class UpdateSpaceTests(unittest.TestCase):
         outside = self.file('external/private-data', 100).parent
         link = self.base / 'junction'
         subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(outside)],
-                       capture_output=True, check=True)
+                       capture_output=True, check=True, timeout=30)
         with self.assertRaises(RuntimeError) as failure:
             self.check([self.copy(source, 'junction/backup')], disk_usage=self.capacity(200_000))
         self.assertEqual(failure.exception.code, 'SPACE_PATH_UNSAFE')

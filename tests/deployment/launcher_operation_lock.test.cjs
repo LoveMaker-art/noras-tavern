@@ -430,20 +430,39 @@ test('a maintenance child keeps exclusion after the desktop dies, then releases 
 
 test('release waits for real close and an old lease cannot release a later epoch', {timeout:15000}, async () => {
   const { acquire, probe }=require(modulePath);
+  const {bounded}=require('./launcher_owned_test_actor.cjs');
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-operation-release-'));
-  const old=await acquire({directory,operationId:'old',ownerEpoch:1});let next;
+  const old=await acquire({directory,operationId:'old',ownerEpoch:1}),deadline=Date.now()+9000;let next,nextAdmission,held,primary,stdinError;
   try {
-    const child=old.spawn(process.execPath,['-e',"process.stdout.write('ready');setTimeout(()=>process.exit(7),300)"],{kind:'verification'});
-    const closing=captureChild(child).closed;await once(child.stdout,'data');
-    const released=old.release();
-    assert.equal((await probe({directory})).busy,true);
-    await closing;await released;
+    const source="const deadline=setTimeout(()=>{process.stderr.write('fixture release acknowledgement missing');process.exit(78);},8000);let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',value=>input+=value);process.stdin.on('end',()=>{clearTimeout(deadline);process.exit(input==='fixture-release\\n'?7:78);});process.stdout.write('ready');";
+    const child=old.spawn(process.execPath,['-e',source],{kind:'verification'});
+    held=captureChild(child);child.stdin.on('error',error=>{stdinError=error;});
+    const closing=held.closed;const [ready]=await bounded(once(child.stdout,'data'),deadline,'FIXTURE_RELEASE_READY_TIMEOUT');
+    assert.equal(ready.toString(),'ready');
+    const released=old.release();released.catch(()=>{});
+    assert.equal((await bounded(probe({directory}),deadline,'FIXTURE_RELEASE_PROBE_TIMEOUT')).busy,true);
+    assert.equal(held.didClose,false,'the acknowledged child must remain held through the release/busy proof');
+    child.stdin.end('fixture-release\n');
+    await bounded(closing,deadline,'FIXTURE_RELEASE_CLOSE_TIMEOUT');await bounded(released,deadline,'FIXTURE_RELEASE_GUARD_TIMEOUT');
+    assert.equal(stdinError,undefined);
     assert.equal(child.exitCode,7);
-    next=await acquire({directory,operationId:'new',ownerEpoch:2});
-    await old.release();
-    assert.equal((await probe({directory})).busy,true);
-    assert.equal((await next.snapshot()).ownerEpoch,2);
-  } finally {await cleanupLease(old);if(next)await cleanupLease(next);fs.rmSync(directory,{recursive:true,force:true});}
+    nextAdmission=acquire({directory,operationId:'new',ownerEpoch:2});
+    next=await bounded(nextAdmission,deadline,'FIXTURE_RELEASE_SUCCESSOR_TIMEOUT');
+    await bounded(old.release(),deadline,'FIXTURE_RELEASE_OLD_TIMEOUT');
+    assert.equal((await bounded(probe({directory}),deadline,'FIXTURE_RELEASE_SUCCESSOR_PROBE_TIMEOUT')).busy,true);
+    assert.equal((await bounded(next.snapshot(),deadline,'FIXTURE_RELEASE_SNAPSHOT_TIMEOUT')).ownerEpoch,2);
+  } catch(error){primary=error;throw error;}
+  finally {
+    const cleanupDeadline=Date.now()+4000;
+    try{
+      await bounded(cleanupLease(old),cleanupDeadline,'FIXTURE_RELEASE_CLEANUP_TIMEOUT');
+      if(nextAdmission&&!next)next=await bounded(nextAdmission,cleanupDeadline,'FIXTURE_RELEASE_SUCCESSOR_ADMISSION_UNCONFIRMED');
+      if(next)await bounded(cleanupLease(next),cleanupDeadline,'FIXTURE_RELEASE_SUCCESSOR_CLEANUP_TIMEOUT');
+      if(held)await bounded(held.closed,cleanupDeadline,'FIXTURE_RELEASE_FINAL_CLOSE_TIMEOUT');
+      assert.equal((await bounded(probe({directory}),cleanupDeadline,'FIXTURE_RELEASE_FINAL_PROBE_TIMEOUT')).busy,false);
+      fs.rmSync(directory,{recursive:true,force:true});
+    }catch(error){error.fixtureRoot=directory;if(primary)primary.cleanupFailure=error;else throw error;}
+  }
 });
 
 test('the public snapshot retains actual child close facts without exposing command arguments', {timeout:15000}, async () => {

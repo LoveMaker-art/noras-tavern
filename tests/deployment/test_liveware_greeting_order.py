@@ -102,7 +102,7 @@ class GatewayPatchTests(unittest.TestCase):
         self.plugin = self.home / "plugins/clawchat"
         shutil.copytree(ROOT / "ops/tests/fixtures/clawchat-greeting-before", self.plugin)
         subprocess.run(["git", "apply", str(self.plugin / "legacy-order.patch")],
-                       cwd=self.plugin, check=True, capture_output=True)
+                       cwd=self.plugin, check=True, capture_output=True, timeout=30)
 
     def prepare(self):
         swaps, report = gateway_patch.prepare(self.home, self.home / "stage")
@@ -131,7 +131,7 @@ class GatewayPatchTests(unittest.TestCase):
         self.assertEqual(before, {p: p.read_bytes() for p in before})
 
     def test_staging_inside_git_checkout_cannot_silently_skip_patch(self):
-        subprocess.run(["git", "init", "-q", str(self.home)], check=True)
+        subprocess.run(["git", "init", "-q", str(self.home)], check=True, timeout=30)
         self.prepare()
 
     def test_gateway_symlink_is_not_replaced(self):
@@ -207,18 +207,27 @@ class GatewayPatchTests(unittest.TestCase):
             entered, release = asyncio.Event(), asyncio.Event()
             async def delayed(_):
                 entered.set()
-                await release.wait()
+                await asyncio.wait_for(release.wait(), timeout=10)
             adapter._handle_inbound.side_effect = delayed
             greeting = asyncio.create_task(adapter._dispatch_activation_bootstrap())
+            primary = None
             try:
-                await entered.wait()
+                await asyncio.wait_for(entered.wait(), timeout=5)
                 adapter._schedule_liveware_sample()
                 adapter._spawn_liveware_sample_task.assert_called_once()
                 self.assertFalse(greeting.done())
                 adapter._store.has_sent_activation_bootstrap.assert_not_called()
+            except BaseException as error:
+                primary = error
+                raise
             finally:
                 release.set()
-                await greeting
+                try:
+                    await asyncio.wait_for(greeting, timeout=5)
+                except BaseException as error:
+                    if primary is None:
+                        raise
+                    primary.add_note(f'Greeting fixture cleanup also failed: {error}')
 
         asyncio.run(scenario())
 
@@ -232,8 +241,8 @@ class GatewayPatchTests(unittest.TestCase):
             async def queued(_):
                 tasks.append(asyncio.create_task(delivered_later()))
             adapter._handle_inbound.side_effect = queued
-            await adapter._dispatch_activation_bootstrap()
-            await asyncio.gather(*tasks)
+            await asyncio.wait_for(adapter._dispatch_activation_bootstrap(), timeout=5)
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
 
         asyncio.run(scenario())
         adapter._store.release_activation_bootstrap_claim.assert_not_called()

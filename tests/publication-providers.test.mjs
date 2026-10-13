@@ -3,13 +3,44 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import childProcess from 'node:child_process';
+import {once} from 'node:events';
+import {syncBuiltinESMExports} from 'node:module';
+import lifecycle from './deployment/launcher_test_lifecycle.cjs';
 import {command,githubProvider,sourceforgeProvider} from '../tooling/release/publication-providers.mjs';
 
-test('a child ignoring SIGTERM is forcibly stopped at the bounded deadline',async()=>{
+test('a child ignoring SIGTERM is forcibly stopped at the bounded deadline',{timeout:10000},async t=>{
+    const {captureChild,stopChild}=lifecycle,originalSpawn=childProcess.spawn;
+    const args=['-e','process.on("SIGTERM",()=>{process.stderr.write("term ignored\\n")});setInterval(()=>{},10);process.send({ready:true,pid:process.pid,termHandlerInstalled:true});'];
+    const child=originalSpawn(process.execPath,args,{stdio:['ignore','pipe','pipe','ipc']}),state=captureChild(child),signals=[];
+    const kill=child.kill.bind(child);
+    t.mock.method(child,'kill',signal=>{signals.push(signal);return kill(signal);});
+    t.after(()=>stopChild(child,{graceMs:100,timeoutMs:5000}));
+    const readyController=new AbortController(),readyTimer=setTimeout(()=>readyController.abort(new Error('Publication child readiness timed out')),5000);
+    try{
+        const [ready]=await Promise.race([once(child,'message',{signal:readyController.signal}),
+            state.closed.then(()=>{throw new Error('Publication child closed before readiness: '+state.stderr);})]);
+        assert.deepEqual(ready,{ready:true,pid:child.pid,termHandlerInstalled:true});assert.equal(state.didClose,false);
+    }finally{clearTimeout(readyTimer);readyController.abort();}
+    let spawned=0;
+    const heldSpawn=t.mock.method(childProcess,'spawn',(program,actualArgs,options)=>{
+        assert.equal(program,process.execPath);assert.deepEqual(actualArgs,args);assert.deepEqual(options.stdio,['ignore','pipe','pipe']);
+        assert.equal(++spawned,1);return child;
+    });
     const started=Date.now();
-    await assert.rejects(command(process.execPath,['-e','process.on("SIGTERM",()=>{});setInterval(()=>{},10)'],
-        {timeout:150,killGrace:100,capture:true,log:()=>{}}),/timeout/);
+    try{
+        syncBuiltinESMExports();
+        await assert.rejects(command(process.execPath,args,{timeout:150,killGrace:100,capture:true,log:()=>{}}),/timeout/);
+    }finally{heldSpawn.mock.restore();syncBuiltinESMExports();}
+    assert.equal(childProcess.spawn,originalSpawn);assert.equal(spawned,1);
+    assert.equal(state.didClose,true,'Command must settle after actual child close');
+    assert.equal(signals[0],'SIGTERM');
+    if(process.platform!=='win32'){
+        assert.deepEqual(signals,['SIGTERM','SIGKILL']);assert.equal(state.result.signal,'SIGKILL');assert.match(state.stderr,/term ignored/);
+    }else t.diagnostic('Windows SIGTERM terminates the native child; POSIX handler execution and force escalation are not Windows evidence.');
     assert.ok(Date.now()-started<1500,'Timeout did not enforce a hard process deadline');
+    t.diagnostic(JSON.stringify({evidence:'ready-publication-command-deadline',pid:child.pid,readyAck:true,
+        timeout:150,killGrace:100,signals,actualClose:state.didClose,...state.result}));
 });
 test('excess command output cannot be accepted even when the child exits successfully',async()=>{
     await assert.rejects(command(process.execPath,['-e','process.stdout.write("x".repeat(10000))'],

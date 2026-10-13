@@ -201,7 +201,7 @@ const packet=faults.packet(collector.attach(new Error('outer exit wrapper')),{ac
 process.stdout.write(JSON.stringify(packet));
 """
         return json.loads(subprocess.run([native_fixtures.NODE, '-e', script, str(desktop), json.dumps(events), action],
-                                         capture_output=True, text=True, check=True).stdout)
+                                         capture_output=True, text=True, check=True, timeout=30).stdout)
 
     @unittest.skipUnless(native_fixtures.NODE, 'requires a real Node executable')
     def test_real_node_failure_crosses_first_install_bridge_and_fault_packet(self):

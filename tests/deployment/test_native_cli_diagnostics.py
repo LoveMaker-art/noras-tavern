@@ -54,7 +54,7 @@ telemetry.close();
         result = subprocess.run([NODE, '-e', script,
                                  str(desktop / 'fault-packet.js'), str(desktop / 'telemetry.js'),
                                  str(directory / 'telemetry.json')], input=json.dumps(events),
-                                text=True, capture_output=True, check=True)
+                                text=True, capture_output=True, check=True, timeout=30)
         return json.loads(result.stdout)
 
     @unittest.skipUnless(NODE, 'requires a local Node executable')

@@ -327,7 +327,7 @@ class ActualNestedExecutorTests(unittest.TestCase):
         self.assertTrue(python.is_file(), 'NORA_TEST_HERMES must contain its read-only Python virtual environment: ' + str(python))
         root = Path(__file__).resolve().parents[2]
         identity = json.loads(subprocess.check_output([str(python), '-B', '-c',
-            'import json,sys;print(json.dumps([sys.prefix,sys.base_prefix]))'], text=True))
+            'import json,sys;print(json.dumps([sys.prefix,sys.base_prefix]))'], text=True, timeout=30))
         with tempfile.TemporaryDirectory(prefix='nora-nested-config-home-') as temporary:
             fixture = Path(temporary)
             script = fixture / 'actor.py'

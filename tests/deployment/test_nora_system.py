@@ -26,7 +26,7 @@ class NoraSystemTests(unittest.TestCase):
             delegate = SimpleNamespace(assert_active=lambda: calls.append('active'), run=execute)
             with patch.object(sys, '_nora_operation_delegate', delegate, create=True):
                 result = moved.maintenance_run([sys.executable, '-B', '-c', 'print("actual child completed")'],
-                    capture_output=True, text=True, check=True)
+                    capture_output=True, text=True, check=True, timeout=10)
             self.assertEqual(calls, ['active', 'run'])
             self.assertEqual(result.stdout.strip(), 'actual child completed')
 
