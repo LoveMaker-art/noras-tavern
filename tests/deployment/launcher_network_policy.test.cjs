@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const http=require('node:http');
 const https=require('node:https');
 const {Readable}=require('node:stream');
-const {execFileSync}=require('node:child_process');
+const {execFileSync,spawn}=require('node:child_process');
 const path=require('node:path');
 const fs=require('node:fs');
 const os=require('node:os');
@@ -18,7 +18,7 @@ async function server(t,handler) {
   await new Promise(resolve=>service.listen(0,'127.0.0.1',resolve));
   t.after(async()=>{service.closeAllConnections();await new Promise(resolve=>service.close(resolve));});
   const base=`http://127.0.0.1:${service.address().port}`;
-  return {requests,fetcher:async(url,options)=>{
+  return {requests,base,fetcher:async(url,options)=>{
     const result=await fetch(base+new URL(url).pathname,options);
     Object.defineProperty(result,'url',{value:String(url),configurable:true});return result;
   }};
@@ -27,6 +27,24 @@ const quiet={write(){},error(){}};
 const sources={schema:1,mirrors:[{id:'primary',baseUrl:'https://primary.example/'}]};
 const latestUrl='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
 const assetUrl='https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/asset.zip';
+
+test('a timed-out 80% transfer keeps its bytes when SourceForge answers with a different ETag',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-timeout-cross-source-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),requests=[];
+  const result=await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+    policy:{downloadBudgetMs:250,backupBudgetMs:100,maxAttempts:1,sources:{schema:1,primary:'github',
+      mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]}},
+    fetcher:async(url,options)=>{
+      const headers=new Headers(options.headers);requests.push({url,range:headers.get('range'),validator:headers.get('if-range')});
+      if(url.startsWith('https://github.com/'))return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,8));}}),
+        {headers:{ETag:'"github-representation"','Content-Length':'10'}});
+      assert.equal(headers.get('range'),'bytes=8-','a source switch must keep the downloaded prefix');
+      assert.equal(headers.get('if-range'),null,'a source-specific validator must not be sent to another origin');
+      return new Response(bytes.subarray(8),{status:206,headers:{ETag:'"sourceforge-representation"','Content-Length':'2','Content-Range':'bytes 8-9/10'}});
+    }});
+  assert.equal(result.resumed,true);assert.equal(requests.length,2);assert.deepEqual(fs.readFileSync(result.file),bytes);
+});
 
 test('asset transfers identify the same product as metadata, including resumed requests',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-product-agent-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -229,7 +247,7 @@ test('controlled HTTPS transfer reports actual bytes and survives a real primary
   });
   await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),fetcher,
     identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
-    policy:{sources:{schema:1,mirrors:[{id:'primary',baseUrl:primary}]},downloadBudgetMs:3000},
+    policy:{sources:{schema:1,mirrors:[{id:'primary',baseUrl:primary}]},downloadBodyMaxAttempts:1,downloadBudgetMs:3000},
     onEvent:event=>{if(event.event==='progress'){
       progress.push({current:event.current,total:event.total});
       // Interrupt the real socket only once the production reader has observed
@@ -243,7 +261,7 @@ test('controlled HTTPS transfer reports actual bytes and survives a real primary
       }
     }}});
   assert.deepEqual(fs.readFileSync(path.join(root,'asset.zip')),bytes);
-  assert.equal(requests.length,2);assert.equal(requests[0].path,'/releases/v2.4.2/asset.zip');assert.equal(requests[1].range,undefined);
+  assert.equal(requests.length,2);assert.equal(requests[0].path,'/releases/v2.4.2/asset.zip');assert.equal(requests[1].range,'bytes=4096-');
   assert.equal(primaryBytesObserved,true,'the interruption must follow a real primary-body read');
   assert.ok(progress.some(item=>item.current===4096&&item.total===bytes.length));
   assert.equal(progress.at(-1).current,bytes.length);assert.equal(fs.existsSync(path.join(root,'asset.zip.partial')),false);
@@ -404,12 +422,13 @@ test('connection timeout fallback still respects cancellation, certificates, has
     if(kind==='unknown-with-url')assert.equal(require(path.join(desktop,'launcher-errors')).describeError(error).error_code,'unknown');
   });
 });
-test('the shipped source order is GitHub first and healthy GitHub makes no backup request',async()=>{
+test('the shipped source order prefers JihuLab and a healthy primary makes no fallback request',async()=>{
   const {sourceCandidates}=require(path.join(desktop,'release-sources'));
-  assert.deepEqual(sourceCandidates(latestUrl).map(item=>item.id),['github','sourceforge']);
+  const candidates=sourceCandidates(latestUrl);
+  assert.deepEqual(candidates.map(item=>item.id),['jihulab','github','sourceforge']);
   const calls=[];
   const result=await networkModule.metadataJson(latestUrl,{fetcher:async url=>{calls.push(url);return Response.json({tag_name:'v2.4.2'});}});
-  assert.equal(result.value.tag_name,'v2.4.2');assert.deepEqual(calls,[latestUrl]);
+  assert.equal(result.value.tag_name,'v2.4.2');assert.deepEqual(calls,[candidates[0].url]);
   assert.equal(sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.2',{sources:sfSources})[1].url,
     'https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/release.json');
 });
@@ -455,14 +474,15 @@ test('a failed GitHub asset downloads the same frozen bytes from SourceForge wit
 });
 test('a retried, continuously slow GitHub body cannot consume the backup download window',async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-slow-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[];let timer,activeUrl,primaryCancelled=false;
+  const bytes=Buffer.from('verified'),calls=[],primaryProgress=[],events=[];let timer,activeUrl,primaryCancelled=false,switched=false;
   const backupUrl='https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip';
   t.after(()=>clearInterval(timer));
   await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
     // Keep the same ratios while allowing actual file writes, sync and hashing on a busy runner.
     // The 625ms byte cadence remains below idle timeout, and cannot overrun the eight-byte identity.
     policy:{sources:sfSources,backoffMs:[0,0],downloadBudgetMs:5000,backupBudgetMs:3750,downloadIdleTimeoutMs:2500},
-    onEvent:event=>{events.push(event);if(activeUrl===assetUrl&&event.event==='progress'&&event.current>0)primaryProgress.push(event.current);},
+    onEvent:event=>{events.push(event);if(event.event==='log'&&event.line.includes('切换'))switched=true;
+      if(!switched&&activeUrl===assetUrl&&event.event==='progress'&&event.current>0)primaryProgress.push(event.current);},
     fetcher:async url=>{
       calls.push(url);activeUrl=url;
       if(url!==assetUrl){assert.equal(url,backupUrl);assert.equal(primaryCancelled,true);return new Response(bytes);}
@@ -475,6 +495,166 @@ test('a retried, continuously slow GitHub body cannot consume the backup downloa
   assert.ok(primaryProgress.every((current,index)=>current>0&&current<bytes.length&&(!index||current>primaryProgress[index-1])));
   assert.ok(events.some(event=>event.event==='log'&&event.line.includes('github')&&event.line.includes('sourceforge')&&event.line.includes('TIMEOUT')));
   assert.equal(primaryCancelled,true);
+});
+
+test('default slow-source estimation switches a 1 KiB/s body before receiving 512 KiB and preserves Range',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-slow-estimate-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.alloc(4*1024*1024,0x61),target=path.join(root,'asset.zip'),requests=[],diagnostics=[];
+  let clock=1000,chunks=0,primaryCancelled=false,backupOffset=0;
+  const result=await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+    policy:{sources:sfSources,now:()=>clock,diagnostics:{write:(event,fields)=>diagnostics.push({event,...fields}),error(){}}},
+    fetcher:async(url,options)=>{
+      const headers=new Headers(options.headers);requests.push({url,range:headers.get('range'),ifRange:headers.get('if-range')});
+      if(url===assetUrl)return new Response(new ReadableStream({async pull(controller){
+        // Keep virtual elapsed time aligned with bytes actually consumed by
+        // the reader instead of letting Web-stream prefetch advance the clock.
+        while(!primaryCancelled && (fs.statSync(target+'.partial',{throwIfNoEntry:false})?.size || 0)<chunks*5*1024)
+          await new Promise(resolve=>setImmediate(resolve));
+        if(primaryCancelled)return;
+        if(chunks++>=15){controller.error(Object.assign(new Error('slow source did not yield within the observation window'),{code:'FIXTURE_NO_EARLY_SWITCH'}));return;}
+        clock+=5000;controller.enqueue(bytes.subarray(0,5*1024));
+      },cancel(){primaryCancelled=true;}}),{headers:{ETag:'"slow-primary"','Content-Length':String(bytes.length)}});
+      assert.equal(primaryCancelled,true);backupOffset=Number(headers.get('range')?.slice(6,-1));
+      assert.ok(backupOffset>=16*1024&&backupOffset<512*1024);assert.equal(headers.get('if-range'),null);
+      assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).size,backupOffset);
+      return new Response(bytes.subarray(backupOffset),{status:206,headers:{ETag:'"faster-backup"','Content-Length':String(bytes.length-backupOffset),
+        'Content-Range':`bytes ${backupOffset}-${bytes.length-1}/${bytes.length}`}});
+    }});
+  assert.equal(requests.length,2);assert.equal(result.resumed,true);assert.ok(clock-1000<90000);
+  assert.equal(sha(fs.readFileSync(result.file)),sha(bytes));
+  const estimate=diagnostics.find(event=>event.event==='network.download.slow_source');assert.ok(estimate);
+  t.diagnostic(JSON.stringify({evidence:'default-slow-source-policy',elapsedMs:clock-1000,backupRange:requests[1].range,
+    receivedBytes:backupOffset,defaultThresholds:true,finalSha256:sha(bytes),requestCount:requests.length}));
+});
+
+function adaptiveTransferFixture(t,{size=4*1024*1024,prefix=0,steps,finishPrimary=false,policy={},backup='complete',ignoreRange=false}={}) {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-adaptive-transfer-'));let cancelled=false;
+  t.after(()=>{cancelled=true;fs.rmSync(root,{recursive:true,force:true});});
+  const target=path.join(root,'asset.zip'),bytes=Buffer.alloc(size,0x61),requests=[],diagnostics=[];
+  const identity={tag:'v2.4.2',asset:'asset.zip',size,sha256:sha(bytes)};let clock=1000,produced=0,index=0;
+  if(prefix) {
+    fs.writeFileSync(target+'.partial',bytes.subarray(0,prefix));
+    fs.writeFileSync(target+'.partial.json',JSON.stringify({schema:'nora-download-partial/2',plan:sha(JSON.stringify(identity)),
+      content:sha(JSON.stringify([identity.sha256,identity.size])),requestUrl:assetUrl,source:assetUrl,etag:'"slow-primary"',encoding:'identity',
+      size:prefix,prefixSha256:sha(bytes.subarray(0,prefix))}));
+  }
+  const run=()=>networkModule.downloadAsset({url:assetUrl,target,identity,
+    policy:{sources:sfSources,now:()=>clock,...policy,diagnostics:{write:(event,fields)=>diagnostics.push({event,...fields}),error(){}}},
+    fetcher:async(url,options)=>{
+      const headers=new Headers(options.headers);requests.push({url,range:headers.get('range'),ifRange:headers.get('if-range')});
+      if(url!==assetUrl) {
+        if(backup==='expired')return new Response(new ReadableStream({start(controller){clock+=1800001;controller.enqueue(bytes.subarray(0,1));controller.close();}}),
+          {headers:{ETag:'"backup"','Content-Length':String(size)}});
+        const offset=Number(headers.get('range')?.slice(6,-1) || 0);assert.equal(headers.get('if-range'),null);
+        return new Response(bytes.subarray(offset),{status:offset?206:200,headers:{ETag:'"backup"','Content-Length':String(size-offset),
+          ...(offset?{'Content-Range':`bytes ${offset}-${size-1}/${size}`}:{})}});
+      }
+      const append=prefix && !ignoreRange,output=target+'.partial'+(prefix&&ignoreRange?'.replacement':'');
+      return new Response(new ReadableStream({async pull(controller){
+        while(!cancelled && (fs.statSync(output,{throwIfNoEntry:false})?.size || 0)<(append?prefix:0)+produced)
+          await new Promise(resolve=>setImmediate(resolve));
+        await new Promise(resolve=>setImmediate(resolve));if(cancelled)return;
+        const step=steps[index++];
+        if(!step){finishPrimary?controller.close():controller.error(Object.assign(new Error('no early slow-source handoff'),{code:'FIXTURE_NO_EARLY_SWITCH'}));return;}
+        clock+=step.ms;const from=(append?prefix:0)+produced,n=Math.min(step.bytes,size-from);produced+=n;
+        controller.enqueue(bytes.subarray(from,from+n));
+      },cancel(){cancelled=true;}}),{status:append?206:200,headers:{ETag:'"slow-primary"','Content-Length':String(append?size-prefix:size),
+        ...(append?{'Content-Range':`bytes ${prefix}-${size-1}/${size}`}:{})}});
+    }});
+  return {run,bytes,target,requests,diagnostics,elapsed:()=>clock-1000};
+}
+
+test('default slow-source estimation also hands off a cold 1 B/s source without a byte floor',async t=>{
+  const fixture=adaptiveTransferFixture(t,{steps:Array.from({length:15},()=>({ms:5000,bytes:5}))});
+  const result=await fixture.run();assert.equal(fixture.requests.length,2);assert.equal(result.resumed,true);
+  const offset=Number(fixture.requests[1].range.slice(6,-1));assert.ok(offset>0&&offset<64);
+  assert.ok(fixture.elapsed()<90000);assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+  t.diagnostic(JSON.stringify({evidence:'default-cold-one-byte-per-second',elapsedMs:fixture.elapsed(),backupRange:fixture.requests[1].range,
+    receivedBytes:offset,defaultThresholds:true,requestCount:fixture.requests.length}));
+});
+
+test('default ETA policy tolerates a brief pause and sustained acceleration before finishing',async t=>{
+  for(const pause of [0,8000])await t.test(pause?'brief-pause':'acceleration',async child=>{
+    const steps=Array.from({length:6},()=>({ms:5000,bytes:5*1024}));
+    steps.push({ms:pause || 5000,bytes:512*1024},{ms:5000,bytes:512*1024},{ms:5000,bytes:512*1024},
+      {ms:5000,bytes:512*1024},{ms:5000,bytes:4*1024*1024});
+    const fixture=adaptiveTransferFixture(child,{steps,finishPrimary:true,policy:{downloadBudgetMs:100000,backupBudgetMs:40000}});
+    const result=await fixture.run();assert.equal(fixture.requests.length,1);
+    assert.equal(fixture.diagnostics.some(event=>event.event==='network.download.slow_source'),false);
+    assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+  });
+});
+
+test('isolated arrival bursts cannot repeatedly erase a sustained hopeless ETA',async t=>{
+  const fixture=adaptiveTransferFixture(t,{steps:Array.from({length:18},(_,index)=>({ms:5000,bytes:index%2?15:5}))});
+  const result=await fixture.run();assert.equal(fixture.requests.length,2);assert.ok(fixture.elapsed()<90000);
+  const estimate=fixture.diagnostics.find(event=>event.event==='network.download.slow_source');assert.ok(estimate);
+  assert.ok(estimate.slowForMs>=15000);assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+});
+
+test('the last available source keeps its finite absolute deadline without speculative ETA handoffs',async t=>{
+  const fixture=adaptiveTransferFixture(t,{steps:Array.from({length:30},()=>({ms:5000,bytes:5})),
+    policy:{sources:{schema:1,mirrors:[]},downloadBudgetMs:100000}});
+  await assert.rejects(fixture.run(),error=>error.code==='TIMEOUT');assert.equal(fixture.requests.length,1);
+  assert.equal(fs.existsSync(fixture.target),false);
+  assert.equal(fixture.diagnostics.some(event=>event.event==='network.download.slow_source'),false);
+});
+
+test('a near-complete viable ETA is protected while a very slow tail still switches source',async t=>{
+  const size=1024*1024,prefix=size-32*1024;
+  await t.test('near-complete-viable',async child=>{
+    const steps=Array.from({length:10},()=>({ms:5000,bytes:2*1024}));steps.push({ms:5000,bytes:32*1024});
+    const fixture=adaptiveTransferFixture(child,{size,prefix,steps,finishPrimary:true,policy:{downloadBudgetMs:100000,backupBudgetMs:40000}});
+    const result=await fixture.run();assert.equal(fixture.requests.length,1);
+    assert.equal(fixture.diagnostics.some(event=>event.event==='network.download.slow_source'),false);
+    assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+  });
+  await t.test('near-complete-one-byte-per-second',async child=>{
+    const fixture=adaptiveTransferFixture(child,{size,prefix,steps:Array.from({length:15},()=>({ms:5000,bytes:5}))});
+    const result=await fixture.run();assert.equal(fixture.requests.length,2);
+    assert.ok(Number(fixture.requests[1].range.slice(6,-1))>prefix);assert.ok(fixture.elapsed()<90000);
+    assert.ok(fixture.diagnostics.some(event=>event.event==='network.download.slow_source'));
+    assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+  });
+});
+
+test('a slow-source handoff cannot loop or commit after the shared operation deadline',async t=>{
+  const fixture=adaptiveTransferFixture(t,{steps:Array.from({length:15},()=>({ms:5000,bytes:5})),backup:'expired'});
+  await assert.rejects(fixture.run(),error=>error.code==='TIMEOUT');assert.equal(fixture.requests.length,2);
+  assert.equal(fs.existsSync(fixture.target),false);
+  assert.equal(fixture.diagnostics.filter(event=>event.event==='network.download.slow_source').length,1);
+});
+
+test('a Range-ignoring replacement is still bounded and preserves the original checkpoint',async t=>{
+  const fixture=adaptiveTransferFixture(t,{prefix:1024,ignoreRange:true,
+    steps:Array.from({length:15},()=>({ms:5000,bytes:5})),policy:{downloadBudgetMs:100000,backupBudgetMs:40000}});
+  const before=fs.readFileSync(fixture.target+'.partial.json');
+  // Returning HTTP 200 keeps the original record untouched; the absolute
+  // phase may expire, and a later admitted source resumes the old 1 KiB.
+  const result=await fixture.run();assert.equal(fixture.requests.length,2);
+  assert.equal(fixture.requests[1].range,'bytes=1024-');assert.equal(result.resumed,true);
+  assert.equal(fixture.diagnostics.some(event=>event.event==='network.download.slow_source'),false);
+  assert.ok(before.length>0);assert.equal(sha(fs.readFileSync(result.file)),sha(fixture.bytes));
+});
+
+test('default multi-source idle timeout gives a real stalled socket 60 seconds before switching',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-default-idle-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip');let advanced=0,ticked=false;
+  const f=await server(t,(request,response)=>{
+    if(request.url.startsWith('/LoveMaker-art/')){response.writeHead(200,{ETag:'"primary"','Content-Length':'10'});response.write(bytes.subarray(0,4));return;}
+    assert.equal(advanced,60000);assert.equal(request.headers.range,'bytes=4-');assert.equal(request.headers['if-range'],undefined);
+    response.writeHead(206,{ETag:'"backup"','Content-Length':'6','Content-Range':'bytes 4-9/10'});response.end(bytes.subarray(4));
+  });
+  t.mock.timers.enable({apis:['setTimeout']});
+  const result=await networkModule.downloadAsset({url:assetUrl,target,fetcher:f.fetcher,
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},policy:{sources:sfSources},
+    onEvent:event=>{if(!ticked&&event.event==='progress'&&event.current===4){ticked=true;
+      advanced=59999;t.mock.timers.tick(59999);assert.equal(f.requests.length,1,'a short pause must keep the current socket');
+      advanced=60000;t.mock.timers.tick(1);
+    }}});
+  assert.equal(ticked,true);assert.equal(f.requests.length,2);assert.deepEqual(fs.readFileSync(result.file),bytes);
+  t.diagnostic(JSON.stringify({evidence:'default-idle-real-socket-virtual-time',idleAtMs:advanced,defaultIdleThreshold:true,
+    backupRange:f.requests[1].headers.range,requestCount:f.requests.length,realSocket:true}));
 });
 
 test('source configuration rejects uncontrolled roots before making any request',async()=>{
@@ -693,7 +873,7 @@ test('cancelled bytes resume with a strong validator and complete whole-file ver
   assert.deepEqual(fs.readFileSync(options.target),bytes);assert.equal(f.requests.length,2);
 });
 
-async function interrupted(t,finish,{etag='"content-v1"',prefix=4}={}) {
+async function interrupted(t,finish,{etag='"content-v1"',prefix=4,url='https://github.com/asset'}={}) {
   const bytes=Buffer.from('abcdefghij'),controller=new AbortController();
   const f=await server(t,(req,res,count)=>{
     if(count>1) return finish(req,res,bytes);
@@ -701,7 +881,7 @@ async function interrupted(t,finish,{etag='"content-v1"',prefix=4}={}) {
     if(prefix===bytes.length) res.end(bytes);else res.write(bytes.subarray(0,prefix));
   });
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-range-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
-  const options={url:'https://github.com/asset',target:path.join(root,'asset.zip'),fetcher:f.fetcher,
+  const options={url,target:path.join(root,'asset.zip'),fetcher:f.fetcher,policy:{sources:{schema:1,mirrors:[]}},
     identity:{tag:'v2.4.2',asset:'asset.zip',sha256:sha(bytes),size:10}};
   await assert.rejects(networkModule.downloadAsset({...options,signal:controller.signal,
     onEvent:event=>{if(event.event==='progress' && event.current===prefix) controller.abort();}}),{name:'AbortError'});
@@ -730,13 +910,319 @@ test('416 only commits a complete partial after whole-file verification',async t
   await networkModule.downloadAsset(f.options);assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
 });
 
-test('weak validators and a changed fixed identity start a new full request',async t=>{
-  for(const kind of ['weak','identity']) await t.test(kind,async child=>{
-    const f=await interrupted(child,(req,res,bytes)=>{assert.equal(req.headers.range,undefined);assert.equal(req.headers['if-range'],undefined);
-      res.writeHead(200,{ETag:'"content-v1"','Content-Length':'10'});res.end(bytes);},{etag:kind==='weak'?'W/"content-v1"':'"content-v1"'});
-    await networkModule.downloadAsset({...f.options,identity:{...f.options.identity,...(kind==='identity'?{tag:'v2.4.3'}:{})}});
-    assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
+test('weak validators are omitted while fixed hash and size still permit checked Range recovery',async t=>{
+  const f=await interrupted(t,(req,res,bytes)=>{assert.equal(req.headers.range,'bytes=4-');assert.equal(req.headers['if-range'],undefined);
+    res.writeHead(206,{'Content-Range':'bytes 4-9/10','Content-Length':'6'});res.end(bytes.subarray(4));},{etag:'W/"content-v1"'});
+  await networkModule.downloadAsset(f.options);assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
+});
+test('a changed fixed plan identity starts a new full request',async t=>{
+  const f=await interrupted(t,(req,res,bytes)=>{assert.equal(req.headers.range,undefined);assert.equal(req.headers['if-range'],undefined);
+    res.writeHead(200,{ETag:'"content-v1"','Content-Length':'10'});res.end(bytes);});
+  await networkModule.downloadAsset({...f.options,identity:{...f.options.identity,tag:'v2.4.3'}});
+  assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
+});
+
+test('transient body resets retry the same source with a finite checked Range request',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-body-retry-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),requests=[];let timer;
+  t.after(()=>clearTimeout(timer));
+  const result=await networkModule.downloadAsset({url:assetUrl,target:path.join(root,'asset.zip'),
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},
+    policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0]},
+    fetcher:async(_url,options)=>{
+      const headers=new Headers(options.headers);requests.push({range:headers.get('range'),etag:headers.get('if-range')});
+      if(requests.length===1)return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,4));
+        timer=setTimeout(()=>controller.error(Object.assign(new Error('body reset'),{code:'ECONNRESET'})),30);}}),
+        {headers:{ETag:'"fixed"','Content-Length':'10'}});
+      return new Response(bytes.subarray(4),{status:206,headers:{ETag:'"fixed"','Content-Range':'bytes 4-9/10','Content-Length':'6'}});
+    }});
+  assert.deepEqual(requests,[{range:null,etag:null},{range:'bytes=4-',etag:'"fixed"'}]);
+  assert.equal(result.resumed,true);assert.deepEqual(fs.readFileSync(result.file),bytes);
+});
+
+test('repeated same-source body resets cannot renew the operation budget or retry indefinitely',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-body-bounded-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),requests=[],timers=[];t.after(()=>timers.forEach(clearTimeout));
+  const target=path.join(root,'asset.zip');
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)},
+    policy:{sources:{schema:1,mirrors:[]},downloadBodyBackoffMs:[0,0],downloadBudgetMs:1000},
+    fetcher:async(_url,options)=>{
+      const range=new Headers(options.headers).get('range');requests.push(range);
+      return new Response(new ReadableStream({start(controller){controller.enqueue(range?bytes.subarray(4,6):bytes.subarray(0,4));
+        timers.push(setTimeout(()=>controller.error(Object.assign(new Error('reset again'),{code:'ECONNRESET'})),30));}}),
+        {status:range?206:200,headers:{ETag:'"fixed"','Content-Length':range?'6':'10',...(range?{'Content-Range':'bytes 4-9/10'}:{})}});
+    }}),error=>error.code==='ECONNRESET');
+  assert.deepEqual(requests,[null,'bytes=4-']);assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).size,6);
+  assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,6));assert.equal(fs.existsSync(target),false);
+});
+
+test('checkpoint hashing and the resumed body share the original absolute download deadline',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-checkpoint-deadline-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
+  fs.writeFileSync(target+'.partial',bytes.subarray(0,4));
+  fs.writeFileSync(target+'.partial.json',JSON.stringify({schema:'nora-download-partial/2',plan:sha(JSON.stringify(identity)),
+    content:sha(JSON.stringify([identity.sha256,identity.size])),requestUrl:assetUrl,source:assetUrl,etag:'"fixed"',encoding:'identity',
+    size:4,prefixSha256:sha(bytes.subarray(0,4))}));
+  const original=fs.createReadStream;let delayed=false,timer;
+  t.after(()=>clearTimeout(timer));
+  t.mock.method(fs,'createReadStream',(file,...args)=>{
+    if(file===target+'.partial'&&!delayed){delayed=true;return Readable.from((async function*(){
+      await new Promise(resolve=>setTimeout(resolve,150));yield bytes.subarray(0,4);
+    })());}
+    return original(file,...args);
   });
+  await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,
+    policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,downloadBudgetMs:200},fetcher:async()=>new Response(new ReadableStream({start(controller){
+      timer=setTimeout(()=>{controller.enqueue(bytes.subarray(4));controller.close();},100);
+    },cancel(){clearTimeout(timer);}}),{status:206,headers:{ETag:'"fixed"','Content-Length':'6','Content-Range':'bytes 4-9/10'}})}),error=>error.code==='TIMEOUT');
+  assert.equal(delayed,true);assert.equal(fs.existsSync(target),false);assert.deepEqual(fs.readFileSync(target+'.partial'),bytes.subarray(0,4));
+});
+
+test('an absolute deadline expiring during prefix or final hashing prevents network or commit',async t=>{
+  for(const stage of ['prefix','final'])await t.test(stage,async child=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-hash-deadline-'));child.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
+    const partial=target+'.partial',record=partial+'.json';let clock=1000,calls=0,hashObserved=false;
+    if(stage==='prefix') {
+      fs.writeFileSync(partial,bytes.subarray(0,4));
+      fs.writeFileSync(record,JSON.stringify({schema:'nora-download-partial/2',plan:sha(JSON.stringify(identity)),
+        content:sha(JSON.stringify([identity.sha256,identity.size])),requestUrl:assetUrl,source:assetUrl,etag:'"fixed"',encoding:'identity',
+        size:4,prefixSha256:sha(bytes.subarray(0,4))}));
+    }
+    const original=fs.createReadStream;
+    child.mock.method(fs,'createReadStream',(file,options,...args)=>{
+      if(file!==partial)return original(file,options,...args);
+      hashObserved=true;assert.ok(options.signal,'disk verification must share the phase abort signal');
+      return Readable.from((async function*(){clock=1201;yield stage==='prefix'?bytes.subarray(0,4):bytes;})());
+    });
+    await assert.rejects(networkModule.downloadAsset({url:assetUrl,target,identity,
+      policy:{sources:{schema:1,mirrors:[]},maxAttempts:1,downloadBudgetMs:200,now:()=>clock},
+      fetcher:async()=>{calls++;return new Response(bytes,{headers:{ETag:'"fixed"','Content-Length':'10'}});}}),error=>error.code==='TIMEOUT');
+    assert.equal(hashObserved,true);assert.equal(calls,stage==='prefix'?0:1);assert.equal(fs.existsSync(target),false);
+    if(stage==='prefix')assert.deepEqual(fs.readFileSync(partial),bytes.subarray(0,4));
+  });
+});
+
+test('a rejected HTTP 200 replacement cannot delete the untouched original checkpoint',async t=>{
+  for(const fault of ['encoding','body'])await t.test(fault,async child=>{
+    const f=await interrupted(child,(_request,response)=>{response.writeHead(503);response.end();});
+    const before=fs.readFileSync(f.options.target+'.partial.json');
+    await assert.rejects(networkModule.downloadAsset({...f.options,policy:{sources:{schema:1,mirrors:[]},maxAttempts:1},
+      fetcher:async()=>new Response(fault==='body'?null:f.bytes,{status:200,headers:{ETag:'"replacement"','Content-Length':'10',
+        ...(fault==='encoding'?{'Content-Encoding':'gzip'}:{})}})}));
+    assert.deepEqual(fs.readFileSync(f.options.target+'.partial'),f.bytes.subarray(0,4));
+    assert.deepEqual(fs.readFileSync(f.options.target+'.partial.json'),before);assert.equal(fs.existsSync(f.options.target),false);
+  });
+});
+
+test('a backup that ignores Range and resets preserves the original larger checkpoint',async t=>{
+  const bytes=Buffer.from('abcdefghij'),requests=[];let backups=0;
+  const f=await interrupted(t,(req,res)=>{requests.push(req.headers.range);res.writeHead(503);res.end();},{prefix:8,url:assetUrl});
+  const before=fs.readFileSync(f.options.target+'.partial.json');let timer;t.after(()=>clearTimeout(timer));
+  await assert.rejects(networkModule.downloadAsset({...f.options,policy:{sources,maxAttempts:1},
+    fetcher:async(url,options)=>{
+      if(url.startsWith('https://primary.example/')) {
+        backups++;
+        assert.equal(new Headers(options.headers).get('range'),'bytes=8-');assert.equal(new Headers(options.headers).get('if-range'),null);
+        return new Response(new ReadableStream({start(controller){controller.enqueue(bytes.subarray(0,2));
+          timer=setTimeout(()=>controller.error(Object.assign(new Error('replacement reset'),{code:'ECONNRESET'})),25);}}),
+          {headers:{ETag:'"backup"','Content-Length':'10'}});
+      }
+      return f.fetcher(url,options);
+    }}),error=>error.code==='ECONNRESET' || error.status===503);
+  assert.deepEqual(fs.readFileSync(f.options.target+'.partial'),bytes.subarray(0,8));
+  assert.deepEqual(fs.readFileSync(f.options.target+'.partial.json'),before);
+  assert.equal(backups,1);assert.equal(requests.length,1);assert.equal(requests[0],'bytes=8-');
+  assert.equal(fs.existsSync(f.options.target+'.partial.replacement'),false);assert.equal(fs.existsSync(f.options.target),false);
+});
+
+test('legacy schema-1 checkpoints are safely upgraded before resuming',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-legacy-partial-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
+  fs.writeFileSync(target+'.partial',bytes.subarray(0,4));
+  fs.writeFileSync(target+'.partial.json',JSON.stringify({schema:'nora-download-partial/1',expected:sha(JSON.stringify([assetUrl,identity])),
+    etag:'"fixed"',source:assetUrl,encoding:'identity',size:4,prefixSha256:sha(bytes.subarray(0,4))}));
+  await networkModule.downloadAsset({url:assetUrl,target,identity,policy:{sources:{schema:1,mirrors:[]}},fetcher:async(_url,options)=>{
+    assert.equal(new Headers(options.headers).get('range'),'bytes=4-');assert.equal(new Headers(options.headers).get('if-range'),'"fixed"');
+    assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).schema,'nora-download-partial/2');
+    return new Response(bytes.subarray(4),{status:206,headers:{ETag:'"fixed"','Content-Length':'6','Content-Range':'bytes 4-9/10'}});
+  }});assert.deepEqual(fs.readFileSync(target),bytes);
+});
+
+test('a SourceForge checkpoint resumes through a different admitted mirror without a foreign If-Range',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-sourceforge-mirror-resume-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.from('abcdefghij'),target=path.join(root,'asset.zip'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
+  const canonical='https://downloads.sourceforge.net/project/nora-tavern/v2.4.2/asset.zip';
+  const previous=canonical.replace('downloads.sourceforge.net','pilotfiber.dl.sourceforge.net');
+  const current=canonical.replace('downloads.sourceforge.net','zenlayer.dl.sourceforge.net'),requests=[];
+  fs.writeFileSync(target+'.partial',bytes.subarray(0,4));
+  fs.writeFileSync(target+'.partial.json',JSON.stringify({schema:'nora-download-partial/2',plan:sha(JSON.stringify(identity)),
+    content:sha(JSON.stringify([identity.sha256,identity.size])),requestUrl:canonical,source:previous,etag:'"previous-mirror"',encoding:'identity',
+    size:4,prefixSha256:sha(bytes.subarray(0,4))}));
+  const result=await networkModule.downloadAsset({url:assetUrl,target,identity,policy:{sources:{...sfSources,primary:'sourceforge'},maxAttempts:1},
+    fetcher:async(url,options)=>{
+      const headers=new Headers(options.headers);requests.push(url);assert.equal(headers.get('range'),'bytes=4-');assert.equal(headers.get('if-range'),null);
+      assert.equal(options.redirect,'manual');
+      const response=url===canonical?new Response(null,{status:302,headers:{Location:current}})
+        :new Response(bytes.subarray(4),{status:206,headers:{ETag:'"current-mirror"','Content-Length':'6','Content-Range':'bytes 4-9/10'}});
+      Object.defineProperty(response,'url',{value:url});return response;
+    }});
+  assert.deepEqual(requests,[canonical,current]);assert.equal(result.resumed,true);assert.deepEqual(fs.readFileSync(result.file),bytes);
+});
+
+test('a local prefix hash never authenticates tampered bytes before whole-file SHA verification',async t=>{
+  const f=await interrupted(t,(req,res,bytes)=>{assert.equal(req.headers.range,'bytes=4-');res.writeHead(206,
+    {ETag:'"content-v1"','Content-Length':'6','Content-Range':'bytes 4-9/10'});res.end(bytes.subarray(4));});
+  const partial=f.options.target+'.partial',record=partial+'.json',saved=JSON.parse(fs.readFileSync(record));
+  fs.writeFileSync(partial,'evil');fs.writeFileSync(record,JSON.stringify({...saved,prefixSha256:sha('evil')}));
+  await assert.rejects(networkModule.downloadAsset(f.options),error=>error.code==='VERIFICATION_FAILED');
+  assert.equal(fs.existsSync(f.options.target),false);assert.equal(fs.existsSync(partial),false);
+});
+
+test('corrupt local prefixes and unapproved checkpoint sources are discarded before issuing Range',async t=>{
+  for(const kind of ['disk','source','short-disk','malformed-source'])await t.test(kind,async child=>{
+    const f=await interrupted(child,(req,res,bytes)=>{assert.equal(req.headers.range,undefined);res.writeHead(200,{'Content-Length':'10'});res.end(bytes);});
+    const partial=f.options.target+'.partial',record=partial+'.json';
+    if(kind==='disk')fs.writeFileSync(partial,'evil');
+    if(kind==='short-disk')fs.truncateSync(partial,2);
+    if(kind==='source'){const saved=JSON.parse(fs.readFileSync(record));fs.writeFileSync(record,JSON.stringify({...saved,requestUrl:'https://unapproved.example/asset.zip'}));}
+    if(kind==='malformed-source'){const saved=JSON.parse(fs.readFileSync(record));fs.writeFileSync(record,JSON.stringify({...saved,source:'malformed final URL'}));}
+    await networkModule.downloadAsset(f.options);assert.deepEqual(fs.readFileSync(f.options.target),f.bytes);
+  });
+});
+
+test('a control file without an independent SHA cannot create a resumable content checkpoint',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-control-not-resumable-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const controller=new AbortController(),target=path.join(root,'SHA256SUMS'),bytes=Buffer.from('abcdefghij');let calls=0;
+  const options={url:assetUrl.replace('asset.zip','SHA256SUMS'),target,identity:{tag:'v2.4.2',asset:'SHA256SUMS',size:10},
+    policy:{sources:{schema:1,mirrors:[]}},fetcher:async(_url,options)=>{
+      assert.equal(new Headers(options.headers).get('range'),null);calls++;
+      return new Response(calls===1?new ReadableStream({start(stream){stream.enqueue(bytes.subarray(0,4));}}):bytes,
+        {headers:{ETag:'"fixed"','Content-Length':'10'}});
+    }};
+  await assert.rejects(networkModule.downloadAsset({...options,signal:controller.signal,
+    onEvent:event=>{if(event.event==='progress'&&event.current===4)controller.abort();}}),{name:'AbortError'});
+  assert.equal(fs.existsSync(target+'.partial'),false);assert.equal(fs.existsSync(target+'.partial.json'),false);
+  await networkModule.downloadAsset(options);assert.equal(calls,2);assert.deepEqual(fs.readFileSync(target),bytes);
+});
+
+test('process death before and after a durable checkpoint recovers only committed bytes',async t=>{
+  for(const mode of ['before','after'])await t.test(mode,async childTest=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-process-checkpoint-'));childTest.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const target=path.join(root,'asset.zip'),bytes=Buffer.from('abcdefghij'),identity={tag:'v2.4.2',asset:'asset.zip',size:10,sha256:sha(bytes)};
+    let firstResponse;
+    const f=await server(childTest,(request,response,count)=>{
+      if(count===1){firstResponse=response;response.writeHead(200,{ETag:'"fixed"','Content-Length':'10'});response.write(bytes.subarray(0,4));return;}
+      const offset=mode==='after'?4:0;assert.equal(request.headers.range,offset?'bytes=4-':undefined);
+      if(offset)response.writeHead(206,{ETag:'"fixed"','Content-Range':'bytes 4-9/10','Content-Length':'6'});
+      else response.writeHead(200,{ETag:'"fixed"','Content-Length':'10'});
+      response.end(bytes.subarray(offset));
+    });
+    const script=`const fs=require('node:fs');const network=require(${JSON.stringify(path.join(desktop,'release-network'))});
+      if(${JSON.stringify(mode)}==='before'){const original=fs.promises.open;fs.promises.open=async(...args)=>{const handle=await original(...args);
+        handle.sync=async()=>{process.send({ready:true});await new Promise(()=>{});};return handle;};}
+      network.downloadAsset({url:${JSON.stringify(assetUrl)},target:${JSON.stringify(target)},identity:${JSON.stringify(identity)},
+        policy:{sources:{schema:1,mirrors:[]},downloadCheckpointIntervalMs:3600000,downloadCheckpointBytes:1048576},
+        fetcher:async(url,options)=>{const response=await fetch(${JSON.stringify(f.base)}+new URL(url).pathname,options);
+          Object.defineProperty(response,'url',{value:url});return response;},
+        onEvent:event=>{if(${JSON.stringify(mode)}==='after'&&event.event==='progress'&&event.current===4)process.send({ready:true});}
+      }).catch(error=>{process.send({failure:String(error)});process.exitCode=1;});`;
+    const processChild=spawn(process.execPath,['-e',script],{stdio:['ignore','ignore','pipe','ipc']});
+    childTest.after(()=>{if(processChild.exitCode===null)processChild.kill('SIGKILL');});
+    let errors='';processChild.stderr.on('data',chunk=>{errors+=chunk;});
+    const exited=new Promise((resolve,reject)=>{processChild.once('error',reject);processChild.once('exit',(code,signal)=>resolve({code,signal}));});
+    await new Promise((resolve,reject)=>{
+      const timeout=setTimeout(()=>reject(new Error('checkpoint child did not reach the controlled crash boundary: '+errors)),5000);
+      processChild.once('message',message=>{clearTimeout(timeout);message.ready?resolve():reject(new Error(message.failure || 'unexpected child message'));});
+      processChild.once('exit',()=>{clearTimeout(timeout);reject(new Error('checkpoint child exited early: '+errors));});
+    });
+    const partial=target+'.partial',record=partial+'.json';assert.equal(fs.statSync(partial).size,4);
+    if(mode==='after') {
+      assert.equal(JSON.parse(fs.readFileSync(record)).size,4);firstResponse.write(bytes.subarray(4,6));
+      const until=Date.now()+3000;
+      while(fs.statSync(partial).size!==6 && Date.now()<until)await new Promise(resolve=>setTimeout(resolve,10));
+      assert.equal(fs.statSync(partial).size,6,'uncommitted bytes must reach disk before the process is killed');
+      assert.equal(JSON.parse(fs.readFileSync(record)).size,4);
+    }else assert.equal(fs.existsSync(record),false);
+    processChild.kill('SIGKILL');assert.equal((await exited).signal,'SIGKILL');
+    await networkModule.downloadAsset({url:assetUrl,target,identity,fetcher:f.fetcher,policy:{sources:{schema:1,mirrors:[]}}});
+    assert.deepEqual(fs.readFileSync(target),bytes);assert.equal(f.requests.length,2);
+  });
+});
+
+test('a real socket interrupted after 100 MiB resumes those bytes from a differently tagged source',async t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-large-cross-source-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const bytes=Buffer.alloc(128*1024*1024,0x61),target=path.join(root,'asset.zip');
+  let primaryResponse,observedOffset=0,backupOffset=0;
+  const f=await server(t,(request,response)=>{
+    if(request.url.startsWith('/LoveMaker-art/')) {
+      primaryResponse=response;response.writeHead(200,{'Content-Length':String(bytes.length),ETag:'"primary-large"'});
+      response.write(bytes.subarray(0,112*1024*1024));return;
+    }
+    assert.match(request.headers.range,/^bytes=\d+-$/);assert.equal(request.headers['if-range'],undefined);
+    backupOffset=Number(request.headers.range.slice(6,-1));assert.ok(backupOffset>100*1024*1024);
+    response.writeHead(206,{ETag:'"backup-large"','Content-Length':String(bytes.length-backupOffset),
+      'Content-Range':`bytes ${backupOffset}-${bytes.length-1}/${bytes.length}`});response.end(bytes.subarray(backupOffset));
+  });
+  const interrupt=setInterval(()=>{
+    const stat=fs.statSync(target+'.partial',{throwIfNoEntry:false});
+    if(primaryResponse && stat?.size>100*1024*1024 && !observedOffset) {
+      observedOffset=stat.size;primaryResponse.destroy();clearInterval(interrupt);
+    }
+  },5);t.after(()=>clearInterval(interrupt));
+  const result=await networkModule.downloadAsset({url:assetUrl,target,fetcher:f.fetcher,
+    identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
+    policy:{sources:sfSources,maxAttempts:1,downloadBudgetMs:15000,backupBudgetMs:5000}});
+  assert.ok(observedOffset>100*1024*1024);assert.ok(backupOffset>=observedOffset);
+  assert.equal(f.requests.length,2);assert.equal(result.resumed,true);assert.equal(fs.statSync(result.file).size,bytes.length);
+  assert.equal(sha(fs.readFileSync(result.file)),sha(bytes));
+  t.diagnostic(JSON.stringify({evidence:'controlled-local-http-real-socket',assetBytes:bytes.length,interruptedDiskBytes:observedOffset,
+    backupRange:`bytes=${backupOffset}-`,backupIfRange:f.requests[1].headers['if-range'] ?? null,backupETag:'"backup-large"',
+    initialETag:'"primary-large"',requestCount:f.requests.length,finalSha256:sha(bytes),resumed:result.resumed,
+    domesticPublicNetwork:false,packagedLauncher:false}));
+});
+
+test('cross-source resume rejects wrong lengths, compressed bytes and content changes before installation',async t=>{
+  for(const kind of ['length','encoding','digest','partial-range','overflow'])await t.test(kind,async child=>{
+    const f=await interrupted(child,(_request,response)=>{response.writeHead(503);response.end();},{url:assetUrl});
+    let backupCalls=0;
+    await assert.rejects(networkModule.downloadAsset({...f.options,policy:{sources,maxAttempts:1},fetcher:async(url,options)=>{
+      if(!url.startsWith('https://primary.example/'))return f.fetcher(url,options);
+      backupCalls++;assert.equal(new Headers(options.headers).get('range'),'bytes=4-');assert.equal(new Headers(options.headers).get('if-range'),null);
+      const body=kind==='digest'?Buffer.from('XXXXXX'):kind==='overflow'?Buffer.from('efghijk'):kind==='partial-range'?Buffer.from('ef'):f.bytes.subarray(4);
+      return new Response(body,{status:206,headers:{ETag:'"new-origin"','Content-Length':kind==='length'?'5':String(body.length),
+        'Content-Range':kind==='partial-range'?'bytes 4-5/10':'bytes 4-9/10',...(kind==='encoding'?{'Content-Encoding':'gzip'}:{})}});
+    }}),error=>error.code==='VERIFICATION_FAILED');
+    assert.equal(backupCalls,1);assert.equal(fs.existsSync(f.options.target),false);
+  });
+});
+
+test('shared assets inherit a source preference only for exact authorized canonical URLs',()=>{
+  const context=networkModule.createReleaseSourceContext({tag:'v2.4.2'}),historical=assetUrl.replace('v2.4.2','v2.4.1');
+  context.rememberAssetResponse(assetUrl,'sourceforge');assert.equal(context.preferredSource(historical),null);
+  context.authorizeAssets([{url:historical,sha256:'a'.repeat(64),size:10}]);assert.equal(context.preferredSource(historical),'sourceforge');
+  assert.equal(context.preferredSource(historical.replace('asset.zip','unlisted.zip')),null);
+  assert.equal(context.isTargetAsset(historical),false);assert.equal(context.beginFixedPlanProbe(historical),false);
+  for(const item of [{url:historical+'?query=yes',sha256:'a'.repeat(64),size:10},
+    {url:historical.replace('github.com','evil.example'),sha256:'a'.repeat(64),size:10},
+    {url:historical,sha256:'bad',size:10},{url:historical,sha256:'b'.repeat(64),size:10},
+    {url:historical,sha256:'a'.repeat(64),size:0}])assert.throws(()=>context.authorizeAssets([item]),error=>error.code==='VERIFICATION_FAILED');
+});
+
+test('complete beta catalogue evidence comes from the admitted source for network, cache and 304 results',async()=>{
+  let clock=1000,calls=0;const metadataCache=networkModule.createMetadataCache({ttlMs:100,now:()=>clock});
+  const url='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1';
+  const options={channel:'beta',metadataCache,policy:{sources,now:()=>clock,maxAttempts:1},fetcher:async()=>{
+    calls++;return calls===1?Response.json([{tag_name:'v2.4.2-beta.1'}],{headers:{ETag:'"beta"'}}):new Response(null,{status:304,headers:{ETag:'"beta"'}});
+  }};
+  const network=await networkModule.metadataJson(url,options);assert.equal(network.catalogueComplete,true);assert.equal(network.source,'network');
+  clock=1050;const cached=await networkModule.metadataJson(url,options);assert.equal(cached.catalogueComplete,true);assert.equal(cached.source,'cache');
+  clock=1200;const revalidated=await networkModule.metadataJson(url,options);assert.equal(revalidated.catalogueComplete,true);assert.equal(revalidated.source,'revalidated');
+  assert.equal(calls,2);
+  const github=await networkModule.metadataJson(url,{channel:'beta',policy:{sources:{schema:1,mirrors:[]},maxAttempts:1},
+    fetcher:async()=>Response.json({catalogueComplete:true})});
+  assert.equal(github.value.catalogueComplete,true);assert.equal(github.catalogueComplete,false,'a network body cannot grant catalogue completeness');
 });
 
 test('403 without rate headers is forbidden, while a rate reset beyond budget is returned without premature retry',async t=>{

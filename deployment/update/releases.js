@@ -113,6 +113,10 @@ async function withAssetReferences(release,fetcher,signal,options,evidence) {
     name:item.name,state:'uploaded',size:item.size,digest:`sha256:${item.sha256}`,asset_release_tag:item.asset_release_tag,
     browser_download_url:`https://github.com/${REPO}/releases/download/${encodeURIComponent(item.asset_release_tag)}/${item.name}`}))]};
   validateAssetReferences(expanded);
+  // Only references whose original text, digest, size and origin were accepted
+  // above may inherit this operation's successful distribution source.
+  options.networkPolicy?.sourceContext?.authorizeAssets?.(index.assets.map(item => ({
+    url:assetUrl(expanded,item.name),sha256:item.sha256,size:item.size})));
   return expanded;
 }
 function validateAssetRelease(manifest,release,minimum) {
@@ -176,7 +180,9 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
       const rows = await read(`https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}`);
       if (!Array.isArray(rows)) throw new Error('测试发布列表无效。');
       candidates.push(...rows.filter(item => accepts(item, channel)));
-      if (rows.length < 100) break;
+      // A build-owned static channel is a complete catalogue, not a page of
+      // GitHub's list endpoint. Never fall back to API pagination after it.
+      if (rows.length < 100 || evidence.at(-1)?.catalogueComplete === true) break;
     }
     release = candidates.sort((a, b) => compare(b.tag_name, a.tag_name))[0];
   } else release = await read(API);

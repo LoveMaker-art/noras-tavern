@@ -41,6 +41,132 @@ def sha(path: Path) -> str:
 
 
 SOURCEFORGE = 'https://downloads.sourceforge.net/project/nora-tavern/'
+# BEGIN BUILD-OWNED RELEASE SOURCES
+RELEASE_SOURCES = json.loads('{"schema":1,"primary":"jihulab","mirrors":[{"id":"jihulab","provider":"jihulab","baseUrl":"https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/","channelBaseUrl":"https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/"},{"id":"sourceforge","provider":"sourceforge","baseUrl":"https://downloads.sourceforge.net/project/nora-tavern/"}]}')
+# END BUILD-OWNED RELEASE SOURCES
+
+
+def validate_sources(value):
+    """Only the build-owned contract may name a download root."""
+    invalid = RuntimeError('资源来源配置无效，未下载或修改安装。')
+    if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
+            or set(value) - {'schema', 'primary', 'mirrors'}
+            or not isinstance(value.get('mirrors'), list) or len(value['mirrors']) > 2):
+        raise invalid
+    ids, origins, mirrors = {'github'}, {'https://github.com', 'https://api.github.com'}, []
+    for item in value['mirrors']:
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', item['id']) or item['id'] in ids
+                or not isinstance(item.get('baseUrl'), str)
+                or set(item) - {'id', 'baseUrl', 'provider', 'channelBaseUrl'}
+                or item.get('provider') not in (None, 'sourceforge', 'jihulab')
+                or item.get('provider') != 'jihulab' and item.get('channelBaseUrl') is not None):
+            raise invalid
+        def root_url(raw):
+            try:
+                parsed = urllib.parse.urlsplit(raw)
+                if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                        or parsed.query or parsed.fragment or parsed.port not in (None, 443)
+                        or not parsed.path.endswith('/') or '\\' in raw
+                        or re.search(r'[\x00-\x20\x7f]', raw)):
+                    raise invalid
+                return parsed
+            except (ValueError, TypeError):
+                raise invalid
+        root = root_url(item['baseUrl'])
+        origin = 'https://' + root.hostname
+        if origin in origins:
+            raise invalid
+        if item.get('provider') == 'sourceforge' and (origin != 'https://downloads.sourceforge.net'
+                or not re.fullmatch(r'/project/[a-z0-9][a-z0-9-]{2,29}/', root.path)):
+            raise invalid
+        if item.get('provider') == 'jihulab':
+            identity = re.fullmatch(r'/api/v4/projects/([1-9][0-9]*)/packages/generic/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/', root.path)
+            if (origin != 'https://jihulab.com' or item['baseUrl'] != 'https://jihulab.com'+root.path
+                    or not identity or int(identity[1]) > 9007199254740991):
+                raise invalid
+            if not isinstance(item.get('channelBaseUrl'), str):
+                raise invalid
+            channel = root_url(item['channelBaseUrl'])
+            raw = re.fullmatch(r'/((?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}/){2,})-/raw/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/', channel.path)
+            if (channel.hostname != 'jihulab.com' or item['channelBaseUrl'] != 'https://jihulab.com'+channel.path
+                    or not raw or '..' in raw[2]
+                    or re.search(r'(?:\.|\.lock)$', raw[2])):
+                raise invalid
+        ids.add(item['id'])
+        origins.add(origin)
+        mirrors.append(item)
+    if value.get('primary') is not None and (not isinstance(value['primary'], str) or value['primary'] not in ids):
+        raise invalid
+    return mirrors
+
+
+def source_candidates(url, *, channel='stable', sources=None):
+    configuration = RELEASE_SOURCES if sources is None else sources
+    mirrors = validate_sources(configuration)
+    value = urllib.parse.urlsplit(url)
+    relative = None
+    api = f'/repos/{REPO}/releases'
+    if value.scheme == 'https' and value.hostname == 'api.github.com' and not value.fragment:
+        if value.path == api+'/latest' and not value.query and channel == 'stable':
+            relative = 'channels/stable.json'
+        elif value.path == api and value.query == 'per_page=100&page=1' and channel == 'beta':
+            relative = 'channels/beta.json'
+        elif value.path.startswith(api+'/tags/') and not value.query:
+            tag = value.path[len(api+'/tags/'):]
+            if re.fullmatch(TAG_PATTERN, tag):
+                relative = f'releases/{tag}/release.json'
+    elif value.scheme == 'https' and value.hostname == 'github.com' and not value.query and not value.fragment:
+        prefix = f'/{REPO}/releases/download/'
+        candidate = value.path[len(prefix):] if value.path.startswith(prefix) else ''
+        if re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, candidate):
+            relative = 'releases/'+candidate
+    candidates = []
+    if relative:
+        for item in mirrors:
+            path = relative.removeprefix('releases/') if item.get('provider') in ('sourceforge', 'jihulab') else relative
+            root = item['channelBaseUrl'] if item.get('provider') == 'jihulab' and relative.startswith('channels/') else item['baseUrl']
+            candidates.append((item['id'], root+path))
+    candidates.append(('github', url))
+    primary = configuration.get('primary')
+    return [candidate for _, candidate in sorted(candidates, key=lambda item: (item[0] != primary, item[0] != 'github'))] if primary else [candidate for _, candidate in candidates]
+
+
+def sourceforge_url(url):
+    value = urllib.parse.urlsplit(url)
+    return (value.hostname == 'downloads.sourceforge.net'
+            or bool(re.fullmatch(r'[a-z0-9-]+\.dl\.sourceforge\.net', value.hostname or '')))
+
+
+def validate_source(url, original):
+    value, initial = urllib.parse.urlsplit(url), urllib.parse.urlsplit(original)
+    github_assets = {'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'}
+    trusted = False
+    api = f'/repos/{REPO}/releases'
+    if initial.hostname == 'api.github.com' and (initial.path in (api, api+'/latest')
+            or initial.path.startswith(api+'/tags/') and re.fullmatch(TAG_PATTERN, initial.path[len(api+'/tags/'):])):
+        trusted = value.hostname == initial.hostname and value.path == initial.path and value.query == initial.query
+    elif initial.hostname in github_assets:
+        prefix = f'/{REPO}/releases/download/'
+        valid_initial = initial.hostname != 'github.com' or (initial.path.startswith(prefix)
+            and re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, initial.path[len(prefix):]) and not initial.query)
+        trusted = valid_initial and value.hostname in github_assets and (value.hostname != 'github.com' or value.path == initial.path)
+    else:
+        for item in validate_sources(RELEASE_SOURCES):
+            roots = [item['baseUrl']] + ([item['channelBaseUrl']] if item.get('provider') == 'jihulab' else [])
+            for root in roots:
+                parsed = urllib.parse.urlsplit(root)
+                match = initial.hostname == parsed.hostname or item.get('provider') == 'sourceforge' and sourceforge_url(original)
+                if match and initial.path.startswith(parsed.path):
+                    permitted = (sourceforge_url(url) and value.port is None) if item.get('provider') == 'sourceforge' else value.hostname == parsed.hostname
+                    trusted = permitted and value.path == initial.path
+                    if item.get('provider') != 'sourceforge':
+                        trusted = trusted and value.query == initial.query and not initial.query
+    if (not trusted or initial.scheme != 'https' or initial.username or initial.password or initial.fragment
+            or value.scheme != 'https' or value.username or value.password or value.fragment
+            or initial.port not in (None, 443) or value.port not in (None, 443)):
+        raise RuntimeError('资源响应偏离受信任来源，未使用下载内容。')
+
 TAG_PATTERN = r'v\d+\.\d+\.\d+(?:-beta\.\d+)?'
 ASSET_PATTERN = r'[A-Za-z0-9][A-Za-z0-9._-]*'
 ASSET_INDEX_NAME = 'release-assets.json'
@@ -86,7 +212,7 @@ def expand_asset_index(release, assets):
     if descriptor['size'] > 64*1024:
         raise RuntimeError('共享资产索引超过读取上限。')
     tag = release['tag_name']
-    urls = [descriptor['browser_download_url'], SOURCEFORGE+tag+'/'+ASSET_INDEX_NAME]
+    urls = source_candidates(descriptor['browser_download_url'])
     for position, url in enumerate(urls):
         try:
             with open_source(url, timeout=30) as response:
@@ -97,9 +223,9 @@ def expand_asset_index(release, assets):
             index = validate_asset_index(json.loads(raw), tag)
             break
         except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
-            if position or not can_switch_source(error):
+            if position == len(urls)-1 or not can_switch_source(error):
                 raise
-            print('[WARN] GitHub共享资产索引请求失败，正在使用SourceForge备用源。', file=sys.stderr)
+            print('[WARN] 当前来源的共享资产索引请求失败，正在使用下一受信来源。', file=sys.stderr)
     for item in index['assets']:
         if item['name'] in assets:
             raise RuntimeError('共享引用与当前发布资产同名。')
@@ -125,27 +251,6 @@ def validate_shared_manifest(release, manifest):
             raise RuntimeError('共享资产引用与组件校验信息不一致。')
 
 
-def sourceforge_url(url):
-    value = urllib.parse.urlsplit(url)
-    return (value.hostname == 'downloads.sourceforge.net'
-            or bool(re.fullmatch(r'[a-z0-9-]+\.dl\.sourceforge\.net', value.hostname or '')))
-
-
-def validate_source(url, original):
-    value, initial = urllib.parse.urlsplit(url), urllib.parse.urlsplit(original)
-    github_assets = {'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'}
-    trusted = False
-    if initial.hostname == 'api.github.com':
-        trusted = value.hostname == initial.hostname and value.path == initial.path and value.query == initial.query
-    elif initial.hostname in github_assets:
-        trusted = value.hostname in github_assets and (value.hostname != 'github.com' or value.path == initial.path)
-    elif sourceforge_url(original):
-        trusted = sourceforge_url(url) and value.port is None and value.path == initial.path
-    if (not trusted or value.scheme != 'https' or value.username or value.password or value.fragment
-            or value.port not in (None, 443)):
-        raise RuntimeError('资源响应偏离受信任来源，未使用下载内容。')
-
-
 class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, response, code, message, headers, newurl):
         validate_source(newurl, request.full_url)
@@ -169,8 +274,7 @@ def can_switch_source(error):
 def select_release(tag=None):
     if tag and not re.fullmatch(TAG_PATTERN, tag):
         raise RuntimeError('发布版本格式无效。')
-    urls = [f'https://api.github.com/repos/{REPO}/releases/' + ('tags/'+tag if tag else 'latest'),
-            SOURCEFORGE + (tag+'/release.json' if tag else 'channels/stable.json')]
+    urls = source_candidates(f'https://api.github.com/repos/{REPO}/releases/' + ('tags/'+tag if tag else 'latest'))
     deadline = time.monotonic()+30
     for index, url in enumerate(urls):
         try:
@@ -199,9 +303,9 @@ def select_release(tag=None):
             index = expand_asset_index(release, assets)
             return {**release, 'asset_index': assets, **({'shared_assets': index} if index is not None else {})}
         except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
-            if index or not can_switch_source(error):
+            if index == len(urls)-1 or not can_switch_source(error):
                 raise
-            print('[WARN] GitHub版本查询失败，正在使用SourceForge备用源。', file=sys.stderr)
+            print('[WARN] 当前来源的版本查询失败，正在使用下一受信来源。', file=sys.stderr)
     raise RuntimeError('无法确认发布版本。')
 
 
@@ -210,13 +314,13 @@ def download(url, target, *, expected_sha256=None, expected_size=None):
     relative = url[len(prefix):] if url.startswith(prefix) else ''
     if not re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, relative):
         raise RuntimeError('发布文件地址无效，未下载。')
-    urls = [url, SOURCEFORGE+relative]
+    urls = source_candidates(url)
     target = Path(target)
     temporary = target.with_name(target.name+'.part')
     deadline = time.monotonic()+1800
     try:
         for index, source in enumerate(urls):
-            source_deadline = deadline-(300 if not index else 0)
+            source_deadline = deadline-300*(len(urls)-index-1)
             digest, size = hashlib.sha256(), 0
             try:
                 with open_source(source, timeout=min(120, max(1, source_deadline-time.monotonic()))) as response, temporary.open('wb') as output:
@@ -236,9 +340,9 @@ def download(url, target, *, expected_sha256=None, expected_size=None):
                 os.replace(temporary, target)
                 return
             except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.IncompleteRead, ssl.SSLEOFError) as error:
-                if index or not can_switch_source(error):
+                if index == len(urls)-1 or not can_switch_source(error):
                     raise
-                print('[WARN] GitHub资源传输失败，正在从SourceForge重新下载同一文件。', file=sys.stderr)
+                print('[WARN] 当前来源的资源传输失败，正在从下一受信来源重新下载同一文件。', file=sys.stderr)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -360,18 +464,6 @@ def main() -> None:
     if not (args.apply and args.confirm):
         raise RuntimeError("首次安装必须显式传入 --apply --confirm")
 
-    try:
-        import operation_cli as cli
-    except ImportError:
-        import importlib.util
-        cli_path = Path(__file__).resolve().with_name('operation_cli.py')
-        if not cli_path.is_file():
-            cli_path = Path(__file__).resolve().parents[1] / 'shared/operation_cli.py'
-        spec = importlib.util.spec_from_file_location('nora_first_bootstrap_operation_cli', cli_path)
-        cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cli)
-    cli.ensure_operation('install', nora_home=args.nora_home or os.environ.get('NORA_TAVERN_HOME'))
-
     with tempfile.TemporaryDirectory(prefix="nora-tavern-bootstrap.") as temporary:
         work = Path(temporary)
         release_dir = args.release_dir
@@ -381,6 +473,15 @@ def main() -> None:
             download_release(release_dir, args.tag)
         manifest_sha = verify_release(release_dir, allow_candidate=args.allow_candidate)
         installer = extract_ops_runner(release_dir, work / "runner")
+        # A downloaded standalone entry has no adjacent operation modules.
+        # Import the existing guard only from the verified temporary ops tree,
+        # then require its authorization before executing any installer writer.
+        import importlib.util
+        cli_path = installer.with_name('operation_cli.py')
+        spec = importlib.util.spec_from_file_location('nora_first_bootstrap_operation_cli', cli_path)
+        cli = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cli)
+        cli.ensure_operation('install', nora_home=args.nora_home or os.environ.get('NORA_TAVERN_HOME'))
         command = [
             sys.executable, "-u", "-B", str(installer),
             "--release-dir", str(Path(release_dir).resolve()),

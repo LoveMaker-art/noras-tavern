@@ -26,6 +26,7 @@ MANAGED = {'SOUL.md','SOUL.nora-tavern.example.md','nora-installation.json',
 CRON_RUNTIME_FIELDS = {'last_run_at','last_status','last_error','last_delivery_error',
                        'last_delivery_unverified','failure_streak','next_run_at',
                        'run_claim','fire_claim','last_dispatch','last_fire_error','monitor_state'}
+SETUP_METADATA_KEY = 'install:tavern-updates/nora-system.json'
 
 
 def cron_definition(path):
@@ -578,6 +579,7 @@ class Journal:
                             or type(entry.get('completed')) is not bool
                             or any(value is not None and not re.fullmatch('[a-f0-9]{64}',str(value)) for name,value in entry.items() if name!='completed')):
                         raise RuntimeError('配置写入收据无效')
+        self.setup_metadata_intent()
         names=set();paths=set()
         if not isinstance(self.plan.get('targets'),list):raise RuntimeError('恢复计划目标列表格式无效')
         for item in self.plan['targets']:
@@ -707,6 +709,63 @@ class Journal:
         self.check_metadata_before_write(self.metadata_items(),offline=True)
         self.save()
 
+    def setup_metadata_intent(self):
+        """Authorize only the exact first-setup postimage declared before its write."""
+        intent=self.plan.get('setupMetadataIntent')
+        if intent is None:return None
+        def reject():raise RuntimeError('初始化写入意图无法核验，当前记录已保留。')
+        if (not isinstance(intent,dict) or set(intent)!={'schema','key','beforeText','before','after','newline','operationId','ownerEpoch'}
+                or intent['schema']!='nora-setup-metadata-intent/1' or intent['key']!=SETUP_METADATA_KEY
+                or not isinstance(intent['beforeText'],str) or intent['newline'] not in ('\n','\r\n')
+                or type(intent['operationId']) is not type(self.record.get('operationId'))
+                or type(intent['ownerEpoch']) is not type(self.record.get('ownerEpoch'))
+                or intent['operationId']!=self.record.get('operationId') or intent['ownerEpoch']!=self.record.get('ownerEpoch')):
+            reject()
+        try:
+            encoded=intent['beforeText'].encode('utf-8')
+            if len(encoded)>2*1024*1024:reject()
+            original=json.loads(intent['beforeText'])
+            if (not isinstance(original,dict) or type(original.get('schema')) is not int or original['schema']!=1
+                    or original.get('setupCompleted') is not False or original.get('version')!=self.record.get('version')
+                    or not re.fullmatch('[a-f0-9]{40}',str(original.get('commit','')))
+                    or not isinstance(original.get('proof'),dict)
+                    or any(original['proof'].get(name) is not True for name in
+                           ('hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration'))):reject()
+            expected=json.dumps({**original,'setupCompleted':True},ensure_ascii=False,indent=2,allow_nan=False).replace('\n',intent['newline']).encode('utf-8')
+        except (UnicodeError,ValueError,TypeError):reject()
+        entry=self.plan.get('metadataWrites',{}).get(SETUP_METADATA_KEY)
+        before=self.plan.get('before');lifecycle=self.plan.get('lifecycle')
+        if (not isinstance(entry,dict) or entry.get('completed') is not True
+                or SETUP_METADATA_KEY not in self.plan.get('metadataIntents',[])
+                or self.plan.get('metadataPhase') not in ('applying','restored')
+                or hashlib.sha256(b'F\0'+encoded).hexdigest()!=intent['before']
+                or hashlib.sha256(b'F\0'+expected).hexdigest()!=intent['after']
+                or entry.get('after') not in (intent['before'],intent['after'])
+                or not isinstance(before,dict) or not isinstance(lifecycle,dict) or not isinstance(lifecycle.get('before'),dict)
+                or any(before.get(name) is not True or lifecycle['before'].get(name) is not True
+                       for name in ('running','gatewayRunning'))):reject()
+        return intent
+
+    def prepare_setup_metadata(self,before_text):
+        original=json.loads(before_text)
+        expected=json.dumps({**original,'setupCompleted':True},ensure_ascii=False,indent=2,allow_nan=False).replace('\n',os.linesep).encode('utf-8')
+        intent={'schema':'nora-setup-metadata-intent/1','key':SETUP_METADATA_KEY,'beforeText':before_text,
+            'before':hashlib.sha256(b'F\0'+before_text.encode('utf-8')).hexdigest(),
+            'after':hashlib.sha256(b'F\0'+expected).hexdigest(),'newline':os.linesep,
+            'operationId':self.record.get('operationId'),'ownerEpoch':self.record.get('ownerEpoch')}
+        previous=self.plan.get('setupMetadataIntent')
+        if previous is not None and (self.setup_metadata_intent()!=intent):
+            raise RuntimeError('初始化写入意图已经变化，当前记录已保留。')
+        self.plan['setupMetadataIntent']=intent
+        try:
+            self.setup_metadata_intent()
+            self.save()  # The verifier must not run until this intent is durable.
+        except BaseException:
+            if previous is None:self.plan.pop('setupMetadataIntent',None)
+            else:self.plan['setupMetadataIntent']=previous
+            raise
+        return intent
+
     def mark_metadata(self,targets):
         items={self.metadata_key(target):(target,saved) for target,saved in self.metadata_items()}
         keys=[self.metadata_key(Path(target).absolute()) for target in targets]
@@ -782,7 +841,9 @@ class Journal:
         if 'metadataWrites' not in self.plan:return  # Existing journals keep their original contract.
         entry=self.plan['metadataWrites'].get(key)
         if entry is None:raise RuntimeError('配置恢复缺少写入收据，当前配置已保留。')
+        setup_intent=self.setup_metadata_intent()
         if current==entry['before'] or entry['completed'] and current==entry['after']:return
+        if key==SETUP_METADATA_KEY and setup_intent is not None and current==setup_intent['after']:return
         for candidate,saved in self.metadata_items():
             if candidate==target:
                 saved=self.metadata_saved(target,saved)

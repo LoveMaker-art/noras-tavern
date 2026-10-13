@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
 import tempfile
 import unittest
 import urllib.error
@@ -14,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[2]
 spec = importlib.util.spec_from_file_location('shared_asset_bootstrap', ROOT / 'ops/updater/bootstrap.py')
 BOOTSTRAP = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(BOOTSTRAP)
+LEGACY_SOURCES = {'schema': 1, 'primary': 'github', 'mirrors': [
+    {'id': 'sourceforge', 'provider': 'sourceforge', 'baseUrl': 'https://downloads.sourceforge.net/project/nora-tavern/'}]}
+JIHULAB_ASSETS = 'https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/'
+JIHULAB_CHANNEL = 'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/channels/stable.json'
 
 
 class Response(io.BytesIO):
@@ -26,6 +31,10 @@ class Response(io.BytesIO):
 
 class SharedAssetTests(unittest.TestCase):
     def setUp(self):
+        self.sealed_sources = copy.deepcopy(BOOTSTRAP.RELEASE_SOURCES)
+        legacy = patch.object(BOOTSTRAP, 'RELEASE_SOURCES', copy.deepcopy(LEGACY_SOURCES))
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.target = Path(self.temp.name) / 'component.tar.gz'
@@ -85,6 +94,34 @@ class SharedAssetTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, '门槛'):
                 BOOTSTRAP.select_release()
 
+    def test_sealed_jihulab_shared_index_resolves_original_tag_hash_and_size(self):
+        with patch.object(BOOTSTRAP, 'RELEASE_SOURCES', self.sealed_sources), patch.object(BOOTSTRAP, 'open_source', side_effect=self.fetch):
+            selected = BOOTSTRAP.select_release()
+            BOOTSTRAP.download_asset(selected, 'component.tar.gz', self.target, expected_sha256=self.sha)
+        self.assertEqual(self.requests, [JIHULAB_CHANNEL, JIHULAB_ASSETS+self.tag+'/release-assets.json',
+            JIHULAB_ASSETS+self.baseline+'/component.tar.gz'])
+        asset = selected['asset_index']['component.tar.gz']
+        self.assertEqual(asset['asset_release_tag'], self.baseline)
+        self.assertEqual(asset['browser_download_url'], self.gh('component.tar.gz', self.baseline))
+        self.assertEqual(asset['digest'], 'sha256:'+self.sha)
+        self.assertEqual(asset['size'], len(self.payload))
+        self.assertEqual(hashlib.sha256(self.target.read_bytes()).hexdigest(), self.sha)
+
+    def test_jihulab_old_tag_bytes_are_verified_without_using_a_foreign_response_url(self):
+        with patch.object(BOOTSTRAP, 'RELEASE_SOURCES', self.sealed_sources), patch.object(BOOTSTRAP, 'open_source', side_effect=self.fetch):
+            selected = BOOTSTRAP.select_release()
+        self.target.write_bytes(b'keep existing verified data')
+        self.requests.clear()
+        def corrupt(url, **kwargs):
+            self.requests.append(url)
+            self.assertEqual(url, JIHULAB_ASSETS+self.baseline+'/component.tar.gz')
+            return Response(b'x'*len(self.payload), url)
+        with patch.object(BOOTSTRAP, 'RELEASE_SOURCES', self.sealed_sources), patch.object(BOOTSTRAP, 'open_source', side_effect=corrupt):
+            with self.assertRaisesRegex(RuntimeError, '哈希校验'):
+                BOOTSTRAP.download_asset(selected, 'component.tar.gz', self.target, expected_sha256=self.sha)
+        self.assertEqual(self.requests, [JIHULAB_ASSETS+self.baseline+'/component.tar.gz'])
+        self.assertEqual(self.target.read_bytes(), b'keep existing verified data')
+
     def test_hash_size_identity_collisions_and_arbitrary_urls_fail_before_payload_download(self):
         original_index = copy.deepcopy(self.index)
         changes = [lambda index: index.update(repository='other/repo'),
@@ -142,6 +179,10 @@ class SharedAssetTests(unittest.TestCase):
     def test_initial_shell_loader_keeps_current_tag_code_and_leaves_shared_index_to_verified_bootstrap(self):
         shell = (ROOT / 'ops/updater/install.sh').read_text()
         code = shell.split('TARGET=$("$PY" -B - "$WORK" "$@" <<\'PY\'\n', 1)[1].split('\nPY\n', 1)[0]
+        code, count = re.subn(r'# BEGIN BUILD-OWNED RELEASE SOURCES\n.*?\n# END BUILD-OWNED RELEASE SOURCES',
+            lambda _: '# BEGIN BUILD-OWNED RELEASE SOURCES\nRELEASE_SOURCES = json.loads('+repr(json.dumps(LEGACY_SOURCES))+')\n# END BUILD-OWNED RELEASE SOURCES',
+            code, flags=re.S)
+        self.assertEqual(count, 1, 'The legacy loader fixture must replace exactly one sealed configuration block')
         owner = self
         class Opener:
             def open(self, request, **kwargs):

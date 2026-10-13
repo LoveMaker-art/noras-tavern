@@ -235,6 +235,32 @@ function immutableStateHashes(root) {
   }
   return Object.fromEntries(Object.entries(result).sort(([left], [right]) => left.localeCompare(right, 'en')));
 }
+function snapshotBeforeTransfer(root,target) {
+  root=path.resolve(root);target=path.resolve(target);
+  const relative=path.relative(root,target),parent=fs.lstatSync(path.dirname(target)),source=fs.lstatSync(root);
+  assert.ok(source.isDirectory()&&!source.isSymbolicLink()&&parent.isDirectory()&&!parent.isSymbolicLink(),'Invalid checkpoint directory');
+  assert.ok(relative&&(relative.startsWith('..'+path.sep)||path.isAbsolute(relative))&&!fs.existsSync(target),'Snapshot must be a new directory outside the live state');
+  immutableStateHashes(root); // Reject linked or non-regular members before copying.
+  const plan=JSON.parse(fs.readFileSync(path.join(root,'publication-plan.json')));
+  assert.ok(plan.destinations===undefined||Array.isArray(plan.destinations),'Invalid checkpoint destinations');
+  fs.mkdirSync(target,{mode:0o700});
+  try {
+    for(const entry of fs.readdirSync(root,{recursive:true,withFileTypes:true})) {
+      const file=path.join(entry.parentPath,entry.name),name=path.relative(root,file),destination=path.join(target,name);
+      if(entry.isDirectory())fs.mkdirSync(destination,{recursive:true,mode:0o700});
+      else {
+        fs.mkdirSync(path.dirname(destination),{recursive:true,mode:0o700});
+        if(['publication-state.json','workflow-provenance.json'].includes(name))fs.copyFileSync(file,destination);
+        else fs.linkSync(file,destination);
+      }
+    }
+    if(plan.destinations?.includes('jihulab')) {
+      const file=path.join(target,'publication-state.json'),checkpoint=JSON.parse(fs.readFileSync(file));
+      checkpoint.checkpointKind='before-transfer';
+      fs.writeFileSync(file,JSON.stringify(checkpoint,null,2)+'\n');
+    }
+  }catch(error){fs.rmSync(target,{recursive:true,force:true});throw error;}
+}
 function verifyRestoredState(root, run, options) {
   const file = path.join(root, 'workflow-provenance.json');
   assert.ok(fs.lstatSync(file).isFile(), 'Publication workflow provenance is required');
@@ -250,6 +276,8 @@ function verifyRestoredState(root, run, options) {
   assert.equal(value.receipt?.mode, options.mode);
   assert.deepEqual(immutableStateHashes(root), value.sealedStateHashes, 'Immutable checkpoint bytes differ from the original receipt');
   const plan = JSON.parse(fs.readFileSync(path.join(root, 'publication-plan.json')));
+  if(plan.destinations?.includes('jihulab'))assert.equal(options.stateArtifact?.name,stateNames[1],
+    'JihuLab recovery requires the final checkpoint; a pre-transfer snapshot may have lost an unresolved PUT. Reconcile the remote inventory manually before retrying.');
   const planId = crypto.createHash('sha256').update(JSON.stringify(plan, null, 2) + '\n').digest('hex');
   assert.equal(value.planId, planId, 'Plan differs from the externally retained publication receipt');
   const expectedReceipt = options.deliveryReceipt;
@@ -301,7 +329,7 @@ async function materialize(run, artifacts, options, root, kind) {
     if (category === 'delivery') flattenDelivery(destination, path.join(root, 'delivery'));
     receipt.artifacts.push({ id: item.id, name: item.name, size: item.size_in_bytes, digest: item.digest });
   }
-  if (kind === 'state') verifyRestoredState(path.join(root, 'state'), run, options);
+  if (kind === 'state') verifyRestoredState(path.join(root, 'state'), run, {...options,stateArtifact:accepted[0]});
   else if (options.mode === 'full') {
     receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
     assert.ok(options.publishedFacts && options.tag, 'Full publication requires independent published-release facts');
@@ -311,7 +339,7 @@ async function materialize(run, artifacts, options, root, kind) {
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
 }
-module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
+module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
 if (require.main === module) {
   if (process.argv[2] === 'baseline-selection') {
     const [, , , releasesFile, targetTag, repository, requestedTag, output, githubOutput, operation] = process.argv;

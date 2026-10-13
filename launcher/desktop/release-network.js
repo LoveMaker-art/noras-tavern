@@ -11,7 +11,7 @@ const RELEASE_USER_AGENT = 'Nora-Tavern-Launcher';
 // A caller owns this context for one operation. It is not a health cache or
 // release-plan field: neither API responses nor old metadata can seed it.
 function createReleaseSourceContext({tag} = {}) {
-  let target=null,preferred=null,probeAttempted=false;
+  let target=null,preferred=null,probeAttempted=false;const authorized=new Map();
   const valid=value=>typeof value==='string' && /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value);
   const assetTag=value=>{
     try {
@@ -29,8 +29,23 @@ function createReleaseSourceContext({tag} = {}) {
         throw launcherError('资源来源上下文与固定目标不一致，未改变更新计划。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
       target=value;return context;
     },
-    preferredSource(url){return target!==null && assetTag(url)===target?preferred:null;},
-    rememberAssetResponse(url,id){if(target!==null && assetTag(url)===target && typeof id==='string')preferred=id;},
+    authorizeAssets(items){
+      const invalid=()=>launcherError('共享资源来源提示与固定计划不一致，未改变更新计划。',
+        {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+      if(target===null || !Array.isArray(items) || items.length>2048)throw invalid();
+      const additions=new Map();
+      for(const item of items) {
+        if(!item || Object.keys(item).some(key=>!['url','sha256','size'].includes(key))
+          || !assetTag(item.url) || !/^[a-f0-9]{64}$/.test(item.sha256 || '')
+          || !Number.isSafeInteger(item.size) || item.size<1 || item.size>2*1024**3)throw invalid();
+        const identity=digest(JSON.stringify([item.sha256,item.size])),previous=authorized.get(item.url) || additions.get(item.url);
+        if(previous && previous!==identity)throw invalid();additions.set(item.url,identity);
+      }
+      if(new Set([...authorized.keys(),...additions.keys()]).size>2048)throw invalid();
+      for(const [url,identity] of additions)authorized.set(url,identity);return context;
+    },
+    preferredSource(url){return target!==null && (assetTag(url)===target || authorized.has(url))?preferred:null;},
+    rememberAssetResponse(url,id){if(target!==null && (assetTag(url)===target || authorized.has(url)) && typeof id==='string')preferred=id;},
     isTargetAsset(url){return target!==null && assetTag(url)===target;},
     beginFixedPlanProbe(url){if(!context.isTargetAsset(url)||probeAttempted)return false;probeAttempted=true;return true;},
   };
@@ -300,8 +315,9 @@ async function metadataJson(url,options={}) {
     if(remaining<=0) throw await sourceFailure(launcherError('发布请求已超过有限等待预算。',
       {code:'TIMEOUT',source:'release_service',site:'release.request'},failures.at(-1)),url,options.conditionIdentity,fetcher,failures,sources);
     const source=sources[index],budget=sources.length>1?Math.min(remaining,policy.attemptTimeoutMs ?? 30000):remaining;
-    try {return await metadataFromSource(source.url,{...options,fetcher,source,resourceKind,policy:{...policy,source,canonicalUrl:url,deadlineAt:deadline,totalBudgetMs:budget,
-      ...(sources.length>1?sourceReadPolicy(source,index,policy,fetcher):{})}});}
+    try {const result=await metadataFromSource(source.url,{...options,fetcher,source,resourceKind,policy:{...policy,source,canonicalUrl:url,deadlineAt:deadline,totalBudgetMs:budget,
+      ...(sources.length>1?sourceReadPolicy(source,index,policy,fetcher):{})}});
+      return {...result,catalogueComplete:source.catalogueComplete===true};}
     catch(error) {
       failures.push(error);
       if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {
@@ -393,8 +409,10 @@ async function metadataFromSource(url,{fetcher,signal,metadataCache,channel='sta
   return {...evidence,value,source:'network',latestConfirmed:true};
 }
 
-async function fileHash(file) {
-  const hash=crypto.createHash('sha256');for await(const chunk of fs.createReadStream(file)) hash.update(chunk);return hash.digest('hex');
+async function fileHash(file,{signal,check=()=>{}}={}) {
+  check();const hash=crypto.createHash('sha256');
+  for await(const chunk of fs.createReadStream(file,{signal})) {check();hash.update(chunk);}
+  check();return hash.digest('hex');
 }
 function regularFile(file) {
   const stat=fs.lstatSync(file,{throwIfNoEntry:false});
@@ -407,9 +425,11 @@ function validateDownloadRequest({url,identity,maxSize=2*1024**3}) {
     || identity.size!=null && (!Number.isSafeInteger(identity.size) || identity.size<1 || identity.size>maxSize))
     throw launcherError('发布资源身份或校验信息无效。',{code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
 }
-async function verifiedDownload(file,identity) {
-  const stat=regularFile(file);return Boolean(stat && (!identity.size || stat.size===identity.size)
-    && identity.sha256 && await fileHash(file)===identity.sha256);
+async function verifiedDownload(file,identity,options={}) {
+  options.check?.();const stat=regularFile(file);
+  const verified=Boolean(stat && (!identity.size || stat.size===identity.size)
+    && identity.sha256 && await fileHash(file,options)===identity.sha256);
+  options.check?.();return verified;
 }
 async function refreshFixedPlanSource({url,identity,fetcher,signal,policy,onEvent,fixedPlanSourceEvidence:evidence}) {
   const context=policy.sourceContext;
@@ -436,11 +456,91 @@ async function refreshFixedPlanSource({url,identity,fetcher,signal,policy,onEven
 function strongETag(value) {return typeof value==='string' && value.length<=256 && /^"[\x21\x23-\x7e]*"$/.test(value);}
 function safeSource(url) {const parsed=new URL(url);return parsed.origin+parsed.pathname;}
 function atomicJson(file,value) {
-  fs.writeFileSync(file+'.tmp',JSON.stringify(value),{mode:0o600});fs.renameSync(file+'.tmp',file);
+  const temporary=file+'.tmp',descriptor=fs.openSync(temporary,'w',0o600);
+  try {fs.writeFileSync(descriptor,JSON.stringify(value));fs.fsyncSync(descriptor);}
+  finally {fs.closeSync(descriptor);}
+  fs.renameSync(temporary,file);
+  // Windows does not expose directory fsync through this filesystem API.
+  if(process.platform!=='win32') {
+    const directory=fs.openSync(path.dirname(file),'r');
+    try {fs.fsyncSync(directory);}finally {fs.closeSync(directory);}
+  }
 }
 function cleanupDownload(files,primary) {
   for(const file of files) try {fs.rmSync(file,{force:true});}
   catch(error) {if(!primary) throw error;try {primary.secondaryErrors=[...(primary.secondaryErrors || []),error];} catch {}}
+}
+// A checkpoint proves that committed bytes still match the local disk. Its
+// prefix hash is not publisher authentication: only the final full-file SHA
+// below can make bytes from one or several admitted sources usable.
+function downloadContent(identity) {return digest(JSON.stringify([identity.sha256,identity.size]));}
+function slowSourceEstimator({identity,start,now,deadline,policy}) {
+  const warmup=policy.downloadSlowWarmupMs ?? 30000,window=policy.downloadSlowWindowMs ?? 20000;
+  const sampleInterval=policy.downloadSlowSampleMs ?? 1000,sustain=policy.downloadSlowSustainMs ?? 15000;
+  const recentWindow=policy.downloadSlowRecentWindowMs ?? 5000;
+  const started=now(),samples=[{at:started,bytes:start}];let badSince=null,improvingSince=null,sampleCount=1;
+  return current=>{
+    const at=now(),last=samples.at(-1);
+    if(at-last.at<sampleInterval)return null;
+    samples.push({at,bytes:current});sampleCount++;
+    while(samples.length>2 && samples[1].at<=at-window)samples.shift();
+    const first=samples[0],elapsed=at-started,received=current-start,remaining=identity.size-current;
+    if(elapsed<warmup || sampleCount<4 || received<1 || remaining<=0) {badSince=null;return null;}
+    const rate=(current-first.bytes)/(at-first.at);
+    const recent=samples.find(sample=>sample.at>=at-recentWindow) || first;
+    const recentRate=at>recent.at?(current-recent.bytes)/(at-recent.at):rate;
+    const eta=rate>0?remaining/rate:Infinity,available=deadline-at;
+    const nearEnd=remaining<=Math.min(8*1024*1024,identity.size*0.05);
+    if(recentRate>rate*1.15){if(improvingSince===null)improvingSince=at;}else improvingSince=null;
+    const improving=improvingSince!==null && (at-improvingSince>=recentWindow || remaining/recentRate<=available);
+    // A brief pause cannot trigger by itself. Improving recent throughput
+    // clears the suspicion; a near-complete transfer still needs a viable ETA.
+    if(improving || nearEnd && (eta<=60000 || eta<=available) || eta<=available*1.25) {
+      badSince=null;return null;
+    }
+    if(badSince===null)badSince=at;
+    if(at-badSince<sustain)return null;
+    return {elapsedMs:elapsed,windowMs:at-first.at,receivedBytes:received,remainingBytes:remaining,
+      estimatedRemainingMs:Number.isFinite(eta)?Math.min(2147483647,Math.ceil(eta)):null,
+      sourceRemainingMs:Math.max(0,Math.ceil(available)),slowForMs:at-badSince};
+  };
+}
+async function prefixHasher(file,{signal,check=()=>{}}={}) {
+  check();const hash=crypto.createHash('sha256');
+  for await(const chunk of fs.createReadStream(file,{signal})){check();hash.update(chunk);}
+  check();
+  return hash;
+}
+async function loadDownloadCheckpoint({partial,record,identity,sources,signal,check=()=>{}}) {
+  check();
+  let saved;
+  try {const stat=regularFile(record);if(stat && stat.size<4096)saved=JSON.parse(fs.readFileSync(record,'utf8'));}catch{}
+  const stat=regularFile(partial),plan=digest(JSON.stringify(identity)),content=downloadContent(identity);
+  const admitted=new Map(sources.map(source=>[safeSource(source.url),source]));
+  if(saved?.schema==='nora-download-partial/1') {
+    const previous=sources.find(source=>digest(JSON.stringify([source.url,identity]))===saved.expected);
+    if(previous && strongETag(saved.etag))saved={...saved,schema:'nora-download-partial/2',
+      requestUrl:safeSource(previous.url),plan,content};
+    else saved=null;
+  }
+  if(stat && identity.sha256 && identity.size && saved?.schema==='nora-download-partial/2'
+    && saved.content===content && saved.plan===plan && admitted.has(saved.requestUrl)
+    && saved.encoding==='identity' && (saved.etag==null || strongETag(saved.etag))
+    && typeof saved.source==='string' && /^[a-f0-9]{64}$/.test(saved.prefixSha256 || '')
+    && Number.isSafeInteger(saved.size) && saved.size>0 && saved.size<=identity.size && stat.size>=saved.size) {
+    try {
+      validateSourceResponse(admitted.get(saved.requestUrl),{url:saved.source});
+      // A process can die after writing data but before committing its record.
+      // Those bytes are deliberately discarded before checking the prefix.
+      check();if(stat.size!==saved.size)fs.truncateSync(partial,saved.size);
+      const hash=await prefixHasher(partial,{signal,check});check();
+      if(hash.copy().digest('hex')===saved.prefixSha256) {
+        atomicJson(record,saved);check();return {saved,hash};
+      }
+    }catch(error){if(signal?.aborted || error?.code && !['VERIFICATION_FAILED','ENOENT'].includes(error.code))throw error;}
+  }
+  check();
+  cleanupDownload([partial,record,record+'.tmp']);return {saved:null,hash:crypto.createHash('sha256')};
 }
 async function downloadAsset(options) {
   const {url,fetcher=fetch,signal,policy={},onEvent=()=>{}}=options;
@@ -450,118 +550,183 @@ async function downloadAsset(options) {
   if(await verifiedDownload(options.target,options.identity))return {file:options.target,cached:true};
   await refreshFixedPlanSource({...options,fetcher,signal,policy,onEvent});
   const sources=operationSources(url,{sources:policy.sources},policy.sourceContext),now=policy.now || Date.now;
-  const eligiblePartials=new Set(sources.map(source=>digest(JSON.stringify([source.url,options.identity]))));
   const deadline=Math.min(policy.deadlineAt ?? Infinity,now()+(policy.downloadBudgetMs ?? 1800000));
   const failures=[];
   for(let index=0;index<sources.length;index++) {
     signal?.throwIfAborted();
     const remaining=deadline-now();
-    if(remaining<=0) throw await sourceFailure(launcherError('资源下载已超过有限等待预算。',
+    if(remaining<=0)throw await sourceFailure(launcherError('资源下载已超过有限等待预算。',
       {code:'TIMEOUT',source:'release_service',site:'release.download'},failures.at(-1)),url,options.identity,fetcher,failures,sources);
     const source=sources[index];
-    // Reserve an actual transfer window for each configured backup, even
-    // when the primary keeps sending a few bytes and never reaches idle.
+    // A slow source has a finite phase, and each backup retains a transfer
+    // window. All phases share one operation deadline and one content prefix.
     const reserve=Math.min(policy.backupBudgetMs ?? 300000,remaining/sources.length);
-    const budget=remaining-reserve*(sources.length-index-1);
-    try {return await downloadFromSource({...options,fetcher,url:source.url,source,eligiblePartials,policy:{...policy,source,deadlineAt:deadline,downloadBudgetMs:Math.ceil(budget),
-      ...(sources.length>1?{...sourceReadPolicy(source,index,policy,fetcher),downloadIdleTimeoutMs:policy.downloadIdleTimeoutMs ?? 300000}:{})}});}
-    catch(error) {
-      failures.push(error);
-      if(signal?.aborted || index===sources.length-1 || !maySwitchSource(error,source)) {
-        throw await sourceFailure(error,url,options.identity,fetcher,failures,sources);
+    const sourceDeadline=Math.min(deadline,now()+remaining-reserve*(sources.length-index-1));
+    const requestAttempts=policy.maxAttempts ?? (fetcher.releaseRead===true?fetcher.releasePolicy?.maxAttempts:undefined);
+    const bodyAttempts=Math.max(1,Math.min(3,policy.downloadBodyMaxAttempts ?? (requestAttempts===1?1:2)));
+    let failure;
+    for(let attempt=1;attempt<=bodyAttempts;attempt++) {
+      try {return await downloadFromSource({...options,fetcher,url:source.url,source,sources,policy:{...policy,source,deadlineAt:deadline,
+        sourceDeadlineAt:sourceDeadline,hasNextSource:index<sources.length-1,
+        ...(sources.length>1?{...sourceReadPolicy(source,index,policy,fetcher),downloadIdleTimeoutMs:policy.downloadIdleTimeoutMs ?? 60000}:{})}});}
+      catch(error) {
+        failure=error;
+        const wait=policy.downloadBodyBackoffMs?.[attempt-1] ?? policy.backoffMs?.[attempt-1] ?? 250;
+        const retry=attempt<bodyAttempts && error.downloadBodyFailure===true && error.downloadCheckpointSaved===true
+          && error.downloadPhaseExpired!==true && error.downloadSlowSourceEstimate!==true && transient(error) && !signal?.aborted
+          && !(error.downloadIdleExpired===true && index<sources.length-1)
+          && Number.isFinite(wait) && wait>=0 && wait<sourceDeadline-now();
+        if(!retry)break;
+        try {(policy.diagnostics || fetcher.releasePolicy?.diagnostics)?.write('network.download.retry',{
+          source:source.id,attempt,nextAttempt:attempt+1,delayMs:wait,message:'正文传输中断，保留已提交字节并向同一来源续传。'});}catch{}
+        await (policy.sleep || ((ms,abort)=>delay(ms,undefined,{signal:abort})))(wait,signal);
       }
-      sourceNotice(fetcher,policy,source,sources[index+1],error,onEvent);
     }
+    failures.push(failure);
+    if(signal?.aborted || index===sources.length-1 || !maySwitchSource(failure,source))
+      throw await sourceFailure(failure,url,options.identity,fetcher,failures,sources);
+    sourceNotice(fetcher,policy,source,sources[index+1],failure,onEvent);
   }
 }
-async function downloadFromSource({url,target,identity,fetcher,signal,onEvent=()=>{},policy={},source:sourceCandidate,eligiblePartials,task='正在下载发布资源',maxSize=2*1024**3}) {
-  validateDownloadRequest({url,identity,maxSize});
-  signal?.throwIfAborted();
-  const verified=file=>verifiedDownload(file,identity);
-  if(await verified(target)) return {file:target,cached:true};
-  const partial=target+'.partial',record=partial+'.json',expected=digest(JSON.stringify([url,identity]));
-  let saved=null;
-  try {const stat=regularFile(record);if(stat && stat.size<4096) saved=JSON.parse(fs.readFileSync(record,'utf8'));} catch {}
-  let start=0,foreignPartial=false;
-  const stat=regularFile(partial);
-  if(stat && saved?.schema==='nora-download-partial/1' && eligiblePartials.has(saved.expected) && identity.sha256 && identity.size
-    && strongETag(saved.etag) && saved.encoding==='identity' && saved.size===stat.size && stat.size>0 && stat.size<=identity.size
-    && typeof saved.source==='string' && await fileHash(partial)===saved.prefixSha256) {
-    if(saved.expected===expected)start=stat.size;else foreignPartial=true;
-  }
-  else {cleanupDownload([partial,record]);saved=null;}
-  const headers=new Headers({'User-Agent':RELEASE_USER_AGENT,'Accept-Encoding':'identity'});
-  if(start) {headers.set('Range',`bytes=${start}-`);headers.set('If-Range',saved.etag);}
-  onEvent({event:'task',stage_id:'download',task});onEvent({event:'progress',stage_id:'download',current:start,total:identity.size || 0});
-  const idle=new AbortController();let idleTimer;
+async function downloadFromSource({url,target,identity,fetcher,signal,onEvent=()=>{},policy={},source:sourceCandidate,sources,task='正在下载发布资源',maxSize=2*1024**3}) {
+  validateDownloadRequest({url,identity,maxSize});signal?.throwIfAborted();
+  const now=policy.now || Date.now;
+  const deadline=Math.min(policy.deadlineAt ?? Infinity,policy.sourceDeadlineAt ?? now()+(policy.downloadBudgetMs ?? 1800000));
+  const idle=new AbortController(),phase=new AbortController();let idleTimer;
+  const timeoutReason=()=>new DOMException('资源来源已超过有限等待预算','TimeoutError');
+  const phaseTimer=setTimeout(()=>phase.abort(timeoutReason()),Math.max(1,Math.ceil(deadline-now())));phaseTimer.unref?.();
+  const downloadSignal=AbortSignal.any([signal || new AbortController().signal,idle.signal,phase.signal]);
+  const checkDeadline=()=>{
+    // The clock check also covers synchronous filesystem work which can delay
+    // the timer callback. Hashing and retries never create a new phase window.
+    if(now()>=deadline && !phase.signal.aborted)phase.abort(timeoutReason());
+    downloadSignal.throwIfAborted();
+  };
+  const verified=file=>verifiedDownload(file,identity,{signal:downloadSignal,check:checkDeadline});
+  const partial=target+'.partial',record=partial+'.json',replacement=partial+'.replacement';
   const resetIdle=()=>{clearTimeout(idleTimer);
     if(policy.downloadIdleTimeoutMs!=null)idleTimer=setTimeout(()=>idle.abort(new DOMException('资源来源长时间没有新增下载字节','TimeoutError')),policy.downloadIdleTimeoutMs);};
-  const downloadSignal=AbortSignal.any([signal || new AbortController().signal,idle.signal,AbortSignal.timeout(policy.downloadBudgetMs ?? 1800000)]);
-  let response,representation=null,keep=false;
+  const protocolError=()=>launcherError('发布资源校验失败：响应或文件与固定内容不符，未使用下载文件。',
+    {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+  let saved=null,initialStart=0,start=0,hash=crypto.createHash('sha256'),checkpointLoaded=false;
+  let response,representation=null,outputFile=partial,checkpointSaved=false,bodyFailure=false;
   try {
-    response=await fetchRead(fetcher,url,{headers,signal:downloadSignal},policy);
+    checkDeadline();if(await verified(target)){checkDeadline();return {file:target,cached:true};}
+    // A prior replacement was never committed. The original checkpoint remains
+    // authoritative until the replacement passes whole-file verification.
+    cleanupDownload([replacement,record+'.tmp']);checkDeadline();
+    const loaded=await loadDownloadCheckpoint({partial,record,identity,sources,signal:downloadSignal,check:checkDeadline});
+    checkpointLoaded=true;saved=loaded.saved;checkpointSaved=Boolean(saved);
+    initialStart=saved?.size || 0;start=initialStart;hash=loaded.hash;checkDeadline();
+    const requestUrl=safeSource(url),headers=new Headers({'User-Agent':RELEASE_USER_AGENT,'Accept-Encoding':'identity'});
+    if(start) {
+      headers.set('Range',`bytes=${start}-`);
+      // ETags identify a representation at one source, not content at mirrors.
+      if(saved.requestUrl===requestUrl && saved.source===requestUrl && strongETag(saved.etag))headers.set('If-Range',saved.etag);
+    }
+    onEvent({event:'task',stage_id:'download',task});onEvent({event:'progress',stage_id:'download',current:start,total:identity.size || 0});
+    checkDeadline();response=await fetchRead(fetcher,url,{headers,signal:downloadSignal},policy);
+    // A full replacement attempt must preserve the original prefix even when
+    // headers or a missing body cause rejection before any file is opened.
+    if(response.status===200 && start)outputFile=replacement;
     validateSourceResponse(sourceCandidate,response);
     const source=safeSource(response.url || url),etag=response.headers.get('etag');
     const encoding=(response.headers.get('content-encoding') || 'identity').toLowerCase();
-    const protocolError=()=>launcherError('发布资源校验失败：响应或文件与固定内容不符，未使用下载文件。',
-      {code:'VERIFICATION_FAILED',source:'release_service',site:'release.verify'});
+    if(encoding!=='identity')throw protocolError();
     if(response.status===416 && start) {
-      if(response.headers.get('content-range')!==`bytes */${identity.size}` || source!==saved.source || etag!==saved.etag || !await verified(partial)) throw protocolError();
-      await response.body?.cancel();fs.renameSync(partial,target);cleanupDownload([record]);return {file:target,cached:false,resumed:true};
+      if(response.headers.get('content-range')!==`bytes */${identity.size}` || !await verified(partial))throw protocolError();
+      await response.body?.cancel();checkDeadline();
+      fs.renameSync(partial,target);cleanupDownload([record,record+'.tmp']);return {file:target,cached:false,resumed:true};
     }
-    if(!response.ok || !response.body) throw launcherError(`发布资源下载失败（HTTP ${response.status}）。`,
+    if(!response.ok || !response.body)throw launcherError(`发布资源下载失败（HTTP ${response.status}）。`,
       {...responseEvidence(response),attempt:response.launcherAttempt,source:'release_service',site:'release.download'});
     let responseSize;
     if(response.status===206) {
       const range=/^bytes (\d+)-(\d+)\/(\d+)$/.exec(response.headers.get('content-range') || '');
-      if(!start || !range || Number(range[1])!==start || Number(range[3])!==identity.size
-        || Number(range[2])<start || Number(range[2])>=identity.size || etag!==saved.etag || source!==saved.source || encoding!=='identity') throw protocolError();
-      responseSize=Number(range[2])-start+1;
+      const numbers=range?.slice(1).map(Number);
+      if(!start || !numbers?.every(Number.isSafeInteger) || numbers[0]!==start || numbers[2]!==identity.size
+        || numbers[1]<start || numbers[1]!==identity.size-1 || headers.has('If-Range') && (etag!==saved.etag || source!==saved.source))throw protocolError();
+      // Without If-Range, an admitted provider may choose another managed
+      // mirror. Range and final whole-file SHA still bind the fixed content.
+      responseSize=numbers[1]-start+1;
     } else if(response.status===200) {
-      start=0;responseSize=identity.size;
+      start=0;hash=crypto.createHash('sha256');responseSize=identity.size;
     } else throw protocolError();
     const declared=response.headers.get('content-length');
-    if(encoding==='identity' && declared && (!/^\d+$/.test(declared) || responseSize && Number(declared)!==responseSize)) throw protocolError();
-    representation=identity.sha256 && identity.size && strongETag(etag) && encoding==='identity'
-      ? {schema:'nora-download-partial/1',expected,etag,source,encoding:'identity'} : null;
-    resetIdle();
-    // Preserve another configured source's verified checkpoint until this
-    // source actually supplies a usable representation. Never append it here.
-    if(foreignPartial){cleanupDownload([record]);foreignPartial=false;}
-    const output=await fs.promises.open(partial,start?'a':'w',0o600);
-    let current=start,lastProgress=0,transferFailure;
+    if(declared!==null && (!/^\d+$/.test(declared) || !Number.isSafeInteger(Number(declared))
+      || responseSize && Number(declared)!==responseSize || Number(declared)>maxSize))throw protocolError();
+    representation=identity.sha256 && identity.size
+      ? {schema:'nora-download-partial/2',content:downloadContent(identity),plan:digest(JSON.stringify(identity)),
+        requestUrl,source,etag:strongETag(etag)?etag:null,encoding:'identity'}:null;
+    resetIdle();checkDeadline();const output=await fs.promises.open(outputFile,start?'a':'w',0o600);
+    let current=start,lastProgress=0,lastCheckpoint=0,committed=start,transferFailure;
+    const estimateSlow=representation && outputFile===partial && policy.hasNextSource
+      ?slowSourceEstimator({identity,start,now,deadline,policy}):null;
+    const checkpoint=async()=>{
+      if(!representation || outputFile!==partial || current<=0)return;
+      await output.sync();
+      atomicJson(record,{...representation,size:current,prefixSha256:hash.copy().digest('hex')});
+      committed=current;lastCheckpoint=Date.now();checkpointSaved=true;
+    };
     try {
       for await(const chunk of Readable.fromWeb(response.body,{signal:downloadSignal})) {
-        if(current+chunk.length>(identity.size || maxSize)) throw protocolError();
-        await output.writeFile(chunk);current+=chunk.length;if(chunk.length)resetIdle();
+        checkDeadline();if(current+chunk.length>(identity.size || maxSize))throw protocolError();
+        await output.writeFile(chunk);hash.update(chunk);current+=chunk.length;checkDeadline();
+        if(chunk.length)resetIdle();
+        if(current-committed>=(policy.downloadCheckpointBytes ?? 4*1024*1024)
+          || Date.now()-lastCheckpoint>=(policy.downloadCheckpointIntervalMs ?? 2000))await checkpoint();
+        checkDeadline();
+        const estimate=estimateSlow?.(current);
+        if(estimate) {
+          // Commit first: cancellation and the next source must observe the
+          // same durable fixed-content prefix, even below the periodic size.
+          await checkpoint();checkDeadline();
+          try {(policy.diagnostics || fetcher.releasePolicy?.diagnostics)?.write('network.download.slow_source',{
+            source:sourceCandidate.id,...estimate,message:'持续下载速度预计无法在来源预算内完成，保留已提交字节并提前尝试下一来源。'});}catch{}
+          const error=launcherError('当前来源持续传输过慢，预计无法在有限预算内完成。',
+            {code:'TIMEOUT',source:'release_service',site:'release.download'});
+          error.downloadSlowSourceEstimate=true;throw error;
+        }
         if(Date.now()-lastProgress>=250) {lastProgress=Date.now();onEvent({event:'progress',stage_id:'download',current,total:identity.size || Number(declared) || 0});}
       }
-      clearTimeout(idleTimer);
-      await output.sync();
-    } catch(error) {transferFailure=error;throw error;}
-    finally {try {await output.close();} catch(error) {if(!transferFailure) throw error;
-      try {transferFailure.secondaryErrors=[...(transferFailure.secondaryErrors || []),error];} catch {}}}
-    downloadSignal.throwIfAborted();
+      await output.sync();checkDeadline();
+      if(identity.size && current!==identity.size)throw Object.assign(new Error('发布资源连接中断，下载尚未完整。'),{code:'ECONNRESET'});
+    }catch(error) {
+      transferFailure=error;bodyFailure=true;
+      const code=downloadSignal.reason?.name==='TimeoutError'?'TIMEOUT':transportCode(error);
+      if(signal?.aborted || downloadSignal.aborted || transient(error) || code && transient({code})) {
+        try {await checkpoint();}catch(saveError){try {error.secondaryErrors=[...(error.secondaryErrors || []),{operation:'download-checkpoint',error:saveError}];}catch{}}
+      }
+      throw error;
+    }finally {
+      try {await output.close();}catch(error){if(!transferFailure)throw error;
+        try {transferFailure.secondaryErrors=[...(transferFailure.secondaryErrors || []),error];}catch{}}
+    }
+    clearTimeout(idleTimer);checkDeadline();
     onEvent({event:'progress',stage_id:'download',current,total:identity.size || current});
     onEvent({event:'task',stage_id:'verify',task:'正在校验下载资源'});
-    if(identity.size && current!==identity.size) throw Object.assign(new Error('发布资源连接中断，下载尚未完整。'),{code:'ECONNRESET'});
-    if(identity.sha256 && !await verified(partial)) throw protocolError();
-    downloadSignal.throwIfAborted();
-    fs.renameSync(partial,target);cleanupDownload([record]);return {file:target,cached:false,resumed:Boolean(start)};
-  } catch(error) {
+    checkDeadline();if(identity.sha256 && !await verified(outputFile))throw protocolError();
+    checkDeadline();
+    fs.renameSync(outputFile,target);cleanupDownload([partial,record,record+'.tmp',replacement]);
+    return {file:target,cached:false,resumed:Boolean(initialStart && outputFile===partial)};
+  }catch(error) {
     const code=downloadSignal.reason?.name==='TimeoutError'?'TIMEOUT':transportCode(error);
     if(code && error.code!==code)error=launcherError(error.message,{code},error);
-    try {if(!error.source) error.source='release_service';if(!error.site||error.site==='release.request') error.site='release.download';} catch {}
+    try {if(!error.source)error.source='release_service';if(!error.site || error.site==='release.request')error.site='release.download';
+      error.downloadBodyFailure=bodyFailure;error.downloadPhaseExpired=phase.signal.aborted || now()>=deadline;
+      error.downloadIdleExpired=idle.signal.aborted;
+      error.downloadCheckpointSaved=checkpointSaved;}catch{}
     await rememberFailureResource(error,url,identity,fetcher);
-    if(foreignPartial)keep=true;
-    else if(representation && (signal?.aborted || downloadSignal.aborted || transient(error))) {
-      try {const current=regularFile(partial);if(current?.size>0 && current.size<=identity.size) {
-        atomicJson(record,{...representation,size:current.size,prefixSha256:await fileHash(partial)});keep=true;
-      }} catch(saveError) {try {error.secondaryErrors=[...(error.secondaryErrors || []),{operation:'download-checkpoint',error:saveError}];} catch {}}
-    } else if(saved && start && !representation && (signal?.aborted || transient(error) || error.status===403 || error.status===429 || error.status>=500)) keep=true;
-    if(!keep) cleanupDownload([partial,record],error);
+    const recoverable=signal?.aborted || downloadSignal.aborted || transient(error) || maySwitchSource(error,sourceCandidate);
+    // Failed fresh 200 downloads cannot destroy a useful original prefix.
+    // Even on a verification failure it remains unavailable until a future
+    // entire-file SHA succeeds; the rejected replacement is always removed.
+    const preserve=outputFile===replacement && Boolean(saved) || checkpointSaved && recoverable
+      || !checkpointLoaded && (signal?.aborted || downloadSignal.aborted || now()>=deadline);
+    cleanupDownload([replacement,record+'.tmp'],error);
+    if(!preserve)cleanupDownload([partial,record],error);
     throw error;
-  } finally {clearTimeout(idleTimer);if(response?.body && !response.bodyUsed) await response.body.cancel().catch(()=>{});}
+  }finally {clearTimeout(idleTimer);clearTimeout(phaseTimer);if(response?.body && !response.bodyUsed)await response.body.cancel().catch(()=>{});}
 }
 
 // Electron net.fetch cancels manual redirects instead of exposing their 3xx

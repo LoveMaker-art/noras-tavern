@@ -4,7 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { buildCommand } from './build-commands.mjs';
-import { projectDelivery } from '../../tooling/layout.mjs';
+import { embedReleaseSources } from './embed-release-sources.mjs';
+import { projectDelivery, readLayout, translatePath } from '../../tooling/layout.mjs';
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 export const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
@@ -116,9 +117,23 @@ export function createReleaseSource(root, { candidate = false } = {}) {
                 fs.writeFileSync(target, bytes, { mode: stat.mode & 0o777 });
             }
         }
+        // Source fingerprints describe authored bytes. Seal generated entry
+        // configuration only in the disposable export, with its own receipt.
+        let generatedSourceFiles;
+        if (['launcher/desktop/release-sources.json', 'ops/installer/desktop/release-sources.json']
+            .some(relative => Object.hasOwn(hashes, relative))) {
+            const report = embedReleaseSources(stage);
+            const rules = readLayout(stage);
+            if (hashes[report.configurationPath] !== report.configurationSha256
+                || report.files.some(file => hashes[file.path] !== file.beforeSha256))
+                throw new Error('Generated release sources do not match the recorded authored inputs');
+            generatedSourceFiles = {...report, configurationDeliveryPath: translatePath(report.configurationPath, rules),
+                files: report.files.map(file => ({...file, deliveryPath: translatePath(file.path, rules)}))};
+        }
         const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
         return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,launcherCapabilities:LAUNCHER_CAPABILITIES,
-            sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes } };
+            sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes,
+            ...(generatedSourceFiles ? {generatedSourceFiles} : {}) } };
     } catch (error) {
         fs.rmSync(stage, { recursive: true, force: true });
         throw error;

@@ -16,7 +16,35 @@ fs.cpSync(path.join(source,'node_modules/semver'),path.join(modules,'node_module
 after(()=>fs.rmSync(modules,{recursive:true,force:true}));
 const releases = require(path.join(modules,'releases'));
 const launcher = require(path.join(modules,'launcher-update'));
+const {sourceCandidates}=require(path.join(modules,'release-sources'));
 const sha = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+const githubOnly={schema:1,primary:'github',mirrors:[]};
+
+// Build the fixture's physical routes from the same trusted source candidates
+// as the consumer. Never resolve arbitrary hosts/projects/tags by basename.
+function fixtureResource(url,release,sourceOptions={}) {
+  const routes=new Map(),api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/';
+  const add=(canonical,resource)=>{
+    for(const candidate of sourceCandidates(canonical,sourceOptions)) {
+      const previous=routes.get(candidate.url);
+      assert.ok(!previous||previous.canonical===canonical,`Conflicting fixture route: ${candidate.url}`);
+      routes.set(candidate.url,{...resource,canonical});
+    }
+  };
+  add(api+'latest',{kind:'release',name:'latest'});
+  add(api+'tags/'+encodeURIComponent(release.tag_name),{kind:'release',name:'tags/'+release.tag_name});
+  for(const asset of release.assets) {
+    const canonical=`https://github.com/LoveMaker-art/noras-tavern/releases/download/${encodeURIComponent(release.tag_name)}/${asset.name}`;
+    if(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(asset.name)&&asset.browser_download_url===canonical)
+      add(canonical,{kind:'asset',name:asset.name});
+  }
+  const resource=routes.get(String(url));
+  assert.ok(resource,`Fixture rejected an unsealed resource: ${url}`);
+  return resource;
+}
+function fixtureResponse(body,url,headers={}) {
+  const response=new Response(body,{headers});Object.defineProperty(response,'url',{value:String(url)});return response;
+}
 
 function publishedFixture() {
   const directory=path.join(__dirname,'fixtures/published-v2.4.4');
@@ -37,7 +65,8 @@ function publishedFixture() {
     assert.ok(asset&&fixture.files[asset.name],`Only captured public metadata may be read: ${url}`);
     return new Response(fixture.files[asset.name],{headers:{'Content-Type':'application/json'}});
   };
-  return {...fixture,requests,options:{fetcher,selectedRelease:fixture.release,launcherVersion:'2.1.1',tag:'v2.4.4'}};
+  return {...fixture,requests,options:{fetcher,selectedRelease:fixture.release,launcherVersion:'2.1.1',tag:'v2.4.4',
+    networkPolicy:{sources:githubOnly}}};
 }
 
 for(const [platform,arch] of [['win32','x64'],['darwin','x64'],['darwin','arm64']]) {
@@ -90,7 +119,8 @@ function publishedSharedFixture() {
     const index=fixture.release.assets.findIndex(item=>item.name===name);
     if(index===-1)fixture.release.assets.push(asset);else fixture.release.assets[index]=asset;
   }
-  const fetcher=async url=>url.startsWith('https://api.github.com/') ? Response.json(fixture.release) : fixture.options.fetcher(url);
+  const fetcher=async url=>fixtureResource(url,fixture.release,{sources:githubOnly}).kind==='release'
+    ? fixtureResponse(JSON.stringify(fixture.release),url,{'Content-Type':'application/json'}) : fixture.options.fetcher(url);
   return {...fixture,options:{...fixture.options,selectedRelease:undefined,fetcher,launcherVersion:minimum}};
 }
 
@@ -131,20 +161,69 @@ function releaseFixture(t) {
   bytes.SHA256SUMS=Object.entries(bytes).map(([name,value])=>`${sha(value)}  ${name}`).join('\n');
   const release={tag_name:'v2.4.2',assets:Object.keys(bytes).map(name=>({name,
     browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/${name}`,size:Buffer.byteLength(bytes[name])}))};
-  let forbidMetadata=false;
+  let forbidMetadata=false;const requests=[];
+  const resourceName=(url,sourceOptions)=>fixtureResource(url,release,sourceOptions).name;
   const fetcher=async url=>{
-    if(url.includes('/api.github.com/')||url.includes('api.github.com/')) {
+    requests.push(String(url));
+    const resource=fixtureResource(url,release);
+    if(resource.kind==='release') {
       if(forbidMetadata) throw new Error('latest changed after the user selected a release');
-      return Response.json(release);
+      return fixtureResponse(JSON.stringify(release),url,{'Content-Type':'application/json'});
     }
-    const name=url.split('/').at(-1);
+    const name=resource.name;assert.ok(Object.hasOwn(bytes,name),`Fixture bytes missing for sealed asset: ${name}`);
     if(forbidMetadata && name==='nora-launcher-win32-x64.json')
       throw new Error('selected launcher metadata must not be queried again');
-    return new Response(bytes[name],{headers:{ETag:'"fixture-v1"','Content-Length':String(Buffer.byteLength(bytes[name]))}});
+    return fixtureResponse(bytes[name],url,{ETag:'"fixture-v1"','Content-Length':String(Buffer.byteLength(bytes[name]))});
   };
-  return {root,manifest,item,release,bytes,fetcher,forbidMetadata(){forbidMetadata=true;},
+  return {root,manifest,item,release,bytes,fetcher,requests,resourceName,forbidMetadata(){forbidMetadata=true;},
     options:{cacheRoot:path.join(root,'cache'),installRoot:root,launcherVersion:'2.0.0',platform:'win32',arch:'x64',fetcher}};
 }
+
+test('current default JihuLab fixed tag selection records source evidence and reuses cached exact metadata',async t=>{
+  const f=releaseFixture(t),configuration=require(path.join(modules,'release-sources.json'));
+  assert.equal(configuration.primary,'jihulab');
+  const metadataCache=releases.createMetadataCache({ttlMs:60000});
+  const selected=await releases.selectPlan({...f.options,tag:f.release.tag_name,metadataCache});
+  assert.equal(selected.tag,'v2.4.2');assert.equal(selected.commit,f.manifest.commit);
+  assert.equal(selected.releaseManifestText,f.bytes['release-manifest.json']);
+  assert.equal(selected.metadataSource,'network');assert.equal(selected.latestConfirmed,true);
+  const domestic=configuration.mirrors.find(source=>source.id==='jihulab');
+  const expected=['release.json','release-manifest.json','nora-launcher-win32-x64.json']
+    .map(name=>new URL(`${f.release.tag_name}/${name}`,domestic.baseUrl).href);
+  assert.deepEqual(f.requests,expected);
+  assert.ok(f.requests.every(url=>new URL(url).origin==='https://jihulab.com'));
+  f.forbidMetadata();
+  const cached=await releases.selectPlan({...f.options,tag:f.release.tag_name,metadataCache});
+  assert.equal(cached.tag,selected.tag);assert.equal(cached.commit,selected.commit);
+  assert.equal(cached.releaseManifestText,selected.releaseManifestText);
+  assert.equal(cached.metadataSource,'cache');assert.equal(cached.latestConfirmed,false);
+  assert.equal(cached.checkedAt,selected.checkedAt);assert.deepEqual(f.requests,expected);
+});
+
+test('default-source fixture rejects foreign host, project, tag and query routes even with a known basename',async t=>{
+  const f=releaseFixture(t),canonical=f.release.assets.find(asset=>asset.name==='release-manifest.json').browser_download_url;
+  const physical=sourceCandidates(canonical).find(source=>source.id==='jihulab').url;
+  const latest=sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')
+    .find(source=>source.id==='jihulab').url;
+  const foreignProject=new URL(physical);foreignProject.pathname=foreignProject.pathname.replace(/\/projects\/[1-9][0-9]*\//,'/projects/1/');
+  assert.notEqual(foreignProject.href,physical);
+  for(const url of [physical.replace('https://jihulab.com/','https://untrusted.example/'),foreignProject.href,
+    physical.replace('/v2.4.2/','/v2.4.3/'),physical+'?unsealed=1',physical+'#fragment',
+    latest.replace('/LoveMaker-art/nora-tavern/','/another-owner/nora-tavern/'),
+    canonical.replace('/LoveMaker-art/noras-tavern/','/another-owner/noras-tavern/'),
+    'https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.3'])
+    await assert.rejects(f.fetcher(url),/Fixture rejected an unsealed resource/,url);
+  assert.equal(fs.existsSync(f.options.cacheRoot),false);
+});
+
+test('current default JihuLab fixed tag selection rejects a different manifest version before asset preparation',async t=>{
+  const f=releaseFixture(t);
+  f.bytes['release-manifest.json']=JSON.stringify({...f.manifest,versions:{tavern:'2.4.3'}});
+  await assert.rejects(releases.selectPlan({...f.options,tag:f.release.tag_name}),
+    error=>error.userCode==='RELEASE_COMPATIBILITY'&&error.site==='release.verify');
+  assert.ok(f.requests.every(url=>new URL(url).origin==='https://jihulab.com'));
+  assert.equal(fs.existsSync(f.options.cacheRoot),false);
+});
 
 test('a selected release survives latest changing and prepares the exact launcher without re-selecting metadata',async t=>{
   const f=releaseFixture(t);
@@ -223,7 +302,7 @@ test('system identity and control-asset routing reject substitution before readi
       change(f,f.release.assets.find(asset=>asset.name==='win32-x64-release-manifest.json'));
     else {change(f);refreshFullFixture(f);}
     await assert.rejects(releases.selectPlan({...f.options,mode:'install',fetcher:async url=>{requests.push(url);return f.fetcher(url);}}));
-    assert.deepEqual(requests.map(url=>url.split('/').at(-1)),['latest','nora-system-win32-x64.json']);
+    assert.deepEqual(requests.map(url=>f.resourceName(url)),['latest','nora-system-win32-x64.json']);
     assert.equal(fs.existsSync(f.options.cacheRoot),false);
   });
 });
@@ -235,7 +314,7 @@ test('install manifest hash and size are checked before inspecting or downloadin
     else f.system.files['release-manifest.json'].size++;
     refreshFullFixture(f);
     await assert.rejects(releases.selectPlan({...f.options,mode:'install',fetcher:async url=>{requests.push(url);return f.fetcher(url);}}),/固定发布清单校验/);
-    assert.deepEqual(requests.map(url=>url.split('/').at(-1)),['latest','nora-system-win32-x64.json','win32-x64-release-manifest.json']);
+    assert.deepEqual(requests.map(url=>f.resourceName(url)),['latest','nora-system-win32-x64.json','win32-x64-release-manifest.json']);
   });
 });
 
@@ -287,8 +366,8 @@ for(const flow of ['install','components','launcher'])test(`${flow} preparation 
     requests.push(url);
     if(url.startsWith('https://primary.example/')) {
       if(selected)return new Response('unavailable',{status:503});
-      if(url.endsWith('/channels/stable.json'))return Response.json(f.release);
-      return new Response(f.bytes[url.split('/').at(-1)]);
+      const resource=fixtureResource(url,f.release,{sources});
+      return fixtureResponse(resource.kind==='release'?JSON.stringify(f.release):f.bytes[resource.name],url);
     }
     return f.fetcher(url,options);
   };
@@ -318,13 +397,13 @@ for(const flow of ['install','components','launcher'])test(`${flow} preparation 
 
 test('release and manifest selection share one total metadata budget',async t=>{
   const f=releaseFixture(t);let clock=1000;
-  await assert.rejects(releases.selectPlan({...f.options,networkPolicy:{now:()=>clock,totalBudgetMs:100,backoffMs:[0,0]},
+  await assert.rejects(releases.selectPlan({...f.options,networkPolicy:{sources:githubOnly,now:()=>clock,totalBudgetMs:100,backoffMs:[0,0]},
     fetcher:async(url,options)=>{clock+=60;return f.fetcher(url,options);}}),error=>error.code==='TIMEOUT');
 });
 
 test('first installation shares the release lookup budget with manifest selection before choosing a plan',async t=>{
   const f=fullInstallFixture(t),requests=[];let clock=1000,selected=0;
-  await assert.rejects(releases.prepareInstall({...f.options,networkPolicy:{now:()=>clock,totalBudgetMs:100,backoffMs:[0,0]},
+  await assert.rejects(releases.prepareInstall({...f.options,networkPolicy:{sources:githubOnly,now:()=>clock,totalBudgetMs:100,backoffMs:[0,0]},
     onPlan:async()=>{selected++;},fetcher:async(url,options)=>{
       requests.push(url);clock+=60;return f.fetcher(url,options);
     }}),error=>error.code==='TIMEOUT');
@@ -344,7 +423,7 @@ for(const flow of ['install','components','launcher'])test(`${flow} keeps the op
   const fetcher=async(url,options)=>{
     requests.push(url);
     if(url.includes('api.github.com/')){clock+=10000;return f.fetcher(url,options);}
-    const name=url.split('/').at(-1);
+    const name=f.resourceName(url,{sources});
     if(metadataNames.has(name)){
       clock+=10000;
       if(url.startsWith('https://github.com/'))return new Response('not reachable',{status:503});
@@ -405,7 +484,7 @@ for(const flow of ['install','components','launcher'])test(`${flow} resumed seal
     networkPolicy:{sourceContext:network.createReleaseSourceContext(),sources:{schema:1,primary:'github',mirrors:[{id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]}},
     fetcher:async(url,request)=>{
       requests.push(url);assert.ok(!url.includes('api.github.com'),'the sealed target must survive latest changing');
-      const name=url.split('/').at(-1);assert.notEqual(name,'nora-launcher-win32-x64.json');
+      const name=f.resourceName(url,{sources:options.networkPolicy.sources});assert.notEqual(name,'nora-launcher-win32-x64.json');
       assert.equal(new Headers(request.headers).get('if-none-match'),null,'fixed source proof is fresh full bytes, not a TTL/304 shortcut');
       if(url.startsWith('https://github.com/')){assert.equal(name,'release-manifest.json');return new Response('unavailable',{status:503});}
       return new Response(f.bytes[name],{headers:{'Content-Length':String(Buffer.byteLength(f.bytes[name]))}});

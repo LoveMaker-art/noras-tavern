@@ -8,12 +8,25 @@ const crypto=require('node:crypto');
 const {create}=require('../installer/desktop/operation-policy');
 const {createOperationController}=require('../installer/desktop/operation-state');
 const lock=require('../installer/desktop/operation-lock');
-const {downloadAsset}=require('../installer/desktop/release-network');
+const {downloadAsset,metadataJson}=require('../installer/desktop/release-network');
+const {sourceCandidates}=require('../installer/desktop/release-sources');
 const releases=require('../installer/desktop/releases');
 const githubOnly={schema:1,primary:'github',mirrors:[]};
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+// These original-resource regressions describe a build whose configured source
+// is GitHub. Load the same shipped policy with that explicit build-owned JSON;
+// current domestic-source cases below use the production modules unchanged.
+const desktop=path.resolve(__dirname,'../installer/desktop');
+const legacyDesktop=fs.mkdtempSync(path.join(os.tmpdir(),'nora-retry-github-build-'));
+for(const name of JSON.parse(fs.readFileSync(path.join(desktop,'package.json'))).build.files)
+  fs.copyFileSync(path.join(desktop,name),path.join(legacyDesktop,name));
+fs.writeFileSync(path.join(legacyDesktop,'release-sources.json'),JSON.stringify(githubOnly));
+fs.symlinkSync(fs.realpathSync(process.env.NORA_TEST_DESKTOP_NODE_MODULES||path.join(desktop,'node_modules')),
+  path.join(legacyDesktop,'node_modules'),process.platform==='win32'?'junction':'dir');
+const legacyCreate=require(path.join(legacyDesktop,'operation-policy')).create;
+test.after(()=>fs.rmSync(legacyDesktop,{recursive:true,force:true}));
 
-async function fixture(t,{execute,capture=true,selectBeforeExecute=true,executionStage='applying',policyOptions={}}={}){
+async function fixture(t,{execute,capture=true,selectBeforeExecute=true,executionStage='applying',policyOptions={},policyFactory=create}={}){
   const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-retry-conditions-'));
   const hermesHome=path.join(home,'hermes'),installRoot=path.join(home,'tavern');
   fs.mkdirSync(hermesHome);fs.mkdirSync(installRoot);
@@ -21,7 +34,7 @@ async function fixture(t,{execute,capture=true,selectBeforeExecute=true,executio
   let unexpectedReads=0;
   const networkFetch=policyOptions.networkFetch||(async()=>{unexpectedReads++;throw new Error('Unexpected network read in a post-selection fixture');});
   t.after(()=>assert.equal(unexpectedReads,0,'Post-selection failures must not query a new release'));
-  const policy=create({home,hermesHome,installRoot,bridge:async()=>({}),runRuntime:async()=>{},networkFetch,
+  const policy=policyFactory({home,hermesHome,installRoot,bridge:async()=>({}),runRuntime:async()=>{},networkFetch,
     inspectRuntime:()=>({effectState:'untouched',recoveryOutcome:'not-required'}),inspectLegacy:()=>null,...policyOptions});
   let runs=0;
   const options={directory:path.join(home,'installer'),lock,observeEffects:policy.observe,recheckers:{install:policy.recheck},
@@ -220,7 +233,7 @@ async function metadataFixture(t,{tag,channel='stable'}={}){
 
 test('initial official metadata failure permits install to continue only after a valid original GET; its consumed proof cannot reset attempts',async t=>{
   const metadata=await metadataFixture(t),completedTags=[];
-  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
+  const f=await fixture(t,{policyFactory:legacyCreate,selectBeforeExecute:false,policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
     const release=await releases.latest(metadata.fetcher,undefined,'stable',undefined,{networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     completedTags.push(release.tag_name);return {verification:'confirmed'};
   }});
@@ -257,7 +270,7 @@ test('initial official metadata failure permits install to continue only after a
 
 test('initial explicit metadata recheck must prove the original fixed tag',async t=>{
   const metadata=await metadataFixture(t,{tag:'v2.4.2'});
-  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
+  const f=await fixture(t,{policyFactory:legacyCreate,selectBeforeExecute:false,policyOptions:{networkFetch:metadata.fetcher},execute:async()=>{
     await releases.latest(metadata.fetcher,undefined,'stable','v2.4.2',{networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     return {verification:'confirmed'};
   }});
@@ -268,6 +281,101 @@ test('initial explicit metadata recheck must prove the original fixed tag',async
   metadata.setMode('readable');
   const valid=await f.controller().recheck(failed.operationId,{snapshotSequence:wrong.snapshotSequence});
   assert.equal(valid.attempt,0);assert.deepEqual(valid.target,target);assert.equal(valid.allowedActions.includes('retry'),true);
+});
+
+test('default Jihu metadata failure retains an admitted physical cause when canonical route lookup fails and recovery needs fresh bytes',async t=>{
+  const canonical='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
+  const primary=sourceCandidates(canonical)[0];assert.equal(primary.provider,'jihulab');
+  let clock=Date.now(),mode='failed',canonicalRoute=false,lastError;const requests=[];
+  const release={tag_name:'v2.4.2',draft:false,prerelease:false,assets:[]};
+  const fetcher=async original=>{
+    const url=String(original);requests.push(url);assert.equal(url,primary.url);
+    if(mode==='failed'){clock+=2000;throw Object.assign(new Error('primary transport reset'),{code:'ECONNRESET'});}
+    const response=mode==='not-modified'?new Response(null,{status:304}):Response.json(mode==='invalid'?{}:release);
+    Object.defineProperty(response,'url',{value:url});return response;
+  };
+  fetcher.conditionRoute=async url=>{
+    if(String(url)===canonical&&!canonicalRoute)throw Error('canonical route lookup unavailable');
+    return 'DIRECT';
+  };
+  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:fetcher,now:()=>clock},execute:async()=>{
+    try{await metadataJson(canonical,{fetcher,policy:{maxAttempts:1,totalBudgetMs:1000,now:()=>clock}});}
+    catch(error){lastError=error;throw error;}
+    return {verification:'confirmed'};
+  }});
+  const target={request:{action:'install'}};
+  await f.controller().start('install',{target},'domestic-route-one');
+  const failed=await f.controller().start('install',{target},'domestic-route-two');
+  assert.equal(lastError.conditionResource,undefined,'the failed logical route lookup cannot invent canonical evidence');
+  assert.equal(lastError.cause?.cause?.conditionResource?.url,primary.url,'the real failed primary read keeps its physical identity');
+  assert.equal(failed.currentFailure.conditionTarget?.kind,'release-metadata');
+  assert.equal(failed.currentFailure.conditionTarget.resource.url,canonical,'retry admission binds the admitted source back to the logical resource');
+  canonicalRoute=true;mode='invalid';
+  let checked=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+  assert.equal(checked.attempt,2);assert.equal(checked.allowedActions.includes('retry'),false);
+  mode='not-modified';checked=await f.controller().recheck(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(checked.attempt,2);assert.equal(checked.allowedActions.includes('retry'),false,'304 without fresh bytes cannot prove recovery');
+  mode='readable';checked=await f.controller().recheck(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(checked.attempt,0);assert.equal(checked.allowedActions.includes('retry'),true);assert.deepEqual(checked.target,target);
+  const before=requests.length,consumed=await f.controller().recheck(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(consumed.snapshotSequence,checked.snapshotSequence);
+  // Selection may probe the catalogue once, but this incomplete publication
+  // cannot create a separate full-install proof or reuse the metadata proof.
+  assert.equal(requests.length,before+1);assert.equal(consumed.attempt,0);
+  const resumed=await f.controller().resume(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(resumed.state,'succeeded');assert.equal(f.runs,3);
+  assert.ok(requests.every(url=>url===primary.url),'a healthy domestic source never delegates this proof to another host');
+});
+
+test('canonical beta API metadata recheck keeps its valid page query with the current domestic source policy',async t=>{
+  const canonical='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1';
+  const candidates=sourceCandidates(canonical,{channel:'beta'});assert.equal(candidates[0].provider,'jihulab');
+  let mode='failed';const requests=[];
+  const rows=[{tag_name:'v2.4.2-beta.1',draft:false,prerelease:true,assets:[]}];
+  const fetcher=async original=>{
+    const url=String(original);requests.push(url);assert.ok(candidates.some(item=>item.url===url));
+    const response=mode==='failed'?new Response('unavailable',{status:503}):Response.json(mode==='invalid'?{}:rows);
+    Object.defineProperty(response,'url',{value:url});return response;
+  };
+  fetcher.conditionRoute=async()=> 'DIRECT';
+  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:fetcher,channel:'beta'},execute:async()=>{
+    await metadataJson(canonical,{fetcher,channel:'beta',policy:{maxAttempts:1,totalBudgetMs:1000}});
+    return {verification:'confirmed'};
+  }});
+  const target={request:{action:'install',channel:'beta'}};
+  await f.controller().start('install',{target},'beta-query-one');
+  const failed=await f.controller().start('install',{target},'beta-query-two');
+  assert.equal(failed.currentFailure.conditionTarget?.kind,'release-metadata');
+  assert.equal(failed.currentFailure.conditionTarget.resource.url,canonical);
+  mode='invalid';const invalid=await f.controller().recheck(failed.operationId,{snapshotSequence:failed.snapshotSequence});
+  assert.equal(invalid.attempt,2);assert.equal(invalid.allowedActions.includes('retry'),false);
+  mode='readable';const checked=await f.controller().recheck(failed.operationId,{snapshotSequence:invalid.snapshotSequence});
+  assert.equal(checked.attempt,0);assert.equal(checked.allowedActions.includes('retry'),true);assert.deepEqual(checked.target,target);
+  const result=await f.controller().resume(failed.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(result.state,'succeeded');assert.equal(f.runs,3);
+  assert.equal(requests.at(-1),candidates[0].url);
+});
+
+test('physical Jihu metadata identity admits only the configured project, fixed tag and known resource shape',async t=>{
+  const f=await fixture(t,{selectBeforeExecute:false});
+  const logical='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/v2.4.2';
+  const primary=sourceCandidates(logical)[0];assert.equal(primary.provider,'jihulab');
+  const project=/\/projects\/([0-9]+)\//.exec(new URL(primary.url).pathname);assert.ok(project);
+  const foreignProject=primary.url.replace(`/projects/${project[1]}/`,`/projects/${project[1]==='1'?'2':'1'}/`);
+  const record={kind:'install',operationId:'bb100075-1af2-4b83-ac46-a9f8e24b6b01',target:{request:{action:'install',tag:'v2.4.2'}}};
+  const error=url=>Object.assign(new Error('metadata unavailable'),{code:'TIMEOUT',source:'release_service',site:'release.request',
+    conditionResource:{url,routeHash:hash('DIRECT')}});
+  const valid=f.policy.identifyFailureCondition(error(primary.url),record);
+  assert.equal(valid.kind,'release-metadata');assert.equal(valid.resource.url,logical);
+  for(const url of [foreignProject,
+    primary.url.replace('/generic/nora-tavern/','/generic/other/'),primary.url.replace('/v2.4.2/','/v2.4.3/'),
+    primary.url+'?credential=external',primary.url+'#external',primary.url.replace('jihulab.com','unknown.example'),
+    primary.url.replace('/release.json','/unowned.json'),
+    sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')[0].url,
+    sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1',{channel:'beta'})[0].url])
+    assert.equal(f.policy.identifyFailureCondition(error(url),record),null,url);
+  for(const code of ['CERT_HAS_EXPIRED','VERIFICATION_FAILED','INVALID_RESPONSE'])
+    assert.equal(f.policy.identifyFailureCondition({...error(primary.url),code},record),null);
 });
 
 function completeReleaseFixture(){
@@ -289,15 +397,16 @@ function completeReleaseFixture(){
   return {platform,arch,tag,payloads,bytes,release};
 }
 
-async function selectedMetadataBlock(t,{legacy=false,laterUnknown=false,olderMetadata=false}={}){
-  const published=completeReleaseFixture(),url=releases.assetUrl(published.release,'release-manifest.json');
+async function selectedMetadataBlock(t,{legacy=false,laterUnknown=false,olderMetadata=false,domestic=false}={}){
+  const published=completeReleaseFixture(),logical=releases.assetUrl(published.release,'release-manifest.json');
+  const url=domestic?sourceCandidates(logical)[0].url:logical;
   let body=published.bytes['release-manifest.json'],reads=0,phase='history';
   const fetcher=async original=>{
     reads++;assert.equal(String(original),url);
     const response=new Response(body);Object.defineProperty(response,'url',{value:String(original)});return response;
   };
   fetcher.conditionRoute=async()=> 'DIRECT';
-  const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:fetcher,launcherVersion:'2.0.3'}});
+  const f=await fixture(t,{policyFactory:domestic?create:legacyCreate,selectBeforeExecute:false,policyOptions:{networkFetch:fetcher,launcherVersion:'2.0.3'}});
   const plan=await releases.selectPlan({mode:'update',launcherVersion:'2.0.3',selectedRelease:published.release,
     fetcher:async original=>new Response(published.bytes[String(original).split('/').at(-1)]),
     networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
@@ -370,6 +479,25 @@ test('a metadata timeout followed by fixed-plan admission still verifies its exa
     const resumed=await f.controller().resume(checked.operationId,{snapshotSequence:checked.snapshotSequence});
     assert.equal(resumed.state,'succeeded');assert.equal(resumed.attempt,1);assert.equal(JSON.stringify(resumed.target),fixed);
   }
+});
+
+test('current Jihu recheck of a selected update keeps the fixed tag and sealed manifest SHA through physical-source recovery',async t=>{
+  const f=await selectedMetadataBlock(t,{domestic:true}),fixed=JSON.stringify(f.blocked.target);
+  const current=f.blocked.currentFailure.conditionTarget.resource.url;
+  assert.equal(current,releases.assetUrl(f.published.release,'release-manifest.json'),'the physical failure cannot replace the canonical fixed target');
+  let record=f.blocked;
+  for(const body of [f.published.bytes['release-manifest.json']+' ',
+    f.published.bytes['release-manifest.json'].replace('a'.repeat(40),'b'.repeat(40))]){
+    f.setBody(body);record=await f.controller().recheck(record.operationId,{snapshotSequence:record.snapshotSequence});
+    assert.equal(record.attempt,3);assert.equal(record.allowedActions.includes('retry'),false);
+    assert.equal(JSON.stringify(record.target),fixed);
+  }
+  f.setBody(f.published.bytes['release-manifest.json']);
+  const checked=await f.controller().recheck(record.operationId,{snapshotSequence:record.snapshotSequence});
+  assert.equal(checked.attempt,0);assert.equal(checked.allowedActions.includes('retry'),true);assert.equal(JSON.stringify(checked.target),fixed);
+  assert.equal(f.reads,3);
+  const resumed=await f.controller().resume(checked.operationId,{snapshotSequence:checked.snapshotSequence});
+  assert.equal(resumed.state,'succeeded');assert.equal(JSON.stringify(resumed.target),fixed);
 });
 
 test('a later actual unknown failure and its admission block cannot revive the first metadata condition',async t=>{

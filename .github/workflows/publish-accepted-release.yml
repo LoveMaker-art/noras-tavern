@@ -16,10 +16,10 @@ on:
         default: full
         options: [full, components]
       destinations:
-        description: Fixed destinations for this publication; github does not require SourceForge
+        description: auto includes the domestic primary; resumed plans retain their original destinations
         type: choice
-        default: all
-        options: [all, github]
+        default: auto
+        options: [auto, github-jihulab, all-with-jihulab, all, github, jihulab]
       stage:
         description: seal is local only; prepare creates verified drafts; promote/all change formal channels
         type: choice
@@ -105,7 +105,7 @@ jobs:
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "Product commit: $source_sha; publisher commit: $GITHUB_SHA"
       - name: Check publication source contracts before downloading accepted packages
-        run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs
+        run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-transport.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-credentials.test.mjs
       - name: Restore accepted delivery with exact artifact ZIP hashes
         shell: bash
         env:
@@ -134,6 +134,22 @@ jobs:
         run: |
           set -euo pipefail
           node tooling/release/asset-catalogue.mjs --baseline "$REUSE_TAG" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/reuse-baseline.json"
+      - name: Resolve destinations from the configured primary or the original resumed plan
+        id: destinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import {resolvePublicationDestinationSelection,publicationDestinations} from './tooling/release/publish-release.mjs';
+          const resumePlan=process.env.STATE_SOURCE_RUN
+            ?JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,'publication-state/publication-plan.json'),'utf8')):undefined;
+          const selector=resolvePublicationDestinationSelection(process.env.DESTINATIONS,{resumePlan});
+          const sources=publicationDestinations(selector);
+          fs.appendFileSync(process.env.GITHUB_ENV,`DESTINATIONS=${selector}\n`);
+          fs.appendFileSync(process.env.GITHUB_OUTPUT,`jihulab=${sources.includes('jihulab')}\nsourceforge=${sources.includes('sourceforge')}\n`);
+          JS
       - name: Seal or revalidate the same local plan before remote writes
         shell: bash
         env:
@@ -149,20 +165,27 @@ jobs:
           if [[ "$ASSET_MODE" == shared && -z "$STATE_SOURCE_RUN" ]]; then reuse=(--reuse-from "$RUNNER_TEMP/reuse-baseline.json"); fi
           node tooling/release/publish-release.mjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE" --stage seal --state-dir "$RUNNER_TEMP/publication-state" --asset-mode "$ASSET_MODE" --destinations "$DESTINATIONS" "${resume[@]}" "${reuse[@]}"
           node -e 'const fs=require("node:fs"),p=require("node:path"),{immutableStateHashes}=require("./tooling/release/publication-source.cjs");const state=p.join(process.env.RUNNER_TEMP,"publication-state"),receipt=JSON.parse(fs.readFileSync(p.join(process.env.RUNNER_TEMP,"accepted-source/source-receipt.json"))),checkpoint=JSON.parse(fs.readFileSync(p.join(state,"publication-state.json")));fs.writeFileSync(p.join(state,"workflow-provenance.json"),JSON.stringify({schema:"nora-publication-workflow/1",tag:process.env.RELEASE_TAG,sourceCommit:process.env.SOURCE_SHA,publisherCommit:process.env.GITHUB_SHA,sourceRun:process.env.SOURCE_RUN,stateSourceRun:process.env.STATE_SOURCE_RUN||null,assetMode:process.env.ASSET_MODE,planId:checkpoint.planId,receipt,sealedStateHashes:immutableStateHashes(state)},null,2)+"\n")'
+      - name: Snapshot the pre-transfer state without duplicating immutable package bytes
+        run: node -e 'const p=require("node:path"),{snapshotBeforeTransfer}=require("./tooling/release/publication-source.cjs");snapshotBeforeTransfer(p.join(process.env.RUNNER_TEMP,"publication-state"),p.join(process.env.RUNNER_TEMP,"publication-state-before-transfer"))'
       - name: Preserve the fixed plan before beginning transfers
         uses: actions/upload-artifact@v4
         with:
           name: nora-publication-state-before-transfer
-          path: ${{ runner.temp }}/publication-state/**
+          path: ${{ runner.temp }}/publication-state-before-transfer/**
           if-no-files-found: error
           retention-days: 90
       - name: Prepare private SourceForge publishing credentials
-        if: inputs.stage != 'seal' && inputs.destinations == 'all'
+        if: inputs.stage != 'seal' && steps.destinations.outputs.sourceforge == 'true'
         env:
           NORA_SF_USERNAME: ${{ vars.SOURCEFORGE_USERNAME }}
           NORA_SF_PRIVATE_KEY: ${{ secrets.SOURCEFORGE_SSH_PRIVATE_KEY }}
           NORA_SF_KNOWN_HOSTS: ${{ secrets.SOURCEFORGE_KNOWN_HOSTS }}
         run: node tooling/release/sourceforge-credentials.mjs prepare
+      - name: Prepare private JihuLab publishing credentials
+        if: inputs.stage != 'seal' && steps.destinations.outputs.jihulab == 'true'
+        env:
+          NORA_JIHULAB_PRIVATE_TOKEN: ${{ secrets.JIHULAB_PRIVATE_TOKEN }}
+        run: node tooling/release/jihulab-credentials.mjs prepare
       - name: Execute only the selected publication stage against the sealed plan
         if: inputs.stage != 'seal'
         shell: bash
@@ -181,5 +204,8 @@ jobs:
           if-no-files-found: warn
           retention-days: 90
       - name: Remove private SourceForge publishing files
-        if: always() && inputs.destinations == 'all'
+        if: always() && steps.destinations.outputs.sourceforge == 'true'
         run: node tooling/release/sourceforge-credentials.mjs cleanup
+      - name: Remove private JihuLab publishing files
+        if: always() && steps.destinations.outputs.jihulab == 'true'
+        run: node tooling/release/jihulab-credentials.mjs cleanup

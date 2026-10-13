@@ -232,8 +232,9 @@ test('the independent publication workflow only consumes accepted bytes and defa
   assert.deepEqual(Object.keys(publisher.on), ['workflow_dispatch']);
   assert.equal(publisher.on.workflow_dispatch.inputs.stage.default, 'seal');
   assert.equal(publisher.on.workflow_dispatch.inputs.asset_mode.default, 'legacy');
-  assert.equal(publisher.on.workflow_dispatch.inputs.destinations.default, 'all');
-  assert.deepEqual(publisher.on.workflow_dispatch.inputs.destinations.options, ['all', 'github']);
+  assert.equal(publisher.on.workflow_dispatch.inputs.destinations.default, 'auto');
+  assert.deepEqual(publisher.on.workflow_dispatch.inputs.destinations.options,
+    ['auto','github-jihulab','all-with-jihulab','all','github','jihulab']);
   assert.doesNotMatch(scripts(publisher), /package-release\.(?:mjs|sh)|package-hermes-runtime|npm (?:ci|install)|npm run pack/);
   const steps = publisher.jobs['publish-accepted'].steps;
   assert.ok(steps.some(step => step.run?.includes('publication-source.cjs delivery')));
@@ -257,13 +258,30 @@ test('the fixed state is durable before remote writes, final failure evidence pe
   const credential = steps.findIndex(step => step.run === 'node tooling/release/sourceforge-credentials.mjs prepare');
   const network = steps.findIndex(step => step.name?.startsWith('Execute only'));
   const final = steps.findIndex(step => step.with?.name === 'nora-publication-state');
+  const snapshot=steps.findIndex(step=>step.run?.includes('snapshotBeforeTransfer('));
+  assert.ok(snapshot>=0&&snapshot<sealed,'upload an independent pre-transfer snapshot before preparing credentials');
   assert.ok(sealed >= 0 && credential > sealed && network > credential && final > network);
-  assert.equal(steps[credential].if, "inputs.stage != 'seal' && inputs.destinations == 'all'");
+  assert.equal(steps[credential].if, "inputs.stage != 'seal' && steps.destinations.outputs.sourceforge == 'true'");
+  const domestic=steps.findIndex(step=>step.run==='node tooling/release/jihulab-credentials.mjs prepare');
+  assert.ok(domestic>sealed&&domestic<network);
+  assert.equal(steps[domestic].if,"inputs.stage != 'seal' && steps.destinations.outputs.jihulab == 'true'");
+  assert.equal(steps[domestic].env.NORA_JIHULAB_PRIVATE_TOKEN,'${{ secrets.JIHULAB_PRIVATE_TOKEN }}');
   assert.match(steps[final].if, /always\(\)/);
-  for (const index of [sealed, final]) assert.equal(steps[index].with.path, '${{ runner.temp }}/publication-state/**');
-  assert.equal(steps.at(-1).if, "always() && inputs.destinations == 'all'");
+  assert.equal(steps[sealed].with.path, '${{ runner.temp }}/publication-state-before-transfer/**');
+  assert.equal(steps[final].with.path, '${{ runner.temp }}/publication-state/**');
+  for(const [provider,script] of [['sourceforge','sourceforge-credentials.mjs'],['jihulab','jihulab-credentials.mjs']]){
+    const cleanup=steps.find(step=>step.run===`node tooling/release/${script} cleanup`);
+    assert.equal(cleanup.if,`always() && steps.destinations.outputs.${provider} == 'true'`);
+  }
+  const resolve=steps.findIndex(step=>step.id==='destinations');
+  assert.ok(resolve<sealed&&resolve<credential);
+  assert.match(steps[resolve].run,/resolvePublicationDestinationSelection/);
+  assert.match(steps[resolve].run,/publication-plan\.json/);
+  assert.match(steps[resolve].run,/GITHUB_ENV/);
   assert.equal(job.env.DESTINATIONS, '${{ inputs.destinations }}');
-  for (const step of steps.filter(step => step.run?.includes('publish-release.mjs'))) {
+  const publicationCommands = steps.filter(step => /node tooling\/release\/publish-release\.mjs /.test(step.run || ''));
+  assert.equal(publicationCommands.length, 2);
+  for (const step of publicationCommands) {
     assert.match(step.run, /--destinations "\$DESTINATIONS"/);
   }
   assert.equal(job.concurrency.group, 'nora-sourceforge-release-channels');

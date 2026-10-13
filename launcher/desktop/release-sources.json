@@ -1,7 +1,13 @@
 {
   "schema": 1,
-  "primary": "github",
+  "primary": "jihulab",
   "mirrors": [
+    {
+      "id": "jihulab",
+      "provider": "jihulab",
+      "baseUrl": "https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/",
+      "channelBaseUrl": "https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/"
+    },
     {
       "id": "sourceforge",
       "provider": "sourceforge",

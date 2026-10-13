@@ -6,6 +6,7 @@ const vm = require('node:vm');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const releases = require('../installer/desktop/releases');
+const { sourceCandidates } = require('../installer/desktop/release-sources');
 const { parse } = require('../installer/desktop/node_modules/acorn');
 
 const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
@@ -81,21 +82,31 @@ test('component download uses shared updater plan, with no Hermes or platform bu
   files.SHA256SUMS = Object.entries(files).map(([name, body]) => `${sha(body)}  ${name}`).join('\n');
   const base = 'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.3.7/';
   const release = { tag_name: 'v2.3.7', assets: Object.keys(files).map(name => ({ name, browser_download_url: base + name })) };
+  const catalogueUrls = new Set(sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')
+    .map(source => source.url));
+  const assetUrls = new Map(release.assets.flatMap(asset => sourceCandidates(asset.browser_download_url)
+    .map(source => [source.url, asset.name])));
   const requests = [];
   const options = { cacheRoot: root, launcherVersion: '1.0.0',
     fetcher: async url => {
       requests.push(url);
-      if (url.endsWith('/releases/latest')) return new Response(JSON.stringify(release));
-      assert.ok(url.startsWith(base));
-      const name = url.slice(base.length);
-      assert.ok(name in files, `Unexpected full package request: ${name}`);
-      return new Response(files[name]);
+      let body;
+      if (catalogueUrls.has(url)) body = JSON.stringify(release);
+      else {
+        const name = assetUrls.get(url);
+        assert.ok(name && Object.hasOwn(files, name), `Unexpected full package or untrusted source request: ${url}`);
+        body = files[name];
+      }
+      const response = new Response(body);
+      Object.defineProperty(response, 'url', { value: url });
+      return response;
     },
     plan: async directory => {
       assert.equal(fs.readFileSync(path.join(directory, 'tavern-updater-bootstrap.py'), 'utf8'), 'updater');
       return { version: '2.3.7', mode: 'incremental', archives: [{ name: 'nora-tavern-module-updater.tar.gz', sha256: sha('changed-module') }] };
     } };
   const output = await releases.prepareUpdate(options);
+  assert.equal(requests[0], sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')[0].url);
   assert.equal(fs.readFileSync(path.join(output, 'nora-tavern-module-updater.tar.gz'), 'utf8'), 'changed-module');
   requests.length = 0;
   await releases.prepareUpdate(options);

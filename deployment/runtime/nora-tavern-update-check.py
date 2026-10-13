@@ -16,6 +16,134 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+REPO = 'LoveMaker-art/noras-tavern'
+TAG_PATTERN = r'v\d+\.\d+\.\d+(?:-beta\.\d+)?'
+ASSET_PATTERN = r'[A-Za-z0-9][A-Za-z0-9._-]*'
+# BEGIN BUILD-OWNED RELEASE SOURCES
+RELEASE_SOURCES = json.loads('{"schema":1,"primary":"jihulab","mirrors":[{"id":"jihulab","provider":"jihulab","baseUrl":"https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/","channelBaseUrl":"https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/"},{"id":"sourceforge","provider":"sourceforge","baseUrl":"https://downloads.sourceforge.net/project/nora-tavern/"}]}')
+# END BUILD-OWNED RELEASE SOURCES
+
+
+def validate_sources(value):
+    """Only the build-owned contract may name a download root."""
+    invalid = RuntimeError('资源来源配置无效，未下载或修改安装。')
+    if (not isinstance(value, dict) or type(value.get('schema')) is not int or value['schema'] != 1
+            or set(value) - {'schema', 'primary', 'mirrors'}
+            or not isinstance(value.get('mirrors'), list) or len(value['mirrors']) > 2):
+        raise invalid
+    ids, origins, mirrors = {'github'}, {'https://github.com', 'https://api.github.com'}, []
+    for item in value['mirrors']:
+        if (not isinstance(item, dict) or not isinstance(item.get('id'), str)
+                or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', item['id']) or item['id'] in ids
+                or not isinstance(item.get('baseUrl'), str)
+                or set(item) - {'id', 'baseUrl', 'provider', 'channelBaseUrl'}
+                or item.get('provider') not in (None, 'sourceforge', 'jihulab')
+                or item.get('provider') != 'jihulab' and item.get('channelBaseUrl') is not None):
+            raise invalid
+        def root_url(raw):
+            try:
+                parsed = urllib.parse.urlsplit(raw)
+                if (parsed.scheme != 'https' or not parsed.hostname or parsed.username or parsed.password
+                        or parsed.query or parsed.fragment or parsed.port not in (None, 443)
+                        or not parsed.path.endswith('/') or '\\' in raw
+                        or re.search(r'[\x00-\x20\x7f]', raw)):
+                    raise invalid
+                return parsed
+            except (ValueError, TypeError):
+                raise invalid
+        root = root_url(item['baseUrl'])
+        origin = 'https://' + root.hostname
+        if origin in origins:
+            raise invalid
+        if item.get('provider') == 'sourceforge' and (origin != 'https://downloads.sourceforge.net'
+                or not re.fullmatch(r'/project/[a-z0-9][a-z0-9-]{2,29}/', root.path)):
+            raise invalid
+        if item.get('provider') == 'jihulab':
+            identity = re.fullmatch(r'/api/v4/projects/([1-9][0-9]*)/packages/generic/([A-Za-z0-9][A-Za-z0-9._-]{0,254})/', root.path)
+            if (origin != 'https://jihulab.com' or item['baseUrl'] != 'https://jihulab.com'+root.path
+                    or not identity or int(identity[1]) > 9007199254740991):
+                raise invalid
+            if not isinstance(item.get('channelBaseUrl'), str):
+                raise invalid
+            channel = root_url(item['channelBaseUrl'])
+            raw = re.fullmatch(r'/((?:[A-Za-z0-9_][A-Za-z0-9_.-]{0,254}/){2,})-/raw/([A-Za-z0-9][A-Za-z0-9._-]{0,127})/', channel.path)
+            if (channel.hostname != 'jihulab.com' or item['channelBaseUrl'] != 'https://jihulab.com'+channel.path
+                    or not raw or '..' in raw[2]
+                    or re.search(r'(?:\.|\.lock)$', raw[2])):
+                raise invalid
+        ids.add(item['id'])
+        origins.add(origin)
+        mirrors.append(item)
+    if value.get('primary') is not None and (not isinstance(value['primary'], str) or value['primary'] not in ids):
+        raise invalid
+    return mirrors
+
+
+def source_candidates(url, *, channel='stable', sources=None):
+    configuration = RELEASE_SOURCES if sources is None else sources
+    mirrors = validate_sources(configuration)
+    value = urllib.parse.urlsplit(url)
+    relative = None
+    api = f'/repos/{REPO}/releases'
+    if value.scheme == 'https' and value.hostname == 'api.github.com' and not value.fragment:
+        if value.path == api+'/latest' and not value.query and channel == 'stable':
+            relative = 'channels/stable.json'
+        elif value.path == api and value.query == 'per_page=100&page=1' and channel == 'beta':
+            relative = 'channels/beta.json'
+        elif value.path.startswith(api+'/tags/') and not value.query:
+            tag = value.path[len(api+'/tags/'):]
+            if re.fullmatch(TAG_PATTERN, tag):
+                relative = f'releases/{tag}/release.json'
+    elif value.scheme == 'https' and value.hostname == 'github.com' and not value.query and not value.fragment:
+        prefix = f'/{REPO}/releases/download/'
+        candidate = value.path[len(prefix):] if value.path.startswith(prefix) else ''
+        if re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, candidate):
+            relative = 'releases/'+candidate
+    candidates = []
+    if relative:
+        for item in mirrors:
+            path = relative.removeprefix('releases/') if item.get('provider') in ('sourceforge', 'jihulab') else relative
+            root = item['channelBaseUrl'] if item.get('provider') == 'jihulab' and relative.startswith('channels/') else item['baseUrl']
+            candidates.append((item['id'], root+path))
+    candidates.append(('github', url))
+    primary = configuration.get('primary')
+    return [candidate for _, candidate in sorted(candidates, key=lambda item: (item[0] != primary, item[0] != 'github'))] if primary else [candidate for _, candidate in candidates]
+
+
+def sourceforge_url(url):
+    value = urllib.parse.urlsplit(url)
+    return (value.hostname == 'downloads.sourceforge.net'
+            or bool(re.fullmatch(r'[a-z0-9-]+\.dl\.sourceforge\.net', value.hostname or '')))
+
+
+def validate_source(url, original):
+    value, initial = urllib.parse.urlsplit(url), urllib.parse.urlsplit(original)
+    github_assets = {'github.com', 'objects.githubusercontent.com', 'release-assets.githubusercontent.com'}
+    trusted = False
+    api = f'/repos/{REPO}/releases'
+    if initial.hostname == 'api.github.com' and (initial.path in (api, api+'/latest')
+            or initial.path.startswith(api+'/tags/') and re.fullmatch(TAG_PATTERN, initial.path[len(api+'/tags/'):])):
+        trusted = value.hostname == initial.hostname and value.path == initial.path and value.query == initial.query
+    elif initial.hostname in github_assets:
+        prefix = f'/{REPO}/releases/download/'
+        valid_initial = initial.hostname != 'github.com' or (initial.path.startswith(prefix)
+            and re.fullmatch(TAG_PATTERN+'/'+ASSET_PATTERN, initial.path[len(prefix):]) and not initial.query)
+        trusted = valid_initial and value.hostname in github_assets and (value.hostname != 'github.com' or value.path == initial.path)
+    else:
+        for item in validate_sources(RELEASE_SOURCES):
+            roots = [item['baseUrl']] + ([item['channelBaseUrl']] if item.get('provider') == 'jihulab' else [])
+            for root in roots:
+                parsed = urllib.parse.urlsplit(root)
+                match = initial.hostname == parsed.hostname or item.get('provider') == 'sourceforge' and sourceforge_url(original)
+                if match and initial.path.startswith(parsed.path):
+                    permitted = (sourceforge_url(url) and value.port is None) if item.get('provider') == 'sourceforge' else value.hostname == parsed.hostname
+                    trusted = permitted and value.path == initial.path
+                    if item.get('provider') != 'sourceforge':
+                        trusted = trusted and value.query == initial.query and not initial.query
+    if (not trusted or initial.scheme != 'https' or initial.username or initial.password or initial.fragment
+            or value.scheme != 'https' or value.username or value.password or value.fragment
+            or initial.port not in (None, 443) or value.port not in (None, 443)):
+        raise RuntimeError('资源响应偏离受信任来源，未使用下载内容。')
 
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path(__file__).resolve().parents[1])).expanduser().resolve()
 INSTANCE = HERMES_HOME / "nora-instance.json"
@@ -41,15 +169,17 @@ def installed_data_root():
 
 DATA_ROOT = installed_data_root()
 CHANNEL = json.loads(INSTANCE.read_text(encoding="utf-8")).get("releaseChannel", "stable") if INSTANCE.is_file() else "stable"
-API_URL = os.environ.get(
-    "TAVERN_RELEASE_API_URL",
-    "https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100" if CHANNEL == 'beta'
-    else "https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest",
-)
+API_URL = (f"https://api.github.com/repos/{REPO}/releases?per_page=100&page=1" if CHANNEL == 'beta'
+    else f"https://api.github.com/repos/{REPO}/releases/latest")
 SOURCEFORGE_ROOT = "https://downloads.sourceforge.net/project/nora-tavern/"
-RELEASE_URLS = (API_URL,) if os.environ.get("TAVERN_RELEASE_API_URL") else (
-    API_URL, SOURCEFORGE_ROOT + f"channels/{CHANNEL}.json",
-)
+LOCAL_RELEASE_URL = os.environ.get("TAVERN_RELEASE_API_URL")
+if LOCAL_RELEASE_URL:
+    local = urllib.parse.urlsplit(LOCAL_RELEASE_URL)
+    if (local.scheme != 'file' or local.netloc or not local.path.startswith('/')
+            or local.query or local.fragment):
+        raise RuntimeError('版本检查覆盖仅允许显式本地 file:// 文件；在线来源由构建配置封存。')
+    API_URL = LOCAL_RELEASE_URL
+RELEASE_URLS = (API_URL,) if LOCAL_RELEASE_URL else tuple(source_candidates(API_URL, channel=CHANNEL))
 MARKER = DATA_ROOT / "apps/tavern-runtime/.tavern-release-version"
 INSTALL_RECORD = DATA_ROOT / "tavern-updates/installed.json"
 NOTICE_STATE = DATA_ROOT / "tavern-updates/notification-state.json"
@@ -123,28 +253,25 @@ def release_summary(value: object) -> str:
 
 class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
     def __init__(self, source: str):
-        self.source = urllib.parse.urlsplit(source)
+        self.source = source
 
     def redirect_request(self, request, fp, code, msg, headers, newurl):
-        destination = urllib.parse.urlsplit(newurl)
-        if destination.scheme != "https" or destination.username or destination.password or destination.fragment:
-            raise RuntimeError("版本信息跳转到不受信任地址，已停止检查")
-        if self.source.hostname == "downloads.sourceforge.net" and (
-            destination.port is not None or destination.path != self.source.path
-            or not (destination.hostname == self.source.hostname
-                    or re.fullmatch(r"[a-z0-9-]+\.dl\.sourceforge\.net", destination.hostname or ""))
-        ):
-            raise RuntimeError("版本信息跳转偏离 SourceForge 官方镜像，已停止检查")
+        validate_source(newurl, self.source)
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
 def query_release(source: str, timeout: float):
+    local = bool(LOCAL_RELEASE_URL and source == LOCAL_RELEASE_URL)
+    if not local:
+        validate_source(source, source)
     request = urllib.request.Request(source, headers={
         "Accept": "application/json", "User-Agent": "nora-tavern-update-check/3",
     })
-    # The explicit local override is kept for offline checks and deployments.
+    # The explicit file override remains available for offline development.
     opener = urllib.request.build_opener(ReleaseRedirect(source))
     with opener.open(request, timeout=timeout) as response:
+        if not local:
+            validate_source(response.geturl(), source)
         raw = response.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:
         raise RuntimeError("版本信息超过大小限制")
@@ -166,7 +293,7 @@ def latest_release() -> tuple[str, str]:
                 raise
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
-            if isinstance(reason, ssl.SSLCertVerificationError) or index == len(RELEASE_URLS) - 1:
+            if isinstance(reason, (ssl.SSLCertVerificationError, ssl.CertificateError)) or index == len(RELEASE_URLS) - 1:
                 raise
     if payload is None:
         raise RuntimeError("所有版本来源均不可用")

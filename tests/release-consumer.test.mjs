@@ -16,7 +16,7 @@ const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const modules=['package.json','releases.js','launcher-update.js','release-network.js','release-sources.js',
     'release-sources.json','launcher-errors.js','telemetry-contract.json'];
 
-function shippedModuleFixture(version) {
+function shippedModuleFixture(version, sources) {
     const files=new Map(modules.map(name=>[name,fs.readFileSync(path.join(root,
         name==='releases.js'?'deployment/update/releases.js':`launcher/desktop/${name}`))]));
     if(version) {
@@ -24,6 +24,7 @@ function shippedModuleFixture(version) {
         const pkg=JSON.parse(files.get('package.json'));pkg.version=version;
         files.set('package.json',Buffer.from(JSON.stringify(pkg)));
     }
+    if(sources) files.set('release-sources.json',Buffer.from(JSON.stringify(sources)));
     const dependencyRoot=process.env.NORA_TEST_DESKTOP_NODE_MODULES || path.join(root,'launcher/desktop/node_modules');
     function dependency(directory,prefix) {
         for(const name of fs.readdirSync(directory).sort()) {
@@ -69,7 +70,7 @@ with zipfile.ZipFile(sys.argv[2],'w') as archive:
     return fs.readFileSync(archive);
 }
 
-function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false}={}) {
+function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false,sources}={}) {
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-final-consumer-test-'));
     t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
     const captured=JSON.parse(zlib.brotliDecompressSync(fs.readFileSync(path.join(root,
@@ -80,7 +81,7 @@ function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,b
     const tag=captured.release.tag_name,commit=JSON.parse(files.get('release-manifest.json')).commit;
     const release=captured.release,references=[];
     const url=(name,source=tag)=>`https://github.com/${repository}/releases/download/${source}/${name}`;
-    const closure=shippedModuleFixture(shared?'2.1.2':undefined),pkg=JSON.parse(closure.get('package.json'));
+    const closure=shippedModuleFixture(shared?'2.1.2':undefined,sources),pkg=JSON.parse(closure.get('package.json'));
     if(shared) {
         // Future shared protocol: retain platform routing while moving only
         // environment archives to older, digest-bound objects. Payload objects
@@ -148,7 +149,8 @@ function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,b
     for(const reference of references) objects.push({phase:'asset',key:`releases/${reference.asset_release_tag}/${reference.name}`,
         file:path.join(directory,'unread-reference',reference.name),size:reference.size,sha256:reference.sha256,
         assetReleaseTag:reference.asset_release_tag,reference:true});
-    return {directory,asar,closure,release,plan:{repository,tag,commit,mode:'full',assetMode:shared?'shared':'legacy',channel:'stable',objects}};
+    return {directory,asar,closure,release,plan:{repository,tag,commit,mode:'full',assetMode:shared?'shared':'legacy',channel:'stable',
+        destinations:['github','jihulab','sourceforge'],objects}};
 }
 
 function rewriteMetadata(fixture,name,change) {
@@ -172,6 +174,50 @@ test('synthetic final assembly reads actual shipped modules and public platform 
         assert.notEqual(proof.modes.install.manifestSha256,proof.modes.update.manifestSha256);
         assert.ok(proof.metadata.some(item=>item.url.endsWith(`/nora-system-${target}.json`)));
     }
+});
+
+test('final consumer gate uses the shipped domestic roots for sealed catalogue and platform metadata',async t=>{
+    const sources={schema:1,primary:'jihulab',mirrors:[{id:'jihulab',provider:'jihulab',
+        baseUrl:'https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/',
+        channelBaseUrl:'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/'},
+        {id:'sourceforge',provider:'sourceforge',baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]};
+    const fixture=distributionFixture(t,{sources}),report=await verifyFinalConsumers(fixture);
+    for(const target of targets) {
+        const proof=report.platforms[target];
+        assert.ok(proof.metadata.length>0);
+        assert.ok(proof.metadata.every(item=>item.url.startsWith(sources.mirrors[0].baseUrl)),
+            'an available domestic source must not silently exercise GitHub instead');
+        assert.equal(proof.moduleHashes['release-sources.json'],hash(fixture.closure.get('release-sources.json')));
+        assert.equal(proof.modes.install.manifest,`${target}-release-manifest.json`);
+    }
+});
+
+test('a publication cannot leave the shipped domestic primary channel stale',async t=>{
+    const sources={schema:1,primary:'jihulab',mirrors:[{id:'jihulab',provider:'jihulab',
+        baseUrl:'https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/',
+        channelBaseUrl:'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/'}]};
+    for(const explicit of [true,false])await t.test(explicit?'explicit primary':'implicit mirror primary',async child=>{
+        const configured=structuredClone(sources);if(!explicit)delete configured.primary;
+        const fixture=distributionFixture(child,{sources:configured});fixture.plan.destinations=['github'];
+        await assert.rejects(verifyFinalConsumers(fixture),/primary source jihulab.*destinations/);
+    });
+    const githubOnly=distributionFixture(t,{sources:{schema:1,mirrors:[]}});githubOnly.plan.destinations=['github'];
+    const report=await verifyFinalConsumers(githubOnly);assert.equal(Object.keys(report.platforms).length,3);
+});
+
+test('legacy omitted destinations retain the GitHub and SourceForge primary gate',async t=>{
+    const jihulab={id:'jihulab',provider:'jihulab',
+        baseUrl:'https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/',
+        channelBaseUrl:'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/'};
+    const domestic=distributionFixture(t,{sources:{schema:1,primary:'jihulab',mirrors:[jihulab]}});
+    delete domestic.plan.destinations;
+    await assert.rejects(verifyFinalConsumers(domestic),/primary source jihulab.*destinations/);
+    for(const primary of ['github','sourceforge'])await t.test(primary,async child=>{
+        const legacy=distributionFixture(child,{sources:{schema:1,primary,mirrors:[{id:'sourceforge',provider:'sourceforge',
+            baseUrl:'https://downloads.sourceforge.net/project/nora-tavern/'}]}});
+        delete legacy.plan.destinations;
+        const report=await verifyFinalConsumers(legacy);assert.equal(Object.keys(report.platforms).length,3);
+    });
 });
 
 test('the final ZIP cannot borrow an accepted payload proof for different selector bytes',async t=>{

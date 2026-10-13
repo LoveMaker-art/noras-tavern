@@ -7,6 +7,7 @@ const crypto=require('node:crypto');
 const policy=require('../installer/desktop/operation-policy');
 const transaction=require('../installer/desktop/runtime-transaction');
 const {treeSeal}=require('../installer/desktop/tree-integrity');
+const {sourceCandidates}=require('../installer/desktop/release-sources');
 const desktopRequire=require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js'));
 function fixture(){
  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-partial-managed-'))),home=path.join(root,'hermes'),tavern=path.join(root,'tavern');
@@ -41,11 +42,25 @@ function releaseFixture(version='2.4.6'){
  bytes[`nora-system-${platform}-${arch}.json`]=JSON.stringify(system);
  const release={tag_name:`v${version}`,draft:false,prerelease:false,assets:Object.entries(bytes).map(([name,value])=>({name,state:'uploaded',size:Buffer.byteLength(value),
   digest:`sha256:${hash(value)}`,browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v${version}/${name}`}))};
- const fetcher=async url=>{if(url==='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')return Response.json(release);
-  const asset=release.assets.find(item=>item.browser_download_url===url);assert.ok(asset,'Only the selected fixture release may be fetched');
-  return new Response(bytes[asset.name],{headers:{'Content-Length':String(asset.size)}});};
- return {version,commit,manifest,fetcher};
+ const catalogueUrls=new Set(sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest').map(item=>item.url));
+ const assetUrls=new Map();
+ for(const asset of release.assets)for(const source of sourceCandidates(asset.browser_download_url))assetUrls.set(source.url,asset);
+ const requests=[];
+ const fetcher=async address=>{const url=String(address);requests.push(url);let response;
+  if(catalogueUrls.has(url))response=Response.json(release);
+  else {const asset=assetUrls.get(url);assert.ok(asset,'Only exact configured URLs of the selected fixture release may be fetched: '+url);
+   response=new Response(bytes[asset.name],{headers:{'Content-Length':String(asset.size)}});}
+  Object.defineProperty(response,'url',{value:url});return response;};
+ return {version,commit,manifest,fetcher,catalogueUrls,requests};
 }
+test('partial repair selects its exact fixed metadata through the configured primary source',async()=>{
+ const releases=require('../installer/desktop/releases'),release=releaseFixture();
+ const plan=await releases.selectPlan({mode:'install',launcherVersion:'2.1.3',fetcher:release.fetcher});
+ assert.equal(plan.tag,'v2.4.6');assert.equal(plan.commit,release.commit);
+ assert.equal(release.requests[0],sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest')[0].url);
+ assert.ok(release.requests.every(url=>url.startsWith('https://jihulab.com/')));
+ await assert.rejects(release.fetcher('https://untrusted.example/nora-system-'+process.platform+'-'+process.arch+'.json'),/Only exact configured URLs/);
+});
 test('managed missing programs keep their receipt; conflicting records cannot become fresh install',()=>{
  const f=fixture();try{assert.equal(f.facts().managedInstallation,true);assert.equal(f.facts().needsRepair,true);assert.equal(f.facts().version,'2.4.5');
   f.write('tavern/tavern-updates/installed.json',{schema:2,version:'2.0.1',commit:'a'.repeat(40)});
@@ -418,7 +433,7 @@ test('a restored partial repair retries the same sealed target, preserves failed
     completed={version:release.version,commit:release.commit,systemReady:true,updateVerified:true,...offline,...f.args};
    let runtimeCalls=0,applies=0,latestReads=0,currentOperation;
    const invoke=input=>cli.execute({receiptPath:'fixture',request:input},{validate:async()=>receipt,lock,telemetry:false,
-    fetcher:async url=>{if(url.endsWith('/releases/latest'))latestReads++;return release.fetcher(url);},
+    fetcher:async url=>{if(release.catalogueUrls.has(String(url)))latestReads++;return release.fetcher(url);},
     // Production plan producer, CLI, controller, policy, journal and directory
     // switch are exercised together. Python results and archive extraction are
     // fixture boundaries; this is not packaged/native installer acceptance.

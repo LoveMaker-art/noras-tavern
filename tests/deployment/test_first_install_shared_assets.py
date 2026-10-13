@@ -15,6 +15,10 @@ spec = importlib.util.spec_from_file_location('first_shared_bootstrap', ROOT / '
 FIRST = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(FIRST)
 SHA = lambda body: hashlib.sha256(body).hexdigest()
+LEGACY_SOURCES = {'schema': 1, 'primary': 'github', 'mirrors': [
+    {'id': 'sourceforge', 'provider': 'sourceforge', 'baseUrl': 'https://downloads.sourceforge.net/project/nora-tavern/'}]}
+JIHULAB_ASSETS = 'https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/'
+JIHULAB_CHANNEL = 'https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/channels/stable.json'
 
 
 class Response(io.BytesIO):
@@ -27,6 +31,10 @@ class Response(io.BytesIO):
 
 class FirstInstallSharedAssets(unittest.TestCase):
     def setUp(self):
+        self.sealed_sources = copy.deepcopy(FIRST.RELEASE_SOURCES)
+        legacy = patch.object(FIRST, 'RELEASE_SOURCES', copy.deepcopy(LEGACY_SOURCES))
+        legacy.start()
+        self.addCleanup(legacy.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
@@ -59,7 +67,7 @@ class FirstInstallSharedAssets(unittest.TestCase):
 
     def fetch(self, url, **kwargs):
         self.requests.append(url)
-        if url.startswith('https://api.github.com/') or url.endswith('/release.json'):
+        if url.startswith('https://api.github.com/') or url.endswith('/release.json') or url.endswith('/channels/stable.json'):
             return Response(json.dumps(self.release).encode(), url)
         name = url.rsplit('/', 1)[1]
         body = self.payloads[name] if f'/{self.old}/' in url else self.physical[name]
@@ -99,6 +107,41 @@ class FirstInstallSharedAssets(unittest.TestCase):
         self.assertEqual((self.directory/name).read_bytes(), self.payloads[name])
         with self.assertRaisesRegex(RuntimeError, '受信任'):
             FIRST.validate_source(FIRST.SOURCEFORGE+self.tag+'/'+name, FIRST.SOURCEFORGE+self.old+'/'+name)
+
+    def test_sealed_jihulab_first_install_keeps_current_index_and_old_tag_payload_identity(self):
+        with patch.object(FIRST, 'RELEASE_SOURCES', self.sealed_sources), patch.object(FIRST, 'open_source', side_effect=self.fetch):
+            selected = FIRST.download_release(self.directory)
+        self.assertEqual(self.requests[0], JIHULAB_CHANNEL)
+        self.assertIn(JIHULAB_ASSETS+self.tag+'/release-assets.json', self.requests)
+        self.assertEqual(selected['tag_name'], self.tag)
+        self.assertEqual(selected['shared_assets']['commit'], self.commit)
+        self.assertEqual(FIRST.verify_release(self.directory), SHA(self.physical['release-manifest.json']))
+        for name, body in self.payloads.items():
+            self.assertIn(JIHULAB_ASSETS+self.old+'/'+name, self.requests)
+            self.assertNotIn(JIHULAB_ASSETS+self.tag+'/'+name, self.requests)
+            asset = selected['asset_index'][name]
+            self.assertEqual(asset['asset_release_tag'], self.old)
+            self.assertEqual(asset['digest'], 'sha256:'+SHA(body))
+            self.assertEqual(asset['browser_download_url'], self.url(name, self.old))
+            self.assertEqual(SHA((self.directory/name).read_bytes()), SHA(body))
+        self.assertTrue(all(url.startswith('https://jihulab.com/') for url in self.requests))
+
+    def test_jihulab_old_tag_hash_failure_cannot_fall_back_or_replace_an_existing_asset(self):
+        with patch.object(FIRST, 'RELEASE_SOURCES', self.sealed_sources), patch.object(FIRST, 'open_source', side_effect=self.fetch):
+            selected = FIRST.select_release()
+        name = FIRST.ASSETS[2]
+        existing = self.directory/name
+        existing.write_bytes(b'keep previous verified file')
+        self.requests.clear()
+        def corrupt(url, **kwargs):
+            self.requests.append(url)
+            self.assertEqual(url, JIHULAB_ASSETS+self.old+'/'+name)
+            return Response(b'x'*len(self.payloads[name]), url)
+        with patch.object(FIRST, 'RELEASE_SOURCES', self.sealed_sources), patch.object(FIRST, 'open_source', side_effect=corrupt):
+            with self.assertRaisesRegex(RuntimeError, '哈希校验'):
+                FIRST.download_asset(selected, name, existing, expected_sha256=SHA(self.payloads[name]))
+        self.assertEqual(self.requests, [JIHULAB_ASSETS+self.old+'/'+name])
+        self.assertEqual(existing.read_bytes(), b'keep previous verified file')
 
     def test_consumed_refs_need_original_manifest_commit_hash_and_size_before_payloads(self):
         original = copy.deepcopy(self.manifest)

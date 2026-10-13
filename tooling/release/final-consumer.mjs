@@ -122,14 +122,38 @@ async function consumeFinalMetadata({plan, release}) {
             const pkg = JSON.parse(files.get('package.json'));
             assert.equal(pkg.version, descriptor.version, 'Shipped launcher package version differs');
             const consumer = require('./releases.js');
+            const shippedSources=JSON.parse(files.get('release-sources.json'));
+            const {sourceCandidates} = require('./release-sources.js');
+            const discoveryUrl=plan.channel==='beta'
+                ?`https://api.github.com/repos/${plan.repository}/releases?per_page=100&page=1`
+                :`https://api.github.com/repos/${plan.repository}/releases/latest`;
+            const primarySource=sourceCandidates(discoveryUrl,{channel:plan.channel,sources:shippedSources})[0];
+            const primaryPublisher=primarySource.provider || primarySource.id;
+            const effectiveDestinations=plan.destinations===undefined?['github','sourceforge']:plan.destinations;
+            if(primaryPublisher)
+                assert.ok(effectiveDestinations.includes(primaryPublisher),
+                    `Shipped primary source ${primaryPublisher} is missing from publication destinations`);
+            // Use the shipped source mapper, so this gate exercises the exact
+            // build-owned roots and ordering. Each physical URL still maps to
+            // one sealed logical object; no host or basename wildcard exists.
+            const physicalObjects = new Map();
+            for (const [logical, object] of byUrl) for (const candidate of sourceCandidates(logical, {channel:plan.channel})) {
+                const previous = physicalObjects.get(candidate.url);
+                assert.ok(!previous || previous === object, 'Conflicting final consumer resource mapping');
+                physicalObjects.set(candidate.url, object);
+            }
+            const api = `https://api.github.com/repos/${plan.repository}/releases`;
+            const catalogueUrls = new Map();
+            for (const [logical, list] of [[api + `/tags/${plan.tag}`, false],
+                ...(plan.channel === 'stable' ? [[api + '/latest', false]] : [[api + '?per_page=100&page=1', true]])])
+                for (const candidate of sourceCandidates(logical, {channel:plan.channel}))
+                    catalogueUrls.set(candidate.url, list);
             const fetcher = async address => {
                 const value = String(address);
-                const api = `https://api.github.com/repos/${plan.repository}/releases`;
                 let bytes;
-                if (value === api + `/tags/${plan.tag}` || value === api + '/latest') bytes = catalogue;
-                else if (value.startsWith(api + '?')) bytes = Buffer.from(JSON.stringify([release]));
+                if (catalogueUrls.has(value)) bytes = catalogueUrls.get(value) ? Buffer.from(JSON.stringify([release])) : catalogue;
                 else {
-                    const object = byUrl.get(value);
+                    const object = physicalObjects.get(value);
                     assert.ok(object, `Final consumer requested an unsealed resource: ${value}`);
                     bytes = sealedMetadata(object);
                 }

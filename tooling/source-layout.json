@@ -55,6 +55,7 @@
     ["tooling/release/package-release.mjs", "ops/scripts/package-release.mjs"],
     ["tooling/release/package-release.sh", "ops/scripts/package-release.sh"],
     ["tooling/release/release-source.mjs", "ops/scripts/release-source.mjs"],
+    ["tooling/release/embed-release-sources.mjs", "ops/scripts/embed-release-sources.mjs"],
     ["tooling/release/build-commands.mjs", "ops/scripts/build-commands.mjs"],
     ["tooling/release/system-release.mjs", "ops/scripts/system-release.mjs"],
     ["tooling/release/package-hermes-runtime.mjs", "ops/scripts/package-hermes-runtime.mjs"],

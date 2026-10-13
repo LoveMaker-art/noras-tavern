@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
@@ -19,6 +21,8 @@ CHECKER = ROOT / "ops/scripts/nora-tavern-update-check.py"
 POSIX_CHECKER = CHECKER.with_suffix(".sh")
 SENDER = ROOT / "ops/scripts/nora-tavern-card-send.py"
 UPDATER = ROOT / "ops/updater/update.py"
+LEGACY_SOURCES = {"schema": 1, "primary": "github", "mirrors": [
+    {"id": "sourceforge", "provider": "sourceforge", "baseUrl": "https://downloads.sourceforge.net/project/nora-tavern/"}]}
 
 
 def load_updater():
@@ -33,18 +37,25 @@ def load_updater():
 
 
 class UpdateCheckScriptTests(unittest.TestCase):
-    def checker_module(self, home: Path):
+    def checker_module(self, home: Path, sources=None):
         spec = importlib.util.spec_from_file_location("tavern_mirrored_update_check", CHECKER)
         module = importlib.util.module_from_spec(spec)
         environment = {key: value for key, value in os.environ.items() if key not in {"TAVERN_RELEASE_API_URL", "TAVERN_DATA_ROOT"}}
         environment["HERMES_HOME"] = str(home)
         with mock.patch.dict(os.environ, environment, clear=True):
-            spec.loader.exec_module(module)
+            if sources is None:
+                spec.loader.exec_module(module)
+            else:
+                code, count = re.subn(r"# BEGIN BUILD-OWNED RELEASE SOURCES\n.*?\n# END BUILD-OWNED RELEASE SOURCES",
+                    lambda _: "# BEGIN BUILD-OWNED RELEASE SOURCES\nRELEASE_SOURCES = json.loads("+repr(json.dumps(sources))+")\n# END BUILD-OWNED RELEASE SOURCES",
+                    CHECKER.read_text(), flags=re.S)
+                self.assertEqual(count, 1, "The legacy checker fixture must replace exactly one sealed configuration block")
+                exec(compile(code, str(CHECKER), "exec"), module.__dict__)
         return module
 
     def test_github_success_never_queries_sourceforge(self):
         with tempfile.TemporaryDirectory() as temporary:
-            module = self.checker_module(Path(temporary))
+            module = self.checker_module(Path(temporary), LEGACY_SOURCES)
             with mock.patch.object(module, "query_release", return_value={"tag_name": "v2.4.2", "body": "更新摘要"}) as query:
                 self.assertEqual(module.latest_release(), ("2.4.2", "更新摘要"))
             self.assertEqual(query.call_count, 1)
@@ -52,7 +63,7 @@ class UpdateCheckScriptTests(unittest.TestCase):
 
     def test_github_network_failures_fall_back_without_losing_release_summary(self):
         with tempfile.TemporaryDirectory() as temporary:
-            module = self.checker_module(Path(temporary))
+            module = self.checker_module(Path(temporary), LEGACY_SOURCES)
             for error in [urllib.error.HTTPError(module.API_URL, 403, "forbidden", {}, None), urllib.error.URLError("connection reset")]:
                 with mock.patch.object(module, "query_release", side_effect=[error, {"tag_name": "v2.4.2", "body": "更新摘要"}]) as query:
                     self.assertEqual(module.latest_release(), ("2.4.2", "更新摘要"))
@@ -69,7 +80,7 @@ class UpdateCheckScriptTests(unittest.TestCase):
 
     def test_sourceforge_redirects_preserve_the_project_and_file_path(self):
         with tempfile.TemporaryDirectory() as temporary:
-            module = self.checker_module(Path(temporary))
+            module = self.checker_module(Path(temporary), LEGACY_SOURCES)
             source = module.SOURCEFORGE_ROOT + "channels/stable.json"
             handler = module.ReleaseRedirect(source)
             request = module.urllib.request.Request(source)
@@ -78,6 +89,22 @@ class UpdateCheckScriptTests(unittest.TestCase):
             for target in [safe.replace("https:", "http:"), safe.replace("nora-tavern", "other"), safe.replace("zenlayer.dl.sourceforge.net", "evil.example")]:
                 with self.assertRaises(RuntimeError):
                     handler.redirect_request(request, None, 302, "", {}, target)
+
+    def test_sealed_jihulab_checker_reads_the_exact_channel_without_api_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            expected = "https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/channels/stable.json"
+            requests = []
+            class Opener:
+                def open(self, request, **kwargs):
+                    requests.append(request.full_url)
+                    response = io.BytesIO(json.dumps({"tag_name": "v2.4.2", "draft": False, "prerelease": False,
+                        "body": "更新摘要"}).encode())
+                    response.geturl = lambda: request.full_url
+                    return response
+            with mock.patch.object(module.urllib.request, "build_opener", return_value=Opener()):
+                self.assertEqual(module.latest_release(), ("2.4.2", "更新摘要"))
+            self.assertEqual(requests, [expected])
 
     def test_legacy_check_without_data_root_reads_existing_home(self):
         with tempfile.TemporaryDirectory() as temporary:

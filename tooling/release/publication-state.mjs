@@ -8,8 +8,8 @@ const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const stages = new Set(['seal', 'prepare', 'promote', 'all']);
 function destinations(value = ['github', 'sourceforge']) {
-    assert.ok(Array.isArray(value) && value.length > 0 && value.length <= 2, 'Invalid publication destinations');
-    assert.ok(value.every(name => ['github', 'sourceforge'].includes(name)) && new Set(value).size === value.length,
+    assert.ok(Array.isArray(value) && value.length > 0 && value.length <= 3, 'Invalid publication destinations');
+    assert.ok(value.every(name => ['github', 'jihulab', 'sourceforge'].includes(name)) && new Set(value).size === value.length,
         'Invalid publication destinations');
     assert.deepEqual(value, [...value].sort(), 'Publication destinations must have canonical order');
     return value;
@@ -94,7 +94,8 @@ export async function sealPublication(distribution, {root, stateDir, repository,
     atomic(path.join(stateDir, 'publication-state.json'), {schema: 'nora-publication-state/1', planId,
         repository, tag: plan.tag, commit: plan.commit, sourceRun: plan.sourceRun,
         publishers: publisherCommit ? [publisherCommit] : [], status: 'sealed', sources: {
-            sourceforge: {objects: {}, ready: false, promoted: false}, github: {objects: {}, ready: false, promoted: false}},
+            sourceforge: {objects: {}, ready: false, promoted: false}, github: {objects: {}, ready: false, promoted: false},
+            ...(plan.destinations.includes('jihulab') ? {jihulab:{objects:{}, uploadIntents:{}, ready:false, promoted:false}} : {})},
         updatedAt: new Date().toISOString()});
     return loadPublication({root, stateDir, repository, tag: plan.tag, commit: plan.commit, mode: plan.mode, sourceRun});
 }
@@ -116,12 +117,24 @@ export async function loadPublication({root, stateDir, repository, tag, commit, 
         if (expected !== undefined) assert.equal(plan[name], expected, `Sealed ${name} differs`);
     }
     for (const name of ['repository', 'tag', 'commit', 'sourceRun']) assert.equal(state[name], plan[name], `Checkpoint ${name} differs`);
-    for (const source of ['github', 'sourceforge']) {
+    for (const source of ['github', 'sourceforge', ...(destinations(plan.destinations).includes('jihulab') ? ['jihulab'] : [])]) {
         assert.equal(typeof state.sources?.[source]?.objects, 'object');
         for (const [key, receipt] of Object.entries(state.sources[source].objects)) {
             const object = plan.objects.find(item => item.key === key);
             assert.ok(object && receipt.sha256 === object.sha256 && receipt.size === object.size && receipt.verifiedAt,
                 'Checkpoint receipt differs from sealed object');
+        }
+        if(source==='jihulab'&&state.sources[source].uploadIntents!==undefined) {
+            const intents=state.sources[source].uploadIntents;
+            assert.ok(intents&&typeof intents==='object'&&!Array.isArray(intents),'Invalid JihuLab upload intent map');
+            for(const [key,intent] of Object.entries(intents)) {
+                const object=plan.objects.find(item=>item.key===key);
+                assert.ok(object&&object.phase!=='channel'&&!object.reference&&intent
+                    &&Object.keys(intent).every(name=>['sha256','size','attemptedAt'].includes(name))
+                    &&intent.sha256===object.sha256&&intent.size===object.size
+                    &&typeof intent.attemptedAt==='string'&&Number.isFinite(Date.parse(intent.attemptedAt)),
+                    'JihuLab upload intent differs from sealed object');
+            }
         }
     }
     const objects = [];
@@ -161,8 +174,10 @@ export async function executePublication(publication, {stage = 'seal', providers
     assert.ok(stages.has(stage), 'Invalid publication stage');
     const {state, plan, stateDir} = publication;
     const selected = destinations(plan.destinations);
-    const prepareOrder = ['sourceforge', 'github'].filter(source => selected.includes(source));
-    const promoteOrder = ['github', 'sourceforge'].filter(source => selected.includes(source));
+    if(stage!=='seal'&&selected.includes('jihulab'))assert.equal(state.checkpointKind,undefined,
+        'A pre-transfer JihuLab snapshot cannot perform remote writes; restore the final checkpoint or reconcile the remote inventory manually.');
+    const prepareOrder = ['sourceforge', 'jihulab', 'github'].filter(source => selected.includes(source));
+    const promoteOrder = ['github', 'sourceforge', 'jihulab'].filter(source => selected.includes(source));
     const save = () => { state.updatedAt = new Date().toISOString(); atomic(path.join(stateDir, 'publication-state.json'), state); };
     if (publisherCommit && !state.publishers.includes(publisherCommit)) state.publishers.push(publisherCommit);
     save();
@@ -177,6 +192,18 @@ export async function executePublication(publication, {stage = 'seal', providers
         save(); throw error;
     }
     if (stage === 'seal') return state;
+    // The transport invokes this only after preflight and exact absence checks,
+    // immediately before PUT. Persist the uncertainty independently from the
+    // latest failure/active phase so a killed or resumed job cannot erase it.
+    publication.recordJihuUploadIntent=object=>{
+        const sealed=plan.objects.find(item=>item.key===object.key);
+        assert.ok(selected.includes('jihulab')&&sealed&&sealed.phase!=='channel'&&!sealed.reference
+            &&sealed.size===object.size&&sealed.sha256===object.sha256,'Different JihuLab upload intent identity');
+        const intents=state.sources.jihulab.uploadIntents ||= {};
+        assert.ok(!Object.hasOwn(intents,object.key),'Unresolved JihuLab upload intent prohibits another PUT');
+        intents[object.key]={sha256:object.sha256,size:object.size,attemptedAt:new Date().toISOString()};
+        save();
+    };
     for (const source of prepareOrder) {
         for (const method of ['begin', 'inspect', 'upload', 'verify', 'assertReady', 'checkPromotion', 'promote', 'verifyPromotion']) {
             assert.equal(typeof providers?.[source]?.[method], 'function', `Missing ${source}.${method}`);
@@ -203,11 +230,17 @@ export async function executePublication(publication, {stage = 'seal', providers
                     const existing = await provider.inspect(object, receipt, publication);
                     assert.ok(['missing', 'matching'].includes(existing), 'Invalid remote inspection result');
                     if (existing === 'missing') {
+                        assert.ok(source!=='jihulab'||!Object.hasOwn(checkpoint.uploadIntents||{},object.key),
+                            'Unresolved JihuLab upload intent: remote object is still missing; refusing automatic re-PUT');
                         assert.ok(!object.reference, 'Referenced immutable asset is missing; never create it under an old tag');
                         progress(source, 'upload', object); await provider.upload(object, publication);
                         progress(source, 'verify', object); await provider.verify(object, publication);
                     }
-                    checkpoint.objects[object.key] = {sha256: object.sha256, size: object.size, verifiedAt: new Date().toISOString()}; save();
+                    checkpoint.objects[object.key] = {sha256: object.sha256, size: object.size, verifiedAt: new Date().toISOString()};
+                    // A resumed intent reaches this point only after the real
+                    // Jihu provider rechecks uniqueness and full anonymous SHA.
+                    if(source==='jihulab'&&checkpoint.uploadIntents)delete checkpoint.uploadIntents[object.key];
+                    save();
                     log(`${source} verified ${object.key} sha256=${object.sha256}`);
                 }
                 progress(source, 'ready-check'); await provider.assertReady(publication);
@@ -226,8 +259,9 @@ export async function executePublication(publication, {stage = 'seal', providers
                 progress(source, 'promotion-check'); await providers[source].checkPromotion(publication);
             }
             state.status = 'promoting'; save();
-            // Cross-site promotion cannot be atomic. Checkpoint GitHub first;
-            // a later SourceForge failure resumes only its channel switch.
+            // Cross-site promotion cannot be atomic. Promote the domestic
+            // pointer last, with every selected fallback already prepared.
+            // A later failure resumes the same sealed publication.
             for (const source of promoteOrder) {
                 if (!state.sources[source].promoted) {
                     progress(source, 'promote'); await providers[source].promote(publication);

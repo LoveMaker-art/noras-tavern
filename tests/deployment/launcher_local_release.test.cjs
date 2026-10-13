@@ -30,3 +30,22 @@ test('local acceptance uses production check, plan and verified component downlo
   fs.writeFileSync(path.join(root, 'nora-tavern-module-updater.tar.gz'), 'corrupt');
   await assert.rejects(releases.prepareUpdate({ ...options, cacheRoot: path.join(root, 'other-cache') }), /校验失败/);
 });
+
+test('local acceptance maps only exact configured domestic catalogues and sealed filenames',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-local-domestic-')));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(root,'release-manifest.json'),JSON.stringify({versions:{tavern:'2.4.6'}}));
+  fs.writeFileSync(path.join(root,'module.zip'),'sealed bytes');
+  const base='https://jihulab.com/api/v4/projects/378185/packages/generic/nora-tavern/';
+  const channelBase='https://jihulab.com/LoveMaker-art/nora-tavern/-/raw/main/';
+  const fetcher=createLocalRelease(root,{sources:{schema:1,primary:'jihulab',mirrors:[
+    {id:'jihulab',provider:'jihulab',baseUrl:base,channelBaseUrl:channelBase}]}});
+  assert.equal((await (await fetcher(channelBase+'channels/stable.json')).json()).tag_name,'v2.4.6');
+  assert.equal((await (await fetcher(base+'v2.4.6/release.json')).json()).tag_name,'v2.4.6');
+  const response=await fetcher(base+'v2.4.6/module.zip');
+  assert.equal(response.url,base+'v2.4.6/module.zip');
+  assert.equal(await response.text(),'sealed bytes');
+  for(const url of [base+'v2.4.5/module.zip',base+'v2.4.6/module.zip?other=1',
+    'https://example.com/v2.4.6/module.zip',base+'v2.4.6/unsealed.zip'])
+    await assert.rejects(fetcher(url),/unexpected URL/);
+});

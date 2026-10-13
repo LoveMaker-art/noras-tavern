@@ -6,6 +6,7 @@ import multiprocessing
 import os
 from pathlib import Path, PureWindowsPath
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -332,6 +333,7 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
                 with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
                     case.verify()
                 self.assertIs(nora_system.read_json(case.target)['setupCompleted'], setup)
+                self.assertNotIn('setupMetadataIntent', case.journal.plan)
                 self.assertEqual(case.journal.plan['metadataWrites'][case.key]['after'], sealed)
                 self.assertEqual(recovery.digest(case.target), sealed)
                 case.journal.restore_metadata()
@@ -426,14 +428,20 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
                 self.assertEqual(caught.exception.code, 'CONDITIONS_CHANGED')
                 self.assertEqual(case.target.read_bytes(), untouched)
 
-    def test_failed_checkpoint_keeps_durable_journal_and_preserves_current_metadata(self):
+    def test_failed_postimage_checkpoint_reopens_and_restores_exact_owned_setup_write(self):
         for primary_failure in (False, True):
             with self.subTest(primary_failure=primary_failure), self.fixture() as case:
                 durable = recovery.load(case.journal.home, case.root)
                 original = durable.plan['metadataWrites'][case.key]['after']
                 primary = RuntimeError('service check failed')
                 storage = OSError('checkpoint storage unavailable')
-                with patch.object(case.journal, 'save', side_effect=storage):
+                saved_metadata = (case.journal.backup/'host/update-receipts/nora-system.json').read_bytes()
+                save = case.journal.save
+                def fail_after_setup(*args, **kwargs):
+                    if nora_system.read_json(case.target)['setupCompleted'] is True:
+                        raise storage
+                    return save(*args, **kwargs)
+                with patch.object(case.journal, 'save', side_effect=fail_after_setup):
                     with self.assertRaises((RuntimeError, OSError)) as caught:
                         with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
                             case.verify()
@@ -442,14 +450,132 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
                 self.assertIs(caught.exception, primary if primary_failure else storage)
                 if primary_failure:
                     self.assertEqual(primary.secondary_errors, [storage])
-                current = case.target.read_bytes()
                 self.assertTrue(nora_system.read_json(case.target)['setupCompleted'])
                 loaded = recovery.load(case.journal.home, case.root)
                 self.assertEqual(loaded.plan['metadataWrites'][case.key]['after'], original)
+                loaded.restore_metadata()
+                self.assertEqual(case.target.read_bytes(), saved_metadata)
+                self.assertTrue(loaded.backup.is_dir())
+
+    def test_persisted_setup_intent_rejects_operation_and_epoch_type_conflicts(self):
+        changes = (('operationId', '22222222-2222-4222-8222-222222222222'),
+                   ('ownerEpoch', 2), ('ownerEpoch', True), ('ownerEpoch', 1.0), ('ownerEpoch', None))
+        for field, value in changes:
+            with self.subTest(field=field, value=value), self.fixture() as case:
+                case.journal.record.update(operationId='11111111-1111-4111-8111-111111111111', ownerEpoch=1)
+                case.journal.save()
+                save = case.journal.save
+                def fail_after_setup(*args, **kwargs):
+                    if nora_system.read_json(case.target)['setupCompleted'] is True:
+                        raise OSError('postimage checkpoint unavailable')
+                    return save(*args, **kwargs)
+                with patch.object(case.journal, 'save', side_effect=fail_after_setup):
+                    with self.assertRaises(OSError):
+                        with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                            case.verify()
+                loaded = recovery.load(case.journal.home, case.root)
+                loaded.plan['setupMetadataIntent'][field] = value
+                loaded.save()
+                current = case.target.read_bytes()
                 with self.assertRaises(RuntimeError):
-                    loaded.restore_metadata()
+                    recovery.load(case.journal.home, case.root).restore_metadata()
                 self.assertEqual(case.target.read_bytes(), current)
                 self.assertTrue(loaded.backup.is_dir())
+
+    def test_intent_checkpoint_failure_never_enters_verifier_or_changes_metadata(self):
+        with self.fixture() as case:
+            current = case.target.read_bytes()
+            durable = case.journal.file.read_bytes()
+            calls = list(case.calls)
+            storage = OSError('intent storage unavailable')
+            with patch.object(case.journal, 'save', side_effect=storage):
+                with self.assertRaises(OSError) as caught:
+                    with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                        self.fail('verifier must not run without durable intent')
+            self.assertIs(caught.exception, storage)
+            self.assertEqual(case.target.read_bytes(), current)
+            self.assertEqual(case.journal.file.read_bytes(), durable)
+            self.assertEqual(case.calls, calls)
+            self.assertNotIn('setupMetadataIntent', case.journal.plan)
+            loaded = recovery.load(case.journal.home, case.root)
+            self.assertNotIn('setupMetadataIntent', loaded.plan)
+            loaded.restore_metadata()
+            self.assertEqual(case.target.read_bytes(), (loaded.backup/'host/update-receipts/nora-system.json').read_bytes())
+
+    def test_abrupt_native_exit_after_setup_write_reopens_and_restores_without_postimage_seal(self):
+        with self.fixture() as case:
+            case.journal.record.update(operationId='11111111-1111-4111-8111-111111111111', ownerEpoch=1)
+            case.journal.save()
+            original = case.journal.plan['metadataWrites'][case.key]['after']
+            script = f'''
+import importlib.util, json, os, signal
+from pathlib import Path
+from ops.installer import update_recovery, nora_system
+spec = importlib.util.spec_from_file_location('setup_killed_updater', {str(case.updater.__file__)!r})
+updater = importlib.util.module_from_spec(spec); spec.loader.exec_module(updater)
+root = Path({str(case.root)!r})
+journal = update_recovery.load(Path({str(case.journal.home)!r}), root)
+manifest = json.loads({json.dumps(case.manifest)!r})
+with updater.reconcile_setup_metadata(journal, nora_system, root, manifest):
+    nora_system.mark_setup_complete(root)
+    print('setup-owned-write-done', flush=True)
+    if os.name == 'nt': os._exit(97)
+    os.kill(os.getpid(), signal.SIGKILL)
+'''
+            result = subprocess.run([sys.executable, '-B', '-c', script], capture_output=True, text=True, timeout=15)
+            self.assertEqual(result.returncode, 97 if os.name == 'nt' else -signal.SIGKILL, result.stderr)
+            self.assertEqual(result.stdout.strip(), 'setup-owned-write-done')
+            self.assertTrue(nora_system.read_json(case.target)['setupCompleted'])
+            loaded = recovery.load(case.journal.home, case.root)
+            self.assertEqual(loaded.plan['metadataWrites'][case.key]['after'], original)
+            loaded.restore_metadata()
+            self.assertEqual(case.target.read_bytes(), (loaded.backup/'host/update-receipts/nora-system.json').read_bytes())
+            self.assertTrue(loaded.backup.is_dir())
+
+    def test_reopened_setup_write_requires_valid_intent_and_exact_postimage(self):
+        changes = ('missing', 'schema', 'key', 'before', 'after', 'text', 'newline', 'extra', 'phase', 'format')
+        for change in changes:
+            with self.subTest(change=change), self.fixture() as case:
+                save = case.journal.save
+                def fail_after_setup(*args, **kwargs):
+                    if nora_system.read_json(case.target)['setupCompleted'] is True:
+                        raise OSError('postimage checkpoint unavailable')
+                    return save(*args, **kwargs)
+                with patch.object(case.journal, 'save', side_effect=fail_after_setup):
+                    with self.assertRaises(OSError):
+                        with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                            case.verify()
+                loaded = recovery.load(case.journal.home, case.root)
+                intent = loaded.plan['setupMetadataIntent']
+                if change == 'missing': del loaded.plan['setupMetadataIntent']
+                if change == 'schema': intent['schema'] = 'nora-setup-metadata-intent/0'
+                if change == 'key': intent['key'] = 'hermes:config.yaml'
+                if change == 'before': intent['before'] = 'a' * 64
+                if change == 'after': intent['after'] = 'a' * 64
+                if change == 'text': intent['beforeText'] += ' '
+                if change == 'newline': intent['newline'] = '\r'
+                if change == 'extra': intent['extra'] = True
+                if change == 'phase': loaded.plan['metadataPhase'] = 'pending'
+                if change == 'format': case.target.write_bytes(case.target.read_bytes() + b' ')
+                loaded.save()
+                current = case.target.read_bytes()
+                with self.assertRaises(RuntimeError):
+                    recovery.load(case.journal.home, case.root).restore_metadata()
+                self.assertEqual(case.target.read_bytes(), current)
+                self.assertTrue(loaded.backup.is_dir())
+
+    def test_declared_setup_intent_restores_initial_false_metadata_when_verifier_fails_before_write(self):
+        with self.fixture() as case:
+            current = case.target.read_bytes()
+            primary = RuntimeError('service verification failed before setup write')
+            with self.assertRaises(RuntimeError) as caught:
+                with case.updater.reconcile_setup_metadata(case.journal, nora_system, case.root, case.manifest):
+                    raise primary
+            self.assertIs(caught.exception, primary)
+            self.assertEqual(case.target.read_bytes(), current)
+            loaded = recovery.load(case.journal.home, case.root)
+            loaded.restore_metadata()
+            self.assertEqual(case.target.read_bytes(), (loaded.backup/'host/update-receipts/nora-system.json').read_bytes())
 
 
 class DigestProgressTests(unittest.TestCase):

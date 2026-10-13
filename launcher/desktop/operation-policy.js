@@ -180,6 +180,24 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
   function trustedMetadata(record,resource){
     try{
       if(!/^[a-f0-9]{64}$/.test(resource?.routeHash||''))return null;
+      // A logical-route lookup can fail after the admitted provider read did.
+      // Its original cause still names physical metadata. Recover the logical
+      // identity only when the build-owned mapper produces that exact URL.
+      const actual=new URL(resource.url);
+      if(actual.username||actual.password||actual.hash)return null;
+      if(!['https://github.com','https://api.github.com'].includes(actual.origin)){
+        if(actual.search)return null;
+        const api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases';
+        const logical=[api+'/latest',api+'?per_page=100&page=1'];
+        const parts=actual.pathname.split('/').slice(-2),tag=decodeURIComponent(parts[0]||''),asset=parts[1];
+        if(asset==='release.json')logical.push(api+'/tags/'+encodeURIComponent(tag));
+        else if(['release-assets.json','release-manifest.json',`nora-launcher-${value(platform)}-${value(arch)}.json`,
+          `nora-system-${value(platform)}-${value(arch)}.json`].includes(asset))
+          logical.push(`https://github.com/LoveMaker-art/noras-tavern/releases/download/${encodeURIComponent(tag)}/${asset}`);
+        const canonical=logical.find(url=>sourceCandidates(url,{channel:value(channel)}).some(source=>source.url===actual.href));
+        if(!canonical)return null;
+        resource={...resource,url:canonical};
+      }
       const source=record.target?.releasePlan;
       if(source){
         // A metadata failure can precede the fixed plan's first admission. Once

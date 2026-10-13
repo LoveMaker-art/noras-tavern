@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const { test } = require('node:test');
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path'), crypto = require('node:crypto');
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
-const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
+const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
 test('acceptance selects actual stable history and cannot turn existing history into a first release', () => {
@@ -81,6 +81,57 @@ function stateFixture(t) {
 }
 test('resume permits a new publisher but keeps the original product tag, source run and asset mode', t => {
   const f = stateFixture(t); assert.deepEqual(verifyRestoredState(f.root, f.run, f.options), f.value);
+});
+for(const conclusion of ['failure','cancelled'])test(`Jihu resume refuses a pre-transfer-only artifact from a ${conclusion} run`,t=>{
+  const f=stateFixture(t);f.run.conclusion=conclusion;
+  const file=path.join(f.root,'publication-plan.json'),plan=JSON.parse(fs.readFileSync(file));
+  plan.destinations=['github','jihulab'];const bytes=JSON.stringify(plan,null,2)+'\n';fs.writeFileSync(file,bytes);
+  f.value.planId=hash(bytes);f.value.sealedStateHashes=immutableStateHashes(f.root);f.save();
+  f.artifacts.artifacts.pop();f.artifacts.total_count--;
+  const stateArtifact=verifyState(f.run,f.artifacts,f.options);
+  assert.equal(stateArtifact.name,'nora-publication-state-before-transfer');
+  assert.throws(()=>verifyRestoredState(f.root,f.run,{...f.options,stateArtifact}),/Jihu.*final checkpoint|pre-transfer.*PUT/i);
+});
+test('a pre-transfer snapshot shares immutable bytes but cannot change live mutable state',t=>{
+  const f=stateFixture(t),file=path.join(f.root,'publication-plan.json'),plan=JSON.parse(fs.readFileSync(file));
+  plan.destinations=['github','jihulab'];fs.writeFileSync(file,JSON.stringify(plan));
+  const parent=fs.mkdtempSync(path.join(os.tmpdir(),'nora-before-transfer-'));t.after(()=>fs.rmSync(parent,{recursive:true,force:true}));
+  const target=path.join(parent,'checkpoint'),checkpoint=path.join(f.root,'publication-state.json'),original=fs.readFileSync(checkpoint);
+  snapshotBeforeTransfer(f.root,target);
+  assert.deepEqual(fs.readFileSync(checkpoint),original,'snapshot cannot mark the state used by the live publisher');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target,'publication-state.json'))).checkpointKind,'before-transfer');
+  for(const name of ['publication-state.json','workflow-provenance.json'])
+    assert.notEqual(fs.statSync(path.join(f.root,name)).ino,fs.statSync(path.join(target,name)).ino,'mutable members need independent copies');
+  assert.equal(fs.statSync(path.join(f.root,'distribution/release.json')).ino,
+    fs.statSync(path.join(target,'distribution/release.json')).ino,'immutable members must not duplicate large payload bytes');
+  fs.writeFileSync(checkpoint,JSON.stringify({status:'preparing'}));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(target,'publication-state.json'))).status,'sealed');
+  const legacy=stateFixture(t),legacyTarget=path.join(parent,'legacy');snapshotBeforeTransfer(legacy.root,legacyTarget);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(legacyTarget,'publication-state.json'))).checkpointKind,undefined);
+});
+for(const conclusion of ['failure','cancelled'])test(`state CLI requires the API-identified final Jihu checkpoint after ${conclusion}`,t=>{
+  const f=stateFixture(t);f.run.conclusion=conclusion;
+  const planFile=path.join(f.root,'publication-plan.json'),plan=JSON.parse(fs.readFileSync(planFile));
+  plan.destinations=['github','jihulab'];const planBytes=JSON.stringify(plan,null,2)+'\n';fs.writeFileSync(planFile,planBytes);
+  f.value.planId=hash(planBytes);f.value.sealedStateHashes=immutableStateHashes(f.root);f.save();
+  const runner=fs.mkdtempSync(path.join(os.tmpdir(),'nora-state-cli-'));t.after(()=>fs.rmSync(runner,{recursive:true,force:true}));
+  const zip=path.join(runner,'state.zip');execFileSync('python3',['-B','-c',
+    'import os,sys,zipfile\nwith zipfile.ZipFile(sys.argv[2],"w") as z:\n for root,dirs,files in os.walk(sys.argv[1]):\n  for name in files:\n   p=os.path.join(root,name);z.write(p,os.path.relpath(p,sys.argv[1]))',f.root,zip]);
+  const bytes=fs.readFileSync(zip);for(const item of f.artifacts.artifacts){item.size_in_bytes=bytes.length;item.digest='sha256:'+hash(bytes);}
+  const bin=path.join(runner,'bin');fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin,'gh'),`#!${process.execPath}\nprocess.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_STATE_ZIP));\n`,{mode:0o755});
+  const runFile=path.join(runner,'run.json'),artifactsFile=path.join(runner,'artifacts.json'),receiptFile=path.join(runner,'delivery-receipt.json');
+  fs.writeFileSync(runFile,JSON.stringify(f.run));fs.writeFileSync(receiptFile,JSON.stringify(f.options.deliveryReceipt));
+  const command=output=>spawnSync(process.execPath,[path.resolve(__dirname,'../tooling/release/publication-source.cjs'),
+    'state',runFile,artifactsFile,f.options.commit,f.options.repository,'123','full',output,f.options.tag,'122','legacy',receiptFile],
+    {env:{...process.env,PATH:bin+path.delimiter+process.env.PATH,FIXTURE_STATE_ZIP:zip},encoding:'utf8'});
+  const all=structuredClone(f.artifacts);f.artifacts.artifacts.pop();f.artifacts.total_count--;fs.writeFileSync(artifactsFile,JSON.stringify(f.artifacts));
+  const rejected=path.join(runner,'before-only'),failure=command(rejected);
+  assert.notEqual(failure.status,0);assert.match(failure.stderr,/Jihu.*final checkpoint/);
+  assert.equal(fs.existsSync(path.join(rejected,'source-receipt.json')),false,'a pre-transfer snapshot must not acquire an accepted restoration receipt');
+  fs.writeFileSync(artifactsFile,JSON.stringify(all));const accepted=path.join(runner,'final'),success=command(accepted);
+  assert.equal(success.status,0,success.stderr);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(accepted,'source-receipt.json'))).artifacts[0].name,'nora-publication-state');
 });
 for (const [label, mutate] of [
   ['different tag', value => value.tag = 'v2.4.5'], ['different product', value => value.sourceCommit = 'c'.repeat(40)],

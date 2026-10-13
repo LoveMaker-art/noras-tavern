@@ -1389,7 +1389,7 @@ def reconcile_setup_metadata(journal, managed, root, manifest):
                     or record.get('version') != manifest.get('versions', {}).get('tavern')
                     or record.get('commit') != manifest.get('commit')):
                 reject()
-            return record, hashlib.sha256(b'F\0' + data).hexdigest()
+            return record, hashlib.sha256(b'F\0' + data).hexdigest(), data.decode('utf-8')
         except (OSError, ValueError, TypeError) as error:
             reject(error)
 
@@ -1411,18 +1411,23 @@ def reconcile_setup_metadata(journal, managed, root, manifest):
                    or before[name] != lifecycle['before'][name]
                    for name in ('running', 'gatewayRunning'))):
         reject()
-    original, sealed = capture()
+    original, sealed, original_text = capture()
     if sealed != entry['after']:
         reject()
+    intent = None
+    if original.get('setupCompleted') is False and before['running'] is True and before['gatewayRunning'] is True:
+        intent = journal.prepare_setup_metadata(original_text)
 
     def reconcile():
-        current, current_digest = capture()
+        current, current_digest, _ = capture()
         if current_digest == sealed:
             return
         expected = {**original, 'setupCompleted': True}
         if (original.get('setupCompleted') is not False
                 or before['running'] is not True or before['gatewayRunning'] is not True
                 or current.get('setupCompleted') is not True
+                or intent is None or journal.setup_metadata_intent() != intent
+                or current_digest != intent['after']
                 or json.dumps(current, sort_keys=True, allow_nan=False) !=
                    json.dumps(expected, sort_keys=True, allow_nan=False)):
             reject()

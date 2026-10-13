@@ -7,8 +7,64 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { sealPublication, loadPublication, executePublication } from './publication-state.mjs';
 import { command, githubProvider, sourceforgeProvider } from './publication-providers.mjs';
+import { jihulabProvider } from './jihulab-provider.mjs';
+import { createJihuTransport } from './jihulab-transport.mjs';
 
 const run = (command, args) => execFileSync(command, args, { stdio: 'inherit' });
+
+export function publicationDestinations(selector='all') {
+    const choices={all:['github','sourceforge'],github:['github'],jihulab:['jihulab'],
+        'github-jihulab':['github','jihulab'],'all-with-jihulab':['github','jihulab','sourceforge']};
+    assert.ok(typeof selector==='string' && Object.hasOwn(choices,selector),'Invalid publication destinations');
+    return [...choices[selector]];
+}
+
+export function resolvePublicationDestinationSelection(selector='auto',{sourceRoot,resumePlan}={}) {
+    if(selector!=='auto'){publicationDestinations(selector);return selector;}
+    if(resumePlan) {
+        const selected=resumePlan.destinations || ['github','sourceforge'];
+        const choice=['all','github','jihulab','github-jihulab','all-with-jihulab']
+            .find(name=>JSON.stringify(publicationDestinations(name))===JSON.stringify(selected));
+        assert.ok(choice,'Invalid resumed publication destinations');return choice;
+    }
+    const root=sourceRoot || path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..');
+    const files=['launcher/desktop','ops/installer/desktop'].map(name=>path.join(root,name,'release-sources.json')).filter(file=>fs.existsSync(file));
+    assert.equal(files.length,1,'Expected one build-owned source configuration for automatic destinations');
+    const configuration=JSON.parse(fs.readFileSync(files[0],'utf8'));
+    const directory=path.dirname(files[0]),mapper=createRequire(import.meta.url)(path.join(directory,'release-sources.js'));
+    const primary=mapper.sourceCandidates('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest',
+        {sources:configuration})[0];
+    return primary.provider==='jihulab'?'github-jihulab':'all';
+}
+
+export function buildOwnedJihuSource(sourceRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'../..')) {
+    const directories=['launcher/desktop','ops/installer/desktop'].map(name=>path.join(sourceRoot,name))
+        .filter(directory=>fs.existsSync(path.join(directory,'release-sources.js'))&&fs.existsSync(path.join(directory,'release-sources.json')));
+    assert.equal(directories.length,1,'Expected one build-owned release source configuration');
+    const directory=directories[0],file=path.join(directory,'release-sources.json'),stat=fs.lstatSync(file);
+    assert.ok(stat.isFile()&&!stat.isSymbolicLink()&&stat.size>0&&stat.size<=65536,'Invalid build-owned source configuration file');
+    const configuration=JSON.parse(fs.readFileSync(file,'utf8'));
+    createRequire(import.meta.url)(path.join(directory,'release-sources.js')).validateSources(configuration);
+    const sources=configuration.mirrors.filter(item=>item.provider==='jihulab');
+    assert.equal(sources.length,1,'A build-owned Jihu source must be configured before selecting its destination');
+    return {...sources[0]};
+}
+
+export function publicationProviders({stage='seal',destinations='all',repository,scratch,sourceRoot,environment=process.env}={},
+    {createTransport=createJihuTransport}={}) {
+    assert.ok(['seal','prepare','promote','all'].includes(stage),'Invalid publication stage');
+    const selected=publicationDestinations(destinations);
+    // Sealing checks the public routing contract, with no credential read or IO.
+    const source=selected.includes('jihulab')?buildOwnedJihuSource(sourceRoot):null;
+    if(stage==='seal')return undefined;
+    return {
+        ...(selected.includes('sourceforge')?{sourceforge:sourceforgeProvider({
+            upload:sourceforgeUploader(environment.NORA_SOURCEFORGE_UPLOAD_CONFIG,scratch),readPublic,
+            verifyObject:verifyDistributionObject,preventDowngrade})}:{}),
+        ...(selected.includes('github')?{github:githubProvider({repository})}:{}),
+        ...(source?{jihulab:jihulabProvider({...createTransport(environment.NORA_JIHULAB_UPLOAD_CONFIG,{source})})}:{}),
+    };
+}
 
 function releaseAssets(root) {
     const assets = new Map();
@@ -330,7 +386,7 @@ async function publish() {
 const args=process.argv.slice(2),[rootArg,tag,commit]=args.splice(0,3);
 const mode=args[0]&&!args[0].startsWith('--')?args.shift():'full';
 assert.ok(rootArg,'Release assets root is required');
-const options={stage:'seal',assetMode:'legacy',resume:false,destinations:'all'};
+const options={stage:'seal',assetMode:'legacy',resume:false,destinations:'auto'};
 const names={'--stage':'stage','--state-dir':'stateDir','--asset-mode':'assetMode','--reuse-from':'reuseFrom','--expected-plan-id':'expectedPlanId','--destinations':'destinations'};
 while(args.length){const name=args.shift();if(name==='--resume'){assert.ok(!options.resume,'Duplicate resume flag');options.resume=true;continue;}
     assert.ok(names[name]&&args[0]&&!args[0].startsWith('--'),`Invalid publication argument: ${name}`);assert.ok(!options['_'+name],`Duplicate ${name}`);options['_'+name]=true;options[names[name]]=args.shift();}
@@ -338,12 +394,15 @@ const root = path.resolve(rootArg);
 const repository = process.env.GH_REPO;
 assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
 assert.ok(['seal','prepare','promote','all'].includes(options.stage));assert.ok(['legacy','shared'].includes(options.assetMode));
-assert.ok(['all','github'].includes(options.destinations),'Invalid publication destinations');
-const destinations=options.destinations==='github'?['github']:['github','sourceforge'];
+const stateDir=path.resolve(options.stateDir||root+'.publication');
+options.destinations=resolvePublicationDestinationSelection(options.destinations,{resumePlan:options.resume
+    ?JSON.parse(fs.readFileSync(path.join(stateDir,'publication-plan.json'),'utf8')):undefined});
+const destinations=publicationDestinations(options.destinations);
+// Invalid or missing domestic roots fail before any publication state is made.
+publicationProviders({stage:'seal',destinations:options.destinations,repository});
 assert.ok(['full','components'].includes(mode),'Invalid delivery mode');
 assert.match(commit,/^[a-f0-9]{40}$/);assert.match(tag,/^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
 assert.equal(execFileSync('git',['rev-parse','--verify',`refs/tags/${tag}^{commit}`],{encoding:'utf8'}).trim(),commit,'Tag differs from accepted product commit');
-const stateDir=path.resolve(options.stateDir||root+'.publication');
 const sourceRun=process.env.SOURCE_RUN||'local',publisherCommit=process.env.GITHUB_SHA||execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
 let publication;
 if(options.resume){
@@ -363,9 +422,7 @@ if(options.resume){
 }
 const scratch=options.stage==='seal'?null:fs.mkdtempSync(path.join(process.env.RUNNER_TEMP||path.dirname(stateDir),'nora-publication-transfer-'));
 try {
-    const providers=options.stage==='seal'?undefined:{
-        ...(destinations.includes('sourceforge')?{sourceforge:sourceforgeProvider({upload:sourceforgeUploader(process.env.NORA_SOURCEFORGE_UPLOAD_CONFIG,scratch),readPublic,verifyObject:verifyDistributionObject,preventDowngrade})}:{}),
-        ...(destinations.includes('github')?{github:githubProvider({repository})}:{})};
+    const providers=publicationProviders({stage:options.stage,destinations:options.destinations,repository,scratch});
     const state=await executePublication(publication,{stage:options.stage,providers,publisherCommit});
     console.log(`Publication ${state.status}: ${tag} product=${commit} publisher=${publisherCommit} plan=${state.planId} state=${stateDir}`);
 } finally {if(scratch)fs.rmSync(scratch,{recursive:true,force:true});}
