@@ -247,13 +247,40 @@ for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000,
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-timeout-'));
   const script = 'process.on("SIGTERM",()=>{process.stderr.write("term ignored\\n")});process.on("message",value=>{if(value==="download")process.stdout.write("ready")});setInterval(()=>{},1000);process.send({ready:true,pid:process.pid,termHandlerInstalled:true});';
   const child = spawn(process.execPath, ['-e', script], {stdio:['ignore','pipe','pipe','ipc']}), state = captureChild(child), signals = [];
+  const archive = path.join(root,'partial.zip'), createWriteStream = fs.createWriteStream;
+  let output, outputClosed, outputDidClose = true, primary;
+  const waitOutputClose = async () => {
+    if (!output) return;
+    let timer;
+    try {
+      await Promise.race([outputClosed,new Promise((_,reject)=>{
+        timer=setTimeout(()=>reject(Object.assign(new Error('Artifact fixture output did not close within 2000 ms'),{fixtureRoot:root})),2000);
+      })]);
+      assert.equal(outputDidClose,true);
+    } finally {clearTimeout(timer);}
+  };
+  const observeOutput = t.mock.method(fs,'createWriteStream',function(file,...args){
+    const stream=createWriteStream.call(this,file,...args);
+    if(file===archive){
+      output=stream;outputDidClose=false;
+      outputClosed=new Promise(resolve=>stream.once('close',()=>{outputDidClose=true;resolve();}));
+    }
+    return stream;
+  });
   const kill = child.kill.bind(child);
   t.mock.method(child, 'kill', signal => {signals.push(signal);return kill(signal);});
   t.after(async () => {
-    try { await stopChild(child, {graceMs:25,timeoutMs:5000}); }
-    finally {
-      if(state.didClose)fs.rmSync(root, {recursive:true,force:true});
-      else t.diagnostic(`Preserved artifact fixture with unconfirmed child closure: ${root}`);
+    try {
+      await stopChild(child,{graceMs:25,timeoutMs:5000});
+      if(output&&!outputDidClose)output.destroy();
+      await waitOutputClose();
+      assert.equal(state.didClose,true);assert.equal(outputDidClose,true);
+      fs.rmSync(root,{recursive:true,force:true});
+    } catch(error) {
+      error.fixtureRoot=root;
+      if(primary)error.cause=primary;
+      t.diagnostic(`Preserved artifact fixture with unconfirmed child or output closure: ${root}`);
+      throw error;
     }
   });
   const readyController = new AbortController(), readyTimer = setTimeout(() => readyController.abort(new Error('Artifact child readiness timed out')), 5000);
@@ -268,16 +295,21 @@ for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000,
     assert.deepEqual(options.stdio,['ignore','pipe','inherit']);assert.equal(++spawned,1);
     child.send('download');return child;
   };
-  await assert.rejects(downloadArchive({ id: 1, name: 'fixture', size_in_bytes: 5, digest: 'sha256:' + hash('ready') },
-    'owner/tavern', path.join(root, 'partial.zip'), { timeout, idleTimeout, killGrace: 25, spawnProcess }), error => error.code === 'ETIMEDOUT');
+  try {
+    await assert.rejects(downloadArchive({ id: 1, name: 'fixture', size_in_bytes: 5, digest: 'sha256:' + hash('ready') },
+      'owner/tavern', archive, { timeout, idleTimeout, killGrace: 25, spawnProcess }), error => error.code === 'ETIMEDOUT');
+    assert.ok(output,'Observe the actual archive writer rather than inferring file closure from the child');
+    await waitOutputClose();
+  } catch(error) {primary=error;throw error;}
+  finally {observeOutput.mock.restore();}
   assert.equal(spawned,1);assert.equal(state.didClose,true,'Downloader must wait for actual child close');
   assert.equal(signals[0],'SIGTERM');
   if(process.platform!=='win32'){
     assert.deepEqual(signals,['SIGTERM','SIGKILL']);assert.equal(state.result.signal,'SIGKILL');assert.match(state.stderr,/term ignored/);
   }else t.diagnostic('Windows SIGTERM terminates the native child; POSIX handler execution and force escalation are not Windows evidence.');
-  assert.equal(fs.readFileSync(path.join(root,'partial.zip'),'utf8'),'ready','Readiness must not be archive bytes; only download-start may write the original five bytes');
+  assert.equal(fs.readFileSync(archive,'utf8'),'ready','Readiness must not be archive bytes; only download-start may write the original five bytes');
   t.diagnostic(JSON.stringify({evidence:'ready-artifact-child-deadline',kind:name,pid:child.pid,readyAck:true,
-    timeout,idleTimeout,killGrace:25,signals,actualClose:state.didClose,...state.result}));
+    timeout,idleTimeout,killGrace:25,signals,actualClose:state.didClose,outputClosed:outputDidClose,...state.result}));
 });
 function nativeFixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-native-report-')); t.after(() => fs.rmSync(root, { recursive: true, force: true }));
