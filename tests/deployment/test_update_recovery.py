@@ -235,7 +235,8 @@ class SetupMetadataRecoveryTests(unittest.TestCase):
         if setup:
             nora_system.mark_setup_complete(root)
         for relative in ('plugins/clawchat/clawchat_cli.py', 'plugins/clawchat/plugin.yaml',
-                         'nora-clawchat-check.py', 'clawchat/liveware/liveware'):
+                         'nora-clawchat-check.py',
+                         'clawchat/liveware/' + ('liveware.exe' if os.name == 'nt' else 'liveware')):
             target = home/relative; target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text('public controlled external fixture\n')
         lock = root/'apps/tavern-ops/updater/runtime_lock.py'
