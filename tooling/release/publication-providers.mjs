@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import crypto from 'node:crypto';
 import {spawn} from 'node:child_process';
 
 export function command(program, args, {timeout = 45 * 60 * 1000, capture = false, log = console.log, killGrace = 2000, maxOutput = 32 * 1024 * 1024} = {}) {

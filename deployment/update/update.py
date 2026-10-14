@@ -23,7 +23,7 @@ sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
-from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path, validate_partial_repair
+from bootstrap import resolve_update_target, managed_instance, filesystem_path, validate_partial_repair
 
 UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"

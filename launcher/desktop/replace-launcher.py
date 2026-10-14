@@ -1,7 +1,6 @@
 """Replace only the desktop application; run from the existing Hermes Python."""
 import hashlib
 import argparse
-import errno
 from contextlib import contextmanager
 import json
 import ntpath

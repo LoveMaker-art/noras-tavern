@@ -237,7 +237,7 @@ class IncrementalUpdateTests(unittest.TestCase):
                     mock.patch.object(BOOTSTRAP, "verify_metadata", return_value=(manifest, "sha", sums)), \
                     mock.patch.object(BOOTSTRAP, "required_archives", return_value=(["module.tar.gz"], "incremental")) as selector, \
                     mock.patch.object(BOOTSTRAP, "download", side_effect=AssertionError("no network")), \
-                    mock.patch.object(BOOTSTRAP.subprocess, "run", side_effect=AssertionError("no apply")), \
+                    mock.patch.dict(sys.modules, operation_cli=SimpleNamespace(ensure_operation=mock.Mock(side_effect=AssertionError("no apply")))), \
                     mock.patch("sys.stdout", output):
                 BOOTSTRAP.main()
             selector.assert_called_once_with(root, manifest)

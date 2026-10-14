@@ -15,7 +15,6 @@ import urllib.parse
 import os
 from pathlib import Path
 from pathlib import PurePosixPath
-import subprocess
 import sys
 import tarfile
 import tempfile
