@@ -49,7 +49,7 @@
   let sawIncompleteSetup = false, firstCompletionPending = false;
   let autoStartAttempted = false;
   let bundledUpgradeAttempted = false;
-  let statusUnknown = false, launcherRecoveryConfirmed = false;
+  let statusUnknown = false, lastStatusAt = 0, launcherRecoveryConfirmed = false;
   let logsOpen = false, logTimer, logCursor, logOperationId, logGeneration = 0, logFollow = true, logOutcome;
   let logRecords = [], logBytes = 0, logErrorLocated = false, logFirstError, logReturnFocus;
   const logIds = new Set(), logMissing = new Set();
@@ -319,7 +319,7 @@
       }
       if (value.statusUnavailable || (value.warning && !value.installed && !value.hermesInstalled && !value.retainedUninstallPending))
         throw new Error(value.warning || '暂时无法查询后台状态。');
-      syncState(value); statusUnknown = false;
+      syncState(value); statusUnknown = false; lastStatusAt = Date.now();
       return value;
     } catch (error) { statusUnknown = true; throw error; }
   }

@@ -915,7 +915,7 @@ def ensure_external_skills_dir():
                 real_mkdir = Path.mkdir
                 def interrupted(path, *args, **kwargs):
                     result = real_mkdir(path, *args, **kwargs)
-                    if path == journal.directory and (journal.directory.parent / 'attempts/attempt-0001/first-install').exists(): raise PowerLoss()
+                    if same_filesystem_path(path, journal.directory) and (journal.directory.parent / 'attempts/attempt-0001/first-install').exists(): raise PowerLoss()
                     return result
                 with patch.object(Path, 'mkdir', side_effect=interrupted, autospec=True):
                     with self.assertRaises(PowerLoss): first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
