@@ -1,5 +1,6 @@
 """Long-path regressions; the native Windows case also runs with LongPathsEnabled=0 in CI."""
 import builtins
+from contextlib import ExitStack
 import errno
 import hashlib
 import importlib.util
@@ -12,6 +13,7 @@ import shutil
 import sys
 import tarfile
 import tempfile
+import traceback
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -140,47 +142,155 @@ class InstallerPathTests(unittest.TestCase):
 
     @unittest.skipUnless(os.name == "nt", "requires native Windows filesystem")
     def test_native_long_path_extract_copy_backup_restore_and_cleanup(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+        self.native_long_path_extract_copy_backup_restore_and_cleanup()
+
+    @unittest.skipUnless(os.name == "nt", "requires native Windows filesystem")
+    def test_native_restore_stage_with_simulated_legacy_directory_limit(self):
+        # Keep the real Windows filesystem and the product's default journal
+        # location. Only legacy mkdir/stat/open limits are simulated on policy=1.
+        original_mkdir, original_stat, original_lstat = os.mkdir, os.stat, os.lstat
+        original_open, original_io_open, original_os_open = builtins.open, io.open, os.open
+        observed = []
+
+        def legacy_path(path, operation, limit):
+            if isinstance(path, int):
+                return
+            value = os.fsdecode(path)
+            extended = value.startswith("\\\\?\\")
+            logical = value[8:] if value.startswith("\\\\?\\UNC\\") else value[4:] if extended else value
+            if "nora-native-paths-" in logical and len(logical) > limit:
+                observed.append({"path": value, "extended": extended, "length": len(logical), "operation": operation})
+                if not extended:
+                    raise OSError(0, "Simulated legacy Windows filesystem length limit", value, 206)
+
+        def legacy_mkdir(path, *args, **kwargs):
+            legacy_path(path, "mkdir", 248)
+            return original_mkdir(path, *args, **kwargs)
+
+        def legacy_stat(path, *args, **kwargs):
+            legacy_path(path, "stat", 259)
+            return original_stat(path, *args, **kwargs)
+
+        def legacy_lstat(path, *args, **kwargs):
+            legacy_path(path, "lstat", 259)
+            return original_lstat(path, *args, **kwargs)
+
+        def legacy_open(path, *args, **kwargs):
+            legacy_path(path, "open", 259)
+            return original_open(path, *args, **kwargs)
+
+        def legacy_io_open(path, *args, **kwargs):
+            legacy_path(path, "io.open", 259)
+            return original_io_open(path, *args, **kwargs)
+
+        def legacy_os_open(path, *args, **kwargs):
+            legacy_path(path, "os.open", 259)
+            return original_os_open(path, *args, **kwargs)
+
+        with ExitStack() as stack:
+            for owner, name, replacement in [(os, "mkdir", legacy_mkdir), (os, "stat", legacy_stat),
+                    (os, "lstat", legacy_lstat), (builtins, "open", legacy_open),
+                    (io, "open", legacy_io_open), (os, "open", legacy_os_open)]:
+                stack.enter_context(patch.object(owner, name, side_effect=replacement))
+            self.native_long_path_extract_copy_backup_restore_and_cleanup()
+        self.assertTrue(any(item["operation"] == "mkdir" and "first-install" in item["path"] for item in observed),
+            "the product's default journal/restore/archive directory must exercise legacy mkdir limits")
+        self.assertTrue(any(item["operation"] in ("stat", "lstat", "open", "io.open", "os.open")
+            and "backups" in item["path"] for item in observed), "the real deep backup must exercise legacy file limits")
+        self.assertTrue(all(item["extended"] for item in observed), observed)
+
+    def native_long_path_extract_copy_backup_restore_and_cleanup(self):
+        # Own the outer directory explicitly: TemporaryDirectory's implicit
+        # cleanup could hide the recovery error behind another MAX_PATH error.
+        root = Path(tempfile.mkdtemp(prefix="nora-native-paths-")).resolve()
+        primary = None
+        try:
             home = root / ("中文用户-" + "x" * max(20, 175 - len(str(root))))
             home.mkdir()
             dependency_fixture(root / "payload")
+            with INSTALLER.install_workspace(home) as temporary_work:
+                source = Path(temporary_work) / "source"
+                INSTALLER.extract_dependency_bundle(root / "payload", source)
+                target = home / "tavern/apps/tavern-runtime"
+                worker = target / WORKER.removeprefix("app/")
+                self.assertGreater(len(str(worker)), 260)
+                INSTALLER.copy_tree(source / "app", target)
+                hermes = home / "hermes"
+                hermes.mkdir()
+                # A real selected installation keeps its journal beneath home;
+                # a shorter test override must not hide long backup/restore I/O.
+                with patch.dict(os.environ):
+                    os.environ.pop("NORA_INSTALLER_DIRECTORY", None)
+                    journal = INSTALLER.FirstInstallJournal.create(home, hermes, home / "tavern")
+                    self.assertEqual(journal.directory.parents[2], home / "installer")
+                    self.assertGreater(len(str(journal.directory)), 248)
+                    self.assertFalse(str(journal.file).startswith("\\\\?\\"))
+                    journal.prepare({"tavern": [target]}, manifest={})
+                    saved_target = journal.backup_target(journal.record["targets"][0])
+                    self.assertEqual(saved_target, journal.directory / "backups/000")
+                    legacy_saved = journal.directory / "backups/tavern/apps/tavern-runtime"
+                    self.assertEqual(len(str(legacy_saved)) - len(str(saved_target)),
+                        len("backups/tavern/apps/tavern-runtime") - len("backups/000"))
+                    saved_worker = saved_target / WORKER.removeprefix("app/")
+                    self.assertGreater(len(str(saved_worker)), 260, "the actual journal backup must exercise long paths")
+                    journal.checkpoint("apply", "intent")
+                    Path(INSTALLER.filesystem_path(worker)).write_bytes(b"changed")
+                    journal.checkpoint("apply", "failed")
+                    result = INSTALLER.resume_first_install(journal.file, stop=lambda: {"offline": True})
+                    errors = result.get("errors", [])
+                    traces = "\n".join("".join(traceback.format_exception(error)) for error in errors)
+                    self.assertEqual(result["status"], "restored", f"recovery result: {result!r}\n{traces}")
+                    restored_journal = INSTALLER.FirstInstallJournal.load(journal.file)
+                    staged = restored_journal.record["targets"][0]["staged"]
+                    self.assertFalse(staged.startswith("\\\\?\\"), "the journal must retain its logical relative path")
+                    self.assertEqual(Path(staged).parent, Path(restored_journal.record["targets"][0]["path"]).parent)
+                    self.assertRegex(Path(staged).name, r"^\.nfi-r-[a-f0-9]{32}$")
+                    staged_path = Path(restored_journal.record["roots"]["tavern"]) / staged
+                    legacy_staged = staged_path.with_name(".nora-first-install-restore-" + staged_path.name.removeprefix(".nfi-r-"))
+                    self.assertEqual(len(str(legacy_staged)) - len(str(staged_path)),
+                        len(".nora-first-install-restore-") - len(".nfi-r-"))
+                    self.assertGreater(len(str(staged_path / WORKER.removeprefix("app/"))), 260,
+                        "the restored tree's real worker path still requires long-path I/O")
+                    self.assertEqual(INSTALLER.resume_first_install(journal.file, stop=lambda: {"offline": True})["status"], "restored",
+                        "a repeated recovery must retain the same default-journal contract")
+                self.assertEqual(Path(INSTALLER.filesystem_path(saved_worker)).read_bytes(), b"worker fixture",
+                    "restoration must preserve the journal's source snapshot")
+                self.assertEqual(Path(INSTALLER.filesystem_path(worker)).read_bytes(), b"worker fixture")
+                context = INSTALLER.module_at("windows_managed_context", ROOT / "ops/updater/managed_context.py")
+                (hermes / "AGENTS.md").write_bytes(b"old rules")
+                (hermes / "AGENTS.md.bak").write_bytes(b"previous rules")
+                agents_backup = Path(INSTALLER.filesystem_path(
+                    home / "tavern/tavern-first-install-backups/20260910-120000-2.2.11-1789011117954000000/agents-rollback"))
+                context.snapshot_agents(hermes, agents_backup)
+                context.install_agents(hermes, b"new rules")
+                context.restore_agents(hermes, agents_backup)
+                self.assertEqual((hermes / "AGENTS.md").read_bytes(), b"old rules")
+                self.assertEqual((hermes / "AGENTS.md.bak").read_bytes(), b"previous rules")
+                # The next attempt must rotate the same deep default journal,
+                # preserving the original transaction bytes and its backups.
+                old_journal = Path(INSTALLER.filesystem_path(journal.file)).read_bytes()
+                with patch.dict(os.environ):
+                    os.environ.pop("NORA_INSTALLER_DIRECTORY", None)
+                    retry = INSTALLER.FirstInstallJournal.create(home, hermes, home / "tavern",
+                        operation_id=journal.record["operationId"])
+                self.assertEqual(retry.record["attempt"], 2)
+                archive = journal.directory.parent / retry.record["previousArchive"]
+                self.assertFalse(str(archive).startswith("\\\\?\\"))
+                self.assertEqual(Path(INSTALLER.filesystem_path(archive / "transaction.json")).read_bytes(), old_journal)
+                self.assertEqual(Path(INSTALLER.filesystem_path(archive / "backups/000"
+                    / WORKER.removeprefix("app/"))).read_bytes(), b"worker fixture")
+            self.assertFalse(Path(temporary_work).exists(), "workspace cleanup must support long descendants")
+        except BaseException as error:
+            primary = error
+            raise
+        finally:
             try:
-                with INSTALLER.install_workspace(home) as temporary_work:
-                    source = Path(temporary_work) / "source"
-                    INSTALLER.extract_dependency_bundle(root / "payload", source)
-                    target = home / "tavern/apps/tavern-runtime"
-                    worker = target / WORKER.removeprefix("app/")
-                    self.assertGreater(len(str(worker)), 260)
-                    INSTALLER.copy_tree(source / "app", target)
-                    hermes = home / "hermes"
-                    hermes.mkdir()
-                    with patch.dict(os.environ, {"NORA_INSTALLER_DIRECTORY": str(root / "installer")}):
-                        journal = INSTALLER.FirstInstallJournal.create(home, hermes, home / "tavern")
-                        journal.prepare({"tavern": [target]}, manifest={})
-                        saved_worker = journal.directory / "backups/tavern/apps/tavern-runtime" / WORKER.removeprefix("app/")
-                        self.assertGreater(len(str(saved_worker)), 260, "the actual journal backup must exercise long paths")
-                        journal.checkpoint("apply", "intent")
-                        Path(INSTALLER.filesystem_path(worker)).write_bytes(b"changed")
-                        journal.checkpoint("apply", "failed")
-                        result = INSTALLER.resume_first_install(journal.file, stop=lambda: {"offline": True})
-                        self.assertEqual(result["status"], "restored")
-                    self.assertEqual(Path(INSTALLER.filesystem_path(saved_worker)).read_bytes(), b"worker fixture",
-                        "restoration must preserve the journal's source snapshot")
-                    self.assertEqual(Path(INSTALLER.filesystem_path(worker)).read_bytes(), b"worker fixture")
-                    context = INSTALLER.module_at("windows_managed_context", ROOT / "ops/updater/managed_context.py")
-                    (hermes / "AGENTS.md").write_bytes(b"old rules")
-                    (hermes / "AGENTS.md.bak").write_bytes(b"previous rules")
-                    agents_backup = Path(INSTALLER.filesystem_path(
-                        home / "tavern/tavern-first-install-backups/20260910-120000-2.2.11-1789011117954000000/agents-rollback"))
-                    context.snapshot_agents(hermes, agents_backup)
-                    context.install_agents(hermes, b"new rules")
-                    context.restore_agents(hermes, agents_backup)
-                    self.assertEqual((hermes / "AGENTS.md").read_bytes(), b"old rules")
-                    self.assertEqual((hermes / "AGENTS.md.bak").read_bytes(), b"previous rules")
-                self.assertFalse(Path(temporary_work).exists(), "workspace cleanup must support long descendants")
-            finally:
-                shutil.rmtree(INSTALLER.filesystem_path(home))
+                shutil.rmtree(INSTALLER.filesystem_path(root))
+            except BaseException as error:
+                message = f"Native path fixture cleanup failed; retained: {root}; cause: {error}"
+                if primary is None:
+                    raise RuntimeError(message) from error
+                primary.add_note(message)
 
 
 if __name__ == "__main__":

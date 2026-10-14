@@ -62,7 +62,7 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                     with patch.dict(os.environ, {"NORA_INSTALLER_DIRECTORY": str(root / "installer")}):
                         journal = MODULE.FirstInstallJournal.create(root, home, tavern)
                         journal.prepare({"hermes": [agents, previous]}, manifest={})
-                        snapshots = journal.directory / "backups/hermes"
+                        snapshots = {item['path']: journal.backup_target(item) for item in journal.record['targets']}
                         journal.checkpoint("apply", "intent")
                         MODULE.install_agents(home, template, journal)
                         self.assertEqual(agents.read_bytes(), template.encode("utf-8"))
@@ -82,7 +82,7 @@ class FirstInstallSnapshotTests(unittest.TestCase):
                         self.assertEqual(MODULE.resume_first_install(journal.file, stop=lambda: {"offline": True})["status"], "restored")
                     for path, content in ((agents, original), (previous, previous_original)):
                         self.assertEqual(path.read_bytes() if path.exists() else None, content)
-                        snapshot = snapshots / path.name
+                        snapshot = snapshots[path.name]
                         self.assertEqual(snapshot.read_bytes() if snapshot.exists() else None, content,
                             "restoration must preserve the original source snapshot")
 
@@ -367,8 +367,8 @@ assert soul in load_soul_md(home_override=home), "SOUL identity not loaded separ
             self.assertEqual(existing_file.read_bytes(), original_config)
             self.assertEqual((existing_tree / "SKILL.md").read_bytes(), original_skill)
             self.assertFalse(new_tree.exists())
-            self.assertEqual((journal.directory / "backups/hermes/config.yaml").read_bytes(), original_config)
-            self.assertEqual((journal.directory / "backups/hermes/skills/creative/tavern/SKILL.md").read_bytes(), original_skill)
+            self.assertEqual(journal.backup_target(journal.record['targets'][0]).read_bytes(), original_config)
+            self.assertEqual((journal.backup_target(journal.record['targets'][1]) / "SKILL.md").read_bytes(), original_skill)
             self.assertTrue(any(path.read_bytes() == candidate_runtime
                 for path in (journal.directory / "failed-new").rglob("server.js")), "failed candidate must be retained outside the active runtime")
 

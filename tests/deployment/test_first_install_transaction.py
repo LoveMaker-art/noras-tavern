@@ -19,6 +19,175 @@ def same_filesystem_path(left, right):
 
 
 class FirstInstallTransactionTests(unittest.TestCase):
+    def test_indexed_backups_bind_each_target_to_its_exact_stable_list_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir()
+            config, agents = hermes / 'config.yaml', hermes / 'AGENTS.md'
+            config.write_bytes(b'original config'); agents.write_bytes(b'original rules')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config, agents]}, manifest={})
+                self.assertEqual(journal.record['backupLayout'], 'indexed-v1')
+                for index, item in enumerate(journal.record['targets']):
+                    self.assertIs(type(item['backupIndex']), int); self.assertEqual(item['backupIndex'], index)
+                    saved = journal.backup_target(item)
+                    self.assertEqual(saved, journal.directory / f'backups/{index:03d}')
+                    self.assertEqual(saved.read_bytes(), (config, agents)[index].read_bytes())
+                    with self.assertRaisesRegex(RuntimeError, '备份'): journal.backup_target(dict(item))
+                journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'first candidate'); journal.apply_bytes(config, b'second candidate')
+                journal.apply_bytes(agents, b'candidate rules')
+                self.assertEqual(first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})['status'], 'restored')
+                self.assertEqual(config.read_bytes(), b'original config'); self.assertEqual(agents.read_bytes(), b'original rules')
+
+    def test_backup_layout_rejects_unknown_legacy_indices_reordered_and_noninteger_indices(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir()
+            config, agents = hermes / 'config.yaml', hermes / 'AGENTS.md'
+            config.write_bytes(b'config'); agents.write_bytes(b'rules')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config, agents]}, manifest={})
+                for layout in (None, '', 'legacy', 'indexed-v2', 1):
+                    with self.subTest(layout=layout):
+                        journal.record['backupLayout'] = layout
+                        with self.assertRaisesRegex(RuntimeError, '备份'): journal.validate()
+                        with self.assertRaisesRegex(RuntimeError, '备份'): journal.backup_target(journal.record['targets'][0])
+                journal.record['backupLayout'] = 'indexed-v1'
+                targets = journal.record['targets']
+                journal.record['targets'] = list(reversed(targets))
+                with self.assertRaisesRegex(RuntimeError, '备份'): journal.validate()
+                with self.assertRaisesRegex(RuntimeError, '备份'): journal.backup_target(targets[0])
+                journal.record['targets'] = targets
+                for index in (True, 0.0, -1, 1, '0', None):
+                    with self.subTest(index=index):
+                        targets[0]['backupIndex'] = index
+                        with self.assertRaisesRegex(RuntimeError, '备份'): journal.validate()
+                        with self.assertRaisesRegex(RuntimeError, '备份'): journal.backup_target(targets[0])
+                targets[0]['backupIndex'] = 0
+                journal.record.pop('backupLayout')
+                with self.assertRaisesRegex(RuntimeError, '备份'): journal.validate()
+                with self.assertRaisesRegex(RuntimeError, '备份'): journal.backup_target(targets[0])
+                self.assertEqual(config.read_bytes(), b'config'); self.assertEqual(agents.read_bytes(), b'rules')
+
+    def test_cross_target_backup_identity_swap_blocks_restore_and_preserves_both_targets(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir()
+            config, agents = hermes / 'config.yaml', hermes / 'AGENTS.md'
+            config.write_bytes(b'original config'); agents.write_bytes(b'original rules')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config, agents]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'candidate config'); journal.apply_bytes(agents, b'candidate rules')
+                first, second = [journal.backup_target(item) for item in journal.record['targets']]
+                temporary_backup = journal.directory / 'swapped-backup'
+                os.replace(first_install.filesystem_path(first), first_install.filesystem_path(temporary_backup))
+                os.replace(first_install.filesystem_path(second), first_install.filesystem_path(first))
+                os.replace(first_install.filesystem_path(temporary_backup), first_install.filesystem_path(second))
+                self.assertEqual(first_install.inspect_first_install(journal.file)['reason'], 'backup_invalid')
+                result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+                self.assertEqual(result['status'], 'recovery_failed'); self.assertEqual(len(result['unrestored']), 2)
+                self.assertEqual(config.read_bytes(), b'candidate config'); self.assertEqual(agents.read_bytes(), b'candidate rules')
+                self.assertEqual(first.read_bytes(), b'original rules'); self.assertEqual(second.read_bytes(), b'original config')
+
+    def test_new_exchange_and_restore_names_are_short_with_full_role_specific_uuid(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir(); config = hermes / 'config.yaml'; config.write_bytes(b'original')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'candidate')
+                exchange = journal.record['targets'][0]['exchanges'][0]
+                self.assertRegex(Path(exchange['staged']).name, r'^\.nfi-a-[a-f0-9]{32}$')
+                self.assertRegex(Path(exchange['old']).name, r'^\.nfi-o-[a-f0-9]{32}$')
+                result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+                self.assertEqual(result['status'], 'restored'); self.assertEqual(config.read_bytes(), b'original')
+                item = first_install.FirstInstallJournal.load(journal.file).record['targets'][0]
+                self.assertRegex(Path(item['staged']).name, r'^\.nfi-r-[a-f0-9]{32}$')
+                self.assertEqual(Path(item['staged']).parent, Path(item['path']).parent)
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.remove(config)
+                self.assertRegex(Path(journal.record['targets'][0]['exchanges'][0]['old']).name, r'^\.nfi-o-[a-f0-9]{32}$')
+                self.assertEqual(first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})['status'], 'restored')
+                self.assertEqual(config.read_bytes(), b'original')
+
+    def test_legacy_exchange_and_interrupted_restore_names_still_resume_owned_files(self):
+        class PowerLoss(BaseException): pass
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir(); config = hermes / 'config.yaml'; config.write_bytes(b'original')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'candidate')
+                item = journal.record['targets'][0]; exchange = item['exchanges'][0]
+                actual_replace = os.replace
+                # A genuine pre-layout record stores the same owned snapshot at
+                # its original namespace/path; never infer or migrate on load.
+                saved = journal.backup_target(item)
+                legacy_saved = journal.directory / 'backups/hermes/config.yaml'
+                legacy_saved.parent.mkdir(parents=True)
+                actual_replace(first_install.filesystem_path(saved), first_install.filesystem_path(legacy_saved))
+                journal.record.pop('backupLayout'); item.pop('backupIndex')
+                for key, prefix in [('old', '.nora-first-install-old-'), ('staged', '.nora-first-install-apply-')]:
+                    before = hermes / exchange[key]
+                    after = before.with_name(prefix + before.name.rsplit('-', 1)[-1])
+                    if before.exists(): actual_replace(first_install.filesystem_path(before), first_install.filesystem_path(after))
+                    exchange[key] = after.relative_to(hermes).as_posix()
+                journal.save(); first_install.FirstInstallJournal.load(journal.file)
+                self.assertEqual(journal.backup_target(item), legacy_saved)
+                def interrupted(source, target):
+                    if same_filesystem_path(target, config) and Path(source).name.startswith(('.nfi-r-', '.nora-first-install-restore-')):
+                        raise PowerLoss()
+                    actual_replace(source, target)
+                with patch.object(first_install.os, 'replace', side_effect=interrupted):
+                    with self.assertRaises(PowerLoss): first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+                journal = first_install.FirstInstallJournal.load(journal.file); item = journal.record['targets'][0]
+                before = hermes / item['staged']
+                after = before.with_name('.nora-first-install-restore-' + before.name.rsplit('-', 1)[-1])
+                actual_replace(first_install.filesystem_path(before), first_install.filesystem_path(after))
+                item['staged'] = after.relative_to(hermes).as_posix(); journal.save()
+                before_identity = first_install._recovery.identity(after)
+                self.assertEqual(before_identity, item['stagedIdentity'])
+                result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
+                self.assertEqual(result['status'], 'restored'); self.assertEqual(config.read_bytes(), b'original')
+                self.assertEqual(first_install._recovery.identity(config), before_identity)
+                self.assertEqual(first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})['status'], 'restored')
+                self.assertNotIn('backupLayout', first_install.FirstInstallJournal.load(journal.file).record)
+                self.assertEqual(legacy_saved.read_bytes(), b'original')
+                self.assertEqual(list(hermes.glob('.nora-first-install-*')), [])
+                self.assertEqual(list(hermes.glob('.nfi-*')), [])
+
+    def test_exchange_names_reject_wrong_roles_parents_and_incomplete_uuids(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            home = Path(temporary).resolve(); hermes, tavern = home / 'hermes', home / 'tavern'
+            hermes.mkdir(); tavern.mkdir(); config = hermes / 'config.yaml'; config.write_bytes(b'original')
+            with patch.dict(os.environ, {'NORA_INSTALLER_DIRECTORY': str(home / 'installer')}):
+                journal = first_install.FirstInstallJournal.create(home, hermes, tavern, operation_id=OPERATION_ID)
+                journal.prepare({'hermes': [config]}, manifest={}); journal.checkpoint('apply', 'intent')
+                journal.apply_bytes(config, b'candidate')
+                item = journal.record['targets'][0]; exchange = item['exchanges'][0]
+                for container, key, valid, invalid in [
+                        (exchange, 'old', '.nfi-o-', ['.nfi-a-', '.nfi-r-', '.nora-first-install-apply-', '.nora-first-install-restore-']),
+                        (exchange, 'staged', '.nfi-a-', ['.nfi-o-', '.nfi-r-', '.nora-first-install-old-', '.nora-first-install-restore-']),
+                        (item, 'staged', '.nfi-r-', ['.nfi-o-', '.nfi-a-', '.nora-first-install-old-', '.nora-first-install-apply-'])]:
+                    original = container.get(key)
+                    for value in [*[prefix + 'a' * 32 for prefix in invalid], valid + 'a' * 31,
+                            valid + 'A' * 32, 'other/' + valid + 'a' * 32, '../' + valid + 'a' * 32,
+                            '/' + valid + 'a' * 32]:
+                        with self.subTest(key=key, value=value):
+                            container[key] = value
+                            with self.assertRaisesRegex(RuntimeError, '不受信任'): journal.validate()
+                    if original is None: container.pop(key)
+                    else: container[key] = original
+                journal.validate()
+                self.assertEqual(config.read_bytes(), b'candidate')
+
     def test_code_digest_progress_preserves_original_hash_and_excludes_migration_backup_bytes(self):
         with tempfile.TemporaryDirectory() as temporary:
             root=Path(temporary);(root/'a-empty').write_bytes(b'')
@@ -343,6 +512,7 @@ class FirstInstallTransactionTests(unittest.TestCase):
             archived = [path.read_bytes() for path in (journal.directory / 'failed-new').rglob('*') if path.is_file()]
             self.assertIn(b'failed new config', archived)
             self.assertEqual(list(hermes.glob('.nora-first-install-restore-*')), [])
+            self.assertEqual(list(hermes.glob('.nfi-r-*')), [])
 
     def test_corrupt_backup_preserves_that_target_while_other_managed_targets_restore(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -358,7 +528,7 @@ class FirstInstallTransactionTests(unittest.TestCase):
                 journal.checkpoint('apply', 'intent')
                 journal.apply_bytes(config, b'failed config'); (app / 'server.js').write_bytes(b'failed runtime')
                 journal.checkpoint('apply', 'result')
-                saved = journal.directory / 'backups/hermes/config.yaml'
+                saved = journal.backup_target(journal.record['targets'][0])
                 saved.write_bytes(b'corrupt backup')
                 result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
                 self.assertEqual(result['status'], 'recovery_failed')
@@ -410,6 +580,7 @@ class FirstInstallTransactionTests(unittest.TestCase):
                 self.assertEqual(restored['status'], 'restored')
                 self.assertEqual(config.read_bytes(), b'original config')
                 self.assertEqual(list(hermes.glob('.nora-first-install-*')), [])
+                self.assertEqual(list(hermes.glob('.nfi-*')), [])
                 self.assertTrue(any(path.read_bytes() in (b'new configuration', b'original config')
                     for path in (journal.directory / 'failed-new').rglob('*') if path.is_file()))
 
@@ -539,14 +710,14 @@ def ensure_external_skills_dir():
                 config.write_bytes(b'concurrent user configuration')
                 result = first_install.inspect_first_install(journal.file)
                 self.assertEqual(result['effectState'], 'unknown'); self.assertFalse(result['canRecover'])
-                (journal.directory / 'backups/hermes/config.yaml').write_bytes(b'corrupt')
+                journal.backup_target(journal.record['targets'][0]).write_bytes(b'corrupt')
                 self.assertEqual(first_install.inspect_first_install(journal.file)['reason'], 'backup_invalid')
 
     def test_actual_install_resumes_after_every_managed_apply_rename_boundary(self):
         class PowerLoss(BaseException): pass
         actual_replace = os.replace
         def managed(source, target):
-            return Path(source).name.startswith('.nora-first-install-apply-') or Path(target).name.startswith('.nora-first-install-old-')
+            return Path(source).name.startswith(('.nora-first-install-apply-', '.nfi-a-')) or Path(target).name.startswith(('.nora-first-install-old-', '.nfi-o-'))
         boundaries = []
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary).resolve()
@@ -573,6 +744,7 @@ def ensure_external_skills_dir():
                 self.assertEqual((home / 'hermes/config.yaml').read_bytes(), b'original config')
                 self.assertFalse((home / 'tavern/apps/tavern-runtime').exists())
                 self.assertEqual(list((home / 'hermes').glob('.nora-first-install-*')), [])
+                self.assertEqual(list((home / 'hermes').glob('.nfi-*')), [])
                 self.assertTrue(all(item.get('phase') == 'restored' for item in json.loads(file.read_text())['targets']))
 
     def test_exchange_artifact_archive_can_resume_after_hard_exit(self):
@@ -587,12 +759,13 @@ def ensure_external_skills_dir():
                 actual_replace = os.replace
                 def interrupted(source, target):
                     actual_replace(source, target)
-                    if Path(source).name.startswith('.nora-first-install-old-'): raise PowerLoss()
+                    if Path(source).name.startswith(('.nora-first-install-old-', '.nfi-o-')): raise PowerLoss()
                 with patch.object(first_install.os, 'replace', side_effect=interrupted):
                     with self.assertRaises(PowerLoss): first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
                 result = first_install.resume_first_install(journal.file, stop=lambda: {'offline': True})
                 self.assertEqual(result['status'], 'restored'); self.assertEqual(config.read_bytes(), b'original')
                 self.assertEqual(list(hermes.glob('.nora-first-install-*')), [])
+                self.assertEqual(list(hermes.glob('.nfi-*')), [])
 
     def test_completed_install_strict_restore_preserves_code_changed_after_success(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -695,7 +868,7 @@ def ensure_external_skills_dir():
             self.assertEqual(retry.record['attempt'], 2)
             self.assertEqual(retry.record['operationId'], OPERATION_ID)
             archive = home / 'installer/operations' / OPERATION_ID / 'attempts/attempt-0001'
-            self.assertEqual((archive / 'first-install/backups/hermes/config.yaml').read_bytes(), b'original')
+            self.assertEqual((archive / 'first-install/backups/000').read_bytes(), b'original')
             self.assertEqual((archive / 'evidence/python.json').read_bytes(), primary)
             self.assertEqual(json.loads(Path(evidence['path']).read_text())['primary']['message'], 'first actual failure')
             self.assertEqual(config.read_bytes(), b'retry configuration')

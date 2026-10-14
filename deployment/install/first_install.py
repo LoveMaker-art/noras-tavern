@@ -163,22 +163,24 @@ class FirstInstallJournal:
         operation_id, operation = _operation_evidence.operation_directory(nora_home,
             operation_id=operation_id, install_root=install_root)
         roots = {'hermes': Path(hermes_home).resolve(), 'tavern': Path(install_root).resolve()}
-        for root in roots.values(): root.mkdir(parents=True, exist_ok=True)
+        for root in roots.values(): Path(filesystem_path(root)).mkdir(parents=True, exist_ok=True)
         directory = operation / 'first-install'
-        if directory.is_symlink(): raise RuntimeError('首装恢复目录不能是链接')
-        operation.mkdir(parents=True, mode=0o700, exist_ok=True)
+        directory_io = Path(filesystem_path(directory))
+        if directory_io.is_symlink(): raise RuntimeError('首装恢复目录不能是链接')
+        Path(filesystem_path(operation)).mkdir(parents=True, mode=0o700, exist_ok=True)
         attempt, archive, missing = cls.retire_attempt(operation, operation_id, nora_home, roots)
-        directory.mkdir(parents=True, mode=0o700, exist_ok=True)
+        directory_io.mkdir(parents=True, mode=0o700, exist_ok=True)
         for owned in (directory, operation, operation.parent): os.chmod(filesystem_path(owned), 0o700)
         record = {'schema': 1, 'owner': 'nora-first-install', 'operationId': operation_id,
             'noraHome': str(Path(nora_home).resolve()), 'roots': {name: str(root) for name, root in roots.items()},
             'rootIdentities': {name: _recovery.identity(root) for name, root in roots.items()},
-            'attempt': attempt, 'status': 'preparing', 'targets': [], 'checkpoints': {}, 'unrestored': []}
+            'attempt': attempt, 'backupLayout': 'indexed-v1', 'status': 'preparing',
+            'targets': [], 'checkpoints': {}, 'unrestored': []}
         if archive: record['previousArchive'] = archive
         if missing: record['missingReasons'] = missing
         journal = cls(directory, record); journal.save()
         rotation = operation / 'first-install-rotation.json'
-        if rotation.exists():
+        if Path(filesystem_path(rotation)).exists():
             state = _recovery.read_object(rotation); state['state'] = 'complete'
             atomic(rotation, json.dumps(state).encode())
         return journal
@@ -188,7 +190,8 @@ class FirstInstallJournal:
         """Rotate only proven inactive effects, with an intent outside the moved tree."""
         directory = operation / 'first-install'; file = directory / 'transaction.json'
         rotation = operation / 'first-install-rotation.json'
-        state = _recovery.read_object(rotation) if rotation.exists() else None
+        directory_io, file_io = Path(filesystem_path(directory)), Path(filesystem_path(file))
+        state = _recovery.read_object(rotation) if Path(filesystem_path(rotation)).exists() else None
         expected = {'operationId': operation_id, 'noraHome': str(Path(nora_home).resolve()),
             'roots': {name: str(root) for name, root in roots.items()}}
         def check(record):
@@ -206,7 +209,7 @@ class FirstInstallJournal:
                 raise RuntimeError('首装尝试归档记录不受信任')
             if state['state'] != 'complete':
                 archive = operation / 'attempts' / f"attempt-{state['fromAttempt']:04d}" / 'first-install'
-                if file.exists():
+                if file_io.exists():
                     current = _recovery.read_object(file)
                     if check(current) == state['toAttempt']:
                         # A crash after the new sealed empty record was written.
@@ -217,9 +220,9 @@ class FirstInstallJournal:
                         state['state'] = 'complete'; atomic(rotation, json.dumps(state).encode())
                         return state['toAttempt'], str(archive.relative_to(operation)), current.get('missingReasons', [])
                 return cls.finish_rotation(operation, directory, state, expected)
-            if not file.exists(): raise RuntimeError('首装当前尝试记录缺失，已保留现场')
-        if not file.exists():
-            if directory.exists() and any(directory.iterdir()): raise RuntimeError('首装恢复目录含未知现场')
+            if not file_io.exists(): raise RuntimeError('首装当前尝试记录缺失，已保留现场')
+        if not file_io.exists():
+            if directory_io.exists() and any(directory_io.iterdir()): raise RuntimeError('首装恢复目录含未知现场')
             return 1, None, []
         journal = cls.load(file); attempt = check(journal.record)
         effects = _inspect_first_install_journal(journal)
@@ -227,7 +230,7 @@ class FirstInstallJournal:
             raise RuntimeError('首装现场尚未安全恢复，拒绝开始新尝试')
         if attempt >= 100: raise RuntimeError('首装尝试次数达到上限')
         state = {'schema': 1, **expected, 'fromAttempt': attempt, 'toAttempt': attempt + 1,
-            'sourceIdentity': _recovery.identity(directory), 'transactionDigest': hashlib.sha256(file.read_bytes()).hexdigest(),
+            'sourceIdentity': _recovery.identity(directory), 'transactionDigest': hashlib.sha256(file_io.read_bytes()).hexdigest(),
             'state': 'intent'}
         atomic(rotation, json.dumps(state).encode())
         return cls.finish_rotation(operation, directory, state, expected)
@@ -237,7 +240,7 @@ class FirstInstallJournal:
         if _recovery.identity(source) != state.get('sourceIdentity'):
             raise RuntimeError('首装尝试归档身份变化')
         file = source / 'transaction.json'
-        if hashlib.sha256(file.read_bytes()).hexdigest() != state.get('transactionDigest'):
+        if hashlib.sha256(Path(filesystem_path(file)).read_bytes()).hexdigest() != state.get('transactionDigest'):
             raise RuntimeError('首装尝试记录内容变化')
         record = _recovery.read_object(file)
         if record.get('schema') != 1 or record.get('owner') != 'nora-first-install' or any(
@@ -251,16 +254,18 @@ class FirstInstallJournal:
     @classmethod
     def finish_rotation(cls, operation, directory, state, expected):
         archive = operation / 'attempts' / f"attempt-{state['fromAttempt']:04d}" / 'first-install'
+        directory_io, archive_io = Path(filesystem_path(directory)), Path(filesystem_path(archive))
         for owned in (archive.parent.parent, archive.parent):
-            if owned.is_symlink(): raise RuntimeError('首装尝试归档目录不能是链接')
-            owned.mkdir(mode=0o700, exist_ok=True); os.chmod(filesystem_path(owned), 0o700)
-        if directory.exists() and archive.exists() and not any(directory.iterdir()):
+            owned_io = Path(filesystem_path(owned))
+            if owned_io.is_symlink(): raise RuntimeError('首装尝试归档目录不能是链接')
+            owned_io.mkdir(mode=0o700, exist_ok=True); os.chmod(filesystem_path(owned), 0o700)
+        if directory_io.exists() and archive_io.exists() and not any(directory_io.iterdir()):
             # The new empty canonical directory was created after a completed
             # old-tree rename, but no new journal was written before power loss.
             cls.validate_retired(archive, state, expected)
-            assert_operation(); directory.rmdir(); fsync_directory(directory.parent)
-        if directory.exists():
-            if archive.exists() or archive.is_symlink(): raise RuntimeError('首装尝试归档已有未知现场')
+            assert_operation(); directory_io.rmdir(); fsync_directory(directory.parent)
+        if directory_io.exists():
+            if archive_io.exists() or archive_io.is_symlink(): raise RuntimeError('首装尝试归档已有未知现场')
             cls.validate_retired(directory, state, expected)
             assert_operation(); os.replace(filesystem_path(directory), filesystem_path(archive))
             fsync_directory(directory.parent); fsync_directory(archive.parent)
@@ -269,16 +274,17 @@ class FirstInstallJournal:
         atomic(operation / 'first-install-rotation.json', json.dumps(state).encode())
         missing = []
         source = operation / 'evidence/python.json'; target = archive.parent / 'evidence/python.json'
-        if source.exists() or source.is_symlink():
+        source_io, target_io = Path(filesystem_path(source)), Path(filesystem_path(target))
+        if source_io.exists() or source_io.is_symlink():
             try:
-                if source.is_symlink() or source.parent.is_symlink() or source.stat().st_size > _operation_evidence.MAX_BYTES:
+                if source_io.is_symlink() or source_io.parent.is_symlink() or source_io.stat().st_size > _operation_evidence.MAX_BYTES:
                     raise ValueError('首因证据不是受管文件')
-                content = source.read_bytes()
+                content = source_io.read_bytes()
                 _operation_evidence._validate_record(json.loads(content), state['operationId'])
-                if target.parent.is_symlink() or target.is_symlink(): raise ValueError('归档证据目录不能是链接')
-                target.parent.mkdir(mode=0o700, exist_ok=True); os.chmod(target.parent, 0o700)
-                if target.exists() and target.read_bytes() != content: raise ValueError('归档首因证据已变化')
-                if not target.exists(): atomic(target, content)
+                if target_io.parent.is_symlink() or target_io.is_symlink(): raise ValueError('归档证据目录不能是链接')
+                target_io.parent.mkdir(mode=0o700, exist_ok=True); os.chmod(filesystem_path(target.parent), 0o700)
+                if target_io.exists() and target_io.read_bytes() != content: raise ValueError('归档首因证据已变化')
+                if not target_io.exists(): atomic(target, content)
             except (OSError, ValueError, TypeError, KeyError): missing.append('attempt_evidence_copy_failed')
         return state['toAttempt'], str(archive.relative_to(operation)), missing
 
@@ -309,7 +315,7 @@ class FirstInstallJournal:
                 if not self.managed_code(item): continue
                 target = self.target(item)
                 item['newIdentity'] = _recovery.identity(target)
-                item['newDigest'] = _recovery.digest(target) if target.is_file() else None
+                item['newDigest'] = _recovery.digest(target) if Path(filesystem_path(target)).is_file() else None
         self.record['checkpoints'][stage] = {'state': state, 'at': time.time()}
         self.save()
 
@@ -326,11 +332,11 @@ class FirstInstallJournal:
 
     def remove(self, target):
         item = self.item_for(target); target = self.target(item)
-        if not target.exists(): return
+        if not Path(filesystem_path(target)).exists(): return
         current = _recovery.identity(target)
         if current not in [item.get('oldIdentity'), item.get('newIdentity')]:
             raise RuntimeError('首装删除目标身份变化，已保留现场')
-        exchange = {'old': (Path(item['path']).parent / ('.nora-first-install-old-' + uuid.uuid4().hex)).as_posix(),
+        exchange = {'old': (Path(item['path']).parent / ('.nfi-o-' + uuid.uuid4().hex)).as_posix(),
             'oldIdentity': current, 'oldDigest': _recovery.digest(target), 'newIdentity': None,
             'newDigest': None, 'phase': 'old-rename-intent'}
         item.setdefault('exchanges', []).append(exchange); self.save()
@@ -343,23 +349,24 @@ class FirstInstallJournal:
         assert_operation()
         item = self.item_for(target)
         target = self.target(item); source = Path(source)
+        target_io, source_io = Path(filesystem_path(target)), Path(filesystem_path(source))
         current_id = _recovery.identity(target)
         expected_ids = [item.get('oldIdentity'), *[entry.get('newIdentity') for entry in item.get('exchanges', [])]]
         if current_id is not None and current_id not in expected_ids:
             raise RuntimeError('首装交换目标身份变化，未覆盖文件')
         expected_digests = [item.get('digest'), *[entry.get('newDigest') for entry in item.get('exchanges', [])]]
-        if target.exists() and _recovery.digest(target) not in expected_digests:
+        if target_io.exists() and _recovery.digest(target) not in expected_digests:
             raise RuntimeError('首装交换目标内容变化，未覆盖文件')
         relative = Path(item['path']).parent
-        exchange = {'staged': (relative / ('.nora-first-install-apply-' + uuid.uuid4().hex)).as_posix(),
-            'old': (relative / ('.nora-first-install-old-' + uuid.uuid4().hex)).as_posix(),
-            'oldIdentity': current_id, 'oldDigest': _recovery.digest(target) if target.exists() else None,
+        exchange = {'staged': (relative / ('.nfi-a-' + uuid.uuid4().hex)).as_posix(),
+            'old': (relative / ('.nfi-o-' + uuid.uuid4().hex)).as_posix(),
+            'oldIdentity': current_id, 'oldDigest': _recovery.digest(target) if target_io.exists() else None,
             'newDigest': _recovery.digest(source), 'phase': 'prepare-intent'}
         item.setdefault('exchanges', []).append(exchange); self.save()
         root = self.record['roots'][item['namespace']]
         staged, old = [_recovery.safe_path(root, exchange[key]) for key in ('staged', 'old')]
-        staged.parent.mkdir(parents=True, exist_ok=True)
-        if source.is_dir(): shutil.copytree(filesystem_path(source), filesystem_path(staged), symlinks=True)
+        Path(filesystem_path(staged.parent)).mkdir(parents=True, exist_ok=True)
+        if source_io.is_dir(): shutil.copytree(filesystem_path(source), filesystem_path(staged), symlinks=True)
         else: shutil.copy2(filesystem_path(source), filesystem_path(staged))
         if _recovery.digest(staged) != exchange['newDigest']: raise RuntimeError('首装暂存源核验失败')
         fsync_tree(staged)
@@ -383,8 +390,23 @@ class FirstInstallJournal:
     def target(self, item):
         return _recovery.safe_path(self.record['roots'][item['namespace']], item['path'])
 
+    def backup_target(self, item):
+        """Select only the journal's recorded layout and exact target slot."""
+        targets = self.record['targets']
+        if 'backupLayout' in self.record:
+            index = item.get('backupIndex')
+            if (self.record['backupLayout'] != 'indexed-v1' or type(index) is not int
+                    or not 0 <= index < len(targets) or targets[index] is not item):
+                raise RuntimeError('首装备份布局或目标索引不受信任')
+            relative = f'backups/{index:03d}'
+        else:
+            if 'backupIndex' in item or not any(target is item for target in targets):
+                raise RuntimeError('旧首装备份目标不受信任')
+            relative = 'backups/' + item['namespace'] + '/' + item['path']
+        return _recovery.safe_path(self.directory, relative)
+
     def validate(self):
-        if self.directory.is_symlink(): raise RuntimeError('首装恢复目录不能是链接')
+        if Path(filesystem_path(self.directory)).is_symlink(): raise RuntimeError('首装恢复目录不能是链接')
         if (not isinstance(self.record.get('checkpoints'), dict)
                 or any(not isinstance(value, dict) for value in self.record['checkpoints'].values())):
             raise RuntimeError('首装检查点记录无效，已保留现场')
@@ -393,8 +415,15 @@ class FirstInstallJournal:
                 raise RuntimeError('首装恢复根目录身份已变化，已保留现场')
         if not isinstance(self.record['targets'], list) or len(self.record['targets']) > 128:
             raise RuntimeError('首装恢复目标清单无效')
+        if 'backupLayout' in self.record and self.record['backupLayout'] != 'indexed-v1':
+            raise RuntimeError('首装备份布局不受信任')
         seen = set()
-        for item in self.record['targets']:
+        for index, item in enumerate(self.record['targets']):
+            if 'backupLayout' in self.record:
+                if type(item.get('backupIndex')) is not int or item['backupIndex'] != index:
+                    raise RuntimeError('首装备份目标索引不受信任')
+            elif 'backupIndex' in item:
+                raise RuntimeError('旧首装备份目标索引不受信任')
             namespace, relative = item.get('namespace'), item.get('path')
             allowed = self.TAVERN if namespace == 'tavern' else self.HERMES if namespace == 'hermes' else set()
             if relative not in allowed or (namespace, relative) in seen:
@@ -405,14 +434,14 @@ class FirstInstallJournal:
                 if path.parent != Path(relative).parent or not re.fullmatch(prefix + r'[a-f0-9]{32}', path.name):
                     raise RuntimeError('首装交换暂存路径不受信任')
             for entry in item.get('exchanges', []):
-                owned(entry['old'], r'\.nora-first-install-old-')
-                if 'staged' in entry: owned(entry['staged'], r'\.nora-first-install-apply-')
+                owned(entry['old'], r'(?:\.nora-first-install-old-|\.nfi-o-)')
+                if 'staged' in entry: owned(entry['staged'], r'(?:\.nora-first-install-apply-|\.nfi-a-)')
                 for artifact in entry.get('artifacts', []):
                     if artifact.get('source') not in (entry.get('old'), entry.get('staged')):
                         raise RuntimeError('首装归档来源不受信任')
                     if not re.fullmatch(r'failed-new/[0-9]+-[a-f0-9]{32}', artifact.get('archive', '')):
                         raise RuntimeError('首装归档路径不受信任')
-            if 'staged' in item: owned(item['staged'], r'\.nora-first-install-restore-')
+            if 'staged' in item: owned(item['staged'], r'(?:\.nora-first-install-restore-|\.nfi-r-)')
             if 'archive' in item and not re.fullmatch(r'failed-new/[0-9]+-[a-f0-9]{32}', item['archive']):
                 raise RuntimeError('首装失败程序归档路径不受信任')
             if 'untrustedCopy' in item and not re.fullmatch(r'failed-new/[0-9]+-[a-f0-9]{32}', item['untrustedCopy'].get('archive', '')):
@@ -423,16 +452,19 @@ class FirstInstallJournal:
         self.record['targetDigest'] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
         self.record['targets'] = [{'namespace': namespace, 'path': Path(target).resolve().relative_to(Path(self.record['roots'][namespace])).as_posix(),
             'phase': 'pending'} for namespace, entries in targets.items() for target in dict.fromkeys(entries)]
+        if 'backupLayout' in self.record:
+            for index, item in enumerate(self.record['targets']): item['backupIndex'] = index
         self.validate(); self.checkpoint('prepare', 'intent')
         for item in self.record['targets']:
             target = self.target(item)
-            saved = _recovery.safe_path(self.directory, 'backups/' + item['namespace'] + '/' + item['path'])
-            item.update(existed=target.exists(), oldIdentity=_recovery.identity(target), phase='preparing')
+            saved = self.backup_target(item)
+            target_io, saved_io = Path(filesystem_path(target)), Path(filesystem_path(saved))
+            item.update(existed=target_io.exists(), oldIdentity=_recovery.identity(target), phase='preparing')
             item['digest'] = _recovery.digest(target) if item['existed'] else None
             self.save()
             if item['existed']:
-                saved.parent.mkdir(parents=True, exist_ok=True)
-                if target.is_dir(): shutil.copytree(filesystem_path(target), filesystem_path(saved), symlinks=True)
+                saved_io.parent.mkdir(parents=True, exist_ok=True)
+                if target_io.is_dir(): shutil.copytree(filesystem_path(target), filesystem_path(saved), symlinks=True)
                 else: shutil.copy2(filesystem_path(target), filesystem_path(saved))
                 if _recovery.digest(saved) != item['digest']: raise RuntimeError('首装备份内容核验失败')
                 fsync_tree(saved)
@@ -442,7 +474,8 @@ class FirstInstallJournal:
 
     def restore_target(self, item, index):
         target = self.target(item)
-        saved = _recovery.safe_path(self.directory, 'backups/' + item['namespace'] + '/' + item['path'])
+        saved = self.backup_target(item)
+        target_io, saved_io = Path(filesystem_path(target)), Path(filesystem_path(saved))
         if item.get('phase') == 'pending' or item.get('savedIdentity') is None and item.get('existed'):
             raise RuntimeError('首装备份未完成，未覆盖目标')
         if item['existed'] and (_recovery.identity(saved) != item['savedIdentity'] or _recovery.digest(saved) != item['digest']):
@@ -460,40 +493,42 @@ class FirstInstallJournal:
             if _recovery.digest(target) not in digests and not derived:
                 self.preserve_unknown(item, index, target)
                 raise RuntimeError('待恢复目标内容未知，已保留现场')
-        if target.exists() and item['existed'] and _recovery.digest(target) == item['digest']:
+        if target_io.exists() and item['existed'] and _recovery.digest(target) == item['digest']:
             if current != item.get('oldIdentity'): _recovery.restore_permissions(saved, target)
             item.update(phase='restored', restoredIdentity=current); self.save(); return
-        if item.get('phase') == 'restored' and not item['existed'] and not target.exists(): return
+        if item.get('phase') == 'restored' and not item['existed'] and not target_io.exists(): return
         if 'archive' not in item:
             item.update(archive=f'failed-new/{index}-{uuid.uuid4().hex}', failedIdentity=_recovery.identity(target), phase='restore-intent')
             self.save()
         archive = _recovery.safe_path(self.directory, item['archive'])
-        if target.exists():
+        archive_io = Path(filesystem_path(archive))
+        if target_io.exists():
             if _recovery.identity(target) != item['failedIdentity']:
                 raise RuntimeError('待恢复目标身份变化，已保留现场')
-            archive.parent.mkdir(parents=True, exist_ok=True)
+            archive_io.parent.mkdir(parents=True, exist_ok=True)
             assert_operation(); os.replace(filesystem_path(target), filesystem_path(archive))
             fsync_directory(target.parent); fsync_directory(archive.parent)
-        elif archive.exists() and _recovery.identity(archive) != item['failedIdentity']:
+        elif archive_io.exists() and _recovery.identity(archive) != item['failedIdentity']:
             raise RuntimeError('失败程序归档身份不一致')
         item['phase'] = 'archived'; self.save()
         if item['existed']:
             if 'staged' not in item:
-                item['staged'] = (Path(item['path']).parent / ('.nora-first-install-restore-' + uuid.uuid4().hex)).as_posix()
+                item['staged'] = (Path(item['path']).parent / ('.nfi-r-' + uuid.uuid4().hex)).as_posix()
                 self.save()
             staged = _recovery.safe_path(self.record['roots'][item['namespace']], item['staged'])
-            if staged.exists():
+            staged_io = Path(filesystem_path(staged))
+            if staged_io.exists():
                 if _recovery.identity(staged) != item.get('stagedIdentity'):
                     raise RuntimeError('首装恢复暂存身份不一致')
                 if _recovery.digest(staged) != item['digest']:
-                    if staged.is_dir(): shutil.rmtree(filesystem_path(staged))
-                    else: staged.unlink()
-            if not staged.exists():
-                staged.parent.mkdir(parents=True, exist_ok=True)
-                if saved.is_dir(): staged.mkdir()
-                else: staged.touch(mode=0o600)
+                    if staged_io.is_dir(): shutil.rmtree(filesystem_path(staged))
+                    else: staged_io.unlink()
+            if not staged_io.exists():
+                staged_io.parent.mkdir(parents=True, exist_ok=True)
+                if saved_io.is_dir(): staged_io.mkdir()
+                else: staged_io.touch(mode=0o600)
                 item.update(stagedIdentity=_recovery.identity(staged), phase='copy-intent'); self.save()
-                if saved.is_dir(): shutil.copytree(filesystem_path(saved), filesystem_path(staged), symlinks=True, dirs_exist_ok=True)
+                if saved_io.is_dir(): shutil.copytree(filesystem_path(saved), filesystem_path(staged), symlinks=True, dirs_exist_ok=True)
                 else: shutil.copy2(filesystem_path(saved), filesystem_path(staged))
             if _recovery.digest(staged) != item['digest']: raise RuntimeError('首装恢复暂存内容核验失败')
             fsync_tree(staged)
@@ -504,7 +539,8 @@ class FirstInstallJournal:
     def preserve_unknown(self, item, index, target):
         # Copy a regular owned-path configuration while leaving its original
         # in place. Links, devices and user-data directories are never read.
-        if not target.is_file() or target.is_symlink(): return
+        target_io = Path(filesystem_path(target))
+        if not target_io.is_file() or target_io.is_symlink(): return
         current, digest = _recovery.identity(target), _recovery.digest(target)
         previous = item.get('untrustedCopy')
         if previous and previous.get('sourceIdentity') == current and previous.get('digest') == digest and previous.get('phase') == 'copy-result':
@@ -514,7 +550,7 @@ class FirstInstallJournal:
             'digest': digest, 'phase': 'copy-intent'}
         item['untrustedCopy'] = copy; self.save()
         archive = _recovery.safe_path(self.directory, copy['archive'])
-        archive.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+        Path(filesystem_path(archive.parent)).mkdir(parents=True, mode=0o700, exist_ok=True)
         descriptor = os.open(filesystem_path(target), os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0) | getattr(os, 'O_NONBLOCK', 0))
         with os.fdopen(descriptor, 'rb') as source:
             opened = os.fstat(source.fileno())
@@ -535,9 +571,10 @@ class FirstInstallJournal:
             for key, identity_key in (('old', 'oldIdentity'), ('staged', 'newIdentity')):
                 if key not in exchange: continue
                 source = _recovery.safe_path(self.record['roots'][item['namespace']], exchange[key])
+                source_io = Path(filesystem_path(source))
                 artifact = next((entry for entry in artifacts if entry['source'] == exchange[key]), None)
                 if artifact is None:
-                    if not source.exists(): continue
+                    if not source_io.exists(): continue
                     expected = exchange.get(identity_key)
                     if expected is not None and _recovery.identity(source) != expected:
                         raise RuntimeError('首装交换残留身份不一致，已保留现场')
@@ -545,13 +582,14 @@ class FirstInstallJournal:
                         'identity': _recovery.identity(source), 'phase': 'archive-intent', 'kind': key}
                     artifacts.append(artifact); self.save()
                 archive = _recovery.safe_path(self.directory, artifact['archive'])
-                if source.exists():
-                    if archive.exists() or _recovery.identity(source) != artifact['identity']:
+                archive_io = Path(filesystem_path(archive))
+                if source_io.exists():
+                    if archive_io.exists() or _recovery.identity(source) != artifact['identity']:
                         raise RuntimeError('首装交换残留归档身份不一致')
-                    archive.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
+                    archive_io.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
                     assert_operation(); os.replace(filesystem_path(source), filesystem_path(archive))
                     fsync_directory(source.parent); fsync_directory(archive.parent)
-                elif not archive.exists() or _recovery.identity(archive) != artifact['identity']:
+                elif not archive_io.exists() or _recovery.identity(archive) != artifact['identity']:
                     raise RuntimeError('首装交换残留归档未完成')
                 artifact['phase'] = 'archive-result'; self.save()
 
@@ -609,7 +647,7 @@ def _inspect_first_install_journal(journal):
         return {'effectState': 'unknown', 'canRecover': False, 'reason': 'journal_incomplete'}
     for item in targets:
         if not item['existed']: continue
-        saved = _recovery.safe_path(journal.directory, 'backups/' + item['namespace'] + '/' + item['path'])
+        saved = journal.backup_target(item)
         if _recovery.identity(saved) != item.get('savedIdentity') or _recovery.digest(saved) != item['digest']:
             return {'effectState': 'unknown', 'canRecover': False, 'reason': 'backup_invalid'}
     changed = False
@@ -676,7 +714,7 @@ def _inspect_committed_first_install(journal):
             digest = next((entry.get('newDigest') for entry in reversed(item.get('exchanges', []))
                 if entry.get('newIdentity') == item.get('newIdentity')), None)
         if (_recovery.identity(target) != item.get('newIdentity')
-                or target.exists() and _recovery.digest(target) != digest): return unknown
+                or Path(filesystem_path(target)).exists() and _recovery.digest(target) != digest): return unknown
     return {'operationId': journal.record['operationId'], 'status': 'committed', 'effectState': 'changed',
         'canRecover': False, 'canResume': True, 'reason': 'committed_target', 'targetDigest': target_digest,
         'version': receipt['version']}
