@@ -57,7 +57,7 @@ test('invalid test prerequisites stop the stability gate before any test process
 
 test('Windows and Intel Mac give complete serial source groups separate bounded budgets', () => {
     for (const [platform, arch, expectedJavascript, expectedPython] of [['win32', 'x64', 900000, 480000],
-        ['darwin', 'x64', 480000, 240000], ['darwin', 'arm64', 240000, 240000], ['linux', 'x64', 240000, 240000]]) {
+        ['darwin', 'x64', 900000, 240000], ['darwin', 'arm64', 240000, 240000], ['linux', 'x64', 240000, 240000]]) {
         const calls = [];
         fixtureGate({ platform, arch, run: (command, args, options) => {
             calls.push({ command, args, options });
@@ -95,8 +95,8 @@ test('Windows and Intel CI source steps leave finite setup headroom above both g
     const workflow = fs.readFileSync(new URL('../.github/workflows/build-integrated-launcher.yml', import.meta.url), 'utf8');
     const step = workflow.split('- name: Require launcher source stability before preparing runtimes')[1]?.split('\n      - name:')[0];
     assert.ok(step, 'The native source gate must remain present');
-    assert.ok(step.includes("timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}"));
-    for (const [outerMinutes, javascript, python] of [[25, 900000, 480000], [15, 480000, 240000], [10, 240000, 240000]]) {
+    assert.ok(step.includes("timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && matrix.arch == 'x64') && 20 || 10 }}"));
+    for (const [outerMinutes, javascript, python] of [[25, 900000, 480000], [20, 900000, 240000], [10, 240000, 240000]]) {
         assert.ok(outerMinutes * 60000 > javascript + python, 'Setup retains finite headroom above both bounded groups');
     }
 });

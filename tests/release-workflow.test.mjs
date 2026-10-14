@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
 import { test } from 'node:test';
+import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 
 const root = path.resolve(import.meta.dirname, '..');
 const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTHON || 'python3', ['-c',
@@ -16,9 +17,10 @@ test('native platform selectors preserve diagnostic, concurrency and publication
   assert.equal(target.default, 'all');
   assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check']);
   assert.deepEqual(full.concurrency, {
-    group: 'nora-release-${{ github.ref }}',
-    'cancel-in-progress': "${{ github.ref_type != 'tag' }}",
+    group: "nora-build-${{ github.sha }}-${{ inputs.target || 'all' }}",
+    'cancel-in-progress': 'false',
   });
+  assert.equal(full.jobs.build.strategy['fail-fast'], 'false', 'One platform must not cancel the other native jobs');
   assert.deepEqual(full.permissions, { contents: 'read', actions: 'read' });
   const shared = full.jobs.build.steps.find(step => step.name === 'Upload shared updater assets');
   assert.equal(shared.if, "matrix.platform == 'darwin' && matrix.arch == 'arm64' && (github.ref_type == 'tag' || inputs.production_mode)");
@@ -52,21 +54,44 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
 });
-test('all release, installation and presentation source contracts block cold builds before their native repeat', () => {
+test('complete source coverage runs once before runtimes and only environment-dependent files repeat natively', () => {
   const steps=full.jobs.build.steps;
   const runtime=steps.findIndex(step=>step.name==='Download and verify unchanged published components');
-  for(const [group,id] of [['release','release_contracts'],['installation','installation_contracts'],['presentation','presentation_contracts']]){
+  const files=command=>[...command.matchAll(/tests\/deployment\/([\w.-]+\.test\.cjs)/g)].map(match=>match[1]);
+  const sourceFiles=steps.slice(0,runtime).flatMap(step=>files(step.run||''));
+  verifyLauncherStability({checkEnvironment:()=>({environment:process.env}),run:(command,args)=>{
+    sourceFiles.push(...args.filter(arg=>arg.endsWith('.test.cjs')).map(file=>path.basename(file)));return {status:0};
+  }});
+  const requiredSource=[
+    'launcher_releases','launcher_bundle_contract','launcher_system_update','launcher_install_cleanup',
+    'launcher_copy','launcher_location','launcher_model_recheck','launcher_publish',
+    'launcher_diagnostics','launcher_process_output','launcher_network','launcher_install_source',
+    'launcher_component_update','launcher_skill_update','launcher_shutdown','launcher_model_config',
+    'launcher_console','launcher_native_crash','launcher_test_build','launcher_windows_extract',
+    'launcher_telemetry','launcher_error_presentation','launcher_ui_feedback','launcher_task_progress',
+    'launcher_operation_state',
+  ].map(name=>name+'.test.cjs');
+  for(const file of requiredSource)assert.equal(sourceFiles.filter(name=>name===file).length,1,
+    `${file} must retain full pre-runtime coverage without a duplicate source invocation`);
+  for(const group of ['release','installation','presentation']){
     const index=steps.findIndex(step=>step.name===`Check ${group} source contracts before preparing runtimes`);
     assert.ok(index>=0&&index<runtime,`${group} contracts must precede all runtime preparation`);
-    const source=steps[index],native=steps.find(step=>step.id===id);
+    const source=steps[index];
     assert.equal(source['continue-on-error'],undefined);
     assert.equal(source.if,undefined);
     assert.equal(source['timeout-minutes'],'5');
     assert.match(source.run,/--test-concurrency=1/);
-    const files=command=>[...command.matchAll(/tests\/deployment\/([\w.-]+\.test\.cjs)/g)].map(match=>match[1]).sort();
-    assert.deepEqual(files(source.run),files(native.run),`${group} cannot omit any later native contract file`);
     assert.doesNotMatch(source.run,/--test-name-pattern|--skip|\|\|\s*true/);
   }
+  const release=steps.find(step=>step.id==='release_contracts'),installation=steps.find(step=>step.id==='installation_contracts');
+  assert.deepEqual(files(release.run),['launcher_system_update.test.cjs'], 'Legacy recovery uses the actual native actor');
+  assert.deepEqual(files(installation.run),['launcher_diagnostics.test.cjs','launcher_skill_update.test.cjs','launcher_native_crash.test.cjs'],
+    'Retain managed Python, skill Python and native Electron contexts');
+  assert.ok(!steps.some(step=>step.id==='presentation_contracts'), 'Pure presentation contracts do not acquire a different runtime context');
+  const barrier=steps.find(step=>step.name==='Require all platform contract checks before native acceptance');
+  assert.ok(barrier.if.includes("steps.release_contracts.outcome != 'success'"));
+  assert.ok(barrier.if.includes("steps.installation_contracts.outcome != 'success'"));
+  assert.ok(!barrier.if.includes('presentation_contracts'), 'Removed step IDs must not block every build');
 });
 test('standalone download source contracts run before runtime preparation without a native Hermes dependency',()=>{
   const steps=full.jobs.build.steps;
@@ -193,7 +218,7 @@ test('test prerequisites and absolute runner entries are mandatory before native
   for (const workflow of [full, components]) assert.doesNotMatch(scripts(workflow), /node tooling\/run\.mjs/);
   const chromium = steps.find(step => step.name === 'Check source networking in pinned native Chromium before preparing runtimes');
   assert.match(chromium.run, /launcher-test-environment\.mjs" chromium/);
-  const presentation = steps.find(step => step.id === 'presentation_contracts');
+  const presentation = steps.find(step => step.name === 'Check presentation source contracts before preparing runtimes');
   assert.ok(!presentation.run.includes('launcher_telemetry_worker.test.cjs'),
     'Source presentation checks must not imply that an absent receiver was tested');
 });

@@ -1,14 +1,20 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn,execFileSync}=require('node:child_process'),{pipeline}=require('node:stream/promises');
 const names=['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64'];
-const requiredSteps=['Require launcher source stability before preparing runtimes','Verify native launcher test prerequisites','Verify cold-profile bootstrap identity before preparing runtimes','Test release channels and update rollback',
- 'Test installation diagnostics on the target platform','Test diagnostic choices, error presentation and download waiting feedback',
+const otherPlatforms=new Map([
+ ['darwin-arm64','build (macos-15, darwin, arm64, pack:mac:arm64)'],
+ ['darwin-x64','build (macos-15-intel, darwin, x64, pack:mac:x64)'],
+]);
+const requiredSteps=['Require launcher source stability before preparing runtimes','Check release source contracts before preparing runtimes','Check installation source contracts before preparing runtimes',
+ 'Check presentation source contracts before preparing runtimes','Verify native launcher test prerequisites','Verify cold-profile bootstrap identity before preparing runtimes','Test release channels and update rollback',
+ 'Test installation diagnostics on the target platform',
  'Verify Windows runtime before long acceptance tests','Verify Windows owned model and profile fixtures before long tests',
  'Test operation ownership, evidence, bounded retry and recovery contracts','Require chat backup safety tests',
  'Test native transaction and complete evidence contracts','Test unified update and application replacement',
  'Test Nora initialization and profile synchronization','Freeze verified historical payload for version migration acceptance',
  'Test Windows installation and managed update with legacy path limits','Verify actual lightweight update archive',
  'Test the actual Windows setup and installed application','Verify real APP production module closure and executor receipts',
+ 'Verify packaged network modules in native Chromium',
  'Verify packaged Nora images and instructions','Upload launcher','Preserve isolated operation acceptance evidence'];
 function verifyModes(env) {
  assert.equal(env.GITHUB_EVENT_NAME,'workflow_dispatch');assert.equal(env.NORA_BUILD_TARGET,'all');
@@ -21,10 +27,13 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  assert.match(commit,/^[a-f0-9]{40}$/);assert.match(repository,/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);assert.match(String(runId),/^[1-9][0-9]*$/);assert.ok(Number.isSafeInteger(Number(runId)));
  assert.equal(run.id,Number(runId));assert.equal(run.head_sha,commit);assert.equal(run.repository.full_name,repository);
  assert.ok(Number.isSafeInteger(run.repository.id)&&run.repository.id>0);assert.equal(run.path,'.github/workflows/build-integrated-launcher.yml');
- assert.equal(run.event,'workflow_dispatch');assert.equal(run.status,'completed');assert.equal(run.conclusion,'success');
+ assert.equal(run.event,'workflow_dispatch');assert.equal(run.status,'completed');assert.ok(['success','failure'].includes(run.conclusion),'Source must have finished without cancellation');
  assert.equal(artifacts.total_count,artifacts.artifacts.length);
  assert.equal(new Set(artifacts.artifacts.map(item=>item.name)).size,artifacts.artifacts.length,'Duplicate artifact names');
- assert.deepEqual(artifacts.artifacts.filter(item=>!['nora-release-plan','nora-windows-failed-packaging-diagnostic'].includes(item.name)).map(item=>item.name).sort(),[...names].sort());
+ const allowedNames=new Set([...names,'nora-release-plan','nora-windows-failed-packaging-diagnostic','nora-tavern-shared',
+  ...[...otherPlatforms.keys()].flatMap(platform=>['nora-tavern-'+platform,'nora-operation-acceptance-'+platform])]);
+ assert.ok(artifacts.artifacts.every(item=>allowedNames.has(item.name)),'Unexpected source artifact');
+ assert.deepEqual(artifacts.artifacts.filter(item=>names.includes(item.name)).map(item=>item.name).sort(),[...names].sort());
  assert.equal(new Set(artifacts.artifacts.map(item=>item.id)).size,artifacts.artifacts.length,'Duplicate artifact IDs');
  for(const item of artifacts.artifacts) {
   assert.ok(Number.isSafeInteger(item.id)&&item.id>0);assert.equal(item.expired,false);assert.ok(Number.isSafeInteger(item.size_in_bytes)&&item.size_in_bytes>0);
@@ -32,6 +41,21 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
   assert.equal(item.workflow_run.repository_id,run.repository.id);assert.equal(item.workflow_run.head_repository_id,run.repository.id);
  }
  assert.equal(jobs.total_count,jobs.jobs.length,'Incomplete job listing');
+ // An unrelated failed platform cannot invalidate a fully accepted Windows
+ // delivery. Its own native gates, API identities and archive/package proofs
+ // remain mandatory; overall failure must be attributable to another builder.
+ if(run.conclusion==='failure') {
+  const preflight=jobs.jobs.filter(job=>job.name==='preflight');assert.equal(preflight.length,1,'Failed cohort requires a successful preflight');
+  assert.equal(preflight[0].run_id,run.id);assert.equal(preflight[0].head_sha,commit);assert.equal(preflight[0].status,'completed');assert.equal(preflight[0].conclusion,'success');
+  const failed=jobs.jobs.filter(job=>[...otherPlatforms.values()].includes(job.name)&&job.conclusion==='failure');
+  assert.ok(failed.length>0,'Overall failure must be explained by another native platform');
+  for(const job of failed){assert.equal(job.run_id,run.id);assert.equal(job.head_sha,commit);assert.equal(job.status,'completed');}
+ }
+ for(const [platform,jobName] of otherPlatforms){
+  if(!artifacts.artifacts.some(item=>item.name==='nora-tavern-'+platform||platform==='darwin-arm64'&&item.name==='nora-tavern-shared'))continue;
+  const completed=jobs.jobs.filter(job=>job.name===jobName);assert.equal(completed.length,1,'Unproven extra platform delivery');
+  assert.equal(completed[0].run_id,run.id);assert.equal(completed[0].head_sha,commit);assert.equal(completed[0].status,'completed');assert.equal(completed[0].conclusion,'success');
+ }
  const native=jobs.jobs.filter(job=>job.name==='build (windows-latest, win32, x64, pack:win:x64)');assert.equal(native.length,1);
  const job=native[0];assert.equal(job.run_id,run.id);assert.equal(job.head_sha,commit);assert.equal(job.status,'completed');assert.equal(job.conclusion,'success');
  assert.ok(job.steps.every(step=>!['failure','cancelled','timed_out','action_required'].includes(step.conclusion)),'Failed native step');

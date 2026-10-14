@@ -47,8 +47,11 @@ export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, ch
     // 585s internal limit. The same complete groups passed on native Windows
     // in 201.542s / 63.909s; 394 matched cases were median 2.76x slower on CI.
     // Allow finite hosted-runner headroom without removing or filtering cases.
-    // The next hosted completion must still establish its actual elapsed time.
-    const javascriptTimeout = platform === 'win32' ? 900000 : platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
+    // Intel run 38555193731 likewise cancelled the still-progressing JS group
+    // at 465s: 679 passed, no failed assertions, two interrupted files. Keep
+    // the complete serial group and finite deadline; hosted completion still
+    // has to establish its actual elapsed time on each platform.
+    const javascriptTimeout = platform === 'win32' || platform === 'darwin' && arch === 'x64' ? 900000 : 240000;
     const pythonTimeout = platform === 'win32' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',

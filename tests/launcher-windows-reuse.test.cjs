@@ -8,7 +8,30 @@ function sourceFixture() {
  const jobs={total_count:1,jobs:[{name:'build (windows-latest, win32, x64, pack:win:x64)',run_id:123,head_sha:commit,status:'completed',conclusion:'success',steps:requiredSteps.map(name=>({name,status:'completed',conclusion:'success'}))}]};
  return {run,artifacts,jobs,options:{commit,repository:'owner/tavern',runId:'123'}};
 }
-test('only a complete same-commit native Windows-only source can be reused',()=>{const f=sourceFixture();assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);});
+test('only a complete same-commit accepted native Windows source can be reused',()=>{const f=sourceFixture();assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);});
+test('another platform failure retains a completely accepted same-commit Windows package',()=>{
+ const f=sourceFixture();f.run.conclusion='failure';
+ f.jobs.jobs.push({name:'preflight',run_id:123,head_sha:commit,status:'completed',conclusion:'success'},
+  {name:'build (macos-15-intel, darwin, x64, pack:mac:x64)',run_id:123,head_sha:commit,status:'completed',conclusion:'failure'},
+  {name:'build (macos-15, darwin, arm64, pack:mac:arm64)',run_id:123,head_sha:commit,status:'completed',conclusion:'success'});
+ f.jobs.total_count=f.jobs.jobs.length;
+ f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:3,name:'nora-tavern-darwin-arm64'});f.artifacts.total_count=3;
+ assert.deepEqual(verifySource(f.run,f.artifacts,f.jobs,f.options).map(item=>item.name),
+  ['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64']);
+ for(const mutate of [value=>value.jobs.jobs[1].conclusion='failure',value=>value.jobs.jobs[2].head_sha='b'.repeat(40),
+  value=>value.jobs.jobs[2].conclusion='success',value=>value.jobs.jobs[0].conclusion='failure']){
+  const invalid=structuredClone(f);mutate(invalid);
+  assert.throws(()=>verifySource(invalid.run,invalid.artifacts,invalid.jobs,invalid.options));
+ }
+});
+test('complete source groups and packaged Chromium transport are required before package reuse',()=>{
+ for(const name of [...['release','installation','presentation'].map(group=>`Check ${group} source contracts before preparing runtimes`),
+  'Verify packaged network modules in native Chromium']){
+  const f=sourceFixture();
+  f.jobs.jobs[0].steps=f.jobs.jobs[0].steps.filter(step=>step.name!==name);
+  assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options),/native gate|Native gate/);
+ }
+});
 test('a successful Windows run cannot be reused without the new stability gate passing',()=>{
  for(const mode of ['missing','skipped']){
   const f=sourceFixture(),name='Require launcher source stability before preparing runtimes';
