@@ -77,6 +77,226 @@ function sameAnchors(actual,expected,label){
     assert.ok(Math.abs(actual[selector][axis]-expected[selector][axis])<=1,
       `${label}: ${selector} ${axis} moved ${actual[selector][axis]-expected[selector][axis]}px`);
 }
+async function workflowAnchors(page) {
+  return page.evaluate(() => ({
+    steps: document.getElementById('main').getBoundingClientRect().top,
+    speaker: document.querySelector('.speaker').getBoundingClientRect().top,
+    copy: document.getElementById('copy').getBoundingClientRect().top,
+  }));
+}
+async function workflowReachability(page) {
+  await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations()
+    .filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+  const baseline=await workflowAnchors(page);
+  const regions=await page.evaluate(()=>['inline','copy','subcopy'].filter(id=>{
+    const e=document.getElementById(id);
+    return e.getClientRects().length&&/auto|scroll/.test(getComputedStyle(e).overflowY)&&e.scrollHeight>e.clientHeight+1;
+  }));
+  const invalidRegions=await page.evaluate(()=>['inline','copy','subcopy'].filter(id=>{
+    const e=document.getElementById(id);if(!e.getClientRects().length)return false;
+    const r=e.getBoundingClientRect();if(r.top<0||r.bottom>innerHeight+1||r.height<1)return true;
+    for(let owner=e.parentElement;owner;owner=owner.parentElement){
+      const style=getComputedStyle(owner),b=owner.getBoundingClientRect();
+      if(/hidden|clip/.test(style.overflowY)&&(r.top<b.top-1||r.bottom>b.bottom+1))return true;
+    }return false;
+  }));
+  const scrolling=[];
+  for(const id of regions) {
+    const region=page.locator(`#${id}`);
+    const before=await region.evaluate(e=>({top:e.scrollTop,range:e.scrollHeight-e.clientHeight}));
+    await region.hover();await page.mouse.wheel(0,10000);
+    await page.waitForFunction(id=>{const e=document.getElementById(id);return e.scrollTop>=e.scrollHeight-e.clientHeight-1;},id,{timeout:2000});
+    const after=await region.evaluate(e=>({top:e.scrollTop,range:e.scrollHeight-e.clientHeight}));
+    scrolling.push({id,before,after});
+  }
+  const wheelTargets=await page.evaluate(()=>{
+    window.layoutWheelTargets=[...document.querySelectorAll('#inline button,#inline input,#inline select,#inline a[href],#inline summary')]
+      .filter(e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden');
+    return window.layoutWheelTargets.map(e=>e.id||e.getAttribute('aria-label')||e.textContent.trim());
+  });
+  const wheelVisited=new Set();
+  if(wheelTargets.length) {
+    const region=page.locator('#inline');await region.hover();await page.mouse.wheel(0,-10000);
+    await page.waitForFunction(()=>document.getElementById('inline').scrollTop<=1,{},{timeout:2000});
+    for(let step=0;step<50;step++) {
+      const sweep=await page.evaluate(()=>{
+        const region=document.getElementById('inline'),b=region.getBoundingClientRect();
+        const visited=window.layoutWheelTargets.flatMap((e,index)=>{
+          const r=e.getBoundingClientRect();if(r.top<b.top-1||r.bottom>b.bottom+1||r.top<0||r.bottom>innerHeight+1)return [];
+          const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+          return hit&&(hit===e||e.contains(hit))?[index]:[];
+        });
+        return {visited,top:region.scrollTop,range:region.scrollHeight-region.clientHeight,height:region.clientHeight};
+      });
+      sweep.visited.forEach(i=>wheelVisited.add(i));
+      if(sweep.top>=sweep.range-1)break;
+      await page.mouse.wheel(0,Math.max(20,sweep.height/2));
+      await page.waitForFunction(top=>document.getElementById('inline').scrollTop>top, sweep.top,{timeout:2000});
+    }
+  }
+  const expected=await page.evaluate(()=>{
+    window.layoutTargets=[...document.querySelectorAll('main button,main input,main select,main a[href],main summary,main [tabindex]')]
+      .filter(e=>!e.disabled&&e.tabIndex>=0&&e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden');
+    document.activeElement?.blur();
+    return window.layoutTargets.map(e=>e.id||e.getAttribute('aria-label')||e.textContent.trim());
+  });
+  const visited=new Set(), unreachable=[];
+  // Walk the actual keyboard order; do not programmatically focus each control.
+  for(let step=0;step<expected.length*2+16&&visited.size<expected.length;step++) {
+    await page.keyboard.press('Tab');
+    await page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve))));
+    const fact=await page.evaluate(()=>{
+      const e=document.activeElement,index=window.layoutTargets.indexOf(e);if(index<0)return {index};
+      const r=e.getBoundingClientRect();let within=r.top>=0&&r.bottom<=innerHeight+1&&r.left>=0&&r.right<=innerWidth+1;
+      const clippedBy=[];
+      for(let owner=e.parentElement;owner;owner=owner.parentElement) {
+        const style=getComputedStyle(owner),b=owner.getBoundingClientRect();
+        if(/auto|scroll|hidden|clip/.test(style.overflowY)&&(r.top<b.top-1||r.bottom>b.bottom+1)){
+          within=false;clippedBy.push({id:owner.id||owner.className,top:b.top,bottom:b.bottom,scrollTop:owner.scrollTop});
+        }
+      }
+      const hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+      return {index,within,uncovered:Boolean(hit&&(hit===e||e.contains(hit))),top:r.top,bottom:r.bottom,clippedBy};
+    });
+    if(fact.index>=0) {
+      visited.add(fact.index);
+      if(!fact.within||!fact.uncovered)unreachable.push({name:expected[fact.index],...fact});
+    }
+  }
+  const after=await workflowAnchors(page);
+  const moved=Object.keys(baseline).filter(key=>Math.abs(baseline[key]-after[key])>1);
+  const outerScroll=await page.evaluate(()=>['main','scroll'].map(id=>({id,top:document.getElementById(id).scrollTop}))
+    .concat({id:'body',top:document.scrollingElement.scrollTop}).filter(e=>e.top!==0));
+  return {scrolling,invalidRegions,wheelMissing:wheelTargets.filter((_,i)=>!wheelVisited.has(i)),
+    visited:[...visited].map(i=>expected[i]),missing:expected.filter((_,i)=>!visited.has(i)),unreachable,moved,outerScroll};
+}
+test('workflow routes preserve the installation anchors at the short-height boundary', {timeout:30000}, async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  const ready={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,modelConfigured:true,
+    clawchatPaired:true,clawchatProfileReady:true,running:true,gatewayRunning:true,clawchatConnected:true,
+    installer:{setupCompleted:false},version:'2.4.2'};
+  const failed={schema:'nora-operation/1',operationId:'22222222-2222-4222-8222-222222222222',kind:'install',
+    state:'failed',effectState:'untouched',allowedActions:['recheck','logs'],primaryFailure:{code:'TEST_FAILURE',
+      guidance:{title:'安装尚未完成。',detail:'请查看日志后继续。'}}};
+  const states=[
+    ['installation',{...ready,busy:true,installer:{setupCompleted:false,phase:'install'}},'#copy'],
+    ['model',{...ready,modelConfigured:false},'#provider'],
+    ['pair',{...ready,clawchatPaired:false},'#pairCode'],
+    ['model-pending',{...ready,modelSyncPending:true},'#inline .button'],
+    ['error',{...ready,operation:failed},'.outcome-actions'],
+    ['repair',{...ready,systemReady:false,systemProblems:['运行环境需要修复。']},'#inline .button'],
+    ['recovery',{...ready,operation:{...failed,state:'interrupted',allowedActions:['recover','recheck','logs']},
+      updateRecovery:{canRecover:true,restoreVersion:'2.4.1',backup:'/isolated/backup'}},'#recoverUpdate'],
+    ['launcher-recovery',{...ready,launcherRecovery:{canRecover:true,backup:'/isolated/launcher-backup'}},'#recoverLauncher'],
+  ];
+  const report=[], moved=[];
+  try {
+    for(const viewport of [{width:1120,height:741},{width:1120,height:740},{width:1120,height:680},{width:740,height:600}]) {
+      let baseline;
+      for(const [name,state,selector] of states) {
+        const page=await browser.newPage({viewport});
+        try {
+          await page.addInitScript(state=>{window.NoraLauncherBridge={status:async()=>state,
+            telemetry:async()=>({available:true,enabled:true}),
+            modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}]}),
+            operationLogs:async()=>({records:[],missing:[],hasMore:false}),recoverOperation:async()=>state,recoverLauncher:async()=>state};},state);
+          await page.goto(url);await page.locator(selector).first().waitFor();
+          await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations()
+            .filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+          const anchors=await workflowAnchors(page),steps=await page.locator('#steps').evaluate(e=>({hidden:e.hidden,top:e.getBoundingClientRect().top,height:e.getBoundingClientRect().height}));
+          let initialForm;
+          if(name==='model'&&viewport.width===1120&&viewport.height===680) {
+            initialForm=await page.evaluate(()=>{
+              const inline=document.getElementById('inline'),box=inline.getBoundingClientRect();
+              return {scrollTop:inline.scrollTop,inline:{top:box.top,bottom:box.bottom,height:box.height},
+                controls:[...inline.querySelectorAll('button,input,select')].filter(e=>e.getClientRects().length).map(e=>{
+                  const r=e.getBoundingClientRect(),hit=document.elementFromPoint(r.left+r.width/2,r.top+r.height/2);
+                  return {name:e.id||e.getAttribute('aria-label')||e.textContent.trim(),top:r.top,bottom:r.bottom,
+                    fullyVisible:r.top>=box.top-1&&r.bottom<=box.bottom+1&&r.top>=0&&r.bottom<=innerHeight,
+                    uncovered:Boolean(hit&&(hit===e||e.contains(hit)))};
+                })};
+            });
+            assert.equal(initialForm.scrollTop,0,'ordinary initial form must be checked before focus or scrolling');
+            assert.ok(initialForm.controls.some(e=>e.name==='验证并继续'));
+            assert.deepEqual(initialForm.controls.filter(e=>!e.fullyVisible||!e.uncovered),[],
+              'ordinary initial fields and submit must be completely visible without scrolling');
+          }
+          report.push({viewport,name,anchors,steps,initialForm});
+          if(!steps.hidden){assert.equal(steps.height,44);assert.equal(steps.top,anchors.steps);}
+          baseline ||= anchors;
+          for(const key of Object.keys(baseline))if(Math.abs(anchors[key]-baseline[key])>1)
+            moved.push(`${name} ${key} moved ${anchors[key]-baseline[key]}px at ${viewport.width}x${viewport.height}`);
+        } finally {await page.close();}
+      }
+    }
+    assert.deepEqual(moved,[]);
+  } finally {
+    if(process.env.NORA_ANCHOR_REPORT)require('node:fs').writeFileSync(process.env.NORA_ANCHOR_REPORT,JSON.stringify(report,null,2)+'\n');
+    await browser.close();
+  }
+});
+test('connection failure and a failure after the daily page use the same workflow anchor',{timeout:15000},async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try {
+    const page=await dailyInteractionPage(browser,{width:1120,height:680});
+    try {
+      await page.locator('#management > [data-action="model"]').click();await page.locator('#provider').waitFor();
+      await page.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+      const baseline=await workflowAnchors(page);
+      await page.getByRole('button',{name:'返回酒馆',exact:true}).click();await page.locator('.services').waitFor();
+      await page.evaluate(()=>{window.NoraLauncherBridge.checkUpdate=async()=>{throw Object.assign(new Error('更新查询失败。'),{guidance:{title:'更新查询失败。',detail:'保留现有安装，重新查询。'}});};});
+      await page.locator('#moreButton').click();await page.locator('#more [data-action="update"]').click();
+      await page.getByText('更新查询失败。',{exact:true}).waitFor();
+      const reachability=await workflowReachability(page);
+      assert.deepEqual(await workflowAnchors(page),baseline,'failure must override the inherited daily/editing centering');
+      assert.deepEqual(reachability.missing,[]);assert.deepEqual(reachability.unreachable,[]);assert.deepEqual(reachability.outerScroll,[]);
+      const disconnected=await browser.newPage({viewport:{width:1120,height:680}});
+      try {
+        await disconnected.goto(`${url}?desktop`);await disconnected.getByText('启动器连接失败。',{exact:true}).waitFor();
+        await disconnected.evaluate(async()=>{await Promise.all(document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+        assert.equal(await disconnected.locator('main').getAttribute('data-layout'),'workflow');
+        assert.deepEqual(await workflowAnchors(disconnected),baseline,'early connection failure shares the hidden-step geometry');
+        assert.equal(await disconnected.locator('#steps').isVisible(),false);
+      }finally{await disconnected.close();}
+    }finally{await page.close();}
+  }finally{await browser.close();}
+});
+test('long workflow text, forms and recovery details retain anchors and keyboard-reachable actions', {timeout:30000},async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined}),report=[];
+  const ready={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,modelConfigured:true,
+    clawchatPaired:true,running:true,gatewayRunning:true,clawchatConnected:true,installer:{setupCompleted:false},version:'2.4.2'};
+  const failure={schema:'nora-operation/1',operationId:'22222222-2222-4222-8222-222222222222',kind:'update',
+    state:'failed',effectState:'untouched',allowedActions:['recheck','logs'],primaryFailure:{code:'TEST_LONG_DETAIL',guidance:{
+      title:'当前安装需要检查，请保留现有数据。'.repeat(20),detail:'这里是完整的失败详情，用于确认窗口内可以阅读全部信息。\n'.repeat(90)}}};
+  try {
+    for(const viewport of [{width:1120,height:680},{width:740,height:600}])for(const name of ['model-feedback','long-error','long-recovery']) {
+      const state=name==='model-feedback'?{...ready,modelConfigured:false}:name==='long-error'?{...ready,operation:failure}:
+        {...ready,operation:{...failure,state:'interrupted',allowedActions:['recover','recheck','logs']},
+          updateRecovery:{canRecover:true,restoreVersion:'2.4.1',backup:'/isolated/备份目录/'.repeat(30),log:'/isolated/日志目录/'.repeat(30)}};
+      const page=await browser.newPage({viewport});
+      try {
+        await page.addInitScript(state=>{window.NoraLauncherBridge={status:async()=>state,telemetry:async()=>({available:true,enabled:true}),
+          modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}]}),
+          modelOptions:async()=>{throw Error('模型返回了需要检查的详细信息。'.repeat(30));},
+          operationLogs:async()=>({records:[],missing:[],hasMore:false}),recoverOperation:async()=>state};},state);
+        await page.goto(url);await page.locator(name==='model-feedback'?'#provider':'.outcome-actions').waitFor();
+        if(name==='model-feedback') {
+          await page.locator('#key').fill('test-only');await page.locator('#loadModels').click();await page.locator('#feedback.error').waitFor();
+        }
+        if(name==='long-recovery')await page.locator('.recovery-details summary').click();
+        await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations()
+          .filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+        const facts=await workflowReachability(page);report.push({name,viewport,...facts});
+        assert.deepEqual({invalidRegions:facts.invalidRegions,wheelMissing:facts.wheelMissing,missing:facts.missing,unreachable:facts.unreachable,moved:facts.moved,outerScroll:facts.outerScroll},
+          {invalidRegions:[],wheelMissing:[],missing:[],unreachable:[],moved:[],outerScroll:[]},`${name} ${JSON.stringify(viewport)}`);
+        assert.ok(facts.scrolling.length>0,'long contents must exercise actual wheel scrolling');
+      }finally{await page.close();}
+    }
+  }finally{
+    if(process.env.NORA_REACHABILITY_REPORT)require('node:fs').writeFileSync(process.env.NORA_REACHABILITY_REPORT,JSON.stringify(report,null,2)+'\n');
+    await browser.close();
+  }
+});
 test('daily service actions retain body anchors while busy and after each result',{timeout:60000},async()=>{
   const browser=await chromium.launch({executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
@@ -144,6 +364,7 @@ test('More navigation retains its right-column origin and returns without moving
     const page=await dailyInteractionPage(browser,{width:1120,height:680});
     try{
       const baseline=await dailyAnchors(page),origin=await page.locator('#main').boundingBox(),message=await page.locator('#message').boundingBox();
+      let workflowBaseline;
       for(const action of ['settings','model','claw','community','update','logs']){
         if(action==='model') await page.locator('#management > [data-action="model"]').click();
         else {
@@ -154,9 +375,14 @@ test('More navigation retains its right-column origin and returns without moving
         const target=action==='logs'?'.operation-console':action==='model'?'#provider':'#inline';
         await page.locator(target).waitFor();
         const actualOrigin=await page.locator('#main').boundingBox();
-        assert.ok(Math.abs(actualOrigin.x-origin.x)<=1&&Math.abs(actualOrigin.y-origin.y)<=1,`${action} moved the whole right column`);
+        assert.ok(Math.abs(actualOrigin.x-origin.x)<=1,`${action} moved the whole right column sideways`);
+        const workflow=await page.locator('main').getAttribute('data-layout')==='workflow';
+        if(workflow) {
+          const anchors=await workflowAnchors(page);workflowBaseline ||= anchors;
+          assert.deepEqual(anchors,workflowBaseline,`${action} preserves the shared installation anchor`);
+        } else assert.ok(Math.abs(actualOrigin.y-origin.y)<=1,`${action} moved the auxiliary right column`);
         if(action!=='logs')assert.equal(await page.locator('#launchbar').isVisible(),false,'home actions are not carried into a feature page');
-        if(action!=='logs')assert.ok(Math.abs((await page.locator('#message').boundingBox()).x-message.x)<=1,`${action} moved the content sideways`);
+        if(action!=='logs'&&!workflow)assert.ok(Math.abs((await page.locator('#message').boundingBox()).x-message.x)<=1,`${action} moved the auxiliary content sideways`);
         await page.getByRole('button',{name:action==='logs'?'返回操作页':'返回酒馆',exact:true}).click();
         await page.locator('.services').waitFor();
         sameAnchors(await dailyAnchors(page),baseline,`${action} returned`);
@@ -167,7 +393,7 @@ test('More navigation retains its right-column origin and returns without moving
     }finally{await page.close();}
   }finally{await browser.close();}
 });
-test('feature pages center their whole content when it fits the original right area',{timeout:30000},async()=>{
+test('workflow feature pages share anchors while auxiliary pages retain their original centering',{timeout:30000},async()=>{
   const browser=await chromium.launch({executablePath:process.env.NORA_CHROMIUM||undefined});
   try{
     const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{state:'blocked',available:false,
@@ -175,6 +401,7 @@ test('feature pages center their whole content when it fits the original right a
       releaseUrl:'https://github.com/LoveMaker-art/noras-tavern/releases/tag/v2.4.2',
       compatibilityError:'线上发布与当前启动器不兼容。\n当前安装和数据未修改。\n请等待兼容版本发布，勿反复重试。'}});
     try{
+      const workflowBaselines=new Map();
       for(const action of ['update','settings','claw','community','model']){
         if(action==='model')await page.locator('#management > [data-action="model"]').click();
         else{await page.locator('#moreButton').click();await page.locator(`#more [data-action="${action}"]`).click();}
@@ -191,8 +418,13 @@ test('feature pages center their whole content when it fits the original right a
             return {above:inner.top-top,below:bottom-inner.bottom,fits:inner.height<=bottom-top+1};
           });
           assert.equal(placement.fits,true,`${action} content should fit ${viewport.width}x${viewport.height}`);
-          assert.ok(Math.abs(placement.above-placement.below)<=2,
-            `${action} should center the whole content; top gap=${placement.above}px bottom gap=${placement.below}px`);
+          if(['update','claw','model'].includes(action)) {
+            assert.equal(await page.locator('main').getAttribute('data-layout'),'workflow');
+            const key=JSON.stringify(viewport),anchors=await workflowAnchors(page);
+            if(!workflowBaselines.has(key))workflowBaselines.set(key,anchors);
+            assert.deepEqual(anchors,workflowBaselines.get(key),`${action} shares the installation anchor at ${key}`);
+          } else assert.ok(Math.abs(placement.above-placement.below)<=2,
+            `${action} retains original centering; top gap=${placement.above}px bottom gap=${placement.below}px`);
           if(process.env.NORA_SCREENSHOT&&action==='update'&&viewport.height===680)
             await page.screenshot({path:process.env.NORA_SCREENSHOT,animations:'disabled'});
         }
@@ -357,33 +589,23 @@ test('real controller waits for backend results through install, model, pairing,
     if (process.env.NORA_SCREENSHOT) await page.screenshot({ path: process.env.NORA_SCREENSHOT, animations: 'disabled' });
     await page.getByRole('button', { name: '验证并继续', exact: true }).click();
     await page.locator('#pairCode').waitFor();
-    const pairingLayout = () => page.evaluate(async () => {
-      const input = document.getElementById('pairCode');
-      const submit = input.form.querySelector('[type="submit"]');
-      await Promise.all([document.getElementById('message'), document.getElementById('inline')]
-        .flatMap(element => element.getAnimations()).map(animation => animation.finished.catch(() => {})));
-      const visible = element => {
-        const rect = element.getBoundingClientRect();
-        const hit = document.elementFromPoint(rect.x + rect.width / 2, rect.y + rect.height / 2);
-        return rect.top >= 0 && rect.bottom <= innerHeight && rect.left >= 0 && rect.right <= innerWidth
-          && Boolean(hit && (hit === element || element.contains(hit)));
-      };
-      return { inputVisible: visible(input), submitVisible: visible(submit),
-        inputAboveSubmit: input.getBoundingClientRect().bottom <= submit.getBoundingClientRect().top,
-        scrollingAreas: ['message', 'inline'].filter(id => {
-          const element = document.getElementById(id);
-          return /auto|scroll/.test(getComputedStyle(element).overflowY) && element.scrollHeight > element.clientHeight + 1;
-        }) };
-    });
+    const pairingLayout = async () => {
+      await page.evaluate(async()=>{await Promise.all(document.getAnimations()
+        .filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));});
+      const facts=await workflowReachability(page);
+      return {inputReachable:facts.visited.includes('pairCode'),submitReachable:facts.visited.includes('配对并继续'),
+        inputAboveSubmit:await page.evaluate(()=>{const input=document.getElementById('pairCode');return input.getBoundingClientRect().bottom<=input.form.querySelector('[type="submit"]').getBoundingClientRect().top;}),
+        invalidRegions:facts.invalidRegions,wheelMissing:facts.wheelMissing,missing:facts.missing,unreachable:facts.unreachable,moved:facts.moved,outerScroll:facts.outerScroll};
+    };
     for (const viewport of [{ width: 1120, height: 680 }, { width: 900, height: 640 }]) {
       await page.setViewportSize(viewport);
-      assert.deepEqual(await pairingLayout(), { inputVisible: true, submitVisible: true,
-        inputAboveSubmit: true, scrollingAreas: [] }, `pairing layout at ${viewport.width}x${viewport.height}`);
+      assert.deepEqual(await pairingLayout(), { inputReachable: true, submitReachable: true,
+        inputAboveSubmit: true,invalidRegions:[],wheelMissing:[],missing:[],unreachable:[],moved:[],outerScroll:[] }, `pairing layout at ${viewport.width}x${viewport.height}`);
     }
     await page.getByRole('button', { name: '配对并继续', exact: true }).click();
     assert.match(await page.locator('#pairFeedback').textContent(), /请填写配对码/);
-    assert.deepEqual(await pairingLayout(), { inputVisible: true, submitVisible: true,
-      inputAboveSubmit: true, scrollingAreas: [] }, 'pairing validation feedback stays in view');
+    assert.deepEqual(await pairingLayout(), { inputReachable: true, submitReachable: true,
+      inputAboveSubmit: true,invalidRegions:[],wheelMissing:[],missing:[],unreachable:[],moved:[],outerScroll:[] }, 'pairing validation feedback stays reachable');
     await page.setViewportSize({ width: 1120, height: 680 });
     await page.locator('#pairCode').fill('test-code');
     await page.getByRole('button', { name: '配对并继续', exact: true }).click();
@@ -463,7 +685,7 @@ test('real controller waits for backend results through install, model, pairing,
   } finally { await browser.close(); }
 });
 
-test('all launcher routes keep visible content and actions reachable without nested scrolling', {timeout:60000}, async()=>{
+test('all launcher routes keep content and actions reachable within their designated scroll regions', {timeout:90000}, async()=>{
   const browser=await chromium.launch({executablePath:process.env.NORA_CHROMIUM||undefined});
   const ready={installed:true,hermesInstalled:true,noraInstalled:true,modelConfigured:true,clawchatPaired:true,
     clawchatProfileReady:true,clawchatConnected:true,running:true,gatewayRunning:true,systemReady:true,
@@ -554,11 +776,16 @@ test('all launcher routes keep visible content and actions reachable without nes
         if(name==='model'||name==='pair')await page.locator('#inline button[type="submit"]').click();
         for(const viewport of [{width:1120,height:680},{width:1120,height:652},{width:900,height:612}]){
           await page.setViewportSize(viewport);
+          const workflow=await page.locator('main').getAttribute('data-layout')==='workflow'&&name!=='logs'&&name!=='more';
+          const reachability=workflow?await workflowReachability(page):null;
           const facts=await page.evaluate(async name=>{
             await document.fonts.ready;
             await Promise.all(document.getAnimations().filter(a=>a.effect.getTiming().iterations!==Infinity).map(a=>a.finished.catch(()=>{})));
             const visible=e=>e.getClientRects().length&&getComputedStyle(e).visibility!=='hidden';
             const within=e=>{
+              // A bounded, genuinely scrollable form is checked by actual wheel
+              // and keyboard traversal, rather than requiring every field at once.
+              if(document.querySelector('main').dataset.layout==='workflow'&&e.closest('#inline'))return true;
               const r=e.getBoundingClientRect();
               if(r.top<0||r.bottom>innerHeight+1||r.left<0||r.right>innerWidth+1)return false;
               for(let owner=e.parentElement;owner;owner=owner.parentElement){
@@ -568,11 +795,14 @@ test('all launcher routes keep visible content and actions reachable without nes
               }return true;
             };
             const scope=name==='more'?document.querySelector('#more'):name==='logs'?document.querySelector('.operation-console'):document.querySelector('main');
-            const allowed=name==='more'?['more-actions']:name==='logs'?['console-output']:name==='recovery-details'?['recovery-details']:[];
+            const workflow=document.querySelector('main').dataset.layout==='workflow';
+            const allowed=name==='more'?['more-actions']:name==='logs'?['console-output']:workflow?['inline','copy','subcopy']:[];
+            const permitted=e=>allowed.includes(e.id)||allowed.some(c=>e.classList.contains(c));
             const scrollers=[...scope.querySelectorAll('*')].filter(e=>visible(e)&&/auto|scroll/.test(getComputedStyle(e).overflowY)&&e.scrollHeight>e.clientHeight+1);
             const clipping=[...scope.querySelectorAll('button,input,select,#copy,#subcopy,#telemetryNotice,.conversation-guidance,.model-feedback,.settings-row,.launch-hint')]
               .filter(e=>visible(e)&&!e.closest('.console-output')&&!within(e));
             const covered=[...scope.querySelectorAll('button,input,select')].filter(e=>{
+              if(workflow&&e.closest('#inline'))return false; // Real wheel/Tab traversal above checks these controls, including disabled controls.
               if(!visible(e)||!within(e))return false;
               const r=e.getBoundingClientRect();
               return [r.top+2,r.top+r.height/2,r.bottom-2].some(y=>{
@@ -580,15 +810,15 @@ test('all launcher routes keep visible content and actions reachable without nes
                 return !hit||(hit!==e&&!e.contains(hit));
               });
             });
-            return {unexpectedScrollers:scrollers.filter(e=>!allowed.some(c=>e.classList.contains(c))).map(e=>e.id||e.className),
+            return {unexpectedScrollers:scrollers.filter(e=>!permitted(e)).map(e=>e.id||e.className),
               clipped:clipping.map(e=>e.id||e.getAttribute('aria-label')||e.textContent.trim()),
               covered:covered.map(e=>e.id||e.getAttribute('aria-label')||e.textContent.trim()),
               logScrollable:name==='logs'?document.querySelector('#consoleOutput').scrollHeight>document.querySelector('#consoleOutput').clientHeight:null,
-              geometry:scrollers.filter(e=>!allowed.some(c=>e.classList.contains(c))).map(e=>({id:e.id,height:e.clientHeight,content:e.scrollHeight})),
+              geometry:scrollers.filter(e=>!permitted(e)).map(e=>({id:e.id,height:e.clientHeight,content:e.scrollHeight})),
               bounds:clipping.map(e=>({id:e.id,top:e.getBoundingClientRect().top,bottom:e.getBoundingClientRect().bottom}))};
           },name);
           if(process.env.NORA_SCREENSHOT&&(facts.unexpectedScrollers.length||facts.clipped.length||facts.covered.length))await page.screenshot({path:process.env.NORA_SCREENSHOT.replace('.png',`-${name}-${viewport.width}x${viewport.height}.png`),animations:'disabled'});
-          results.push({name,viewport,...facts,errors:errors.slice()});
+          results.push({name,viewport,...facts,reachability,errors:errors.slice()});
         }
         if(name==='more'){
           const coveredBody=await page.locator('#copy').boundingBox();
@@ -605,7 +835,8 @@ test('all launcher routes keep visible content and actions reachable without nes
       finally{await page.close();}
     }
     if(process.env.NORA_LAYOUT_REPORT)require('node:fs').writeFileSync(process.env.NORA_LAYOUT_REPORT,JSON.stringify(results,null,2)+'\n');
-    const failed=results.filter(r=>r.error||r.errors.length||r.unexpectedScrollers.length||r.clipped.length||r.covered.length||r.logScrollable===false);
+    const failed=results.filter(r=>r.error||r.errors.length||r.unexpectedScrollers.length||r.clipped.length||r.covered.length||r.logScrollable===false
+      ||r.reachability&&['invalidRegions','wheelMissing','missing','unreachable','moved','outerScroll'].some(key=>r.reachability[key].length));
     assert.deepEqual(failed,[],JSON.stringify(failed,null,2));
     assert.equal(results.length,scenarios.length*3);
   }finally{await browser.close();}

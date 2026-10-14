@@ -115,7 +115,6 @@
     .pair b { font-size:13px; font-weight:500; }
     .pair p { color:#9caaa0; font-size:12px; line-height:1.8; margin:9px 0 17px; }
     .pair-form { margin-top:18px; }
-    main:not(.logs-open):has(:is(#provider,#pairCode)) :is(.message,.inline) { flex-shrink:0; overflow:visible; }
     main:not(.logs-open):has(#pairCode) .pair p { margin-bottom:12px; }
     main:not(.logs-open):has(#pairCode) .inline form > .form-bottom { position:static; margin-top:12px; padding-top:0; }
     #pairFeedback:empty { display:none; }
@@ -252,9 +251,7 @@
     }
     @media (max-height:740px) {
       .daily { margin-top:24px; }
-      main:not(.daily):has(#provider), main:not(.daily):not(.logs-open):has(#pairCode) { margin-top:12px; }
       .daily.editing .conversation { padding-top:0; }
-      .conversation:has(#provider), .conversation:has(#pairCode) { padding-top:0; }
       .conversation:has(#provider) .fields { row-gap:8px; }
       .fields:has(#authField:not([hidden])) .wide:has(#model) { grid-column:auto; }
       main:has(:is(#provider,#pairCode)) .scroll { padding-bottom:0; }
@@ -271,6 +268,13 @@
       .conversation:has(#pairCode) label { margin-bottom:4px; }
       .conversation:has(#pairCode) input { height:38px; }
       .conversation:has(#pairCode) .form-bottom .button { margin-bottom:0; }
+      /* Keep the ordinary model form's complete submit visible at 1120x680.
+         Longer feedback still uses the bounded workflow form scroller. */
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .fields { row-gap:4px; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .field-line .quiet { min-height:26px; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .inline form { padding-top:0; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .model-feedback { margin-top:4px; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .inline form > .form-bottom { margin-top:4px; }
     }
     @media (max-height:680px) {
       main { margin-bottom:20px; }
@@ -279,6 +283,32 @@
       .daily:not(.editing) .conversation-entry { margin-bottom:12px; }
       .management { margin-top:12px; }
       main:not(.daily) .launchbar:has(.launch-hint[hidden]) { height:49px; }
+    }
+    /* Installation, configuration and recovery share the installation anchor.
+       Hidden steps reserve their geometry without displaying inapplicable steps.
+       Only the bounded text/form regions scroll; the page and title origin stay put. */
+    main[data-layout="workflow"]:not(.logs-open) { --workflow-indent:42px; margin-top:48px; }
+    main[data-layout="workflow"]:not(.logs-open) .conversation { padding-top:48px; }
+    main[data-layout="workflow"]:not(.logs-open) > .steps[hidden] + .conversation { padding-top:92px; }
+    main[data-layout="workflow"]:not(.logs-open) .scroll { justify-content:flex-start; padding-left:0; }
+    main[data-layout="workflow"]:not(.logs-open) .dialogue-group { width:100%; max-width:100%; height:100%; margin:0; flex:1 1 auto; }
+    main[data-layout="workflow"]:not(.logs-open) :is(.message,.inline,.management) { width:auto; margin-left:var(--workflow-indent); margin-right:0; }
+    main[data-layout="workflow"]:not(.logs-open) .message { display:flex; min-height:0; max-height:calc(100% - 98px); flex:0 0 auto; }
+    main[data-layout="workflow"]:not(.logs-open) .dialogue-group:has(.management:not([hidden])) .message { max-height:calc(100% - 160px); }
+    main[data-layout="workflow"]:not(.logs-open) .message > div { display:flex; flex-direction:column; min-height:0; }
+    main[data-layout="workflow"]:not(.logs-open) .speaker { flex-shrink:0; }
+    main[data-layout="workflow"]:not(.logs-open) .copy { min-height:1.5em; max-height:3lh; flex:0 0 auto; overflow:auto; scrollbar-width:thin; }
+    main[data-layout="workflow"]:not(.logs-open) .subcopy { min-height:0; flex:0 1 auto; }
+    main[data-layout="workflow"]:not(.logs-open) .inline { min-height:80px; flex:1 1 auto; overflow:auto; overscroll-behavior:contain; }
+    main[data-layout="workflow"]:not(.logs-open) .inline:empty { min-height:0; }
+    main[data-layout="workflow"]:not(.logs-open) .inline:has(.outcome-actions) { display:block; }
+    main[data-layout="workflow"]:not(.logs-open) .recovery-details { max-height:none; overflow:visible; }
+    main[data-layout="workflow"]:not(.logs-open) .inline form > .form-bottom { position:static; }
+    @media (max-width:980px) {
+      main[data-layout="workflow"]:not(.logs-open) { --workflow-indent:18px; }
+    }
+    @media (max-width:760px) {
+      main[data-layout="workflow"]:not(.logs-open) { --workflow-indent:0px; margin-top:32px; }
     }
     /* The console replaces only the original right task area. */
     main.logs-open { height:calc(100dvh - 135px); min-height:0; max-height:calc(100dvh - 135px); }
@@ -305,7 +335,7 @@
           <div class="dialogue-group">
           <div class="previous" id="previous" hidden></div>
           <article class="message" id="message">
-            <div><div class="speaker">诺拉</div><p class="copy" id="copy"></p><p class="subcopy" id="subcopy"></p></div>
+            <div><div class="speaker">诺拉</div><p class="copy" id="copy" tabindex="0"></p><p class="subcopy" id="subcopy" tabindex="0"></p></div>
           </article>
           <div class="inline" id="inline"></div>
         <div class="management" id="management" hidden>

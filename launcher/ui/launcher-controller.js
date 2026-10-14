@@ -2,6 +2,7 @@
 (() => {
   const api = window.NoraLauncherBridge;
   if (!api && new URLSearchParams(location.search).has('desktop')) {
+    $('main').dataset.layout = 'workflow';
     clearInline(); $('steps').hidden = true; $('management').hidden = true; $('launchbar').hidden = true;
     say('启动器连接失败。', '请关闭后重新打开桌面启动器。');
     return;
@@ -324,6 +325,11 @@
   }
   function hideMenu() { $('more').hidden = true; $('moreButton').setAttribute('aria-expanded', 'false'); }
   function controls() {
+    // Presentation follows the route, never the presence of a particular form.
+    // Error/recovery routes may retain the previous page's daily/editing classes.
+    const workflow = ['loading', 'monitor', 'task', 'model', 'model-pending', 'claw', 'update', 'error', 'recovery'].includes(view);
+    if (workflow) $('main').dataset.layout = 'workflow';
+    else delete $('main').dataset.layout;
     const recoveryView = view === 'recovery' && Boolean(snapshot.updateRecovery || snapshot.launcherRecovery);
     const freshInstall = view === 'welcome' && !statusUnknown && !snapshot.retainedInstallation && !snapshot.operation && !snapshot.installer?.startedAt
       && !snapshot.installed && !snapshot.hermesInstalled && !snapshot.noraInstalled && !serviceRunning();
@@ -1202,6 +1208,7 @@
     clearTimeout(pollTimer); pollTimer = setTimeout(poll, 5000);
   }
   addEventListener('beforeunload', () => { alive = false; logGeneration++; clearTimeout(logTimer); clearTimeout(pollTimer); clearInterval(taskTimer); });
+  $('main').dataset.layout = 'workflow';
   clearInline(); $('steps').hidden = true; $('launchbar').hidden = true; say('正在检查本机安装。');
   poll();
 })();

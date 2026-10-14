@@ -47,10 +47,49 @@ function metadataSeal(file){
   }
  }visit(file);return files;
 }
-function verifyEntry(root,entry,completed=false){
+function verifyEntry(root,entry,completed=false,verifyRecreated){
  const from=safe(root,entry.from),to=safe(root,entry.to),atSource=present(from),atArchive=present(to);
- if(atSource===atArchive||completed&&atSource)throw error();const file=atSource?from:to;
- if(!same(identity(file),entry.identity)||!same(metadataSeal(file),entry.metadata))throw error();return {from,to,atSource};
+ if(completed){
+  // Completion seals the old archive, not permanent absence of a path that a
+  // later first install must recreate. Nothing may replace the sealed archive.
+  if(!atArchive||!same(identity(to),entry.identity)||!same(metadataSeal(to),entry.metadata))throw error();
+  if(atSource){if(!verifyRecreated)throw error();verifyRecreated(entry.from,from);}
+ }else{
+  if(atSource===atArchive)throw error();const file=atSource?from:to;
+  if(!same(identity(file),entry.identity)||!same(metadataSeal(file),entry.metadata))throw error();
+ }
+ return {from,to,atSource};
+}
+function recreatedReceipt(value,record,relative,file){
+ if(!record||!['installed.json','installed-manifest.json','nora-system.json'].map(name=>'tavern/tavern-updates/'+name).includes(relative)
+  ||value.state!=='complete'||record.planSelected!==true||record.planDigest!==hash(JSON.stringify(record.target))
+  ||record.target?.releasePlan?.mode!=='install')throw error();
+ const root=value.root,operationId=value.reinstallOperationId;
+ // Python journals encode NTFS identities as JSON integers. Preserve the exact
+ // integer text beyond JS's safe range instead of authorizing a rounded inode.
+ const first=JSON.parse(readBytes(safe(root,`installer/operations/${operationId}/first-install/transaction.json`)).toString('utf8'),
+  (_key,number,context)=>typeof number==='number'&&Number.isInteger(number)&&!Number.isSafeInteger(number)?context.source:number);
+ const matches=(target,expected)=>{
+  const observed=identity(target);
+  return Array.isArray(expected)&&expected.length===2&&expected.every(part=>/^[0-9]+$/.test(String(part)))
+   &&observed.device===String(expected[0])&&observed.inode===String(expected[1]);
+ };
+ if(first.schema!==1||first.owner!=='nora-first-install'||first.operationId!==operationId||first.noraHome!==root
+  ||first.roots?.hermes!==path.join(root,value.hermes)||first.roots?.tavern!==path.join(root,value.tavern)
+  ||!matches(safe(root,value.hermes),first.rootIdentities?.hermes)||!matches(safe(root,value.tavern),first.rootIdentities?.tavern)
+  ||!SHA.test(first.targetDigest||'')||first.applyIntent!==true||!['applying','installed','recovery_failed'].includes(first.status)
+  ||!Array.isArray(first.targets)||first.targets.length>2048)throw error();
+ const seen=new Set();let selected;
+ for(const target of first.targets){
+  if(!['hermes','tavern'].includes(target.namespace))throw error();const name=target.namespace+'/'+target.path;safe(root,name);
+  if(seen.has(name))throw error();seen.add(name);if(name===relative)selected=target;
+ }
+ if(!selected||!SHA.test(selected.newDigest||'')||identity(file).kind!=='file')throw error();
+ // Atomic setup writes may replace nora-system after success. The terminal
+ // completionFacts call below validates its current semantics and immutable
+ // install receipts; in-flight files still need exact journal identity/bytes.
+ if(relative==='tavern/tavern-updates/nora-system.json'&&record.state==='succeeded')return;
+ if(!matches(file,selected.newIdentity)||hash(Buffer.concat([Buffer.from('F\0'),readBytes(file)]))!==selected.newDigest)throw error();
 }
 function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}){
  const file=path.join(path.resolve(home),fileName);if(!present(file))return null;
@@ -63,11 +102,14 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
    ||!['prepared','complete'].includes(value.state)||!Number.isInteger(value.port)||value.port<1024||value.port>65535
    ||value.archive!==`installer/retained/${value.id}`||!Array.isArray(value.entries)||value.entries.length>2048
    ||!Array.isArray(value.targets)||value.targets.length!==programs(root).length+2||!Number.isFinite(Date.parse(value.createdAt)))throw error();
+  let reinstall;
+  if(value.reinstallOperationId!==undefined){if(!ID.test(value.reinstallOperationId))throw error();reinstall=installRecord(root,value.reinstallOperationId);}
+  const verifyRecreated=(relative,source)=>recreatedReceipt(value,reinstall,relative,source);
   const seen=new Set();for(const entry of value.entries){if(seen.has(entry.from)
     ||!['installed.json','installed-manifest.json','nora-system.json','transaction.json'].map(name=>'tavern/tavern-updates/'+name)
       .concat(['installer/system-update','installer/launcher-update']).includes(entry.from)&&!/^installer\/operations\/[0-9a-f-]{36}$/i.test(entry.from)
     ||entry.from.startsWith('installer/operations/')&&!ID.test(entry.from.slice('installer/operations/'.length))
-    ||entry.to!==value.archive+'/history/'+entry.from)throw error();seen.add(entry.from);verifyEntry(root,entry,value.state==='complete');}
+    ||entry.to!==value.archive+'/history/'+entry.from)throw error();seen.add(entry.from);verifyEntry(root,entry,value.state==='complete',verifyRecreated);}
   const targetNames=new Set();for(const target of value.targets){if(targetNames.has(target.path)||!programs(root).concat(['cache','launcher']).includes(target.path))throw error();targetNames.add(target.path);safe(root,target.path);
    if(value.state==='prepared'&&!['cache','launcher'].includes(target.path)&&present(safe(root,target.path))&&!same(identity(safe(root,target.path)),target.identity))throw error();}
   if(value.state==='complete'){
@@ -76,8 +118,8 @@ function inspect(home,{allowPending=false,operationId,allowProgramTree=false}={}
    if(value.reinstallOperationId===undefined&&['installed.json','installed-manifest.json','nora-system.json','transaction.json']
     .some(name=>present(safe(root,'tavern/tavern-updates/'+name))))throw error();
   }
-  if(value.reinstallOperationId!==undefined){if(!ID.test(value.reinstallOperationId))throw error();
-   const record=installRecord(root,value.reinstallOperationId);
+  if(value.reinstallOperationId!==undefined){
+   const record=reinstall;
    if(record.state==='succeeded'){
     completionFacts(value,record);
     // Derived from the actual terminal install and its physical owners. This

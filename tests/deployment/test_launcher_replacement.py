@@ -1,6 +1,7 @@
 import importlib.util
 import hashlib
 import json
+import math
 import os
 import subprocess
 import shutil
@@ -308,7 +309,7 @@ from pathlib import Path
 job=Path(sys.argv[1]);kind=sys.argv[2]
 if os.name=='nt': job=Path(chr(92)*2+'?'+chr(92)+str(job))
 with (job/'children.jsonl').open('a',encoding='utf-8') as file:
- file.write(json.dumps({'pid':os.getpid(),'creationTime':psutil.Process().create_time(),'kind':kind})+'\\n')
+ file.write(json.dumps({'pid':os.getpid(),'creationTime':psutil.Process().create_time(),'kind':kind,'spawnId':sys.argv[4],'executable':psutil.Process().exe(),'cwd':os.getcwd()})+'\\n')
 if kind=='new' and sys.argv[3]=='fail': sys.exit(3)
 if kind=='new':
  plan=json.loads((job/'plan.json').read_text(encoding='utf-8'))
@@ -316,7 +317,7 @@ if kind=='new':
 time.sleep(0.15)
 ''')
         runner = base / 'fixture-worker.py'
-        runner.write_text('''import importlib.util,os,subprocess,sys
+        runner.write_text('''import importlib.util,json,os,subprocess,sys,time,uuid
 from pathlib import Path
 spec=importlib.util.spec_from_file_location('replace_worker',sys.argv[1]);w=importlib.util.module_from_spec(spec);spec.loader.exec_module(w)
 job=Path(sys.argv[2]);mode=sys.argv[3];edge=sys.argv[4];fail=sys.argv[5];launcher=sys.argv[6]
@@ -326,7 +327,21 @@ def launch(args,**options):
  if Path(args[0]).name=='launcher.exe':
   kind='new' if any(arg.startswith('--nora-self-update=') for arg in args[1:]) else 'old'
   options.pop('executable',None)
-  return real_popen([sys.executable,'-B',launcher,str(job),kind,fail],**options)
+  spawn_id=str(uuid.uuid4())
+  with w.io_path(job/'spawns.jsonl').open('a',encoding='utf-8') as file:
+   file.write(json.dumps({'spawnId':spawn_id,'kind':kind})+'\\n')
+  child=real_popen([sys.executable,'-B',launcher,str(job),kind,fail,spawn_id],**options)
+  deadline=time.monotonic()+5
+  while time.monotonic()<deadline:
+   file=w.io_path(job/'children.jsonl')
+   records=[json.loads(line) for line in file.read_text(encoding='utf-8').splitlines()] if file.exists() else []
+   matches=[record for record in records if record.get('spawnId')==spawn_id]
+   if len(matches)>1: raise RuntimeError('Duplicate fixture launcher birth ACK')
+   if matches:
+    if matches[0].get('kind')!=kind: raise RuntimeError('Fixture launcher birth ACK kind differs')
+    return child
+   time.sleep(.005)
+  raise RuntimeError('Fixture launcher birth ACK deadline expired; preserve the fixture')
  return real_popen(args,**options)
 w.subprocess.Popen=launch
 
@@ -363,12 +378,30 @@ else: w.recover(job,allow_legacy=True)
 
     def wait_children(self, f):
         import psutil
-        for child in self.children(f):
+        spawns_file = worker.io_path(f['job'] / 'spawns.jsonl')
+        spawns = [json.loads(line) for line in spawns_file.read_text(encoding='utf-8').splitlines()] if spawns_file.exists() else []
+        children = self.children(f)
+        expected = [spawn.get('spawnId') for spawn in spawns]
+        actual = [child.get('spawnId') for child in children]
+        if (any(not isinstance(token, str) or not token for token in expected)
+                or len(set(expected)) != len(expected) or len(set(actual)) != len(actual)
+                or set(expected) != set(actual)):
+            raise RuntimeError('Fixture launcher spawn lacks an exact birth ACK; retaining fixture')
+        kinds = {spawn['spawnId']: spawn.get('kind') for spawn in spawns}
+        for child in children:
+            if (child.get('kind') != kinds[child['spawnId']] or child.get('kind') not in {'old', 'new'}
+                    or type(child.get('pid')) is not int or child['pid'] <= 0
+                    or type(child.get('creationTime')) not in {int, float} or child['creationTime'] <= 0
+                    or not math.isfinite(child['creationTime'])
+                    or not isinstance(child.get('executable'), str) or not Path(child['executable']).is_absolute()):
+                raise RuntimeError('Fixture launcher birth ACK identity is invalid; retaining fixture')
             try:
                 process = psutil.Process(child['pid'])
-                if abs(process.create_time() - child['creationTime']) > 0.001:
+                if process.create_time() != child['creationTime']:
                     continue  # The original fixture birth is gone; never touch a reused PID.
-                if str(f['launcher']) not in process.cmdline():
+                arguments = process.cmdline()
+                if (str(f['launcher']) not in arguments or child['spawnId'] not in arguments
+                        or process.exe() != child['executable']):
                     raise RuntimeError('Original launcher child has unknown command ownership; retaining fixture')
                 process.wait(timeout=5)
             except (psutil.NoSuchProcess, psutil.ZombieProcess):
@@ -523,6 +556,69 @@ class OperationReplacementTests(unittest.TestCase):
             "(job/'ready.json').write_text(json.dumps({'schema':'nora-launcher-handoff/1','token':plan['token'],'version':plan['version'],'operationId':plan['operationId'],'planDigest':plan['planDigest']}),encoding='utf-8')")
         f['launcher'].write_text(launcher)
         return f
+
+    def test_cleanup_refuses_returned_spawn_without_exact_birth_ack(self):
+        f = self.fixture()
+        pending = f['job'] / 'spawns.jsonl'
+        pending.write_text(json.dumps({'spawnId': str(uuid.uuid4()), 'kind': 'old'}) + '\n')
+        try:
+            with patch.object(shutil, 'rmtree') as remove:
+                with self.assertRaisesRegex(RuntimeError, 'unconfirmed children'):
+                    f['owner'].cleanup_fixture(f)
+                remove.assert_not_called()
+            self.assertTrue(f['base'].is_dir())
+        finally:
+            # This obligation is synthetic: no process was created by this pure
+            # negative case. Remove it only after proving guarded retention.
+            pending.unlink()
+
+    def test_cleanup_retains_malformed_birth_ack_and_unknown_live_command(self):
+        import psutil
+        current = psutil.Process()
+        for mutation in ('duplicate', 'wrong-kind', 'invalid-birth', 'unknown-command'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture()
+                token = str(uuid.uuid4())
+                pending = f['job'] / 'spawns.jsonl'
+                births = f['job'] / 'children.jsonl'
+                pending.write_text(json.dumps({'spawnId': token, 'kind': 'old'}) + '\n')
+                record = {'spawnId': token, 'kind': 'old', 'pid': current.pid,
+                          'creationTime': current.create_time(), 'executable': current.exe()}
+                if mutation == 'wrong-kind': record['kind'] = 'new'
+                if mutation == 'invalid-birth': record['creationTime'] = float('nan')
+                records = [record, record] if mutation == 'duplicate' else [record]
+                births.write_text(''.join(json.dumps(item) + '\n' for item in records))
+                try:
+                    with patch.object(shutil, 'rmtree') as remove, patch.object(psutil.Process, 'wait') as wait:
+                        with self.assertRaisesRegex(RuntimeError, 'unconfirmed children'):
+                            f['owner'].cleanup_fixture(f)
+                        remove.assert_not_called()
+                        wait.assert_not_called()
+                    self.assertTrue(f['base'].is_dir())
+                finally:
+                    # These rows are pure fault inputs; no child was launched.
+                    pending.unlink()
+                    births.unlink()
+
+    def test_cleanup_never_waits_or_stops_a_reused_pid(self):
+        import psutil
+        current = psutil.Process()
+        f = self.fixture()
+        token = str(uuid.uuid4())
+        pending = f['job'] / 'spawns.jsonl'
+        births = f['job'] / 'children.jsonl'
+        pending.write_text(json.dumps({'spawnId': token, 'kind': 'old'}) + '\n')
+        births.write_text(json.dumps({'spawnId': token, 'kind': 'old', 'pid': current.pid,
+            'creationTime': current.create_time() - 100, 'executable': current.exe()}) + '\n')
+        try:
+            with patch.object(shutil, 'rmtree') as remove, patch.object(psutil.Process, 'wait') as wait:
+                f['owner'].cleanup_fixture(f)
+                wait.assert_not_called()
+                remove.assert_called_once_with(f['base'])
+            self.assertTrue(current.is_running())
+        finally:
+            pending.unlink()
+            births.unlink()
 
     def test_preparation_only_seals_current_operation_without_waiting_or_replacing(self):
         f = self.fixture()
