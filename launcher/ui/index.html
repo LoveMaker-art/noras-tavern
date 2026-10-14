@@ -62,7 +62,7 @@
     .inline:has(.outcome-actions) { display:flex; flex-direction:column; overflow:hidden; min-height:52px; }
     .outcome-actions { display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; flex-shrink:0; }
     .outcome-actions .quiet { min-height:40px; }
-    .inline form { min-height:0; }
+    .inline form { min-height:0; padding-bottom:4px; }
     .inline form > .form-bottom { position:sticky; bottom:0; padding-top:8px; background:#171a19; z-index:1; }
     .button { display:inline-flex; justify-content:center; align-items:center; gap:12px; min-height:44px; margin:0 8px 8px 0; padding:0 18px; background:#303b33; border:1px solid #59685a; border-radius:5px; font-size:13px; transition:background .2s,transform .2s; }
     .button:hover { background:#405045; }
@@ -94,21 +94,28 @@
     .meter span { display:block; height:100%; background:var(--green); width:0; transition:width .3s; }
     .meter.indeterminate span { width:35%!important; animation:scan 1.4s infinite; }
     .task-actions { margin-top:14px; display:flex; align-items:center; flex-wrap:wrap; gap:12px; }
-    .field-line { display:flex; align-items:center; justify-content:space-between; gap:12px; }
-    .field-line .quiet { font-size:12px; padding:0 0 8px; }
+    .field-line { display:flex; align-items:center; justify-content:space-between; gap:12px; min-height:24px; margin-bottom:4px; }
+    .field-line label { display:flex; align-items:center; min-height:24px; margin:0; line-height:18px; }
+    .field-line .quiet { display:inline-flex; align-items:center; min-height:24px; font-size:12px; line-height:18px; padding:0; }
     .model-feedback { margin:12px 0 0; font-size:12px; line-height:1.6; color:#aebdaf; overflow-wrap:anywhere; white-space:pre-line; }
     .model-feedback.error { color:#e8a3af; }
     .job-note { font-size:12px; color:#8e9f93; line-height:1.6; white-space:pre-line; overflow-wrap:anywhere; }
     form { padding-top:4px; }
-    .fields { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+    .fields { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; }
     label { display:block; color:#b7c0b7; font-size:12px; margin-bottom:8px; }
     .wide { grid-column:1 / -1; }
+    .fields > div { display:grid; grid-template-rows:24px auto; align-content:start; row-gap:2px; min-width:0; }
+    .fields > div > :is(label,.field-line) { margin:0; }
+    .fields > div > label { display:flex; align-items:center; min-height:24px; line-height:18px; }
+    .fields:has(#authField:not([hidden])) .wide:has(#model) { grid-column:auto; }
+    .fields:has(> div[hidden] #key) > div:has(> #provider) { grid-column:1 / -1; }
     input,select { width:100%; height:42px; min-width:0; border:1px solid #465148; background:#202723; border-radius:4px; color:#eee; padding:0 10px; font-size:12px; outline:none; }
     input:focus,select:focus { border-color:#c8919f; }
     .secret { position:relative; }
     .secret input { padding-right:36px; }
     .eye { position:absolute; right:0; top:0; width:38px; height:42px; background:none; border:0; color:#9eaca0; }
     .form-bottom { margin-top:18px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:15px; }
+    .form-bottom .button { margin:0; }
     .note { color:#8c9d90; font-size:12px; line-height:1.6; margin:0; }
     .error { color:#e8a3af; }
     .pair { border-left:1px solid #57675c; padding:2px 0 3px 17px; }
@@ -170,8 +177,10 @@
     .daily .management { width:auto; margin-left:0; margin-right:0; }
     .daily.editing .scroll { justify-content:safe center; }
     .daily.editing .management { display:none; }
-    .settings-row { display:flex; justify-content:space-between; gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
+    .settings-row { display:grid; grid-template-columns:88px minmax(0,1fr); gap:18px; padding:12px 0; border-bottom:1px solid #354137; font-size:12px; }
     .settings-row span { color:#a9b9ac; }
+    .settings-row > :first-child { white-space:nowrap; }
+    .settings-row > :last-child { min-width:0; }
     #telemetryNotice { position:relative; flex-shrink:0; margin-top:12px; font-size:12px; line-height:1.6; color:#a9b9ac; }
     #telemetryNotice label { display:flex; align-items:center; gap:8px; min-height:36px; margin:0; font-size:12px; cursor:pointer; }
     #telemetryEnabled { flex:0 0 16px; width:16px; height:16px; min-width:16px; margin:0; padding:0; accent-color:var(--accent); cursor:pointer; }
@@ -247,34 +256,29 @@
       .launchbar { align-items:stretch; }
       .runtime-actions,.launch { width:100%; }
       .update-recovery .recovery-actions { gap:8px; }
-      .settings-row { flex-direction:column; gap:6px; }
+      .settings-row { grid-template-columns:1fr; gap:6px; }
     }
     @media (max-height:740px) {
       .daily { margin-top:24px; }
       .daily.editing .conversation { padding-top:0; }
       .conversation:has(#provider) .fields { row-gap:8px; }
-      .fields:has(#authField:not([hidden])) .wide:has(#model) { grid-column:auto; }
       main:has(:is(#provider,#pairCode)) .scroll { padding-bottom:0; }
       main:has(:is(#provider,#pairCode)) .inline { margin-top:12px; }
-      .conversation:has(#provider) label { margin-bottom:4px; }
-      .conversation:has(#provider) .field-line .quiet { min-height:28px; padding:0; }
       .conversation:has(#provider) :is(input,select,.eye) { height:38px; }
       .conversation:has(#provider) .model-feedback { margin-top:8px; }
       .conversation:has(#provider) .form-bottom { position:static; margin-top:10px; padding-top:0; }
       .conversation:has(#provider) .form-bottom .button { margin-bottom:0; }
       .conversation:has(#provider) #feedback { flex-shrink:0; }
       .conversation:has(#pairCode) .pair-form { margin-top:12px; }
-      .conversation:has(#pairCode) .field-line .quiet { min-height:28px; padding:0; }
-      .conversation:has(#pairCode) label { margin-bottom:4px; }
       .conversation:has(#pairCode) input { height:38px; }
       .conversation:has(#pairCode) .form-bottom .button { margin-bottom:0; }
       /* Keep the ordinary model form's complete submit visible at 1120x680.
          Longer feedback still uses the bounded workflow form scroller. */
       main[data-layout="workflow"]:not(.logs-open):has(#provider) .fields { row-gap:4px; }
-      main[data-layout="workflow"]:not(.logs-open):has(#provider) .field-line .quiet { min-height:26px; }
       main[data-layout="workflow"]:not(.logs-open):has(#provider) .inline form { padding-top:0; }
       main[data-layout="workflow"]:not(.logs-open):has(#provider) .model-feedback { margin-top:4px; }
-      main[data-layout="workflow"]:not(.logs-open):has(#provider) .inline form > .form-bottom { margin-top:4px; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .inline form > .form-bottom { margin-top:2px; }
+      main[data-layout="workflow"]:not(.logs-open):has(#provider) .management { margin-top:4px; }
     }
     @media (max-height:680px) {
       main { margin-bottom:20px; }

@@ -32,6 +32,165 @@ async function dailyInteractionPage(browser,viewport,options={}){
   return page;
 }
 
+test('production configuration fields, pairing and settings share aligned geometry across viewports', {timeout:90000}, async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined}),report=[];
+  const sourceHash=file=>require('node:crypto').createHash('sha256').update(require('node:fs').readFileSync(file)).digest('hex');
+  report.push({kind:'executed-source-inputs',htmlSha256:sourceHash(new URL(url)),
+    controllerSha256:sourceHash(new URL('launcher-controller.js',url)),testSha256:sourceHash(__filename)});
+  const viewports=[{width:1120,height:680},{width:1120,height:741},{width:1120,height:900},
+    {width:980,height:680},{width:761,height:740},{width:760,height:600}];
+  const ready={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
+    modelConfigured:true,clawchatPaired:true,clawchatProfileReady:true,clawchatConnected:true,
+    gatewayRunning:true,running:true,installer:{setupCompleted:true},noraHome:'/isolated/NoraTavern',version:'2.4.2'};
+  const close=(left,right,message)=>assert.ok(Math.abs(left-right)<=0.5,`${message}: ${left} != ${right}`);
+  const settle=page=>page.evaluate(async()=>{await document.fonts.ready;await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));});
+  const open=async(viewport,state)=>{
+    const page=await browser.newPage({viewport,reducedMotion:'reduce'});
+    page.setDefaultTimeout(4000);page.uiErrors=[];page.on('pageerror',error=>page.uiErrors.push(error.message));
+    try {
+      await page.addInitScript(state=>{
+        window.alignmentCalls={providers:0,versions:0};
+        window.NoraLauncherBridge={status:async()=>({...state}),telemetry:async()=>({available:true,enabled:true}),
+          checkUpdate:async()=>{window.alignmentCalls.versions++;return {state:'current',available:false,
+            current:state.version,latest:state.version,launcherVersion:'2.4.8-layout-verification'};},
+          modelProviders:async()=>{window.alignmentCalls.providers++;return {ok:true,providers:[
+            {id:'deepseek',label:'DeepSeek',signupUrl:'https://platform.deepseek.com/'},
+            {id:'custom',label:'自定义模型',custom:true}]};},
+          modelOptions:async()=>{throw Object.assign(new Error('模型列表未能获取。'),{guidance:{title:'模型列表未能获取。',
+            detail:'请核对接口地址与认证设置；未提供模型列表的服务仍可手动输入模型名称。'}});},
+          operationLogs:async()=>({records:[],missing:[],hasMore:false}),openClawChat:async()=>({ok:true}),
+          openClawChatApp:async()=>({ok:true}),openInstallDirectory:async()=>({ok:true})};
+      },state);
+      await page.goto(url);
+      assert.equal(new URL(page.url()).searchParams.has('scenario'),false,'the standalone scenario must not bypass the production controller');
+      return page;
+    } catch(error) {await page.close();throw error;}
+  };
+  const navigate=async(page,action)=>{
+    await page.locator('.services').waitFor();
+    if(action==='model'){await page.locator('#management > [data-action="model"]').click();return;}
+    await page.locator('#moreButton').click();
+    await page.locator(`#more [data-action="${action}"]`).click();
+  };
+  const modelGeometry=page=>page.evaluate(()=>{
+    const rect=e=>e.getBoundingClientRect().toJSON(),fields=document.querySelector('.fields');
+    const visible=e=>e&&e.getClientRects().length>0&&getComputedStyle(e).visibility!=='hidden';
+    const controls=Object.fromEntries(['provider','key','endpoint','model','authMode'].map(id=>{
+      const control=document.getElementById(id),label=document.querySelector(`label[for="${id}"]`);
+      return [id,visible(control)?{label:rect(label),control:rect(control)}:null];
+    }));
+    const inline=document.getElementById('inline'),submit=fields.closest('form').querySelector('[type="submit"]');
+    const submitRect=rect(submit),clipOwners=[];
+    for(let owner=submit.parentElement;owner;owner=owner.parentElement){
+      const style=getComputedStyle(owner),bounds=rect(owner);
+      if(/auto|scroll|hidden|clip/.test(style.overflowY)&&(submitRect.top<bounds.top-0.5||submitRect.bottom>bounds.bottom+0.5))
+        clipOwners.push({id:owner.id||owner.className,rect:bounds,scrollHeight:owner.scrollHeight,clientHeight:owner.clientHeight,scrollTop:owner.scrollTop});
+    }
+    return {fields:rect(fields),controls,provider:document.getElementById('provider').value,
+      auth:document.getElementById('authMode').value,getKeyVisible:visible(document.getElementById('getKey')),
+      keyFieldHidden:document.getElementById('key').closest('.secret').parentElement.hidden,
+      submit:submitRect,inline:{rect:rect(inline),scrollHeight:inline.scrollHeight,clientHeight:inline.clientHeight,scrollTop:inline.scrollTop},
+      clipOwners,providers:window.alignmentCalls.providers};
+  });
+  const assertModel=(facts,viewport,branch,label)=>{
+    assert.ok(facts.providers>0,`${label}: real bridge modelProviders must have been called`);
+    assert.equal(facts.provider,branch==='deepseek'?'deepseek':'custom');
+    assert.equal(facts.getKeyVisible,branch==='deepseek');
+    assert.equal(facts.keyFieldHidden,branch==='custom-none');
+    assert.equal(Boolean(facts.controls.key),branch!=='custom-none');
+    assert.equal(Boolean(facts.controls.endpoint),branch!=='deepseek');
+    assert.equal(Boolean(facts.controls.authMode),branch!=='deepseek');
+    assert.equal(facts.auth,branch==='custom-none'?'none':'key');
+    if(viewport.width>760){
+      for(const [leftId,rightId] of [['provider','key'],['model','authMode']]){
+        const left=facts.controls[leftId],right=facts.controls[rightId];if(!left||!right)continue;
+        close(left.label.top,right.label.top,`${label}: ${leftId}/${rightId} label tops`);
+        for(const property of ['top','width','height'])close(left.control[property],right.control[property],`${label}: ${leftId}/${rightId} ${property}`);
+      }
+    }else{
+      for(const [id,fact] of Object.entries(facts.controls))if(fact){
+        close(fact.control.left,facts.fields.left,`${label}: single-column ${id} left`);
+        close(fact.control.width,facts.fields.width,`${label}: single-column ${id} width`);
+      }
+    }
+    if(branch==='custom-none'){
+      close(facts.controls.provider.control.left,facts.fields.left,`${label}: no-key provider left`);
+      close(facts.controls.provider.control.width,facts.fields.width,`${label}: no-key provider full width`);
+    }
+    close(facts.submit.right,facts.fields.right,`${label}: submit/fields right edges`);
+  };
+  try {
+    for(const viewport of viewports){
+      for(const mode of ['default','edit'])for(const branch of ['deepseek','custom-key','custom-none']){
+        const state=mode==='edit'?ready:{...ready,setupCompleted:false,modelConfigured:false,clawchatPaired:false,installer:{setupCompleted:false}};
+        const page=await open(viewport,state),label=`model ${mode}/${branch} ${viewport.width}x${viewport.height}`;
+        try {
+          if(mode==='edit')await navigate(page,'model');
+          await page.locator('#authMode').waitFor({state:'attached'});
+          await page.locator('#provider').selectOption(branch==='deepseek'?'deepseek':'custom');
+          if(branch!=='deepseek')await page.locator('#authMode').selectOption(branch==='custom-none'?'none':'key');
+          await settle(page);const facts=await modelGeometry(page);report.push({label,viewport,facts});assertModel(facts,viewport,branch,label);
+          await page.locator('#loadModels').click();await page.locator('#feedback.error').waitFor();
+          await settle(page);const errorFacts=await modelGeometry(page);report.push({label:label+' feedback',viewport,facts:errorFacts});
+          assertModel(errorFacts,viewport,branch,label+' feedback');
+          const reachability=await workflowReachability(page);report.push({label:label+' reachability',viewport,reachability});
+          assert.deepEqual({invalidRegions:reachability.invalidRegions,wheelMissing:reachability.wheelMissing,
+            missing:reachability.missing,unreachable:reachability.unreachable,moved:reachability.moved,outerScroll:reachability.outerScroll},
+            {invalidRegions:[],wheelMissing:[],missing:[],unreachable:[],moved:[],outerScroll:[]},`${label}: every visible control remains reachable`);
+          assert.deepEqual(page.uiErrors,[]);
+        } finally {await page.close();}
+      }
+      for(const mode of ['default','edit']){
+        const state=mode==='edit'?ready:{...ready,setupCompleted:false,clawchatPaired:false,installer:{setupCompleted:false}};
+        const page=await open(viewport,state),label=`pair ${mode} ${viewport.width}x${viewport.height}`;
+        try {
+          if(mode==='edit'){
+            await navigate(page,'claw');assert.equal(await page.locator('.pair-form').isHidden(),true);
+            await page.getByRole('button',{name:'重新配对',exact:true}).click();
+          }
+          await page.locator('#pairCode').waitFor();await settle(page);
+          const geometry=()=>page.evaluate(()=>{
+            const input=document.getElementById('pairCode'),form=input.form,header=form.querySelector('.field-line');
+            const rect=e=>e.getBoundingClientRect().toJSON();
+            const textRect=e=>{const range=document.createRange();range.selectNodeContents([...e.childNodes].find(node=>node.nodeType===Node.TEXT_NODE&&node.textContent.trim()));return range.getBoundingClientRect().toJSON();};
+            return {label:textRect(header.querySelector('label')),help:textRect(header.querySelector('a')),
+              header:rect(header),input:rect(input),submit:rect(form.querySelector('[type="submit"]'))};
+          });
+          for(const validation of [false,true]){
+            if(validation){await page.locator('.pair-form [type="submit"]').click();await page.locator('#pairFeedback').filter({hasText:'请填写配对码'}).waitFor();await settle(page);}
+            const facts=await geometry();report.push({label,validation,viewport,facts});
+            close(facts.label.top,facts.help.top,`${label}: title/help text tops`);
+            close(facts.input.left,facts.header.left,`${label}: input/header left`);
+            close(facts.input.right,facts.header.right,`${label}: input/header right`);
+            close(facts.submit.right,facts.input.right,`${label}: submit/input right`);
+          }
+          assert.deepEqual(page.uiErrors,[]);
+        } finally {await page.close();}
+      }
+      const state={...ready,noraHome:'C:\\Users\\中文用户\\AppData\\Local\\'+'chosen-installation-directory\\'.repeat(8)+'NoraTavern',version:'2.4.2-'+ 'long-version.'.repeat(8)};
+      const page=await open(viewport,state),label=`settings ${viewport.width}x${viewport.height}`;
+      try {
+        await navigate(page,'settings');await page.locator('.settings-row').last().waitFor();await settle(page);
+        const facts=await page.locator('.settings-row').evaluateAll(rows=>rows.map(row=>{
+          const rect=e=>e.getBoundingClientRect().toJSON();return {row:rect(row),title:rect(row.firstElementChild),
+            value:rect(row.lastElementChild),text:row.lastElementChild.textContent,scrollWidth:row.scrollWidth,clientWidth:row.clientWidth};
+        }));
+        report.push({label,viewport,facts});assert.equal(facts.length,3);assert.equal(facts[0].text,state.noraHome);assert.equal(facts[1].text,state.version);
+        for(const fact of facts){
+          close(fact.value.left,facts[0].value.left,`${label}: fixed value-column start`);
+          assert.ok(fact.value.left>=fact.row.left-0.5&&fact.value.right<=fact.row.right+0.5,`${label}: value stays within row ${JSON.stringify(fact)}`);
+          assert.ok(fact.scrollWidth<=fact.clientWidth+1,`${label}: long values must not create horizontal overflow`);
+          assert.ok(fact.row.left>=-0.5&&fact.row.right<=viewport.width+0.5,`${label}: row stays within viewport`);
+        }
+        assert.deepEqual(page.uiErrors,[]);
+      } finally {await page.close();}
+    }
+  } finally {
+    try {if(process.env.NORA_ALIGNMENT_REPORT)require('node:fs').writeFileSync(process.env.NORA_ALIGNMENT_REPORT,JSON.stringify(report,null,2)+'\n');}
+    finally {await browser.close();}
+  }
+});
+
 test('an interrupted KEEP offers its existing uninstall entry and logs while blocking installation',{timeout:15000},async()=>{
   const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM});
   try{
