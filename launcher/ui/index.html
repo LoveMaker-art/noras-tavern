@@ -16,7 +16,7 @@
     button,a,input,select { -webkit-tap-highlight-color:transparent; }
     button { cursor:pointer; color:inherit; }
     button:disabled { cursor:default; opacity:.5; }
-    button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,summary:focus-visible { outline:2px solid var(--accent); outline-offset:5px; }
+    button:focus-visible,a:focus-visible,summary:focus-visible { outline:1px solid var(--green); outline-offset:2px; }
     [hidden] { display:none!important; }
     .app { width:100%; height:100dvh; position:relative; display:grid; grid-template-rows:auto minmax(0,1fr); background:#171a19; overflow:clip; }
     .portrait { position:absolute; inset:0 auto 0 0; width:60%; overflow:hidden; cursor:pointer; }
@@ -25,7 +25,7 @@
     header { position:relative; margin:25px 36px 0; min-height:32px; display:flex; align-items:center; justify-content:flex-end; z-index:2; }
     .wordmark { position:absolute; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:11px; white-space:nowrap; font-family:"Songti SC","STSong","SimSun",serif; font-size:15px; font-weight:400; line-height:1.4; color:#a3a69a; text-shadow:0 2px 16px #000; }
     .wordmark::before, .wordmark::after { content:""; width:22px; height:1px; background:#777d71; opacity:.45; }
-    .portrait:focus-visible { outline:1px solid #c8919f; outline-offset:-5px; }
+    .portrait:focus-visible { outline:1px solid var(--green); outline-offset:-5px; }
     .portrait-bubble { position:absolute; z-index:3; left:clamp(24px,20vw,320px); bottom:145px; width:238px; min-height:48px; display:flex; align-items:center; justify-content:center; padding:12px 16px; border:1px solid #a7b8a63d; border-radius:6px; background:rgba(28,36,31,.94); color:#eee9df; font-size:13px; line-height:1.6; box-shadow:0 5px 20px #0003; pointer-events:none; opacity:0; transform:translateY(8px); transition:opacity .25s,transform .25s; }
     .portrait-bubble.visible { opacity:1; transform:translateY(0); }
     .status { display:flex; align-items:center; gap:8px; color:#c4c9c2; font-size:12px; }
@@ -175,7 +175,7 @@
     #telemetryNotice { position:relative; flex-shrink:0; margin-top:12px; font-size:12px; line-height:1.6; color:#a9b9ac; }
     #telemetryNotice label { display:flex; align-items:center; gap:8px; min-height:36px; margin:0; font-size:12px; cursor:pointer; }
     #telemetryEnabled { flex:0 0 16px; width:16px; height:16px; min-width:16px; margin:0; padding:0; accent-color:var(--accent); cursor:pointer; }
-    #telemetryEnabled:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+    #telemetryEnabled:focus-visible { outline:1px solid var(--green); outline-offset:2px; }
     #telemetryEnabled:disabled { cursor:wait; }
     #telemetryNotice p { margin:2px 0 0 24px; }
     #telemetryExplanation { color:#91a094; }
