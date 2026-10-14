@@ -69,14 +69,6 @@ node "$PWD/tooling/run.mjs" npm --prefix app/engine/sillytavern run lint:owned
 
 Choose focused tests before repository-wide suites. Tests establish only the workflows they exercise, not visual or real-device acceptance.
 
-Release, installation and presentation source contract files run once before runtime preparation. Only legacy recovery, managed-Python diagnostics, Python skill exchange and the optional Electron crash fixture repeat after the sealed native runtime is qualified. The crash fixture requires an explicit `NORA_TEST_ELECTRON`; an absent input is recorded as a skip, not native crash acceptance. Complete native maintenance, historical migration and packaged APP checks remain separate requirements. The workflow contract tests preserve the source coverage inventory; removing a duplicate invocation must not remove its only complete execution.
-
-Windows and Intel source JavaScript groups have a finite 15-minute budget, with an earlier held-child cancellation deadline; the Python groups and workflow steps retain separate finite budgets. Inspect assertion failures, child-close evidence and elapsed times before changing a budget. A deadline adjustment is not a product fix or proof of hosted completion.
-
-Build scheduling is isolated by source commit and selected platform. Starting an Intel-only task must not cancel an active Windows or ARM task. For unchanged source and build inputs, `gh run rerun RUN_ID --failed --repo LoveMaker-art/noras-tavern` reruns failed jobs and their dependencies; do not dispatch another all-platform build solely because one platform failed. When source or build inputs change, preserve prior artifacts with their original identity and select the affected platform explicitly. Do not combine different commits into one accepted release.
-
-`verified_windows_run` can retain fully accepted Windows delivery from a completed cohort whose Mac builder failed. Reuse still requires the exact commit and repository, complete Windows gates including packaged Chromium transport, GitHub ZIP digests, installed APP/setup evidence and running/stopped historical migration evidence. Overall failure must be explained by another native builder after a successful preflight. Missing, cancelled, stale, changed or incomplete Windows evidence blocks reuse. Publication consumes verified saved bytes; it does not rebuild them.
-
 ## Launcher Development
 
 The active launcher reliability scope, acceptance gates, and phase reports live in [one delivery plan](docs/launcher-reliability-plan.md). Keep unique regression tests and necessary evidence; delete obsolete one-off drivers, duplicate snapshots and outdated plans. Commands are indexed in [deployment test navigation](tests/deployment/README-nora-acceptance.md). Do not maintain a second mutable progress plan or start another test instance before the current one has closed.
