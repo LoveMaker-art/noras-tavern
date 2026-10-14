@@ -43,11 +43,12 @@ const python = [
 export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,
     platform = process.platform, arch = process.arch } = {}) {
     const { environment } = checkEnvironment({ root, profile: 'source' });
-    // Hosted Windows finished the full serial JS group in 469.55s, then its
-    // Python group was cut off by the 240s parent budget. The Windows Python
-    // limit is a finite candidate pending complete native timing evidence.
-    // Keep every case and the established Intel, ARM and Linux group limits.
-    const javascriptTimeout = platform === 'win32' ? 600000 : platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
+    // Run 38546128125 cut the still-progressing Windows JS group at its
+    // 585s internal limit. The same complete groups passed on native Windows
+    // in 201.542s / 63.909s; 394 matched cases were median 2.76x slower on CI.
+    // Allow finite hosted-runner headroom without removing or filtering cases.
+    // The next hosted completion must still establish its actual elapsed time.
+    const javascriptTimeout = platform === 'win32' ? 900000 : platform === 'darwin' && arch === 'x64' ? 480000 : 240000;
     const pythonTimeout = platform === 'win32' ? 480000 : 240000;
     for (const [scope, args, timeout] of [
         ['launcher plans, results, recovery and uninstall', ['node', '--test', '--test-concurrency=1',

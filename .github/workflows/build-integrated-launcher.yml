@@ -400,7 +400,7 @@ jobs:
         run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" "$PWD/tests/deployment/launcher_operation_lock.test.cjs"
 
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: ${{ runner.os == 'Windows' && 20 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}
+        timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}
         shell: bash
         run: |
           set -euo pipefail

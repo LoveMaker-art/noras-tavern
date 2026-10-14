@@ -56,7 +56,7 @@ test('invalid test prerequisites stop the stability gate before any test process
 });
 
 test('Windows and Intel Mac give complete serial source groups separate bounded budgets', () => {
-    for (const [platform, arch, expectedJavascript, expectedPython] of [['win32', 'x64', 600000, 480000],
+    for (const [platform, arch, expectedJavascript, expectedPython] of [['win32', 'x64', 900000, 480000],
         ['darwin', 'x64', 480000, 240000], ['darwin', 'arm64', 240000, 240000], ['linux', 'x64', 240000, 240000]]) {
         const calls = [];
         fixtureGate({ platform, arch, run: (command, args, options) => {
@@ -73,9 +73,9 @@ test('Windows and Intel Mac give complete serial source groups separate bounded 
     }
     let completed = 0;
     fixtureGate({ platform: 'win32', run: (command, args, options) => {
-        // Windows CI finished the full JS group at 469.55s and its Python
-        // parent cut off at 240s. This tests policy, not actual Python completion.
-        const required = [469552, 240001][completed++];
+        // The latest hosted JS group outgrew the former 600s outer budget.
+        // This tests the bounded policy, not actual hosted completion.
+        const required = [600001, 240001][completed++];
         return options.timeout >= required ? { status: 0 }
             : { error: Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' }) };
     } });
@@ -95,8 +95,8 @@ test('Windows and Intel CI source steps leave finite setup headroom above both g
     const workflow = fs.readFileSync(new URL('../.github/workflows/build-integrated-launcher.yml', import.meta.url), 'utf8');
     const step = workflow.split('- name: Require launcher source stability before preparing runtimes')[1]?.split('\n      - name:')[0];
     assert.ok(step, 'The native source gate must remain present');
-    assert.ok(step.includes("timeout-minutes: ${{ runner.os == 'Windows' && 20 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}"));
-    for (const [outerMinutes, javascript, python] of [[20, 600000, 480000], [15, 480000, 240000], [10, 240000, 240000]]) {
+    assert.ok(step.includes("timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && matrix.arch == 'x64') && 15 || 10 }}"));
+    for (const [outerMinutes, javascript, python] of [[25, 900000, 480000], [15, 480000, 240000], [10, 240000, 240000]]) {
         assert.ok(outerMinutes * 60000 > javascript + python, 'Setup retains finite headroom above both bounded groups');
     }
 });
