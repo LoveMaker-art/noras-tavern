@@ -540,9 +540,10 @@ function confirmedMaintenanceIdentity(operation) {
   const result = operation.result;
   if (!result || typeof result !== 'object') return null;
   let version, commit;
-  if (operation.state === 'rolled-back') {
-    if (operation.effectState !== 'restored' || operation.recoveryOutcome !== 'restored-and-verified'
-      || result.recoveryVerification !== 'confirmed') return null;
+  if (operation.state === 'rolled-back' || operation.state === 'failed') {
+    if (operation.state === 'failed'
+      ? operation.currentFailure || operation.effectState !== 'untouched' || operation.recoveryOutcome !== 'not-required' || result.notAppliedVerification !== 'confirmed'
+      : operation.effectState !== 'restored' || operation.recoveryOutcome !== 'restored-and-verified' || result.recoveryVerification !== 'confirmed') return null;
     version = result.version; commit = result.commit;
     // A rollback restores its original system, not the candidate plan's new
     // version. The first failure remains immutable diagnostic evidence.
@@ -1522,7 +1523,9 @@ if (primaryInstance) {
       else lastStatusError = '';
       if(retained?.cleanupPending){runtime.retainedCompletionPending=true;
         runtime.warning=[runtime.warning,retained.warning].filter(Boolean).join('\n');}
-      const installer = ['succeeded','rolled-back'].includes(operation?.state) && ['install','update','repair','recover'].includes(operation.kind)
+      const installer = (['succeeded','rolled-back'].includes(operation?.state)
+        || operation?.state==='failed'&&operation.result?.notAppliedVerification==='confirmed')
+        && ['install','update','repair','recover'].includes(operation.kind)
         ? reconcileInstallerState(operation, runtime, { hasRecovery: Boolean(runtime.updateRecovery || legacyRecovery || launcherRecovery) })
         : readInstallerState();
       if (!activeRun && !modelBusy) telemetry?.status({ ...runtime, installer });

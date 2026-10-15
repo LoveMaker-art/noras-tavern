@@ -414,7 +414,16 @@ else: w.recover(job,allow_legacy=True)
                 process = psutil.Process(child['pid'])
                 if process.create_time() != child['creationTime']:
                     continue  # The original fixture birth is gone; never touch a reused PID.
-                arguments = process.cmdline()
+                try:
+                    arguments = process.cmdline()
+                except psutil.AccessDenied:
+                    # macOS may deny KERN_PROCARGS2 while this exact child is
+                    # exiting. A bounded read-only wait can prove closure; a
+                    # still-live or unidentified process must retain its files.
+                    process.wait(timeout=1)
+                    if process.is_running() and process.status() != psutil.STATUS_ZOMBIE:
+                        raise
+                    continue
                 if (str(f['launcher']) not in arguments or child['spawnId'] not in arguments
                         or process.exe() != child['executable']):
                     raise RuntimeError('Original launcher child has unknown command ownership; retaining fixture')
@@ -572,6 +581,34 @@ class OperationReplacementTests(unittest.TestCase):
         f['launcher'].write_text(launcher)
         return f
 
+    @unittest.skipUnless(os.name == 'nt', 'Requires the native Windows current-directory handle')
+    def test_real_windows_directory_lock_ends_untouched_and_reopens_original(self):
+        f = self.fixture(); f['plan']['parentCreationTime'] -= 100
+        worker.write_json(f['job'] / 'plan.json', f['plan']); worker.prepare(f['job'])
+        # The test process owns this directory as its cwd; the independent
+        # replacement worker must encounter a real WinError32 when moving it.
+        # A plain directory read handle permits rename on current Windows.
+        previous = os.getcwd(); os.chdir(f['app'])
+        try:
+            result = f['owner'].execute(f, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('WinError 32', result.stderr)
+            snapshot = worker.read_json(f['job'] / 'recovery.json')
+            self.assertEqual(snapshot['phase'], 'cancelled')
+            self.assertTrue(snapshot['launchAttempted'])
+            self.assertEqual([item['kind'] for item in f['owner'].children(f)], ['old'])
+            outcome = worker.inspect_outcome(f['job'])
+            self.assertEqual(outcome['effectState'], 'untouched')
+            self.assertTrue(outcome['workerOffline'])
+            self.assertIn('32', json.dumps(outcome['diagnosticError']))
+        finally:
+            os.chdir(previous)
+        f['owner'].assert_preserved(f)
+        # Once the controlled handle is released the same original directory
+        # must be movable; no system setting or user data cleanup is required.
+        moved = f['app'].with_name('after-busy-check')
+        worker.retry_rename(f['app'], moved); worker.retry_rename(moved, f['app'])
+
     def test_cleanup_refuses_returned_spawn_without_exact_birth_ack(self):
         f = self.fixture()
         pending = f['job'] / 'spawns.jsonl'
@@ -675,6 +712,30 @@ class OperationReplacementTests(unittest.TestCase):
         worker.write_json(f['job'] / 'recovery.json', snapshot)
         self.assertTrue(worker.assess(f['job'])['workerOffline'])
 
+    def test_pre_swap_failure_records_cause_reopens_original_and_proves_untouched_only_after_worker_exit(self):
+        f = self.fixture(); worker.prepare(f['job'])
+        original = PermissionError(13, 'original directory sharing violation')
+        with patch.object(worker, 'parent_alive', return_value=False), \
+                patch.object(worker, 'retry_rename', side_effect=original), \
+                patch.object(worker, 'launch_old') as launch:
+            with self.assertRaises(PermissionError) as raised:
+                worker.run(f['job'])
+            self.assertIs(raised.exception, original)
+            launch.assert_called_once()
+        snapshot = worker.read_json(f['job'] / 'recovery.json')
+        self.assertEqual(snapshot['phase'], 'cancelled')
+        self.assertIn('original directory sharing violation', json.dumps(snapshot.get('diagnosticError')))
+        self.assertIsNone(worker.inspect_outcome(f['job']), 'a live worker must never grant terminalization')
+        with patch.object(worker, 'parent_alive', return_value=False):
+            outcome = worker.inspect_outcome(f['job'])
+        self.assertEqual(outcome['status'], 'cancelled')
+        self.assertEqual(outcome['effectState'], 'untouched')
+        self.assertTrue(outcome['workerOffline'])
+        self.assertEqual(outcome['operationId'], f['plan']['operationId'])
+        (f['app'] / 'launcher.exe').write_text('tampered')
+        with patch.object(worker, 'parent_alive', return_value=False), self.assertRaises(ValueError):
+            worker.inspect_outcome(f['job'])
+
     def test_prepared_or_moving_old_unchanged_original_can_cancel_without_relaunch(self):
         for phase in ('prepared', 'waiting-parent', 'moving-old'):
             with self.subTest(phase=phase):
@@ -686,6 +747,28 @@ class OperationReplacementTests(unittest.TestCase):
                 self.assertTrue(result['untouched']); self.assertFalse(result['restarting'])
                 self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'cancelled')
                 self.assertEqual((f['app'] / 'launcher.exe').read_text(), 'old')
+
+    def test_cancelled_outcome_rejects_missing_worker_foreign_status_and_failed_tree(self):
+        for mutation in ('worker-pid', 'worker-birth', 'status-operation', 'status-plan', 'status-worker', 'failed-tree'):
+            with self.subTest(mutation=mutation):
+                f = self.fixture(); worker.prepare(f['job']); worker.recover(f['job'])
+                snapshot = worker.read_json(f['job'] / 'recovery.json')
+                status = worker.read_json(f['job'] / 'status.json')
+                if mutation == 'worker-pid': snapshot.pop('workerPid')
+                if mutation == 'worker-birth': snapshot['workerCreationTime'] = float('nan')
+                if mutation == 'status-operation': status['operationId'] = str(uuid.uuid4())
+                if mutation == 'status-plan': status['planDigest'] = 'b' * 64
+                if mutation == 'status-worker': status['workerCreationTime'] -= 1
+                if mutation == 'failed-tree':
+                    worker.io_path(worker.context(f['job'])['failed']).mkdir()
+                    # Unknown failed trees must remain untouched, even if the
+                    # original application itself still has its exact digest.
+                    with self.assertRaises(ValueError): worker.inspect_outcome(f['job'])
+                    continue
+                worker.write_json(f['job'] / 'recovery.json', snapshot)
+                worker.write_json(f['job'] / 'status.json', status)
+                with patch.object(worker, 'parent_alive', return_value=False):
+                    self.assertIsNone(worker.inspect_outcome(f['job']))
 
     def test_plan_and_snapshot_binding_reject_unknown_compatibility_and_tampering(self):
         f = self.fixture(); f['plan']['rollbackCompatibility']['compatible'] = False

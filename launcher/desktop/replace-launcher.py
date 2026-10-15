@@ -453,23 +453,32 @@ def untouched(ctx, snapshot):
 
 
 def inspect_outcome(job):
-    """Explicit, read-only proof for closing a restored operation, never status polling."""
+    """Explicit full proof for a restored or untouched handoff, never status polling."""
     ctx = context(job)
     if ctx['plan']['schema'] != 2:
         return None
     with job_lock(ctx['job'], readonly=True):
         snapshot = validate_snapshot(ctx, full=True)
-        if snapshot['phase'] != 'restored':
+        phase = snapshot['phase']
+        if phase not in ('restored', 'cancelled'):
+            return None
+        if (type(snapshot.get('workerPid')) is not int or snapshot['workerPid'] <= 0
+                or type(snapshot.get('workerCreationTime')) not in (int, float)
+                or not math.isfinite(snapshot['workerCreationTime']) or snapshot['workerCreationTime'] <= 0):
             return None
         if parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
             return None
-        status = read_json(ctx['job'] / 'status.json')
-        if status.get('status') != 'restored':
+        if phase == 'cancelled' and (not untouched(ctx, snapshot) or exists(ctx['failed'])):
             return None
-        return {'job': str(ctx['job']), 'status': 'restored', 'verification': 'confirmed',
-                'effectState': 'restored', 'busy': False, 'workerOffline': True,
+        status = read_json(ctx['job'] / 'status.json')
+        if status.get('status') != phase or any(status.get(key) != snapshot.get(key)
+                for key in ('operationId', 'planDigest', 'workerPid', 'workerCreationTime')):
+            return None
+        return {'job': str(ctx['job']), 'status': phase, 'verification': 'confirmed',
+                'effectState': 'untouched' if phase == 'cancelled' else 'restored', 'busy': False, 'workerOffline': True,
                 'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
-                'version': snapshot['old']['version'], 'diagnosticError': status.get('diagnosticError')}
+                'version': snapshot['old']['version'],
+                'diagnosticError': snapshot.get('diagnosticError') or status.get('diagnosticError')}
 
 
 def assess(job, *, allow_legacy=False):
@@ -629,12 +638,13 @@ def wait_parent(pid, created, *, cancel=None):
         time.sleep(0.1)
 
 
-def cancel_untouched(ctx, snapshot):
+def cancel_untouched(ctx, snapshot, *, error=None):
     if not untouched(ctx, snapshot): raise ValueError('原程序现场发生变化，未取消恢复')
-    checkpoint(ctx, snapshot, 'cancelled', **worker_identity())
+    extra = {'diagnosticError': error_data(error)} if error is not None else {}
+    checkpoint(ctx, snapshot, 'cancelled', **worker_identity(), **extra)
     try: clean_stage(ctx, snapshot)
     except (OSError, ValueError) as cleanup:
-        checkpoint(ctx, snapshot, 'cancelled', cleanupError=error_data(cleanup))
+        checkpoint(ctx, snapshot, 'cancelled', cleanupError=error_data(cleanup), **extra)
     return {'restored': False, 'untouched': True, 'restarting': False}
 
 
@@ -866,11 +876,22 @@ def replace(ctx, *, allow_legacy=False):
             else:
                 report_failure(ctx, snapshot, 'restored', error, launchAttempted=True)
         else:
-            try: cancel_untouched(ctx, snapshot)
+            try: cancel_untouched(ctx, snapshot, error=error)
             except Exception as recovery_error:
                 error.secondary_errors = [*getattr(error, 'secondary_errors', ()), recovery_error]
                 report_failure(ctx, snapshot, 'recovery-failed', error)
         freeze_failure(ctx, error)
+        # The parent may already have quit for the handoff. Reopen its verified
+        # untouched program only after all slow cleanup/evidence work, so the
+        # returning GUI can acquire the writer and end the original task.
+        if not moved and snapshot.get('phase') == 'cancelled' and not exists(job / 'cancel'):
+            try:
+                if not parent_alive(plan['parentPid'], plan.get('parentCreationTime')):
+                    checkpoint(ctx, snapshot, 'cancelled', launchAttempted=True, diagnosticError=error_data(error))
+                    launch_old(ctx)
+            except Exception as relaunch_error:
+                error.secondary_errors = [*getattr(error, 'secondary_errors', ()), relaunch_error]
+                report_failure(ctx, snapshot, 'cancelled', error, relaunchError=error_data(relaunch_error))
         raise
 
 

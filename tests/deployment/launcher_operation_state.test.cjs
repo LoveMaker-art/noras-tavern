@@ -45,6 +45,20 @@ test('recheck closes a verified restored handoff durably and admits a subsequent
   assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restore')).state,'succeeded');
 });
 
+test('recheck ends an untouched cancelled handoff as failed and preserves its original error',async t=>{
+  const original=Object.assign(new Error('Directory is being used by another process'),{code:'EACCES'});
+  const f=fixture(t,async context=>{await context.handoff('/owned/job');return {handoff:true};},
+    {verifyRestoredHandoff:async(record)=>({operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
+      status:'cancelled',effectState:'untouched',verification:'confirmed',failure:original,value:{version:'2.5.0',notAppliedVerification:'confirmed'}})});
+  const pending=await f.controller.start('install',{},'untouched-handoff');
+  const ended=await f.controller.recheck(pending.operationId);
+  assert.equal(ended.state,'failed');assert.equal(ended.effectState,'untouched');
+  assert.equal(ended.recoveryOutcome,'not-required');assert.equal(ended.verification,'confirmed');
+  assert.equal(ended.primaryFailure.code,'EACCES');assert.equal(ended.currentFailure,null);
+  assert.equal((await createOperationController(f.options).snapshot()).state,'failed');
+  assert.equal((await f.controller.start('stop',{execute:async()=>({verification:'confirmed'})},'after-untouched')).state,'succeeded');
+});
+
 test('handoff reconciliation rejects stale snapshots and foreign or unconfirmed outcomes',async t=>{
   let outcome;
   const f=fixture(t,async context=>{await context.handoff('/owned/job');return {handoff:true};},

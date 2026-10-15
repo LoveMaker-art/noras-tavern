@@ -50,6 +50,35 @@ test('restored handoff closes only after actual system verification and no other
     app=originalApp;verified=originalVerified;facts={effectState:'untouched',reason:'no_journal'};
   }
 });
+test('cancelled handoff requires untouched complete installation, offline worker and matching service state',async t=>{
+  let facts={effectState:'untouched',reason:'no_journal'},app,status,verified;
+  const f=setup(t,{inspectRuntime:()=>facts,inspectLauncherOutcome:async()=>app,
+    bridge:async command=>command==='status'?status:verified});
+  Object.assign(f.record,{state:'awaiting-handoff',handoffRef:'/owned/job',planDigest:'a'.repeat(64),
+    target:{currentVersion:'2.5.0',request:{port:18999}}});
+  app={status:'cancelled',verification:'confirmed',effectState:'untouched',busy:false,workerOffline:true,
+    operationId:id,planDigest:f.record.planDigest,job:f.record.handoffRef};
+  status={installed:true,hermesInstalled:true,noraInstalled:true,systemReady:true,setupCompleted:true,
+    running:true,gatewayRunning:true,clawchatConnected:true,version:'2.5.0',commit:'b'.repeat(40),port:18999,
+    noraHome:f.home,hermesHome:path.join(f.home,'hermes'),installRoot:path.join(f.home,'tavern')};
+  verified={...status,updateVerified:true};
+  assert.equal((await f.policy.reconcileHandoff(f.record,f.context))?.status,'cancelled');
+  for(const mutation of ['worker','binding','runtime','health','version','root','port','service','effect']){
+    const originalApp={...app},originalVerified={...verified};
+    if(mutation==='worker')app.workerOffline=false;
+    if(mutation==='binding')app.operationId='foreign';
+    if(mutation==='runtime')facts={effectState:'restored'};
+    if(mutation==='health')verified.updateVerified=false;
+    if(mutation==='version')verified.version='2.4.5';
+    if(mutation==='root')verified.noraHome='/foreign';
+    if(mutation==='port')verified.port=19000;
+    if(mutation==='service')verified.running=false;
+    if(mutation==='effect')app.effectState='restored';
+    assert.equal(await f.policy.reconcileHandoff(f.record,f.context),null,mutation);
+    app=originalApp;verified=originalVerified;facts={effectState:'untouched',reason:'no_journal'};
+  }
+});
+
 test('a failure before any journal exists stays untouched without executing recovery',async t=>{
   const f=setup(t);
   assert.equal((await f.policy.observe(f.record)).effectState,'untouched');

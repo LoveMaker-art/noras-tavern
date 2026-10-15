@@ -609,19 +609,24 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         const context={lease,operationId:id,ownerEpoch,get snapshot(){return dto(record);},get target(){return record.target;},
           observe:message=>saved?.observe(message),delivery:summary=>evidence?.updateDelivery(id,summary),check};
         const outcome=await verifyRestoredHandoff(record,context);check();
-        if(outcome?.status==='restored'&&outcome.verification==='confirmed'
+        const untouched=outcome?.status==='cancelled'&&outcome.effectState==='untouched'
+          &&outcome.value?.notAppliedVerification==='confirmed';
+        if((outcome?.status==='restored'||untouched)&&outcome.verification==='confirmed'
           &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef){
+          const terminal=untouched?'failed':'rolled-back';
+          const error=outcome.failure||fail('LAUNCHER_START_FAILED',untouched
+            ?'Launcher update could not be applied; original program unchanged':'Incoming launcher failed before handoff; original restored');
           if(!record.primaryFailure){
-            const error=outcome.failure||fail('LAUNCHER_START_FAILED','Incoming launcher failed before handoff; original restored');
             record.primaryFailure=failure(error,record.kind,record);record.failureSignature=digest(record.primaryFailure);
-            const frozen=saved?.freeze({error,outcome:'rolled-back',context:{stage:record.stageId,planId:record.planDigest}});
+            const frozen=saved?.freeze({error,outcome:terminal,context:{stage:record.stageId,planId:record.planDigest}});
             record.evidenceStatus=!frozen?'missing':frozen.missingReasons?.some(value=>value.startsWith('save_failed:'))?'save-failed':frozen.truncated?'saved-truncated':'saved';
             record.evidenceMissingReasons=frozen?.missingReasons||[];record.evidenceRef=saved?.directory||record.evidenceRef||null;
           }
-          record.ownerEpoch=ownerEpoch;record.state='rolled-back';record.stageId='verifying';
-          record.verification='confirmed';record.effectState='restored';record.recoveryOutcome='restored-and-verified';
+          record.ownerEpoch=ownerEpoch;record.state=terminal;record.stageId='verifying';
+          record.verification='confirmed';record.effectState=untouched?'untouched':'restored';
+          record.recoveryOutcome=untouched?'not-required':'restored-and-verified';
           record.currentFailure=null;record.result=outcome.value;
-          saved?.finish({outcome:'rolled-back'});
+          saved?.finish({outcome:terminal});
           await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence},capture:saved});
           return dto(record);
         }

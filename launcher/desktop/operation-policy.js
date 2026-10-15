@@ -549,11 +549,13 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     context.check();
     if(record.state!=='awaiting-handoff'||!record.handoffRef||!maintenanceKinds.has(record.kind))return null;
     const app=await inspectLauncherOutcome(record.handoffRef,record,context);
-    if(app?.status!=='restored'||app.verification!=='confirmed'||app.effectState!=='restored'
+    const untouched=app?.status==='cancelled'&&app.effectState==='untouched';
+    if(!(app?.status==='restored'&&app.effectState==='restored'||untouched)||app.verification!=='confirmed'
       ||app.busy!==false||app.workerOffline!==true||app.operationId!==record.operationId
       ||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;
     const effects=await observe(record,{launcherOutcome:app});
-    if(effects.effectState!=='restored'||effects.recoveryOutcome!=='restored-and-verified')return null;
+    const expectedEffect=untouched?'untouched':'restored',expectedRecovery=untouched?'not-required':'restored-and-verified';
+    if(effects.effectState!==expectedEffect||effects.recoveryOutcome!==expectedRecovery)return null;
     // A restored launcher alone cannot prove that the system transaction and
     // services are usable. Verify the installed version, never the new target.
     const port=record.target?.request?.port;
@@ -575,8 +577,8 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     if(services&&(state.running!==services.running||state.gatewayRunning!==services.gatewayRunning
       ||services.clawchatConnected&&!state.clawchatConnected||services.version&&!sameVersion(state.version,services.version)))return null;
     const after=await observe(record,{launcherOutcome:app});context.check();
-    if(after.effectState!=='restored'||after.recoveryOutcome!=='restored-and-verified')return null;
-    return {...app,value:{...state,recoveryVerification:'confirmed'}};
+    if(after.effectState!==expectedEffect||after.recoveryOutcome!==expectedRecovery)return null;
+    return {...app,value:{...state,...(untouched?{notAppliedVerification:'confirmed'}:{recoveryVerification:'confirmed'})}};
   }
   async function inspectPartial(context,managed){
     context.check();

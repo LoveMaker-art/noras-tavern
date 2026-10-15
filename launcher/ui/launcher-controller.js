@@ -453,7 +453,7 @@
     const introduce = firstCompletionPending && allRunning() && !message && !snapshot.warning && !statusUnknown;
     $('main').classList.toggle('completion', introduce);
     say(statusUnknown ? '服务状态暂时无法确认。' : message || (introduce ? '酒馆准备好了。' : snapshot.running || snapshot.gatewayRunning ? '欢迎回来，坐一会儿吧。' : '随时可以继续。'),
-      statusUnknown ? unknownStatusCopy() : snapshot.warning ? textError(snapshot.warning) : recoveredOperation(snapshot.operation) ? `已恢复版本：${snapshot.version || '版本待确认'}。` : snapshot.gatewayRunning && !snapshot.clawchatConnected
+      statusUnknown ? unknownStatusCopy() : snapshot.warning ? textError(snapshot.warning) : recoveredOperation(snapshot.operation) ? `${snapshot.operation.effectState==='untouched'?'更新未应用，原版本可继续使用':'已恢复版本'}：${snapshot.version || '版本待确认'}。` : snapshot.gatewayRunning && !snapshot.clawchatConnected
         ? 'ClawChat 暂未连通，请在更多中检查连接。' : '', '', {animate:false});
     renderServices();
     renderConversationEntry();
@@ -528,9 +528,11 @@
   }
 
   function recoveredOperation(operation) {
-    return operation?.state === 'rolled-back' && operation.verification === 'confirmed'
+    return operation?.verification === 'confirmed'
       && operation.currentFailure === null
-      && ['restored-and-verified', 'not-required'].includes(operation.recoveryOutcome);
+      && (operation.state === 'rolled-back' && ['restored-and-verified', 'not-required'].includes(operation.recoveryOutcome)
+        || operation.state === 'failed' && operation.effectState === 'untouched' && operation.recoveryOutcome === 'not-required'
+          && operation.result?.notAppliedVerification === 'confirmed');
   }
   function route() {
     $('main').classList.remove('update-recovery');

@@ -159,9 +159,12 @@ async function inspectOutcome(options){
   const outcome=await helperCall(options.python,options.helper,['--inspect-outcome',job],job,
     {spawnChild:options.spawnChild});
   if(outcome?.operationId!==operation.operationId||outcome.planDigest!==operation.planDigest
-    ||outcome.job!==job||outcome.status!=='restored'||outcome.verification!=='confirmed'
-    ||outcome.effectState!=='restored'||outcome.workerOffline!==true||outcome.busy!==false)return null;
-  return {...outcome,failure:helperError(outcome.diagnosticError,'新版启动器启动失败，旧程序已恢复。')};
+    ||outcome.job!==job||outcome.verification!=='confirmed'
+    ||!(outcome.status==='restored'&&outcome.effectState==='restored'
+      ||outcome.status==='cancelled'&&outcome.effectState==='untouched')
+    ||outcome.workerOffline!==true||outcome.busy!==false)return null;
+  return {...outcome,failure:helperError(outcome.diagnosticError,outcome.status==='cancelled'
+    ?'启动器更新未能应用，原程序和数据已保留。请查看日志后重试。':'新版启动器启动失败，旧程序已恢复。')};
 }
 async function waitHandoff(options){
   for(let count=0;count<200;count++){

@@ -343,6 +343,22 @@ test('a confirmed explicit recovery retains the original failure and returns to 
   assert.doesNotMatch(h.inline.textContent,/上次操作尚未确认/);
 });
 
+test('verified unapplied update retains the first failure and permits navigation and the next update',async()=>{
+  const original=structuredFailure();
+  const ended={...original.operation,state:'failed',effectState:'untouched',verification:'confirmed',
+    recoveryOutcome:'not-required',currentFailure:null,result:{notAppliedVerification:'confirmed'}};
+  const h=fixture({snapshot:{...ready,operation:ended},api:{checkUpdate:async()=>updateResult}});
+  await h.invoke('route()');assert.equal(h.context.view,'daily');
+  await h.invoke('route()');assert.equal(h.context.view,'daily','returning to the home page must remain usable');
+  assert.equal(h.context.snapshot.operation.primaryFailure.code,original.operation.primaryFailure.code);
+  await h.invoke('checkUpdates()');assert.ok(action(h,'安装更新'));
+  for(const patch of [{verification:'unconfirmed'},{effectState:'changed'},{recoveryOutcome:'recovery-required'},
+      {currentFailure:original.operation.primaryFailure},{result:{}}]){
+    const denied=fixture({snapshot:{...ready,operation:{...ended,...patch}}});
+    await denied.invoke('route()');assert.equal(denied.context.view,'error');
+  }
+});
+
 test('automatic rollback and files-only recovery still show the failed operation',async()=>{
   const original=structuredFailure();
   for(const patch of [{verification:'confirmed',recoveryOutcome:'restored-and-verified',currentFailure:original.operation.primaryFailure},

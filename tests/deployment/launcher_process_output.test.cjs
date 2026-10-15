@@ -234,6 +234,30 @@ for (const hasInstance of [true, false]) test(`confirmed rollback reopening clea
   assert.deepEqual(fs.readFileSync(recordFile),recordBytes);assert.deepEqual(fs.readFileSync(metadataFile),evidenceBytes);
 });
 
+test('confirmed untouched handoff reopening clears stale hints without losing the failed task',async t=>{
+  const f=launcherFixture(t,{cacheWriteDenied:true});
+  fs.mkdirSync(path.join(f.home,'installer'),{recursive:true});
+  fs.writeFileSync(path.join(f.home,'installer','state.json'),JSON.stringify({schema:1,phase:'error',port:8799,error:'Unfinished handoff',resumeTarget:'v2.4.6'}));
+  const operation=await vm.runInContext(`(async()=>{
+    operationController=createOperationController({directory:installerDirectory,lock:fixtureLock,evidence:operationEvidence,
+      verifyRestoredHandoff:(record,context)=>maintenancePolicy().reconcileHandoff(record,context)});
+    const controller=operations();
+    operationPolicy={reconcileHandoff:async record=>({status:'cancelled',effectState:'untouched',verification:'confirmed',
+      operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
+      failure:Object.assign(new Error('Original sharing violation'),{code:'EACCES'}),
+      value:{...fixtureOutput.at(-1),notAppliedVerification:'confirmed'}})};
+    const pending=await controller.start('update',{target:{currentVersion:'2.4.6'},execute:async context=>{
+      await context.handoff('/owned/job');return {handoff:true};}},'untouched-cache');
+    return controller.recheck(pending.operationId);
+  })()`,f.context);
+  assert.equal(operation.state,'failed');assert.equal(operation.currentFailure,null);assert.equal(operation.primaryFailure.code,'EACCES');
+  const reopened=launcherFixture(t,{existingHome:f.home,cacheWriteDenied:true,output:[{...f.context.fixtureOutput.at(-1)}]});
+  const response=await reopened.status();
+  assert.equal(response.value.installer.phase,'ready');assert.equal(response.value.installer.error,'');
+  assert.equal(response.value.installer.resumeTarget,null);assert.equal(response.value.operation.state,'failed');
+  assert.equal(response.value.operation.primaryFailure.code,'EACCES');
+});
+
 for(const [name,options] of [
   ['a partial original system',{resultChanges:{systemReady:false}}],
   ['files restored but services unconfirmed',{outcome:'files-only'}],
