@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
+import {setTimeout as pause} from 'node:timers/promises';
 
 const origin='https://jihulab.com';
 const immutableKey=/^releases\/(v\d+\.\d+\.\d+(?:-beta\.\d+)?)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/;
@@ -173,19 +174,27 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
                 ||target.pathname==='/api/graphql'),'Invalid JihuLab authenticated API root');
         const budget=deadline(timeout,signal);let response;
         try {
-            response=await abortable(fetcher(target.href,{method,redirect:'manual',signal:budget.signal,
-                headers:{'Accept-Encoding':'identity',...(authenticated?{'PRIVATE-TOKEN':token}:{}),
-                    ...(body!==undefined?{'Content-Type':typeof body==='string'?'application/json':'application/octet-stream'}:{}),
-                    ...(typeof body!=='string'&&body!==undefined?{'Content-Length':String(body.sealedSize)}:{})},
-                ...(body!==undefined?{body,...(typeof body==='string'?{}:{duplex:'half'})}:{})}),budget.signal);
-            if(response.url&&response.url!==target.href)throw failure('API response left its requested site');
-            log(`jihulab API ${method} ${target.pathname} HTTP ${response.status}`);
-            if(!allowed.includes(response.status))throw failure(`API ${method} ${target.pathname} HTTP ${response.status}`,
-                response.status>=300&&response.status<400?'JIHULAB_API_REDIRECT':'JIHULAB_API_HTTP');
-            if(response.status===404){await cancel(response);return {status:404,value:null};}
-            const bytes=await bodyBytes(response,budget.signal,maxJsonBytes);
-            let value;try {value=JSON.parse(bytes.toString('utf8'));}catch {throw failure('invalid bounded API JSON');}
-            return {status:response.status,value,nextPage:response.headers.get('x-next-page')};
+            for(let attempt=0; ;attempt++) {
+                response=await abortable(fetcher(target.href,{method,redirect:'manual',signal:budget.signal,
+                    headers:{'Accept-Encoding':'identity',...(authenticated?{'PRIVATE-TOKEN':token}:{}),
+                        ...(body!==undefined?{'Content-Type':typeof body==='string'?'application/json':'application/octet-stream'}:{}),
+                        ...(typeof body!=='string'&&body!==undefined?{'Content-Length':String(body.sealedSize)}:{})},
+                    ...(body!==undefined?{body,...(typeof body==='string'?{}:{duplex:'half'})}:{})}),budget.signal);
+                if(response.url&&response.url!==target.href)throw failure('API response left its requested site');
+                log(`jihulab API ${method} ${target.pathname} HTTP ${response.status}`);
+                // Retry only read-only HTTP failures, within the original deadline.
+                // A PUT/POST may already have taken effect and must never be replayed here.
+                if(method==='GET'&&body===undefined&&[500,502,503,504].includes(response.status)&&attempt<3) {
+                    await cancel(response);response=undefined;
+                    await pause(250*2**attempt,undefined,{signal:budget.signal});continue;
+                }
+                if(!allowed.includes(response.status))throw failure(`API ${method} ${target.pathname} HTTP ${response.status}`,
+                    response.status>=300&&response.status<400?'JIHULAB_API_REDIRECT':'JIHULAB_API_HTTP');
+                if(response.status===404){await cancel(response);return {status:404,value:null};}
+                const bytes=await bodyBytes(response,budget.signal,maxJsonBytes);
+                let value;try {value=JSON.parse(bytes.toString('utf8'));}catch {throw failure('invalid bounded API JSON');}
+                return {status:response.status,value,nextPage:response.headers.get('x-next-page')};
+            }
         } catch(error) {
             if(budget.signal.aborted)throw budget.signal.reason;
             if(error.code?.startsWith('JIHULAB_')||error.code==='ERR_ASSERTION')throw error;

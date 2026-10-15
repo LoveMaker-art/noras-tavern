@@ -410,3 +410,32 @@ test('channel check and promotion recheck inventory closure and block changed id
   server.files.push(inventoryFile(Buffer.from('other'),'unexpected.zip',903));
   await assert.rejects(transport.channelPromotion.check(p),/closure|unexpected|inventory/i);
 });
+
+test('Jihu inventory GET recovers from transient 503 without repeating a write',async t=>{
+    let reads=0;const f=fixture(t,{configValue:inventoryConfig,route:call=>{
+        const url=new URL(call.url);
+        if(url.pathname===new URL(api).pathname+'/packages'){
+            if(++reads<=2)return json({},503);
+            return json(url.searchParams.get('status')==='default'?[packageRecord]:[],200,{'x-next-page':''});
+        }
+        if(url.pathname===new URL(api).pathname+'/packages/900/package_files')return json([inventoryFile(Buffer.from('asset'))],200,{'x-next-page':''});
+        return new Response(null,{status:404});
+    }});
+    assert.equal(await f.transport.verifyIdentity(f.object(Buffer.from('asset'))),'matching');
+    assert.equal(reads,8);assert.ok(f.calls.every(call=>(call.method||'GET')==='GET'));
+});
+test('Jihu inventory GET retries are bounded when 503 persists',async t=>{
+    let reads=0;const f=fixture(t,{configValue:inventoryConfig,route:call=>{
+        if(new URL(call.url).pathname===new URL(api).pathname+'/packages'){reads++;return json({},503);}
+        return new Response(null,{status:404});
+    }});
+    await assert.rejects(f.transport.verifyIdentity(f.object(Buffer.from('asset'))),/HTTP 503/);
+    assert.equal(reads,4);assert.ok(f.calls.every(call=>(call.method||'GET')==='GET'));
+});
+
+test('Jihu HTTP 503 on an immutable PUT is never automatically replayed',async t=>{
+    const f=fixture(t,{route:call=>call.method==='PUT'?json({},503):new Response(null,{status:404})});
+    const asset=f.object(Buffer.from('asset'));
+    await assert.rejects(f.transport.upload(asset,{immutable:true}),/503/);
+    assert.equal(f.calls.filter(call=>call.method==='PUT').length,1);
+});

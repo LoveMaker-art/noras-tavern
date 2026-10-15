@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
+import {setTimeout as pause} from 'node:timers/promises';
 
 export function command(program, args, {timeout = 45 * 60 * 1000, capture = false, log = console.log, killGrace = 2000, maxOutput = 32 * 1024 * 1024} = {}) {
     return new Promise((resolve, reject) => {
@@ -115,6 +116,14 @@ export function githubProvider({repository, execute=command, log=console.log}={}
                 const notes=path.join(p.stateDir,'authored-release-notes.md');fs.writeFileSync(notes,p.plan.body);
                 await execute('gh',['release','create',p.plan.tag,'--repo',repository,'--target',p.plan.commit,'--verify-tag','--draft',
                     ...(p.plan.channel==='beta'?['--prerelease']:[]),'--title',`诺拉·酒馆 ${p.plan.tag}${p.plan.channel==='beta'?' 测试版':''}`,'--notes-file',notes],{log});
+                // Creation can succeed before the authorized release listing sees it.
+                // Keep the single create and bind its ID before further operations.
+                for(let attempt=0;attempt<4;attempt++) {
+                    current=await release(p.plan.tag);
+                    if(current)break;
+                    if(attempt<3)await pause(250*2**attempt);
+                }
+                assert.ok(current,'Prepared GitHub release disappeared');
             }
             await refresh(p);
         },

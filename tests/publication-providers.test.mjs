@@ -339,3 +339,25 @@ test('SourceForge authorization errors and wrong sizes are failures rather than 
         await assert.rejects(provider.inspect({key:'releases/v2.4.4/one.zip',size:3},null));assert.equal(uploads,0);
     }
 });
+
+test('new GitHub drafts tolerate delayed listing visibility without recreating or publishing',async t=>{
+    const f=githubFixture(t,{exists:false});let hidden=0;
+    const execute=async(program,args,options)=>{const output=await f.execute(program,args,options);
+        if(args[0]==='api'&&args.at(-1).endsWith('/releases?per_page=100')&&f.state.exists&&hidden++<2)return '[[]]';
+        return output;};
+    const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,log:()=>{}});
+    await provider.begin(f.p);await provider.assertReady(f.p);
+    assert.equal(f.calls.filter(args=>args[0]==='release'&&args[1]==='create').length,1);
+    assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
+    assert.equal(f.release.draft,true);assert.equal(hidden,3);
+});
+test('an invisible new GitHub draft fails after bounded reads and is never recreated',async t=>{
+    const f=githubFixture(t,{exists:false});let hidden=0;
+    const execute=async(program,args,options)=>{const output=await f.execute(program,args,options);
+        if(args[0]==='api'&&args.at(-1).endsWith('/releases?per_page=100')&&f.state.exists){hidden++;return '[[]]';}
+        return output;};
+    const provider=githubProvider({repository:'LoveMaker-art/noras-tavern',execute,log:()=>{}});
+    await assert.rejects(provider.begin(f.p),/Prepared GitHub release disappeared/);
+    assert.equal(hidden,4);assert.equal(f.calls.filter(args=>args[0]==='release'&&args[1]==='create').length,1);
+    assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
+});
