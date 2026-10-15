@@ -109,6 +109,9 @@ def env_for(nora_home: Path, hermes_home: Path, install_root: Path) -> dict[str,
     env["TAVERN_DATA_ROOT"] = str(install_root)
     env["PYTHONPATH"] = str(hermes_home / "hermes-agent")
     env["PYTHONNOUSERSITE"] = "1"
+    # Child gateways import owned hook directories after their installation
+    # digest is sealed. -B on this bridge does not propagate to a new Python.
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONUTF8"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     # The desktop runtime is installation-owned; inherited PATH may contain a

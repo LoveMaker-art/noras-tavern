@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
@@ -30,6 +31,25 @@ class SharedLogicTests(unittest.TestCase):
         self.root = Path(temporary.name).resolve()
         self.home, self.tavern = self.root / "hermes", self.root / "tavern"
         self.home.mkdir()
+
+    def test_gateway_import_does_not_mutate_the_sealed_hook_directory(self):
+        hook = self.home / 'hooks/tavern-liveware-register'
+        shutil.copytree(ROOT / 'ops/hooks/tavern-liveware-register', hook)
+        before = first_install._recovery.digest(hook)
+        # The gateway is a new Python process. Its caller's -B switch does not
+        # propagate to it; exercise the same file-loader import in that child.
+        code = ('import importlib.util,sys;'
+                's=importlib.util.spec_from_file_location("owned_hook",sys.argv[1]);'
+                'm=importlib.util.module_from_spec(s);s.loader.exec_module(m);'
+                'assert callable(m.handle)')
+        with patch.dict(os.environ, {'PYTHONDONTWRITEBYTECODE': '0'}):
+            result = subprocess.run([sys.executable, '-c', code, str(hook / 'handler.py')],
+                                    env=bridge.env_for(self.root, self.home, self.tavern),
+                                    capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr.decode(errors='replace'))
+        self.assertEqual(first_install._recovery.digest(hook), before,
+                         'Normal gateway import must preserve first-install program evidence')
+        self.assertFalse((hook / '__pycache__').exists())
 
     def test_proof_is_written_to_tavern_without_greeting_dependency(self):
         database = self.home / "clawchat/clawchat.sqlite"
