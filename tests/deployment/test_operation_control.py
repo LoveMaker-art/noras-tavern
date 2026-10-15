@@ -39,6 +39,7 @@ class Server:
         self.messages = []
         self.closed = threading.Event()
         self.stopping = threading.Event()
+        self.child_started = threading.Event()
         self.thread_errors = []
         self.child_threads = []
         self.env = {'NORA_OPERATION_DELEGATE_ENDPOINT': '127.0.0.1:%s' % self.listener.getsockname()[1],
@@ -110,6 +111,7 @@ class Server:
                     child_thread = threading.Thread(target=close_child, daemon=True)
                     self.child_threads.append(child_thread)
                     child_thread.start()
+                    self.child_started.set()
                 else:
                     self.send({'type': 'reply', 'requestId': message['requestId'], 'result': {'sent': True}})
 
@@ -253,6 +255,11 @@ class OperationControlTests(unittest.TestCase):
         with Server() as server, patch.dict(os.environ, server.env, clear=True):
             gate = control.OperationDelegate.connect(creation_time=lambda: 10.5)
             process = gate.popen([sys.executable, '-c', 'pass'], stdout=-1, text=True)
+            self.assertTrue(server.child_started.wait(1), 'Create the held child before injecting guard loss')
+            # This is the deliberate transport fault, rather than an unexpected
+            # server failure. Windows can raise WSAESHUTDOWN in its receiver
+            # immediately, before the context manager reaches normal teardown.
+            server.stopping.set()
             server.connection.shutdown(socket.SHUT_RDWR)
             with self.assertRaises(control.OperationControlError) as failed:
                 process.wait(1)
