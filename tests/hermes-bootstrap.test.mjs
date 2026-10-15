@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { deferBedrockInstall, patchHermesRuntime } from '../tooling/runtime/hermes-runtime-patches.mjs';
 import { prepareBootstrap, readBootstrapLock, verifyBootstrap } from '../tooling/runtime/prepare-hermes-bootstrap.mjs';
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -161,4 +162,44 @@ test('matching versions from another venv or another checkout cannot satisfy fix
     fixture.probe.prefix = prefix; fixture.probe.hermesFile = path.join(elsewhere, '__init__.py');
     fs.writeFileSync(fixture.probe.hermesFile, 'other identical version package');
     assert.throws(() => verifyBootstrap({ hermesHome: fixture.home, ...fixture }), /outside the fixed checkout/);
+});
+
+// Minimal upstream import/client seam; the installed full initializer is also
+// exercised in native acceptance, with network installation intercepted.
+const bedrockImportFixture = "# boto3 is not in the [all] extras; lazy_deps installs it on demand.\ntry:\n    # --------------------------------------------------------------------------- Ensure boto3/botocore are\n    # installed before any code in this module runs. Upstream removed boto3 from [all] extras (PRs #24220,\n    # #24515); lazy_deps handles on-demand installation so the Bedrock provider still works in the EKS\n    # deployment without baking boto3 into the base image.\n    # ---------------------------------------------------------------------------\n    from tools.lazy_deps import ensure\n    ensure(\"provider.bedrock\", prompt=False)\nexcept Exception:\n    pass  # let downstream imports surface the real error\ndef _require_boto3():\n    \"\"\"Import boto3; converse_stream() needs >= 1.34.59 (a system boto3 can shadow the venv pin).\"\"\"\n    import boto3\n    return boto3\n";
+
+test('Bedrock imports never install dependencies; actual client use retains the lazy install', () => {
+    const patched = deferBedrockInstall(bedrockImportFixture);
+    const code = `import sys,types
+calls=[]
+module=types.ModuleType('tools.lazy_deps')
+module.ensure=lambda feature,**kw:calls.append((feature,kw))
+sys.modules['tools']=types.ModuleType('tools');sys.modules['tools.lazy_deps']=module
+sys.modules['boto3']=types.ModuleType('boto3')
+scope={}
+exec(${JSON.stringify(patched)},scope)
+assert calls==[],calls
+assert scope['_require_boto3']() is sys.modules['boto3']
+assert calls==[('provider.bedrock',{'prompt':False})],calls
+`;
+    const result = spawnSync(process.env.NORA_TEST_PYTHON || 'python3', ['-I', '-B', '-c', code], { encoding: 'utf8', timeout: 10000 });
+    assert.equal(result.status, 0, result.stderr);
+});
+
+test('an unknown Hermes source is refused without modifying it', t => {
+    const root=temporary(t), file=path.join(root,'hermes-agent/agent/bedrock_adapter.py');
+    fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bedrockImportFixture);
+    assert.throws(()=>patchHermesRuntime(root),/source changed/);
+    assert.equal(fs.readFileSync(file,'utf8'),bedrockImportFixture);
+});
+
+test('native delivery checks the restored sealed runtime through the real initializer before packaging', () => {
+    const workflow=fs.readFileSync(new URL('../.github/workflows/build-integrated-launcher.yml',import.meta.url),'utf8');
+    const restore=workflow.indexOf('- name: Restore the freshly sealed runtime for native acceptance');
+    const probe=workflow.indexOf('- name: Verify actual sealed Hermes cold initialization without dependency installs');
+    const packaging=workflow.indexOf('- name: Build release');
+    assert.ok(restore>=0 && probe>restore,'The real sealed runtime must be restored before the cold probe');
+    assert.ok(workflow.slice(probe,probe+650).includes('"$NORA_TEST_PYTHON" -I -B "$PWD/tooling/runtime/hermes-cold-init-check.py" "$RUNNER_TEMP/hermes"'));
+    assert.ok(packaging<0 || packaging>probe,'The initializer gate must precede packaging');
+    assert.ok(workflow.includes('${{ runner.temp }}/nora-hermes-cold-init-acceptance.json'),'Keep the native cold-init receipt');
 });

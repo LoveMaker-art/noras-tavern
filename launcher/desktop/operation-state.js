@@ -35,7 +35,7 @@ const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.p
 // and installed-version truth stay in their journal and receipt owners.
 function createOperationController({directory,lock,executors={},recoverers={},recheckers={},captureConditions,identifyFailureCondition,evidence,
   observeEffects,prepareEffects,now=()=>new Date().toISOString(),projectResult=value=>value,
-  verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,retention={}}={}) {
+  verifyResult=result=>result?.verification==='confirmed',verifyHandoff,verifyRecoveryHandoff,verifyRestoredHandoff,retention={}}={}) {
   if(!lock?.acquire||!lock?.probe)throw new TypeError('An OS lock adapter is required');
   const root=()=>path.join(typeof directory==='function'?directory():directory,'operations');
   const budget={...RETENTION,...retention};let cachedRecords,cachedGeneration;
@@ -596,6 +596,36 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     try{
       const record=read(id);
       if(record.sequence!==before.snapshotSequence)throw fail('OPERATION_SNAPSHOT_CHANGED','The operation changed; inspect it again');
+      if(record.state==='awaiting-handoff'&&record.handoffRef&&verifyRestoredHandoff){
+        const check=()=>{
+          lease.assertActive?.();
+          const current=read(id);
+          if(current.sequence!==before.snapshotSequence||current.ownerEpoch!==before.ownerEpoch)
+            throw fail('OPERATION_SNAPSHOT_CHANGED','The handoff changed during verification');
+        };
+        // Verification uses the same bridge event path as an executing task.
+        // Keep its evidence in memory until the owner-bound terminal commit.
+        const saved=evidence?.begin({action:record.kind,runId:record.requestId,operationId:id,memoryOnly:true});
+        const context={lease,operationId:id,ownerEpoch,get snapshot(){return dto(record);},get target(){return record.target;},
+          observe:message=>saved?.observe(message),delivery:summary=>evidence?.updateDelivery(id,summary),check};
+        const outcome=await verifyRestoredHandoff(record,context);check();
+        if(outcome?.status==='restored'&&outcome.verification==='confirmed'
+          &&outcome.operationId===id&&outcome.planDigest===record.planDigest&&outcome.job===record.handoffRef){
+          if(!record.primaryFailure){
+            const error=outcome.failure||fail('LAUNCHER_START_FAILED','Incoming launcher failed before handoff; original restored');
+            record.primaryFailure=failure(error,record.kind,record);record.failureSignature=digest(record.primaryFailure);
+            const frozen=saved?.freeze({error,outcome:'rolled-back',context:{stage:record.stageId,planId:record.planDigest}});
+            record.evidenceStatus=!frozen?'missing':frozen.missingReasons?.some(value=>value.startsWith('save_failed:'))?'save-failed':frozen.truncated?'saved-truncated':'saved';
+            record.evidenceMissingReasons=frozen?.missingReasons||[];record.evidenceRef=saved?.directory||record.evidenceRef||null;
+          }
+          record.ownerEpoch=ownerEpoch;record.state='rolled-back';record.stageId='verifying';
+          record.verification='confirmed';record.effectState='restored';record.recoveryOutcome='restored-and-verified';
+          record.currentFailure=null;record.result=outcome.value;
+          saved?.finish({outcome:'rolled-back'});
+          await write(record,lease,{expected:{ownerEpoch:before.ownerEpoch,sequence:before.snapshotSequence},capture:saved});
+          return dto(record);
+        }
+      }
       const verify=recheckers[record.kind];
       if(!verify)return dto(record);
       const proof=await verify(record,{lease,...options,conditionTarget:failureCondition(record)});

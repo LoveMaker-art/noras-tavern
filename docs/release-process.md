@@ -69,13 +69,13 @@ node tooling/release/publish-release.mjs "$NORA_ACCEPTED_ASSETS" "$NORA_RELEASE_
 | 阶段 | 行为与成功条件 |
 | --- | --- |
 | `seal` | 本地重新核验封存资产，固定发布计划、说明、时间戳、目录清单及 `planId`。 |
-| `prepare` | 对 SourceForge 不可变对象和 GitHub 草稿资产分别检查、补传及核验；两源完整后标记准备完成，不切正式通道。 |
-| `promote` | 只接受原计划的两源已准备状态；重新检查远端完整性、防降级条件，然后依次切换并核验 GitHub、SourceForge。 |
+| `prepare` | 按封存计划的 `destinations` 检查、补传并核验不可变资源及 GitHub 草稿；所选渠道完整后标记准备完成，不切正式通道。 |
+| `promote` | 只接受原计划中所选渠道的已准备状态；重新检查远端完整性、防降级条件，然后切换并逐站核验。 |
 | `all` | 显式组合准备与正式切换，仍执行相同门禁。 |
 
 首先保存 `nora-publication-state-before-transfer`，然后才准备私有凭据和开始远端写入。常规失败或取消时通过 `always()` 保存 `nora-publication-state`。状态目录仅包含公开资产的发布元数据、固定说明、来源证明和检查点；私钥、主机密钥文件及私有配置放在独立临时目录，并始终清理。
 
-所有版本共用正式通道锁。GitHub 与 SourceForge 的通道切换不能构成跨站原子事务：先切 GitHub，再切 SourceForge，并逐站记录结果。后一站失败必须明确报告两站差异，恢复剩余切换；只有两站最终核验成功才记为 `published`。
+所有版本共用正式通道锁。跨站切换不能构成原子事务，须逐站记录结果；后续站点失败必须报告渠道差异并恢复剩余切换，只有计划内全部渠道核验成功才记为 `published`。国内主源为极狐时，默认选择 GitHub 与极狐；本轮显式使用 `destinations=github-jihulab`，SourceForge 不作为放行条件。
 
 ## 5. 失败恢复沿用原计划
 
@@ -90,11 +90,11 @@ node tooling/release/publish-release.mjs "$NORA_ACCEPTED_ASSETS" "$NORA_RELEASE_
 ```sh
 gh workflow run publish-accepted-release.yml --ref main \
   -f release_tag="$NORA_RELEASE_TAG" -f source_run="$NORA_BUILD_RUN" \
-  -f delivery_mode=full -f asset_mode=legacy -f stage=prepare \
+  -f delivery_mode=full -f asset_mode=legacy -f destinations=github-jihulab -f stage=prepare \
   -f state_source_run="$NORA_PREVIOUS_PUBLISH_RUN"
 ```
 
-上述命令属于远端执行示例，需要发布授权；实现或验证流程本身不会执行它。不要对失败发布任务直接使用“rerun”：新 runner 必须显式恢复此前固定计划。双站准备完毕后，再以该准备 run 的状态执行 `stage=promote`。
+上述命令属于远端写入示例，需要相应授权；准备授权不包含正式发布。不要对失败发布任务直接使用“rerun”：新 runner 必须显式恢复此前固定计划。所选渠道准备完毕后，取得正式发布授权，才可用该准备 run 的状态执行 `stage=promote`。
 
 每件对象记录当前源、阶段、大小、摘要与完成时间；下载和子进程具有截止及心跳。SourceForge 已有对象若有受信检查点记录的完整哈希收据，恢复时检查 HEAD 存在和大小，避免重复读取 GB 级内容；这依赖不可变对象未被外部覆盖，HEAD 本身不证明当前 SHA256。没有收据的旧部分对象须完整读取并验 SHA256 一次。冲突对象拒绝覆盖；失败阶段及有限诊断写入检查点，禁止将私有环境或配置写入诊断。首次完整传输仍受带宽影响，不能承诺固定分钟数。
 

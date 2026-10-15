@@ -68,7 +68,21 @@ def write_json(file, value):
     try:
         with os.fdopen(descriptor, 'wb') as stream:
             stream.write(encoded); stream.flush(); os.fsync(stream.fileno())
-        os.chmod(temporary, 0o600); os.replace(temporary, file); fsync_directory(file.parent)
+        os.chmod(temporary, 0o600)
+        # Windows readers can briefly prevent replacement even when their
+        # handles share DELETE. Retain this exact payload and the old record
+        # while waiting; permanent denial still fails within a bounded time.
+        deadline = time.monotonic() + 2
+        while True:
+            try:
+                os.replace(temporary, file)
+                break
+            except OSError as error:
+                remaining = deadline - time.monotonic()
+                if getattr(error, 'winerror', None) not in (5, 32, 33) or remaining <= 0:
+                    raise
+                time.sleep(min(0.02, remaining))
+        fsync_directory(file.parent)
     finally:
         if os.path.exists(temporary): os.unlink(temporary)
 
@@ -438,6 +452,26 @@ def untouched(ctx, snapshot):
         and tree_digest(ctx['app'], ctx['plan']['platform']) == snapshot['old']['digest'])
 
 
+def inspect_outcome(job):
+    """Explicit, read-only proof for closing a restored operation, never status polling."""
+    ctx = context(job)
+    if ctx['plan']['schema'] != 2:
+        return None
+    with job_lock(ctx['job'], readonly=True):
+        snapshot = validate_snapshot(ctx, full=True)
+        if snapshot['phase'] != 'restored':
+            return None
+        if parent_alive(snapshot['workerPid'], snapshot['workerCreationTime']):
+            return None
+        status = read_json(ctx['job'] / 'status.json')
+        if status.get('status') != 'restored':
+            return None
+        return {'job': str(ctx['job']), 'status': 'restored', 'verification': 'confirmed',
+                'effectState': 'restored', 'busy': False, 'workerOffline': True,
+                'operationId': snapshot['operationId'], 'planDigest': snapshot['planDigest'],
+                'version': snapshot['old']['version'], 'diagnosticError': status.get('diagnosticError')}
+
+
 def assess(job, *, allow_legacy=False):
     try:
         ctx = context(job)
@@ -525,7 +559,9 @@ def launch_old(ctx):
     args = [str(ctx['app'] / ctx['executable'])]
     if ctx['plan'].get('localRelease'):
         args.append('--nora-local-release=' + ctx['plan']['localRelease'])
-    options = {'executable': str(io_path(ctx['app'] / ctx['executable']))} if os.name == 'nt' else {}
+    # Extended namespace paths are for filesystem IO. Electron exits before
+    # loading its app when CreateProcess receives that form as its executable.
+    options = {'executable': args[0]} if os.name == 'nt' else {}
     return subprocess.Popen(args, cwd=launcher_cwd(ctx['home']), env=env,
                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                             start_new_session=os.name != 'nt', **options)
@@ -795,7 +831,7 @@ def replace(ctx, *, allow_legacy=False):
         checkpoint(ctx, snapshot, 'awaiting-launcher')
         args = [str(app / executable), '--nora-self-update=' + str(job)]
         if plan.get('localRelease'): args.append('--nora-local-release=' + plan['localRelease'])
-        options = {'executable': str(io_path(app / executable))} if os.name == 'nt' else {}
+        options = {'executable': args[0]} if os.name == 'nt' else {}
         child = subprocess.Popen(args, cwd=launcher_cwd(home), env=launcher_environment(ctx), stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=os.name != 'nt', **options)
         expected_ack = {'token': plan['token'], 'version': plan['version']}
@@ -844,6 +880,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument('--assess', metavar='JOB')
+    modes.add_argument('--inspect-outcome', metavar='JOB')
     modes.add_argument('--prepare', metavar='JOB')
     modes.add_argument('--prepare-recovery', metavar='JOB')
     modes.add_argument('--process-identity', type=int, metavar='PID')
@@ -856,8 +893,8 @@ def main():
     parser.add_argument('--version')
     parser.add_argument('--verified', action='store_true')
     args = parser.parse_args()
-    job = Path(args.assess or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
-    if not (args.assess or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
+    job = Path(args.assess or args.inspect_outcome or args.prepare or args.prepare_recovery or args.recover or args.finalize or args.job or '').absolute()
+    if not (args.assess or args.inspect_outcome or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
     try:
         if args.process_identity:
@@ -868,6 +905,8 @@ def main():
             result = prepare_recovery(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created)
         elif args.assess:
             result = assess(job)
+        elif args.inspect_outcome:
+            result = inspect_outcome(job)
         elif args.recover:
             result = recover(job, parent_pid=args.parent_pid, parent_creation_time=args.parent_created)
         elif args.finalize:

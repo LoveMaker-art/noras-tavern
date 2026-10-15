@@ -14,6 +14,54 @@ function fixture(t, execute, overrides = {}) {
   return {directory, options, controller:createOperationController(options)};
 }
 
+test('recheck closes a verified restored handoff durably and admits a subsequent operation',async t=>{
+  let reads=0;
+  const f=fixture(t,async context=>{
+    await context.plan(context.target);
+    await context.handoff('/owned/job');
+    return {handoff:true};
+  },{observeEffects:async()=>({effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false}),
+    verifyRestoredHandoff:async(record,context)=>{
+      context.check();reads++;
+      return {operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
+        status:'restored',verification:'confirmed',failure:Object.assign(new Error('Incoming launcher exited before ready'),{code:'LAUNCHER_START_FAILED'}),
+        value:{version:'2.4.5',recoveryVerification:'confirmed'}};
+    }});
+  const pending=await f.controller.start('install',{target:{currentVersion:'2.4.5'}},'handoff-restore');
+  const file=path.join(f.directory,'operations',pending.operationId,'operation.json');
+  const bytes=fs.readFileSync(file);
+  assert.equal((await f.controller.snapshot(pending.operationId)).state,'interrupted');
+  assert.deepEqual(fs.readFileSync(file),bytes,'status must remain read-only');
+  const restored=await f.controller.recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
+  assert.equal(restored.state,'rolled-back');
+  assert.equal(restored.verification,'confirmed');
+  assert.equal(restored.currentFailure,null);
+  assert.equal(restored.primaryFailure.code,'LAUNCHER_START_FAILED');
+  assert.equal(restored.recoveryOutcome,'restored-and-verified');
+  const reopened=createOperationController(f.options);
+  assert.equal((await reopened.snapshot()).state,'rolled-back');
+  await reopened.recheck(pending.operationId);
+  assert.equal(reads,1,'a terminal handoff is not rehashed or closed again');
+  assert.equal((await reopened.start('start',{execute:async()=>({verification:'confirmed'})},'after-restore')).state,'succeeded');
+});
+
+test('handoff reconciliation rejects stale snapshots and foreign or unconfirmed outcomes',async t=>{
+  let outcome;
+  const f=fixture(t,async context=>{await context.handoff('/owned/job');return {handoff:true};},
+    {verifyRestoredHandoff:async()=>outcome});
+  const pending=await f.controller.start('install',{},'pending-reconcile');
+  const file=path.join(f.directory,'operations',pending.operationId,'operation.json'),bytes=fs.readFileSync(file);
+  const valid={operationId:pending.operationId,planDigest:pending.planDigest,job:pending.handoffRef,status:'restored',verification:'confirmed'};
+  for(const change of [{operationId:'foreign'},{planDigest:'foreign'},{job:'/foreign'},{verification:'unconfirmed'}, {status:'committed'}]){
+    outcome={...valid,...change};
+    await f.controller.recheck(pending.operationId);
+    assert.deepEqual(fs.readFileSync(file),bytes);
+  }
+  outcome=valid;
+  await assert.rejects(f.controller.recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence-1}),{code:'OPERATION_SNAPSHOT_CHANGED'});
+  assert.deepEqual(fs.readFileSync(file),bytes);
+});
+
 test('KEEP archival invalidates the same controller active history before its next commit and request lookup',async t=>{
   for(const mode of ['capacity','request'])await t.test(mode,async t=>{
     const home=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-retained-history-cache-')));

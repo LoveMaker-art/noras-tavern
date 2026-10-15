@@ -151,6 +151,18 @@ async function verifyHandoff(options){
     return observed?.status==='awaiting-system'&&observed.busy===false&&observed.workerOffline===true;
   }catch{return false;}
 }
+async function inspectOutcome(options){
+  const job=ownedJob(options.job,options),operation=options.operation;
+  const plan=JSON.parse(fs.readFileSync(path.join(job,'plan.json'),'utf8'));
+  if(plan.schema!==2||!operation||plan.operationId!==operation.operationId
+    ||plan.planDigest!==operation.planDigest||operation.handoffRef!==job)return null;
+  const outcome=await helperCall(options.python,options.helper,['--inspect-outcome',job],job,
+    {spawnChild:options.spawnChild});
+  if(outcome?.operationId!==operation.operationId||outcome.planDigest!==operation.planDigest
+    ||outcome.job!==job||outcome.status!=='restored'||outcome.verification!=='confirmed'
+    ||outcome.effectState!=='restored'||outcome.workerOffline!==true||outcome.busy!==false)return null;
+  return {...outcome,failure:helperError(outcome.diagnosticError,'新版启动器启动失败，旧程序已恢复。')};
+}
 async function waitHandoff(options){
   for(let count=0;count<200;count++){
     const state=await assessJob(options);
@@ -319,4 +331,4 @@ async function finalize(options) {
     ['--finalize', job, '--target', options.target, '--version', options.version, '--verified'], job, {spawnChild:options.spawnChild});
 }
 module.exports = { inspect, prepare, prepareHandoff, launchHandoff, resume, waitHandoff,verifyHandoff,verifyRecovery,
-  prepareRecovery,assessJob, applicationRoot, assessPending, recover, finalize,validateManifest };
+  prepareRecovery,assessJob,inspectOutcome, applicationRoot, assessPending, recover, finalize,validateManifest };

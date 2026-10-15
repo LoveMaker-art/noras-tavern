@@ -25,6 +25,57 @@ function visit(node) {
 }
 visit(parse(source, { ecmaVersion: 'latest' }));
 
+test('restored handoff recheck accepts real bridge progress through the active operation context',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-restored-bridge-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const bridge=vm.createContext({activeOperationContext:null,
+    diagnostics:{clean:value=>value},recordEvent(){},readInstallerState:()=>({phase:'done'}),taskCancellation:()=>({})});
+  const node=nodes.sendBridgeEvent;
+  const send=vm.runInContext('('+source.slice(node.start,node.end)+')',bridge);
+  const controller=mainRequire('./operation-state').createOperationController({directory,
+    lock:require('./launcher_operation_test_lock.cjs').createTestOperationLock(),verifyResult:()=>true,
+    evidence:mainRequire('./evidence-store').createEvidenceStore({directory}),
+    verifyRestoredHandoff:async(record,context)=>{
+      assert.equal(context.target.currentVersion,'2.5.0');
+      context.delivery({schema:1,operationId:record.operationId,status:'pending',queued:0});
+      bridge.activeOperationContext=context;
+      try{
+        send(null,'',{event:'task',task:'verify-current-update'});
+        send(null,'',{event:'result',ok:true});
+      }finally{bridge.activeOperationContext=null;}
+      return {operationId:record.operationId,planDigest:record.planDigest,job:record.handoffRef,
+        status:'restored',verification:'confirmed',value:{version:'2.5.0'}};
+    }});
+  const pending=await controller.start('update',{target:{currentVersion:'2.5.0'},execute:async context=>{
+    await context.handoff('/owned/restored-job');return {handoff:true};
+  }},'restored-bridge');
+  const result=await controller.recheck(pending.operationId);
+  assert.equal(result.state,'rolled-back');assert.equal(result.verification,'confirmed');
+  assert.equal(result.currentFailure,null);assert.equal(result.primaryFailure.code,'LAUNCHER_START_FAILED');
+  assert.equal((await controller.start('stop',{execute:async()=>({verification:'confirmed'})},'after-bridge')).state,'succeeded');
+});
+
+test('restored GUI startup waits for the helper writer and verifies its task once outside status polling',async t=>{
+  for(const kind of ['closing-helper','active-writer','terminal','ordinary'])await t.test(kind,async()=>{
+    let snapshots=0,checks=0,waits=0;
+    const pending={handoffRef:'/owned/job',operationId:'original-operation',snapshotSequence:9,state:'interrupted',busy:false};
+    const controller={snapshot:async()=>{
+      snapshots++;
+      if(kind==='ordinary')return null;
+      if(kind==='terminal')return {...pending,state:'rolled-back'};
+      return {...pending,busy:kind==='active-writer'||snapshots===1};
+    },recheck:async(id,options)=>{
+      checks++;assert.equal(id,pending.operationId);assert.equal(options.snapshotSequence,9);return {state:'rolled-back'};
+    }};
+    const context=vm.createContext({operations:()=>controller,setTimeout:fn=>{waits++;queueMicrotask(fn);}});
+    const node=nodes.reconcileRestoredHandoff;
+    const run=vm.runInContext('('+source.slice(node.start,node.end)+')',context);
+    await run();
+    assert.equal(checks,kind==='closing-helper'?1:0);
+    assert.equal(waits,kind==='active-writer'?8:kind==='closing-helper'?1:0);
+  });
+});
+
 function fixture({ setupCompleted = false, running = true, syncFails = false, runtimeFails = false, recheck = true, marker = null } = {}) {
   const order = [], events = [];
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-model-recheck-'));

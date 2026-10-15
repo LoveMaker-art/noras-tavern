@@ -57,11 +57,22 @@ function commandFailure(message, result, command) {
   });
 }
 
-function relocateText(text, home, manifest) {
+function relocateText(text, home, manifest, format='text') {
+  // A kernel shebang cannot quote a relocated interpreter path. Use the same
+  // shell/Python trampoline as portable Python console scripts; argv is kept
+  // intact and shell metacharacters in the installation path stay literal.
+  if(manifest.platform!=='win32'&&/^#!@@NORA_VENV_PYTHON@@\r?\n/.test(text)){
+    const python=path.join(home,manifest.venvPython);
+    const quoted="'"+python.replaceAll("'","'\"'\"'")+"'";
+    text=text.replace(/^#!@@NORA_VENV_PYTHON@@\r?\n/,`#!/bin/sh\n'''exec' ${quoted} "$0" "$@"\n' '''\n`);
+  }
   for (const [token, resolve] of Object.entries(TOKENS)) {
     const native = resolve(home, manifest);
     // Forward slashes also work in Windows Python literals, unlike unescaped C:\\Users.
-    text = text.split(token).join(manifest.platform === 'win32' ? native.replaceAll('\\', '/') : native);
+    let replacement=manifest.platform === 'win32' ? native.replaceAll('\\', '/') : native;
+    if(format==='python'||format==='json')replacement=JSON.stringify(replacement).slice(1,-1);
+    if(format==='python')replacement=replacement.replaceAll("'","\\'");
+    text = text.split(token).join(replacement);
   }
   return text;
 }
@@ -70,7 +81,8 @@ function relocateTextFiles(home, manifest, targetHome=home) {
   for (const relative of manifest.relocatableFiles || []) {
     const target = contained(home, relative);
     if (!fs.existsSync(target)) throw new Error(`运行时缺少可迁移文件：${relative}`);
-    const text = relocateText(fs.readFileSync(target, 'utf8'), targetHome, manifest);
+    const format=relative.endsWith('.py')?'python':relative.endsWith('.json')?'json':'text';
+    const text = relocateText(fs.readFileSync(target, 'utf8'), targetHome, manifest,format);
     fs.writeFileSync(target, text);
   }
 }

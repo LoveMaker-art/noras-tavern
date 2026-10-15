@@ -162,6 +162,19 @@ class ReplacementTests(unittest.TestCase):
                 if handle:
                     kernel.CloseHandle.assert_called_once_with(handle)
 
+    def test_windows_relaunch_does_not_use_filesystem_namespace_for_native_executable(self):
+        application = Path('/fixture/application')
+        home = Path('/fixture/home')
+        context = {'app': application, 'executable': 'launcher.exe', 'home': home, 'plan': {}}
+        with patch.object(worker.os, 'name', 'nt'), \
+                patch.object(worker, 'launcher_cwd', return_value=home), \
+                patch.object(worker.subprocess, 'Popen') as launch:
+            worker.launch_old(context)
+        arguments, options = launch.call_args
+        self.assertEqual(arguments[0][0], str(application / 'launcher.exe'))
+        self.assertEqual(options['executable'], arguments[0][0],
+                         'The real Electron GUI exits before main.js when started with a filesystem namespace prefix')
+
     @unittest.skipUnless(os.environ.get('NORA_TEST_LAUNCHER_ARCHIVE'), 'Optional real archive acceptance')
     def test_real_archive_matches_build_inputs_without_runtime_payload(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -326,6 +339,8 @@ ctx=w.context(job);real_popen=w.subprocess.Popen;real_replace=w.os.replace
 def launch(args,**options):
  if Path(args[0]).name=='launcher.exe':
   kind='new' if any(arg.startswith('--nora-self-update=') for arg in args[1:]) else 'old'
+  if os.name=='nt' and options.get('executable')!=args[0]:
+   raise AssertionError('Native launcher executable must retain its ordinary application path')
   options.pop('executable',None)
   spawn_id=str(uuid.uuid4())
   with w.io_path(job/'spawns.jsonl').open('a',encoding='utf-8') as file:

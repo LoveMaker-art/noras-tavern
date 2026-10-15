@@ -4,8 +4,31 @@ const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
 const test=require('node:test');
+const {spawnSync}=require('node:child_process');
 const {findBundledRuntime,initializeHome,relocateTextFiles,sha256File,validateRuntimeLinks}=require('../installer/desktop/runtime');
 const componentFixture={componentProbe:'nora-clawchat-check.py',components:{clawchat:{revision:'a'.repeat(40)},liveware:{sha256:'b'.repeat(64)},files:{}}};
+
+test('relocated Python entrypoints execute from long Unicode paths with spaces and shell punctuation',
+ {skip:process.platform==='win32'||!process.env.NORA_TEST_PYTHON},()=>{
+  const parent=fs.mkdtempSync(path.join(os.tmpdir(),'nora-python-entry-'));
+  try{
+    const home=path.join(parent,"中文 空格 ' $() ` ", 'long-directory-'.repeat(14));
+    const python=path.join(home,'venv/bin/python'),entry=path.join(home,'venv/bin/hermes');
+    fs.mkdirSync(path.dirname(python),{recursive:true});fs.symlinkSync(process.env.NORA_TEST_PYTHON,python);
+    fs.writeFileSync(path.join(home,'finder.py'),"import json\nprint(json.dumps({'home': '@@NORA_HERMES_HOME@@'}))\n");
+    fs.writeFileSync(path.join(home,'direct_url.json'),'{"home":"@@NORA_HERMES_HOME@@"}');
+    fs.writeFileSync(entry,'#!@@NORA_VENV_PYTHON@@\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\n',{mode:0o755});
+    relocateTextFiles(home,{platform:'darwin',venvPython:'venv/bin/python',relocatableFiles:['venv/bin/hermes','finder.py','direct_url.json']});
+    const result=spawnSync(entry,['argument with spaces',"quote'and$()"],{encoding:'utf8'});
+    assert.equal(result.error,undefined,result.error?.message);assert.equal(result.status,0,result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout),['argument with spaces',"quote'and$()"]);
+    const compiled=spawnSync(process.env.NORA_TEST_PYTHON,['-B','-c','import ast,sys;ast.parse(open(sys.argv[1]).read())',entry],{encoding:'utf8'});
+    assert.equal(compiled.status,0,compiled.stderr);
+    const found=spawnSync(python,['-B',path.join(home,'finder.py')],{encoding:'utf8'});
+    assert.equal(found.status,0,found.stderr);assert.equal(JSON.parse(found.stdout).home,home);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(home,'direct_url.json'),'utf8')).home,home);
+  }finally{fs.rmSync(parent,{recursive:true,force:true});}
+});
 
 test('a skill-copy failure retains its real filesystem error and concrete source/destination metadata',t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-runtime-copy-'));

@@ -108,7 +108,8 @@ function validConditions(proof){
 }
 
 function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=runtime.inspect,
-  inspectLauncher=async()=>null,inspectLegacy=()=>require('./system-update').inspect(value(home)),runLegacy,checkConditions,
+  inspectLauncher=async()=>null,inspectLauncherOutcome=async()=>null,
+  inspectLegacy=()=>require('./system-update').inspect(value(home)),runLegacy,checkConditions,
   networkFetch=globalThis.fetch,launcherVersion='2.0.2',channel='stable',platform=process.platform,arch=process.arch,now=Date.now}={}){
   if(typeof bridge!=='function'||typeof runRuntime!=='function')throw new TypeError('Owned bridge and runtime executors are required');
   const locations=id=>({noraHome:value(home),hermesHome:value(hermesHome),operationId:id});
@@ -529,20 +530,53 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     return {effectState:restored?'restored':'untouched',
       recoveryOutcome:filesOnly?'files-restored-start-failed':restored?'restored-and-verified':'not-required',canRecover:false};
   }
-  async function observe(record){
+  async function observe(record,{launcherOutcome}={}){
     if(!['install','update','repair','recover'].includes(record.kind))return {effectState:'untouched',recoveryOutcome:'not-required'};
     try{
       const parts=[inspectRuntime(locations(record.operationId)),await system(record)];
       const legacy=inspectLegacy();
       if(legacy)parts.push({effectState:legacy.canRecover?'changed':'unknown',canRecover:legacy.canRecover});
       if(record.handoffRef){
-        const app=await inspectLauncher(record.handoffRef,record);
+        const app=launcherOutcome||await inspectLauncher(record.handoffRef,record);
         parts.push(app?{effectState:app.effectState||'unknown',canRecover:app.canRecover,
           canResume:app.status==='awaiting-system'&&app.busy===false&&app.workerOffline===true,reason:app.reason}
           :{effectState:'unknown',canRecover:false});
       }
       return combine(parts);
     }catch{return {effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false};}
+  }
+  async function reconcileHandoff(record,context){
+    context.check();
+    if(record.state!=='awaiting-handoff'||!record.handoffRef||!maintenanceKinds.has(record.kind))return null;
+    const app=await inspectLauncherOutcome(record.handoffRef,record,context);
+    if(app?.status!=='restored'||app.verification!=='confirmed'||app.effectState!=='restored'
+      ||app.busy!==false||app.workerOffline!==true||app.operationId!==record.operationId
+      ||app.planDigest!==record.planDigest||app.job!==record.handoffRef)return null;
+    const effects=await observe(record,{launcherOutcome:app});
+    if(effects.effectState!=='restored'||effects.recoveryOutcome!=='restored-and-verified')return null;
+    // A restored launcher alone cannot prove that the system transaction and
+    // services are usable. Verify the installed version, never the new target.
+    const port=record.target?.request?.port;
+    const before=await bridge('status',{port},context);
+    const version=record.target?.currentVersion||before?.version;
+    if(!version||!sameVersion(before?.version,version))return null;
+    const state=await bridge('verify-current-update',{port,version},context);
+    const roots={noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot)};
+    if(state?.updateVerified!==true||state.systemReady!==true||state.warningCode
+      ||!sameVersion(state.version,version)||!sameVersion(state.version,before.version)
+      ||!/^[a-f0-9]{40}$/.test(state.commit||'')||state.commit!==before.commit
+      ||statusFlags.some(key=>typeof state[key]!=='boolean')
+      ||['running','gatewayRunning','clawchatConnected'].some(key=>state[key]!==before[key])
+      ||!Number.isInteger(state.port)||state.port<1024||state.port>65535||state.port!==before.port
+      ||port!==undefined&&state.port!==port
+      ||Object.entries(roots).some(([key,root])=>[state[key],before[key]].some(actual=>
+        typeof actual!=='string'||!path.isAbsolute(actual)||path.resolve(actual)!==path.resolve(root))))return null;
+    const services=servicePlan(record);
+    if(services&&(state.running!==services.running||state.gatewayRunning!==services.gatewayRunning
+      ||services.clawchatConnected&&!state.clawchatConnected||services.version&&!sameVersion(state.version,services.version)))return null;
+    const after=await observe(record,{launcherOutcome:app});context.check();
+    if(after.effectState!=='restored'||after.recoveryOutcome!=='restored-and-verified')return null;
+    return {...app,value:{...state,recoveryVerification:'confirmed'}};
   }
   async function inspectPartial(context,managed){
     context.check();
@@ -680,6 +714,6 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     const proof={schema:CONDITION_SCHEMA,facts,fingerprint:conditionFingerprint(facts)};
     return {changed:improved,fingerprint:proof.fingerprint,...(improved?{baseline:proof}:{}),...effects};
   }
-  return {observe,recover,recheck,initialConditions,prepareEffects,identifyFailureCondition,inspectPartial};
+  return {observe,recover,recheck,reconcileHandoff,initialConditions,prepareEffects,identifyFailureCondition,inspectPartial};
 }
 module.exports={create,inspectConditions,inspectManagedInstallation,hasManagedRecords};

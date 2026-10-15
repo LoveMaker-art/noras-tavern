@@ -161,7 +161,12 @@ function operations() {
     identifyFailureCondition:(error,record)=>maintenancePolicy().identifyFailureCondition(error,record),
     verifyHandoff:async(record,proof)=>launcherUpdate.verifyHandoff({...launcherRecoveryOptions(),job:proof.job,
       operation:record,version:app.getVersion(),planDigest:proof.planDigest}),
-    verifyRecoveryHandoff:async(record,proof)=>launcherUpdate.verifyRecovery({...launcherRecoveryOptions(),job:proof?.job,operation:record})});
+    verifyRecoveryHandoff:async(record,proof)=>launcherUpdate.verifyRecovery({...launcherRecoveryOptions(),job:proof?.job,operation:record}),
+    verifyRestoredHandoff:async(record,context)=>{
+      const previous=activeOperationContext;activeOperationContext=context;
+      try{return await maintenancePolicy().reconcileHandoff(record,context);}
+      finally{activeOperationContext=previous;}
+    }});
 }
 
 let operationPolicy;
@@ -176,7 +181,9 @@ function maintenancePolicy(){
       {input:partialRepair?JSON.stringify(partialRepair):undefined,returnResult:true}),
     runLegacy:(context,request)=>runProcess(process.execPath,[path.join(__dirname,'legacy-recovery-worker.js'),noraHome()],null,
       context.operationId,{kind:'legacy-recovery',input:JSON.stringify(request),returnResult:true}),
-    inspectLauncher:job=>launcherUpdate.assessJob({...launcherRecoveryOptions(),job})});
+    inspectLauncher:job=>launcherUpdate.assessJob({...launcherRecoveryOptions(),job}),
+    inspectLauncherOutcome:(job,operation)=>launcherUpdate.inspectOutcome({...launcherRecoveryOptions(),job,operation,
+      spawnChild:(command,args,options)=>spawnMaintenance(command,args,options)})});
 }
 
 function requireOperationResult(operation,{recover=false}={}) {
@@ -981,6 +988,20 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
 function launcherRecoveryOptions() {
   return {home:noraHome(),executable:process.execPath,python:findPython()?.command,
     helper:path.join(installerRoot(),'replace-launcher.py')};
+}
+
+async function reconcileRestoredHandoff() {
+  // The restored GUI can start just before its helper releases the writer.
+  // Wait for that owner, then perform one explicit verification, never a
+  // repeated full-tree check in the ordinary status polling path.
+  for(let attempt=0;attempt<8;attempt++){
+    const pending=await operations().snapshot();
+    if(!pending?.handoffRef)return;
+    if(pending.busy){await new Promise(resolve=>setTimeout(resolve,250));continue;}
+    if(pending.state==='interrupted')
+      return operations().recheck(pending.operationId,{snapshotSequence:pending.snapshotSequence});
+    return;
+  }
 }
 
 async function readLauncherRecovery() {
@@ -1844,7 +1865,11 @@ if (primaryInstance) {
   handle('nora:operation-recheck',async(_event,payload)=>{
     if(activeRun||modelBusy)throw launcherError('正在处理任务，请等待完成。',{code:'OPERATION_BUSY'});
     const options=operationRequest(payload);
-    return {operation:await operations().recheck(payload.operationId,options)};
+    activeRun=true;
+    try{
+      if(statusRequest)await statusRequest;
+      return {operation:await operations().recheck(payload.operationId,options)};
+    }finally{activeRun=false;activeOperationContext=null;}
   });
 
   const runAction = async (event,payload) => {
@@ -2073,6 +2098,12 @@ if (primaryInstance) {
         timer.unref();
         outboxTimer.unref();
         app.once('will-quit', () => { clearInterval(timer);clearInterval(outboxTimer); skillUpdates.close(); });
+        if(!SELF_UPDATE_JOB&&app.isPackaged){
+          activeRun=true;
+          try{await reconcileRestoredHandoff();}
+          catch(error){diagnostics.error('update.restored-handoff-unconfirmed',error);}
+          finally{activeRun=false;activeOperationContext=null;}
+        }
         await registerCapabilities();
         if (SELF_UPDATE_JOB) activeRun = true;
         createWindow();

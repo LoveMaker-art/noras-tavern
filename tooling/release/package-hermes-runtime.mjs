@@ -8,6 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import runtimeTools from '../installer/desktop/runtime.js';
 import { buildCommand } from './build-commands.mjs';
+import { patchHermesRuntime } from '../../tooling/runtime/hermes-runtime-patches.mjs';
 
 const installer = fileURLToPath(new URL('../installer/', import.meta.url));
 const lockPath = path.join(installer, 'clawchat-bundle.lock.json');
@@ -140,6 +141,7 @@ try {
     if (audit.status !== 0) throw new Error(`ClawChat 安全审核未通过：${audit.stderr || audit.stdout}`);
     fs.mkdirSync(runtime, { recursive: true });
     copyTree(agent, path.join(runtime, 'hermes-agent'));
+    const patches = patchHermesRuntime(runtime);
     copyTree(pythonRoot, path.join(runtime, 'python'));
     fs.cpSync(nodeRoot, path.join(runtime, 'node'), {
         recursive: true, preserveTimestamps: true, verbatimSymlinks: true,
@@ -248,6 +250,7 @@ try {
         components,
         componentProbe: 'nora-clawchat-check.py',
         hermesVersion: version,
+        patches,
         nodeVersion,
         venvPython: platform === 'win32' ? 'hermes-agent/venv/Scripts/python.exe' : 'hermes-agent/venv/bin/python',
         nodeBin: platform === 'win32' ? 'node' : 'node/bin',

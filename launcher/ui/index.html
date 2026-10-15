@@ -384,7 +384,7 @@
     const labels = ['诺拉', '酒馆', '模型', 'ClawChat', '启动检查'];
     const scenario = new URLSearchParams(location.search).get('mock');
     // Populate only with author-provided community destinations.
-    const contacts = { qq: { number:'', url:'' }, discord:'', bilibili:'' };
+    const contacts = { qq: { number:'904830926', url:'' }, discord:'https://discord.gg/2fxP9uYvpV2', bilibili:'https://space.bilibili.com/484690448' };
     let runtimePhase = 'idle', failNextStart = scenario === 'start-error';
     let stage = 0, daily = false, busy = false, running = false, model = 'deepseek-chat', provider = 'DeepSeek';
     const portrait = document.querySelector('.portrait');

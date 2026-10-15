@@ -88,6 +88,29 @@ const ready={installed:true,hermesInstalled:true,setupCompleted:true,systemReady
 const network=formatUserError({code:'TIMEOUT',source:'release_service'},{action:'update'});
 const updateResult={state:'available',available:true,updateSupported:true,current:'2.4.2',latest:'v2.4.3',channel:'stable'};
 function action(h,label){return descendants(h.inline).find(n=>n.tagName==='BUTTON'&&n.textContent===label);}
+test('installed users can check and request updates before model or pairing setup completes',async()=>{
+  for(const [view,configuration] of [['model',{modelConfigured:false}],['model-pending',{modelSyncPending:true}],
+      ['claw',{modelConfigured:true,clawchatPaired:false}]]){
+    let checks=0;const requests=[];
+    const h=fixture({view,snapshot:{...ready,...configuration,setupCompleted:false,running:false,gatewayRunning:false},
+      api:{checkUpdate:async()=>{checks++;return updateResult;}}});
+    await h.invoke('controls()');
+    const update=h.menu.find(control=>control.dataset.action==='update');
+    assert.equal(h.output().managementVisible,true,view);assert.equal(update.hidden,false,view);assert.equal(update.disabled,false,view);
+    update.onclick();await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(checks,1);assert.ok(action(h,'安装更新'),JSON.stringify(h.output()));
+    h.context.run=async(kind,payload)=>requests.push({kind,tag:payload.tag});
+    await action(h,'安装更新').onclick();
+    assert.deepEqual(requests,[{kind:'update',tag:'v2.4.3'}]);
+    assert.equal(h.context.snapshot.setupCompleted,false,'Checking an update cannot fabricate completed setup');
+  }
+});
+test('unfinished setup never exposes update actions during maintenance or unresolved recovery',async()=>{
+  for(const state of [{view:'model',snapshot:{...ready,setupCompleted:false,busy:true}},
+      {view:'recovery',snapshot:{...ready,setupCompleted:false,launcherRecovery:{pending:true}}}]){
+    const h=fixture(state);await h.invoke('controls()');assert.equal(h.output().managementVisible,false);
+  }
+});
 test('unknown process failure reaches actual logs without clearing the error page',async()=>{
   const h=fixture({snapshot:{...ready}});h.context.original=formatUserError({source:'launcher_process',exitCode:1},{action:'update'});
   await h.invoke('fail(original,"update",()=>{})');const logs=action(h,'查看日志');assert.ok(logs);const before=h.output().copy;

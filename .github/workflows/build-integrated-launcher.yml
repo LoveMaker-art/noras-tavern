@@ -582,6 +582,12 @@ jobs:
       - name: Verify native launcher test prerequisites
         run: node "$PWD/tooling/checks/launcher-test-environment.mjs" native
 
+      - name: Verify actual sealed Hermes cold initialization without dependency installs
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          "$NORA_TEST_PYTHON" -I -B "$PWD/tooling/runtime/hermes-cold-init-check.py" "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/nora-hermes-cold-init-acceptance.json"
+
       - name: Verify committed installation journals before installation tests
         shell: bash
         run: |
@@ -874,6 +880,7 @@ jobs:
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
+            ${{ runner.temp }}/nora-hermes-cold-init-acceptance.json
             ${{ runner.temp }}/nora-electron-network-acceptance.json
             ${{ runner.temp }}/nora-upgrade-baseline-acceptance.json
             ${{ runner.temp }}/nora-upgrade-baseline/baseline-source-receipt.json

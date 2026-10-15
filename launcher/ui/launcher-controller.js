@@ -336,7 +336,7 @@
     $('management').hidden = freshInstall || recoveryView || view === 'error' && !snapshot.retainedUninstallPending || view !== 'daily' && (busy || Boolean(snapshot.busy));
     if (freshInstall) hideMenu();
     document.querySelectorAll('#management [data-action]').forEach(control => {
-      control.hidden = !complete() && !['uninstall', 'logs'].includes(control.dataset.action);
+      control.hidden = !complete() && !['uninstall', 'logs', 'update'].includes(control.dataset.action);
       if (control.dataset.action === 'logs') control.hidden = typeof api.operationLogs !== 'function' && typeof api.openLogs !== 'function';
     });
     $('launchbar').hidden = recoveryView || !complete() || view !== 'daily';

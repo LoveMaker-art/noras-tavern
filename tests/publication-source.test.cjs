@@ -7,6 +7,13 @@ const { captureChild, stopChild } = require('./deployment/launcher_test_lifecycl
 const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
+function writeGhFixture(bin, source) {
+  // A kernel shebang cannot quote a Node path containing spaces. Keep the
+  // executable fixture offline even when the repository lives in such a path.
+  const script=path.join(bin,'gh.cjs');fs.writeFileSync(script,source);
+  const quote=value=>"'"+value.replaceAll("'","'\"'\"'")+"'";
+  fs.writeFileSync(path.join(bin,'gh'),`#!/bin/sh\nexec ${quote(process.execPath)} ${quote(script)} "$@"\n`,{mode:0o755});
+}
 test('acceptance selects actual stable history and cannot turn existing history into a first release', () => {
   const options = { repository: 'owner/tavern', targetTag: 'v2.4.4' };
   assert.equal(selectAcceptanceBaseline([[stableRelease('v2.4.2'), stableRelease('v2.4.3')]], options).tag, 'v2.4.3');
@@ -121,7 +128,7 @@ for(const conclusion of ['failure','cancelled'])test(`state CLI requires the API
     'import os,sys,zipfile\nwith zipfile.ZipFile(sys.argv[2],"w") as z:\n for root,dirs,files in os.walk(sys.argv[1]):\n  for name in files:\n   p=os.path.join(root,name);z.write(p,os.path.relpath(p,sys.argv[1]))',f.root,zip]);
   const bytes=fs.readFileSync(zip);for(const item of f.artifacts.artifacts){item.size_in_bytes=bytes.length;item.digest='sha256:'+hash(bytes);}
   const bin=path.join(runner,'bin');fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin,'gh'),`#!${process.execPath}\nprocess.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_STATE_ZIP));\n`,{mode:0o755});
+  writeGhFixture(bin, `process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_STATE_ZIP));\n`);
   const runFile=path.join(runner,'run.json'),artifactsFile=path.join(runner,'artifacts.json'),receiptFile=path.join(runner,'delivery-receipt.json');
   fs.writeFileSync(runFile,JSON.stringify(f.run));fs.writeFileSync(receiptFile,JSON.stringify(f.options.deliveryReceipt));
   const command=output=>spawnSync(process.execPath,[path.resolve(__dirname,'../tooling/release/publication-source.cjs'),
@@ -172,7 +179,7 @@ test('actual source CLI hashes artifact ZIP bytes before extracting them', t => 
     const bytes = fs.readFileSync(zip); f.artifacts.artifacts[index].size_in_bytes = bytes.length; f.artifacts.artifacts[index].digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}\nconst id=process.argv.at(-1).split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`, { mode: 0o755 });
+  writeGhFixture(bin, `const id=process.argv.at(-1).split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
   const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'); fs.writeFileSync(runFile, JSON.stringify(f.run));
   const execute = output => spawnSync(process.execPath, [path.resolve(__dirname, '../tooling/release/publication-source.cjs'),
     'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'components', output],
@@ -222,7 +229,7 @@ function fullCliFixture(t) {
     const bytes = fs.readFileSync(path.join(root, `${item.id}.zip`)); item.size_in_bytes = bytes.length; item.digest = 'sha256:' + hash(bytes);
   }
   const bin = path.join(root, 'bin'); fs.mkdirSync(bin);
-  fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}\nconst resource=process.argv.at(-1);if(!/^repos\\/owner\\/tavern\\/actions\\/artifacts\\/\\d+\\/zip$/.test(resource))throw Error('Unexpected remote read: '+resource);const id=resource.split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`, { mode: 0o755 });
+  writeGhFixture(bin, `const resource=process.argv.at(-1);if(!/^repos\\/owner\\/tavern\\/actions\\/artifacts\\/\\d+\\/zip$/.test(resource))throw Error('Unexpected remote read: '+resource);const id=resource.split('/').at(-2);process.stdout.write(require('node:fs').readFileSync(process.env.FIXTURE_ZIP_ROOT+'/'+id+'.zip'));\n`);
   const runFile = path.join(root, 'run.json'), artifactsFile = path.join(root, 'artifacts.json'), factsFile = path.join(root, 'published-releases.json');
   fs.writeFileSync(runFile, JSON.stringify(f.run)); fs.writeFileSync(artifactsFile, JSON.stringify(f.artifacts));
   const execute = (output, pages = [[]]) => {
