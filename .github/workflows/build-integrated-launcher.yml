@@ -3,6 +3,14 @@ name: Build and accept Nora Tavern installers (no publication)
 on:
   workflow_dispatch:
     inputs:
+      publication_tag:
+        description: Explicit component publication batch (blank keeps v<core-version>)
+        type: string
+        default: ''
+      compatibility_file:
+        description: Reviewed committed JSON under tooling/release/compatibility/ (optional)
+        type: string
+        default: ''
       target:
         description: Build installers or check an existing sealed Windows package
         type: choice
@@ -25,6 +33,10 @@ on:
         description: Published stable version used only for historical upgrade acceptance (blank uses latest stable; EMPTY requires no stable history)
         type: string
         default: ''
+      app_only:
+        description: APP-only publication, unchanged core; requires interactive self-hosted native-ui runners and launcher_baseline_tag
+        type: boolean
+        default: false
       launcher_baseline_tag:
         description: Launcher-only build using verified unchanged components from a stable tag (otherwise full build)
         type: string
@@ -58,6 +70,7 @@ permissions:
   actions: read
 
 env:
+  NORA_APP_ONLY: ${{ inputs.app_only || false }}
   PYTHONUTF8: '1'
   PYTHONIOENCODING: 'utf-8'
 
@@ -86,6 +99,12 @@ jobs:
           python-version: '3.11'
       - name: Install the workflow contract parser
         run: python -m pip install PyYAML==6.0.2 psutil==7.0.0
+      - name: Resolve explicit component publication inputs
+        id: publication
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
       - name: Select a published acceptance baseline independently of environment reuse
         id: acceptance-baseline
         shell: bash
@@ -94,7 +113,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/nora-acceptance-published-releases.json"
-          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "v$(cat app/.tavern-release-version)" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
+          node "$PWD/tooling/release/publication-source.cjs" baseline-selection "$RUNNER_TEMP/nora-acceptance-published-releases.json" "$NORA_PUBLICATION_TAG" "$GITHUB_REPOSITORY" "$ACCEPTANCE_BASELINE_TAG" "$RUNNER_TEMP/nora-acceptance-baseline-selection.json" "$GITHUB_OUTPUT" build
       - name: Plan committed changes before native builds
         id: plan
         shell: bash
@@ -123,6 +142,7 @@ jobs:
             echo 'Reviewed unknown inputs require a full build without environment or Windows package reuse.' >&2
             exit 1
           fi
+          if [[ "${NORA_APP_ONLY:-false}" == "true" && ( -z "$LAUNCHER_BASELINE_TAG" || "$NORA_PUBLICATION_TAG" == "v$(cat app/.tavern-release-version)" ) ]]; then echo 'APP-only needs an explicit newer publication tag and real launcher baseline.' >&2; exit 1; fi
           case "$PLAN_MODE" in
             full|launcher|review-required) ;;
             components) echo 'Use the component build workflow for this plan.' >&2; exit 1 ;;
@@ -327,7 +347,9 @@ jobs:
             || inputs.verified_windows_run != ''
             && '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"}]'
             || '[{"runner":"macos-15","platform":"darwin","arch":"arm64","package_script":"pack:mac:arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64","package_script":"pack:mac:x64"},{"runner":"windows-latest","platform":"win32","arch":"x64","package_script":"pack:win:x64"}]') }}
-    runs-on: ${{ matrix.runner }}
+    # These labels are requirements, not a claim that runners are registered.
+    # APP-only acceptance deliberately blocks without a real interactive UI.
+    runs-on: ${{ inputs.app_only && fromJSON(format('["self-hosted","{0}","{1}","nora-launcher-native-ui"]', matrix.platform == 'win32' && 'Windows' || 'macOS', matrix.arch == 'arm64' && 'ARM64' || 'X64')) || matrix.runner }}
     timeout-minutes: 90
 
     steps:
@@ -338,11 +360,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-
-      - name: Verify release tag matches committed payload version
-        if: github.ref_type == 'tag'
-        shell: bash
-        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
 
       - name: Reject conflicting baseline modes
         if: inputs.launcher_baseline_tag != '' && inputs.runtime_source_run != ''
@@ -363,6 +380,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
 
       - name: Verify embedded Story Profile before preparing runtimes
         run: node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
@@ -421,9 +444,9 @@ jobs:
       - name: Check installation source contracts before preparing runtimes
         timeout-minutes: 5
         shell: bash
-        # Diagnostics, process output and install source already ran in the
+        # Diagnostics, process output, install source, skills and shutdown ran in the
         # qualified source gate above. Keep every remaining file unfiltered.
-        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_skill_update.test.cjs" "$PWD/tests/deployment/launcher_shutdown.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs" "$PWD/tests/deployment/launcher_console.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs" "$PWD/tests/deployment/launcher_test_build.test.cjs" "$PWD/tests/deployment/launcher_windows_extract.test.cjs"
+        run: node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_network.test.cjs" "$PWD/tests/deployment/launcher_component_update.test.cjs" "$PWD/tests/deployment/launcher_model_config.test.cjs" "$PWD/tests/deployment/launcher_console.test.cjs" "$PWD/tests/deployment/launcher_native_crash.test.cjs" "$PWD/tests/deployment/launcher_test_build.test.cjs" "$PWD/tests/deployment/launcher_windows_extract.test.cjs"
 
       - name: Check presentation source contracts before preparing runtimes
         timeout-minutes: 5
@@ -447,7 +470,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
         shell: bash
-        run: node "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then args+=(--app-only); fi
+          node "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline" "${args[@]}"
 
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
@@ -674,12 +701,19 @@ jobs:
           PRODUCTION_MODE: ${{ inputs.production_mode }}
           LAUNCHER_BASELINE: ${{ inputs.launcher_baseline_tag }}
         run: |
+          set -euo pipefail
           mode=--candidate
+          if [[ "$NORA_APP_ONLY" == "true" && "$PRODUCTION_MODE" != "true" && "$GITHUB_REF_TYPE" != "tag" ]]; then echo 'APP-only native acceptance requires production_mode=true ordinary protocol test artifacts (does not publish).' >&2; exit 1; fi
           if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
+          if [[ "$NORA_APP_ONLY" == "true" && ( -z "$LAUNCHER_BASELINE" || -z "$NORA_COMPONENT_PUBLICATION_TAG" ) ]]; then echo 'APP-only requires explicit publication_tag and launcher_baseline_tag' >&2; exit 1; fi
+          publication_args=()
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then publication_args+=(--app-only); fi
+          if [[ -n "$NORA_COMPONENT_PUBLICATION_TAG" ]]; then publication_args+=(--publication-tag "$NORA_COMPONENT_PUBLICATION_TAG"); fi
+          if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then publication_args+=(--update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"); fi
           if [[ -n "$LAUNCHER_BASELINE" ]]; then
-            node "$PWD/tooling/release/package-release.mjs" $mode --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+            node "$PWD/tooling/release/package-release.mjs" $mode "${publication_args[@]}" --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
           else
-            node "$PWD/tooling/release/package-release.mjs" $mode \
+            node "$PWD/tooling/release/package-release.mjs" $mode "${publication_args[@]}" \
               --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
           fi
 
@@ -693,8 +727,18 @@ jobs:
           set -euo pipefail
           node "$PWD/tooling/release/acceptance-baseline.mjs" --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ matrix.platform }}-${{ matrix.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline"
 
+      - name: Verify official APP inputs exclusively for native APP-only transition
+        if: inputs.app_only
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
+        run: |
+          set -euo pipefail
+          node "$PWD/tooling/release/acceptance-baseline.mjs" --launcher --tag "$ACCEPTANCE_BASELINE_TAG" --platform "${{ matrix.platform }}-${{ matrix.arch }}" --repository "$GITHUB_REPOSITORY" --output "$RUNNER_TEMP/nora-upgrade-baseline-launcher"
+
       - name: Freeze verified historical payload for version migration acceptance
-        if: needs.preflight.outputs.initial_release != 'true'
+        if: needs.preflight.outputs.initial_release != 'true' && !inputs.app_only
         shell: bash
         env:
           ACCEPTANCE_BASELINE_TAG: ${{ needs.preflight.outputs.acceptance_baseline_tag }}
@@ -738,7 +782,7 @@ jobs:
           const target=JSON.parse(fs.readFileSync(targetFile,'utf8')),version=fs.readFileSync('app/.tavern-release-version','utf8').trim();
           assert.equal(target.versions.tavern,version);assert.equal(target.commit,process.env.GITHUB_SHA);assert.ok(semver.valid(version));
           const comparison=semver.compare(system.version,version);assert.ok(comparison<0,'Historical acceptance baseline must be strictly older than the target');
-          const proof={schema:'nora-upgrade-baseline/1',sourceTag:process.env.ACCEPTANCE_BASELINE_TAG,sourceReceiptSha256:digest(path.join(baseline,'baseline-source-receipt.json')),platform,
+          const proof={schema:'nora-upgrade-baseline/1',sourceTag:process.env.ACCEPTANCE_BASELINE_TAG,baselineTag:process.env.ACCEPTANCE_BASELINE_TAG,targetTag:process.env.NORA_PUBLICATION_TAG,sourceReceiptSha256:digest(path.join(baseline,'baseline-source-receipt.json')),platform,
             baselineVersion:system.version,baselineCommit:system.commit,baselineManifestSha256:digest(path.join(baseline,'release-manifest.json')),
             systemManifestSha256:digest(systemFile),targetVersion:version,targetCommit:target.commit,targetManifestSha256:digest(targetFile),
             verifiedFiles:Object.keys(system.files).length,acceptance:'version-transition-required'};
@@ -778,7 +822,9 @@ jobs:
         run: |
           mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
           release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
-          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --payload "$release_dir/nora-tavern-launcher/payload" \
+          product_args=()
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then product_args+=(--product-manifest "$release_dir/release-manifest.json"); fi
+          node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" "${product_args[@]}" --payload "$release_dir/nora-tavern-launcher/payload" \
             --update-release "$release_dir/nora-tavern-launcher/payload" --missing-system-receipt \
             --scratch-base "$RUNNER_TEMP/nora-operation-acceptance" --keep
 
@@ -814,7 +860,9 @@ jobs:
               Sort-Object Name | Select-Object -Last 1
             if (-not $release) { throw 'Candidate release payload is missing' }
             $payload = Join-Path $release.FullName 'nora-tavern-launcher/payload'
-            node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
+            $productArgs = @()
+            if ($env:NORA_APP_ONLY -eq 'true') { $productArgs = @('--product-manifest', (Join-Path $release.FullName 'release-manifest.json')) }
+            node "$PWD/tooling/run.mjs" node "$PWD/tests/deployment/launcher_product_refactor_smoke.cjs" @productArgs --payload $payload --update-release $payload --missing-system-receipt --scratch-base (Join-Path $env:RUNNER_TEMP 'nora-operation-acceptance') --keep
             if ($LASTEXITCODE -ne 0) { throw 'Windows install or managed update failed with LongPathsEnabled=0' }
             if ($env:NORA_UPGRADE_REQUIRED -eq 'true') {
               foreach ($state in @('running', 'stopped')) {
@@ -870,6 +918,18 @@ jobs:
         shell: bash
         run: node "$PWD/tooling/checks/launcher-artifact-checks.cjs" network
 
+      - name: Verify actual APP-only upgrades with running and stopped unchanged core
+        if: inputs.app_only
+        timeout-minutes: 45
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="$(node "$PWD/tooling/checks/launcher-artifact-checks.cjs" release)"
+          node "$PWD/tooling/release/app-only-acceptance.cjs" --phase run --baseline "$RUNNER_TEMP/nora-upgrade-baseline" \
+            --baseline-launcher "$RUNNER_TEMP/nora-upgrade-baseline-launcher" --target "$release_dir" \
+            --output "$RUNNER_TEMP/nora-operation-acceptance/app-only"
+          cp "$RUNNER_TEMP/nora-operation-acceptance/app-only/nora-upgrade-baseline-acceptance.json" "$RUNNER_TEMP/nora-upgrade-baseline-acceptance.json"
+
       - name: Preserve isolated operation acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -879,6 +939,12 @@ jobs:
           path: |
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-result.json
             ${{ runner.temp }}/nora-operation-acceptance/**/harness-*.log
+            ${{ runner.temp }}/nora-operation-acceptance/**/baseline-preparation.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/checkpoint.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/observed.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/finished-status.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/native-*-actions.json
+            ${{ runner.temp }}/nora-operation-acceptance/**/preparation.log
             ${{ runner.temp }}/nora-packaged-app-acceptance.json
             ${{ runner.temp }}/nora-hermes-cold-init-acceptance.json
             ${{ runner.temp }}/nora-electron-network-acceptance.json

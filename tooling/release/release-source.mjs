@@ -9,6 +9,9 @@ import { projectDelivery, readLayout, translatePath } from '../../tooling/layout
 
 export function digest(value) { return createHash('sha256').update(value).digest('hex'); }
 export const LAUNCHER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
+export const UPDATER_CAPABILITIES=Object.freeze({operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2});
+export const UPDATER_DEPENDENCY_ROOT = 'ops/updater/actor-dependencies';
+const ACTOR_DEPENDENCIES = Object.freeze({ 'fs-native-extensions': '1.5.1', semver: '7.8.5' });
 
 export const NORA_SYSTEM_REQUIRED_FILES = [
     'app/engine/sillytavern/src/nora-world-core/builtin-welcome.js',
@@ -20,6 +23,9 @@ export const NORA_SYSTEM_REQUIRED_FILES = [
     'ops/updater/managed_context.py', 'ops/installer/update_recovery.py', 'ops/installer/error_diagnostics.py',
     'ops/installer/operation_control.py', 'ops/installer/operation_cli.py', 'ops/installer/operation_node.mjs', 'ops/installer/operation_evidence.py', 'ops/installer/operation-budget.json',
     'ops/installer/desktop/operation-delegate.js', 'ops/installer/desktop/operation-history.js',
+    'ops/installer/desktop/updater-task.js', 'ops/installer/desktop/updater-capability.js', 'ops/installer/desktop/updater-policy.js',
+    'ops/updater/task.py', 'ops/updater/task_backend.py',
+    ...['receipt.json', 'package.json', 'package-lock.json'].map(name => `${UPDATER_DEPENDENCY_ROOT}/${name}`),
     'ops/installer/mcp_probe.mjs',
     'ops/updater/clawchat_greeting_patch.py', 'ops/updater/clawchat-greeting-order.patch',
     'ops/scripts/nora-instance.py', 'ops/scripts/nora-tavern-update-check.py',
@@ -38,14 +44,15 @@ export function assertNoraSystemArtifacts(files) {
     if (missing.length) throw new Error(`Incomplete Nora system artifacts: ${missing.join(', ')}`);
 }
 
-export function assertSafeReleasePath(relative) {
+export function assertSafeReleasePath(relative, { updaterDependencies = false } = {}) {
     const parts = relative.split('/');
     if (!relative || path.isAbsolute(relative) || parts.some(part => !part || part === '..') || /[\r\n\0\\]/.test(relative)) {
         throw new Error(`Unsafe release path: ${relative}`);
     }
     const defaultTemplate = ['app/engine/sillytavern/default/config.yaml', 'app/engine/sillytavern/default/content/settings.json'].includes(relative);
     if (relative.startsWith('outputs/')
-        || parts.some(part => ['.git', 'node_modules', 'local-state', 'tavern-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
+        || parts.some(part => ['.git', 'local-state', 'tavern-state', 'data', 'logs', 'backups', '__pycache__', '_cache'].includes(part))
+        || (parts.includes('node_modules') && !(updaterDependencies && relative.startsWith(`${UPDATER_DEPENDENCY_ROOT}/node_modules/`)))
         || parts.some(part => /^\.env(?:\.|$)/.test(part))
         || (!defaultTemplate && /(?:^|\/)(?:secrets\.json|config\.yaml|settings\.json|cookie-secret\.txt|apps\.json)$/.test(relative))
         || /(?:^|\/)(?:model_configs\.json|model-input\.json|secrets\.json)(?:\.[^/]*)?$/.test(relative)
@@ -132,12 +139,131 @@ export function createReleaseSource(root, { candidate = false } = {}) {
         }
         const deliveryFiles = projectDelivery(stage, Object.keys(hashes));
         return { stage, files: deliveryFiles, identity: { schema: 'tavern-release/v2', commit, candidate, dirty,launcherCapabilities:LAUNCHER_CAPABILITIES,
+            updaterCapabilities: UPDATER_CAPABILITIES,
             sourceDigest: digest(JSON.stringify(hashes)), node: process.version, sourceFiles: hashes,
             ...(generatedSourceFiles ? {generatedSourceFiles} : {}) } };
     } catch (error) {
         fs.rmSync(stage, { recursive: true, force: true });
         throw error;
     }
+}
+
+// The desktop lock remains the only authored dependency authority. Generate a
+// small production-only package in the disposable export, never install Electron
+// or execute dependency scripts, and seal every delivered byte in the manifest.
+function actorDependencyLock(stage) {
+    const bytes = fs.readFileSync(path.join(stage, 'ops/installer/desktop/package-lock.json'));
+    const source = JSON.parse(bytes);
+    if (source.lockfileVersion !== 3 || JSON.stringify(source.packages?.['']?.dependencies) !== JSON.stringify(ACTOR_DEPENDENCIES))
+        throw new Error('Independent updater dependencies differ from the canonical desktop lock');
+    const packageJson = { name: 'nora-updater-actor-dependencies', version: '1.0.0', private: true,
+        dependencies: ACTOR_DEPENDENCIES, engines: { node: '>=20' } };
+    const packages = { '': { name: packageJson.name, version: packageJson.version,
+        dependencies: ACTOR_DEPENDENCIES, engines: packageJson.engines } };
+    const visit = name => {
+        const key = `node_modules/${name}`;
+        if (packages[key]) return;
+        const value = source.packages[key];
+        if (!value || value.dev || value.link || !value.resolved?.startsWith('https://registry.npmjs.org/') || !value.integrity)
+            throw new Error(`Missing locked updater dependency: ${name}`);
+        packages[key] = value;
+        for (const child of Object.keys(value.dependencies || {})) visit(child);
+    };
+    for (const name of Object.keys(ACTOR_DEPENDENCIES)) visit(name);
+    const lock = { name: packageJson.name, version: packageJson.version, lockfileVersion: 3, requires: true,
+        packages: Object.fromEntries(Object.entries(packages).sort(([left], [right]) => left.localeCompare(right))) };
+    return { packageJson, lock, canonicalLockSha256: digest(bytes) };
+}
+
+function dependencyInventory(directory) {
+    const files = {};
+    const visit = relative => {
+        for (const item of fs.readdirSync(path.join(directory, relative), { withFileTypes: true })) {
+            const name = relative ? `${relative}/${item.name}` : item.name;
+            if (!relative && item.name === 'receipt.json') continue;
+            if (item.isDirectory()) visit(name);
+            else if (item.isFile()) files[name] = digest(fs.readFileSync(path.join(directory, name)));
+            else throw new Error(`Non-regular updater dependency: ${name}`);
+        }
+    };
+    visit('');
+    return Object.fromEntries(Object.entries(files).sort(([left], [right]) => left.localeCompare(right)));
+}
+
+function verifyActorDirectory(directory, expected) {
+    const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'receipt.json'), 'utf8'));
+    if (receipt.schema !== 'nora-updater-dependencies/1' || receipt.canonicalLockSha256 !== expected.canonicalLockSha256
+        || JSON.stringify(receipt.dependencies) !== JSON.stringify(ACTOR_DEPENDENCIES)
+        || JSON.stringify(JSON.parse(fs.readFileSync(path.join(directory, 'package.json')))) !== JSON.stringify(expected.packageJson)
+        || JSON.stringify(JSON.parse(fs.readFileSync(path.join(directory, 'package-lock.json')))) !== JSON.stringify(expected.lock)
+        || JSON.stringify(receipt.files) !== JSON.stringify(dependencyInventory(directory)))
+        throw new Error('Updater dependency closure differs from its sealed lock or receipt');
+    const names = fs.readdirSync(path.join(directory, 'node_modules')).sort();
+    const locked = Object.keys(expected.lock.packages).filter(Boolean).map(name => name.slice('node_modules/'.length)).sort();
+    if (JSON.stringify(names) !== JSON.stringify(locked)) throw new Error('Unexpected updater dependency package');
+    for (const name of names) {
+        const installed = JSON.parse(fs.readFileSync(path.join(directory, 'node_modules', name, 'package.json')));
+        if (installed.version !== expected.lock.packages[`node_modules/${name}`].version)
+            throw new Error(`Updater dependency version mismatch: ${name}`);
+    }
+    return receipt;
+}
+
+export function verifyUpdaterDependencies(stage) {
+    const directory = path.join(stage, UPDATER_DEPENDENCY_ROOT);
+    return verifyActorDirectory(directory, actorDependencyLock(stage));
+}
+
+function restoreUpdaterDependencies(stage, baseline, expected) {
+    const names = Object.keys(baseline?.identity?.artifacts || {}).filter(name => name.startsWith(`${UPDATER_DEPENDENCY_ROOT}/`));
+    if (!names.includes(`${UPDATER_DEPENDENCY_ROOT}/receipt.json`)) return false;
+    const descriptor = baseline.identity.archives?.ops;
+    if (!descriptor) return false;
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(descriptor.name || '')) throw new Error('Unsafe baseline updater archive name');
+    const archive = path.join(baseline.directory, descriptor.name);
+    if (digest(fs.readFileSync(archive)) !== descriptor.sha256) throw new Error('Baseline updater archive checksum mismatch');
+    const runTar = args => {
+        const command = buildCommand('tar', args);
+        return execFileSync(command.command, command.args, { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    };
+    if (!runTar(['-tvzf', archive]).trim().split(/\r?\n/).every(line => line.startsWith('-')))
+        throw new Error('Baseline updater archive links are forbidden');
+    for (const name of names) assertSafeReleasePath(name, { updaterDependencies: true });
+    const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-updater-dependencies-'));
+    try {
+        const list = path.join(scratch, 'members.txt');
+        fs.writeFileSync(list, names.sort().join('\n') + '\n');
+        runTar(['-xzf', archive, '-C', scratch, '-T', list]);
+        for (const name of names) {
+            const file = path.join(scratch, name);
+            if (!fs.lstatSync(file).isFile() || digest(fs.readFileSync(file)) !== baseline.identity.artifacts[name])
+                throw new Error(`Baseline updater dependency mismatch: ${name}`);
+        }
+        const directory = path.join(scratch, UPDATER_DEPENDENCY_ROOT);
+        const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'receipt.json')));
+        if (receipt.canonicalLockSha256 !== expected.canonicalLockSha256) return false;
+        verifyActorDirectory(directory, expected);
+        fs.cpSync(directory, path.join(stage, UPDATER_DEPENDENCY_ROOT), { recursive: true });
+        return true;
+    } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+}
+
+export function materializeUpdaterDependencies(stage, { baseline, install } = {}) {
+    const expected = actorDependencyLock(stage), directory = path.join(stage, UPDATER_DEPENDENCY_ROOT);
+    if (fs.existsSync(directory)) return verifyActorDirectory(directory, expected);
+    if (restoreUpdaterDependencies(stage, baseline, expected)) return verifyActorDirectory(directory, expected);
+    fs.mkdirSync(directory, { recursive: true });
+    try {
+        fs.writeFileSync(path.join(directory, 'package.json'), JSON.stringify(expected.packageJson, null, 2) + '\n');
+        fs.writeFileSync(path.join(directory, 'package-lock.json'), JSON.stringify(expected.lock, null, 2) + '\n');
+        if (!install) throw new Error('Updater dependencies require a verified production install');
+        install(directory);
+        fs.rmSync(path.join(directory, 'node_modules/.package-lock.json'), { force: true });
+        const receipt = { schema: 'nora-updater-dependencies/1', canonicalLockSha256: expected.canonicalLockSha256,
+            dependencies: ACTOR_DEPENDENCIES, files: dependencyInventory(directory) };
+        fs.writeFileSync(path.join(directory, 'receipt.json'), JSON.stringify(receipt, null, 2) + '\n');
+        return verifyActorDirectory(directory, expected);
+    } catch (error) { fs.rmSync(directory, { recursive: true, force: true }); throw error; }
 }
 
 export function collectRuntimeFiles(stage, sourceFiles) {
@@ -214,6 +340,11 @@ export function collectRuntimeFiles(stage, sourceFiles) {
     visit('app/engine/sillytavern/public/dist/nora');
     visit('app/engine/sillytavern/dist/_webpack/output');
     visit('nora-mcp/dist');
+    const dependencyRoot = path.join(stage, UPDATER_DEPENDENCY_ROOT);
+    if (fs.existsSync(dependencyRoot)) {
+        const receipt = verifyUpdaterDependencies(stage);
+        for (const file of [...Object.keys(receipt.files), 'receipt.json']) selected.add(`${UPDATER_DEPENDENCY_ROOT}/${file}`);
+    }
     // Never ship an index that asks first startup to copy absent resources.
     const contentRoot = `${engineRoot}default/content/`;
     if (selected.has(`${contentRoot}index.json`)) {
@@ -226,7 +357,7 @@ export function collectRuntimeFiles(stage, sourceFiles) {
         }
     }
     for (const relative of selected) {
-        assertSafeReleasePath(relative);
+        assertSafeReleasePath(relative, { updaterDependencies: relative.startsWith(`${UPDATER_DEPENDENCY_ROOT}/`) });
         assertSafeReleaseContent(relative, fs.readFileSync(path.join(stage, relative)));
     }
     return [...selected].sort();
@@ -264,6 +395,12 @@ const UPDATER_RUNTIME_FILES = new Set([
  * understand these path rules.
  */
 export function releaseModuleFor(relative) {
+    if (relative.startsWith('ops/installer/') && (
+        /^ops\/installer\/[^/]+\.(?:py|mjs|json)$/.test(relative)
+        || relative.startsWith('ops/installer/templates/')
+        || /^ops\/installer\/desktop\/[^/]+\.(?:js|json)$/.test(relative)
+            && !['main.js', 'preload.js', 'native-crash.js', 'package.json', 'package-lock.json'].includes(path.posix.basename(relative))
+    )) return 'updater';
     if (UPDATER_RUNTIME_FILES.has(relative)) return 'updater';
     if (relative.startsWith('ops/updater/')) return 'updater';
     if (relative.startsWith('ops/skills/')) return 'skills';

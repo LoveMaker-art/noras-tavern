@@ -7,7 +7,14 @@ const { execFileSync } = require('node:child_process');
 
 function configuration(desktop, platform, arch) {
   const pkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
-  const release = JSON.parse(fs.readFileSync(path.join(desktop, '../payload/release-manifest.json')));
+  let release = JSON.parse(fs.readFileSync(path.join(desktop, '../payload/release-manifest.json')));
+  if(release.coreRelease)throw new Error('Platform core manifest cannot itself be a recursive core reference');
+  const systemFile=path.join(desktop,'../payload/nora-system.json');
+  if(fs.existsSync(systemFile)){const system=JSON.parse(fs.readFileSync(systemFile));
+    if(system.coreRelease){const product=JSON.parse(fs.readFileSync(path.resolve(desktop,'../../release-manifest.json')));
+      if(product.commit!==system.commit||JSON.stringify(product.coreRelease)!==JSON.stringify(system.coreRelease)
+        ||product.versions?.tavern!==release.versions?.tavern)throw new Error('APP product source differs from bound system');
+      release=product;}}
   const identity = { schema: 1, version: pkg.version, platform, arch, commit: release.commit };
   const identityFile = path.join(desktop, 'launcher-update-info.json');
   fs.writeFileSync(identityFile, JSON.stringify(identity));

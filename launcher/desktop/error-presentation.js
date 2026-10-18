@@ -62,6 +62,8 @@ const business = {
   UNINSTALL_PARENT_UNCONFIRMED: ['卸载暂未开始。', '无法确认启动器进程身份，文件未删除。', '请重新打开新版启动器后再卸载。'],
   UNINSTALL_RECOVERY_REQUIRED: ['请先处理未完成的恢复。', '卸载尚未开始。', '请先恢复旧版本；无法恢复时复制日志反馈。'],
   RETRY_CONDITIONS_UNCHANGED: ['连续失败，已暂停重试。', '', '请先处理失败原因，再点击“重新检查”。'],
+  PAIR_RETRY_COOLDOWN: ['配对暂时频繁。', '', '请重新输入配对码，等待倒计时结束后提交。'],
+  PAIR_ACTIVATION_FAILED: ['ClawChat 配对未成功。', '具体失败信息已保留在本次日志中。', '请检查网络和配对信息，然后重新输入配对码。'],
   RUNTIME_PARTIAL_UNCONFIRMED: ['上次诺拉安装尚未完成确认。', '', '请先处理恢复提示，保留安装目录和备份。'],
   RUNTIME_IDENTITY_UNKNOWN: ['诺拉程序目录身份无法确认。', '', '请重新检查原安装目录，保留文件和备份。'],
   LAUNCHER_RECOVERY_REQUIRED: ['启动器更新仍需恢复。', '', '请先按提示恢复旧启动器。'],

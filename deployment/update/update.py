@@ -24,7 +24,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 from managed_context import agents_document, install_agents, snapshot_agents, restore_agents
 # These defaults are also the updater module's public compatibility interface.
-from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path, validate_partial_repair
+from bootstrap import default_hermes_home, default_install_root, resolve_update_target, managed_instance, filesystem_path, validate_partial_repair, verify_metadata, publication_tag, TAG_PATTERN
 
 UPDATE_CHECK_JOB_NAME = "Nora Tavern daily update check (09:00 Hermes timezone)"
 UPDATE_CHECK_SCRIPT = "nora-tavern-update-check.py"
@@ -286,6 +286,34 @@ _operation_control = module_at('nora_update_operation_control', _control_path)
 _evidence_path = HERE.parent / 'installer/operation_evidence.py'
 if not _evidence_path.is_file(): _evidence_path = HERE.parent / 'shared/operation_evidence.py'
 _operation_evidence = module_at('nora_update_operation_evidence', _evidence_path)
+_standalone_execution = None
+
+
+@contextmanager
+def guarded_standalone_execution(home, root):
+    """Use the same standalone transaction under the shared task's live guard."""
+    global _standalone_execution
+    gate = _operation_control.require_operation()
+    gate.assert_active()
+    if _standalone_execution is not None:
+        raise RuntimeError('已有独立更新上下文，禁止创建第二个执行者。')
+    verified = resolve_update_target(home, root)
+    if (verified[0] / 'nora-instance.json').exists():
+        raise RuntimeError('受管实例必须使用已有系统更新后端，未改为独立更新。')
+    _standalone_execution = {'home': verified[0], 'root': verified[1], 'lock': None, 'guarded': True}
+    try:
+        yield
+    finally:
+        _standalone_execution = None
+
+
+def standalone_run(command, *, input=None, capture_output=False, timeout=None, check=False, **options):
+    state = _standalone_execution
+    if not state or state.get('guarded') is not True:
+        raise RuntimeError('独立更新必须通过现有任务执行维护进程。')
+    # The existing task guard owns every maintenance child and its close event.
+    return _operation_control.managed_run(command, input=input, capture_output=capture_output,
+        timeout=timeout, check=check, **options)
 
 
 def resource_incomplete(message):
@@ -415,8 +443,19 @@ def port_open(port=8799):
 @contextmanager
 def installer_lock(home):
     from runtime_lock import installation_lock
-    with installation_lock(home, "tavern-installer.lock"):
-        yield
+    state = _standalone_execution
+    with installation_lock(home, "tavern-installer.lock", blocking=state is None, descriptor=state is not None) as lease:
+        if lease is False:
+            raise RuntimeError('另一项安装或更新操作正在进行，请等待原任务结束。')
+        if state is not None:
+            if Path(home).resolve() != state['root'] or state['lock'] is not None:
+                raise RuntimeError('独立更新目录或锁状态不一致。')
+            state['lock'] = lease
+        try:
+            yield
+        finally:
+            if state is not None:
+                state['lock'] = None
 
 
 def python_layout(app):
@@ -454,6 +493,11 @@ def runtime_process_belongs_to_app(app, cwd, argv):
 
 def process_rows(app):
     app = Path(app).resolve()
+    if python_layout(app) is None:
+        # Native installations share the runtime's OS reader. /proc alone is
+        # not an absence proof on Windows or macOS.
+        processes = module_at('updater_native_process_reader', HERE / 'runtime_process.py')
+        return [record['pid'] for record in processes.find_processes(app / 'engine/sillytavern/server.js')]
     rows = []
     if not Path("/proc").is_dir():
         return rows
@@ -472,6 +516,16 @@ def process_rows(app):
 
 
 def stop_unmanaged(app):
+    app = Path(app)
+    if (app / 'native-runtime.json').is_file() and (app / 'native_lifecycle.py').is_file():
+        pids = process_rows(app)
+        # Reuse the runtime's saved argv/cwd/config, OS identity and confirmed
+        # process-close checks. Unknown ownership is a stop error, not permission
+        # to rename a still-running installation or signal an unrelated PID.
+        standalone_runtime(app.parent.parent).stop_run()
+        if process_rows(app):
+            raise RuntimeError('原酒馆停止后仍有归属本安装的进程，未替换程序。')
+        return pids
     pids = process_rows(app)
     for pid in pids:
         try:
@@ -636,7 +690,8 @@ def run(command, *, cwd=None, env=None, timeout=None, capture=False):
         if not entry.is_absolute():raise RuntimeError('维护任务必须使用 Nora 自带的 Hermes CLI。')
         command=[sys.executable,'-B','-c',
             'import runpy,sys; p=sys.argv.pop(1); sys.argv[0]=p; runpy.run_path(p,run_name="__main__")',*command]
-    return _operation_control.managed_run(
+    execute = standalone_run if _standalone_execution is not None else _operation_control.managed_run
+    return execute(
         command,
         cwd=cwd,
         env=env,
@@ -807,6 +862,53 @@ def reuse_dependencies(target, current, lock_name, required):
     raise resource_incomplete('更新资源依赖不完整，且现有依赖不能安全复用；当前安装尚未替换。请重新下载完整正式安装包。')
 
 
+def standalone_dependencies(source, target, lock_name, required):
+    """Prepare a verified Linux component in private staging, before stopping.
+
+    This is not a fallback for desktop updates: it requires the independently
+    authenticated installation and its live lock, plus the installer's own
+    temporary source directory. npm executes no package lifecycle scripts.
+    """
+    state = _standalone_execution
+    lease = state.get('lock') if state else None
+    if not sys.platform.startswith('linux') or lease is None or lease.closed:
+        raise resource_incomplete('独立更新尚未取得安装目录锁，未准备依赖或停止服务。')
+    source, target = Path(source), Path(target)
+    staging = state['root'] / 'tavern-updates'
+    if (source.name != 'source' or not source.parent.name.startswith('direct-')
+            or source.parent.parent != staging or source.resolve() != source.absolute()
+            or target not in (source / 'app/engine/sillytavern', source / 'nora-mcp')
+            or target.resolve() != target.absolute()):
+        raise RuntimeError('独立更新依赖目标不是已核验的临时程序目录。')
+    lock = target / lock_name
+    before = {name: file_sha(target / name) for name in ('package.json', lock_name)}
+    value = json.loads(lock.read_text(encoding='utf-8'))
+    if (value.get('lockfileVersion') not in (2, 3) or not isinstance(value.get('packages'), dict)
+            or any(package.get('hasInstallScript') for package in value['packages'].values())):
+        raise resource_incomplete('独立更新依赖清单需要额外安装脚本，尚未停止服务；请保留当前安装并反馈日志。')
+    npm = shutil.which('npm')
+    if not npm:
+        raise resource_incomplete('独立更新需要现有 Node.js 对应的 npm，尚未停止服务或修改安装。')
+    log('在临时目录准备锁定的 Linux 依赖，原服务继续运行')
+    standalone_run([npm, 'ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund',
+        '--userconfig', os.devnull, '--cache', str(source.parent / 'npm-cache')],
+        cwd=target, timeout=300, check=True, text=True)
+    if (any(file_sha(target / name) != digest for name, digest in before.items())
+            or any(not (target / 'node_modules' / name).is_file() for name in required)):
+        raise resource_incomplete('新版依赖准备或清单校验未通过，尚未停止服务或替换安装。')
+    return 'prepared-standalone'
+
+
+def component_dependencies(source, target, current, lock_name, required):
+    try:
+        return reuse_dependencies(target, current, lock_name, required)
+    except RuntimeError as error:
+        if (getattr(error, 'code', None) != 'RESOURCE_INCOMPLETE'
+                or _standalone_execution is None or not sys.platform.startswith('linux')):
+            raise
+        return standalone_dependencies(source, target, lock_name, required)
+
+
 def materialize_staged_local_dependencies(source):
     """Copy reviewed file dependencies inside staging, without installation."""
     source = Path(source)
@@ -841,7 +943,8 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, 
     if app_changed:
         log("准备 Tavern 依赖")
         engine = source / "app/engine/sillytavern"
-        report["tavern"] = reuse_dependencies(
+        report["tavern"] = component_dependencies(
+            source,
             engine,
             Path(old_app) / "engine/sillytavern",
             "package-lock.json",
@@ -852,7 +955,8 @@ def prepare_dependencies(source, old_app, old_mcp, *, app_changed, mcp_changed, 
         materialize_staged_local_dependencies(source)
     if mcp_changed:
         log("准备 Nora MCP 依赖")
-        report["mcp"] = reuse_dependencies(
+        report["mcp"] = component_dependencies(
+            source,
             source / "nora-mcp",
             old_mcp,
             "npm-shrinkwrap.json",
@@ -1140,6 +1244,15 @@ def restore_tree(target, backup_target, failed):
 
 def start_old(hermes_home, install_root, service, snapshot):
     app = install_root / "apps/tavern-runtime"
+    if _standalone_execution is not None and (app / 'native_lifecycle.py').is_file():
+        runtime = standalone_runtime(install_root)
+        runtime.install()
+        if service and snapshot:
+            service.restore(snapshot)
+            service.start()
+        else:
+            runtime.start(port=standalone_port(hermes_home, install_root))
+        return
     if (app / "native_lifecycle.py").is_file():
         environment = {**os.environ, "HERMES_HOME": str(hermes_home), "TAVERN_DATA_ROOT": str(install_root)}
         run([sys.executable, "-B", app / "native_lifecycle.py", "install"], env=environment)
@@ -1157,6 +1270,85 @@ def start_old(hermes_home, install_root, service, snapshot):
     if layout:
         error=RuntimeError('旧 Python 酒馆无法由新版启动器安全接管。文件和数据已保留，请使用完整正式包重新安装启动器。')
         error.code='LEGACY_RUNTIME_UNSUPPORTED';raise error
+
+
+def standalone_port(home, root):
+    """Read this instance's configured port; never probe a different Tavern."""
+    import urllib.parse
+    import yaml
+    config = Path(home) / 'config.yaml'
+    if not config.is_file():
+        return 8799
+    value = yaml.safe_load(config.read_text(encoding='utf-8')) or {}
+    url = value.get('mcp_servers', {}).get('nora', {}).get('env', {}).get('NORA_MCP_BASE_URL')
+    if not url:
+        return 8799
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'http' or parsed.hostname not in ('127.0.0.1', 'localhost', '::1')
+            or parsed.username or parsed.password or parsed.path not in ('', '/') or parsed.query or parsed.fragment
+            or parsed.port is None or not 1024 <= parsed.port <= 65535):
+        raise RuntimeError('现有酒馆端口配置无效，未修改安装。')
+    return parsed.port
+
+
+def standalone_runtime(root):
+    app = Path(root) / 'apps/tavern-runtime'
+    module = module_at('standalone_native_lifecycle', app / 'native_lifecycle.py')
+    contract = module.RuntimeContract.from_dict(json.loads((app / 'native-runtime.json').read_text(encoding='utf-8')))
+    return module.NativeRuntime(root, app, Path(root) / 'tavern-state', contract)
+
+
+def standalone_snapshot(root):
+    receipt = json.loads((Path(root) / 'tavern-updates/installed.json').read_text(encoding='utf-8'))
+    status = standalone_runtime(root).status()
+    if status.get('inspection_error'):
+        raise RuntimeError('无法核验独立酒馆进程归属，已保留现场。')
+    return {'scope': 'standalone-tavern', 'version': receipt['version'],
+            'running': status.get('processes', {}).get('native') is True}
+
+
+def restore_standalone_running_state(root, before):
+    if before.get('running') is not False:
+        return
+    standalone_runtime(root).stop_run()
+    if standalone_snapshot(root)['running']:
+        raise RuntimeError('新版已通过检查，但未恢复原有停止状态。')
+
+
+def recover_standalone(home, root, *, helper=None):
+    helper = helper or recovery_module()
+    journal = helper.load(home, root)
+    if journal.plan['before'].get('scope') != 'standalone-tavern':
+        raise RuntimeError('历史事务不属于可核验的独立更新，已保留日志和备份。')
+    before = journal.plan['before']
+    saved_service = journal.backup / 'host/service.json'
+    snapshot = json.loads(saved_service.read_text(encoding='utf-8')) if saved_service.is_file() else None
+    def stop(_plan, _backup):
+        service = module_at('standalone_service_manager', HERE / 'service_manager.py').ManagedService.discover(
+            root, Path(root) / 'apps/tavern-runtime')
+        if service:
+            service.stop()
+        stop_unmanaged(Path(root) / 'apps/tavern-runtime')
+        if process_rows(Path(root) / 'apps/tavern-runtime'):
+            raise RuntimeError('独立酒馆尚未停止，未恢复文件。')
+        return {'offline': True}
+    def resume(_plan, _backup):
+        service = module_at('standalone_service_manager', HERE / 'service_manager.py').ManagedService.discover(
+            root, Path(root) / 'apps/tavern-runtime')
+        if before['running']:
+            start_old(home, root, service, snapshot)
+        elif service and snapshot:
+            service.restore(snapshot)
+    def verify(_plan, _backup):
+        result = standalone_snapshot(root)
+        runtime = standalone_runtime(root)
+        if before['running'] and runtime.status().get('health', {}).get('ok') is not True:
+            raise RuntimeError('旧版文件已恢复，但服务健康检查未通过。')
+        if journal.plan.get('worlds') is not None:
+            verify_preserved_worlds(Path(root) / 'apps/tavern-runtime', Path(root) / 'tavern-state',
+                                   journal.plan.get('storyInventory', {}), journal.plan['worlds'])
+        return result
+    return helper.recover(home, root, stop=stop, resume=resume, verify=verify)
 
 
 @contextmanager
@@ -1457,7 +1649,7 @@ def install(args):
     hermes_home, install_root = resolve()
     instance = managed_instance(hermes_home, managed_home) if managed_home else None
     partial = validate_partial_repair(hermes_home, install_root, instance) if instance else None
-    port = instance["port"] if instance else 8799
+    port = instance["port"] if instance else standalone_port(hermes_home, install_root)
     os.environ["HERMES_HOME"] = str(hermes_home)
     os.environ["NORA_HERMES_HOME"] = str(hermes_home)
     os.environ["HERMES_INSTALL_DIR"] = str(hermes_home / "hermes-agent")
@@ -1474,6 +1666,11 @@ def install(args):
         closure_refs=recovery_module().effect_closure_refs(hermes_home,install_root) if instance else []
         if transaction_file.exists():
             previous = json.loads(transaction_file.read_text(encoding="utf-8"))
+            if (_standalone_execution is not None and previous.get('status') not in ('committed', 'restored')
+                    and previous.get('recoveryPlan', {}).get('before', {}).get('scope') == 'standalone-tavern'):
+                result = recover_standalone(hermes_home, install_root)
+                print(json.dumps(result, ensure_ascii=False, indent=2))
+                return
             if instance:recovery_module().require_partial_history_before_replace(hermes_home,install_root,previous,closure_refs)
             if previous.get("status") not in ("committed", "restored"):
                 previous_effects=recovery_module().effects(hermes_home,install_root)
@@ -1586,6 +1783,9 @@ def install(args):
             stamp = time.strftime("%Y%m%d-%H%M%S")
             resolve()
             before_state = {}
+            standalone_journal = _standalone_execution is not None and layout is None
+            if standalone_journal:
+                before_state = standalone_snapshot(install_root)
             if managed:
                 before_state = managed_lifecycle("preflight", hermes_home, install_root, version)
                 if partial and (before_state.get('partialRepair') != partial
@@ -1621,13 +1821,13 @@ def install(args):
             story_inventory, story_worlds = {}, {}
             transaction = {"schema": 1, "status": "prepared", "version": version, "backup": str(backup)}
             journal = None
-            if managed:
+            if managed or standalone_journal:
                 recovery_helper = recovery_module()
                 journal = recovery_helper.Journal.create(
                     hermes_home, install_root, backup, swaps, version=version,
                     before=before_state,
                     state=install_root / "tavern-state" if runtime_changed else None,
-                    lifecycle=json.loads(os.environ["NORA_UPDATE_LIFECYCLE"]),
+                    lifecycle=json.loads(os.environ["NORA_UPDATE_LIFECYCLE"]) if managed else None,
                 )
                 transaction = journal.record
             else:
@@ -1637,6 +1837,9 @@ def install(args):
                 if runtime_changed:
                     log("备份旧版本并停止 Tavern")
                     runtime_stopped = True
+                    if standalone_journal:
+                        journal.plan['phase'] = 'stopping'
+                        journal.save()
                     if managed:
                         journal.plan["phase"] = "stopping"
                         journal.save()
@@ -1658,6 +1861,12 @@ def install(args):
                         service.stop()
                     else:
                         stop_unmanaged(old_app)
+                    if standalone_journal:
+                        if process_rows(old_app):
+                            raise RuntimeError('原酒馆进程尚未停止，未替换程序。')
+                        journal.seal_offline({'offline': True})
+                        journal.plan['phase'] = 'stopped'
+                        journal.save()
                     runtime_stopped = True
                     # Include the final write before stopping and use saved
                     # metadata, whose backup already occupies disk space.
@@ -1714,6 +1923,9 @@ def install(args):
                         story_worlds = verify_worlds(baseline_reader, backup / "state")
                         if journal is not None:
                             journal.plan["worlds"] = story_worlds
+                            if standalone_journal:
+                                journal.plan['storyInventory'] = story_inventory
+                                journal.save()
                             if partial:
                                 journal.plan['partialBaseline']['worlds'] = story_worlds
                             journal.save()
@@ -1784,6 +1996,7 @@ def install(args):
                     if journal is not None:journal.finish_metadata([install_root/'tavern-state/native-runtime/dependencies.json'])
                 if runtime_changed:
                     log("启动新版 Tavern")
+                    if standalone_journal:journal.preserve_startup_backups()
                     runtime = install_runtime(
                         hermes_home,
                         install_root,
@@ -1792,9 +2005,10 @@ def install(args):
                     )
                     if not runtime.get("health", {}).get("ok"):
                         raise RuntimeError("新版酒馆健康检查未通过")
+                    if standalone_journal:journal.preserve_startup_backups(restore=True)
                 else:
                     runtime = {"native_pid": service_snapshot.get("pid") if service_snapshot else None,
-                               "health": {"ok": port_open(8799)}}
+                               "health": {"ok": port_open(port)}}
                 resolve(validate_partial=False)
                 verify_partial_configuration(hermes_home, install_root, partial)
                 world_verification = verify_preserved_worlds(
@@ -1851,6 +2065,10 @@ def install(args):
                     verify_preserved_worlds(install_root / "apps/tavern-runtime",
                                            install_root / "tavern-state", story_inventory, story_worlds,
                                            exact=bool(partial))
+                if standalone_journal and not before_state['running'] and runtime_changed:
+                    # Acceptance above proves the replacement can run. Leave a
+                    # previously stopped installation stopped before committing.
+                    restore_standalone_running_state(install_root, before_state)
                 if journal is not None:
                     journal.save("committed")
                 else:
@@ -1901,12 +2119,23 @@ def install(args):
                         log(f"AGENTS 事务快照清理未完成：{cleanup_error}")
                 return
             except BaseException as error:
-                _operation_evidence.freeze(error, nora_home=managed_home or install_root.parent,
-                    install_root=install_root, context={'stage': 'update_apply'})
+                _operation_evidence.freeze(error, nora_home=managed_home or os.environ.get('NORA_TAVERN_HOME') or install_root.parent,
+                    install_root=install_root if managed_home else install_root / 'apps', context={'stage': 'update_apply'})
                 if committed:
                     raise RuntimeError(f"更新已验证提交，但结果传递或收尾失败；请检查状态，不要重装：{error}; backup={backup}") from error
                 log("更新未完成，恢复旧版本")
                 if journal is not None:
+                    if standalone_journal:
+                        try:
+                            recover_standalone(hermes_home, install_root, helper=recovery_helper)
+                        except BaseException as recovery_error:
+                            failure = RuntimeError('更新失败：'+str(error)+'; 恢复未完成：'+str(recovery_error)+'; backup='+str(backup))
+                            failure.code = getattr(error, 'code', None)
+                            failure.secondary_errors = [recovery_error]
+                            raise failure from error
+                        failure = RuntimeError(str(error)+'; recovery=restored; backup='+str(backup))
+                        failure.code = getattr(error, 'code', None)
+                        raise failure from error
                     def verify_restored(plan, _backup):
                         state = managed_lifecycle("recover-verify", hermes_home, install_root, version)
                         if partial:
@@ -1927,8 +2156,8 @@ def install(args):
                             verify=verify_restored,
                         )
                     except BaseException as recovery_error:
-                        _operation_evidence.freeze(recovery_error, nora_home=managed_home or install_root.parent,
-                            install_root=install_root, context={'stage': 'restoring'})
+                        _operation_evidence.freeze(recovery_error, nora_home=managed_home or os.environ.get('NORA_TAVERN_HOME') or install_root.parent,
+                            install_root=install_root if managed_home else install_root / 'apps', context={'stage': 'restoring'})
                         failure = RuntimeError(f"更新失败：{error}; 恢复未完成：{recovery_error}; recovery=incomplete; backup={backup}")
                         failure.code = getattr(error,'code',None)
                         failure._bridge_diagnostic_message = "更新失败，旧版本恢复未完成；请保留日志和备份。"
@@ -1988,9 +2217,48 @@ def main():
     command.add_argument("--confirm", action="store_true", required=True)
     command.add_argument("--allow-candidate", action="store_true")
     args = parser.parse_args()
-    cli = module_at('nora_update_operation_cli', _control_path.with_name('operation_cli.py'))
-    cli.ensure_operation('update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
-    install(args)
+    if (args.managed_home is not None or getattr(sys, '_nora_operation_delegate', None) is not None
+            or any(name.startswith('NORA_OPERATION_') for name in os.environ)):
+        cli = module_at('nora_update_operation_cli', _control_path.with_name('operation_cli.py'))
+        cli.ensure_operation('update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
+        if args.managed_home is not None:
+            install(args)
+        else:
+            args.home, args.install_root = resolve_update_target(args.home, args.install_root)
+            with guarded_standalone_execution(args.home, args.install_root):
+                install(args)
+    else:
+        args.home, args.install_root = resolve_update_target(args.home, args.install_root)
+        # Historical bootstraps call this entry with a verified extracted
+        # runner. They must submit the same durable actor as current Nora and
+        # desktop callers, rather than taking a separate Python writer lock.
+        entry = HERE / 'task.py'
+        if not entry.is_file():
+            error = RuntimeError('当前更新器缺少独立任务执行文件，未修改现有程序和数据。')
+            error.code = 'RESOURCE_INCOMPLETE'
+            raise error
+        release = args.release_dir.expanduser().resolve()
+        manifest, digest, _ = verify_metadata(release, args.manifest_sha256, allow_candidate=args.allow_candidate)
+        tag = publication_tag(manifest)
+        commit = manifest.get('commit', '')
+        if not re.fullmatch(TAG_PATTERN, tag) or not re.fullmatch(r'[a-f0-9]{40}', commit):
+            raise RuntimeError('发布清单缺少可固定的版本或提交身份，未开始更新。')
+        command = [sys.executable, '-u', '-B', str(entry), '--hermes-home', str(args.home),
+            '--install-root', str(args.install_root), '--apply', '--confirm',
+            '--manifest-sha256', digest, '--runner-root', str(HERE.parent),
+            '--runner-manifest', str(release / 'release-manifest.json'), '--tag', tag, '--target-commit', commit]
+        if manifest.get('candidate'):
+            # The old bootstrap deletes its downloaded temporary bundle when
+            # ACK returns. Only an explicit stable candidate directory may be
+            # retained as a local source; formal releases are re-opened by tag.
+            try:
+                relative = release.relative_to(args.install_root / 'tavern-updates')
+            except ValueError:
+                relative = None
+            if relative is not None and relative.parts and relative.parts[0].startswith('install-'):
+                raise RuntimeError('候选资源位于旧更新器自动清理的临时目录，请指定稳定的本地验收目录。')
+            command.extend(['--release-dir', str(release), '--allow-candidate'])
+        raise SystemExit(subprocess.run(command, check=False).returncode)
 
 
 if __name__ == "__main__":

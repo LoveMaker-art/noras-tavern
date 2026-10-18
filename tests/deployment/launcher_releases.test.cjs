@@ -164,7 +164,7 @@ test('actual check-update entry shares in-flight work and uses its persisted met
   visit(ast);assert.ok(callback);
   let tracked=0;
   const context=vm.createContext({activeRun:false,modelBusy:false,path,fs,Date,Promise,
-    releaseCheckRequest:null,releaseMetadataState:null,
+    releaseCheckRequest:null,releaseMetadataState:null,localReleaseDirectory:null,
     noraHome:()=>f.root,installRoot:()=>f.root,CHANNEL:'stable',app:{getVersion:()=>f.options.launcherVersion},
     releases,formatUserError:error=>error.message,
     require:name=>require(path.join(path.dirname(mainFile),name)),
@@ -187,7 +187,7 @@ test('old published metadata is still visible but its unbound writer cannot be s
   const f=fixture(t),legacy=JSON.parse(f.data['release-manifest.json']);delete legacy.launcherCapabilities;
   f.data['release-manifest.json']=JSON.stringify(legacy);
   const checked=await releases.check(f.options);
-  assert.equal(checked.latest,'v2.2.8');assert.equal(checked.state,'blocked');
+  assert.equal(checked.latest,null);assert.equal(checked.releaseTag,'v2.2.8');assert.equal(checked.state,'blocked');
   assert.equal(checked.diagnosticError.userCode,'RELEASE_EXECUTOR_INCOMPATIBLE');
   assert.equal(checked.diagnosticError.code,'VERIFICATION_FAILED');
   assert.ok(checked.diagnosticError.message.length>0);
@@ -402,9 +402,9 @@ test('a newer release without an updater manifest is blocked', async t => {
   const result = await releases.check(f.options);
   assert.equal(result.state, 'blocked');
   assert.equal(result.available, false);
-  assert.equal(result.releaseAvailable, true);
+  assert.equal(result.releaseAvailable, false);
   assert.equal(result.installable, false);
-  assert.equal(result.latest, 'v2.2.8');
+  assert.equal(result.latest,null);assert.equal(result.releaseTag,'v2.2.8');
   assert.match(result.compatibilityError, /release-manifest.json/);
 });
 test('an incompatible component updater is blocked', async t => {
@@ -547,4 +547,101 @@ test('component transfer throttles chunk progress and preserves exact zero and t
     :f.options.fetcher(url,options);
   await releases.prepare({...f.options,fetcher,onEvent:event=>{if(event.event==='progress')progress.push(event);}});
   assert.ok(progress.length<=3,'rapid chunks are throttled');assert.equal(progress[0].current,0);assert.equal(progress.at(-1).current,3);assert.equal(progress.at(-1).total,3);assert.equal(progress.at(-1).ratio,1);
+});
+
+
+function appOnlyFixture(t){
+  const f=fixture(t),sha=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const original=f.data['release-manifest.json'],tag='v2.2.9',commit='b'.repeat(40);
+  const ref={schema:'nora-core-reference/1',tag:'v2.2.8',commit:'a'.repeat(40),manifests:{
+    'darwin-arm64':{asset:'darwin-arm64-release-manifest.json',sha256:sha(original),size:Buffer.byteLength(original)}}};
+  const product={...JSON.parse(original),commit,publication:{schema:'nora-component-publication/1',tag},
+    launcherVersion:'0.1.1',coreRelease:ref};
+  Object.assign(f.system,{commit,publication:product.publication,coreRelease:ref});
+  const archive='Nora-Tavern-Launcher-0.1.1-darwin-arm64-update.zip';
+  const physical={'release-manifest.json':JSON.stringify(product),[archive]:'APP archive',
+    'nora-launcher-darwin-arm64.json':JSON.stringify({schema:'nora-launcher/v1',platform:'darwin',arch:'arm64',
+      version:'0.1.1',commit,asset:archive,size:11,sha256:sha('APP archive')})};
+  for(const [name,item] of Object.entries(f.system.files))physical[item.asset]=f.data[name];
+  const refresh=()=>{
+    physical['nora-system-darwin-arm64.json']=JSON.stringify(f.system);
+    f.release.tag_name=tag;
+    f.release.assets=Object.entries(physical).map(([name,bytes])=>({name,state:'uploaded',size:Buffer.byteLength(bytes),
+      digest:'sha256:'+sha(bytes),browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/${name}`}));
+  };
+  refresh();
+  const fetcher=async url=>{
+    f.requested.push(String(url));
+    const resource=f.resource(url);
+    return fixtureResponse(JSON.stringify(resource.kind==='asset'?undefined:f.release)||physical[resource.asset],url);
+  };
+  const receipt=path.join(f.root,'tavern-updates/installed.json');fs.mkdirSync(path.dirname(receipt));
+  fs.writeFileSync(receipt,JSON.stringify({version:'2.2.8',commit:'a'.repeat(40)}));
+  return {...f,physical,refresh,original,product,options:{...f.options,fetcher}};
+}
+
+test('confirmed APP-only handoff reconciles its installer cache against the unchanged core, including a sealed plan',async t=>{
+  const f=appOnlyFixture(t),vm=require('node:vm'),{parse}=require('../installer/desktop/node_modules/acorn');
+  const source=fs.readFileSync(path.join(__dirname,'../installer/desktop/main.js'),'utf8'),tree=parse(source,{ecmaVersion:'latest'});
+  const operationId=crypto.randomUUID(),operationDirectory=path.join(f.root,'installer/operations',operationId);
+  fs.mkdirSync(operationDirectory,{recursive:true});
+  const selected=await releases.selectPlan(f.options),sealed=releases.sealPlan(selected,{...f.options,operationDirectory,assertOwner:()=>{}});
+  let state={phase:'error',error:'old start failure',task:'old task',resumeTarget:selected.tag,setupCompleted:false};
+  const result={version:selected.releaseManifest.versions.tavern,commit:'a'.repeat(40),systemReady:true,updateVerified:true,port:8799,
+    noraHome:f.root,hermesHome:path.join(f.root,'hermes'),installRoot:path.join(f.root,'tavern'),setupCompleted:false};
+  assert.equal(releases.coreIdentity(releases.validatePlan(sealed,{...f.options,operationDirectory,launcherVersion:selected.launcherManifest.version})).commit,result.commit);
+  const context=vm.createContext({path,releases,process:{platform:selected.platform,arch:selected.arch},CHANNEL:'stable',
+    app:{getVersion:()=>selected.launcherManifest.version},installerDirectory:()=>path.join(f.root,'installer'),
+    noraHome:()=>result.noraHome,hermesHome:()=>result.hermesHome,installRoot:()=>result.installRoot,
+    activeRun:false,modelBusy:false,readInstallerState:()=>state,writeInstallerState:value=>(state=value)});
+  const load=name=>{const node=tree.body.find(node=>node.type==='FunctionDeclaration'&&node.id.name===name);assert.ok(node);return vm.runInContext('('+source.slice(node.start,node.end)+')',context);};
+  context.confirmedMaintenanceIdentity=load('confirmedMaintenanceIdentity');
+  const reconcile=load('reconcileInstallerState');
+  const operation={operationId,kind:'update',state:'succeeded',verification:'confirmed',effectState:'untouched',
+    recoveryOutcome:'not-required',currentFailure:null,target:{releasePlan:sealed},result};
+  assert.equal(context.confirmedMaintenanceIdentity(operation)?.commit,result.commit,'product commit is not the installed core commit');
+  assert.equal(reconcile(operation,result).resumeTarget,null);assert.equal(state.error,'');assert.equal(state.phase,'ready');
+  for(const commit of [selected.commit,'c'.repeat(40)])assert.equal(context.confirmedMaintenanceIdentity({...operation,result:{...result,commit}}),null);
+  fs.appendFileSync(path.join(operationDirectory,sealed.manifestRef.file),' ');
+  assert.equal(context.confirmedMaintenanceIdentity(operation),null,'tampered core reference must not clear a failed installer state');
+});
+
+test('APP-only publication discovers the new APP while independent core check stays current',async t=>{
+  const f=appOnlyFixture(t),receipt=fs.readFileSync(path.join(f.root,'tavern-updates/installed.json'));
+  const options={...f.options,client:'updater',updaterCapabilities:capabilities};
+  const core=await releases.check(options);
+  assert.equal(core.state,'current');assert.equal(core.releaseAvailable,false);assert.equal(core.available,false);
+  assert.equal(core.latest,'v2.2.8');assert.equal(core.releaseTag,'v2.2.9');
+  assert.equal(f.requested.some(url=>url.includes('nora-launcher-')),false);
+  const gui=await releases.check({...options,launcherDiscovery:true});
+  assert.equal(gui.state,'available');assert.equal(gui.releaseAvailable,false);assert.equal(gui.launcherUpdateAvailable,true);
+  assert.deepEqual(releases.coreIdentity(gui.releasePlan),{version:'2.2.8',commit:'a'.repeat(40),
+    manifestSha256:crypto.createHash('sha256').update(f.original).digest('hex')});
+  assert.deepEqual(fs.readFileSync(path.join(f.root,'tavern-updates/installed.json')),receipt);
+  assert.equal(f.requested.some(url=>url.endsWith('-update.zip')||url.endsWith('.tar.gz')),false);
+});
+
+test('APP-only publication resolves original core bytes for installation and older core updates',async t=>{
+  const f=appOnlyFixture(t),options={...f.options,client:'updater',updaterCapabilities:capabilities};
+  const update=await releases.selectPlan(options);
+  assert.equal(update.commit,'b'.repeat(40));
+  const install=await releases.selectPlan({...options,mode:'install'});
+  assert.equal(install.commit,'a'.repeat(40));assert.equal(install.releaseManifestText,f.original);
+  const payload=await releases.prepareUpdate({...options,selectedPlan:update,plan:()=>assert.fail('must not plan product runner as core')});
+  assert.equal(fs.readFileSync(path.join(payload,'release-manifest.json'),'utf8'),f.original);
+  assert.equal(fs.readFileSync(path.join(payload,'nora-tavern-app.tar.gz'),'utf8'),'app');
+});
+
+test('APP-only core proof rejects changed manifest bytes, source commit and recursive references',async t=>{
+  const f=appOnlyFixture(t),options={...f.options,client:'updater',updaterCapabilities:capabilities,mode:'install'};
+  f.physical['darwin-arm64-release-manifest.json']+=' ';
+  f.refresh();await assert.rejects(releases.selectPlan(options),/校验|证明/);
+  f.physical['darwin-arm64-release-manifest.json']=f.original;
+  const bad={...JSON.parse(f.original),commit:'c'.repeat(40)};
+  f.physical['darwin-arm64-release-manifest.json']=JSON.stringify(bad);
+  const bytes=f.physical['darwin-arm64-release-manifest.json'];
+  Object.assign(f.system.files['release-manifest.json'],{sha256:crypto.createHash('sha256').update(bytes).digest('hex'),size:Buffer.byteLength(bytes)});
+  Object.assign(f.system.coreRelease.manifests['darwin-arm64'],f.system.files['release-manifest.json']);
+  f.refresh();await assert.rejects(releases.selectPlan(options),/不变核心/);
+  assert.throws(()=>releases.coreReference({...f.product,coreRelease:{...f.product.coreRelease,tag:'v2.2.9'}},'darwin','arm64'),/来源证明/);
 });

@@ -28,6 +28,7 @@ function element(tag='div') {
     add(...names){n.className=[...new Set([...n.className.split(/\s+/).filter(Boolean),...names])].join(' ');},
     remove(...names){n.className=n.className.split(/\s+/).filter(name=>!names.includes(name)).join(' ');},
     toggle(name,force){const add=force??!this.contains(name);this[add?'add':'remove'](name);return add;}};
+  Object.defineProperty(n,'isConnected',{get(){return n.connected===true||n.parentElement?.isConnected===true;}});
   let text='';
   Object.defineProperty(n,'textContent',{get(){return text+n.children.map(c=>typeof c==='string'?c:c.textContent||'').join('');},set(value){text=String(value);n.children=[];}});
   Object.defineProperty(n,'innerHTML',{set(value){
@@ -46,7 +47,7 @@ function element(tag='div') {
 }
 function fixture(extra={}) {
   const elements=new Map(), copies=[], calls=[];
-  const inline=element();elements.set('inline',inline);
+  const inline=element();inline.connected=true;elements.set('inline',inline);
   const menuHtml=html.slice(html.indexOf('<div class="management"'),html.indexOf('<div class="launchbar"'));
   const menu=[...menuHtml.matchAll(/<button([^>]*)>(.*?)<\/button>/gs)].map(m=>{
     const n=element('button');n.textContent=m[2].replace(/<[^>]+>/g,'');
@@ -60,7 +61,7 @@ function fixture(extra={}) {
   };
   const button=(text,onclick,primary=true)=>Object.assign(element('button'),{textContent:text,onclick,className:primary?'button primary':'button'});
   const context=vm.createContext({snapshot:{},view:'daily',busy:false,statusUnknown:false,launcherRecoveryConfirmed:false,daily:false,running:false,stage:0,
-    activeAction:'',activeService:'all',lastFailure:null,lastStatusError:'',lastStatusAt:0,taskTimer:null,logsOpen:false,operationCancelled:false,versionInfo:null,autoVersionChecked:false,
+    activeAction:'',activeService:'all',lastFailure:null,lastStatusError:'',lastStatusAt:0,taskTimer:null,pairTimer:null,logsOpen:false,operationCancelled:false,versionInfo:null,autoVersionChecked:false,
     versionChecking:false,modelFormGeneration:0,pageReturnFocus:null,firstCompletionPending:false,sawIncompleteSetup:false,autoStartAttempted:true,bundledUpgradeAttempted:false,
     launchHint:element(),labels:['Nora','酒馆','模型','ClawChat','检查'],milestoneStates:[],currentTask:'',startedAt:0,lastEvent:0,taskStage:'',stageStartedAt:0,taskProgress:null,lastProgressAt:0,alive:true,refreshing:false,pollTimer:null,launchHint:element(),api:{openLogs:async()=>{calls.push(['logs']);return {ok:true};}},$,button,
     document:{createElement:element,createTextNode:value=>String(value),querySelector:selector=>inline.querySelector(selector),querySelectorAll:selector=>{
@@ -483,6 +484,33 @@ test('a pairing form preserves its single-use code and makes no request when cur
   assert.equal(requests,0);assert.equal(h.inline.querySelector('#pairCode').value,'single-use-fixture');
 });
 
+test('a failed pairing opens fresh input, counts down and actually submits after cooldown',async()=>{
+  let clock=Date.parse('2026-10-16T08:00:00Z'),requests=0,tick;
+  class Clock extends Date{static now(){return clock;}}
+  const operation={operationId:'22222222-2222-4222-8222-222222222222',snapshotSequence:4,kind:'pair',state:'blocked',
+    effectState:'untouched',recoveryOutcome:'not-required',allowedActions:['pair-clawchat','recheck','logs'],
+    pairRetryAt:clock+30000,primaryFailure:{code:'PAIR_CODE_REJECTED',guidance:{title:'配对未成功。',detail:'服务返回拒绝。'}}};
+  const state={...ready,modelConfigured:true,clawchatPaired:false,clawchatProfileReady:false,operation};
+  const h=fixture({Date:Clock,snapshot:state,setInterval:fn=>{tick=fn;return 1;},api:{
+    status:async()=>({...state}),pair:async options=>{
+      requests++;assert.equal(options.code,'new-fixture-code');
+      Object.assign(state,{clawchatPaired:true,clawchatProfileReady:true,
+        operation:{...operation,state:'succeeded',allowedActions:['recheck','logs'],pairRetryAt:null}});
+      return {...state};
+    }}});
+  await h.invoke('route()');assert.ok(action(h,'重新输入配对码'));
+  await action(h,'重新输入配对码').onclick();
+  const form=h.inline.querySelector('form'),submit=form.querySelector('button[type="submit"]');
+  h.inline.querySelector('#pairCode').value='new-fixture-code';
+  await h.invoke('controls()');
+  assert.equal(submit.disabled,true,'status refresh cannot temporarily enable a cooling-down pairing form');assert.match(submit.textContent,/30/);
+  form.onsubmit({preventDefault(){}});assert.equal(requests,0);
+  assert.equal(h.inline.querySelector('#pairCode').value,'new-fixture-code');
+  clock+=30001;tick();assert.equal(submit.disabled,false);
+  form.onsubmit({preventDefault(){}});await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(requests,1,'fresh input must get past the real run admission guard');
+});
+
 test('failure navigation requires confirmed usable files and keeps normal controls off the error page',async()=>{
   for(const [effectState,verification,permitted] of [['unknown','unconfirmed',false],['changed','unconfirmed',false],
     ['restored','unconfirmed',false],['untouched','failed',true],['restored','confirmed',true]]){
@@ -529,4 +557,15 @@ test('the model failure log entry stays bound to the submitted operation instead
   await descendants(h.inline).find(n=>n.tagName==='FORM').onsubmit({preventDefault(){}});
   const logs=action(h,'查看日志');assert.equal(logs.hidden,false);await logs.onclick({currentTarget:logs});
   assert.equal(requested,submitted.operationId);
+});
+
+test('APP-only offer uses the existing update control and requests the launcher handoff explicitly',async()=>{
+  const requests=[];const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,current:'2.4.3',releaseAvailable:false,launcherUpdateAvailable:true})}});
+  await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
+  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
+});
+test('content offer stays independent even when the launcher also has an update',async()=>{
+  const requests=[];const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,releaseAvailable:true,launcherUpdateAvailable:true})}});
+  await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
+  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3'}]);
 });

@@ -70,7 +70,7 @@ with zipfile.ZipFile(sys.argv[2],'w') as archive:
     return fs.readFileSync(archive);
 }
 
-function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false,sources}={}) {
+function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false,sources,publicationTag}={}) {
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-final-consumer-test-'));
     t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
     const captured=JSON.parse(zlib.brotliDecompressSync(fs.readFileSync(path.join(root,
@@ -78,8 +78,16 @@ function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,b
     const files=new Map(Object.entries(captured.files).map(([name,text])=>[name,Buffer.from(text)]));
     const provenance=JSON.parse(fs.readFileSync(path.join(root,'tests/deployment/fixtures/published-v2.4.4/provenance.json')));
     for(const item of provenance.files) assert.equal(hash(files.get(item.name)),item.sha256);
-    const tag=captured.release.tag_name,commit=JSON.parse(files.get('release-manifest.json')).commit;
+    const oldTag=captured.release.tag_name,tag=publicationTag||oldTag,commit=JSON.parse(files.get('release-manifest.json')).commit;
     const release=captured.release,references=[];
+    if(publicationTag){
+        release.tag_name=tag;
+        for(const asset of release.assets)asset.browser_download_url=asset.browser_download_url.replace(`/${oldTag}/`,`/${tag}/`);
+        for(const name of ['release-manifest.json',...targets.map(target=>`${target}-release-manifest.json`),...targets.map(target=>`nora-system-${target}.json`)]) {
+            const manifest=JSON.parse(files.get(name));manifest.publication={schema:'nora-component-publication/1',tag};
+            files.set(name,Buffer.from(JSON.stringify(manifest)));
+        }
+    }
     const url=(name,source=tag)=>`https://github.com/${repository}/releases/download/${source}/${name}`;
     const closure=shippedModuleFixture(shared?'2.1.2':undefined,sources),pkg=JSON.parse(closure.get('package.json'));
     if(shared) {
@@ -173,6 +181,14 @@ test('synthetic final assembly reads actual shipped modules and public platform 
         assert.equal(proof.modes.update.manifest,'release-manifest.json');
         assert.notEqual(proof.modes.install.manifestSha256,proof.modes.update.manifestSha256);
         assert.ok(proof.metadata.some(item=>item.url.endsWith(`/nora-system-${target}.json`)));
+    }
+});
+test('shipped final consumers bind APP-only publication while preserving actual core version',async t=>{
+    const fixture=distributionFixture(t,{publicationTag:'v2.4.5'}),report=await verifyFinalConsumers(fixture);
+    assert.equal(report.tag,'v2.4.5');
+    for(const target of targets)for(const mode of ['install','update']){
+        assert.equal(report.platforms[target].modes[mode].coreVersion,'2.4.4');
+        assert.equal(report.platforms[target].modes[mode].releaseTag,'v2.4.5');
     }
 });
 
@@ -289,4 +305,12 @@ test('the ZIP gate refuses ambiguous app.asar members and path traversal',async 
             const fixture=distributionFixture(t,{zipMembers:memberNames});
             await assert.rejects(verifyFinalConsumers(fixture),/Expected exactly one shipped|AssertionError/);
         });
+});
+
+test('APP-only final assembly selects unchanged original core for install and current product for APP discovery',async t=>{
+ const fixture=distributionFixture(t,{publicationTag:'v2.4.5'}),original='b'.repeat(40),reference={schema:'nora-core-reference/1',tag:'v2.4.4',commit:original,manifests:{}};
+ for(const target of targets){const name=target+'-release-manifest.json';rewriteMetadata(fixture,name,manifest=>{manifest.commit=original;manifest.publication.tag='v2.4.4';});const object=fixture.plan.objects.find(o=>o.key.endsWith('/'+name));reference.manifests[target]={asset:name,size:object.size,sha256:object.sha256};}
+ rewriteMetadata(fixture,'release-manifest.json',manifest=>{manifest.coreRelease=reference;});
+ for(const target of targets)rewriteMetadata(fixture,`nora-system-${target}.json`,system=>{system.coreRelease=reference;system.files['release-manifest.json']=reference.manifests[target];});
+ const report=await verifyFinalConsumers(fixture);assert.equal(report.tag,'v2.4.5');for(const target of targets)assert.equal(report.platforms[target].modes.install.coreVersion,'2.4.4');
 });

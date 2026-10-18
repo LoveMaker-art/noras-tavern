@@ -22,8 +22,8 @@ function options(argv) {
   const result = {};
   for (let index=0;index<argv.length;index++) {
     const name=argv[index];
-    if (['--runtime-only','--keep','--missing-system-receipt','--interrupt-first-install','--interrupt-update'].includes(name)) result[name.slice(2)]=true;
-    else if (['--payload','--runtime-payload','--update-release','--baseline-release','--scratch-base','--start-state'].includes(name)) {
+    if (['--runtime-only','--keep','--missing-system-receipt','--interrupt-first-install','--interrupt-update','--app-only-prepare'].includes(name)) result[name.slice(2)]=true;
+    else if (['--payload','--runtime-payload','--update-release','--baseline-release','--scratch-base','--start-state','--product-manifest'].includes(name)) {
       const value=argv[++index];
       if(!value || value.startsWith('--')) throw new Error(`Missing ${name} value`);
       result[name.slice(2)]=name==='--start-state'?value:path.resolve(value);
@@ -34,12 +34,13 @@ function options(argv) {
   for(const key of ['payload','update-release','baseline-release'])if(result[key] && !fs.existsSync(path.join(result[key],'release-manifest.json'))
       && fs.existsSync(path.join(result[key],'payload/release-manifest.json')))result[key]=path.join(result[key],'payload');
   if(result['start-state']&&!['running','stopped'].includes(result['start-state']))throw new Error('--start-state must be running or stopped');
-  if(result['baseline-release']&&!result['update-release'])throw new Error('A legacy baseline requires --update-release');
+  if(result['baseline-release']&&!result['update-release']&&!result['app-only-prepare'])throw new Error('A legacy baseline requires --update-release');
   if(result['missing-system-receipt']&&!result['update-release'])throw new Error('--missing-system-receipt requires --update-release');
   if(result['interrupt-first-install']&&(result['runtime-only']||result['baseline-release']||result['update-release']))
     throw new Error('--interrupt-first-install requires a new full installation without a baseline/update');
   if(result['interrupt-update']&&(!result['baseline-release']||!result['update-release']))
     throw new Error('--interrupt-update requires an actual baseline and update target');
+  if(result['app-only-prepare']&&(!result['baseline-release']||result['update-release']||!result['product-manifest']||!result.keep))throw new Error('APP-only preparation requires retained actual baseline and current product manifest, without a core update');
   return result;
 }
 function read(file) {return JSON.parse(fs.readFileSync(file,'utf8'));}
@@ -347,10 +348,11 @@ async function main() {
         .map(name=>`desktop/${name}.js`)].map(name=>[name,sha(path.join(installer,name))])),
     phases:[],jobs:0,nestedJobs:0,remoteModel:'pending-not-exercised',remoteClawChat:'pending-no-account',gui:'pending-not-exercised'};
   if(payload) {
-    const selected=read(path.join(payload,'release-manifest.json'));
+    const selected=read(opts['product-manifest']||path.join(payload,'release-manifest.json'));
     for(const [name,hash] of Object.entries(report.actorSourceFiles))
       assert.equal(hash,selected.artifacts[`ops/installer/${name}`],`Current actor differs from the selected candidate: ${name}`);
     report.actorSourceBinding='verified-selected-candidate-manifest';
+    if(opts['product-manifest'])report.actorManifestSha256=sha(opts['product-manifest']);
   }
   console.log(`Isolated product fixture: ${root}; port ${port}`);
   const executePhase=async phase=>controller.start(phase,{target:{request:{mode:'isolated-source-smoke',phase,action:phase,port},
@@ -536,7 +538,7 @@ async function main() {
         return {verification:'confirmed',value:{runtime:report.runtime,firstInstall:report.firstInstall||'not-requested',stop:report.stop}};
       }},crypto.randomUUID());
   try {
-    const phases=['install',...(opts['update-release']?['update']:[]),...(!opts['runtime-only']?['model']:[]),'stop'];
+    const phases=['install',...(opts['update-release']?['update']:[]),...(!opts['runtime-only']?['model']:[]),...(!opts['app-only-prepare']||opts['start-state']==='stopped'?['stop']:[])];
     if(!opts['update-release'])report.update='pending-no-target-provided';
     for(const phase of phases){
       operation=await executePhase(phase);
@@ -557,7 +559,7 @@ async function main() {
     if(operation.state!=='succeeded'&&rootFailure)throw rootFailure;
     assert.equal(operation.state,'succeeded',JSON.stringify(operation.currentFailure||operation.primaryFailure));
     assert.equal((await lock.probe({directory})).busy,false,'The fixture native owner was not released');
-    report.operation='verified';report.outcome='passed';
+    report.operation='verified';report.outcome=opts['app-only-prepare']?'prepared-for-native-app-upgrade':'passed';
   } catch(error) {report.outcome='failed';report.error={name:error.name,message:error.message,code:error.code,fixtureLog:error.fixtureLog};throw error;}
   finally {
     report.retained=Boolean(opts.keep||report.outcome!=='passed'||!stopConfirmed);
@@ -579,5 +581,3 @@ async function verifyProductAfterUpdate(run,{root,hermes,tavern,port},expectedRu
 }
 if(require.main===module)main().catch(error=>{console.error(error);process.exitCode=1;});
 module.exports={main,options,actor,modelConfigurationFixture};
-
-module.exports={actor};

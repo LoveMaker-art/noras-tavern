@@ -8,7 +8,7 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { fileDigest } from './system-release.mjs';
+import { fileDigest, releasePublicationTag, coreReleaseIdentity } from './system-release.mjs';
 
 export const REPOSITORY = 'LoveMaker-art/noras-tavern';
 const INDEX = 'release-assets.json';
@@ -119,7 +119,8 @@ export function expandAssetCatalogue({ repository = REPOSITORY, tag, commit, rel
         assert.equal(identity.schema, 'tavern-release/v2', 'Missing baseline source identity');
         assertBaselineCatalogue({ commit: commits[sourceTag], release: { tag_name: sourceTag,
             ...(sourceTag === tag && index ? { assetIndexText: indexText } : {}) } }, identity);
-        sourceManifests[sourceTag] = { commit: identity.commit, version: identity.versions.tavern, size: descriptor.size, sha256: descriptor.digest.slice(7) };
+        sourceManifests[sourceTag] = { commit: identity.commit, version: identity.versions.tavern, size: descriptor.size, sha256: descriptor.digest.slice(7),
+            ...(identity.coreRelease ? {coreRelease: coreReleaseIdentity(identity)} : {}) };
     }
     return { schema: 'nora-reuse-baseline/1', repository, commit, originCommits: commits, sourceManifests,
         release: { ...release, ...(index ? { assetIndexText: indexText } : {}), assets: [...release.assets, ...referenced] } };
@@ -194,7 +195,7 @@ export function readAssetCatalogue({ repository = REPOSITORY, tag, execute = exe
  * byte-identical environments come from older releases. */
 export function assertBaselineCatalogue(catalogue, identity, minimum) {
     assert.equal(identity.commit, catalogue.commit, 'Baseline descriptor commit differs from the remote tag');
-    assert.equal(identity.versions?.tavern ?? identity.version, catalogue.release.tag_name.slice(1), 'Baseline descriptor version differs from the remote tag');
+    assert.equal(releasePublicationTag(identity), catalogue.release.tag_name, 'Baseline descriptor publication differs from the remote tag');
     assert.equal(identity.candidate, false, 'Baseline descriptor must be stable');
     if (identity.schema === 'tavern-release/v2') assert.equal(identity.dirty, false, 'Baseline source must be clean');
     if (identity.schema === 'nora-system/v1') assert.equal(identity.channel, 'stable');

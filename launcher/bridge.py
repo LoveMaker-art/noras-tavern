@@ -933,7 +933,16 @@ def command_pair(args) -> None:
                                               "repair": clawchat_paired(args.hermes_home)}),
                             env=env, text=True, capture_output=True, timeout=120)
     if result.returncode:
-        fail("ClawChat 激活失败，请检查配对码是否过期，并重新获取。", user_code='PAIR_CODE_REJECTED')
+        # The same nonzero exit can mean a network, service or input failure.
+        # Preserve the bounded CLI explanation in the existing redacted log;
+        # do not invent "expired code" as the cause of every activation error.
+        output = str(result.stderr or result.stdout or '').replace(code, '[REDACTED]')
+        if output:
+            emit('log', line=output[-8192:])
+        error = RuntimeError('ClawChat 激活进程退出，退出码 '+str(result.returncode)+'。')
+        error.code = 'PAIR_ACTIVATION_FAILED'
+        fail('ClawChat 配对未成功。请查看日志，检查网络和配对信息后重新提交。',
+             user_code='PAIR_ACTIVATION_FAILED', error=error)
     if not clawchat_paired(args.hermes_home):
         fail("ClawChat 激活未保存完整配置。")
     stop_gateway(args.nora_home, hermes_home=args.hermes_home)
@@ -1147,6 +1156,47 @@ def command_verify_current_update(args):
     emit('result', **state, updateVerified=True)
 
 
+def command_inspect_current_update(args):
+    """Verify an already installed combination without owning or changing a task."""
+    version = str(args.version).removeprefix('v')
+    commit = str(args.commit)
+    expected_digest = getattr(args, 'manifest_sha256', None)
+    if (not re.fullmatch(r'(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.(?:0|[1-9]\d*))?', version)
+            or not re.fullmatch(r'[0-9a-f]{40}', commit)
+            or expected_digest is not None and not re.fullmatch(r'[0-9a-f]{64}', expected_digest)):
+        raise RuntimeError('当前安装核验目标无效，未改变安装和数据。')
+    updates = args.install_root / 'tavern-updates'
+    for file in (updates, updates / 'installed.json', updates / 'installed-manifest.json'):
+        attributes = file.lstat()
+        if file.is_symlink() or getattr(attributes, 'st_file_attributes', 0) & 0x400:
+            raise RuntimeError('当前安装记录不能使用链接或重解析目录，未改变安装和数据。')
+    files = (updates / 'installed.json', updates / 'installed-manifest.json')
+    records, before = [], []
+    for file in files:
+        value = _repair_object(file)
+        raw = file.read_bytes()
+        if json.loads(raw) != value:
+            raise RuntimeError('当前安装记录正在变化，请等待原任务结束。')
+        records.append(value)
+        before.append(raw)
+    receipt, manifest = records
+    if (receipt.get('schema') not in (1, 2) or manifest.get('schema') != 'tavern-release/v2'
+            or receipt.get('version') != version or manifest.get('versions', {}).get('tavern') != version
+            or receipt.get('commit') != commit or manifest.get('commit') != commit
+            or expected_digest is not None and hashlib.sha256(before[1]).hexdigest() != expected_digest
+            or receipt.get('manifestDigest') is not None and receipt['manifestDigest'] != hashlib.sha256(
+                json.dumps(manifest, sort_keys=True).encode()).hexdigest()):
+        raise RuntimeError('当前核心版本、提交或已安装清单与固定目标不一致，未改变安装和数据。')
+    acceptance = nora_system.inspect(args.hermes_home, args.install_root, args.port)
+    state = status_payload(args.nora_home, args.hermes_home, args.install_root, args.port)
+    if (acceptance.get('ready') is not True or state.get('systemReady') is not True
+            or str(state.get('version', '')).removeprefix('v') != version or state.get('commit') != commit
+            or any(type(state.get(key)) is not bool for key in ('running', 'gatewayRunning'))
+            or any(file.read_bytes() != raw for file, raw in zip(files, before))):
+        raise RuntimeError('当前安装完整性、进程状态或稳定记录未通过核验，未改变安装和数据。')
+    emit('result', **state, updateVerified=True, verificationScope='read-only-current-install')
+
+
 def command_resume_committed_install(args):
     gate = operation_control.require_operation()
     transaction = args.nora_home / 'installer/operations' / args.operation_id / 'first-install/transaction.json'
@@ -1328,6 +1378,10 @@ def command_update(args, *, repair: bool = False, plan: bool = False) -> None:
         command.append("--repair")
     if selected:
         command += ["--release-dir", str(selected)]
+    if getattr(args, 'allow_candidate', False):
+        if not selected:
+            fail('测试版本必须明确指定本地验收目录。')
+        command.append('--allow-candidate')
     if managed:
         command += ["--managed-home", str(args.nora_home)]
     if getattr(args, "tag", None):
@@ -1413,6 +1467,10 @@ def main() -> None:
     sub.add_parser('repair-preflight').add_argument('--offline-only', action='store_true')
     sub.add_parser("verify-model")
     sub.add_parser('verify-current-update').add_argument('--version', required=True)
+    inspect_current = sub.add_parser('inspect-current-update')
+    inspect_current.add_argument('--version', required=True)
+    inspect_current.add_argument('--commit', required=True)
+    inspect_current.add_argument('--manifest-sha256')
     install = sub.add_parser("install")
     install.add_argument("--release-dir")
     for action in ("start", "stop", "restart"):
@@ -1429,7 +1487,10 @@ def main() -> None:
     update = sub.add_parser("update")
     update.add_argument("--tag")
     update.add_argument("--release-dir")
-    sub.add_parser("plan-update").add_argument("--release-dir", required=True)
+    update.add_argument('--allow-candidate', action='store_true')
+    plan_update = sub.add_parser("plan-update")
+    plan_update.add_argument("--release-dir", required=True)
+    plan_update.add_argument('--allow-candidate', action='store_true')
     sub.add_parser("check-update")
     sub.add_parser("repair")
     sub.add_parser("open-logs")
@@ -1446,7 +1507,7 @@ def main() -> None:
     args.install_root = safe(args.install_root) if args.install_root else default_install_root(args.nora_home)
     require_descendant(args.nora_home, args.hermes_home, "Hermes 目录")
     require_descendant(args.nora_home, args.install_root, "Tavern 目录")
-    readonly = args.command in ('status', 'repair-preflight', 'verify-model', 'operation-effects', 'plan-update', 'check-update', 'open-logs', 'open-settings', 'open-url')
+    readonly = args.command in ('status', 'repair-preflight', 'verify-model', 'operation-effects', 'plan-update', 'check-update', 'inspect-current-update', 'open-logs', 'open-settings', 'open-url')
     if not readonly:
         from operation_cli import ensure_operation
         ensure_operation({'recover-update': 'recover', 'recover-install': 'recover',
@@ -1500,6 +1561,8 @@ def main() -> None:
         command_resume_committed_install(args)
     elif args.command == 'verify-current-update':
         command_verify_current_update(args)
+    elif args.command == 'inspect-current-update':
+        command_inspect_current_update(args)
     elif args.command == "plan-update":
         command_update(args, plan=True)
     elif args.command == "check-update":

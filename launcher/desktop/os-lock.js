@@ -5,7 +5,7 @@ const path=require('node:path');
 const native=require('fs-native-extensions');
 const failure=(code,message)=>Object.assign(new Error(message),{code});
 function acquire({directory,probe=false}={}) {
-  if(!['darwin','win32'].includes(process.platform))throw failure('LOCK_UNSUPPORTED','Unsupported operation lock platform');
+  if(!['darwin','win32','linux'].includes(process.platform))throw failure('LOCK_UNSUPPORTED','Unsupported operation lock platform');
   if(!path.isAbsolute(directory||''))throw new TypeError('An absolute installer directory is required');
   const operations=path.join(directory,'operations'),file=path.join(operations,'.writer.lock');
   for(const candidate of [directory,operations,file]){

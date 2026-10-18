@@ -790,6 +790,26 @@ else:
             bridge.command_pair(args)
             sync.assert_called_once_with(args)
 
+    def test_pairing_failure_keeps_cli_reason_without_claiming_expired_code_or_logging_code(self):
+        args = Mock(nora_home=self.root, hermes_home=self.hermes,
+                    install_root=self.root / 'tavern', port=18999)
+        output = io.StringIO()
+        with patch.object(bridge.sys, 'stdin', io.StringIO('{"code":"private-pair-fixture"}')), \
+             patch.object(bridge.sys, 'stdout', output), \
+             patch.object(bridge, 'hermes_command', return_value='hermes'), \
+             patch.object(bridge, 'require_bundled_clawchat'), patch.object(bridge, 'run_stream'), \
+             patch.object(bridge.operation_control, 'managed_run', return_value=Mock(returncode=1,
+                 stderr='Connection refused while activating private-pair-fixture', stdout='')), \
+             patch.object(bridge, 'clawchat_paired', return_value=False), \
+             patch.object(bridge, 'sync_nora_profile') as sync, self.assertRaises(SystemExit):
+            bridge.command_pair(args)
+        records=[json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertIn('Connection refused',output.getvalue())
+        self.assertNotIn('private-pair-fixture',output.getvalue())
+        self.assertNotIn('过期',output.getvalue())
+        self.assertEqual(next(item for item in records if item['event']=='error')['userCode'],'PAIR_ACTIVATION_FAILED')
+        sync.assert_not_called()
+
     def test_launcher_pairing_type_is_scoped_to_activation_process(self):
         plugin = self.hermes / 'plugins/clawchat'
         package = plugin / 'clawchat_gateway'

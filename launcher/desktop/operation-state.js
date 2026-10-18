@@ -30,6 +30,7 @@ function retryIdentity(target){
     launcher:plan.launcherManifest||null,system:plan.systemManifest||null}}));
 }
 const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.primaryFailure);
+const PAIR_COOLDOWN_MS=30000;
 
 // The operation record stores references and outcomes. File swap inventories
 // and installed-version truth stay in their journal and receipt owners.
@@ -123,7 +124,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         ||['recovery-required','files-restored-start-failed'].includes(facts.recoveryOutcome))continue;}
       const summary={};
       for(const key of ['schema','operationId','requestId','requestDigest','retryTargetDigest','kind','planDigest','conditionFingerprint',
-        'ownerEpoch','sequence','createdAt','updatedAt','state','stageId','attempt','totalAttempts','effectState','recoveryOutcome','verification','planSelected','effectClosureRefs'])
+        'ownerEpoch','sequence','createdAt','updatedAt','state','stageId','attempt','totalAttempts','effectState','recoveryOutcome','verification','planSelected','effectClosureRefs',
+        'pairFailureStreak','pairRetryAt','pairAttemptedAt'])
         if(record[key]!==undefined)summary[key]=record[key];
       summary.target={};summary.archived=true;summary.archivedAt=now();summary.secondaryFailures=[];summary.evidenceStatus='archived';
       summary.retryTargetDigest=record.retryTargetDigest||retryIdentity(record.target);
@@ -233,10 +235,11 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     }catch{}
     return detail;
   }
-  function dto(record,fields={}){
+  function dto(record,fields={},recoveryClosurePending=false){
     let allowedActions;
     if(record.archived)allowedActions=['logs'];
     else if(fields.busy)allowedActions=['wait','logs'];
+    else if(recoveryClosurePending)allowedActions=['recover','recheck','logs'];
     else if(record.recoveryOutcome==='files-restored-start-failed')allowedActions=(record.restoredStartAttempts||0)>=2?['recheck','logs']:['start-restored','recheck','logs'];
     else if(record.recoveryOutcome==='recovery-required')allowedActions=record.canRecover===false?['recheck','logs']:['recover','recheck','logs'];
     else if(record.effectState==='unknown')allowedActions=['recheck','logs'];
@@ -250,6 +253,13 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(record.kind==='pair'||record.kind==='model'&&record.target?.request?.mode==='configure')
       allowedActions=allowedActions.filter(action=>!['retry','resume'].includes(action));
     allowedActions=failureActions((record.currentFailure||record.primaryFailure)?.code,{operation:{...record,busy:fields.busy,allowedActions}})||allowedActions;
+    // A fresh, explicit pairing submission needs new transient input. It is
+    // never an automatic replay of the previous operation's one-time code.
+    if(record.kind==='pair'&&!record.archived&&!fields.busy&&!record.handoffRef
+      &&['failed','cancelled','blocked','rolled-back'].includes(record.state)
+      &&['untouched','restored'].includes(record.effectState)
+      &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome))
+      allowedActions=[...new Set(['pair-clawchat',...allowedActions])];
     return {schema:SCHEMA,operationId:record.operationId,requestId:record.requestId,kind:record.kind,
       snapshotSequence:record.sequence,ownerEpoch:record.ownerEpoch,state:record.state,stageId:record.stageId,
       target:record.target,planDigest:record.planDigest,attempt:record.attempt,totalAttempts:record.totalAttempts||1,
@@ -259,7 +269,8 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       secondaryFailures:record.secondaryFailures||[],primaryFailureRef:record.evidenceRef||null,
       recoveryOutcome:record.recoveryOutcome||'not-required',verification:record.verification||'unconfirmed',
       evidenceStatus:record.evidenceStatus||'not-needed',evidenceMissingReasons:record.evidenceMissingReasons||[],journalRefs:record.journalRefs||[],
-      handoffRef:record.handoffRef||null,result:record.result,archived:record.archived===true,allowedActions,...fields};
+      handoffRef:record.handoffRef||null,result:record.result,archived:record.archived===true,allowedActions,
+      ...(record.kind==='pair'?{pairRetryAt:Number.isSafeInteger(record.pairRetryAt)&&record.pairRetryAt>Date.parse(now())?record.pairRetryAt:null}:{}),...fields};
   }
   async function snapshot(id){
     if(!id){
@@ -280,7 +291,14 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     const fields={busy:Boolean(observed.busy)};
     if((!TERMINAL.has(record.state)||record.recoveryOutcome==='recovery-required')&&!observed.busy){
       const effects=observeEffects?await observeEffects(record):{effectState:record.effectState==='untouched'?'untouched':'unknown'};
-      return dto({...record,state:'interrupted',...effects},fields);
+      // A previous writer may have restored files/services before its verifier
+      // failed. Keep explicit same-operation recovery reachable so the next
+      // owner can verify under the writer lock and persist the terminal state.
+      // Read-only observation itself never commits or invents update success.
+      const closurePending=record.recoveryOutcome==='recovery-required'&&!record.handoffRef
+        &&effects.effectState==='restored'&&effects.recoveryOutcome==='restored-and-verified'
+        &&typeof recoverers[record.kind]==='function';
+      return dto({...record,state:'interrupted',...effects},fields,closurePending);
     }
     return dto(record,fields);
   }
@@ -358,7 +376,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           &&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest
           &&value.conditionFingerprint===record.conditionFingerprint).at(-1);
         await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,attempt:failedAttempt(previous)?previous.attempt+1:1});
-        if(failedAttempt(previous)&&previous.attempt>=2){
+        if(record.kind!=='pair'&&failedAttempt(previous)&&previous.attempt>=2){
           const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
           const ownFailure=(record.currentFailure||record.primaryFailure)&&Date.parse(record.createdAt)>Date.parse(previous.createdAt);
           error.retryConditionTarget=ownFailure?failureCondition(record):failureCondition(previous);throw error;
@@ -380,6 +398,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     try{
       const executor=mode==='recover'?(options.prepareHandoff||recoverers[record.kind]):(options.execute||executors[record.kind]);
       if(typeof executor!=='function')throw fail('OPERATION_UNSUPPORTED','Operation has no supported executor');
+      if(record.kind==='pair')await update({pairAttemptedAt:now(),pairRetryAt:null});
       const result=await executor(context,options);
       if(result?.handoff===true){
         if(record.state!=='awaiting-handoff'||!record.handoffRef)throw fail('OPERATION_INVALID_HANDOFF','A durable handoff is required');
@@ -392,6 +411,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       record.result=projectResult(result,record.kind);
       record.state=recoveryMode?'rolled-back':'succeeded';
       record.currentFailure=null;
+      if(record.kind==='pair'){record.pairFailureStreak=0;record.pairRetryAt=null;}
       record.verification=filesOnly?'failed':'confirmed';
       if(recoveryMode){record.effectState=result?.effectState==='untouched'?'untouched':'restored';
         record.recoveryOutcome=record.effectState==='untouched'?'not-required':filesOnly?'files-restored-start-failed':'restored-and-verified';}
@@ -403,6 +423,12 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       saved?.finish({outcome:record.state});await persist();
       }
     }catch(error){
+      if(record.kind==='pair'&&record.pairAttemptedAt&&error?.name!=='AbortError'&&error?.code!=='ABORT_ERR'){
+        record.pairFailureStreak=(record.pairFailureStreak||0)+1;
+        const local=record.pairFailureStreak>=2?Date.parse(now())+PAIR_COOLDOWN_MS:0;
+        const server=Number.isSafeInteger(error?.retryAt)&&error.retryAt>Date.parse(now())?error.retryAt:0;
+        record.pairRetryAt=Math.max(local,server)||null;
+      }
       // Save the first cause while its files still exist. Recovery errors are
       // secondary and can never turn a failed operation into a success.
       record.currentFailure=failure(error,record.kind,record);
@@ -525,6 +551,19 @@ function createOperationController({directory,lock,executors={},recoverers={},re
         ownerEpoch,sequence:0,createdAt:now(),updatedAt:now(),state:'selecting',stageId:'selecting',
         attempt:1,totalAttempts:1,conditionFingerprint:options.conditionFingerprint||'',effectState:'untouched',secondaryFailures:[]};
       const prior=candidates.at(-1);
+      if(kind==='pair'){
+        const previousPair=records().filter(value=>value.kind==='pair').at(-1);
+        const retryAt=previousPair?.pairRetryAt;
+        record.pairFailureStreak=previousPair?.state==='succeeded'||Number.isSafeInteger(retryAt)&&retryAt<=Date.parse(now())
+          ?0:previousPair?.pairFailureStreak||0;
+        record.pairRetryAt=Number.isSafeInteger(retryAt)&&retryAt>Date.parse(now())?retryAt:null;
+        if(record.pairRetryAt){
+          const error=fail('PAIR_RETRY_COOLDOWN','配对暂时频繁，请等待倒计时结束后重新提交。');
+          record.state='blocked';record.primaryFailure=previousPair.primaryFailure||failure(error,kind,record);
+          record.currentFailure=failure(error,kind,record);
+          await write(record,lease,{expected:null});await lease.release();return dto(record);
+        }
+      }
       initialConditions=conditionProof(await captureConditions?.(record,{...options,lease,previous:prior}));
       // Service commands do not capture a maintenance baseline. Keep the last
       // verified setup proof after success rather than reviving older failures.
@@ -538,7 +577,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       }
       const previous=candidates.filter(value=>value.conditionFingerprint===record.conditionFingerprint).at(-1);
       record.attempt=failedAttempt(previous)?previous.attempt+1:1;
-      if(failedAttempt(previous)&&previous.attempt>=2){
+      if(kind!=='pair'&&failedAttempt(previous)&&previous.attempt>=2){
         const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
         record.state='blocked';record.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation',
           guidance:presentError(error,{action:kind})};

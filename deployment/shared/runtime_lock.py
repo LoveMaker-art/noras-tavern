@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 @contextmanager
-def installation_lock(home, name="tavern-update.lock", *, blocking=True):
+def installation_lock(home, name="tavern-update.lock", *, blocking=True, descriptor=False):
     path = Path(home) / name
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a+") as stream:
@@ -36,7 +36,7 @@ def installation_lock(home, name="tavern-update.lock", *, blocking=True):
                 yield False
                 return
         try:
-            yield True
+            yield stream if descriptor else True
         finally:
             if os.name == "nt":
                 stream.seek(0)

@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 
 async function verifyRelease() {
-const { assertMaintenanceVersions } = await import('./system-release.mjs');
+const { assertMaintenanceVersions, releasePublicationTag, assertCoreReleasePayload } = await import('./system-release.mjs');
 const [root, tag, commit, mode = 'full'] = process.argv.slice(2);
 assert.ok(root && /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/.test(tag) && /^[a-f0-9]{40}$/.test(commit));
 assert.ok(['full', 'components'].includes(mode), 'Invalid verification mode');
@@ -33,7 +33,7 @@ let reuse;
 if (mode === 'components') {
   reuse = JSON.parse(fs.readFileSync(byName.get('component-release.json')));
   assert.equal(reuse.schema, 'nora-component-release/v1');
-  assert.equal(reuse.version, tag.slice(1));
+  assert.equal(reuse.version, shared.versions.tavern);
   assert.equal(reuse.commit, commit);
   assert.match(reuse.baselineTag, /^v\d+\.\d+\.\d+$/);
   assert.match(reuse.installerTag, /^v\d+\.\d+\.\d+$/);
@@ -42,7 +42,8 @@ if (mode === 'components') {
 for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   const manifest = JSON.parse(fs.readFileSync(byName.get(`nora-system-${platform}.json`)));
   assert.deepEqual(manifest.launcherCapabilities,shared.launcherCapabilities,'System launcherCapabilities differ from the shared release');
-  assert.equal(manifest.version, tag.slice(1));
+  assert.equal(releasePublicationTag(manifest),tag);
+  assert.equal(manifest.version,shared.versions.tavern);
   assert.equal(manifest.commit, commit);
   assert.equal(manifest.candidate, false);
   assert.equal(manifest.channel, tag.includes('-beta.') ? 'beta' : 'stable');
@@ -55,12 +56,18 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
   }
   const payloadJson = name => JSON.parse(fs.readFileSync(byName.get(manifest.files[name]?.asset)));
   const payload = payloadJson('release-manifest.json');
-  assert.deepEqual(payload.launcherCapabilities,shared.launcherCapabilities,'Payload launcherCapabilities differ from the shared release');
-  assert.equal(payload.commit, commit);
+  assert.deepEqual(manifest.coreRelease,shared.coreRelease,'Platform core reference differs from product');
+  if(shared.coreRelease)assertCoreReleasePayload(shared,fs.readFileSync(byName.get(manifest.files['release-manifest.json'].asset)),platform,manifest.files['release-manifest.json']);
+  const appIdentity=shared.coreRelease?shared:payload;
+  assert.deepEqual(appIdentity.launcherCapabilities,shared.launcherCapabilities,'Payload launcherCapabilities differ from the shared release');
+  assert.equal(appIdentity.commit, commit);
   assert.equal(payload.candidate, false);
-  assert.equal(payload.versions.tavern, tag.slice(1));
+  assert.equal(releasePublicationTag(appIdentity),tag);
+  assert.equal(payload.versions.tavern,shared.versions.tavern);
+  assert.deepEqual(appIdentity.updateCompatibility,shared.updateCompatibility,'Platform compatibility declaration differs');
+  assert.deepEqual(manifest.updateCompatibility,shared.updateCompatibility,'System compatibility declaration differs');
   if (shared.launcherBuildReuse) {
-    const provenance = payload.launcherBuildReuse;
+    const provenance = appIdentity.launcherBuildReuse;
     assert.equal(provenance?.schema, 1, 'Missing launcher build provenance');
     assert.match(provenance.baselineCommit, /^[a-f0-9]{40}$/);
     assert.match(provenance.baselineVersion, /^\d+\.\d+\.\d+$/);
@@ -68,25 +75,25 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
     assert.equal(provenance.baselineVersion, shared.launcherBuildReuse.baselineVersion);
     for (const kind of ['archives', 'modules']) {
       for (const [name, checksum] of Object.entries(provenance[kind])) {
-        assert.equal(payload[kind][name]?.sha256, checksum, `Reused ${kind} changed: ${name}`);
+        assert.equal(appIdentity[kind][name]?.sha256, checksum, `Reused ${kind} changed: ${name}`);
       }
     }
-  } else assert.ok(!payload.launcherBuildReuse, 'Mixed full and reused platform builds');
-  assert.equal(payload.launcherVersion, shared.launcherVersion);
+  } else assert.ok(!appIdentity.launcherBuildReuse, 'Mixed full and reused platform builds');
+  assert.equal(appIdentity.launcherVersion, shared.launcherVersion);
   assert.equal(manifest.launcherVersion, shared.launcherVersion);
-  assert.equal(payload.bootstrap?.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
+  assert.equal(appIdentity.bootstrap?.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
   assert.equal(manifest.minimumLauncherVersion, shared.bootstrap.minimumLauncherVersion);
   for (const [name, fingerprint] of [['nora-hermes-runtime.json', 'runtimeSha256'], ['nora-tavern-dependencies.json', 'dependenciesSha256']]) {
     const component = payloadJson(name);
     assert.equal(`${component.platform}-${component.arch}`, platform);
     assert.equal(component.sha256, manifest.files[component.archive]?.sha256);
     if (reuse) assert.equal(component.sha256, reuse.reused.find(item => item.platform === platform)[fingerprint]);
-    if (shared.launcherBuildReuse) assert.equal(component.sha256, payload.launcherBuildReuse[fingerprint], 'Reused environment changed');
+    if (shared.launcherBuildReuse) assert.equal(component.sha256, appIdentity.launcherBuildReuse[fingerprint], 'Reused environment changed');
   }
   if (mode === 'full') {
   const report = JSON.parse(fs.readFileSync(byName.get(`Nora-Tavern-package-verification-${platform}.json`)));
   assert.equal(report.commit, commit);
-  assert.equal(report.version, tag.slice(1));
+  assert.equal(report.version,shared.versions.tavern);
   assert.equal(report.nativeIcon, true);
   assert.ok(report.instructions['ops/installer/templates/greeting.md']);
   const suffix = platform.replace('darwin', 'mac').replace('win32', 'win');
@@ -109,7 +116,7 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) {
 }
 assert.equal(shared.commit, commit);
 assert.equal(shared.candidate, false);
-assert.equal(shared.versions.tavern, tag.slice(1));
+assert.equal(releasePublicationTag(shared),tag);
 for (const archive of Object.values(shared.archives)) assert.equal(digest(byName.get(archive.name)), archive.sha256);
 for (const archive of Object.values(shared.modules)) assert.equal(digest(byName.get(archive.name)), archive.sha256);
 // The build's sealed component list may include unpublished intermediate

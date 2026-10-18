@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -260,7 +261,7 @@ class ReleaseRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(request, fp, code, msg, headers, newurl)
 
 
-def query_release(source: str, timeout: float):
+def query_bytes(source: str, timeout: float, *, limit=1024 * 1024):
     local = bool(LOCAL_RELEASE_URL and source == LOCAL_RELEASE_URL)
     if not local:
         validate_source(source, source)
@@ -272,10 +273,68 @@ def query_release(source: str, timeout: float):
     with opener.open(request, timeout=timeout) as response:
         if not local:
             validate_source(response.geturl(), source)
-        raw = response.read(1024 * 1024 + 1)
-    if len(raw) > 1024 * 1024:
+        raw = response.read(limit + 1)
+    if len(raw) > limit:
         raise RuntimeError("版本信息超过大小限制")
-    return json.loads(raw)
+    return raw
+
+
+def query_release(source: str, timeout: float):
+    return json.loads(query_bytes(source, timeout))
+
+
+def core_release_version(payload, deadline):
+    tag = payload.get('tag_name')
+    if not isinstance(tag, str) or not re.fullmatch(TAG_PATTERN, tag):
+        raise RuntimeError('发布批次版本无效')
+    # Pre-component releases had no component manifest. Keep that historical
+    # protocol; a present modern catalogue may never fall back after failure.
+    if 'assets' not in payload:
+        return normalize_version(tag)
+    assets = payload['assets']
+    if not isinstance(assets, list):
+        raise RuntimeError('发布资源目录无效')
+    matches = [item for item in assets if isinstance(item, dict) and item.get('name') == 'release-manifest.json']
+    if len(matches) != 1:
+        raise RuntimeError('发布缺少唯一的核心清单')
+    asset = matches[0]
+    url = f'https://github.com/{REPO}/releases/download/{tag}/release-manifest.json'
+    if (asset.get('browser_download_url') != url or asset.get('state') != 'uploaded'
+            or type(asset.get('size')) is not int or not 0 < asset['size'] <= 4 * 1024 * 1024
+            or not re.fullmatch(r'sha256:[a-f0-9]{64}', asset.get('digest') or '')
+            or 'asset_release_tag' in asset):
+        raise RuntimeError('核心清单来源或校验信息无效')
+    sources = source_candidates(url, channel=CHANNEL)
+    raw = None
+    for index, source in enumerate(sources):
+        try:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('核心版本检查超时')
+            raw = query_bytes(source, min(15, remaining), limit=4 * 1024 * 1024)
+            break
+        except urllib.error.HTTPError as error:
+            if index == len(sources) - 1 or error.code not in {403, 404, 408, 410, 429, 500, 502, 503, 504}:
+                raise
+        except (urllib.error.URLError, OSError) as error:
+            if isinstance(getattr(error, 'reason', error), (ssl.SSLCertVerificationError, ssl.CertificateError)) or index == len(sources) - 1:
+                raise
+    if raw is None or len(raw) != asset['size'] or hashlib.sha256(raw).hexdigest() != asset['digest'][7:]:
+        raise RuntimeError('核心清单原文与发布校验不一致')
+    manifest = json.loads(raw)
+    core = manifest.get('versions', {}).get('tavern')
+    if (manifest.get('schema') != 'tavern-release/v2' or not isinstance(core, str)
+            or not re.fullmatch(TAG_PATTERN, 'v' + core) or not re.fullmatch(r'[a-f0-9]{40}', manifest.get('commit') or '')
+            or manifest.get('candidate')):
+        raise RuntimeError('核心清单身份无效')
+    publication = manifest.get('publication')
+    if 'publication' in manifest:
+        if (not isinstance(publication, dict) or set(publication) != {'schema', 'tag'}
+                or publication.get('schema') != 'nora-component-publication/1' or publication.get('tag') != tag):
+            raise RuntimeError('核心清单与固定发布批次不一致')
+    elif 'v' + core != tag:
+        raise RuntimeError('旧核心清单版本与发布批次不一致')
+    return core
 
 
 def latest_release() -> tuple[str, str]:
@@ -307,7 +366,7 @@ def latest_release() -> tuple[str, str]:
         payload = max(releases, key=lambda item: version_key(normalize_version(item['tag_name'])))
     if not isinstance(payload, dict) or payload.get('draft') or bool(payload.get('prerelease')) != (CHANNEL == 'beta'):
         raise RuntimeError('版本信息与更新渠道不符')
-    value = normalize_version(payload.get("tag_name"))
+    value = core_release_version(payload, deadline)
     version_key(value)
     return value, release_summary(payload.get("body"))
 

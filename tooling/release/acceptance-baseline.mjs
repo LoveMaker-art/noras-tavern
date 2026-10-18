@@ -9,6 +9,8 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { readAssetCatalogue, downloadCatalogueAsset, assertBaselineCatalogue, REPOSITORY } from './asset-catalogue.mjs';
 
+import { assertCoreReleasePayload } from './system-release.mjs';
+
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const metadataNames = ['release-manifest.json', 'nora-hermes-runtime.json', 'nora-tavern-dependencies.json'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -47,7 +49,7 @@ function payloadClosure(identity, runtime, dependencies, system, platform) {
     for (const [descriptor, key] of [[runtime, 'hermesRuntime'], [dependencies, 'dependencies']]) {
         assert.equal(descriptor.schema, 1); assert.equal(`${descriptor.platform}-${descriptor.arch}`, platform);
         name(descriptor.archive); assert.match(descriptor.sha256 || '', /^[a-f0-9]{64}$/);
-        assert.equal(descriptor.sha256, identity[key]?.sha256, 'Historical environment identity differs from payload');
+        if(identity[key])assert.equal(descriptor.sha256, identity[key].sha256, 'Historical environment identity differs from payload');
         assert.equal(system.files[descriptor.archive]?.sha256, descriptor.sha256, 'Historical environment archive differs from system');
         assert.equal(system.files[descriptor.archive].size, descriptor.size, 'Historical environment size differs from system');
     }
@@ -83,7 +85,11 @@ function readAcceptanceSource({ repository = REPOSITORY, tag, platform, expected
             const file = downloadCatalogueAsset(catalogue, entry.asset, temporary, { execute, targetName: logical, expected: entry });
             metadata[logical] = fs.readFileSync(file);
         }
-        const identity = JSON.parse(metadata['release-manifest.json']); assertBaselineCatalogue(catalogue, identity);
+        const identity = JSON.parse(metadata['release-manifest.json']);
+        const reference=catalogue.sourceManifests[tag].coreRelease;
+        assert.deepEqual(system.coreRelease,reference,'Historical system core reference differs from authenticated product');
+        if(reference) assertCoreReleasePayload(system,metadata['release-manifest.json'],platform,system.files['release-manifest.json']);
+        else assertBaselineCatalogue(catalogue, identity);
         payloadClosure(identity, JSON.parse(metadata['nora-hermes-runtime.json']), JSON.parse(metadata['nora-tavern-dependencies.json']), system, platform);
         const proof = text(catalogueProof(catalogue));
         const files = Object.fromEntries(names.map(logical => {
@@ -91,7 +97,7 @@ function readAcceptanceSource({ repository = REPOSITORY, tag, platform, expected
             return [logical, { ...entry, assetReleaseTag: asset.asset_release_tag || tag }];
         }));
         const receipt = { schema: 'nora-acceptance-baseline/1', mode: 'identity-only', repository, tag, platform,
-            commit: catalogue.commit, version: system.version, systemManifestSha256: sha(systemBytes),
+            commit: identity.commit, ...(reference?{productCommit:catalogue.commit,coreTag:reference.tag}:{}), version: system.version, systemManifestSha256: sha(systemBytes),
             payloadManifestSha256: sha(metadata['release-manifest.json']), catalogueSha256: sha(proof), files,
             declaredFiles: names.length, verifiedFiles: metadataNames.length, verifiedNames: [...metadataNames] };
         return { catalogue, system, identity, metadata, proof, receipt };
@@ -99,6 +105,49 @@ function readAcceptanceSource({ repository = REPOSITORY, tag, platform, expected
 }
 
 export function readAcceptanceIdentity(options) { return readAcceptanceSource(options).receipt; }
+
+/** Authenticate the published APP descriptor separately from an unchanged core. */
+function readAcceptanceLauncherSource({repository=REPOSITORY,tag,platform,expectedCommit,execute}={}) {
+    assert.ok(platforms.includes(platform));
+    const catalogue=readAssetCatalogue({repository,tag,execute});
+    if(expectedCommit!==undefined)assert.equal(catalogue.commit,expectedCommit,'Historical tag changed from its selected commit');
+    const temporary=fs.mkdtempSync(path.join(os.tmpdir(),'nora-acceptance-launcher-'));
+    try {
+        const descriptorName=`nora-launcher-${platform}.json`;
+        const file=downloadCatalogueAsset(catalogue,descriptorName,temporary,{execute});
+        const bytes=fs.readFileSync(file),descriptor=JSON.parse(bytes);
+        assert.equal(descriptor.schema,'nora-launcher/v1');assert.equal(descriptor.candidate,false);
+        assert.equal(`${descriptor.platform}-${descriptor.arch}`,platform);
+        assert.match(descriptor.version||'',/^\d+\.\d+\.\d+$/);assert.match(descriptor.commit||'',/^[a-f0-9]{40}$/);
+        name(descriptor.asset);
+        const archive=catalogue.release.assets.find(asset=>asset.name===descriptor.asset);
+        assert.ok(archive,'Official baseline APP archive is missing');
+        assert.equal(archive.digest,'sha256:'+descriptor.sha256);assert.equal(archive.size,descriptor.size);
+        const identity={version:descriptor.version,commit:descriptor.commit,descriptorSha256:sha(bytes),
+            archiveSha256:descriptor.sha256,archiveSize:descriptor.size};
+        return {catalogue,descriptorName,descriptor,bytes,identity};
+    } finally {fs.rmSync(temporary,{recursive:true,force:true});}
+}
+export function readAcceptanceLauncherIdentity(options) {return readAcceptanceLauncherSource(options).identity;}
+
+/** Native upgrade inputs come from the published APP archive, never the current
+ * build output. A materialized receipt certifies downloaded bytes, not upgrade. */
+export function materializeAcceptanceLauncher({output,...options}={}) {
+    assert.ok(typeof output==='string'&&output,'Specify a new acceptance output directory');output=path.resolve(output);
+    assert.ok(!fs.lstatSync(output,{throwIfNoEntry:false}),'Acceptance output must be a new directory');
+    const source=readAcceptanceLauncherSource(options);
+    fs.mkdirSync(output,{recursive:true,mode:0o700});
+    try {
+        fs.writeFileSync(path.join(output,source.descriptorName),source.bytes,{flag:'wx',mode:0o600});
+        downloadCatalogueAsset(source.catalogue,source.descriptor.asset,output,{execute:options.execute,
+            expected:{sha256:source.descriptor.sha256,size:source.descriptor.size}});
+        const receipt={schema:'nora-acceptance-launcher/1',mode:'materialized',repository:source.catalogue.repository,
+            tag:source.catalogue.release.tag_name,platform:options.platform,...source.identity,
+            descriptor:source.descriptorName,archive:source.descriptor.asset};
+        fs.writeFileSync(path.join(output,'baseline-launcher-source-receipt.json'),text(receipt),{flag:'wx',mode:0o600});
+        return receipt;
+    } catch(error){fs.rmSync(output,{recursive:true,force:true});throw error;}
+}
 
 /** New private, flat logical payload directory for the existing native harness.
  * Failure removes only this invocation's incomplete output directory. */
@@ -130,13 +179,13 @@ function main() {
     const values = {}, flags = new Set();
     for (let i = 2; i < process.argv.length; i++) {
         const option = process.argv[i];
-        if (option === '--identity-only') { assert.ok(!flags.has(option), 'Duplicate option'); flags.add(option); continue; }
+        if (['--identity-only','--launcher'].includes(option)) { assert.ok(!flags.has(option), 'Duplicate option'); flags.add(option); continue; }
         assert.ok(['--tag', '--platform', '--output', '--repository', '--expected-commit'].includes(option) && !values[option], 'Unknown or duplicate option');
         const value = process.argv[++i]; assert.ok(value && !value.startsWith('--'), 'Missing option value'); values[option] = value;
     }
     assert.ok(values['--tag'] && values['--platform'] && values['--output'], 'Specify --tag, --platform and --output; see --help');
-    const receipt = materializeAcceptanceBaseline({ tag: values['--tag'], platform: values['--platform'], output: values['--output'],
+    const receipt = (flags.has('--launcher')?materializeAcceptanceLauncher:materializeAcceptanceBaseline)({ tag: values['--tag'], platform: values['--platform'], output: values['--output'],
         repository: values['--repository'] || REPOSITORY, expectedCommit: values['--expected-commit'], identityOnly: flags.has('--identity-only') });
-    console.log(`Verified ${receipt.mode} historical baseline ${receipt.tag} (${receipt.platform}) at ${receipt.commit}; ${receipt.verifiedFiles}/${receipt.declaredFiles} payload files.`);
+    console.log(`Verified ${receipt.mode} historical baseline ${receipt.tag} (${receipt.platform}) at ${receipt.commit}; ${receipt.verifiedFiles??1}/${receipt.declaredFiles??1} source files.`);
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();

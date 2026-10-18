@@ -42,18 +42,26 @@ async function verifyNativeAcceptance(delivery, acceptance, commit, selected = p
     assert.equal(system.commit, commit); assert.equal(system.candidate, false); assert.equal(`${system.platform}-${system.arch}`, target);
     const payloadBytes = fs.readFileSync(path.join(delivery, system.files['release-manifest.json'].asset)), payload = JSON.parse(payloadBytes);
     const payloadHash = digestBytes(payloadBytes), systemHash = digestBytes(systemBytes);
-    assert.equal(payload.commit, commit); assert.equal(payload.candidate, false); assert.equal(payload.dirty, false);
+    let product=payload;
+    if(system.coreRelease){
+      product=JSON.parse(fs.readFileSync(path.join(delivery,'release-manifest.json')));
+      const {assertCoreReleasePayload}=await import('./system-release.mjs');
+      assert.equal(product.commit,commit);assert.deepEqual(system.coreRelease,product.coreRelease);
+      assertCoreReleasePayload(product,payloadBytes,target,system.files['release-manifest.json']);
+    }
+    const runtimeHash=payload.hermesRuntime?.sha256||JSON.parse(fs.readFileSync(path.join(delivery,system.files['nora-hermes-runtime.json'].asset))).sha256;
+    assert.equal(product.commit, commit); assert.equal(payload.candidate, false); assert.equal(payload.dirty, false);
     const app = name => {
       const value = oneReport(reports, name); assert.equal(value.schema, 'nora-app-candidate-gate/1'); assert.equal(value.platform, platform); assert.equal(value.arch, arch);
       assert.equal(value.payloadManifestSha256, systemHash);
       assert.ok(typeof value.versions?.electron === 'string' && value.versions.electron);
       for (const key of ['actualElectron', 'nativeDependencyComplete', 'allFlatResourceHashesMatchCandidate', 'jsPythonReceiptAgree', 'arbitraryCliRefusedBeforeOperation']) assert.equal(value.assertions?.[key], true, `Native APP gate failed: ${key}`);
       assert.ok(Object.keys(value.moduleHashes || {}).length > 0, 'Actual APP module hashes are missing');
-      const expectedModules = Object.keys(payload.artifacts).filter(name => name.startsWith('ops/installer/desktop/')
+      const expectedModules = Object.keys(product.artifacts).filter(name => name.startsWith('ops/installer/desktop/')
         && /\.(?:js|mjs|cjs|json)$/.test(name) && !['ops/installer/desktop/package.json', 'ops/installer/desktop/package-lock.json'].includes(name))
         .map(name => name.slice('ops/installer/desktop/'.length)).sort();
       assert.deepEqual(Object.keys(value.moduleHashes).sort(), expectedModules, 'Native APP report must cover the exact authored production modules');
-      for (const [name, hash] of Object.entries(value.moduleHashes)) assert.equal(hash, payload.artifacts['ops/installer/desktop/' + name], `APP module differs: ${name}`);
+      for (const [name, hash] of Object.entries(value.moduleHashes)) assert.equal(hash, product.artifacts['ops/installer/desktop/' + name], `APP module differs: ${name}`);
       return value;
     };
     const packaged = app('nora-packaged-app-acceptance.json');
@@ -85,25 +93,34 @@ async function verifyNativeAcceptance(delivery, acceptance, commit, selected = p
     assert.ok(harness.length >= 2, 'Missing native runtime/install harness evidence');
     for (const value of harness) {
       assert.equal(value.schema, 'nora-launcher-products-smoke/1'); assert.equal(value.outcome, 'passed'); assert.equal(value.platform, platform); assert.equal(value.arch, arch);
-      assert.equal(value.executorHandles, 'verified-closed'); assert.equal(value.operation, 'verified'); assert.equal(value.runtime, 'verified'); assert.equal(value.runtimeSha256, payload.hermesRuntime.sha256);
+      assert.equal(value.executorHandles, 'verified-closed'); assert.equal(value.operation, 'verified'); assert.equal(value.runtime, 'verified'); assert.equal(value.runtimeSha256, runtimeHash);
+      if(value.launcherTransition){assert.equal(value.actorSourceBinding,'verified-native-app-source');assert.deepEqual(value.moduleHashes,packaged.moduleHashes);for(const name of ['operation_control.py','operation_cli.py','operation_evidence.py','desktop/operation-delegate.js'])assert.equal(value.actorSourceFiles?.[name],product.artifacts['ops/installer/'+name]);continue;}
       for (const name of ['operation_control.py', 'operation_cli.py', 'operation_evidence.py', 'desktop/operation-delegate.js']) assert.match(value.actorSourceFiles?.[name] || '', /^[a-f0-9]{64}$/);
-      for (const [name, hash] of Object.entries(value.actorSourceFiles)) assert.equal(hash, payload.artifacts['ops/installer/' + name], `Native actor differs: ${name}`);
+      for (const [name, hash] of Object.entries(value.actorSourceFiles)) assert.equal(hash, product.artifacts['ops/installer/' + name], `Native actor differs: ${name}`);
       if (value.releaseManifestSha256) {
-        assert.equal(value.releaseManifestSha256, payloadHash); assert.equal(value.actorSourceBinding, 'verified-selected-candidate-manifest');
+        assert.equal(value.releaseManifestSha256, payloadHash);if(system.coreRelease)assert.match(value.actorManifestSha256||'',/^[a-f0-9]{64}$/,'Actual current actor manifest hash is missing'); assert.equal(value.actorSourceBinding, 'verified-selected-candidate-manifest');
         for (const key of ['firstInstall', 'http', 'hermesSkills', 'mcp', 'stop']) assert.equal(value[key], 'verified');
         assert.equal(value.userData, 'retained'); assert.equal(value.modelConfiguration, 'verified-local-A-to-B-model-requests');
       }
     }
     assert.equal(harness.filter(value => value.releaseManifestSha256 === null).length, 1);
-    const fresh = harness.filter(value => value.releaseManifestSha256 === payloadHash && !value.versionTransition);
+    const fresh = harness.filter(value => value.releaseManifestSha256 === payloadHash && !value.versionTransition && !value.launcherTransition);
     assert.equal(fresh.length, 1); assert.equal(fresh[0].committedFirstInstall, 'verified-real-resume-without-reinstall');
     assert.equal(fresh[0].missingSystemReceipt, 'verified-bound-repair-and-preserved-user-data');
     assert.match(fresh[0].userConfigurationDigest || '', /^[a-f0-9]{64}$/, 'User configuration preservation requires a concrete digest');
     const baselineFiles = reportFiles(reports, 'nora-upgrade-baseline-acceptance.json'); assert.ok(baselineFiles.length <= 1);
     if (baselineFiles.length) {
-      const baseline = JSON.parse(fs.readFileSync(baselineFiles[0])); assert.equal(baseline.schema, 'nora-upgrade-baseline/1');
+      const baseline = JSON.parse(fs.readFileSync(baselineFiles[0]));
+      const launcherOnly=baseline.schema==='nora-app-upgrade-baseline/1';
+      assert.ok(launcherOnly||baseline.schema==='nora-upgrade-baseline/1');
       assert.equal(baseline.platform, target); assert.equal(baseline.targetCommit, commit); assert.equal(baseline.targetVersion, system.version); assert.equal(baseline.targetManifestSha256, payloadHash);
-      assert.ok(['version-transition-required', 'same-version-repair-only'].includes(baseline.acceptance));
+      assert.ok((launcherOnly?['launcher-transition-required']:['version-transition-required', 'same-version-repair-only']).includes(baseline.acceptance));
+      if(launcherOnly){
+        const {releasePublicationTag}=await import('./system-release.mjs');
+        assert.equal(baseline.targetTag,releasePublicationTag(system));
+        assert.equal(baseline.targetLauncher?.executableSha256,packaged.executable.sha256);
+        assert.equal(baseline.targetLauncher?.asarSha256,packaged.asar.sha256);
+      }
       if (baseline.acceptance === 'version-transition-required') for (const state of ['running', 'stopped']) {
         const historical = harness.filter(value => value.versionTransition?.startState === state); assert.equal(historical.length, 1);
         const { startState, ...proof } = historical[0].versionTransition; assert.deepEqual(proof, baseline);
@@ -115,7 +132,92 @@ async function verifyNativeAcceptance(delivery, acceptance, commit, selected = p
   }
   return result;
 }
-async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { repository, targetTag, commit, selected = platforms, readIdentity }) {
+async function verifyAppOnlyHistory(reports,proof,{identity,readLauncher,repository,tag,target,targetManifest,targetDelivery}) {
+  const {releasePublicationTag,coreReleaseIdentity,coreReceiptRepresentations}=await import('./system-release.mjs');
+  assert.ok(targetManifest&&targetDelivery,'APP-only evidence requires authenticated target delivery metadata');
+  assert.equal(proof.acceptance,'launcher-transition-required');
+  assert.equal(proof.targetVersion,proof.baselineVersion,'APP-only evidence must retain the actual core version');
+  assert.equal(proof.targetTag,releasePublicationTag(targetManifest),'APP-only target publication differs');
+  const retained=coreReleaseIdentity(targetManifest,target);assert.ok(retained,'APP-only requires an explicit original core reference');
+  assert.equal(retained.commit,identity.commit);assert.equal(retained.tag,identity.coreTag||tag);
+  assert.equal(retained.manifests[target].sha256,identity.payloadManifestSha256,'APP-only may not repack the core');
+  assert.equal(proof.targetManifestSha256,identity.payloadManifestSha256);
+  assert.deepEqual(proof.coreIdentity,{version:identity.version,commit:identity.commit,manifestSha256:identity.payloadManifestSha256});
+  const coreEntry=retained.manifests[target],coreBytes=fs.readFileSync(path.join(targetDelivery,coreEntry.asset));
+  assert.equal(coreBytes.length,coreEntry.size);assert.equal(digestBytes(coreBytes),identity.payloadManifestSha256);
+  const targetSystem=JSON.parse(fs.readFileSync(path.join(targetDelivery,`nora-system-${target}.json`)));
+  const dependencyEntry=targetSystem.files?.['nora-tavern-dependencies.json'];let dependenciesBytes;
+  if(dependencyEntry){assert.match(dependencyEntry.asset||'',/^[A-Za-z0-9][A-Za-z0-9._-]*\.json$/);dependenciesBytes=fs.readFileSync(path.join(targetDelivery,dependencyEntry.asset));}
+  const [platform,arch]=target.split('-'),receiptIdentity=coreReceiptRepresentations(coreBytes,{platform,arch,
+    ...(dependencyEntry?{dependencyEntry,dependenciesBytes}:{})});
+  assert.deepEqual(Object.keys(proof.cases||{}).sort(),['running','stopped']);
+  const official=await readLauncher({repository,tag,platform:target});
+  for(const [name,value] of Object.entries(official))assert.equal(proof.baselineLauncher?.[name],value,`Official baseline APP differs: ${name}`);
+  const descriptorBytes=fs.readFileSync(path.join(targetDelivery,`nora-launcher-${target}.json`)),descriptor=JSON.parse(descriptorBytes);
+  assert.equal(descriptor.schema,'nora-launcher/v1');assert.equal(descriptor.candidate,false);
+  assert.equal(`${descriptor.platform}-${descriptor.arch}`,target);assert.equal(descriptor.commit,targetManifest.commit);
+  assert.equal(descriptor.version,targetManifest.launcherVersion);
+  assert.match(descriptor.asset||'',/^[A-Za-z0-9][A-Za-z0-9._-]*-update\.zip$/);
+  const archive=path.join(targetDelivery,descriptor.asset);
+  assert.equal(fs.statSync(archive).size,descriptor.size);assert.equal(await digestFile(archive),descriptor.sha256);
+  const targetIdentity={version:descriptor.version,commit:descriptor.commit,descriptorSha256:digestBytes(descriptorBytes),
+    archiveSha256:descriptor.sha256,archiveSize:descriptor.size};
+  for(const [name,value] of Object.entries(targetIdentity))assert.equal(proof.targetLauncher?.[name],value,`Target APP differs: ${name}`);
+  assert.ok(compareVersions('v'+descriptor.version,'v'+official.version)>0,'APP-only evidence needs an actual APP version transition');
+  for(const value of [proof.baselineLauncher,proof.targetLauncher])for(const name of ['executableSha256','asarSha256'])assert.match(value?.[name]||'',/^[a-f0-9]{64}$/);
+  assert.ok(proof.baselineLauncher.executableSha256!==proof.targetLauncher.executableSha256
+    ||proof.baselineLauncher.asarSha256!==proof.targetLauncher.asarSha256,'APP transition must change actual executable or ASAR bytes');
+  const packaged=oneReport(reports,'nora-packaged-app-acceptance.json');
+  assert.equal(packaged.schema,'nora-app-candidate-gate/1');
+  assert.equal(packaged.assertions?.actualElectron,true);
+  assert.equal(packaged.executable?.sha256,proof.targetLauncher.executableSha256);
+  assert.equal(packaged.asar?.sha256,proof.targetLauncher.asarSha256);
+  const harness=reportFiles(reports,'harness-result.json').map(file=>JSON.parse(fs.readFileSync(file))).filter(value=>value.launcherTransition);
+  assert.equal(harness.length,2,'APP-only publication requires running and stopped native APP upgrades');
+  for(const state of ['running','stopped']){
+    const values=harness.filter(value=>value.launcherTransition.startState===state);assert.equal(values.length,1);
+    const value=values[0],{startState,...recorded}=value.launcherTransition;assert.deepEqual(recorded,proof);
+    assert.equal(value.outcome,'passed');assert.equal(value.update,'verified-launcher-transition');
+    assert.equal(value.releaseAcceptance,'isolated-launcher-transition');assert.equal(value.updateInitialService,state);
+    const evidence=proof.cases[state];assert.ok(Number.isSafeInteger(evidence.coreFilesCount)&&evidence.coreFilesCount>0);
+    for(const name of ['coreFilesSha256','protectedDataSha256','userConfigurationDigest'])assert.match(evidence[name]||'',/^[a-f0-9]{64}$/);
+    for(const [field,expected] of Object.entries({executorHandles:'verified-closed',operation:'verified',runtime:'verified',
+      http:'verified',hermesSkills:'verified',mcp:'verified',stop:'verified',userData:'retained'}))assert.equal(value[field],expected);
+    assert.deepEqual(value.coreBefore,proof.coreIdentity);assert.deepEqual(value.coreAfter,proof.coreIdentity);
+    assert.equal(value.preservedCoreFiles,evidence.coreFilesCount);
+    assert.equal(value.coreFilesBeforeSha256,evidence.coreFilesSha256);assert.equal(value.coreFilesAfterSha256,evidence.coreFilesSha256);
+    assert.equal(value.protectedDataBeforeSha256,evidence.protectedDataSha256);assert.equal(value.protectedDataAfterSha256,evidence.protectedDataSha256);
+    assert.equal(value.userConfigurationDigest,evidence.userConfigurationDigest);
+    assert.ok(Number.isSafeInteger(value.changedLauncherFiles)&&value.changedLauncherFiles>0);
+    const directory=path.dirname(reportFiles(reports,'harness-result.json').find(file=>JSON.parse(fs.readFileSync(file)).launcherTransition?.startState===state));
+    const native={};for(const [name,field]of [['checkpoint.json','checkpointSha256'],['observed.json','observedSha256'],['finished-status.json','finishedStatusSha256']]){const bytes=fs.readFileSync(path.join(directory,name));assert.equal(digestBytes(bytes),evidence.nativeEvidence?.[field],'Native evidence bytes differ');native[name]=JSON.parse(bytes);}
+    const before=native['checkpoint.json'],after=native['observed.json'],finished=native['finished-status.json'];
+    assert.equal(before.schema,'nora-app-native-checkpoint/1');assert.equal(before.scope,'published-baseline','Private native baselines cannot authorize publication');
+    assert.equal(before.productCommit,proof.targetCommit);assert.equal(before.targetTag,proof.targetTag);assert.equal(before.baselineTag,tag);assert.equal(before.sourceReceiptSha256,proof.sourceReceiptSha256);
+    assert.deepEqual(before.coreIdentity,proof.coreIdentity);assert.deepEqual(after.after,before.before,'Raw native core/data/config inventories changed');
+    const actualInstalled=evidence.actualInstalledManifestSha256||proof.coreIdentity.manifestSha256;
+    assert.ok(receiptIdentity.representations.some(value=>value.sha256===actualInstalled),'Local manifest is not an authenticated core representation');
+    assert.equal(before.actualInstalledManifestSha256||proof.coreIdentity.manifestSha256,actualInstalled);
+    assert.equal(before.before.receipts['installed-manifest.json'],actualInstalled);
+    assert.equal(digestBytes(JSON.stringify({core:before.before.core,receipts:before.before.receipts})),evidence.coreFilesSha256);
+    assert.equal(digestBytes(JSON.stringify(before.before.protectedData.files)),evidence.protectedDataSha256);
+    assert.equal(digestBytes(JSON.stringify(before.before.config)),evidence.userConfigurationDigest);
+    assert.equal(Object.values(before.before.core).reduce((count,tree)=>count+tree.files.length,0)+Object.keys(before.before.receipts).length,evidence.coreFilesCount);
+    assert.equal(before.status.running,state==='running');assert.equal(after.operation.result.running,state==='running');
+    if(state==='stopped'&&after.status.running){assert.ok(after.continuationOperations?.length);for(const start of after.continuationOperations){assert.equal(start.kind,'start');assert.equal(start.target?.request?.service,'tavern');assert.equal(start.state,'succeeded');assert.equal(start.verification,'confirmed');assert.ok(Date.parse(start.createdAt)>=Date.parse(after.operation.updatedAt));}}else assert.equal(after.status.running,state==='running');
+    for(const runtime of [before.runtimeProof,after.runtimeProof]){for(const key of ['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration','sessionReadable'])assert.equal(runtime?.[key],true);assert.equal(runtime.httpStatus,200);assert.ok(Number.isSafeInteger(runtime.worldCount)&&runtime.worldCount>0);}
+    assert.deepEqual(after.sourceProof.modules,value.moduleHashes);assert.deepEqual(after.sourceProof.actors,value.actorSourceFiles);
+    assert.equal(after.operation.state,'succeeded');assert.equal(after.operation.verification,'confirmed');assert.equal(after.operation.target?.request?.launcherOnly,true);assert.equal(after.operation.target?.releasePlan?.tag,proof.targetTag);
+    assert.equal(after.operation.result?.updateVerified,true);assert.equal(after.operation.result?.version,proof.coreIdentity.version);assert.equal(after.operation.result?.commit,proof.coreIdentity.commit);
+    assert.equal(after.operations.length,1);assert.equal(after.ready.operationId,after.operation.operationId);assert.equal(after.ready.planDigest,after.operation.planDigest);assert.equal(after.ready.version,proof.targetLauncher.version);
+    assert.equal(finished.status.running,false);assert.equal(finished.status.systemReady,true);assert.equal(finished.offline,true);assert.deepEqual(finished.processes,[]);assert.equal(finished.lockProof.busy,false);
+
+  }
+}
+async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { repository, targetTag, commit, selected = platforms, readIdentity,readLauncherIdentity,targetManifest,targetDelivery }) {
+  const {releasePublicationTag}=await import('./system-release.mjs');
+  if(targetManifest){assert.equal(targetManifest.commit,commit);assert.equal(releasePublicationTag(targetManifest),targetTag);}
+  const coreVersion=targetManifest?.versions?.tavern||targetTag.slice(1);
   const freshFacts = selectAcceptanceBaseline(pages, { repository, targetTag, publication: true });
   const selections = fs.existsSync(planRoot) ? reportFiles(planRoot, 'nora-acceptance-baseline-selection.json') : [];
   assert.ok(selections.length <= 1, 'Duplicate original acceptance selection');
@@ -139,8 +241,10 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
   const read = readIdentity || (await import('./acceptance-baseline.mjs')).readAcceptanceIdentity;
   for (const target of selected) {
     const reports = path.join(acceptance, `nora-operation-acceptance-${target}`), proof = oneReport(reports, 'nora-upgrade-baseline-acceptance.json');
-    assert.equal(proof.schema, 'nora-upgrade-baseline/1'); assert.equal(proof.targetCommit, commit); assert.equal(proof.targetVersion, targetTag.slice(1));
-    const tag = `v${proof.baselineVersion}`; assert.ok(compareVersions(tag, targetTag) < 0, 'Historical upgrade evidence must use a strictly older version');
+    const launcherOnly=proof.schema==='nora-app-upgrade-baseline/1';
+    assert.ok(launcherOnly||proof.schema==='nora-upgrade-baseline/1');assert.equal(proof.targetCommit,commit);assert.equal(proof.targetVersion,coreVersion);
+    if(targetTag!==`v${coreVersion}`)assert.equal(proof.targetTag,targetTag,'Component evidence must bind its publication batch separately');
+    const tag = proof.baselineTag||`v${proof.baselineVersion}`; assert.ok(compareVersions(tag, targetTag) < 0, 'Historical upgrade evidence must use a strictly older version');
     assert.ok(freshFacts.releases.some(value => value.tag_name === tag), 'Historical baseline is not an actually published stable release');
     assert.equal(tag, freshFacts.tag, 'Historical upgrade evidence must cover the most recent published older stable release');
     if (original) { assert.equal(original.tag, tag); assert.equal(proof.sourceTag, tag); }
@@ -148,7 +252,13 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
     assert.equal(identity.schema, 'nora-acceptance-baseline/1'); assert.equal(identity.repository, repository); assert.equal(identity.tag, tag);
     assert.equal(identity.platform, target); assert.equal(identity.version, proof.baselineVersion); assert.equal(identity.commit, proof.baselineCommit);
     assert.equal(identity.systemManifestSha256, proof.systemManifestSha256); assert.equal(identity.payloadManifestSha256, proof.baselineManifestSha256);
-    assert.equal(identity.declaredFiles, proof.verifiedFiles); assert.equal(proof.acceptance, 'version-transition-required');
+    assert.equal(identity.declaredFiles, proof.verifiedFiles);
+    if(launcherOnly){
+      await verifyAppOnlyHistory(reports,proof,{identity,readLauncher:readLauncherIdentity||(await import('./acceptance-baseline.mjs')).readAcceptanceLauncherIdentity,
+        repository,tag,target,targetManifest,targetDelivery});
+    }else{
+    assert.equal(proof.acceptance, 'version-transition-required');
+    assert.ok(compareVersions('v'+proof.targetVersion,'v'+proof.baselineVersion)>0,'Core upgrade evidence requires an actual version transition');
     const historical = reportFiles(reports, 'harness-result.json').map(file => JSON.parse(fs.readFileSync(file))).filter(value => value.versionTransition);
     assert.equal(historical.length, 2, 'Formal publication requires both running and stopped historical upgrades');
     for (const state of ['running', 'stopped']) {
@@ -158,6 +268,7 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
       assert.equal(values[0].releaseAcceptance, 'isolated-version-transition'); assert.equal(values[0].updateInitialService, state);
       assert.ok(Number.isSafeInteger(values[0].changedSourceArtifacts) && values[0].changedSourceArtifacts > 0);
     }
+    }
     const retained = reportFiles(reports, 'baseline-source-receipt.json');
     if (original) assert.equal(retained.length, 1, 'New acceptance must retain the official baseline receipt');
     if (retained.length) {
@@ -166,7 +277,7 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
       for (const key of ['repository', 'tag', 'platform', 'commit', 'version', 'systemManifestSha256', 'payloadManifestSha256', 'declaredFiles']) assert.equal(receipt[key], identity[key]);
       assert.equal(receipt.verifiedFiles, receipt.declaredFiles); assert.deepEqual(receipt.files, identity.files);
     }
-    result[target] = { tag, commit: identity.commit, systemManifestSha256: identity.systemManifestSha256, payloadManifestSha256: identity.payloadManifestSha256, states: ['running', 'stopped'] };
+    result[target] = { tag, commit: identity.commit, systemManifestSha256: identity.systemManifestSha256, payloadManifestSha256: identity.payloadManifestSha256, states: ['running', 'stopped'],...(launcherOnly?{scope:'launcher-transition'}:{}) };
   }
   return { initialRelease: false, baselines: result };
 }
@@ -333,7 +444,9 @@ async function materialize(run, artifacts, options, root, kind) {
   else if (options.mode === 'full') {
     receipt.acceptance = await verifyNativeAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), options.commit);
     assert.ok(options.publishedFacts && options.tag, 'Full publication requires independent published-release facts');
-    receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts, { ...options, targetTag: options.tag });
+    receipt.historicalAcceptance = await verifyHistoricalAcceptance(path.join(root, 'acceptance'), path.join(root, 'plan'), options.publishedFacts,
+      { ...options, targetTag: options.tag,targetDelivery:path.join(root,'delivery'),
+        targetManifest:JSON.parse(fs.readFileSync(path.join(root,'delivery/release-manifest.json'))) });
   } else receipt.acceptance = await verifyComponentAcceptance(path.join(root, 'delivery'), path.join(root, 'acceptance'), path.join(root, 'plan'), options.commit);
   fs.writeFileSync(path.join(root, 'source-receipt.json'), JSON.stringify(receipt, null, 2) + '\n', { flag: 'wx' });
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);

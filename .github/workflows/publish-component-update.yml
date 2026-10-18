@@ -7,6 +7,14 @@ on:
         description: Published stable tag with verified Hermes and dependencies to reuse
         required: true
         type: string
+      publication_tag:
+        description: Explicit component publication batch (blank keeps v<core-version>)
+        type: string
+        default: ''
+      compatibility_file:
+        description: Reviewed committed JSON under tooling/release/compatibility/ (optional)
+        type: string
+        default: ''
 
 # Both release paths share a lock; they must never upload to one tag concurrently.
 concurrency:
@@ -31,9 +39,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Verify committed release identity
-        shell: bash
-        run: test "$GITHUB_REF_NAME" = "v$(cat app/.tavern-release-version)"
       - uses: actions/setup-node@v4
         with:
           node-version: 24
@@ -44,6 +49,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Resolve explicit component publication inputs
+        env:
+          BUILD_PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          BUILD_COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: node tooling/release/system-release.mjs --workflow-options
       - name: Plan component changes before compilation
         id: plan
         shell: bash
@@ -66,7 +76,7 @@ jobs:
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
           node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
           node "$PWD/tooling/run.mjs" node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
-          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
+          node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_standalone_update_entry tests.deployment.test_standalone_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Require chat backup safety tests
         timeout-minutes: 10
         shell: bash
@@ -77,7 +87,13 @@ jobs:
           node --test tests/backup-safety-gate.test.mjs
           node tooling/checks/verify-backup-safety.mjs
       - name: Build only shared application and updater components
-        run: node tooling/release/package-release.mjs --components-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          publication_args=()
+          if [[ -n "$NORA_COMPONENT_PUBLICATION_TAG" ]]; then publication_args+=(--publication-tag "$NORA_COMPONENT_PUBLICATION_TAG"); fi
+          if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then publication_args+=(--update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"); fi
+          node tooling/release/package-release.mjs --components-only "${publication_args[@]}"
       - name: Reuse verified environments and seal three system manifests
         shell: bash
         run: |

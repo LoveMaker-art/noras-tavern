@@ -5,8 +5,10 @@ import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { buildCommand } from './build-commands.mjs';
 import { assertSafeReleasePath, createReleaseSource, digest } from './release-source.mjs';
-import { fileDigest } from './system-release.mjs';
+import { fileDigest, assertCoreReleasePayload } from './system-release.mjs';
 import { verifyFile, PLATFORMS } from './package-component-update.mjs';
+import {materializeAcceptanceBaseline} from './acceptance-baseline.mjs';
+import {materializeCoreReference} from './app-only-release.mjs';
 import { readAssetCatalogue, downloadCatalogueAsset, assertBaselineCatalogue } from './asset-catalogue.mjs';
 
 const json = file => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -23,7 +25,18 @@ const allowedFiles = new Set([
     'tooling/release/acceptance-baseline.mjs',
 ]);
 
-export function assertLauncherReuse(current, baseline) {
+const appOnlyFiles=new Set([
+    'tooling/release/acceptance-baseline.mjs', 'tooling/release/app-only-release.mjs', 'tooling/release/app-only-acceptance.cjs',
+    'tooling/release/app-only-native-ui.ps1', 'tooling/release/app-only-native-ui.applescript',
+    'tooling/release/publication-source.cjs', 'tooling/release/release-plan.mjs', 'tooling/release/final-consumer.mjs',
+    '.github/workflows/publish-accepted-release.yml',
+    'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs',
+    'tooling/release/launcher-build-baseline.mjs', 'tooling/release/package-release.mjs',
+    'deployment/update/bootstrap.py', 'deployment/update/update.py', 'deployment/update/task.py',
+    'deployment/update/task_backend.py', 'deployment/runtime/nora-tavern-update-check.py',
+    '.github/workflows/build-integrated-launcher.yml',
+]);
+export function assertLauncherReuse(current, baseline,{appOnly=false}={}) {
     assert.equal(baseline.schema, 'tavern-release/v2');
     assert.equal(baseline.candidate, false, 'Baseline must be a stable published build');
     assert.equal(baseline.dirty, false, 'Baseline must be clean');
@@ -37,7 +50,7 @@ export function assertLauncherReuse(current, baseline) {
     }
     // Shared build/projection tools can change compiled payloads without changing
     // app source. Only reviewed launcher-specific tools may bypass compilation.
-    const allowed = name => allowedFiles.has(name)
+    const allowed = name => allowedFiles.has(name)||(appOnly&&appOnlyFiles.has(name))
         || ['launcher/', 'deployment/install/', 'deployment/uninstall/', 'tests/', 'docs/'].some(prefix => name.startsWith(prefix));
     const changed = [...new Set([...Object.keys(current.sourceFiles), ...Object.keys(baseline.sourceFiles)])]
         .filter(name => current.sourceFiles[name] !== baseline.sourceFiles[name]);
@@ -53,7 +66,7 @@ export function assertLauncherVersion(version, previous) {
     assert.ok(difference >= 0 && next[difference] > old[difference], 'Increase launcher version before a stable launcher build');
 }
 
-export function readBaseline(directory, current, platform = `${process.platform}-${process.arch}`) {
+export function readBaseline(directory, current, platform = `${process.platform}-${process.arch}`,{appOnly=false}={}) {
     assert.ok(PLATFORMS.includes(platform));
     const system = json(path.join(directory, `nora-system-${platform}.json`));
     assert.equal(system.schema, 'nora-system/v1');
@@ -65,9 +78,10 @@ export function readBaseline(directory, current, platform = `${process.platform}
         return json(path.join(directory, name));
     };
     const identity = readVerified('release-manifest.json');
-    assert.equal(identity.commit, system.commit);
+    if(system.coreRelease)assertCoreReleasePayload(system,fs.readFileSync(path.join(directory,'release-manifest.json')),platform,system.files['release-manifest.json']);
+    else assert.equal(identity.commit, system.commit);
     assert.equal(identity.versions.tavern, system.version);
-    assertLauncherReuse(current, identity);
+    assertLauncherReuse(current, identity,{appOnly});
     // Shared module archives come from one build platform, whereas installers
     // have platform-specific full archives (including different tar metadata).
     const sharedPath = path.join(directory, 'shared-release-manifest.json');
@@ -77,21 +91,23 @@ export function readBaseline(directory, current, platform = `${process.platform}
         assert.equal(expected.length, 1, 'Missing shared manifest checksum');
         assert.equal(fileDigest(sharedPath), expected[0][1]);
         const shared = json(sharedPath);
-        assert.equal(shared.commit, identity.commit);
+        if(!system.coreRelease){assert.equal(shared.commit, identity.commit);
         assert.deepEqual(shared.sourceFiles, identity.sourceFiles);
         identity.modules = Object.fromEntries(Object.entries(shared.modules).filter(([, entry]) => entry.artifacts.every(name =>
-            shared.artifacts[name] === identity.artifacts[name] && shared.artifactModes[name] === identity.artifactModes[name])));
+            shared.artifacts[name] === identity.artifacts[name] && shared.artifactModes[name] === identity.artifactModes[name])));}
     }
     const runtime = readVerified('nora-hermes-runtime.json');
     const dependencies = readVerified('nora-tavern-dependencies.json');
     for (const [item, key] of [[runtime, 'hermesRuntime'], [dependencies, 'dependencies']]) {
         assert.equal(item.schema, 1);
         assert.equal(`${item.platform}-${item.arch}`, platform);
-        assert.equal(item.sha256, identity[key]?.sha256);
+        if(identity[key])assert.equal(item.sha256, identity[key].sha256);
         verifyFile(path.join(directory, safeName(item.archive)), item);
         verifyFile(path.join(directory, item.archive), system.files[item.archive]);
     }
-    return { directory, identity, system, runtime, dependencies };
+    return { directory, identity, system, runtime, dependencies,
+        product:fs.existsSync(sharedPath)?json(sharedPath):identity,
+        coreRelease:fs.existsSync(path.join(directory,'baseline-core-reference.json'))?json(path.join(directory,'baseline-core-reference.json')):undefined };
 }
 
 // Only regular, manifest-owned files are extracted, never archive links or arbitrary paths.
@@ -138,43 +154,30 @@ export function reuseArchive(baseline, entry, members, stage, destination) {
 
 function main() {
     const [tag, platform, output] = process.argv.slice(2);
+    const appOnly=process.argv.includes('--app-only');
     assert.match(tag || '', /^v\d+\.\d+\.\d+$/);
     assert.ok(PLATFORMS.includes(platform));
     assert.ok(output && !fs.existsSync(output), 'Use a new baseline directory');
     const catalogue = readAssetCatalogue({ tag });
-    fs.mkdirSync(output, { recursive: true });
+    materializeAcceptanceBaseline({tag,platform,output});
     const download = (asset, name = asset, entry) => downloadCatalogueAsset(catalogue, asset, output, { targetName: name, expected: entry });
-    download(`nora-system-${platform}.json`);
     const system = json(path.join(output, `nora-system-${platform}.json`));
-    assertBaselineCatalogue(catalogue, system);
-    assert.equal(system.version, tag.slice(1));
-    for (const name of ['release-manifest.json', 'nora-hermes-runtime.json', 'nora-tavern-dependencies.json']) {
-        download(system.files[name].asset, name, system.files[name]);
-    }
     const baseline = json(path.join(output, 'release-manifest.json'));
-    assertBaselineCatalogue(catalogue, baseline);
+    materializeCoreReference(catalogue,output);
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
     const source = createReleaseSource(root, { candidate: true });
-    try { assertLauncherReuse(source.identity, baseline); }
+    try { assertLauncherReuse(source.identity, baseline,{appOnly}); }
     finally { fs.rmSync(source.stage, { recursive: true, force: true }); }
-    for (const entry of Object.values(baseline.archives)) {
-        const item = system.files[entry.name];
-        download(item.asset, entry.name, item);
-        assert.equal(fileDigest(path.join(output, entry.name)), entry.sha256);
-    }
     download('release-manifest.json', 'shared-release-manifest.json');
     download('SHA256SUMS', 'shared-SHA256SUMS');
     const shared = json(path.join(output, 'shared-release-manifest.json'));
     assertBaselineCatalogue(catalogue, shared);
-    assert.equal(shared.commit, baseline.commit);
+    if(!system.coreRelease)assert.equal(shared.commit, baseline.commit);
     for (const entry of Object.values(shared.modules)) {
         download(entry.name);
         assert.equal(fileDigest(path.join(output, entry.name)), entry.sha256);
     }
-    for (const name of [baseline.hermesRuntime.archive, baseline.dependencies.archive]) {
-        download(system.files[name].asset, name, system.files[name]);
-    }
-    readBaseline(output, source.identity, platform);
+    readBaseline(output, source.identity, platform,{appOnly});
     console.log(`Verified launcher baseline ${tag} (${platform}) in ${output}`);
 }
 

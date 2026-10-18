@@ -11,12 +11,12 @@ from ops.updater import update
 
 
 class UpdateOperationSafetyTests(unittest.TestCase):
-    def test_actual_cli_requires_live_operation_before_install_is_called(self):
-        with patch.object(sys, 'argv', ['update.py', 'install', '--release-dir', '/fixture',
+    def test_managed_cli_requires_valid_receipt_before_install_is_called(self):
+        with patch.object(sys, 'argv', ['update.py', '--managed-home', '/fixture', 'install', '--release-dir', '/fixture',
                 '--manifest-sha256', 'a' * 64, '--confirm']), patch.object(update, 'install') as install:
             with self.assertRaises(RuntimeError) as caught:
                 update.main()
-            self.assertEqual(caught.exception.code, 'OPERATION_CAPABILITY_REQUIRED')
+            self.assertEqual(caught.exception.code, 'OPERATION_CAPABILITY_INVALID')
             install.assert_not_called()
 
     def test_python_maintenance_uses_managed_channel(self):

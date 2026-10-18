@@ -40,7 +40,7 @@
   }
 
   let snapshot = {}, view = 'loading', refreshing = false, activeAction = '', lastFailure = null;
-  let alive = true, pollTimer, taskTimer, startedAt = 0, lastEvent = 0;
+  let alive = true, pollTimer, taskTimer, pairTimer, startedAt = 0, lastEvent = 0;
   let taskStage = '', taskProgress = null, lastProgressAt = 0;
   let milestoneStates = [], currentTask = '', operationCancelled = false;
   let versionInfo = null, versionChecking = false, autoVersionChecked = false, activeService = 'all';
@@ -377,7 +377,8 @@
     });
     const submit = $('inline').querySelector('button[type="submit"]');
     if (submit) {
-      submit.disabled = busy || Boolean(snapshot.busy) || statusUnknown || Boolean(snapshot.retainedUninstallPending) || submit.dataset.unavailable === 'true';
+      submit.disabled = busy || Boolean(snapshot.busy) || statusUnknown || Boolean(snapshot.retainedUninstallPending) || submit.dataset.unavailable === 'true'
+        || view==='claw'&&(snapshot.operation?.pairRetryAt||0)>Date.now();
       submit.classList.toggle('primary', !statusUnknown && submit.dataset.unavailable !== 'true');
     }
     const modelQuery = $('inline').querySelector('#modelStatusRecheck');
@@ -613,6 +614,18 @@
       if (information.children.length) { details.append(information); $('inline').append(details); }
       controls(); $('launchbar').hidden = true; $('status').hidden = false; $('status').textContent = '需要恢复'; return;
     }
+    const partial=snapshot.updateSequence;
+    if(['partial','blocked'].includes(partial?.status)){
+      const original=partial.operation||snapshot.operation?.operationId===partial.operationId&&snapshot.operation;
+      const operation=original?currentOperation({operation:original}):undefined;
+      fail({...(operation?{operation}:{}),allowedActions:partial.status==='partial'||partial.canRetry?['retry','recheck','logs']:['recheck','logs'],
+        logOperationId:partial.operationId,guidance:{title:partial.status==='partial'?'更新部分完成。':'更新尚未完成。',
+        detail:[partial.message,partial.coreVersion&&partial.launcherVersion?`酒馆 ${partial.coreVersion} · 启动器 ${partial.launcherVersion}`:''].filter(Boolean).join('\n'),
+        next:partial.status==='partial'?'可重试未完成的一项；已成功的部分会保留。':'请先查询原任务并保留日志和数据。'}},'update',
+        partial.operationId?()=>run('update',{operationId:partial.operationId,snapshotSequence:partial.snapshotSequence},'resumeOperation')
+          :()=>run('update',{tag:partial.releaseTag,includeLauncher:true}));
+      return;
+    }
     const operation = snapshot.operation;
     const restoredSuccessfully = recoveredOperation(operation);
     if (operation && !restoredSuccessfully&&['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)) {
@@ -781,7 +794,10 @@
     }
   }
   function continueOperation(mode = 'resume', expected = snapshot.operation) {
-    const operation = snapshot.operation;
+    // A later shutdown or other task must not replace the failed component's
+    // canonical record in a pending two-component update.
+    const partial = snapshot.updateSequence?.operation;
+    const operation = expected?.operationId === partial?.operationId ? partial : snapshot.operation;
     if (expected?.operationId !== operation?.operationId) return;
     if (busy || statusUnknown || !operation || !operation.allowedActions?.some(action => mode === 'recover' ? ['recover','start-restored'].includes(action) : ['retry','resume'].includes(action))) return;
     const endpoint = mode === 'recover' ? 'recoverOperation' : 'resumeOperation';
@@ -817,7 +833,7 @@
     say(operation?.state === 'cancelled' || operationCancelled ? '操作已取消。' : problem.title, detail.filter(Boolean).join('\n'));
     const entries = [];
     if (!statusUnknown && actions.includes('configure-model')) entries.push({label:'配置模型', run:modelForm});
-    if (!statusUnknown && actions.includes('pair-clawchat')) entries.push({label:'连接 ClawChat', run:clawForm});
+    if (!statusUnknown && actions.includes('pair-clawchat')) entries.push({label:operation?.kind==='pair'?'重新输入配对码':'连接 ClawChat', run:clawForm});
     if (!statusUnknown && actions.includes('recover') && operation && typeof api.recoverOperation === 'function') entries.push({label:'恢复旧版本', run:() => continueOperation('recover', operation)});
     if (!statusUnknown && actions.includes('start-restored') && operation && typeof api.recoverOperation === 'function') entries.push({label:'启动旧版本', run:() => continueOperation('recover', operation)});
     if (!statusUnknown && actions.includes('resume-model') && typeof api.resumeModelSetup === 'function') entries.push({label:'继续同步', run:() => run('resumeModelSetup')});
@@ -837,6 +853,12 @@
     appendActions(group, entries); $('inline').append(group);
     controls();
   }
+  function canSubmitPair(operation=snapshot.operation) {
+    return operation?.kind==='pair'&&operation.allowedActions?.includes('pair-clawchat')
+      &&!operation.busy&&!snapshot.busy&&!snapshot.updateRecovery&&!snapshot.launcherRecovery
+      &&['untouched','restored'].includes(operation.effectState)
+      &&!['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome);
+  }
   async function run(action, options = {}, endpoint = action) {
     if (busy) return;
     if (statusUnknown && !(action === 'recoverLauncher' && launcherRecoveryConfirmed)) {
@@ -847,6 +869,7 @@
     if (operation && !recoveredOperation(operation) && ['failed', 'cancelled', 'blocked', 'interrupted', 'rolled-back'].includes(operation.state)
       && (operation.kind === action || ['install','update','repair','recover'].includes(action))
       && !['resumeOperation','recoverOperation'].includes(endpoint)
+      && !(action==='pair'&&endpoint==='pair'&&canSubmitPair(operation))
       && !(action === 'update' && endpoint === 'update' && isNewUpdateTarget(options.tag, operation))) { route(); return; }
     if ((snapshot.updateRecovery || snapshot.launcherRecovery) && !['recover', 'recoverLauncher'].includes(action)) { route(); return; }
     const wasComplete = complete();
@@ -898,6 +921,7 @@
       if (error.operation) syncState({ operation: error.operation });
       lastFailure = { error, action, options, retry: () => run(action, options) };
       try { await readStatus(); } catch {}
+      if(action==='update'&&['partial','blocked'].includes(snapshot.updateSequence?.status)) { route(); return; }
       if (['update', 'repair', 'recover', 'recoverLauncher'].includes(action) && (snapshot.updateRecovery || snapshot.launcherRecovery)) {
         if (!statusUnknown) snapshot.installer = { ...snapshot.installer, phase: 'error', error: textError(error) };
         route(); return;
@@ -1057,6 +1081,7 @@
   }
   clawForm = () => {
     if (busy) return;
+    clearInterval(pairTimer);
     view = 'claw'; setupStage(3); clearInline();
     say(snapshot.clawchatPaired ? 'ClawChat 配对已保留。' : '把我接到 ClawChat 吧。');
     if (complete()) editHeader('ClawChat', canReturnHome() ? '返回酒馆' : '返回操作页');
@@ -1068,11 +1093,26 @@
     const form = document.createElement('form'); form.className = 'pair-form';
     form.innerHTML = '<div class="field-line"><label for="pairCode">配对码</label><a class="quiet" href="https://clawling.com/zh/chat/docs/connect-code/" target="_blank" rel="noopener noreferrer">如何获取配对码 <i class="fa-solid fa-arrow-up-right-from-square" aria-hidden="true"></i></a></div><input id="pairCode" type="password" autocomplete="off" placeholder="粘贴 ClawChat 配对码"><p class="model-feedback" id="pairFeedback"></p><div class="form-bottom"><span></span><button class="button primary" type="submit">连接并继续</button></div>';
     form.querySelector('button[type="submit"]').textContent = complete() ? '配对并连接' : '配对并继续';
-    if (snapshot.clawchatPaired) {
+    if (snapshot.clawchatPaired&&!canSubmitPair()) {
       const replace = button('重新配对', () => { replace.hidden = true; form.hidden = false; }, false); replace.className = 'quiet'; $('inline').append(replace); form.hidden = true;
     }
     $('inline').append(form);
-    form.onsubmit = event => { event.preventDefault(); if (busy || statusUnknown) return; const code = $('pairCode').value.trim();
+    const submit=form.querySelector('button[type="submit"]'),submitLabel=submit.textContent;
+    const lastPair=snapshot.operation?.kind==='pair'?snapshot.operation:null;
+    if(lastPair?.primaryFailure){
+      const note=document.createElement('p');note.className='model-feedback';note.id='pairLastFailure';
+      const original=errorCopy({guidance:lastPair.primaryFailure.guidance});
+      note.textContent=[original.title,original.detail].filter(Boolean).join(' ');form.prepend(note);
+    }
+    const cooldown=()=>{
+      if(!alive||view!=='claw'||!form.isConnected){clearInterval(pairTimer);return 0;}
+      const remaining=Math.max(0,Math.ceil(((snapshot.operation?.pairRetryAt||0)-Date.now())/1000));
+      submit.disabled=busy||statusUnknown||snapshot.busy||remaining>0;
+      submit.textContent=remaining?'请等待 '+remaining+' 秒':submitLabel;
+      return remaining;
+    };
+    cooldown();pairTimer=setInterval(cooldown,250);
+    form.onsubmit = event => { event.preventDefault(); if (busy || statusUnknown||cooldown()>0) return; const code = $('pairCode').value.trim();
       if (!code || /\s/.test(code)) { $('pairFeedback').textContent = '请填写配对码，不是整条激活命令。'; return; }
       $('pairCode').value = ''; run('pair', { code });
     };
@@ -1089,7 +1129,7 @@
       const title = problem ? problem.title
         : { available: '发现可用更新。', blocked: '此版本暂时无法安装。', current: `暂无${channelName}更新。`, ahead: `本机酒馆版本高于${channelName}发布。`, unknown: '本机版本暂时无法确认。', unavailable: '检查更新未完成。' }[state];
       const versions = `酒馆：当前 ${result.current || '待确认'}${result.latest ? ` · 发布 ${result.latest}` : ''}\n启动器：当前 ${result.launcherVersion || '待确认'} · 发布 ${result.launcherLatest || '待确认'}`;
-      const explanation = [versions, problem?.detail, state === 'blocked' ? '本次未开始安装此版本。' : '',
+      const explanation = [versions, problem?.detail, result.launcherError ? `启动器更新检查未完成：${result.launcherError}` : '', state === 'blocked' ? '本次未开始安装此版本。' : '',
         result.checkedAt ? `${reused ? '上次检查结果' : '检查时间'}：${checkedTime(result.checkedAt)}` : ''].filter(Boolean).join('\n');
       const noraGuidance = state === 'unavailable' ? noraUpdateGuidance(result, 'check_update') : '';
       say(title, [explanation, noraGuidance].filter(Boolean).join('\n'));
@@ -1103,7 +1143,9 @@
       } else if (result.available && result.updateSupported && (!unresolved || newTarget)) entries.push({
         label:newTarget ? '安装新版更新' : '安装更新', run:() => {
           if (newTarget && !isNewUpdateTarget(result.latest, operation)) { route(); return; }
-          return run('update', { tag: result.latest });
+          return run('update', { tag: result.releaseTag||result.latest,
+            ...(result.launcherUpdateAvailable===true
+              ?result.releaseAvailable===true?{includeLauncher:true}:{launcherOnly:true}:{} ) });
         }, primary:true});
       else if (unresolved) {
         const note = document.createElement('p'); note.className = 'model-feedback';
@@ -1209,7 +1251,7 @@
     }
     clearTimeout(pollTimer); pollTimer = setTimeout(poll, 5000);
   }
-  addEventListener('beforeunload', () => { alive = false; logGeneration++; clearTimeout(logTimer); clearTimeout(pollTimer); clearInterval(taskTimer); });
+  addEventListener('beforeunload', () => { alive = false; logGeneration++; clearTimeout(logTimer); clearTimeout(pollTimer); clearInterval(taskTimer); clearInterval(pairTimer); });
   $('main').dataset.layout = 'workflow';
   clearInline(); $('steps').hidden = true; $('launchbar').hidden = true; say('正在检查本机安装。');
   poll();

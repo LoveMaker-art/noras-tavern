@@ -85,6 +85,22 @@ test('a failure before any journal exists stays untouched without executing reco
   assert.equal((await f.policy.recover(f.context)).effectState,'untouched');
   assert.deepEqual(f.events,[]);
 });
+test('an already restored system transaction closes as rollback without repeating file recovery',async t=>{
+  const f=setup(t,{systemEffects:async()=>({effectState:'restored',recoveryOutcome:'restored-and-verified',canRecover:false}),
+    bridge:async command=>{throw new Error(`Verified automatic recovery must not repeat ${command}`);}});
+  const journal=path.join(f.options.installRoot,'tavern-updates/transaction.json');
+  fs.mkdirSync(path.dirname(journal),{recursive:true});fs.writeFileSync(journal,'fixture');
+  const controller=createOperationController({directory:path.join(f.home,'installer'),lock:createTestOperationLock(),
+    observeEffects:record=>f.policy.observe(record),recoverers:{update:context=>f.policy.recover(context)},
+    projectResult:value=>value?.value??value});
+  const result=await controller.start('update',{target:{request:{port:18999}},execute:async context=>{
+    await context.effect('unknown');throw new Error('new program failed; Python already restored the original');
+  }},'automatic-system-rollback');
+  assert.equal(result.state,'rolled-back');assert.equal(result.effectState,'restored');
+  assert.equal(result.recoveryOutcome,'restored-and-verified');assert.equal(result.verification,'confirmed');
+  assert.equal(result.result.recoveryVerification,'confirmed');
+  assert.deepEqual(f.events,[]);
+});
 test('whole-install recovery waits for the system writer before restoring the runtime',async t=>{
   const order=[];let runtime={effectState:'changed',reason:'committed'};
   const f=setup(t,{inspectRuntime:()=>runtime,bridge:async command=>{
@@ -308,6 +324,27 @@ test('a fixed system descriptor read may prove network recovery before the launc
   current={...descriptor,minimumLauncherVersion:'2.1.1'};
   assert.equal((await f.policy.recheck(f.record,{conditionTarget:{...condition,resource:{url,routeHash:resource.routeHash,expectedVersion:'2.1.1'}}})).changed,true,
     'legacy proofs remain readable under their original launcher minimum');
+});
+
+test('independent updater metadata recovery uses actual executor capabilities rather than an APP version',async t=>{
+  const releases=require('../installer/desktop/releases');
+  const captured=JSON.parse(require('node:zlib').brotliDecompressSync(fs.readFileSync(path.join(__dirname,'fixtures/published-v2.4.4/metadata.json.br'))));
+  const descriptor=JSON.parse(captured.files['nora-system-win32-x64.json']);
+  descriptor.minimumLauncherVersion='99.0.0';descriptor.updaterCapabilities={...releases.UPDATER_CAPABILITIES};
+  const url=releases.assetUrl(captured.release,'nora-system-win32-x64.json'),routes=capturedMetadataRoutes(captured);
+  let current=descriptor;
+  const f=setup(t,{client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherVersion:undefined,
+    platform:'win32',arch:'x64',networkFetch:async read=>capturedMetadataResponse(captured,routes,read,{'nora-system-win32-x64.json':JSON.stringify(current)})});
+  Object.assign(f.record,{state:'failed',stageId:'downloading',effectState:'untouched',recoveryOutcome:'not-required',target:{request:{tag:captured.release.tag_name}}});
+  f.record.primaryFailure={code:'ETIMEDOUT',conditionTarget:{kind:'release-metadata',retryAt:null,
+    resource:{url,routeHash:'a'.repeat(64),expectedVersion:'2.0.0'}}};
+  f.record.conditionBaseline=await f.policy.initialConditions(f.record);
+  assert.equal((await f.policy.recheck(f.record)).changed,true);
+  current={...descriptor,updaterCapabilities:{...releases.UPDATER_CAPABILITIES,executorProtocol:'nora-operation-executor/2'}};
+  f.record.conditionBaseline=await f.policy.initialConditions(f.record);
+  assert.equal((await f.policy.recheck(f.record)).changed,false);
+  current=descriptor;
+  assert.equal((await create({...f.options,updaterCapabilities:undefined}).recheck(f.record)).changed,false);
 });
 
 test('official platform selection unblocks an untouched legacy first-install operation while preserving its identity and first failure',async t=>{

@@ -13,6 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import os
+import platform
 from pathlib import Path
 from pathlib import PurePosixPath
 import sys
@@ -234,12 +235,28 @@ def expand_asset_index(release, assets):
     return index
 
 
+def publication_tag(manifest):
+    core = manifest.get('versions', {}).get('tavern')
+    if not isinstance(core, str) or not re.fullmatch(TAG_PATTERN, 'v' + core):
+        raise RuntimeError('发布清单缺少有效核心版本。')
+    if 'publication' not in manifest:
+        return 'v' + core
+    value = manifest['publication']
+    if (not isinstance(value, dict) or set(value) != {'schema', 'tag'}
+            or value.get('schema') != 'nora-component-publication/1'
+            or not isinstance(value.get('tag'), str) or not re.fullmatch(TAG_PATTERN, value['tag'])):
+        raise RuntimeError('组件发布批次身份无效。')
+    return value['tag']
+
+
 def validate_shared_manifest(release, manifest):
+    if publication_tag(manifest) != release['tag_name']:
+        raise RuntimeError('发布清单与固定发布批次不一致。')
     index = release.get('shared_assets')
     if index is None:
         return
     minimum = manifest.get('bootstrap', {}).get('minimumLauncherVersion')
-    if (manifest.get('commit') != index['commit'] or manifest.get('versions', {}).get('tavern') != index['tag'][1:]
+    if (manifest.get('commit') != index['commit'] or publication_tag(manifest) != index['tag']
             or release_version_key(minimum) < release_version_key(index['minimumLauncherVersion'])):
         raise RuntimeError('共享资产与目标发布提交或客户端兼容门槛不一致。')
     for descriptor in [*manifest.get('archives', {}).values(), *manifest.get('modules', {}).values()]:
@@ -358,18 +375,59 @@ def download_release(directory: Path, tag=None) -> dict:
     for name in ASSETS[:2]:
         download_asset(release, name, directory / name)
     manifest = json.loads((directory / "release-manifest.json").read_text(encoding="utf-8"))
-    if manifest.get("versions", {}).get("tavern") != release["tag_name"][1:]:
-        raise RuntimeError("发布清单与固定下载版本不一致。")
     validate_shared_manifest(release, manifest)
+    physical = {}
+    if 'coreRelease' in manifest:
+        # APP-only publications carry a new runner, not a new core. Resolve the
+        # same platform payload as the desktop installer before installing it.
+        ref = manifest['coreRelease']
+        target = sys.platform + '-' + ('arm64' if platform.machine().lower() in ('arm64', 'aarch64') else 'x64')
+        if (not isinstance(ref, dict) or set(ref) != {'schema', 'tag', 'commit', 'manifests'}
+                or ref.get('schema') != 'nora-core-reference/1'
+                or not re.fullmatch(r'v\d+\.\d+\.\d+', str(ref.get('tag', '')))
+                or not re.fullmatch(r'[a-f0-9]{40}', str(ref.get('commit', '')))
+                or not isinstance(ref.get('manifests'), dict)
+                or release_version_key(ref['tag']) >= release_version_key(release['tag_name'])):
+            raise RuntimeError('不变核心的来源证明无效，未开始安装。')
+        bound = ref['manifests'].get(target)
+        if target not in ('darwin-arm64', 'darwin-x64', 'win32-x64') or not isinstance(bound, dict):
+            raise RuntimeError('此仅启动器发布未提供当前平台的核心安装资源，未修改现有安装。')
+        if (set(bound) != {'asset', 'sha256', 'size'} or bound.get('asset') != target+'-release-manifest.json'
+                or not re.fullmatch(r'[a-f0-9]{64}', str(bound.get('sha256', '')))
+                or type(bound.get('size')) is not int or not 0 < bound['size'] <= 4*1024*1024):
+            raise RuntimeError('原始核心清单的绑定无效。')
+        system_file = directory / 'nora-system.json'
+        download_asset(release, 'nora-system-'+target+'.json', system_file)
+        system = json.loads(system_file.read_text(encoding='utf-8'))
+        physical = system.get('files', {})
+        if (system.get('schema') != 'nora-system/v1' or system.get('coreRelease') != ref
+                or system.get('commit') != manifest.get('commit') or system.get('version') != manifest.get('versions', {}).get('tavern')
+                or system.get('platform')+'-'+system.get('arch') != target or system.get('publication') != manifest.get('publication')
+                or physical.get('release-manifest.json') != bound):
+            raise RuntimeError('完整系统与不变核心证明不一致。')
+        for name in ASSETS[:2]:
+            entry = physical.get(name, {})
+            download_asset(release, entry.get('asset'), directory / name, expected_sha256=entry.get('sha256'))
+            if type(entry.get('size')) is not int or (directory / name).stat().st_size != entry['size']:
+                raise RuntimeError('原始核心元数据大小不一致。')
+        core = json.loads((directory / 'release-manifest.json').read_text(encoding='utf-8'))
+        if (core.get('coreRelease') or core.get('commit') != ref['commit'] or publication_tag(core) != ref['tag']
+                or core.get('versions', {}).get('tavern') != system['version']):
+            raise RuntimeError('原始核心身份与发布证明不一致。')
+        manifest = core
     for name in ASSETS[2:]:
         descriptor = next((item for item in manifest.get("archives", {}).values() if item.get("name") == name), None)
         if not descriptor or not re.fullmatch(r'[a-f0-9]{64}', descriptor.get('sha256') or ''):
             raise RuntimeError("首次安装组件缺少发布清单身份：" + name)
-        asset = release["asset_index"].get(name)
+        entry = physical.get(name) if physical else None
+        asset_name = entry.get('asset') if entry else name
+        if entry and entry.get('sha256') != descriptor['sha256']:
+            raise RuntimeError('原始核心档案与完整系统不一致。')
+        asset = release["asset_index"].get(asset_name)
         if release.get("shared_assets") and (not asset or not isinstance(descriptor.get("size"), int)
                 or isinstance(descriptor["size"], bool) or descriptor["size"] != asset["size"]):
             raise RuntimeError("首次安装组件大小与发布清单不一致：" + name)
-        download_asset(release, name, directory / name, expected_sha256=descriptor.get("sha256"))
+        download_asset(release, asset_name, directory / name, expected_sha256=descriptor.get("sha256"))
     return release
 
 

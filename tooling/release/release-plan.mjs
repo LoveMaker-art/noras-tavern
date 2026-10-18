@@ -16,10 +16,11 @@ const configPaths = ['tooling/source-layout.json', 'launcher/desktop/package.jso
     '.github/workflows/publish-component-update.yml', '.github/workflows/publish-accepted-release.yml'];
 const fullTools = new Set(['tooling/layout.mjs', 'tooling/source-layout.json', 'tooling/release/release-source.mjs',
     'tooling/release/build-commands.mjs', 'tooling/release/package-release.mjs', 'tooling/release/package-release.sh',
-    'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs']);
+    'tooling/release/system-release.mjs', 'tooling/release/asset-catalogue.mjs', 'tooling/release/app-only-release.mjs']);
 const automation = new Set(['tooling/run.mjs', 'tooling/release/release-plan.mjs', 'tooling/release/publish-release.mjs',
     'tooling/release/publication-state.mjs', 'tooling/release/publication-source.cjs', 'tooling/release/publication-providers.mjs',
-    'tooling/release/acceptance-baseline.mjs',
+    'tooling/release/acceptance-baseline.mjs', 'tooling/release/app-only-acceptance.cjs',
+    'tooling/release/app-only-native-ui.ps1', 'tooling/release/app-only-native-ui.applescript',
     'tooling/release/sourceforge-credentials.mjs', 'tooling/release/verify-publish-source.cjs',
     'tooling/release/reuse-windows-build.cjs', 'tooling/release/verify-launcher-release.cjs',
     'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs']);

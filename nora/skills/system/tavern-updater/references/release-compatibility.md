@@ -26,8 +26,14 @@ Worlds, chats, model configuration and Story Profile data are not migration
 inputs.
 
 Tavern and MCP dependencies are reused when their lock-file hashes match the
-installed trees. `npm ci` runs only for a changed root whose dependency lock no
-longer matches. Tavern stays running for operations-, MCP- and skill-only
+installed trees. Independent Linux updates can prepare missing dependencies in
+the verified temporary target tree with `npm ci --omit=dev --ignore-scripts`.
+The installation lock remains held; the old service is still running. Both
+the dependency manifests and unchanged package/lock files must pass before
+stopping or replacing the old program. Locks requiring install scripts are
+rejected. Desktop-managed updates require bundled or reusable dependencies;
+they do not enter this Linux preparation path.
+Tavern stays running for operations-, MCP- and skill-only
 updates on standalone installations. Launcher-managed updates restore the prior
 Nora/Tavern service selection after validation.
 
@@ -45,9 +51,34 @@ installation backup is `<verified-install-root>/tavern-backups/<timestamp>-<vers
 It is used immediately if the new local Tavern fails to start and is kept for
 manual recovery after success.
 
-The skill and desktop UI share one updater, not two installation implementations.
-The launcher exposes a local task handoff under
-`<noraHome>/installer/skill-update`; no network listener is opened. Only the last
-task is retained. A request is bound to the current launcher session and expires
-after 60 seconds. Interrupted tasks are never replayed automatically. Logs remain
-in the launcher's normal diagnostics. Managed updates require a running launcher.
+## Historical independent Linux entry
+
+Old installed skills are immutable until the update runs. Some call the raw
+installer; 2.4.3 and later published bootstraps also require desktop credentials
+before obtaining the replacement runner. Installing a desktop launcher is not
+the remedy for a standalone Linux instance.
+
+After owner authorization to update, resolve the actual Hermes interpreter,
+Hermes home and Tavern root from the existing configuration. Use the official
+`install-tavern-updater.sh` from the selected published release with
+`--apply --confirm --hermes-home <verified-home> --install-root <verified-root>`.
+The official entry downloads and checks the release catalogue, bootstrap
+digest and target runner, then updates the same installation. Do not execute a
+copied raw `update.py`, invent its flags, erase retry/transaction records or
+replace user configuration to make the update proceed.
+
+If a prior owned transaction is incomplete, the standalone updater first
+restores and ends that transaction. Verify the restored version, health and
+data before a separate update attempt. Recovery completion alone is not a
+successful upgrade. Python-era migrations have a distinct service/data
+contract; report an unsupported layout explicitly instead of promising that
+every historical 1.x layout is covered by the native 2.x path.
+
+The skill and desktop UI share one updater and one native writer lock. Each
+submission lives under `<noraHome>/installer/update-jobs/<requestId>` and points
+to the canonical `<noraHome>/installer/operations/<operationId>/operation.json`.
+The submission directory holds a verified immutable runner and diagnostics; it
+is not a second outcome journal. No GUI heartbeat or launcher session is needed.
+A caller receives acceptance only after the controller owns the lock and durable
+operation. Reconnecting callers read that same operation. APP replacement keeps
+its separate guarded handoff and cannot become a prerequisite for content updates.

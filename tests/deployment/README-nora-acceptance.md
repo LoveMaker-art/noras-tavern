@@ -8,12 +8,14 @@
 
 | 主题 | 入口示例 |
 | --- | --- |
-| 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs` |
+| 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
 | 原生锁、委托与关闭 | `launcher_operation_lock.test.cjs`、`launcher_operation_inspection.test.cjs`、`test_operation_control.py` |
 | 首装、更新与恢复 | `launcher_runtime_transaction.test.cjs`、`launcher_update_executor.test.cjs`、`test_first_install_transaction.py`、`test_update_operation_safety.py` |
+| 独立部署更新 | `test_standalone_update_entry.py`、`test_standalone_update_recovery.py`、`test_update_dependency_materialization.py`：单文件入口、无桌面凭据执行、Linux staging 依赖准备与拒绝边界、持久恢复、设置备份轮换与再次中断；不替代旧安装实测 |
 | 版本、来源与下载 | `launcher_release_plan.test.cjs`、`launcher_network_policy.test.cjs`、`launcher_network.test.cjs` |
 | 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs` |
 | 引导、进度与界面 | `launcher_guidance_flow.test.cjs`、`launcher_task_progress.test.cjs`、`launcher_controller.test.cjs` |
+| 原生配对重试界面 | `launcher_pair_ui_electron.cjs`：生产 HTML/preload/controller 与原生锁，激活回复和服务状态受控；不连接外部 ClawChat，不证明真实账号激活或网关调用 |
 | 真实程序流程 | `launcher_product_refactor_smoke.cjs`：实际 native lease、受管生产者与临时安装；不是完整 GUI/真实账户验收 |
 | 打包 APP | `launcher_packaged_app.test.cjs`、`verify_launcher_package.cjs`：实际 Electron/ASAR/资源核验；缺输入或 skip 不算通过 |
 | Mac 打包 GUI 安装 | `launcher_packaged_install.test.cjs`：真实候选应用点击安装、停止及重开；当前路径与候选端口合同仅适用于 macOS |
@@ -45,6 +47,13 @@ node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_first_in
 ```
 
 依赖和隔离 native 输入见 [开发说明](../../CONTRIBUTING.md)。完整源码门禁的 TLS fixture 需要 PATH 中的实际 OpenSSL／Mac LibreSSL，缺少工具应先由前置检查返回 exit 2。不要直接运行不存在的源码 `ops/tests/`，不要在用户安装目录修补代码。
+
+配对重试原生界面检查使用锁文件固定的 Electron 38.8.6、完整桌面依赖和新的隔离证据目录。顺序执行两阶段：第一阶段触发两次受控激活失败并关闭；第二阶段重开同一目录，等待真实倒计时结束后提交新输入并确认任务成功。Windows 需在已登录用户的交互会话执行。不要用正式用户安装目录作为证据目录。
+
+```sh
+node "$PWD/tooling/run.mjs" /absolute/path/to/electron tests/deployment/launcher_pair_ui_electron.cjs --proof-root /absolute/path/to/new-isolated-proof --phase 1
+node "$PWD/tooling/run.mjs" /absolute/path/to/electron tests/deployment/launcher_pair_ui_electron.cjs --proof-root /absolute/path/to/new-isolated-proof --phase 2
+```
 
 完整流程需已冻结且平台匹配的真实 payload：
 

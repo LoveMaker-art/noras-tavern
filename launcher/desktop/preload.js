@@ -7,7 +7,10 @@ async function invoke(channel, ...args) {
   if (result.ok === true) return result.value;
   const payload = result.error || {};
   const guidance = payload.guidance || {};
-  const error = new Error([guidance.title, guidance.detail, guidance.next].filter(Boolean).join("\n"));
+  // contextBridge copies Error.message but drops custom Error properties.
+  // Reject a plain DTO so recovery actions and the operation proof reach the UI.
+  const error = { name: 'LauncherOperationError',
+    message: [guidance.title, guidance.detail, guidance.next].filter(Boolean).join("\n") };
   for (const key of ["failureCode", "userCode", "technical", "guidance", "allowedActions", "operation", "logOperationId"]) error[key] = payload[key];
   throw error;
 }
@@ -34,7 +37,8 @@ function requestWithEvents(ipcChannel,payload,options = {}) {
     .finally(() => ipcRenderer.removeListener(channel, listener));
 }
 function runAction(action,options={}){
-  return requestWithEvents('nora:run',{action,port:options.port,code:options.code,tag:options.tag,service:options.service},options);
+  return requestWithEvents('nora:run',{action,port:options.port,code:options.code,tag:options.tag,service:options.service,
+    ...(options.launcherOnly===true?{launcherOnly:true}:{}),...(options.includeLauncher===true?{includeLauncher:true}:{})},options);
 }
 function operationAction(channel,payload={}){
   return requestWithEvents(channel,{operationId:payload.operationId,snapshotSequence:payload.snapshotSequence},payload);

@@ -78,7 +78,10 @@ function releaseMetadataCache(){
 function checkRelease(){
   if(releaseCheckRequest)return releaseCheckRequest;
   releaseCheckRequest=trackLauncher('check_update','release_check',()=>releases.check({fetcher:updateFetch,
-    installRoot:installRoot(),launcherVersion:app.getVersion(),channel:CHANNEL,metadataCache:releaseMetadataCache()}))
+    client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherVersion:app.getVersion(),launcherDiscovery:true,
+    ...(localReleaseDirectory?{allowCandidate:true,explicitLocalRelease:localReleaseDirectory}:{}),
+    installRoot:installRoot(),channel:CHANNEL,metadataCache:releaseMetadataCache()}))
+    .then(result=>({...result,launcherVersion:app.getVersion()}))
     .finally(()=>{releaseCheckRequest=null;});
   return releaseCheckRequest;
 }
@@ -86,6 +89,9 @@ const systemUpdate = require('./system-update');
 const { createSkillUpdateReceiver, finishHandoff } = require('./skill-update');
 const launcherUpdate = require('./launcher-update');
 const SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
+const updateSequence = require('./update-sequence');
+let continueDesktopUpdate;
+let desktopUpdateNotice;
 const { testBuild, prepareTestPayload } = require('./test-build');
 const { cleanupInstallTemps } = require('./install-cleanup');
 const uninstall = require('./uninstall');
@@ -557,6 +563,16 @@ function confirmedMaintenanceIdentity(operation) {
     const plan = operation.target?.releasePlan;
     version = plan?.version || plan?.releaseManifest?.versions?.tavern;
     commit = plan?.commit || plan?.releaseManifest?.commit;
+    if (plan?.schema === 'nora-release-plan/1') {
+      try {
+        const fixed = releases.validatePlan(plan, { launcherVersion: app.getVersion(), channel: CHANNEL,
+          platform: process.platform, arch: process.arch,
+          operationDirectory: path.join(installerDirectory(), 'operations', operation.operationId),
+          ...(plan.client === 'updater' ? { client: 'updater', updaterCapabilities: releases.UPDATER_CAPABILITIES } : {}),
+          ...(plan.candidateAcceptance ? { allowCandidate: true, explicitLocalRelease: plan.candidateAcceptance.releaseDirectory } : {}) });
+        ({ version, commit } = releases.coreIdentity(fixed));
+      } catch { return null; }
+    }
   } else return null;
   if (typeof version !== 'string' || releases.compare(version, version) !== 0
     || releases.compare(result.version, version) !== 0 || !/^[a-f0-9]{40}$/.test(commit || '') || result.commit !== commit) return null;
@@ -676,6 +692,8 @@ function bridgeArgs(command, options = {}) {
       ...(options.operationId ? ['--operation-id',options.operationId] : []),
       ...(options.kind ? ['--kind',options.kind] : []),
       ...(options.version ? ['--version',options.version] : []),
+      ...(command==='inspect-current-update' ? ['--commit',options.commit,
+        ...(options.manifestSha256 ? ['--manifest-sha256',options.manifestSha256] : [])] : []),
     ],
   };
 }
@@ -896,7 +914,7 @@ function runBridge(command, options = {}, webContents = null, runId = '') {
     try {
       const spec = bridgeArgs(command, options);
       if (command !== 'status') diagnostics.write('process.start', { command: [spec.command, ...spec.args], cwd: installerRoot() });
-      proc = command === 'status' || (!activeOperationContext && ['verify-model','operation-effects','check-update','plan-update'].includes(command))
+      proc = ['status','inspect-current-update'].includes(command) || (!activeOperationContext && ['verify-model','operation-effects','check-update','plan-update'].includes(command))
         ? spawn(spec.command,spec.args,{env:launcherEnv(),cwd:installerRoot(),windowsHide:true})
         : spawnMaintenance(spec.command,spec.args,{env:launcherEnv(),cwd:installerRoot(),windowsHide:true});
       // The file journals decide recovery. Cancellation remains available while
@@ -1036,6 +1054,11 @@ async function recoverLauncher() {
           operation:context.snapshot,spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
           onEvent:message=>diagnostics.event(message)});
         if(prepared.untouched)return {effectState:'untouched',verification:'confirmed',value:{untouched:true,restarting:false}};
+        // Service children can keep the APP's crash reporter alive after its
+        // main process exits. Stop them while this recovery still owns the lock.
+        const stopped=await runBridge('stop',{service:'all'});
+        if(stopped.running!==false||stopped.gatewayRunning!==false)
+          throw new Error('尚未确认诺拉与酒馆已停止，暂未交接启动器恢复。');
         await context.handoff(pending.job);return {handoff:true,value:prepared};
       }});
     if(operation.state!=='awaiting-handoff'){
@@ -1085,6 +1108,16 @@ async function requestQuit(event) {
         message: '任务尚未结束，暂不能退出启动器', detail: '请等待任务结束；当前阶段允许取消时，可先点击“取消任务”。', buttons: ['知道了'] });
       return;
     }
+    // A busy shared lock does not identify its owner. Keep the original quit
+    // protection and never stop services while an independent task may own them.
+    const updating=await require('./updater-task').query(noraHome());
+    if(updating.busy===true||updating.settled===false
+      ||updating.operation&&['selecting','downloading','prepared','applying','verifying','recovering'].includes(updating.status)){
+      await dialog.showMessageBox({type:'info',title:'暂未退出',
+        message:'后台任务尚未结束或状态待确认，暂不能退出启动器',
+        detail:'请等待更新或恢复结束后再退出；状态无法确认时请查看日志。',buttons:['知道了']});
+      return;
+    }
     if (statusRequest) await statusRequest.catch(() => {});
     diagnostics.write('shutdown.start', { services: ['nora', 'tavern'] });
     if (findPython()) {
@@ -1115,12 +1148,116 @@ async function requestQuit(event) {
 
 function systemUpdateExecutor(payload,webContents){
   return require('./system-update-executor').create({compare:releases.compare,
+    resolveCommit:context=>{
+      const fixed=context.target.releasePlan;
+      if(fixed?.schema!=='nora-release-plan/1')return fixed?.commit||fixed?.releaseManifest?.commit;
+      return releases.coreIdentity(releases.validatePlan(fixed,{launcherVersion:app.getVersion(),channel:CHANNEL,
+        operationDirectory:path.join(installerDirectory(),'operations',context.operationId)})).commit;
+    },
     bridge:(command,options)=>runBridge(command,options,webContents,payload.runId),
     finalizeLauncher:async(job,verified)=>{
       await launcherUpdate.finalize({...launcherRecoveryOptions(),spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
         job,version:app.getVersion(),target:verified.version,systemReady:verified.systemReady,updateVerified:verified.updateVerified});
       diagnostics.write('update.launcher-committed',{job,target:verified.version});
     }});
+}
+
+function sharedUpdateJob(operationId,requestId){
+  const jobs=path.join(installerDirectory(),'update-jobs');
+  if(!fs.existsSync(jobs))return null;
+  const expected=/^[a-f0-9-]{36}$/.test(requestId||'')?path.join(jobs,requestId):null;
+  if(expected&&fs.existsSync(expected)){
+    const referenceFile=path.join(expected,'operation-ref.json');
+    if(fs.existsSync(referenceFile)){
+      const reference=JSON.parse(fs.readFileSync(referenceFile,'utf8'));
+      if(reference.operationId!==operationId)throw launcherError('更新任务归属与操作记录不一致，请保留日志。',{code:'UPDATER_JOB_INVALID'});
+    }else{
+      // The canonical admission can commit before its job pointer. Its fixed
+      // request ID may reconnect only the original update submission.
+      const submitted=JSON.parse(fs.readFileSync(path.join(expected,'request.json'),'utf8'));
+      if(submitted.requestId!==requestId||submitted.request?.kind!=='update')
+        throw launcherError('原更新提交记录无法核验，请保留日志。',{code:'UPDATER_JOB_INVALID'});
+    }
+    return expected;
+  }
+  for(const id of fs.readdirSync(jobs)){
+    if(!/^[a-f0-9-]{36}$/.test(id))continue;
+    const job=path.join(jobs,id),reference=path.join(job,'operation-ref.json');
+    let record;try{record=JSON.parse(fs.readFileSync(reference,'utf8'));}catch{continue;}
+    if(record.operationId===operationId)return job;
+  }
+  return null;
+}
+
+async function runSharedUpdate(event,payload,{recover=false}={}){
+  const python=findPython();
+  if(!python)throw launcherError('诺拉运行环境不完整，未开始更新。请保留数据。',{code:'RESOURCE_INCOMPLETE'});
+  let script=path.join(installRoot(),'apps/tavern-ops/updater/task.py');
+  if(payload.operationId&&!fs.existsSync(script)){
+    const job=sharedUpdateJob(payload.operationId,payload.requestId);
+    if(job)script=path.join(job,'runner/ops/updater/task.py');
+  }
+  let bootstrap=false;
+  if(!fs.existsSync(script)&&payload.sequenceId){
+    const sequence=updateSequence.load(noraHome(),desktopSequenceOptions());
+    if(sequence?.id!==payload.sequenceId||sequence.requests.core!==payload.operationRequestId)
+      throw launcherError('核心更新入口与原两项任务不一致，未开始更新。',{code:'UPDATE_SEQUENCE_INVALID'});
+    if(sequence.order[0]==='launcher'){script=updateSequence.bootstrap(noraHome(),sequence);bootstrap=true;}
+  }
+  if(!fs.existsSync(script)&&!payload.operationId){
+    const bundled=path.join(payloadDirectory(),'tavern-updater-bootstrap.py'),manifest=path.join(payloadDirectory(),'release-manifest.json');
+    if(fs.existsSync(bundled)&&fs.existsSync(manifest)){
+      const expected=JSON.parse(fs.readFileSync(manifest,'utf8')).bootstrap?.sha256;
+      if(require('node:crypto').createHash('sha256').update(fs.readFileSync(bundled)).digest('hex')!==expected)
+        throw launcherError('包内更新入口校验失败，未修改程序和数据。',{code:'RELEASE_COMPATIBILITY'});
+      script=bundled;bootstrap=true;
+    }
+  }
+  if(!fs.existsSync(script))throw launcherError('当前安装尚未包含独立更新入口，请用新版官方更新命令接入；现有数据未改变。',{code:'RESOURCE_INCOMPLETE'});
+  const args=['-B','-u',script,'--hermes-home',hermesHome(),'--install-root',installRoot(),...(bootstrap?[]:['--port',String(installationPort())]),
+    recover?'--recover':'--apply','--confirm'];
+  if(payload.tag)args.push('--tag',payload.tag);
+  if(payload.requestId&&!payload.operationId)args.push('--request-id',payload.requestId);
+  if(payload.operationRequestId)args.push('--operation-request-id',payload.operationRequestId);
+  if(payload.targetManifestSha256)args.push('--target-manifest-sha256',payload.targetManifestSha256);
+  if(payload.targetCommit)args.push('--target-commit',payload.targetCommit);
+  if(localReleaseDirectory)args.push('--release-dir',localReleaseDirectory,'--allow-candidate');
+  if(payload.operationId)args.push('--operation-id',payload.operationId,'--snapshot-sequence',String(payload.snapshotSequence));
+  const admitted=await new Promise((resolve,reject)=>{
+    // This child only submits. The detached task has its own output handles
+    // and real Node interpreter; it is never put in activeProcess.
+    const child=spawn(python.command,args,{env:launcherEnv(),windowsHide:true,stdio:['ignore','pipe','pipe']});
+    let result,error;
+    consumeLines(child.stdout,line=>{try{const item=JSON.parse(line);if(item.event==='result')result=item;}catch{}},reject);
+    consumeLines(child.stderr,line=>{try{const item=JSON.parse(line);if(item.event==='error')error=Object.assign(new Error(item.message),{code:item.code});}catch{}},reject);
+    child.once('error',reject);child.once('close',code=>result?resolve(result):reject(error||new Error(`更新器未确认接管，退出码 ${code}。`)));
+  });
+  const submitting=admitted.status==='submitting'&&admitted.settled===false
+    &&/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(admitted.requestId||'');
+  if(!admitted.operation&&!submitting)throw Object.assign(new Error(admitted.message||'更新器未确认接管，请查看日志。'),{code:admitted.code||'UPDATER_ADMISSION_PENDING'});
+  if(submitting)sendBridgeEvent(event.sender,payload.runId,{event:'task',stage_id:'update_admission',task:'更新器仍在准备接管，正在查询同一任务，请勿重复更新'});
+  const final=await require('./updater-task').wait(noraHome(),admitted.requestId,{onEvent:current=>{
+    if(!current.operation)return;
+    const tasks={selecting:'正在确认更新版本',downloading:'正在下载更新',prepared:'更新资源已校验',applying:'正在更新程序，用户数据保留',verifying:'正在核验更新结果',recovering:'正在恢复原程序和数据'};
+    sendBridgeEvent(event.sender,payload.runId,{event:'task',stage_id:current.operation.stageId,
+      task:tasks[current.operation.state]||'正在读取更新结果'});
+  }});
+  if(final.settled!==true)throw launcherError('暂时无法确认更新任务是否结束。后台任务和数据已保留，请查询同一任务或查看日志。',
+    {code:'UPDATER_STATUS_UNCONFIRMED'});
+  if(!final.operation)throw new Error(final.message||'更新任务未返回操作结果，请查看日志。');
+  const result=requireOperationResult(final.operation,{recover});
+  const state=readInstallerState();
+  writeInstallerState({...state,phase:result.systemReady?'ready':'idle',error:'',task:'',resumeTarget:null});
+  return result;
+}
+
+function desktopSequenceOptions(){
+  return {capabilities:releases.LAUNCHER_CAPABILITIES,validatePlan:plan=>releases.validatePlan(plan,
+    {launcherVersion:app.getVersion(),platform:process.platform,arch:process.arch,channel:CHANNEL})};
+}
+function desktopSequenceForOperation(operation){
+  const sequence=updateSequence.load(noraHome(),desktopSequenceOptions());
+  return sequence&&Object.values(sequence.requests).includes(operation?.requestId)?sequence:null;
 }
 
 async function performSystemUpdate(selectedPayload, payload, webContents) {
@@ -1287,6 +1424,9 @@ function createWindow() {
     });
   }
   win.on('close', (event) => {
+    // A prepared replacement/recovery has already authorized this exit; its
+    // helper cannot restore the APP until the current process closes.
+    if (quitReady) return;
     if (quitting && !quitReady) { event.preventDefault(); return; }
     // Windows closes the last window to quit. Keep it visible until managed
     // shutdown succeeds so a failed stop still has a usable retry surface.
@@ -1532,7 +1672,10 @@ if (primaryInstance) {
       const bundledUpgradeTarget = !LOCAL_TEST && runtime.installed ? releases.bundledUpgradeTarget({
         bundledRoot: payloadDirectory(), currentVersion: runtime.version, launcherVersion: app.getVersion(), channel: CHANNEL,
       }) : null;
-      return { ...runtime,...taskCancellation(),operation,updateRecovery:runtime.updateRecovery||legacyRecovery, bundledUpgradeTarget, installer, busy: activeRun || modelBusy, launcherRecovery, ...locationStatus() };
+      return { ...runtime,...taskCancellation(),operation,updateRecovery:runtime.updateRecovery||legacyRecovery, bundledUpgradeTarget, installer, busy: activeRun || modelBusy, launcherRecovery,
+        updateSequence:desktopUpdateNotice?{...desktopUpdateNotice,
+          ...(desktopUpdateNotice.operationId?{operation:await operations().snapshot(desktopUpdateNotice.operationId)}:{})}:null,
+        ...locationStatus() };
     } catch (error) {
       // Failed inspection provides no evidence that services stopped or that
       // the installation needs repair. Let the renderer retain known facts.
@@ -1638,6 +1781,12 @@ if (primaryInstance) {
         await context.plan({request,releasePlan:contract,currentVersion});
         selectedPlan=contract;
       };
+      if(payload.sequenceId){
+        const sequence=updateSequence.load(noraHome(),desktopSequenceOptions());
+        if(sequence?.id!==payload.sequenceId||sequence.requests.launcher!==context.snapshot.requestId)
+          throw launcherError('启动器更新与原两项任务不一致，请保留日志。',{code:'UPDATE_SEQUENCE_INVALID'});
+        if(!selectedPlan)await fixedTarget(sequence.plan,payload.expectedCoreVersion);
+      }
       const isUpdate=['update','repair'].includes(payload.action);
       if(payload.action==='install'&&selectedPlan){
         let continued=await systemUpdateExecutor(payload,event.sender).resumeInstallation(context,
@@ -1678,6 +1827,8 @@ if (primaryInstance) {
               metadataCache:releaseMetadataCache(),networkPolicy});
             await fixedTarget(selectedPlan,current.version);
           }
+          if(payload.launcherOnly===true&&releases.compare(current.version,payload.expectedCoreVersion||selectedPlan.version||selectedPlan.releaseManifest?.versions?.tavern)!==0)
+            throw launcherError('酒馆版本已变化，请重新检查更新；本次未替换启动器或酒馆。',{code:'CONDITIONS_CHANGED'});
           await context.stage('downloading');
           prepared = await launcherUpdate.prepare({ fetcher: updateFetch, channel: CHANNEL, tag: payload.tag,
             selectedPlan,operationDirectory,networkPolicy,
@@ -1702,6 +1853,17 @@ if (primaryInstance) {
           await context.handoff(job);
           return {handoff:true,value:{restarting:true,job}};
         }
+        if(payload.launcherOnly===true){
+          const expected=payload.expectedCoreVersion||prepared.manifest.versions.tavern;
+          const verified=await runBridge('verify-current-update',{port:payload.port,version:expected},event.sender,payload.runId);
+          if(verified.updateVerified!==true||verified.systemReady!==true||releases.compare(verified.version,expected)!==0)
+            throw launcherError('启动器替换后的原核心尚未通过核验，程序备份已保留。',{code:'VERIFICATION_FAILED'});
+          if(context.snapshot.handoffRef)await launcherUpdate.finalize({...launcherRecoveryOptions(),
+            spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),job:context.snapshot.handoffRef,
+            version:app.getVersion(),target:prepared.tag,systemReady:true,updateVerified:true});
+          writeInstallerState({ ...readInstallerState(), phase: 'ready', error: '', task: '', resumeTarget: null });
+          return {verification:'confirmed',value:verified};
+        }
         const comparison = releases.compare(current.version, prepared.manifest.versions.tavern);
         if (comparison === null) throw new Error('当前安装版本不明确，未修改现有安装。');
         if (comparison > 0 && current.systemReady === false) {
@@ -1715,7 +1877,7 @@ if (primaryInstance) {
             if(verified.updateVerified!==true||verified.systemReady!==true||releases.compare(verified.version,prepared.manifest.versions.tavern)!==0)
               throw launcherError('联合更新的原系统尚未通过核验，旧启动器备份已保留。',{code:'VERIFICATION_FAILED'});
             await launcherUpdate.finalize({...launcherRecoveryOptions(),spawnChild:(command,args,options)=>spawnMaintenance(command,args,options),
-              job:context.snapshot.handoffRef,version:app.getVersion(),target:verified.version,systemReady:verified.systemReady,updateVerified:verified.updateVerified});
+              job:context.snapshot.handoffRef,version:app.getVersion(),target:prepared.tag,systemReady:verified.systemReady,updateVerified:verified.updateVerified});
           }
           writeInstallerState({ ...readInstallerState(), phase: current.systemReady ? 'ready' : 'idle', error: '', task: '', resumeTarget: null });
           diagnostics.finish('success');
@@ -1847,6 +2009,148 @@ if (primaryInstance) {
     await context.stage('applying');const result=await finishModelSetup();
     await context.stage('verifying');return {verification:'confirmed',value:result};
   };
+  const runDesktopUpdate=async(event,payload,{retry=false}={})=>{
+    const options=desktopSequenceOptions();
+    let sequence=updateSequence.load(noraHome(),options);
+    if(!sequence){
+      const before=await runBridge('status');
+      if(before.systemReady!==true)throw launcherError('请先确认当前核心安装可用，再更新两项程序。',{code:'UPDATE_RECOVERY_REQUIRED'});
+      await registerCapabilities();
+      await require('./launcher-capability').validate({receiptPath:path.join(installerDirectory(),'launcher-control.json'),
+        noraHome:noraHome(),currentExecutable:process.execPath});
+      const plan=await releases.selectPlan({fetcher:updateFetch,tag:payload.tag,launcherVersion:app.getVersion(),
+        channel:CHANNEL,metadataCache:releaseMetadataCache()});
+      const installedManifest=path.join(installRoot(),'tavern-updates','installed-manifest.json');
+      const stat=fs.lstatSync(installedManifest);
+      if(!stat.isFile()||stat.isSymbolicLink()||stat.size>8*1024*1024)
+        throw launcherError('当前核心清单无法核验，未开始两项更新。',{code:'UPDATE_SEQUENCE_UNCONFIRMED'});
+      const bytes=fs.readFileSync(installedManifest),installed=JSON.parse(bytes);
+      if(installed.versions?.tavern!==before.version||installed.commit!==before.commit)
+        throw launcherError('当前核心版本与实际清单不一致，未开始两项更新。',{code:'UPDATE_SEQUENCE_UNCONFIRMED'});
+      sequence=updateSequence.create(noraHome(),{plan,before:{core:before.version,launcher:app.getVersion(),
+        coreCommit:installed.commit,coreManifestSha256:require('node:crypto').createHash('sha256').update(bytes).digest('hex')},...options});
+    }else if(payload.tag&&payload.tag!==sequence.plan.tag){
+      throw launcherError('原来的两项更新尚未结束，请先继续原目标。',{code:'UPDATE_SEQUENCE_PENDING'});
+    }
+    const safe=operation=>operation&&!operation.busy&&operation.state!=='awaiting-handoff'
+      &&['untouched','restored'].includes(operation.effectState)
+      &&!['recovery-required','files-restored-start-failed'].includes(operation.recoveryOutcome);
+    const observe=async step=>{
+      const record=updateSequence.operation(noraHome(),sequence.requests[step]);
+      if(!record){
+        if(step!=='core'||!fs.existsSync(path.join(installerDirectory(),'update-jobs',sequence.requests.core)))return null;
+        const pending=await require('./updater-task').query(noraHome(),sequence.requests.core);
+        return {settled:pending.settled===true,safe:pending.settled===true&&['error','interrupted'].includes(pending.status),
+          failed:['error','interrupted'].includes(pending.status),error:launcherError(pending.message||'更新器接管尚未完成。',
+            {code:pending.code||'UPDATER_ADMISSION_PENDING'})};
+      }
+      const current=step==='core'?await require('./updater-task').query(noraHome(),sequence.requests.core)
+        :{operation:await operations().snapshot(record.operationId)};
+      const operation=current.operation;
+      if(!operation)throw launcherError('原更新任务暂时无法核验，请保留记录。',{code:'UPDATE_SEQUENCE_UNCONFIRMED'});
+      const settled=step==='core'?current.settled===true:operation.busy===false;
+      return {operation,settled,safe:settled&&safe(operation),
+        succeeded:settled&&operation.state==='succeeded'&&operation.verification==='confirmed',
+        failed:settled&&['failed','rolled-back','blocked','cancelled','interrupted'].includes(operation.state),
+        error:Object.assign(new Error(operation.currentFailure?.message||operation.primaryFailure?.message||'更新未完成，请查看日志。'),
+          {operation,code:operation.currentFailure?.code||operation.primaryFailure?.code||'UPDATE_SEQUENCE_FAILED'})};
+    };
+    const verifyCombination=async()=>{
+      await registerCapabilities();
+      await require('./launcher-capability').validate({receiptPath:path.join(installerDirectory(),'launcher-control.json'),
+        noraHome:noraHome(),currentExecutable:process.execPath});
+      const current=await runBridge('status');
+      if(current.systemReady!==true)return {compatible:false,current};
+      const hash=bytes=>require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+      const file=path.join(installRoot(),'tavern-updates','installed-manifest.json'),stat=fs.lstatSync(file);
+      if(!stat.isFile()||stat.isSymbolicLink()||stat.size>4*1024*1024)return {compatible:false,current};
+      const installedDigest=hash(fs.readFileSync(file));
+      // Updates serialize the authenticated manifest with indent=2 and a final
+      // newline. Keep that installed-byte identity separate from download SHA.
+      const identities=[{version:sequence.before.core,commit:sequence.before.coreCommit,
+        manifestSha256:sequence.before.coreManifestSha256},
+        {...releases.coreIdentity(sequence.plan),
+          ...(!releases.coreReference(sequence.plan.releaseManifest,process.platform,process.arch)
+            ?{manifestSha256:hash(JSON.stringify(sequence.plan.releaseManifest,null,2)+'\n')}:{})}];
+      const expected=identities.find(item=>item.version===current.version&&item.commit===current.commit
+        &&item.manifestSha256===installedDigest);
+      if(!expected)return {compatible:false,current};
+      const verified=await runBridge('inspect-current-update',expected);
+      return {current,compatible:verified.updateVerified===true&&verified.systemReady===true
+        &&updateSequence.compatible(sequence.plan.releaseManifest,current.version,app.getVersion(),options.capabilities)};
+    };
+    let result;
+    try{
+      if(sequence.order[0]==='launcher'&&!fs.existsSync(path.join(installRoot(),'apps/tavern-ops/updater/task.py')))
+        await updateSequence.prepareBootstrap(noraHome(),sequence,{fetcher:updateFetch,
+          networkPolicy:{sourceContext:require('./release-network').createReleaseSourceContext()},
+          onEvent:message=>sendBridgeEvent(event.sender,payload.runId,message)});
+      result=await updateSequence.run(sequence,{
+      observe,
+      verifyCombination,
+      verifyStep:async(step,_sequence,current)=>{
+        const fixed=current.operation.target?.releasePlan;
+        const digest=require('node:crypto').createHash('sha256').update(sequence.plan.releaseManifestText).digest('hex');
+        if(fixed?.tag!==sequence.plan.tag||fixed.commit!==sequence.plan.commit||fixed.manifestSha256!==digest)
+          throw launcherError('更新步骤与原固定发布不一致，请保留数据和记录。',{code:'UPDATE_SEQUENCE_INVALID'});
+        const actual=await verifyCombination();
+        const expected=step==='core'?sequence.plan.releaseManifest.versions.tavern:sequence.plan.launcherManifest.version;
+        if(actual.compatible!==true||releases.compare(step==='core'?actual.current.version:app.getVersion(),expected)!==0)
+          throw launcherError('更新步骤的实际程序组合尚未通过核验，请保留数据。',{code:'UPDATE_RECOVERY_REQUIRED'});
+      },
+      execute:async(step,_sequence,current)=>{
+        if(step==='core'){
+          return runSharedUpdate(event,{action:'update',tag:sequence.plan.tag,sequenceId:sequence.id,
+            ...(!current?.failed?{requestId:sequence.requests.core}:{}),operationRequestId:sequence.requests.core,
+            targetCommit:sequence.plan.commit,
+            targetManifestSha256:require('node:crypto').createHash('sha256').update(sequence.plan.releaseManifestText).digest('hex'),
+            ...(current?.failed&&current.operation?{operationId:current.operation.operationId,snapshotSequence:current.operation.snapshotSequence||current.operation.sequence}:{}),
+            runId:payload.runId||sequence.requests.core});
+        }
+        const core=await observe('core');
+        const request={action:'update',tag:sequence.plan.tag,launcherOnly:true,sequenceId:sequence.id,
+          expectedCoreVersion:core?.succeeded?sequence.plan.releaseManifest.versions.tavern:sequence.before.core};
+        const operation=current
+          ?await operations().resume(current.operation.operationId,{snapshotSequence:current.operation.snapshotSequence,
+            event,runId:sequence.requests.launcher,onFailure:rememberOperationFailure})
+          :await operations().start('update',{target:{request},execute:context=>executeAction(context,{payload:request,event}),
+            onFailure:rememberOperationFailure},sequence.requests.launcher);
+        finishOperationTelemetry(operation);
+        if(operation.state==='awaiting-handoff'){
+          try{await launcherUpdate.launchHandoff({...launcherRecoveryOptions(),job:operation.handoffRef,
+            managedPythonRoot:path.join(hermesHome(),'python'),venvHome:path.join(hermesHome(),'hermes-agent','venv'),env:process.env});}
+          catch(error){const failed=await operations().failHandoff(operation.operationId,{job:operation.handoffRef,error,onFailure:rememberOperationFailure});
+            finishOperationTelemetry(failed);return requireOperationResult(failed);}
+          quitReady=true;setImmediate(()=>app.quit());return {restarting:true};
+        }
+        return requireOperationResult(operation);
+      },
+    },{retry});}
+    catch(error){
+      const anchor=error.operation||updateSequence.operation(noraHome(),sequence.requests.launcher)||updateSequence.operation(noraHome(),sequence.requests.core);
+      const first=await observe(sequence.order[0]);
+      desktopUpdateNotice={status:'blocked',message:error.message,releaseTag:sequence.plan.tag,canRetry:first===null||first?.settled===true&&first?.safe===true,
+        ...(anchor?{operationId:anchor.operationId,snapshotSequence:anchor.snapshotSequence||anchor.sequence}:{})};
+      throw error;
+    }
+    if(result.restarting)return result;
+    if(result.status==='partial'){
+      const anchor=result.operation||updateSequence.operation(noraHome(),sequence.requests[result.completed.at(-1)]);
+      desktopUpdateNotice={status:'partial',message:result.message,failed:result.failed,releaseTag:sequence.plan.tag,
+        coreVersion:result.current.version,launcherVersion:app.getVersion(),
+        operationId:anchor.operationId,snapshotSequence:anchor.snapshotSequence||anchor.sequence};
+      throw Object.assign(new Error(result.message),{code:'UPDATE_PARTIALLY_COMPLETED',operation:anchor});
+    }
+    updateSequence.clear(noraHome(),sequence);desktopUpdateNotice=null;
+    return {...result.current,updateComplete:true,updateSequence:null};
+  };
+  continueDesktopUpdate=async(event)=>{
+    activeRun=true;
+    try{if(!updateSequence.load(noraHome(),desktopSequenceOptions()))return;
+      return await runDesktopUpdate(event,{},{});}
+    catch(error){desktopUpdateNotice||={status:'blocked',message:error.message};throw error;}
+    finally{activeRun=false;activeOperationContext=null;}
+  };
   const operationRequest=payload=>{
     if(!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(payload?.operationId||'')
       ||!Number.isSafeInteger(payload.snapshotSequence)||payload.snapshotSequence<1)
@@ -1859,6 +2163,15 @@ if (primaryInstance) {
     if(activeRun||modelBusy)throw launcherError('正在处理任务，请等待完成。',{code:'OPERATION_BUSY'});
     const options=operationRequest(payload);activeRun=true;cancelled=false;
     try{
+      const selected=await operations().snapshot(payload.operationId);
+      if(desktopSequenceForOperation(selected)){
+        if(selected.snapshotSequence!==payload.snapshotSequence)throw launcherError('任务记录已变化，请重新查询。',{code:'OPERATION_SNAPSHOT_CHANGED'});
+        if(mode==='resume')return await runDesktopUpdate(event,{}, {retry:true});
+      }
+      if(sharedUpdateJob(payload.operationId,selected?.requestId)){
+        if(selected.snapshotSequence!==payload.snapshotSequence)throw launcherError('任务记录已变化，请重新查询。',{code:'OPERATION_SNAPSHOT_CHANGED'});
+        return await runSharedUpdate(event,{...selected.target.request,...payload,requestId:selected.requestId,action:'update'},{recover:mode==='recover'});
+      }
       const operation=await operations()[mode](payload.operationId,{...options,event});
       finishOperationTelemetry(operation,{recover:mode==='recover'});
       if(['succeeded','rolled-back'].includes(operation.state))await registerCapabilities();
@@ -1880,13 +2193,17 @@ if (primaryInstance) {
     if (!['install', 'start', 'stop', 'restart', 'pair', 'update', 'repair', 'recover'].includes(payload?.action)) throw new Error('不支持的操作。');
     if (payload.port !== undefined && (!Number.isInteger(payload.port) || payload.port < 1024 || payload.port > 65535)) throw new Error('端口无效。');
     if (typeof payload.runId !== 'string' || !/^[\w-]{1,100}$/.test(payload.runId)) throw new Error('任务编号无效。');
+    if(payload.launcherOnly!==undefined&&(typeof payload.launcherOnly!=='boolean'||payload.action!=='update'))throw new Error('启动器更新请求无效。');
+    if(payload.includeLauncher!==undefined&&(typeof payload.includeLauncher!=='boolean'||payload.action!=='update'))throw new Error('两项更新请求无效。');
     if (payload.tag !== undefined && !/^[a-zA-Z0-9._-]{1,100}$/.test(payload.tag)) throw new Error('版本编号无效。');
     if (payload.service !== undefined && (!['all', 'nora', 'tavern'].includes(payload.service)
       || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun=true;cancelled=false;
     try {
+      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
+      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
       const request={action:payload.action};
-      for(const name of ['port','tag','service'])if(payload[name]!==undefined)request[name]=payload[name];
+      for(const name of ['port','tag','service','launcherOnly'])if(payload[name]!==undefined)request[name]=payload[name];
       const operation=await operations().start(payload.action,{target:{request},
         execute:context=>executeAction(context,{payload,event}),onFailure:rememberOperationFailure},payload.runId);
       if(operation.state==='awaiting-handoff'){
@@ -1912,7 +2229,7 @@ if (primaryInstance) {
     execute: async (action, id) => {
       if (systemUpdate.pending(noraHome())) throw new Error('上次更新尚待恢复，请先在启动器中检查状态。');
       if (action === 'check') {
-        const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), launcherVersion: app.getVersion(), channel: CHANNEL }));
+        const result = await trackLauncher('check_update','release_check', () => releases.check({ fetcher: updateFetch, installRoot: installRoot(), client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES, channel: CHANNEL }));
         if (result.error) throw new Error(result.error);
         return result;
       }
@@ -2128,12 +2445,17 @@ if (primaryInstance) {
                 const result=requireOperationResult(operation);
                 await registerCapabilities();
                 finishHandoff(noraHome(), plan.skillId, { version: result.version, systemReady: result.systemReady });
+                await continueDesktopUpdate?.({sender:window.webContents});
               }
             } catch (error) {
               activeRun = false; diagnostics.error('update.resume', error);
               if (plan?.skillId) finishHandoff(noraHome(), plan.skillId, null, diagnostics.clean(error.message));
             }finally{activeRun=false;activeOperationContext=null;}
           });
+        }else{
+          const window=BrowserWindow.getAllWindows()[0];
+          window.webContents.once('did-finish-load',()=>continueDesktopUpdate?.({sender:window.webContents})
+            .catch(error=>diagnostics.error('update.sequence-resume',error)));
         }
         return;
       }

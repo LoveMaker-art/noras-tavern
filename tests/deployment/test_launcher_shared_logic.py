@@ -32,6 +32,68 @@ class SharedLogicTests(unittest.TestCase):
         self.home, self.tavern = self.root / "hermes", self.root / "tavern"
         self.home.mkdir()
 
+    def current_install_fixture(self):
+        updates = self.tavern / 'tavern-updates'
+        updates.mkdir(parents=True)
+        manifest = {'schema': 'tavern-release/v2', 'versions': {'tavern': '2.5.2'}, 'commit': 'a' * 40}
+        raw = (json.dumps(manifest, ensure_ascii=False, indent=2) + '\n').encode()
+        (updates / 'installed-manifest.json').write_bytes(raw)
+        (updates / 'installed.json').write_text(json.dumps({'schema': 2, 'version': '2.5.2', 'commit': 'a' * 40}))
+        return updates, hashlib.sha256(raw).hexdigest()
+
+    def test_current_install_query_is_readonly_and_exactly_bound_without_an_operation(self):
+        updates, digest = self.current_install_fixture()
+        state = {'systemReady': True, 'version': '2.5.2', 'commit': 'a' * 40,
+                 'running': False, 'gatewayRunning': False}
+        before = {str(p): p.read_bytes() for p in updates.iterdir()}
+        arguments = ['launcher_bridge.py', '--nora-home', str(self.root), '--hermes-home', str(self.home),
+                     '--install-root', str(self.tavern), 'inspect-current-update', '--version', '2.5.2',
+                     '--commit', 'a' * 40, '--manifest-sha256', digest]
+        with patch.object(sys, 'argv', arguments), \
+             patch.object(bridge.operation_control, 'require_operation', side_effect=AssertionError('query requires no writer')), \
+             patch.dict(sys.modules, {'operation_cli': SimpleNamespace(ensure_operation=Mock(side_effect=AssertionError('no task admission')))}), \
+             patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge, 'status_payload', return_value=state), patch.object(bridge, 'emit') as emit:
+            bridge.main()
+        result = next(call.kwargs for call in emit.call_args_list if call.args == ('result',))
+        self.assertIs(result['updateVerified'], True)
+        self.assertEqual(result['verificationScope'], 'read-only-current-install')
+        self.assertEqual({str(p): p.read_bytes() for p in updates.iterdir()}, before)
+
+    def test_current_install_query_rejects_wrong_identity_unhealthy_or_changed_records(self):
+        updates, digest = self.current_install_fixture()
+        state = {'systemReady': True, 'version': '2.5.2', 'commit': 'a' * 40,
+                 'running': False, 'gatewayRunning': False}
+        args = SimpleNamespace(nora_home=self.root, hermes_home=self.home, install_root=self.tavern,
+                               port=8799, version='2.5.2', commit='a' * 40, manifest_sha256=digest)
+        for change in ({'version': '2.5.1'}, {'commit': 'b' * 40}, {'manifest_sha256': 'b' * 64}):
+            with self.subTest(change=change), patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+                 patch.object(bridge, 'status_payload', return_value=state), patch.object(bridge, 'emit') as emit:
+                with self.assertRaises(RuntimeError):
+                    bridge.command_inspect_current_update(SimpleNamespace(**(vars(args) | change)))
+                emit.assert_not_called()
+        for bad_state in (state | {'commit': 'b' * 40}, state | {'gatewayRunning': None}, state | {'systemReady': False}):
+            with self.subTest(state=bad_state), patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+                 patch.object(bridge, 'status_payload', return_value=bad_state), patch.object(bridge, 'emit') as emit:
+                with self.assertRaises(RuntimeError):
+                    bridge.command_inspect_current_update(args)
+                emit.assert_not_called()
+        def drift(*_):
+            (updates / 'installed.json').write_text('{}')
+            return state
+        with patch.object(bridge.nora_system, 'inspect', return_value={'ready': True}), \
+             patch.object(bridge, 'status_payload', side_effect=drift), patch.object(bridge, 'emit') as emit:
+            with self.assertRaises(RuntimeError):
+                bridge.command_inspect_current_update(args)
+            emit.assert_not_called()
+
+    def test_existing_current_update_verification_still_requires_the_owned_operation(self):
+        with patch.object(bridge.operation_control, 'require_operation', side_effect=RuntimeError('writer required')), \
+             patch.object(bridge.nora_system, 'inspect') as inspect:
+            with self.assertRaisesRegex(RuntimeError, 'writer required'):
+                bridge.command_verify_current_update(SimpleNamespace())
+        inspect.assert_not_called()
+
     def test_gateway_import_does_not_mutate_the_sealed_hook_directory(self):
         hook = self.home / 'hooks/tavern-liveware-register'
         shutil.copytree(ROOT / 'ops/hooks/tavern-liveware-register', hook)

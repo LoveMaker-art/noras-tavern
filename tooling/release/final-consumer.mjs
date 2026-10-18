@@ -167,7 +167,9 @@ async function consumeFinalMetadata({plan, release}) {
                 const selected = await consumer.selectPlan({mode, tag:plan.tag, platform, arch, fetcher,
                     launcherVersion:pkg.version, channel:plan.channel,
                     networkPolicy:{attempts:1, maxAttempts:1, totalBudgetMs:5000, attemptTimeoutMs:2000}});
-                assert.equal(selected.commit, plan.commit, 'Consumer selected a different product');
+                const reference=selected.systemManifest?.coreRelease;
+                assert.equal(selected.commit,mode==='install'&&reference?reference.commit:plan.commit,'Consumer selected a different fixed source');
+                if(reference)assert.equal(selected.systemManifest.commit,plan.commit,'Consumer system product source differs');
                 const expectedName = mode === 'install' ? selected.systemManifest.files['release-manifest.json'].asset : 'release-manifest.json';
                 const expected = byUrl.get(url(expectedName));
                 assert.ok(expected && sha(Buffer.from(selected.releaseManifestText)) === expected.sha256,
@@ -175,7 +177,9 @@ async function consumeFinalMetadata({plan, release}) {
                 if (mode === 'install') for (const name of modules.filter(name => name !== 'package.json')) {
                     // Native APP reports are bound to these same payload module
                     // hashes. A different final update ZIP cannot borrow them.
-                    assert.equal(sha(files.get(name)), selected.releaseManifest.artifacts?.[`ops/installer/desktop/${name}`],
+                    const product=reference?JSON.parse(sealedMetadata(byUrl.get(url('release-manifest.json')))):selected.releaseManifest;
+                    assert.equal(product.commit,plan.commit);
+                    assert.equal(sha(files.get(name)), product.artifacts?.[`ops/installer/desktop/${name}`],
                         `Shipped consumer module differs from accepted payload: ${name}`);
                 }
                 // planId includes the time of this check. Record deterministic
@@ -183,7 +187,8 @@ async function consumeFinalMetadata({plan, release}) {
                 assert.match(selected.planId, /^[a-f0-9]{64}$/);
                 consumer.validatePlan(selected, {mode, tag:plan.tag, platform, arch,
                     launcherVersion:pkg.version, channel:plan.channel});
-                modes[mode] = {validatedPlan:true, manifest:expectedName, manifestSha256:expected.sha256};
+                modes[mode] = {validatedPlan:true, manifest:expectedName, manifestSha256:expected.sha256,
+                    coreVersion:selected.releaseManifest.versions.tavern,releaseTag:selected.tag};
             }
             report.platforms[target] = {launcherVersion:pkg.version, archiveSha256:archive.sha256,
                 asarSha256:sha(asar), moduleHashes:Object.fromEntries(modules.map(name => [name, sha(files.get(name))])), modes, metadata:calls};

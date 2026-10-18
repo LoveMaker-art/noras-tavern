@@ -6,7 +6,8 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { readAcceptanceIdentity, materializeAcceptanceBaseline } from '../tooling/release/acceptance-baseline.mjs';
+import { readAcceptanceIdentity, readAcceptanceLauncherIdentity, materializeAcceptanceBaseline } from '../tooling/release/acceptance-baseline.mjs';
+import * as acceptanceBaseline from '../tooling/release/acceptance-baseline.mjs';
 import { assertLauncherReuse } from '../tooling/release/launcher-build-baseline.mjs';
 
 const repository = 'LoveMaker-art/noras-tavern', tag = 'v2.5.0', origin = 'v2.4.9', commit = 'a'.repeat(40);
@@ -15,6 +16,7 @@ function fixture(t, platform = 'darwin-arm64', shared = false) {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-acceptance-baseline-test-'));
     t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
     const [osName, arch] = platform.split('-'), bytes = { [tag]: {}, [origin]: {} }, calls = [];
+    const commits = { [tag]: commit, [origin]: 'b'.repeat(40) };
     const releases = Object.fromEntries([tag, origin].map(value => [value, { tag_name: value, draft: false, prerelease: false, assets: [] }]));
     const put = (source, name, value) => {
         const data = Buffer.from(typeof value === 'object' && !Buffer.isBuffer(value) ? JSON.stringify(value) + '\n' : value);
@@ -57,7 +59,7 @@ function fixture(t, platform = 'darwin-arm64', shared = false) {
         if (args[0] === 'api') {
             for (const source of [tag, origin]) {
                 if (args[1] === `repos/${repository}/releases/tags/${source}`) return JSON.stringify(releases[source]);
-                if (args[1] === `repos/${repository}/git/ref/tags/${source}`) return JSON.stringify({ ref: `refs/tags/${source}`, object: { type: 'commit', sha: source === tag ? commit : 'b'.repeat(40) } });
+                if (args[1] === `repos/${repository}/git/ref/tags/${source}`) return JSON.stringify({ ref: `refs/tags/${source}`, object: { type: 'commit', sha: commits[source] } });
             }
             throw Error(`Unexpected API ${args[1]}`);
         }
@@ -68,7 +70,7 @@ function fixture(t, platform = 'darwin-arm64', shared = false) {
         return '';
     };
     const options = { repository, tag, platform, expectedCommit: commit, execute };
-    return { directory, bytes, releases, calls, put, component, seal, system, identity, runtime, options, systemName };
+    return { directory, bytes, releases, calls, put, component, seal, system, identity, runtime, options, systemName, commits };
 }
 
 for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) for (const shared of [false, true]) {
@@ -91,6 +93,48 @@ for (const platform of ['darwin-arm64', 'darwin-x64', 'win32-x64']) for (const s
         assert.throws(() => materializeAcceptanceBaseline({ ...f.options, output }), /new directory/);
     });
 }
+
+test('APP history identity reads official descriptor bytes and binds the archived APP digest',t=>{
+    const f=fixture(t),asset='Nora-Tavern-Launcher-2.2.2-darwin-arm64-update.zip',archive=f.put(tag,asset,'official APP bytes');
+    const descriptor={schema:'nora-launcher/v1',candidate:false,platform:'darwin',arch:'arm64',version:'2.2.2',commit,
+        asset,sha256:archive.digest.slice(7),size:archive.size};
+    const sealed=f.put(tag,'nora-launcher-darwin-arm64.json',descriptor);
+    assert.deepEqual(readAcceptanceLauncherIdentity(f.options),{version:'2.2.2',commit,descriptorSha256:sealed.digest.slice(7),
+        archiveSha256:descriptor.sha256,archiveSize:archive.size});
+    assert.equal(f.calls.filter(call=>call[0]==='release'&&call[call.indexOf('--pattern')+1]===asset).length,0,
+        'identity-only source verification does not pretend to have accepted an old native executable');
+    f.put(tag,'nora-launcher-darwin-arm64.json',{...descriptor,sha256:'0'.repeat(64)});
+    assert.throws(()=>readAcceptanceLauncherIdentity(f.options));
+});
+
+test('native APP acceptance materializes the exact published archive and source receipt without reusing compiler outputs', t => {
+    const f = fixture(t, 'win32-x64'), asset = 'Nora-Tavern-Launcher-2.2.2-win32-x64-update.zip';
+    const archive = f.put(tag, asset, 'official native APP archive bytes');
+    const descriptor = { schema: 'nora-launcher/v1', candidate: false, platform: 'win32', arch: 'x64', version: '2.2.2', commit,
+        asset, sha256: archive.digest.slice(7), size: archive.size };
+    const metadata = f.put(tag, 'nora-launcher-win32-x64.json', descriptor), output = path.join(f.directory, 'published-app');
+    const proof = acceptanceBaseline.materializeAcceptanceLauncher({ ...f.options, output });
+    assert.equal(proof.schema, 'nora-acceptance-launcher/1'); assert.equal(proof.mode, 'materialized');
+    assert.equal(proof.repository, repository); assert.equal(proof.tag, tag); assert.equal(proof.platform, 'win32-x64');
+    assert.equal(proof.commit, commit); assert.equal(proof.version, '2.2.2');
+    assert.equal(proof.descriptorSha256, metadata.digest.slice(7)); assert.equal(proof.archiveSha256, descriptor.sha256);
+    assert.equal(hash(fs.readFileSync(path.join(output, asset))), descriptor.sha256);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(output, 'baseline-launcher-source-receipt.json'))), proof);
+    assert.throws(() => acceptanceBaseline.materializeAcceptanceLauncher({ ...f.options, output }), /new directory/);
+});
+
+test('native APP materialization refuses corrupt archive or a moved source tag and preserves no false receipt', t => {
+    const f = fixture(t), asset = 'Nora-Tavern-Launcher-2.2.2-darwin-arm64-update.zip';
+    const archive = f.put(tag, asset, 'official APP bytes');
+    f.put(tag, 'nora-launcher-darwin-arm64.json', { schema: 'nora-launcher/v1', candidate: false, platform: 'darwin', arch: 'arm64',
+        version: '2.2.2', commit, asset, sha256: archive.digest.slice(7), size: archive.size });
+    const output = path.join(f.directory, 'rejected-app');
+    assert.throws(() => acceptanceBaseline.materializeAcceptanceLauncher({ ...f.options, output, expectedCommit: 'f'.repeat(40) }), /selected commit/);
+    assert.equal(fs.existsSync(output), false);
+    f.bytes[tag][asset][0] ^= 1;
+    assert.throws(() => acceptanceBaseline.materializeAcceptanceLauncher({ ...f.options, output }), /checksum/);
+    assert.equal(fs.existsSync(output), false);
+});
 
 test('metadata-only receipt records limited verification and downloads no business/environment archives', t => {
     const f = fixture(t, 'win32-x64', true), output = path.join(f.directory, 'identity');
@@ -139,4 +183,20 @@ test('acceptance-only helper edits do not authorize or force compiler/environmen
     const file = fileURLToPath(new URL('../tooling/release/acceptance-baseline.mjs', import.meta.url));
     const help = spawnSync(process.execPath, [file, '--help'], { encoding: 'utf8' });
     assert.equal(help.status, 0); assert.match(help.stdout, /--identity-only/); assert.match(help.stdout, /never build, publish, or authorize runtime reuse/);
+});
+
+test('APP-only published baseline authenticates product separately and materializes the unchanged actual core manifest', t => {
+ const f=fixture(t,'win32-x64');
+ const core={...f.identity,versions:{tavern:'2.4.9'}},coreFile=f.component('release-manifest.json',core);
+ const reference={schema:'nora-core-reference/1',tag:'v2.4.9',commit,manifests:{'win32-x64':{asset:'win32-x64-release-manifest.json',sha256:coreFile.sha256,size:coreFile.size}}};
+ const product={...core,commit:'e'.repeat(40),publication:{schema:'nora-component-publication/1',tag},coreRelease:reference};
+ f.commits[tag]=product.commit;f.put(tag,'release-manifest.json',product);
+ Object.assign(f.system,{commit:product.commit,version:'2.4.9',publication:product.publication,coreRelease:reference});f.seal();
+ const output=path.join(f.directory,'retained-core');
+ const receipt=materializeAcceptanceBaseline({...f.options,expectedCommit:product.commit,output});
+ assert.equal(receipt.commit,commit);assert.equal(receipt.productCommit,product.commit);assert.equal(receipt.coreTag,'v2.4.9');
+ assert.equal(receipt.payloadManifestSha256,coreFile.sha256);assert.equal(receipt.version,'2.4.9');
+ assert.deepEqual(JSON.parse(fs.readFileSync(path.join(output,'release-manifest.json'))),core);
+ f.system.coreRelease={...reference,commit:'f'.repeat(40)};f.seal();
+ assert.throws(()=>materializeAcceptanceBaseline({...f.options,expectedCommit:product.commit,output:path.join(f.directory,'forged-core')}));
 });

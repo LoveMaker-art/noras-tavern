@@ -2,6 +2,32 @@
 
 Nora Tavern presents persistent interactive stories as Worlds while using SillyTavern as a compatibility engine. This language keeps Nora product identity separate from compatibility-engine bindings.
 
+## Product And Delivery
+
+**Nora**:
+The Hermes-based companion and authorized management agent for Tavern and its story resources.
+_Avoid_: Desktop Launcher, World Core
+
+**Tavern**:
+The roleplaying application whose persistent stories are organized as Worlds and Story Sessions.
+_Avoid_: Desktop Launcher, Runtime Card
+
+**Desktop Launcher**:
+The desktop client for installation, configuration and lifecycle management of a Nora Tavern installation.
+_Avoid_: Nora, Core Updater, complete installation
+
+**Nora Tavern Core Update**:
+A change to the installed Nora content, Tavern application and applicable shared maintenance components, distinct from replacement of the Desktop Launcher application.
+_Avoid_: Launcher Update, reinstalling all dependencies, Release Batch
+
+**Launcher Update**:
+A replacement of the Desktop Launcher application, distinct from a Nora Tavern Core Update.
+_Avoid_: Core Update, Tavern version
+
+**Nora Tavern Release Batch**:
+A published delivery that identifies exact versions and artifacts for one or more Nora Tavern components. Its publication identity is distinct from the version of each component it contains.
+_Avoid_: Core Version, Launcher Version, source repository
+
 ## Story Identity
 
 **World**:

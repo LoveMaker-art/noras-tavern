@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
@@ -37,6 +38,60 @@ def load_updater():
 
 
 class UpdateCheckScriptTests(unittest.TestCase):
+    def test_app_only_batch_does_not_send_a_core_notice_or_change_notice_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            module.MARKER.parent.mkdir(parents=True)
+            module.MARKER.write_text('2.5.2\n')
+            module.NOTICE_STATE.parent.mkdir(parents=True)
+            module.NOTICE_STATE.write_text('{"last_notified_latest":"2.5.1"}\n')
+            previous = module.NOTICE_STATE.read_bytes()
+            module.SENDER.parent.mkdir(parents=True, exist_ok=True)
+            module.SENDER.touch()
+            for core, notified in [('2.5.2', False), ('2.5.3', True)]:
+                with self.subTest(core=core):
+                    manifest = {'schema': 'tavern-release/v2', 'commit': 'a' * 40,
+                        'versions': {'tavern': core}, 'launcherVersion': '2.2.3',
+                        'publication': {'schema': 'nora-component-publication/1', 'tag': 'v2.5.4'}}
+                    raw = json.dumps(manifest).encode()
+                    release = {'tag_name': 'v2.5.4', 'draft': False, 'prerelease': False, 'assets': [{
+                        'name': 'release-manifest.json', 'state': 'uploaded', 'size': len(raw),
+                        'digest': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+                        'browser_download_url': f'https://github.com/{module.REPO}/releases/download/v2.5.4/release-manifest.json'}]}
+                    with mock.patch.object(module, 'query_release', return_value=release), \
+                            mock.patch.object(module, 'query_bytes', return_value=raw), \
+                            mock.patch.object(sys, 'argv', ['update-check']), \
+                            mock.patch.object(module.subprocess, 'run') as sender:
+                        self.assertEqual(module.main(), 0)
+                    self.assertEqual(sender.call_count, int(notified))
+                    if notified:
+                        command = sender.call_args.args[0]
+                        self.assertEqual(command[command.index('--latest') + 1], core)
+                    else:
+                        self.assertEqual(module.NOTICE_STATE.read_bytes(), previous)
+                    self.assertEqual(module.MARKER.read_text(), '2.5.2\n')
+
+    def test_app_only_publication_reads_hashed_core_manifest_not_batch_tag(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            module = self.checker_module(Path(temporary))
+            manifest = {'schema': 'tavern-release/v2', 'commit': 'a' * 40,
+                        'versions': {'tavern': '2.5.2'},
+                        'publication': {'schema': 'nora-component-publication/1', 'tag': 'v2.5.3'}}
+            raw = json.dumps(manifest).encode()
+            descriptor = {'name': 'release-manifest.json', 'state': 'uploaded', 'size': len(raw),
+                          'digest': 'sha256:' + hashlib.sha256(raw).hexdigest(),
+                          'browser_download_url': f'https://github.com/{module.REPO}/releases/download/v2.5.3/release-manifest.json'}
+            release = {'tag_name': 'v2.5.3', 'draft': False, 'prerelease': False, 'assets': [descriptor]}
+            with mock.patch.object(module, 'query_release', return_value=release), \
+                    mock.patch.object(module, 'query_bytes', return_value=raw, create=True):
+                self.assertEqual(module.latest_release(), ('2.5.2', ''))
+            for change in [{'digest': 'sha256:' + '0' * 64}, {'size': len(raw) + 1},
+                           {'browser_download_url': descriptor['browser_download_url'].replace('github.com', 'evil.example')}]:
+                with mock.patch.object(module, 'query_release', return_value={**release, 'assets': [{**descriptor, **change}]}), \
+                        mock.patch.object(module, 'query_bytes', return_value=raw, create=True):
+                    with self.assertRaises(RuntimeError):
+                        module.latest_release()
+
     def checker_module(self, home: Path, sources=None):
         spec = importlib.util.spec_from_file_location("tavern_mirrored_update_check", CHECKER)
         module = importlib.util.module_from_spec(spec)

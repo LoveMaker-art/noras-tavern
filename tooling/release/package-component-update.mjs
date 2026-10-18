@@ -142,7 +142,7 @@ function main() {
             verifyFile(launcherArchive, launcher);
             assertReusable(current, baseline);
             launcherProvenance(current, baseline, launcher, platform, previous);
-            assert.equal(system.version, baselineTag.slice(1));
+            assert.equal(system.version, baseline.versions.tavern);
             inputs.push({ directory, baseline, system, launcherName, launcher });
         }
         let installerTag = baselineTag;

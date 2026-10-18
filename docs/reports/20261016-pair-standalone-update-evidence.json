@@ -1,0 +1,227 @@
+{
+  "date": "2026-10-16",
+  "branch": "codex/fix-pairing-standalone-update",
+  "baseCommit": "db17f67290f4e2b4b6a21d36b7451f37158e2fd7",
+  "candidateSourceDigest": "f7d3fccaea86fdad5eb75f7e1501cb788fd8771cb6eaeb2f8802b993195bd66a",
+  "runtimeFileSha256": {
+    "deployment/shared/runtime_lock.py": "98eb41cfd568c3def2d62dd1b0020e96e26cffd3edf3c6faa1f5eb4a7615d01f",
+    "deployment/update/bootstrap.py": "69f9ed945b0307834b332d17b75f1a6f1c5b2f351f08fcf7b167300d74ee4047",
+    "deployment/update/recovery.py": "a2de909c84f45df281ed656cbf78651fa0152fdeaf5cfce002848bcc58c29255",
+    "deployment/update/update.py": "464d94b877af19ef73a66d94f1a37be78bcba12348b0f924dbb1f5e0672a3415",
+    "launcher/bridge.py": "6240f1568a8c48cf72aad842d0cb44c4e89b809e86af1f36354200a5e54c51f3",
+    "launcher/desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534",
+    "launcher/desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+    "launcher/desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+    "launcher/ui/launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d"
+  },
+  "nativePairUI": {
+    "macOS": {
+      "phases": [
+        {
+          "phase": 1,
+          "platform": "darwin",
+          "electron": "38.8.6",
+          "node": "22.22.0",
+          "controlledActivationResponses": true,
+          "externalPairingPerformed": false,
+          "activationCalls": 2,
+          "state": "failed",
+          "pairRetryAt": 1792145092466,
+          "writerBusy": false,
+          "privateInputAbsent": true,
+          "userDataPreserved": true,
+          "sourceHashes": {
+            "launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d",
+            "desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+            "desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+            "desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534"
+          },
+          "errors": []
+        },
+        {
+          "phase": 2,
+          "platform": "darwin",
+          "electron": "38.8.6",
+          "node": "22.22.0",
+          "controlledActivationResponses": true,
+          "externalPairingPerformed": false,
+          "activationCalls": 3,
+          "state": "succeeded",
+          "pairRetryAt": null,
+          "writerBusy": false,
+          "privateInputAbsent": true,
+          "userDataPreserved": true,
+          "sourceHashes": {
+            "launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d",
+            "desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+            "desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+            "desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534"
+          },
+          "errors": []
+        }
+      ],
+      "activationAndServiceStatusControlled": true,
+      "externalAccountOrGatewayAcceptance": false
+    },
+    "Windows": {
+      "phases": [
+        {
+          "phase": 1,
+          "platform": "win32",
+          "electron": "38.8.6",
+          "node": "22.22.0",
+          "controlledActivationResponses": true,
+          "externalPairingPerformed": false,
+          "activationCalls": 2,
+          "state": "failed",
+          "pairRetryAt": 1792145095271,
+          "writerBusy": false,
+          "privateInputAbsent": true,
+          "userDataPreserved": true,
+          "sourceHashes": {
+            "launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d",
+            "desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+            "desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+            "desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534"
+          },
+          "errors": []
+        },
+        {
+          "phase": 2,
+          "platform": "win32",
+          "electron": "38.8.6",
+          "node": "22.22.0",
+          "controlledActivationResponses": true,
+          "externalPairingPerformed": false,
+          "activationCalls": 3,
+          "state": "succeeded",
+          "pairRetryAt": null,
+          "writerBusy": false,
+          "privateInputAbsent": true,
+          "userDataPreserved": true,
+          "sourceHashes": {
+            "launcher-controller.js": "301e1ee1e2e265d46ad0144c87f2888f2df92c64fe5d054ce36369baf790242d",
+            "desktop/preload.js": "dc7e8a86f0f8c704c323f7303bf555698299a1b1a2e69f6072be8dc533dcaf64",
+            "desktop/operation-state.js": "67ca5a1107d450fe7cb4adeb948c13f79ed317a8fea2d7be08aeee4c3acbb194",
+            "desktop/error-presentation.js": "3b377da4a2db5676de7a9f29ccdbd1c152e0d9d94d614b8b242d8b02d715b534"
+          },
+          "errors": []
+        }
+      ],
+      "activationAndServiceStatusControlled": true,
+      "externalAccountOrGatewayAcceptance": false
+    }
+  },
+  "linux242": {
+    "occupiedPort": {
+      "exitCode": 1,
+      "fault": {
+        "occupied": true,
+        "releasedForRecovery": true
+      },
+      "version": "2.4.2",
+      "transaction": "restored",
+      "userFilesPreserved": 375,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "health": true
+    },
+    "hardKill": {
+      "signal": 9,
+      "oldDirectoryMoved": true,
+      "durablePlanPresent": true
+    },
+    "coldRecovery": {
+      "exitCode": 0,
+      "version": "2.4.2",
+      "transaction": "restored",
+      "userFilesPreserved": 375,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "health": true
+    },
+    "subsequentUpdate": {
+      "exitCode": 0,
+      "originalSkillEntryExecuted": true,
+      "version": "2.5.2",
+      "transaction": "committed",
+      "userFilesPreserved": 375,
+      "modelPreserved": true,
+      "envPreserved": true,
+      "health": true
+    },
+    "productionVersion": "2.4.2",
+    "candidateSourceDigest": "f7d3fccaea86fdad5eb75f7e1501cb788fd8771cb6eaeb2f8802b993195bd66a"
+  },
+  "checks": {
+    "macNode": {
+      "tests": 118,
+      "passed": 118
+    },
+    "macPython": {
+      "tests": 133,
+      "passed": 132,
+      "skipped": 1,
+      "skippedReason": "test_update_recovery: requires actual Windows extended-path I/O; this report does not claim that skipped case passed"
+    },
+    "windowsNode": {
+      "tests": 58,
+      "passed": 58
+    },
+    "windowsPython": {
+      "tests": 7,
+      "passed": 7
+    },
+    "workflowContracts": {
+      "tests": 34,
+      "passed": 34
+    }
+  },
+  "publication": {
+    "pushed": false,
+    "merged": false,
+    "formallyReleased": false,
+    "publicVersionEntryChanged": false
+  },
+  "cleanup": {
+    "linux": {
+      "isolatedCopies": [
+        {
+          "scenario": "old-242",
+          "nativeStopped": true,
+          "ownedProcessesRemaining": 0
+        },
+        {
+          "scenario": "failure-242",
+          "nativeStopped": true,
+          "ownedProcessesRemaining": 0
+        },
+        {
+          "scenario": "failure-242-final",
+          "nativeStopped": true,
+          "ownedProcessesRemaining": 0
+        },
+        {
+          "scenario": "failure-242-complete",
+          "nativeStopped": true,
+          "ownedProcessesRemaining": 0
+        },
+        {
+          "scenario": "failure-242-accepted",
+          "nativeStopped": true,
+          "ownedProcessesRemaining": 0
+        }
+      ],
+      "testCopiesRemoved": 5,
+      "productionVersion": "2.4.2",
+      "productionHealth": true,
+      "sshMasterRetained": true
+    },
+    "windows": {
+      "temporaryTaskCount": 0,
+      "ownedProcessCount": 0,
+      "proofRetained": true,
+      "unusedRuntimeRemoved": true
+    }
+  }
+}

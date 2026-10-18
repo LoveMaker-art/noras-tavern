@@ -174,7 +174,7 @@ test('desktop replacement status routes legacy 2.3.2 to the bundled 2.3.13 relea
     require: require('node:module').createRequire(path.join(__dirname, '../installer/desktop/main.js')),
     activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,
     quitting: false, uninstalling: false, selectingLocation: false, modelBusy: false,
-    statusRequest: null, activeRun: false, activeOperationContext:null, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,
+    statusRequest: null, activeRun: false, activeOperationContext:null, desktopUpdateNotice:null, LOCAL_TEST: null, CHANNEL: 'stable', telemetry: null,
     operations:()=>({snapshot:async()=>null}),systemUpdate: { inspect: () => null }, noraHome: () => f.root,
     readLauncherRecovery: async () => null,
     readInstallerState: () => ({ phase: 'ready' }), findPython: () => true,

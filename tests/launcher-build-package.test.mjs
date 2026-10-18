@@ -5,13 +5,31 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { createReleaseSource, collectRuntimeFiles, groupRuntimeModules } from '../tooling/release/release-source.mjs';
+import { createReleaseSource, collectRuntimeFiles, groupRuntimeModules, materializeUpdaterDependencies } from '../tooling/release/release-source.mjs';
 import { fileDigest } from '../tooling/release/system-release.mjs';
 import { buildCommand } from '../tooling/release/build-commands.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-for (const changed of [false, true]) test(`real packager: ${changed ? 'changed launcher resources and product version' : 'unchanged payload'} without npm builds`, { timeout: 120000 }, t => {
+test('the packaged desktop includes its local JavaScript execution closure', t => {
+    const source = createReleaseSource(root, { candidate: true });
+    t.after(() => fs.rmSync(source.stage, { recursive: true, force: true }));
+    const desktop = path.join(source.stage, 'ops/installer/desktop');
+    const pkg = JSON.parse(fs.readFileSync(path.join(desktop, 'package.json')));
+    const included = new Set([...pkg.build.files, 'package.json']);
+    const pending = [...included].filter(name => /\.js$/.test(name));
+    for (const name of pending) {
+        const text = fs.readFileSync(path.join(desktop, name), 'utf8');
+        for (const match of text.matchAll(/require\(['"]\.\/([^'"]+)['"]\)/g)) {
+            const relative = match[1];
+            const file = path.extname(relative) ? relative : relative + '.js';
+            assert.ok(included.has(file), `${name} requires ${file}, which is absent from the APP archive`);
+        }
+    }
+});
+
+for (const kind of ['same','changed','app-only']) test(`real packager: ${kind} without npm builds`, { timeout: 120000 }, t => {
+    const changed=kind==='changed',appOnly=kind==='app-only';
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'launcher-package-test-'));
     t.after(() => fs.rmSync(temporary, { recursive: true, force: true }));
     const source = createReleaseSource(root, { candidate: true });
@@ -28,6 +46,13 @@ for (const changed of [false, true]) test(`real packager: ${changed ? 'changed l
         source.identity.sourceFiles['deployment/shared/services.py'] = 'b'.repeat(64);
         source.identity.sourceFiles['app/.tavern-release-version'] = 'c'.repeat(64);
     }
+    // A current sealed baseline already contains the actor's exact production
+    // closure. Preparing that fixture is separate from the packager invocation;
+    // the reuse path below must still perform no npm/build work.
+    materializeUpdaterDependencies(source.stage, { install: directory => {
+        const npm = buildCommand('npm', ['ci', '--omit=dev', '--ignore-scripts', '--bin-links=false', '--no-audit', '--no-fund']);
+        execFileSync(npm.command, npm.args, { cwd: directory, stdio: 'pipe', timeout: 60000 });
+    } });
     const members = collectRuntimeFiles(source.stage, source.files);
     const baseline = { ...source.identity, candidate: false, dirty: false,
         versions: { tavern: fs.readFileSync(path.join(source.stage, 'app/.tavern-release-version'), 'utf8').trim() },
@@ -59,9 +84,12 @@ for (const changed of [false, true]) test(`real packager: ${changed ? 'changed l
         baseline[key] = { schema: 1, platform: process.platform, arch: process.arch, archive, ...system.files[archive] };
         write(name, baseline[key]);
     }
+    if(appOnly){baseline.launcherVersion='2.2.1';for(const entry of [...Object.values(baseline.archives),...Object.values(baseline.modules)])system.files[entry.name]={asset:`${process.platform}-${process.arch}-${entry.name}`,size:fs.statSync(path.join(temporary,entry.name)).size,sha256:entry.sha256};write('SHA256SUMS','original core checksum table\n');}
     write('release-manifest.json', baseline);
+    if(appOnly){for(const [name,entry]of Object.entries(system.files))entry.asset=`${process.platform}-${process.arch}-${name}`;
+      fs.writeFileSync(path.join(temporary,'baseline-core-reference.json'),JSON.stringify({schema:'nora-core-reference/1',tag:'v'+baseline.versions.tavern,commit:baseline.commit,manifests:{[`${process.platform}-${process.arch}`]:system.files['release-manifest.json']}}));}
     write(`nora-system-${process.platform}-${process.arch}.json`, system);
-    const output = execFileSync(process.execPath, ['tooling/release/package-release.mjs', '--candidate', '--launcher-baseline', temporary],
+    const output = execFileSync(process.execPath, ['tooling/release/package-release.mjs', '--candidate', '--launcher-baseline', temporary,...(appOnly?['--app-only','--publication-tag','v9.0.0']:[])],
         { cwd: root, encoding: 'utf8', timeout: 90000, maxBuffer: 8 * 1024 * 1024 });
     const release = /^release=(.+)$/m.exec(output)?.[1];
     assert.ok(release);
@@ -85,6 +113,7 @@ for (const changed of [false, true]) test(`real packager: ${changed ? 'changed l
     assert.equal(result.artifacts['ops/installer/launcher_services.py'], fileDigest(path.join(root, 'deployment/shared/services.py')));
     const payload = path.join(release, 'nora-tavern-launcher/payload');
     for (const name of ['hermesRuntime.tar.gz', 'dependencies.tar.gz']) assert.equal(fileDigest(path.join(payload, name)), system.files[name].sha256);
+    if(appOnly){assert.deepEqual(fs.readFileSync(path.join(payload,'release-manifest.json')),fs.readFileSync(path.join(temporary,'release-manifest.json')));assert.equal(result.coreRelease.manifests[`${process.platform}-${process.arch}`].sha256,fileDigest(path.join(payload,'release-manifest.json')));assert.notEqual(fileDigest(path.join(release,'release-manifest.json')),fileDigest(path.join(payload,'release-manifest.json')));}
     const desktop = path.join(release, 'nora-tavern-launcher/desktop');
     assert.ok(fs.existsSync(path.join(desktop, 'main.js')));
     assert.ok(fs.existsSync(path.join(release, 'nora-tavern-launcher/launcher_services.py')));

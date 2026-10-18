@@ -909,6 +909,39 @@ test('a recovery object without file and service proof cannot be marked restored
   assert.equal(result.secondaryFailures[0].code,'VERIFICATION_FAILED');
 });
 
+test('explicit recovery closes an old failed record after actual effects were already restored',async t=>{
+  let restored=false,recoveries=0,applies=0;
+  const facts=()=>restored?{effectState:'restored',recoveryOutcome:'restored-and-verified',canRecover:false}
+    :{effectState:'unknown',recoveryOutcome:'recovery-required',canRecover:false};
+  const f=fixture(t,async context=>{
+    applies++;await context.effect('unknown');
+    throw Object.assign(new Error('Original verifier unavailable'),{code:'VERIFICATION_FAILED'});
+  },{observeEffects:async()=>facts(),verifyResult:result=>result?.verification==='confirmed',
+    recoverers:{install:async context=>{
+      context.check();recoveries++;
+      if(!restored)throw new Error('World reader unavailable during initial recovery');
+      // The explicit recovery still owns the writer and independently verifies
+      // real state; observing restored facts alone never commits a terminal.
+      assert.equal(context.snapshot.state,'recovering');
+      return {effectState:'restored',verification:'confirmed',value:{recoveryVerification:'confirmed',version:'2.4.2'}};
+    }}});
+  const failed=await f.controller.start('install',{},'restore-closed-later');
+  assert.equal(failed.state,'failed');assert.equal(failed.effectState,'unknown');
+  assert.equal(failed.recoveryOutcome,'recovery-required');
+  const file=path.join(f.directory,'operations',failed.operationId,'operation.json'),bytes=fs.readFileSync(file);
+  restored=true;
+  const reader=createOperationController(f.options),before=await reader.snapshot(failed.operationId);
+  assert.equal(before.state,'interrupted');assert.equal(before.effectState,'restored');
+  assert.ok(before.allowedActions.includes('recover'));
+  assert.deepEqual(fs.readFileSync(file),bytes,'status cannot close the old task by itself');
+  const closed=await reader.recover(failed.operationId,{snapshotSequence:before.snapshotSequence});
+  assert.equal(closed.operationId,failed.operationId);assert.equal(closed.state,'rolled-back');
+  assert.equal(closed.verification,'confirmed');assert.equal(closed.recoveryOutcome,'restored-and-verified');
+  assert.equal(closed.primaryFailure.code,'VERIFICATION_FAILED');assert.equal(applies,1);assert.equal(recoveries,2);
+  assert.equal((await createOperationController(f.options).snapshot()).state,'rolled-back');
+  assert.equal((await reader.start('start',{execute:async()=>({verification:'confirmed'})},'after-restored-closure')).state,'succeeded');
+});
+
 test('verified file-only recovery offers starting the restored program, rather than repeating the update',async t=>{
   const f=fixture(t,async context=>{await context.effect('changed');throw new Error('failed');},
     {recoverers:{install:async()=>({filesRestored:true,verification:'failed'})}});

@@ -179,6 +179,27 @@ function releaseFixture(t) {
     options:{cacheRoot:path.join(root,'cache'),installRoot:root,launcherVersion:'2.0.0',platform:'win32',arch:'x64',fetcher}};
 }
 
+test('component publication separates immutable batch tag from unchanged core and keeps legacy tag binding',async t=>{
+  const f=releaseFixture(t);
+  fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.4.2'}));
+  f.release.tag_name='v2.4.3';
+  for(const asset of f.release.assets) asset.browser_download_url=asset.browser_download_url.replace('/v2.4.2/','/v2.4.3/');
+  f.manifest.publication={schema:'nora-component-publication/1',tag:'v2.4.3'};
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  const selected=await releases.selectPlan({...f.options,tag:'v2.4.3'});
+  assert.equal(selected.tag,'v2.4.3');assert.equal(selected.releaseManifest.versions.tavern,'2.4.2');
+  const checked=await releases.check(f.options);
+  assert.equal(checked.latest,'v2.4.2');assert.equal(checked.releaseTag,'v2.4.3');
+  assert.equal(checked.releaseAvailable,false);assert.equal(checked.launcherUpdateAvailable,true);
+  for(const publication of [undefined,{schema:'unknown',tag:'v2.4.3'},
+    {schema:'nora-component-publication/1',tag:'v2.4.4'},
+    {schema:'nora-component-publication/1',tag:'v2.4.3',untrusted:true}]) {
+    const manifest={...f.manifest,publication};
+    if(publication===undefined)delete manifest.publication;
+    assert.throws(()=>releases.validateUpdate(manifest,f.release,'2.0.2'),/目标发布|批次/);
+  }
+});
+
 test('current default JihuLab fixed tag selection records source evidence and reuses cached exact metadata',async t=>{
   const f=releaseFixture(t),configuration=require(path.join(modules,'release-sources.json'));
   assert.equal(configuration.primary,'jihulab');
@@ -267,6 +288,87 @@ function refreshFullFixture(f) {
   f.release.assets=Object.entries(f.bytes).map(([name,bytes])=>({name,state:'uploaded',size:Buffer.byteLength(bytes),
     digest:`sha256:${sha(bytes)}`,browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.4.2/${name}`}));
 }
+
+test('independent updater selects, seals and downloads components without an APP version or handoff',async t=>{
+  const f=releaseFixture(t),updaterCapabilities={...f.manifest.launcherCapabilities};
+  f.manifest.launcherVersion='99.0.0';f.manifest.bootstrap.minimumLauncherVersion='99.0.0';
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  f.bytes.SHA256SUMS=Object.entries(f.bytes).filter(([name])=>name!=='SHA256SUMS').map(([name,bytes])=>`${sha(bytes)}  ${name}`).join('\n');
+  const options={...f.options,platform:'linux',arch:'x64',launcherVersion:undefined,client:'updater',updaterCapabilities};
+  const selected=await releases.selectPlan(options);
+  assert.equal(selected.client,'updater');assert.equal(selected.launcherManifest,null);
+  assert.equal(selected.platform,'linux');
+  assert.ok(!f.requests.some(url=>url.includes('nora-launcher-')||url.includes('nora-system-')));
+  const checked=await releases.check(options);
+  assert.equal(checked.updateSupported,true);assert.equal(checked.available,true);assert.equal(checked.launcherUpdateAvailable,false);
+  const operationDirectory=path.join(f.root,'operations',crypto.randomUUID());fs.mkdirSync(operationDirectory,{recursive:true});
+  const sealed=releases.sealPlan(selected,{...options,operationDirectory,assertOwner:()=>{}});
+  assert.equal(releases.validatePlan(sealed,{...options,operationDirectory}).client,'updater');
+  assert.throws(()=>releases.validatePlan(sealed,{...f.options,operationDirectory}),/客户端|client|固定发布计划/);
+  const prepared=await releases.prepareUpdate({...options,selectedPlan:sealed,operationDirectory,
+    plan:async()=>({version:'2.4.2',archives:[{name:'app.tar.gz',sha256:sha('app')}]})});
+  assert.equal(fs.readFileSync(path.join(prepared,'app.tar.gz'),'utf8'),'app');
+});
+
+test('independent updater full system preparation checks actual executor capabilities and skips only APP requirements',async t=>{
+  const f=fullInstallFixture(t),updaterCapabilities={...f.manifest.launcherCapabilities};
+  f.manifest.launcherVersion='99.0.0';f.manifest.bootstrap.minimumLauncherVersion='99.0.0';
+  f.manifest.updaterCapabilities=updaterCapabilities;
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  f.system.minimumLauncherVersion='99.0.0';f.system.updaterCapabilities=updaterCapabilities;
+  f.system.files['release-manifest.json']={asset:'release-manifest.json',sha256:sha(f.bytes['release-manifest.json']),size:Buffer.byteLength(f.bytes['release-manifest.json'])};
+  refreshFullFixture(f);
+  const options={...f.options,launcherVersion:undefined,client:'updater',updaterCapabilities,mode:'install'};
+  const selected=await releases.selectPlan(options);
+  assert.equal(selected.launcherManifest,null);
+  const prepared=await releases.prepareInstall({...options,selectedPlan:selected});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(prepared,'release-manifest.json'),'utf8')).commit,f.manifest.commit);
+  assert.ok(!f.requests.some(url=>url.includes('nora-launcher-')));
+  for(const actual of [undefined,{...updaterCapabilities,executorProtocol:'nora-operation-executor/2'}])
+    await assert.rejects(releases.selectPlan({...options,updaterCapabilities:actual}),{userCode:'RELEASE_EXECUTOR_INCOMPATIBLE'});
+  const incompatible={...f.manifest,updaterCapabilities:{...updaterCapabilities,executorProtocol:'nora-operation-executor/2'}};
+  assert.throws(()=>releases.validateUpdate(incompatible,f.release,undefined,options),{userCode:'RELEASE_EXECUTOR_INCOMPATIBLE'});
+  assert.throws(()=>releases.validateUpdate({...f.manifest,updaterCapabilities:null},f.release,undefined,options),{userCode:'RELEASE_EXECUTOR_INCOMPATIBLE'});
+  assert.throws(()=>releases.validateUpdate(f.manifest,f.release,'2.0.0'),/升级启动器/);
+});
+
+test('independent updater accepts historical shared-asset contracts without weakening platform manifest identity',async()=>{
+  const f=publishedSharedFixture(),updaterCapabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
+  const options={...f.options,launcherVersion:undefined,client:'updater',updaterCapabilities,platform:'darwin',arch:'arm64'};
+  const selected=await releases.selectPlan({...options,mode:'install'});
+  assert.equal(selected.releaseManifestText,f.files['darwin-arm64-release-manifest.json']);
+  assert.equal(selected.client,'updater');assert.equal(selected.launcherManifest,null);
+  const references=releases.validateAssetReferences(selected.release);
+  assert.ok(references.assets.length>0);
+  assert.throws(()=>releases.validatePlan(selected,{...options,arch:'x64'}),/固定发布计划/);
+  const components=await releases.selectPlan({...options,platform:'linux',arch:'x64',mode:'update'});
+  assert.equal(components.releaseManifestText,f.files['release-manifest.json']);
+  assert.equal(components.systemManifest,null);assert.equal(components.launcherManifest,null);
+});
+
+test('candidate updater plans require explicit matching local files and retain candidate identity through download',async t=>{
+  const f=releaseFixture(t);f.manifest.candidate=true;
+  f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+  f.bytes.SHA256SUMS=Object.entries(f.bytes).filter(([name])=>name!=='SHA256SUMS').map(([name,bytes])=>`${sha(bytes)}  ${name}`).join('\n');
+  const local=path.join(f.root,'candidate-release');fs.mkdirSync(local);
+  for(const [name,bytes] of Object.entries(f.bytes))fs.writeFileSync(path.join(local,name),bytes);
+  const options={...f.options,launcherVersion:undefined,platform:'linux',client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES};
+  await assert.rejects(releases.selectPlan({...options,allowCandidate:true}));
+  await assert.rejects(releases.selectPlan({...options,explicitLocalRelease:local}));
+  await assert.rejects(releases.selectPlan({...options,client:undefined,allowCandidate:true,explicitLocalRelease:local}));
+  const accepted={...options,allowCandidate:true,explicitLocalRelease:local};
+  const selected=await releases.selectPlan(accepted);
+  assert.equal(selected.releaseManifest.candidate,true);
+  assert.deepEqual(selected.candidateAcceptance,{schema:'nora-local-candidate/1',releaseDirectory:local});
+  const operationDirectory=path.join(f.root,'operations',crypto.randomUUID());fs.mkdirSync(operationDirectory,{recursive:true});
+  const sealed=releases.sealPlan(selected,{...accepted,operationDirectory,assertOwner:()=>{}});
+  assert.throws(()=>releases.validatePlan(sealed,{...options,operationDirectory}),/候选计划/);
+  const prepared=await releases.prepareUpdate({...accepted,operationDirectory,selectedPlan:sealed,
+    plan:async()=>({version:'2.4.2',archives:[{name:'app.tar.gz',sha256:sha('app')}]})});
+  assert.equal(JSON.parse(fs.readFileSync(path.join(prepared,'release-manifest.json'),'utf8')).candidate,true);
+  fs.writeFileSync(path.join(local,'release-manifest.json'),JSON.stringify({...f.manifest,commit:'b'.repeat(40)}));
+  await assert.rejects(releases.selectPlan(accepted),/本地验收文件/);
+});
 
 function platformInstallFixture(t) {
   const f=fullInstallFixture(t),name='win32-x64-release-manifest.json';
@@ -576,7 +678,7 @@ test('an uncommitted immutable seal cannot pin the next selection, and repeated 
   // No Operation.plan CAS has committed. A new owner may still select safely.
   let last;
   for(let attempt=1;attempt<=4;attempt++){
-    f.manifest.publication=attempt;f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
+    f.manifest.fixtureRevision=attempt;f.bytes['release-manifest.json']=JSON.stringify(f.manifest);
     const selected=await releases.selectPlan(f.options);
     if(attempt<4)last=releases.sealPlan(selected,{...f.options,operationDirectory,assertOwner:()=>{}});
     else assert.throws(()=>releases.sealPlan(selected,{...f.options,operationDirectory,assertOwner:()=>{}}),/安全上限/);
@@ -584,4 +686,36 @@ test('an uncommitted immutable seal cannot pin the next selection, and repeated 
   assert.notEqual(saved.manifestRef.file,last.manifestRef.file);assert.equal(sha(fs.readFileSync(originalFile)),originalSha);
   assert.deepEqual(releases.sealPlan(last,{...f.options,operationDirectory,assertOwner:()=>{}}),last);
   assert.equal(fs.readdirSync(path.dirname(originalFile)).length,4);
+});
+
+test('GUI discovers an APP-only update independently of its content updater plan',async t=>{
+  const f=releaseFixture(t);fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.4.2'}));
+  const checked=await releases.check({...f.options,client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherDiscovery:true});
+  assert.equal(checked.state,'available');assert.equal(checked.available,true);assert.equal(checked.releaseAvailable,false);
+  assert.equal(checked.launcherUpdateAvailable,true);assert.equal(checked.launcherLatest,'2.0.2');
+  assert.equal(checked.releasePlan.client,'updater');assert.equal(checked.releasePlan.launcherManifest,null);
+});
+test('a failed APP-only metadata query cannot block a valid content update',async t=>{
+  const f=releaseFixture(t);
+  const checked=await releases.check({...f.options,client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherDiscovery:true,
+    fetcher:async(url,options)=>{if(String(url).includes('nora-launcher-'))return new Response('missing',{status:404});return f.fetcher(url,options);},
+    networkPolicy:{sources:githubOnly,backoffMs:[0]}});
+  assert.equal(checked.state,'available');assert.equal(checked.available,true);assert.equal(checked.updateSupported,true);
+  assert.equal(checked.launcherUpdateAvailable,false);assert.ok(checked.launcherError);
+  assert.equal(checked.error,undefined);assert.equal(checked.compatibilityError,'');
+});
+
+test('an unavailable APP check does not claim all components are current',async t=>{
+  const f=releaseFixture(t);fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.4.2'}));
+  const checked=await releases.check({...f.options,client:'updater',updaterCapabilities:releases.UPDATER_CAPABILITIES,launcherDiscovery:true,
+    fetcher:async(url,options)=>String(url).includes('nora-launcher-')?new Response('missing',{status:404}):f.fetcher(url,options),
+    networkPolicy:{sources:githubOnly,backoffMs:[0]}});
+  assert.equal(checked.state,'unavailable');assert.equal(checked.available,false);assert.equal(checked.updateSupported,true);assert.ok(checked.launcherError);
+});
+
+test('a failed content capability check preserves its actual failure during optional APP discovery',async t=>{
+  const f=releaseFixture(t);
+  const checked=await releases.check({...f.options,client:'updater',updaterCapabilities:{},launcherDiscovery:true});
+  assert.equal(checked.state,'blocked');assert.equal(checked.available,false);assert.equal(checked.updateSupported,false);
+  assert.ok(checked.compatibilityError.includes('维护协议不兼容'));assert.equal(checked.diagnosticError.cause.userCode,'RELEASE_EXECUTOR_INCOMPATIBLE');
 });

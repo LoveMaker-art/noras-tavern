@@ -77,29 +77,33 @@ test('failures remain failures and diagnostic secrets are cleaned', async t => {
   assert.equal(f.status().status, 'error');
   assert.equal(f.status().error, 'token [redacted]');
 });
-test('both UI and skill execute the same launcher action', () => {
+test('legacy receiver enters the same action and the UI routes content update to independent task', () => {
   const source = fs.readFileSync(path.join(__dirname, '../installer/desktop/main.js'), 'utf8');
   assert.match(source, /handle\('nora:run', runAction\)/);
   assert.match(source, /await runAction\(\{ sender: null \}, \{ action: 'update'/);
+  assert.match(source, /apps\/tavern-ops\/updater\/task.py/);
 });
-test('real Python skill exchanges a request and result with the JS receiver', async t => {
-  const f = await fixture(t, async () => ({ version: '2.4.0', systemReady: true }));
+test('real Python skill refuses an unverified raw terminal record without a query closure', async t => {
+  const f = await fixture(t, () => assert.fail('read-only query must not execute'));
   const hermes = path.join(f.home, 'hermes');
   fs.mkdirSync(hermes);
   fs.writeFileSync(path.join(hermes, 'nora-instance.json'), JSON.stringify({ schema: 1,
     noraHome: f.home, hermesHome: hermes, installRoot: path.join(f.home, 'tavern') }));
+  const jobId=randomUUID(),operationId=randomUUID();
+  const job=path.join(f.home,'installer/update-jobs',jobId),operation=path.join(f.home,'installer/operations',operationId);
+  fs.mkdirSync(job,{recursive:true});fs.mkdirSync(operation,{recursive:true});
+  fs.writeFileSync(path.join(job,'operation-ref.json'),JSON.stringify({operationId}));
+  fs.writeFileSync(path.join(operation,'operation.json'),JSON.stringify({state:'succeeded',result:{version:'2.5.2'}}));
+  fs.rmSync(path.join(f.home,'installer/skill-update/endpoint.json'));
   const script = path.join(__dirname, '../skills/system/tavern-updater/scripts/update.py');
-  const command = 'import importlib.util,json,sys; from pathlib import Path; s=importlib.util.spec_from_file_location("skill",sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); print(json.dumps(m.managed_request(Path(sys.argv[2]),sys.argv[3])))';
   const python = process.env.NORA_TEST_PYTHON || process.env.NORA_PYTHON || (process.platform === 'win32' ? 'python' : 'python3');
-  const errors = [];
-  const timer = setInterval(() => f.receiver.tick().catch(error => errors.push(error)), 30);
-  try {
-    const { stdout } = await promisify(execFile)(python, ['-B', '-c', command, script, hermes, 'update'], { timeout: 15000 });
-    const result = JSON.parse(stdout);
-    assert.equal(result.status, 'success');
-    assert.equal(result.result.systemReady, true);
-    const queried = await promisify(execFile)(python, ['-B', '-c', command, script, hermes, 'status'], { timeout: 15000 });
-    assert.equal(JSON.parse(queried.stdout).id, result.id);
-    assert.deepEqual(errors, []);
-  } finally { clearInterval(timer); }
+  let failure;
+  try{await promisify(execFile)(python,['-B',script,'--status'],{env:{...process.env,HERMES_HOME:hermes},timeout:15000});}
+  catch(error){failure=error;}
+  assert.equal(failure?.code,1);
+  const queried=JSON.parse(failure.stdout);
+  assert.equal(queried.requestId,undefined,'without a verified reader the wrapper cannot claim which task it inspected');
+  assert.equal(queried.status,'inspection-required');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(operation,'operation.json'))).state,'succeeded','read-only failure preserves the raw evidence');
+  assert.equal(queried.settled,false);assert.equal(queried.operation,undefined);
 });

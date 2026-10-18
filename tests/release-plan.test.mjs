@@ -74,7 +74,7 @@ test('launcher membership comes from actual build files and resources rather tha
 
 test('canonical Nora instructions and cardforge Markdown are product content, unlike repository documentation', () => {
     const plan = createReleasePlan(change('nora/SOUL.md', 'nora/AGENTS.md', 'nora/skills/creative/nora-cardforge/references/starter-stories.md'));
-    assert.equal(plan.mode, 'components'); assert.deepEqual(plan.build.modules, ['operations', 'skills']);
+    assert.equal(plan.mode, 'components'); assert.deepEqual(plan.build.modules, ['skills', 'updater']);
     assert.deepEqual(plan.build.launcher, []); noEnvironment(plan);
 });
 

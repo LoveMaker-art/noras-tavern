@@ -12,6 +12,36 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+test('component publication is an explicit validated input forwarded as quoted arguments',async t=>{
+  const {workflowPublicationOptions}=await import('../tooling/release/system-release.mjs');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-workflow-publication-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  fs.mkdirSync(path.join(directory,'app'),{recursive:true});fs.writeFileSync(path.join(directory,'app/.tavern-release-version'),'2.5.2');
+  fs.mkdirSync(path.join(directory,'launcher/desktop'),{recursive:true});fs.writeFileSync(path.join(directory,'launcher/desktop/package.json'),JSON.stringify({version:'2.2.3'}));
+  assert.equal(workflowPublicationOptions(directory).tag,'v2.5.2');
+  assert.equal(workflowPublicationOptions(directory).explicit,false);
+  assert.equal(workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.3'}).tag,'v2.5.3');
+  assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3\nEVIL=true'}));
+  assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.2'}));
+  for(const compatibilityFile of ['/tmp/private.json','../private.json','local-state/private.json','tooling/release/compatibility/../../private.json'])
+    assert.throws(()=>workflowPublicationOptions(directory,{compatibilityFile}));
+  const compatibilityFile='tooling/release/compatibility/reviewed.json',compatibility={schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.2',
+    launcherVersions:['2.2.2','2.2.3'],capabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}};
+  fs.mkdirSync(path.dirname(path.join(directory,compatibilityFile)),{recursive:true});fs.writeFileSync(path.join(directory,compatibilityFile),JSON.stringify(compatibility));
+  const git=args=>execFileSync('git',args,{cwd:directory,stdio:'pipe'});
+  git(['init','-q']);git(['add','.']);git(['-c','core.hooksPath=/dev/null','-c','user.name=Workflow fixture','-c','user.email=fixture@example.invalid',
+    '-c','commit.gpgSign=false','commit','-qm','isolated workflow fixture']);
+  const selected=workflowPublicationOptions(directory,{publicationTag:'v2.5.3',compatibilityFile});
+  assert.equal(selected.compatibilityFile,compatibilityFile);assert.match(selected.compatibilitySha256,/^[a-f0-9]{64}$/);
+  fs.appendFileSync(path.join(directory,compatibilityFile),'\n');assert.throws(()=>workflowPublicationOptions(directory,{compatibilityFile}),/fixed source commit/);
+  fs.rmSync(path.join(directory,compatibilityFile));fs.symlinkSync(path.join(directory,'launcher/desktop/package.json'),path.join(directory,compatibilityFile));
+  assert.throws(()=>workflowPublicationOptions(directory,{compatibilityFile}),/links/);
+  for(const workflow of [full,components]){
+    assert.equal(workflow.on.workflow_dispatch.inputs.publication_tag.default,'');
+    assert.equal(workflow.on.workflow_dispatch.inputs.compatibility_file.default,'');
+    assert.match(scripts(workflow),/--workflow-options/);assert.match(scripts(workflow),/--publication-tag "\$NORA_COMPONENT_PUBLICATION_TAG"/);
+    assert.match(scripts(workflow),/--update-compatibility "\$NORA_UPDATE_COMPATIBILITY_FILE"/);
+  }
+});
 test('native platform selectors preserve diagnostic, concurrency and publication boundaries', () => {
   const target = full.on.workflow_dispatch.inputs.target;
   assert.equal(target.default, 'all');
@@ -238,8 +268,8 @@ test('historical acceptance selects published history and runs independently fro
   assert.match(selection.run, /--paginate --slurp/); assert.match(selection.run, /baseline-selection/);
   const historical = full.jobs.build.steps.find(step => step.name?.startsWith('Freeze verified historical'));
   const download = full.jobs.build.steps.find(step => step.name?.startsWith('Download the official historical'));
-  assert.equal(historical.if, "needs.preflight.outputs.initial_release != 'true'");
-  assert.equal(download.if, historical.if); assert.match(download.run, /acceptance-baseline\.mjs/);
+  assert.equal(historical.if, "needs.preflight.outputs.initial_release != 'true' && !inputs.app_only");
+  assert.equal(download.if, "needs.preflight.outputs.initial_release != 'true'"); assert.match(download.run, /acceptance-baseline\.mjs/);
   assert.equal(download.env.GH_TOKEN, '${{ github.token }}', 'Historical GitHub downloads require the read-only job token');
   assert.equal(full.permissions.contents, 'read'); assert.equal(full.permissions.actions, 'read');
   const early = full.jobs.preflight.steps.find(step => step.name === 'Verify historical download identities before native builds');
@@ -387,4 +417,17 @@ test('actual shell entry refuses invalid promotion, shared baseline and rerun in
   }
   const valid = run({}); assert.equal(valid.status, 0, valid.stderr);
   assert.match(fs.readFileSync(base.GITHUB_OUTPUT, 'utf8'), /source_sha=[a-f0-9]{40}/);
+});
+test('APP-only builds retain ordinary core gates and require real interactive historical APP evidence after sealing target bytes',()=>{
+ assert.equal(full.on.workflow_dispatch.inputs.app_only.default,'false');
+ assert.match(full.jobs.build['runs-on'],/inputs\.app_only/);assert.match(full.jobs.build['runs-on'],/nora-launcher-native-ui/);assert.match(full.jobs.build['runs-on'],/matrix\.runner/);
+ const steps=full.jobs.build.steps,download=steps.find(s=>s.name==='Verify official APP inputs exclusively for native APP-only transition');
+ assert.equal(download.if,'inputs.app_only');assert.match(download.run,/acceptance-baseline\.mjs.*--launcher/);assert.doesNotMatch(download.run,/--identity-only/);
+ const native=steps.findIndex(s=>s.name==='Verify actual APP-only upgrades with running and stopped unchanged core');
+ assert.ok(native>steps.findIndex(s=>s.name==='Build lightweight launcher replacement'));
+ assert.ok(native>steps.findIndex(s=>s.name==='Verify real APP production module closure and executor receipts'));
+ assert.equal(steps[native].if,'inputs.app_only');assert.match(steps[native].run,/app-only-acceptance\.cjs.*--phase run/);
+ assert.match(steps[native].run,/--baseline-launcher/);assert.doesNotMatch(steps[native].run,/\|\|\s*true|--skip|manual/);
+ const proof=steps.find(s=>s.with?.name==='nora-operation-acceptance-${{ matrix.platform }}-${{ matrix.arch }}');
+ for(const name of ['checkpoint.json','observed.json','finished-status.json'])assert.ok(proof.with.path.includes(name));
 });

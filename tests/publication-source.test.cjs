@@ -325,7 +325,7 @@ function nativeFixture(t) {
   const actorNames = ['operation_control.py', 'operation_cli.py', 'operation_evidence.py', 'desktop/operation-delegate.js'];
   const actors = Object.fromEntries(actorNames.map(name => [name, hash(name)]));
   const networkModules = Object.fromEntries(['release-network.js', 'release-sources.js', 'release-sources.json', 'launcher-errors.js'].map(name => [name, hash(name)]));
-  const payload = { commit: 'a'.repeat(40), candidate: false, dirty: false, hermesRuntime: { sha256: hash('runtime') },
+  const payload = {schema:'tavern-release/v2',versions:{tavern:'2.4.4'},commit: 'a'.repeat(40), candidate: false, dirty: false, hermesRuntime: { sha256: hash('runtime') },
     artifacts: { ...Object.fromEntries(Object.entries(actors).map(([name, hash]) => ['ops/installer/' + name, hash])),
       ...Object.fromEntries(Object.entries(networkModules).map(([name, hash]) => ['ops/installer/desktop/' + name, hash])), 'ops/installer/desktop/main.js': hash('main') } };
   const payloadBytes = JSON.stringify(payload), payloadHash = hash(payloadBytes); fs.writeFileSync(path.join(delivery, 'payload.json'), payloadBytes);
@@ -388,6 +388,101 @@ function historicalFixture(t) {
 test('old frozen full sources remain acceptable only with real running and stopped upgrades matching the published baseline', async t => {
   const f = historicalFixture(t); const value = await f.execute(); assert.equal(value.initialRelease, false); assert.deepEqual(value.baselines['darwin-arm64'].states, ['running', 'stopped']);
 });
+function launcherHistoricalFixture(t) {
+  const f=historicalFixture(t),proof=f.proof;
+  const descriptor={schema:'nora-launcher/v1',candidate:false,platform:'darwin',arch:'arm64',version:'2.2.3',commit:f.commit,
+    asset:'Nora-Tavern-Launcher-2.2.3-darwin-arm64-update.zip',sha256:hash('accepted native APP bytes'),size:25};
+  const bytes=JSON.stringify(descriptor);
+  fs.writeFileSync(path.join(f.delivery,'nora-launcher-darwin-arm64.json'),bytes);
+  fs.writeFileSync(path.join(f.delivery,descriptor.asset),'accepted native APP bytes');
+  const before={version:'2.2.2',commit:f.identity.commit,descriptorSha256:hash('official old descriptor'),
+    archiveSha256:hash('official old APP bytes'),archiveSize:22,executableSha256:hash('old native executable'),asarSha256:hash('old native asar')};
+  const after={version:descriptor.version,commit:f.commit,descriptorSha256:hash(bytes),archiveSha256:descriptor.sha256,
+    archiveSize:descriptor.size,executableSha256:f.app.executable.sha256,asarSha256:f.app.asar.sha256};
+  Object.assign(proof,{schema:'nora-app-upgrade-baseline/1',targetTag:'v2.4.4',baselineTag:'v2.4.3',targetVersion:'2.4.3',
+    acceptance:'launcher-transition-required',baselineLauncher:before,targetLauncher:after,
+    coreIdentity:{version:'2.4.3',commit:f.identity.commit,manifestSha256:f.identity.payloadManifestSha256},
+    protectedDataSha256:hash('retained chats characters worlds settings'),userConfigurationDigest:f.fresh.userConfigurationDigest});
+  f.options.targetManifest={schema:'tavern-release/v2',commit:f.commit,versions:{tavern:'2.4.3'},launcherVersion:'2.2.3',
+    publication:{schema:'nora-component-publication/1',tag:'v2.4.4'}};
+  f.options.targetDelivery=f.delivery;
+  f.options.readLauncherIdentity=async()=>Object.fromEntries(Object.entries(before).filter(([name])=>!['executableSha256','asarSha256'].includes(name)));
+  const payloadFile=path.join(f.delivery,'payload.json'),payload=JSON.parse(fs.readFileSync(payloadFile));
+  payload.versions.tavern=proof.targetVersion;payload.commit=f.identity.commit;const payloadBytes=JSON.stringify(payload);fs.writeFileSync(payloadFile,payloadBytes);
+  proof.targetManifestSha256=hash(payloadBytes);proof.baselineManifestSha256=hash(payloadBytes);f.identity.payloadManifestSha256=hash(payloadBytes);proof.coreIdentity.manifestSha256=hash(payloadBytes);f.fresh.releaseManifestSha256=proof.targetManifestSha256;
+  const entry={asset:'darwin-arm64-release-manifest.json',sha256:hash(payloadBytes),size:Buffer.byteLength(payloadBytes)};
+  f.options.targetManifest.coreRelease={schema:'nora-core-reference/1',tag:'v2.4.3',commit:f.identity.commit,manifests:{'darwin-arm64':entry}};
+  Object.assign(f.options.targetManifest,{candidate:false,dirty:false,artifacts:payload.artifacts,hermesRuntime:payload.hermesRuntime});
+  const productBytes=JSON.stringify(f.options.targetManifest);fs.writeFileSync(path.join(f.delivery,'release-manifest.json'),productBytes);f.fresh.actorManifestSha256=hash(productBytes);
+  fs.writeFileSync(path.join(f.delivery,entry.asset),payloadBytes);
+  const systemFile=path.join(f.delivery,'nora-system-darwin-arm64.json'),system=JSON.parse(fs.readFileSync(systemFile));
+  system.version=proof.targetVersion;system.publication=f.options.targetManifest.publication;system.coreRelease=f.options.targetManifest.coreRelease;system.files['release-manifest.json']=entry;
+  const systemBytes=JSON.stringify(system);fs.writeFileSync(systemFile,systemBytes);f.app.payloadManifestSha256=hash(systemBytes);
+  f.save=(()=>{const save=f.save;return ()=>{save();fs.writeFileSync(path.join(f.reports,'nora-packaged-app-acceptance.json'),JSON.stringify(f.app));
+    fs.writeFileSync(path.join(f.reports,'fresh/harness-result.json'),JSON.stringify(f.fresh));};})();
+  proof.cases={};
+  for(const [index,report] of f.historical.entries()) {
+    delete report.versionTransition;
+    Object.assign(report,{launcherTransition:{...proof,startState:['running','stopped'][index]},
+      releaseManifestSha256:proof.targetManifestSha256,
+      releaseAcceptance:'isolated-launcher-transition',update:'verified-launcher-transition',changedLauncherFiles:2,
+      coreBefore:{...proof.coreIdentity},coreAfter:{...proof.coreIdentity},preservedCoreFiles:4,
+      actorSourceBinding:'verified-native-app-source',moduleHashes:f.app.moduleHashes,http:'verified'});
+    const state=['running','stopped'][index],directory=path.join(f.reports,'historical-'+index),runtimeProof=Object.fromEntries(['hermesContext','mcpInstanceRead','managedConfiguration','clawchatRegistration'].map(key=>[key,true]));Object.assign(runtimeProof,{sessionReadable:true,httpStatus:200,worldCount:1});
+    const before={core:{app:{files:[{path:'main.js',size:4,sha256:hash('core')}]}},receipts:{'installed-manifest.json':proof.coreIdentity.manifestSha256,'installed.json':hash('receipt'),'nora-system.json':hash('initialization')},protectedData:{files:[{path:'chat.jsonl',size:4,sha256:hash('chat')}]},config:{model:hash('config')}};
+    const checkpoint={schema:'nora-app-native-checkpoint/1',scope:'published-baseline',productCommit:proof.targetCommit,targetTag:proof.targetTag,baselineTag:proof.baselineTag,sourceReceiptSha256:proof.sourceReceiptSha256,coreIdentity:proof.coreIdentity,before,status:{running:state==='running'},runtimeProof};
+    const operation={operationId:'native-'+state,planDigest:hash('fixedplan'),state:'succeeded',verification:'confirmed',target:{request:{launcherOnly:true},releasePlan:{tag:proof.targetTag}},result:{running:state==='running',updateVerified:true,version:proof.coreIdentity.version,commit:proof.coreIdentity.commit}};
+    const observed={sourceProof:{modules:f.app.moduleHashes,actors:report.actorSourceFiles},after:before,status:{running:state==='running'},runtimeProof,operation,operations:[operation],ready:{operationId:operation.operationId,planDigest:operation.planDigest,version:after.version}};
+    const finished={status:{running:false,systemReady:true},offline:true,processes:[],lockProof:{busy:false}};
+    const evidence={coreFilesCount:4,coreFilesSha256:hash(JSON.stringify({core:before.core,receipts:before.receipts})),protectedDataSha256:hash(JSON.stringify(before.protectedData.files)),userConfigurationDigest:hash(JSON.stringify(before.config)),nativeEvidence:{}};
+    for(const [name,field,value]of [['checkpoint.json','checkpointSha256',checkpoint],['observed.json','observedSha256',observed],['finished-status.json','finishedStatusSha256',finished]]){const bytes=JSON.stringify(value);fs.writeFileSync(path.join(directory,name),bytes);evidence.nativeEvidence[field]=hash(bytes);}
+    proof.cases[state]=evidence;Object.assign(report,{coreFilesBeforeSha256:evidence.coreFilesSha256,coreFilesAfterSha256:evidence.coreFilesSha256,protectedDataBeforeSha256:evidence.protectedDataSha256,protectedDataAfterSha256:evidence.protectedDataSha256,userConfigurationDigest:evidence.userConfigurationDigest});
+
+  }
+  for(const [index,report]of f.historical.entries())report.launcherTransition={...proof,startState:['running','stopped'][index]};
+  f.save();return f;
+}
+test('APP-only publication requires native transitions while binding unchanged core separately from batch',async t=>{
+  const f=launcherHistoricalFixture(t),result=await f.execute();
+  assert.equal(result.baselines['darwin-arm64'].scope,'launcher-transition');
+  assert.equal((await verifyNativeAcceptance(f.delivery,f.acceptance,f.commit,['darwin-arm64']))['darwin-arm64'].harnessReports,4);
+});
+test('APP-only native proof permits a reused Electron executable when actual ASAR changes',async t=>{
+  const f=launcherHistoricalFixture(t);f.proof.baselineLauncher.executableSha256=f.proof.targetLauncher.executableSha256;f.save();
+  assert.equal((await f.execute()).baselines['darwin-arm64'].scope,'launcher-transition');
+});
+test('APP-only publication independently binds a first-install receipt without confusing it with release bytes',async t=>{
+ const f=launcherHistoricalFixture(t),target='darwin-arm64';
+ const source=JSON.parse(fs.readFileSync(path.join(f.delivery,target+'-release-manifest.json')));
+ const dependencies={schema:1,platform:'darwin',arch:'arm64',archive:'nora-tavern-dependencies-darwin-arm64.tar.gz',sha256:hash('deps archive'),size:50,nodeMajor:24,roots:['app/engine/sillytavern/node_modules','nora-mcp/node_modules']};
+ const metadata=JSON.stringify(dependencies),asset='darwin-arm64-nora-tavern-dependencies.json',installedSha=hash(JSON.stringify({...source,integratedDependencies:dependencies},null,2));
+ fs.writeFileSync(path.join(f.delivery,asset),metadata);
+ const systemFile=path.join(f.delivery,'nora-system-'+target+'.json'),system=JSON.parse(fs.readFileSync(systemFile));system.files['nora-tavern-dependencies.json']={asset,sha256:hash(metadata),size:Buffer.byteLength(metadata)};
+ const systemBytes=JSON.stringify(system);fs.writeFileSync(systemFile,systemBytes);f.app.payloadManifestSha256=hash(systemBytes);
+ for(const [index,state]of ['running','stopped'].entries()){
+  const directory=path.join(f.reports,'historical-'+index),checkpoint=JSON.parse(fs.readFileSync(path.join(directory,'checkpoint.json'))),observed=JSON.parse(fs.readFileSync(path.join(directory,'observed.json')));
+  checkpoint.actualInstalledManifestSha256=installedSha;checkpoint.before.receipts['installed-manifest.json']=installedSha;observed.after=checkpoint.before;
+  const evidence=f.proof.cases[state];evidence.actualInstalledManifestSha256=installedSha;evidence.coreFilesSha256=hash(JSON.stringify({core:checkpoint.before.core,receipts:checkpoint.before.receipts}));
+  for(const [name,field,value]of [['checkpoint.json','checkpointSha256',checkpoint],['observed.json','observedSha256',observed]]){const bytes=JSON.stringify(value);fs.writeFileSync(path.join(directory,name),bytes);evidence.nativeEvidence[field]=hash(bytes);}
+  Object.assign(f.historical[index],{coreFilesBeforeSha256:evidence.coreFilesSha256,coreFilesAfterSha256:evidence.coreFilesSha256});
+ }
+ for(const [index,report]of f.historical.entries())report.launcherTransition={...f.proof,startState:['running','stopped'][index]};f.save();
+ assert.notEqual(installedSha,f.proof.coreIdentity.manifestSha256);assert.equal((await f.execute()).baselines[target].scope,'launcher-transition');
+ fs.appendFileSync(path.join(f.delivery,asset),' ');await assert.rejects(f.execute(),/metadata (size|SHA)/,'Changed metadata cannot authorize another local receipt');
+});
+for(const [name,mutate] of [
+  ['missing target metadata',f=>delete f.options.targetManifest],
+  ['forged publication',f=>f.options.targetManifest.publication.tag='v2.4.5'],
+  ['missing native APP proof',f=>fs.unlinkSync(path.join(f.reports,'nora-packaged-app-acceptance.json'))],
+  ['missing stopped APP transition',f=>fs.rmSync(path.join(f.reports,'historical-1'),{recursive:true})],
+  ['changed core',f=>{f.historical[0].coreAfter.manifestSha256=hash('changed');f.save();}],
+  ['changed user data',f=>{f.historical[0].protectedDataAfterSha256=hash('changed');f.save();}],
+  ['false post-update health',f=>{f.historical[0].http='unknown';f.save();}],
+  ['forged baseline APP',f=>f.options.readLauncherIdentity=async()=>({...f.proof.baselineLauncher,archiveSha256:hash('other')} )],
+  ['changed target archive',f=>fs.appendFileSync(path.join(f.delivery,'Nora-Tavern-Launcher-2.2.3-darwin-arm64-update.zip'),'changed')],
+])test(`APP-only publication refuses ${name}`,async t=>{
+  const f=launcherHistoricalFixture(t);mutate(f);await assert.rejects(f.execute());
+});
 test('an ancient published baseline cannot substitute for the most recent older stable release', async t => {
   const f = historicalFixture(t); f.proof.baselineVersion = '2.4.1'; f.save();
   await assert.rejects(f.execute([[stableRelease('v2.4.1'), stableRelease('v2.4.3'), stableRelease('v2.4.4')]]), /most recent published older/);
@@ -419,3 +514,11 @@ test('fresh installation evidence cannot substitute for historical evidence or d
   fs.writeFileSync(path.join(planRoot, 'nora-acceptance-published-releases.json'), JSON.stringify([[stableRelease('v2.4.3')]]));
   await assert.rejects(execute([[]]), /snapshot differs/);
 });
+for(const [name,mutate]of [
+ ['missing explicit original core reference',f=>delete f.options.targetManifest.coreRelease],
+ ['different original core source',f=>f.options.targetManifest.coreRelease.commit='c'.repeat(40)],
+ ['different original core bytes',f=>f.options.targetManifest.coreRelease.manifests['darwin-arm64'].sha256=hash('repacked same version')],
+ ['missing raw native evidence',f=>fs.unlinkSync(path.join(f.reports,'historical-0/observed.json'))],
+ ['changed raw core inventory',f=>fs.appendFileSync(path.join(f.reports,'historical-0/checkpoint.json'),' ')],
+ ['missing full core inventory digest',f=>{delete f.proof.cases.running.coreFilesSha256;f.save();}],
+])test(`APP-only native publication refuses ${name}`,async t=>{const f=launcherHistoricalFixture(t);mutate(f);await assert.rejects(f.execute());});

@@ -1,16 +1,16 @@
 // Final acceptance is shared by GUI and CLI. A committed file transaction may
 // finish its original service plan; it must never be applied a second time.
 const failure=(message)=>Object.assign(new Error(message),{code:'VERIFICATION_FAILED'});
-function create({bridge,compare,finalizeLauncher=async()=>{}}){
+function create({bridge,compare,resolveCommit,finalizeLauncher=async()=>{}}){
   if(typeof bridge!=='function'||typeof compare!=='function')throw new TypeError('Owned update backend is required');
   async function accept(context,result,target){
     if(result?.updateVerified!==true||result.systemReady!==true||compare(result.version,target)!==0)
       throw failure('更新后的版本、文件或服务尚未通过验收，旧版本备份继续保留。');
     const plan=context.target.releasePlan;
     if(plan?.commit!==undefined||plan?.releaseManifest?.commit!==undefined){
-      const commit=plan.commit!==undefined?plan.commit:plan.releaseManifest.commit;
+      const commit=resolveCommit?resolveCommit(context):(plan.commit!==undefined?plan.commit:plan.releaseManifest.commit);
       if(typeof commit!=='string'||!/^[a-f0-9]{40}$/.test(commit)||result.commit!==commit
-        ||plan.releaseManifest?.commit!==undefined&&plan.releaseManifest.commit!==commit)
+        ||!resolveCommit&&plan.releaseManifest?.commit!==undefined&&plan.releaseManifest.commit!==commit)
         throw failure('更新后的提交与原固定发布计划不符，旧版本备份继续保留。');
     }
     const job=context.snapshot.handoffRef;

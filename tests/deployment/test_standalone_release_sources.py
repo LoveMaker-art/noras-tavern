@@ -63,6 +63,124 @@ def loader_code(entry, config):
 
 
 class StandaloneReleaseSources(unittest.TestCase):
+    def test_first_installer_app_only_resolves_original_core_and_rejects_changed_bytes(self):
+        module = module_at('ops/installer/bootstrap.py', JIHULAB)
+        digest = lambda value: hashlib.sha256(value).hexdigest()
+        core = {'schema': 'tavern-release/v2', 'candidate': False, 'commit': COMMIT,
+                'versions': {'tavern': '2.4.2'}, 'archives': {}}
+        payload = {name: name.encode() for name in module.ASSETS[2:]}
+        for name, raw in payload.items():
+            core['archives'][name] = {'name': name, 'sha256': digest(raw), 'size': len(raw)}
+        payload['release-manifest.json'] = json.dumps(core).encode()
+        payload['SHA256SUMS'] = '\n'.join(digest(raw)+'  '+name for name, raw in payload.items()).encode()
+        system = {'schema': 'nora-system/v1', 'version': '2.4.2', 'commit': 'b'*40,
+                  'platform': 'darwin', 'arch': 'arm64',
+                  'publication': {'schema': 'nora-component-publication/1', 'tag': TAG}, 'files': {}}
+        physical = {}
+        for name, raw in payload.items():
+            asset = 'darwin-arm64-'+name
+            system['files'][name] = {'asset': asset, 'size': len(raw), 'sha256': digest(raw)}
+            physical[asset] = raw
+        reference = {'schema': 'nora-core-reference/1', 'tag': 'v2.4.2', 'commit': COMMIT,
+                     'manifests': {'darwin-arm64': system['files']['release-manifest.json']}}
+        system['coreRelease'] = reference
+        product = {**core, 'commit': 'b'*40, 'publication': system['publication'], 'coreRelease': reference}
+        physical.update({'release-manifest.json': json.dumps(product).encode(), 'SHA256SUMS': b'product checksums',
+                         'nora-system-darwin-arm64.json': json.dumps(system).encode()})
+        release = self.catalogue(physical)
+        release['asset_index'] = {asset['name']: asset for asset in release['assets']}
+        def download(_release, name, target, *, expected_sha256=None):
+            raw = physical[name]
+            self.assertEqual(digest(raw), expected_sha256 or _release['asset_index'][name]['digest'][7:])
+            target.write_bytes(raw)
+        with tempfile.TemporaryDirectory() as temporary, patch.object(module, 'select_release', return_value=release), \
+                patch.object(module, 'download_asset', side_effect=download), patch.object(module.sys, 'platform', 'darwin'), \
+                patch.object(module.platform, 'machine', return_value='arm64'):
+            directory = Path(temporary)
+            module.download_release(directory)
+            self.assertEqual((directory/'release-manifest.json').read_bytes(), payload['release-manifest.json'])
+            self.assertEqual(module.verify_release(directory), digest(payload['release-manifest.json']))
+            self.assertEqual(json.loads((directory/'release-manifest.json').read_text())['commit'], COMMIT)
+            physical['darwin-arm64-release-manifest.json'] += b' '
+            with self.assertRaises(AssertionError):
+                module.download_release(directory)
+
+    def test_first_installer_accepts_component_publication_and_keeps_fixed_batch_checks(self):
+        module=module_at('ops/installer/bootstrap.py',JIHULAB)
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)
+            manifest={'schema':'tavern-release/v2','versions':{'tavern':'2.4.2'},'commit':COMMIT,
+                      'publication':{'schema':'nora-component-publication/1','tag':TAG},'archives':{}}
+            for name in module.ASSETS[2:]:
+                manifest['archives'][name]={'name':name,'sha256':'f'*64,'size':1}
+            files={name:b'x' for name in module.ASSETS}
+            files['release-manifest.json']=json.dumps(manifest).encode()
+            release=self.catalogue(files);release['asset_index']={asset['name']:asset for asset in release['assets']}
+            def download(_release,name,target,**_options):target.write_bytes(files[name])
+            with patch.object(module,'select_release',return_value=release),patch.object(module,'download_asset',side_effect=download):
+                self.assertEqual(module.download_release(directory)['tag_name'],TAG)
+            manifest['publication']['tag']='v2.4.4';files['release-manifest.json']=json.dumps(manifest).encode()
+            with patch.object(module,'select_release',return_value=release),patch.object(module,'download_asset',side_effect=download) as fetch:
+                with self.assertRaises(RuntimeError):module.download_release(directory)
+                self.assertEqual(fetch.call_count,2,'Reject mismatched batch before payload download')
+
+    def test_bootstrap_fixes_target_bytes_before_extraction_and_forwards_batch_to_actor(self):
+        module = module_at('ops/updater/bootstrap.py', JIHULAB)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary);home=root/'hermes';home.mkdir();install=root/'tavern';install.mkdir();release=root/'release';release.mkdir()
+            manifest={'versions':{'tavern':'2.4.2'},'commit':COMMIT,
+                      'publication':{'schema':'nora-component-publication/1','tag':TAG}}
+            digest='f'*64;sums={'release-manifest.json':digest}
+            args=['bootstrap','--hermes-home',str(home),'--install-root',str(install),'--release-dir',str(release),
+                  '--apply','--confirm','--tag',TAG,'--target-commit',COMMIT,'--target-manifest-sha256',digest,
+                  '--request-id','12345678-1234-4234-8234-123456789012','--operation-request-id','12345678-1234-4234-8234-123456789013']
+            def extract(_bundle,runner,_manifest):
+                task=runner/'ops/updater/task.py';task.parent.mkdir(parents=True);task.write_text('# independently owned task')
+            for mismatch in ['digest','tag','commit',None]:
+                selected={**manifest}
+                if mismatch=='tag':selected['publication']={**manifest['publication'],'tag':'v2.4.4'}
+                if mismatch=='commit':selected['commit']='b'*40
+                actual='0'*64 if mismatch=='digest' else digest
+                with self.subTest(mismatch=mismatch),patch.object(sys,'argv',args),\
+                        patch.object(module,'resolve_update_target',return_value=(home,install)),\
+                        patch.object(module,'verify_metadata',return_value=(selected,actual,sums)),\
+                        patch.object(module,'required_archives',return_value=([],'incremental')),\
+                        patch.object(module,'verify_archives') as verify,\
+                        patch.object(module,'extract_runner',side_effect=extract) as extraction,\
+                        patch.object(module.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)) as run:
+                    if mismatch:
+                        with self.assertRaises(RuntimeError):module.main()
+                        verify.assert_not_called();extraction.assert_not_called();run.assert_not_called()
+                    else:
+                        with self.assertRaises(SystemExit) as result:module.main()
+                        self.assertEqual(result.exception.code,0)
+                        command=run.call_args.args[0]
+                        self.assertEqual(command[command.index('--tag')+1],TAG)
+                        self.assertEqual(command[command.index('--target-manifest-sha256')+1],digest)
+                        self.assertEqual(command[command.index('--request-id')+1],args[args.index('--request-id')+1])
+                        self.assertEqual(command[command.index('--operation-request-id')+1],args[args.index('--operation-request-id')+1])
+            for option in ['--request-id','--operation-request-id']:
+                invalid=list(args);invalid[invalid.index(option)+1]='unsafe identity'
+                with self.subTest(option=option),patch.object(sys,'argv',invalid),patch.object(module,'resolve_update_target') as resolve:
+                    with self.assertRaises(RuntimeError):module.main()
+                    resolve.assert_not_called()
+
+    def test_component_batch_binding_is_explicit_and_keeps_legacy_checks(self):
+        module = module_at('ops/updater/bootstrap.py', JIHULAB)
+        manifest = {'versions': {'tavern': '2.4.2'}, 'commit': COMMIT,
+                    'publication': {'schema': 'nora-component-publication/1', 'tag': TAG}}
+        self.assertEqual(module.publication_tag(manifest), TAG)
+        module.validate_shared_manifest({'tag_name': TAG}, manifest)
+        for value in [None, {'schema': 'unknown', 'tag': TAG},
+                      {'schema': 'nora-component-publication/1', 'tag': 'v2.4.4'},
+                      {'schema': 'nora-component-publication/1', 'tag': TAG, 'untrusted': True}]:
+            with self.subTest(value=value), self.assertRaises(RuntimeError):
+                module.validate_shared_manifest({'tag_name': TAG}, {**manifest, 'publication': value})
+        legacy = {**manifest}; legacy.pop('publication')
+        with self.assertRaises(RuntimeError):
+            module.validate_shared_manifest({'tag_name': TAG}, legacy)
+        module.validate_shared_manifest({'tag_name': 'v2.4.2'}, legacy)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

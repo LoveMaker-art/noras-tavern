@@ -110,8 +110,20 @@ function validConditions(proof){
 function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=runtime.inspect,
   inspectLauncher=async()=>null,inspectLauncherOutcome=async()=>null,
   inspectLegacy=()=>require('./system-update').inspect(value(home)),runLegacy,checkConditions,
-  networkFetch=globalThis.fetch,launcherVersion='2.0.2',channel='stable',platform=process.platform,arch=process.arch,now=Date.now}={}){
+  networkFetch=globalThis.fetch,launcherVersion='2.0.2',channel='stable',platform=process.platform,arch=process.arch,now=Date.now,
+  client,updaterCapabilities,systemEffects,allowCandidate,explicitLocalRelease}={}){
   if(typeof bridge!=='function'||typeof runRuntime!=='function')throw new TypeError('Owned bridge and runtime executors are required');
+  const executionOptions=record=>{
+    // A GUI reader understands this shipped executor contract too. This reads
+    // the sealed plan only; mutation still routes through the core task owner.
+    const execution=record?.target?.releasePlan?.client==='updater'&&value(client)!=='updater'
+      ?{client:'updater',updaterCapabilities:require('./releases').UPDATER_CAPABILITIES}
+      :{client:value(client),updaterCapabilities:value(updaterCapabilities)};
+    const local=record?.target?.releasePlan?.candidateAcceptance;
+    return {...execution,...(value(explicitLocalRelease)
+      ?{allowCandidate:value(allowCandidate),explicitLocalRelease:value(explicitLocalRelease)}
+      :local?.schema==='nora-local-candidate/1'?{allowCandidate:true,explicitLocalRelease:local.releaseDirectory}:{})};
+  };
   const locations=id=>({noraHome:value(home),hermesHome:value(hermesHome),operationId:id});
   const firstJournal=id=>path.join(value(home),'installer','operations',id,'first-install','transaction.json');
   const systemJournal=()=>path.join(value(installRoot),'tavern-updates','transaction.json');
@@ -167,7 +179,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         ||!Number.isSafeInteger(resource.size)||resource.size<1||resource.size>2*1024**3)return null;
       const source=record.target?.releasePlan;if(source?.schema!=='nora-release-plan/1')return null;
       const releases=require('./releases');
-      const plan=releases.validatePlan(source,{launcherVersion:value(launcherVersion),platform:source.platform,arch:source.arch,channel:source.channel,
+      const plan=releases.validatePlan(source,{...executionOptions(record),launcherVersion:value(launcherVersion),platform:source.platform,arch:source.arch,channel:source.channel,
         operationDirectory:path.join(value(home),'installer','operations',record.operationId)});
       if(resource.tag!==plan.tag||resource.url!==releases.assetUrl(plan.release,resource.asset)
         ||plan.release.assets.find(item=>item.name===resource.asset)?.size!==resource.size)return null;
@@ -205,7 +217,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         // selected, only that sealed root manifest's exact raw bytes may prove
         // availability; catalogues and other descriptors cannot reselect it.
         if(source.mode!=='update'||!source.manifestRef)return null;
-        const releases=require('./releases'),plan=releases.validatePlan(source,{launcherVersion:value(launcherVersion),
+        const releases=require('./releases'),plan=releases.validatePlan(source,{...executionOptions(record),launcherVersion:value(launcherVersion),
           platform:value(platform),arch:value(arch),channel:value(channel),mode:'update',tag:record.target?.request?.tag,
           operationDirectory:path.join(value(home),'installer','operations',record.operationId)});
         if(resource.url!==releases.assetUrl(plan.release,'release-manifest.json')
@@ -331,15 +343,15 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         }else if(resource.type==='release-manifest'){
           if(resource.sha256&&(bytes!==resource.size||crypto.createHash('sha256').update(Buffer.concat(parts)).digest('hex')!==resource.sha256))return null;
           if(result.launcherVersion!==undefined&&releases.compare(result.launcherVersion,result.launcherVersion)!==0)return null;
-          releases.validateUpdate(result,{tag_name:resource.tag},result.launcherVersion||value(launcherVersion));
+          releases.validateUpdate(result,{tag_name:resource.tag},executionOptions(record).client==='updater'?undefined:result.launcherVersion||value(launcherVersion),executionOptions(record));
         }else if(resource.type==='system-manifest'){
           if(releases.compare(result.version,resource.tag)!==0)return null;
           if(resource.expectedSystemVersion!==undefined){
             if(releases.compare(result.version,resource.expectedSystemVersion)!==0)return null;
             // This original read proves metadata availability. Full selection
             // still owns release membership and the launcher minimum handoff.
-            releases.validateSystemDescriptor(result,null,value(platform),value(arch),value(channel));
-          }else releases.validateSystem(result,null,value(platform),value(arch),resource.expectedVersion,value(channel));
+            releases.validateSystemDescriptor(result,null,value(platform),value(arch),value(channel),executionOptions(record));
+          }else releases.validateSystem(result,null,value(platform),value(arch),executionOptions(record).client==='updater'?undefined:resource.expectedVersion,value(channel),executionOptions(record));
         }else if(resource.type==='launcher-manifest'){
           // This verifies the original metadata and its expected version. The
           // resumed selectPlan still verifies membership in the full release.
@@ -392,7 +404,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     if(!validConditions(baseline)||!untouchedSelection(record,effects)||(baseline.facts.installSelections||[]).length>=8)return null;
     try{
       context.lease?.assertActive?.();
-      const plan=await require('./releases').selectPlan({fetcher:networkFetch,signal:AbortSignal.timeout(15000),
+      const plan=await require('./releases').selectPlan({...executionOptions(record),fetcher:networkFetch,signal:AbortSignal.timeout(15000),
         launcherVersion:value(launcherVersion),channel:value(channel),platform:value(platform),arch:value(arch),
         mode:'install',tag:record.target.request.tag,networkPolicy:{totalBudgetMs:15000}});
       context.lease?.assertActive?.();
@@ -501,6 +513,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     }
   }
   async function system(record){
+    if(systemEffects)return systemEffects(record);
     if(!present(firstJournal(record.operationId))&&!present(systemJournal()))
       return {effectState:'untouched',recoveryOutcome:'not-required',canRecover:false,reason:'no_journal'};
     const restored=inspectRuntime(locations(record.operationId));
@@ -626,11 +639,14 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
         throw failure('VERIFICATION_FAILED','旧文件恢复未返回受管确认，已保留现场。');
       return {effectState:'restored',filesRestored:true,verification:'failed',value:{...restored,originalServiceState:'unrecorded'}};
     }
-    let systemResult,stagedSystemFacts;
+    let systemResult,stagedSystemFacts,systemRestored=false;
     const currentManaged=inspectManagedInstallation({noraHome:value(home),hermesHome:value(hermesHome),installRoot:value(installRoot),port,operationId:record.operationId});
     if(currentManaged?.missing.python&&present(systemJournal()))stagedSystemFacts=(await inspectPartial(context,currentManaged)).effects;
     if(present(firstJournal(record.operationId))||present(systemJournal())){
       const facts=stagedSystemFacts||await system(record);
+      // The Python transaction may have completed automatic rollback before
+      // its failing child returned. Keep that verified effect in the result.
+      systemRestored=facts.effectState==='restored'&&facts.recoveryOutcome==='restored-and-verified';
       if(facts.effectState==='unknown'||facts.effectState==='changed'&&facts.canRecover!==true)
         throw failure('UPDATE_RECOVERY_REQUIRED','恢复记录无法核验，未覆盖现有文件。请保留安装、数据和日志。');
       if(!safe.has(facts.effectState)||facts.recoveryOutcome==='files-restored-start-failed'){
@@ -674,7 +690,7 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
     const retained=require('./retained-installation').inspect(value(home),{operationId:context.operationId});
     if(runtimePending||record.recoveryOutcome==='files-restored-start-failed'||retained?.reinstallOperationId===context.operationId)
       return finishRuntimeRecovery(context,record,systemResult,port,runtimeResult?.offlineProof);
-    return {effectState:runtimeFacts.effectState==='untouched'&&!systemResult?'untouched':'restored',
+    return {effectState:runtimeFacts.effectState==='untouched'&&!systemResult&&!systemRestored?'untouched':'restored',
       verification:'confirmed',value:{...(systemResult||{}),recoveryVerification:'confirmed'}};
   }
   async function recheck(record,context={}){

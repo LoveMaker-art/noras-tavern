@@ -188,5 +188,81 @@ class UpdateDependencyMaterializationTests(unittest.TestCase):
                 (before.st_dev, before.st_ino, before.st_mtime_ns))
 
 
+class StandaloneDependencyPreparationTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='nora-independent-deps-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.source = self.root / 'tavern-updates/direct-test/source'
+        self.engine = self.source / 'app/engine/sillytavern'
+        self.engine.mkdir(parents=True)
+        (self.engine / 'package.json').write_text(json.dumps({'dependencies': {'fixture': '1.0.0'}}))
+        (self.engine / 'package-lock.json').write_text(json.dumps({'lockfileVersion': 3, 'packages': {}}))
+        self.old = self.root / 'apps/tavern-runtime/engine/sillytavern'
+        self.old.mkdir(parents=True)
+        (self.old / 'package-lock.json').write_text('{"historical":"different lock"}')
+        (self.old / 'keep.txt').write_text('original program')
+        self.lease = tempfile.TemporaryFile()
+        self.addCleanup(self.lease.close)
+        self.state = {'root': self.root, 'lock': self.lease}
+        self.required = ('fixture/package.json',)
+
+    def prepare(self):
+        return UPDATER.component_dependencies(self.source, self.engine, self.old,
+            'package-lock.json', self.required)
+
+    def completed_npm(self, command, **options):
+        self.assertEqual(options['cwd'], self.engine)
+        self.assertEqual(options['timeout'], 300)
+        self.assertIn('--ignore-scripts', command)
+        self.assertEqual(command[1:3], ['ci', '--omit=dev'])
+        package = self.engine / 'node_modules/fixture/package.json'
+        package.parent.mkdir(parents=True)
+        package.write_text('{"name":"fixture","version":"1.0.0"}')
+
+    def test_different_historical_lock_can_prepare_without_touching_old_program(self):
+        with mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
+                mock.patch.object(UPDATER, '_standalone_execution', self.state), \
+                mock.patch.object(UPDATER.shutil, 'which', return_value='/fixture/npm'), \
+                mock.patch.object(UPDATER, 'standalone_run', side_effect=self.completed_npm) as npm:
+            self.assertEqual(self.prepare(), 'prepared-standalone')
+        npm.assert_called_once()
+        self.assertEqual((self.old / 'keep.txt').read_text(), 'original program')
+        self.assertFalse((self.root / 'tavern-updates/transaction.json').exists())
+
+    def test_missing_scope_or_lock_does_not_enable_npm_for_desktop(self):
+        for state in (None, {'root': self.root, 'lock': None}):
+            with self.subTest(state=bool(state)), mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
+                    mock.patch.object(UPDATER, '_standalone_execution', state), \
+                    mock.patch.object(UPDATER, 'standalone_run') as npm:
+                with self.assertRaises(RuntimeError): self.prepare()
+                npm.assert_not_called()
+
+    def test_no_npm_outside_owned_staging_or_with_install_script(self):
+        with mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
+                mock.patch.object(UPDATER, '_standalone_execution', self.state), \
+                mock.patch.object(UPDATER, 'standalone_run') as npm:
+            with self.assertRaisesRegex(RuntimeError, '临时程序目录'):
+                UPDATER.standalone_dependencies(self.source, self.old, 'package-lock.json', self.required)
+            (self.engine / 'package-lock.json').write_text(json.dumps({'lockfileVersion': 3,
+                'packages': {'node_modules/fixture': {'hasInstallScript': True}}}))
+            with self.assertRaisesRegex(RuntimeError, '额外安装脚本'): self.prepare()
+            npm.assert_not_called()
+
+    def test_failed_preparation_or_changed_lock_never_touches_old_program(self):
+        for failure in ('network', 'changed-lock'):
+            with self.subTest(failure=failure):
+                def npm(*_args, **_kwargs):
+                    if failure == 'network': raise subprocess.TimeoutExpired('npm', 300)
+                    (self.engine / 'package-lock.json').write_text('changed')
+                with mock.patch.object(UPDATER.sys, 'platform', 'linux'), \
+                        mock.patch.object(UPDATER, '_standalone_execution', self.state), \
+                        mock.patch.object(UPDATER.shutil, 'which', return_value='/fixture/npm'), \
+                        mock.patch.object(UPDATER, 'standalone_run', side_effect=npm):
+                    with self.assertRaises((RuntimeError, subprocess.TimeoutExpired)): self.prepare()
+                self.assertEqual((self.old / 'keep.txt').read_text(), 'original program')
+                self.assertFalse((self.root / 'tavern-updates/transaction.json').exists())
+
+
 if __name__ == "__main__":
     unittest.main()

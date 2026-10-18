@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 import re
 import ssl
 import stat
+import subprocess
 import sys
 import tarfile
 import tempfile
@@ -327,6 +328,27 @@ def validate_partial_repair(home, root, instance, lifecycle=None):
     return snapshot
 
 
+def pending_standalone_recovery(home, root):
+    """Discovery only; the verified runner must validate the complete journal."""
+    try:
+        file = Path(root) / 'tavern-updates/transaction.json'
+        if file.is_symlink() or file.stat().st_size > 16 * 1024 * 1024:
+            return False
+        record = json.loads(file.read_text(encoding='utf-8'))
+        plan = record.get('recoveryPlan', {})
+        backup = Path(record.get('backup', ''))
+        if (record.get('status') in (None, 'committed', 'restored') or plan.get('before', {}).get('scope') != 'standalone-tavern'
+                or plan.get('hermesHome') != str(home) or plan.get('installRoot') != str(root)
+                or not backup.is_absolute() or backup.parent != Path(root) / 'tavern-backups'
+                or backup.is_symlink() or not backup.is_dir()):
+            return False
+        receipt = json.loads((backup / 'nora-update-backup.json').read_text(encoding='utf-8'))
+        return (receipt.get('schema') == 'nora-update-backup/1' and receipt.get('owner') == 'nora-tavern-updater'
+                and receipt.get('installRoot') == str(root) and receipt.get('backupId') == backup.name)
+    except (OSError, ValueError, TypeError, AttributeError):
+        return False
+
+
 def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=None, validate_partial=True):
     """Resolve an existing installation without writing or inventing a new root.
 
@@ -415,11 +437,17 @@ def resolve_update_target(hermes_home=None, install_root=None, *, managed_home=N
     if not candidates:
         raise RuntimeError("未找到已有酒馆安装，更新器不会创建新实例。首次部署请使用安装流程。")
     root = next(iter(candidates.values()))
+    if not instance:
+        for base in {home.parent, root.parent}:
+            if (home == base / 'hermes' and root == base / 'tavern'
+                    and ((base / 'installer/launcher-control.json').exists() or (base / 'nora-owner.json').exists())):
+                raise RuntimeError(managed_error)
     if (root / "tavern-updates/nora-system.json").exists() and not instance:
         raise RuntimeError(managed_error)
     app = root / "apps/tavern-runtime"
     partial = validate_partial_repair(home, root, instance) if instance and validate_partial else None
-    if (not partial and not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py"))) or not (root / "tavern-state").is_dir():
+    pending = not instance and pending_standalone_recovery(home, root)
+    if (not partial and not pending and not any((app / entry).is_file() for entry in ("native-runtime.json", "server.py", "backend/server.py"))) or not (root / "tavern-state").is_dir():
         raise RuntimeError("目标不是完整的已有酒馆安装，已停止更新：" + str(root))
     if (root / "tavern-state").is_symlink():
         raise RuntimeError("数据目录是符号链接，无法保证事务回滚，已停止更新：" + str(root / "tavern-state"))
@@ -636,12 +664,28 @@ def expand_asset_index(release, assets):
     return index
 
 
+def publication_tag(manifest):
+    core = manifest.get('versions', {}).get('tavern')
+    if not isinstance(core, str) or not re.fullmatch(TAG_PATTERN, 'v' + core):
+        raise RuntimeError('发布清单缺少有效核心版本。')
+    if 'publication' not in manifest:
+        return 'v' + core
+    value = manifest['publication']
+    if (not isinstance(value, dict) or set(value) != {'schema', 'tag'}
+            or value.get('schema') != 'nora-component-publication/1'
+            or not isinstance(value.get('tag'), str) or not re.fullmatch(TAG_PATTERN, value['tag'])):
+        raise RuntimeError('组件发布批次身份无效。')
+    return value['tag']
+
+
 def validate_shared_manifest(release, manifest):
+    if publication_tag(manifest) != release['tag_name']:
+        raise RuntimeError('发布清单与固定发布批次不一致。')
     index = release.get('shared_assets')
     if index is None:
         return
     minimum = manifest.get('bootstrap', {}).get('minimumLauncherVersion')
-    if (manifest.get('commit') != index['commit'] or manifest.get('versions', {}).get('tavern') != index['tag'][1:]
+    if (manifest.get('commit') != index['commit'] or publication_tag(manifest) != index['tag']
             or release_version_key(minimum) < release_version_key(index['minimumLauncherVersion'])):
         raise RuntimeError('共享资产与目标发布提交或客户端兼容门槛不一致。')
     for descriptor in [*manifest.get('archives', {}).values(), *manifest.get('modules', {}).values()]:
@@ -777,6 +821,7 @@ def verify_metadata(directory, expected_manifest=None, *, allow_candidate=False)
     manifest = json.loads((directory / "release-manifest.json").read_text(encoding="utf-8"))
     if manifest.get("schema") != "tavern-release/v2" or (manifest.get("candidate") and not allow_candidate):
         raise RuntimeError("只允许安装正式 Tavern v2 发布包")
+    publication_tag(manifest)
     return manifest, manifest_sha, sums
 
 
@@ -874,12 +919,18 @@ def main():
     parser.add_argument("--tag")
     parser.add_argument("--release-dir", type=Path)
     parser.add_argument("--manifest-sha256")
+    parser.add_argument("--target-manifest-sha256", help=argparse.SUPPRESS)
+    parser.add_argument("--request-id", help=argparse.SUPPRESS)
+    parser.add_argument("--operation-request-id", help=argparse.SUPPRESS)
     parser.add_argument("--target-commit", help=argparse.SUPPRESS)
     parser.add_argument("--repair", action="store_true")
     parser.add_argument("--allow-candidate", action="store_true", help="显式允许本地校验过的测试包")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm", action="store_true")
     args = parser.parse_args()
+    for identity in (args.request_id, args.operation_request_id):
+        if identity is not None and not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}', identity, re.I):
+            raise RuntimeError('独立更新请求编号无效，未开始更新。')
     if not (args.apply and args.confirm):
         raise RuntimeError("更新命令必须包含 --apply --confirm")
     if args.allow_candidate and not args.release_dir:
@@ -887,32 +938,46 @@ def main():
     if args.data_root and args.install_root and Path(args.data_root).expanduser().resolve() != Path(args.install_root).expanduser().resolve():
         raise RuntimeError("--data-root 与 --install-root 冲突，已停止更新")
     home = args.hermes_home or (args.data_root if not os.environ.get("HERMES_HOME") else None)
+    # The instance marker binds directories and port. It is not permission to
+    # require an installed/online desktop APP for a component update.
+    resolved_home = Path(home).expanduser().resolve() if home else default_hermes_home()
+    if args.managed_home is None and (resolved_home / 'nora-instance.json').is_file():
+        marker = json.loads((resolved_home / 'nora-instance.json').read_text(encoding='utf-8'))
+        args.managed_home = Path(marker['noraHome'])
     hermes_home, install_root = resolve_update_target(home, args.install_root or args.data_root,
                                                      managed_home=args.managed_home)
     print(f"[tavern-updater] 已确认现有安装：{install_root}", file=sys.stderr, flush=True)
     if args.plan:
         if not args.release_dir:
             raise RuntimeError("更新计划需要已下载的发布清单")
-        manifest, _, sums = verify_metadata(args.release_dir, args.manifest_sha256)
+        manifest, _, sums = verify_metadata(args.release_dir, args.manifest_sha256, allow_candidate=args.allow_candidate)
+        if args.target_manifest_sha256 and sums['release-manifest.json'] != args.target_manifest_sha256:
+            raise RuntimeError('发布清单与本次固定目标校验值不一致，未修改安装。')
+        if args.tag and publication_tag(manifest) != args.tag or args.target_commit and manifest.get('commit') != args.target_commit:
+            raise RuntimeError('发布清单与本次固定目标批次或提交不一致，未修改安装。')
         archives, mode = required_archives(install_root, manifest)
         print(json.dumps({"archives": [{"name": name, "sha256": sums[name]} for name in archives],
                           "mode": mode, "version": manifest["versions"]["tavern"]}))
         return
-    try:
-        import operation_cli as cli
-    except ImportError:
-        import importlib.util
-        cli_path = Path(__file__).resolve().parents[1] / 'installer/operation_cli.py'
-        if not cli_path.is_file():
-            cli_path = Path(__file__).resolve().parents[1] / 'shared/operation_cli.py'
-        spec = importlib.util.spec_from_file_location('nora_bootstrap_operation_cli', cli_path)
-        cli = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(cli)
-    cli.ensure_operation('repair' if args.repair else 'update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
+    cli = None
+    guarded = (getattr(sys, '_nora_operation_delegate', None) is not None
+               or any(name.startswith('NORA_OPERATION_') for name in os.environ))
+    if guarded:
+        try:
+            import operation_cli as cli
+        except ImportError:
+            import importlib.util
+            cli_path = Path(__file__).resolve().parents[1] / 'installer/operation_cli.py'
+            if not cli_path.is_file():
+                cli_path = Path(__file__).resolve().parents[1] / 'shared/operation_cli.py'
+            spec = importlib.util.spec_from_file_location('nora_bootstrap_operation_cli', cli_path)
+            cli = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cli)
+        cli.ensure_operation('repair' if args.repair else 'update', nora_home=args.managed_home or os.environ.get('NORA_TAVERN_HOME'))
     root = install_root / "tavern-updates"
     root.mkdir(parents=True, exist_ok=True)
     installed = root / "installed.json"
-    if args.target_commit and not args.repair and not args.allow_candidate and not args.managed_home and installed.is_file():
+    if args.target_commit and not args.target_manifest_sha256 and not args.repair and not args.allow_candidate and not args.managed_home and installed.is_file():
         try:
             current = json.loads(installed.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -923,7 +988,10 @@ def main():
             install_root / "apps/tavern-ops/updater/update.py",
             install_root / "apps/nora-mcp/dist/server.js",
         )
-        if current.get("commit") == args.target_commit and all(path.is_file() for path in required_install):
+        transaction = root / 'transaction.json'
+        pending = json.loads(transaction.read_text(encoding='utf-8')) if transaction.is_file() else {}
+        if (current.get("commit") == args.target_commit and all(path.is_file() for path in required_install)
+                and pending.get('status') in (None, 'committed', 'restored')):
             print(json.dumps({
                 "status": "up-to-date",
                 "version": current.get("version"),
@@ -944,6 +1012,11 @@ def main():
             if args.target_commit and manifest.get('commit') != args.target_commit:
                 raise RuntimeError('发布清单与本次更新目标不一致，未修改安装。')
             archives, mode = required_archives(install_root, manifest)
+            independent = 'ops/updater/task.py' in manifest.get('artifacts', {}) and not guarded
+            if independent:
+                descriptor = next((value for value in (manifest.get('modules') or {}).values()
+                                   if 'ops/updater/task.py' in value.get('artifacts', [])), None)
+                archives = [descriptor['name']] if descriptor else ['nora-tavern-ops.tar.gz']
             for name in archives:
                 download_asset(release, name, bundle / name, expected_sha256=sums.get(name))
         else:
@@ -951,10 +1024,35 @@ def main():
             archives, mode = required_archives(install_root, manifest)
             if all((bundle / name).is_file() for name in FULL_ARCHIVES):
                 archives, mode = list(FULL_ARCHIVES), "local"
+        if args.target_manifest_sha256 and manifest_sha != args.target_manifest_sha256:
+            raise RuntimeError('发布清单与本次固定目标校验值不一致，未修改安装。')
+        if args.tag and publication_tag(manifest) != args.tag or args.target_commit and manifest.get('commit') != args.target_commit:
+            raise RuntimeError('发布清单与本次固定目标批次或提交不一致，未修改安装。')
         verify_archives(bundle, archives, sums)
         print(f"[tavern-updater] 下载模式：{mode}，压缩包 {len(archives)} 个", file=sys.stderr, flush=True)
         runner = work / "runner"
         extract_runner(bundle, runner, manifest)
+        task = runner / 'ops/updater/task.py'
+        if not guarded and task.is_file():
+            # Only the small, verified execution closure belongs to the caller.
+            # The independent owner fixes/downloads the update itself. Local
+            # acceptance files remain in their explicit caller-owned directory.
+            command = [sys.executable, '-B', '-u', str(task), '--hermes-home', str(hermes_home),
+                       '--install-root', str(install_root), '--apply', '--confirm',
+                       '--runner-root', str(runner / 'ops'), '--runner-manifest', str(bundle / 'release-manifest.json'),
+                       '--target-commit', manifest['commit'], '--manifest-sha256', manifest_sha,
+                       '--tag', publication_tag(manifest)]
+            if args.target_manifest_sha256:
+                command.extend(['--target-manifest-sha256', args.target_manifest_sha256])
+            if args.request_id:
+                command.extend(['--request-id', args.request_id])
+            if args.operation_request_id:
+                command.extend(['--operation-request-id', args.operation_request_id])
+            if args.release_dir:
+                command.extend(['--release-dir', str(args.release_dir.resolve())])
+            if args.allow_candidate:
+                command.append('--allow-candidate')
+            raise SystemExit(subprocess.run(command, check=False).returncode)
         command = [
             sys.executable, "-u", "-B", str(runner / "ops/updater/update.py"),
             "--hermes-home", str(hermes_home),
@@ -966,7 +1064,10 @@ def main():
         ]
         if args.allow_candidate:
             command.append("--allow-candidate")
-        result = cli._control().managed_run(command)
+        # The public standalone file is self-contained until the complete,
+        # hash-verified runner is available. Desktop execution keeps its guard.
+        result = (cli._control().managed_run(command) if guarded else
+                  subprocess.run(command, start_new_session=os.name != 'nt', check=False))
         raise SystemExit(result.returncode)
 
 

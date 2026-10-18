@@ -20,6 +20,64 @@ function walk(node) {
 }
 walk(ast);
 
+test('readonly current-install inspection forwards fixed identity and never enters maintenance dispatch', () => {
+  const argsNode=ast.body.find(node=>node.type==='FunctionDeclaration'&&node.id.name==='bridgeArgs');
+  const argsContext=vm.createContext({findPython:()=>({command:'python',args:[]}),bridgeScript:()=>'/bridge.py',
+    noraHome:()=>'/owned',hermesHome:()=>'/owned/hermes',installRoot:()=>'/owned/tavern',installationPort:()=>8799});
+  const makeArgs=vm.runInContext(`(${source.slice(argsNode.start,argsNode.end)})`,argsContext);
+  const spec=makeArgs('inspect-current-update',{version:'2.5.2',commit:'a'.repeat(40),manifestSha256:'b'.repeat(64)});
+  assert.equal(spec.args[spec.args.indexOf('--commit')+1],'a'.repeat(40));
+  assert.equal(spec.args[spec.args.indexOf('--manifest-sha256')+1],'b'.repeat(64));
+  let dispatch;
+  function find(node){if(!node||typeof node!=='object')return;
+    if(node.type==='AssignmentExpression'&&node.left.name==='proc'&&node.right.type==='ConditionalExpression')dispatch=node.right;
+    for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(find);else if(value&&typeof value==='object')find(value);}}
+  find(ast.body.find(node=>node.type==='FunctionDeclaration'&&node.id.name==='runBridge'));
+  assert.ok(dispatch);
+  for(const activeOperationContext of [null,{operationId:'ended-operation'}])for(const [command,expected] of [
+    ['inspect-current-update','readonly'],['verify-current-update','guarded'],['update','guarded']]){
+    const context=vm.createContext({command,activeOperationContext,spec:{command:'python',args:[]},
+      launcherEnv:()=>({}),installerRoot:()=>'/owned',spawn:()=> 'readonly',spawnMaintenance:()=> 'guarded'});
+    assert.equal(vm.runInContext(source.slice(dispatch.start,dispatch.end),context),expected);
+  }
+});
+
+test('joint update verifies only the frozen old or new installed core identity through the readonly query', async t => {
+  const crypto=require('node:crypto'),os=require('node:os');
+  const home=fs.mkdtempSync(path.join(os.tmpdir(),'nora-combination-query-'));t.after(()=>fs.rmSync(home,{recursive:true,force:true}));
+  const root=path.join(home,'tavern'),file=path.join(root,'tavern-updates','installed-manifest.json');
+  fs.mkdirSync(path.dirname(file),{recursive:true});
+  const before={schema:'tavern-release/v2',versions:{tavern:'2.4.2'},commit:'a'.repeat(40)};
+  const target={schema:'tavern-release/v2',versions:{tavern:'2.5.2'},commit:'b'.repeat(40)};
+  const oldBytes=JSON.stringify(before,null,2),targetBytes=JSON.stringify(target,null,2)+'\n';
+  const digest=raw=>crypto.createHash('sha256').update(raw).digest('hex');
+  let node;function find(value){if(!value||typeof value!=='object')return;
+    if(value.type==='VariableDeclarator'&&value.id.name==='verifyCombination')node=value.init;
+    for(const child of Object.values(value)){if(Array.isArray(child))child.forEach(find);else if(child&&typeof child==='object')find(child);}}
+  find(ast);assert.ok(node);
+  const calls=[],context=vm.createContext({registerCapabilities:async()=>{},path,fs,process,
+    releases:createRequire(path.join(__dirname,'../installer/desktop/main.js'))('./releases'),
+    require:name=>name==='node:crypto'?crypto:{validate:async()=>{}},installerDirectory:()=>path.join(home,'installer'),
+    noraHome:()=>home,installRoot:()=>root,app:{getVersion:()=> '2.2.2'},options:{capabilities:{}},
+    updateSequence:{compatible:()=>true},sequence:{before:{core:'2.4.2',coreCommit:before.commit,coreManifestSha256:digest(oldBytes)},
+      plan:{commit:target.commit,releaseManifest:target,releaseManifestText:JSON.stringify(target)}},
+    state:{systemReady:true,version:'2.4.2',commit:before.commit},
+    runBridge:async(command,identity)=>{calls.push({command,identity});return command==='status'?context.state:{updateVerified:true,systemReady:true};}});
+  const verify=vm.runInContext(`(${source.slice(node.start,node.end)})`,context);
+  for(const [manifest,bytes] of [[before,oldBytes],[target,targetBytes]]){
+    context.state={systemReady:true,version:manifest.versions.tavern,commit:manifest.commit};fs.writeFileSync(file,bytes);calls.length=0;
+    assert.equal((await verify()).compatible,true);
+    assert.equal(calls.at(-1).command,'inspect-current-update');
+    assert.equal(calls.at(-1).identity.version,manifest.versions.tavern);
+    assert.equal(calls.at(-1).identity.commit,manifest.commit);
+    assert.equal(calls.at(-1).identity.manifestSha256,digest(bytes));
+  }
+  fs.writeFileSync(file,targetBytes+' ');calls.length=0;
+  assert.equal((await verify()).compatible,false);assert.equal(calls.length,1,'unbound bytes never become a compatibility claim');
+  fs.writeFileSync(file,targetBytes);context.state.commit='c'.repeat(40);calls.length=0;
+  assert.equal((await verify()).compatible,false);assert.equal(calls.length,1);
+});
+
 test('GUI telemetry distinguishes explicit recovery from a failed update with automatic rollback',()=>{
   const node=ast.body.find(value=>value.type==='FunctionDeclaration'&&value.id.name==='finishOperationTelemetry');
   assert.ok(node);const outcomes=[],records=[],operationErrors=new Map(),primaryFailure={code:'ORIGINAL_FAILURE'};
@@ -34,6 +92,28 @@ test('GUI telemetry distinguishes explicit recovery from a failed update with au
   assert.equal(original.primaryFailure,primaryFailure);assert.equal(operationErrors.has('fixture'),false);
   assert.equal(records.length,3);assert.ok(records.every(record=>record.event==='operation.result'));
   assert.equal(records.at(-1).fields.verification,'failed');
+});
+
+test('APP-only handoff clears its old installer resume target only after actual core verification and helper finalization',async()=>{
+  let branch;
+  function find(node){if(!node||typeof node!=='object')return;
+    if(node.type==='IfStatement'&&source.slice(node.test.start,node.test.end)==='payload.launcherOnly===true')branch=node;
+    for(const value of Object.values(node)){if(Array.isArray(value))value.forEach(find);else if(value&&typeof value==='object')find(value);}}
+  find(ast);assert.ok(branch);
+  for(const outcome of ['success','core-failed','helper-failed']){
+    let state={phase:'update',error:'old error',task:'old task',resumeTarget:'v2.5.5'},writes=0,finalized=0;
+    const context=vm.createContext({payload:{launcherOnly:true,port:8799},prepared:{tag:'v2.5.5',manifest:{versions:{tavern:'2.5.2'}}},
+      context:{snapshot:{handoffRef:'/owned/job'}},releases:{compare:(a,b)=>a===b?0:1},event:{sender:{}},
+      runBridge:async()=>({version:'2.5.2',systemReady:true,updateVerified:outcome!=='core-failed'}),
+      launcherError:message=>new Error(message),launcherRecoveryOptions:()=>({}),spawnMaintenance(){},app:{getVersion:()=> '2.2.3'},
+      launcherUpdate:{finalize:async()=>{finalized++;if(outcome==='helper-failed')throw Error('helper not final');}},
+      readInstallerState:()=>state,writeInstallerState:value=>{writes++;state=value;}});
+    const run=()=>vm.runInContext('(async()=>{'+source.slice(branch.start,branch.end)+'})()',context);
+    if(outcome==='success'){const result=await run();assert.equal(result.verification,'confirmed');assert.equal(writes,1);
+      assert.equal(state.resumeTarget,null);assert.equal(state.error,'');assert.equal(state.task,'');assert.equal(state.phase,'ready');}
+    else{await assert.rejects(run);assert.equal(writes,0,'unconfirmed handoff must retain the recovery projection');assert.equal(state.resumeTarget,'v2.5.5');}
+    assert.equal(finalized,outcome==='core-failed'?0:1);
+  }
 });
 
 test('actual first-install handler selects the latest complete release; local candidates stay offline', async () => {

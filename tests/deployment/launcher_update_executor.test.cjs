@@ -9,7 +9,7 @@ const operationId='df489037-5361-4b6a-b02a-8c6cf6cb256e';
 const fixture=()=>({operationId,target:{releasePlan:{releaseManifest:{versions:{tavern:'2.4.0'}}}},
   snapshot:{handoffRef:'/owned/job'},stage:async()=>{},effectStates:[],effect:async function(state){this.effectStates.push(state);}});
 
-async function sealedFixture(t){
+async function sealedFixture(t,{appOnly=false}={}){
   const releases=require('../installer/desktop/releases'),{createLocalRelease}=require('../installer/desktop/local-release');
   const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-update-acceptance-')));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
@@ -19,6 +19,9 @@ async function sealedFixture(t){
   const manifest={schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.4.0'},launcherVersion:'2.1.2',
     launcherCapabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2},
     bootstrap:{managedComponents:1,minimumLauncherVersion:'2.1.2',sha256:sha('bootstrap')}};
+  if(appOnly)Object.assign(manifest,{publication:{schema:'nora-component-publication/1',tag:'v2.4.1'},
+    coreRelease:{schema:'nora-core-reference/1',tag:'v2.4.0',commit:'c'.repeat(40),manifests:{
+      [`${process.platform}-${process.arch}`]:{asset:`${process.platform}-${process.arch}-release-manifest.json`,sha256:sha('bound original core'),size:19}}}});
   const bytes={'release-manifest.json':JSON.stringify(manifest),'tavern-updater-bootstrap.py':'bootstrap'};
   bytes.SHA256SUMS=Object.entries(bytes).map(([name,value])=>`${sha(value)}  ${name}`).join('\n');
   for(const [name,value] of Object.entries(bytes))fs.writeFileSync(path.join(local,name),value);
@@ -29,8 +32,24 @@ async function sealedFixture(t){
   assert.equal(releases.validatePlan(plan,options).commit,manifest.commit);
   assert.equal(plan.manifestRef.schema,'nora-operation-manifest/1');
   assert.equal(fs.readFileSync(path.join(operationDirectory,plan.manifestRef.file),'utf8'),bytes['release-manifest.json']);
-  return {...fixture(),target:{releasePlan:plan}};
+  return {...fixture(),target:{releasePlan:plan},validationOptions:options};
 }
+
+for(const route of ['apply','resumeCommitted'])test(`shared ${route} validates the referenced core commit independently from product source`,async t=>{
+  const releases=require('../installer/desktop/releases'),context=await sealedFixture(t,{appOnly:true}),plan=context.target.releasePlan;
+  for(const commit of ['c'.repeat(40),plan.commit]){
+    let finalized=false;
+    const result={operationVerified:true,updateVerified:true,systemReady:true,version:plan.version,commit};
+    const executor=create({compare:releases.compare,
+      resolveCommit:owned=>releases.coreIdentity(releases.validatePlan(owned.target.releasePlan,context.validationOptions)).commit,
+      bridge:async command=>command==='operation-effects'?{effects:{operationId,status:'committed',canResume:true}}:result,
+      finalizeLauncher:async()=>{finalized=true;}});
+    const action=route==='apply'?executor.apply(context,{releaseDir:'/owned/release',target:plan.version})
+      :executor.resumeCommitted(context,{hasTransaction:true});
+    if(commit===plan.commit){await assert.rejects(action,{code:'VERIFICATION_FAILED'});assert.equal(finalized,false);}
+    else{assert.equal(await action,result);assert.equal(finalized,true);}
+  }
+});
 
 for(const route of ['apply','resumeCommitted'])test(`shared ${route} rejects a different commit under a real sealed plan before retiring the APP backup`,async t=>{
   const context=await sealedFixture(t),calls=[];

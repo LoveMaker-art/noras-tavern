@@ -101,8 +101,10 @@ jobs:
             exit 1
           fi
           source_sha="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")" || exit 1
-          test "$RELEASE_TAG" = "v$(git show "$source_sha:app/.tavern-release-version")" || exit 1
+          core_version="$(git show "$source_sha:app/.tavern-release-version")"
+          [[ "$core_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || exit 1
           echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "core_version=$core_version" >> "$GITHUB_OUTPUT"
           echo "Product commit: $source_sha; publisher commit: $GITHUB_SHA"
       - name: Check publication source contracts before downloading accepted packages
         run: node --test tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/launcher-release-notes.test.cjs tests/sourceforge-publishing.test.mjs tests/publication-providers.test.mjs tests/release-publication.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-transport.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-credentials.test.mjs
@@ -110,6 +112,7 @@ jobs:
         shell: bash
         env:
           SOURCE_SHA: ${{ steps.identity.outputs.source_sha }}
+          SOURCE_CORE_VERSION: ${{ steps.identity.outputs.core_version }}
         run: |
           set -euo pipefail
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/source-run.json"
@@ -117,6 +120,7 @@ jobs:
           timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --paginate --slurp > "$RUNNER_TEMP/published-releases.json"
           node tooling/release/publication-source.cjs delivery "$RUNNER_TEMP/source-run.json" "$RUNNER_TEMP/source-artifacts.json" "$SOURCE_SHA" "$GITHUB_REPOSITORY" "$SOURCE_RUN" "$DELIVERY_MODE" "$RUNNER_TEMP/accepted-source" "$RELEASE_TAG" "$RUNNER_TEMP/published-releases.json"
           node tooling/release/verify-launcher-release.cjs "$RUNNER_TEMP/accepted-source/delivery" "$RELEASE_TAG" "$SOURCE_SHA" "$DELIVERY_MODE"
+          node -e 'const fs=require("node:fs"),path=require("node:path"),assert=require("node:assert/strict");const manifest=JSON.parse(fs.readFileSync(path.join(process.env.RUNNER_TEMP,"accepted-source/delivery/release-manifest.json")));assert.equal(manifest.versions.tavern,process.env.SOURCE_CORE_VERSION,"Accepted core differs from fixed source commit");'
       - name: Restore the original plan and latest checkpoint without changing their identity
         if: inputs.state_source_run != ''
         shell: bash

@@ -109,6 +109,14 @@ function restoreDiagnostic(fields) {
   return error;
 }
 
+function linuxCreationTime(pid,stat,boot,ticks){
+  const close=stat.lastIndexOf(')'),fields=stat.slice(close+2).trim().split(/\s+/);
+  const start=Number(fields[19]),btime=/^btime\s+(\d+)$/m.exec(boot);
+  if(!stat.startsWith(String(pid)+' (')||close<0||!btime||!/^\d+$/.test(fields[19]||'')
+    ||!Number.isSafeInteger(start)||start<0||Number(btime[1])<1||!Number.isSafeInteger(ticks)||ticks<1||ticks>1000000)
+    throw failed('DELEGATION_IDENTITY_UNKNOWN','Linux executor creation time could not be established');
+  return Number(btime[1])+start/ticks;
+}
 async function creationIdentity(pid=process.pid) {
   if(!Number.isSafeInteger(pid)||pid<1)throw failed('DELEGATION_IDENTITY_UNKNOWN','Executor PID is invalid');
   let value,precisionSeconds;
@@ -122,6 +130,15 @@ async function creationIdentity(pid=process.pid) {
       // Keep the exact identity check and bounded query budget.
       {windowsHide:true,timeout:30000});
     value=Number(result.stdout.trim())/1000;precisionSeconds=0.001;
+  } else if(process.platform==='linux') {
+    const statFile=`/proc/${pid}/stat`,before=fs.readFileSync(statFile,'utf8');
+    const result=await run('/usr/bin/getconf',['CLK_TCK'],{timeout:10000});
+    const ticks=Number(result.stdout.trim()),boot=fs.readFileSync('/proc/stat','utf8');
+    value=linuxCreationTime(pid,before,boot,ticks);
+    // Do not bind a recycled PID observed while reading the clock frequency.
+    if(value!==linuxCreationTime(pid,fs.readFileSync(statFile,'utf8'),boot,ticks))
+      throw failed('DELEGATION_IDENTITY_UNKNOWN','Linux executor changed while reading its birth identity');
+    precisionSeconds=1/ticks;
   } else throw failed('DELEGATION_UNSUPPORTED','Operation delegation is unsupported on this platform');
   if(!Number.isFinite(value) || value<=0)throw failed('DELEGATION_IDENTITY_UNKNOWN','Executor creation time could not be established');
   return {pid,creationTime:value,precisionSeconds};
@@ -229,4 +246,4 @@ async function connect(options={}) {
   };
   return result;
 }
-module.exports={connect,creationIdentity,projectDiagnostic,restoreDiagnostic};
+module.exports={connect,creationIdentity,projectDiagnostic,restoreDiagnostic,linuxCreationTime};

@@ -11,6 +11,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 import uuid
 
 RECEIPT = 'nora-update-backup.json'
@@ -277,13 +278,65 @@ def _io_path(path):
     return Path(value)
 
 
+def _atomic_file_identity(path):
+    try:
+        item=os.lstat(path)
+    except FileNotFoundError:
+        return None
+    return (item.st_dev,item.st_ino,item.st_mode,item.st_size,item.st_mtime_ns,item.st_ctime_ns,
+            getattr(item,'st_file_attributes',0))
+
+
+def _publish_json(source, target):
+    # Windows readers can briefly prevent replacing a closed JSON file. Keep
+    # the original and complete temporary file intact; never truncate in place.
+    # A changed source/target or a persistent denial remains a real failure.
+    source_identity=_atomic_file_identity(source)
+    target_identity=_atomic_file_identity(target)
+    deadline=time.monotonic()+2.0
+    delay=.01
+    while True:
+        try:
+            os.replace(source,target)
+            return
+        except OSError as error:
+            if sys.platform!='win32' or getattr(error,'winerror',None) not in (5,32,33):
+                raise
+            if (_atomic_file_identity(source)!=source_identity
+                    or _atomic_file_identity(target)!=target_identity
+                    or time.monotonic()>=deadline):
+                raise
+            time.sleep(min(delay,max(0,deadline-time.monotonic())))
+            # Check again after waiting, before granting another replace.
+            if (_atomic_file_identity(source)!=source_identity
+                    or _atomic_file_identity(target)!=target_identity):
+                raise
+            delay=min(.1,delay*2)
+
+
 def atomic_json(path, value):
     path=_io_path(path);path.parent.mkdir(parents=True,exist_ok=True)
     fd,name=tempfile.mkstemp(prefix='.'+path.name+'.',dir=path.parent)
     try:
         with os.fdopen(fd,'w',encoding='utf-8') as stream:
             json.dump(value,stream,ensure_ascii=False,indent=2);stream.flush();os.fsync(stream.fileno())
-        os.replace(name,path)
+        _publish_json(name,path)
+    finally:
+        if os.path.lexists(name):os.unlink(name)
+
+
+def copy_startup_backup(source, target, expected):
+    """Publish a complete verified settings backup, never a partial file."""
+    source,target=_io_path(source),_io_path(target)
+    target.parent.mkdir(parents=True,exist_ok=True)
+    fd,name=tempfile.mkstemp(prefix='.nora-settings-',dir=target.parent);os.close(fd)
+    try:
+        shutil.copyfile(source,name)
+        with open(name,'r+b') as stream:stream.flush();os.fsync(stream.fileno())
+        shutil.copystat(source,name)
+        if digest(name)!=expected:raise RuntimeError('自动设置备份复制校验失败')
+        if os.path.lexists(target):raise RuntimeError('设置备份目标已出现，未覆盖现有文件')
+        os.replace(name,target)
     finally:
         if os.path.lexists(name):os.unlink(name)
 
@@ -451,7 +504,9 @@ class Journal:
         targets=[]
         for name,source,target in swaps:
             target=Path(target).absolute()
-            namespace='install' if target.is_relative_to(root) else 'hermes'
+            # Independent installations may keep Hermes and Tavern in the
+            # same root. The declared, whitelisted target owns its namespace.
+            namespace='install' if name in ('app','ops','nora-mcp') else 'hermes'
             owner=root if namespace=='install' else home
             relative=target.relative_to(owner).as_posix()
             if not allowed_target(name,namespace,relative):raise RuntimeError('恢复计划含未受管目标：'+name)
@@ -516,7 +571,12 @@ class Journal:
         before=self.plan.get('before')
         if not isinstance(before,dict) or not isinstance(before.get('version'),str) or not before['version']:
             raise RuntimeError('恢复计划缺少旧版本身份')
-        if any(type(before.get(key)) is not bool for key in ('running','gatewayRunning','clawchatConnected')):
+        standalone = before.get('scope') == 'standalone-tavern'
+        if standalone and (self.plan.get('lifecycle') is not None or (self.home/'nora-instance.json').exists()
+                           or (self.root/'tavern-updates/nora-system.json').exists()):
+            raise RuntimeError('独立恢复计划不能接管启动器管理的实例')
+        service_keys = ('running',) if standalone else ('running','gatewayRunning','clawchatConnected')
+        if any(type(before.get(key)) is not bool for key in service_keys):
             raise RuntimeError('恢复计划缺少原服务状态')
         receipt_path=safe_path(self.backup,'host/update-receipts/installed.json')
         if read_object(receipt_path).get('version')!=before['version']:
@@ -611,10 +671,40 @@ class Journal:
             if full and state and item.get('phase')=='restored':
                 for relative,expected_file in item.get('storyInventory',{}).items():
                     current=safe_path(target,relative)
+                    if not _io_path(current).exists() and self.startup_backup(relative,expected_file) is not None:
+                        continue  # Verified archive remains recoverable after a restart cut.
                     if not _io_path(current).is_file() or digest(current)!=expected_file:raise RuntimeError('恢复后原有剧情数据发生变化')
             elif full and digest(target)!=expected:raise RuntimeError('原目标内容与旧备份不一致')
         elif current_id is not None and current_id!=item.get('newIdentity'):
             raise RuntimeError('新建目标身份未知，未覆盖文件')
+
+    def startup_backup(self,relative,expected,*,prepare=False):
+        parts=Path(relative).parts
+        # SillyTavern rotates exactly these automatic settings backups at
+        # startup. Preserve their bytes, rather than weakening story checks.
+        if (len(parts)!=4 or parts[0]!='native' or parts[2]!='backups'
+                or re.fullmatch('settings_'+re.escape(parts[1])+r'_[0-9]{8}-[0-9]{6}\.json',parts[3]) is None):
+            return None
+        archive=safe_path(self.backup,'startup-settings-backups/'+Path(relative).as_posix())
+        if _io_path(archive).exists():
+            if not _io_path(archive).is_file() or digest(archive)!=expected:
+                raise RuntimeError('启动前封存的设置备份已变化，已保留现场')
+            return archive
+        if not prepare:return None
+        for root in (self.root/'tavern-state',self.backup/'state',self.backup/'failed-new/state'):
+            source=safe_path(root,Path(relative).as_posix())
+            if _io_path(source).is_file() and digest(source)==expected:
+                copy_startup_backup(source,archive,expected)
+                return archive
+        raise RuntimeError('无法封存原有自动设置备份，未启动旧版本')
+
+    def preserve_startup_backups(self,*,restore=False):
+        for relative,expected in (self.plan.get('state') or {}).get('storyInventory',{}).items():
+            saved=self.startup_backup(relative,expected,prepare=not restore)
+            if saved is None or not restore:continue
+            target=safe_path(self.root/'tavern-state',Path(relative).as_posix())
+            if not _io_path(target).exists():
+                copy_startup_backup(saved,target,expected)
 
     def swap(self,name):
         item=next(i for i in self.plan['targets'] if i['name']==name)
@@ -1061,14 +1151,17 @@ def recover(home,root,*,stop,resume,verify):
         # Authoritative backup and managed bytes are checked while services are
         # offline. Running code may legitimately create cache/generated files.
         journal.validate()
+        journal.preserve_startup_backups()
         plan['phase']='resuming-services';journal.save();resume(plan,backup)
+        journal.preserve_startup_backups(restore=True)
         proof=verify(plan,backup)
         before=plan['before']
         if not isinstance(proof,dict) or proof.get('version')!=before['version']:
             raise RuntimeError('恢复后的旧版本核验失败')
-        for key in ('running','gatewayRunning','clawchatConnected'):
+        standalone = before.get('scope') == 'standalone-tavern'
+        for key in (('running',) if standalone else ('running','gatewayRunning','clawchatConnected')):
             if type(proof.get(key)) is not bool:raise RuntimeError('恢复后缺少明确服务状态：'+key)
-        for key in ('running','gatewayRunning'):
+        for key in (('running',) if standalone else ('running','gatewayRunning')):
             if before[key]!=proof[key]:raise RuntimeError('未恢复原服务状态：'+key)
         if before.get('clawchatConnected') and not proof['clawchatConnected']:
             raise RuntimeError('未恢复原服务状态：clawchatConnected')

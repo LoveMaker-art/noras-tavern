@@ -21,6 +21,39 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UpdaterSkillEnvironmentTests(unittest.TestCase):
+    def test_plain_python_skill_does_not_write_cache_into_authenticated_ops(self):
+        with tempfile.TemporaryDirectory(prefix='nora plain skill ') as directory:
+            root = Path(directory).resolve()
+            updater = root / 'apps/tavern-ops/updater'
+            updater.mkdir(parents=True)
+            (updater / 'bootstrap.py').write_text(
+                'def resolve_update_target(home, managed_home=None):\n    return home, home\n')
+            (updater / 'task.py').write_text('# transport endpoint\n')
+            program = ('import runpy, pathlib; namespace=runpy.run_path(' + repr(str(Path(SPEC.origin))) + '); '
+                'namespace["standalone_entry"](pathlib.Path(' + repr(str(root)) + ')); '
+                'print(__import__("json").dumps([str(p) for p in pathlib.Path(' + repr(str(updater)) + ').rglob("*.pyc")]))')
+            environment = {k: v for k, v in os.environ.items() if k != 'PYTHONDONTWRITEBYTECODE'}
+            environment['TAVERN_DATA_ROOT'] = str(root)
+            result = subprocess.run([sys.executable, '-c', program], env=environment,
+                capture_output=True, text=True, timeout=15, check=True)
+            self.assertEqual(json.loads(result.stdout), [], 'normal skill invocation must preserve the ops inventory')
+
+    def test_installed_nora_update_does_not_require_a_launcher_endpoint(self):
+        with tempfile.TemporaryDirectory(prefix='nora update without GUI ') as directory:
+            root = Path(directory).resolve()
+            home, _ = self.managed(directory)
+            (root / 'installer/skill-update/endpoint.json').unlink()
+            entry = root / 'tavern/apps/tavern-ops/updater/task.py'
+            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), \
+                    patch.object(sys, 'argv', ['update.py', '--apply', '--confirm']), \
+                    patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
+                    patch.object(MODULE, 'standalone_entry', return_value=(entry, root / 'tavern')), \
+                    patch.object(MODULE.subprocess, 'call', return_value=0) as invoke:
+                with self.assertRaises(SystemExit) as result:
+                    MODULE.main()
+            self.assertEqual(result.exception.code, 0)
+            self.assertEqual(invoke.call_count, 1, 'Nora must invoke the independent updater while GUI is closed')
+
     def test_managed_installation_does_not_fall_back_to_system(self):
         with tempfile.TemporaryDirectory() as directory:
             home = Path(directory)
@@ -77,37 +110,71 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             'schema': 1, 'session': 'current', 'noraHome': str(root), 'updatedAt': int(time.time() * 1000)}))
         return home, target
 
-    def test_managed_handoff_uses_actual_instance_root_and_never_runs_a_process(self):
-        with tempfile.TemporaryDirectory(prefix='nora with spaces ') as directory:
-            home, target = self.managed(directory)
-            with patch.object(MODULE.time, 'monotonic', side_effect=[0, 9]), patch.object(MODULE.subprocess, 'call') as call:
-                result = MODULE.managed_request(home, 'update')
-            self.assertEqual(result['status'], 'queued')
-            self.assertEqual(result['action'], 'update')
-            self.assertEqual(json.loads((target / 'request.json').read_text())['id'], result['id'])
-            call.assert_not_called()
-            self.assertEqual(MODULE.managed_request(home, 'check')['id'], result['id'])
-            self.assertEqual(MODULE.managed_request(home, 'status')['id'], result['id'])
-
-    def test_offline_launcher_or_wrong_instance_fails_without_a_task(self):
+    def test_wrong_managed_target_is_rejected_before_execution(self):
         with tempfile.TemporaryDirectory() as directory:
-            home, target = self.managed(directory)
-            (target / 'endpoint.json').unlink()
-            with self.assertRaisesRegex(RuntimeError, '启动器'):
-                MODULE.managed_request(home, 'update')
-            self.assertFalse((target / 'request.json').exists())
+            home, _ = self.managed(directory)
             instance = json.loads((home / 'nora-instance.json').read_text())
             instance['installRoot'] = str(home / 'wrong')
             (home / 'nora-instance.json').write_text(json.dumps(instance))
             with self.assertRaisesRegex(RuntimeError, 'Conflicting'):
                 MODULE.managed_root(home)
 
-    def test_standalone_calls_bootstrap_with_verified_paths_not_raw_updater(self):
+    def test_status_calls_shared_query_without_a_gui_receiver_or_hermes_python(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, legacy = self.managed(directory)
+            (legacy / 'endpoint.json').unlink()
+            root = Path(directory).resolve()
+            job_id = '6f110f8b-7671-4840-b7b3-740a42d2d923'
+            operation_id = 'f94fe932-d9a1-47d9-88cc-44aac4137062'
+            job = root / 'installer/update-jobs' / job_id
+            job.mkdir(parents=True)
+            (job / 'operation-ref.json').write_text(json.dumps({'operationId': operation_id}))
+            operation = root / 'installer/operations' / operation_id
+            operation.mkdir(parents=True)
+            expected = {'state': 'succeeded', 'result': {'version': '2.5.2'}}
+            (operation / 'operation.json').write_text(json.dumps(expected))
+            entry = job / 'runner/ops/installer/desktop/updater-task.js'
+            entry.parent.mkdir(parents=True); entry.write_text('// fixed query entry')
+            node = root / 'node'; node.write_text('test Node selection')
+            reply = {'status':'succeeded','requestId':job_id,'settled':True,'busy':False,'operation':expected}
+            with patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE':str(node)}), \
+                    patch.object(MODULE, 'select_python', side_effect=AssertionError('no Hermes Python probe')), \
+                    patch.object(MODULE, 'query_entries', return_value=[entry]), \
+                    patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,json.dumps(reply),'')) as query:
+                actual = MODULE.task_status(home)
+            self.assertEqual(actual['requestId'], job_id)
+            self.assertEqual(actual['operation'], expected)
+            self.assertEqual(query.call_args.args[0], [str(node),str(entry)])
+            self.assertEqual(json.loads(query.call_args.kwargs['input']), {'action':'status','noraHome':str(root)})
+            self.assertFalse((legacy / 'request.json').exists())
+            for old_reply in ({'status':'succeeded','requestId':job_id,'operation':expected},
+                              {'status':'failed','requestId':job_id,'settled':False,'busy':True,'operation':expected}):
+                with patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE':str(node)}), \
+                        patch.object(MODULE, 'query_entries', return_value=[entry]), \
+                        patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([],0,json.dumps(old_reply),'')):
+                    self.assertEqual(MODULE.task_status(home)['status'],'inspection-required')
+
+    def test_status_delegates_job_discovery_to_the_shared_reader(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home, _ = self.managed(directory)
+            root = Path(directory).resolve()
+            entry = root / 'tavern/apps/tavern-ops/installer/desktop/updater-task.js'
+            entry.parent.mkdir(parents=True); entry.write_text('// selected trusted reader')
+            node = root / 'node'; node.write_text('test Node selection')
+            reply = {'status': 'none', 'settled': True, 'busy': False}
+            with patch.dict(os.environ, {'TAVERN_NODE_EXECUTABLE': str(node)}), \
+                    patch.object(MODULE, 'query_entries', return_value=[entry]), \
+                    patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0, json.dumps(reply), '')) as query:
+                self.assertEqual(MODULE.task_status(home), reply)
+            query.assert_called_once()
+            self.assertEqual(json.loads(query.call_args.kwargs['input']), {'action': 'status', 'noraHome': str(root)})
+
+    def test_standalone_calls_shared_task_with_verified_paths(self):
         with tempfile.TemporaryDirectory(prefix='nora 中文 ') as directory:
             root = Path(directory).resolve()
             home = root / 'home'
             home.mkdir()
-            entry = root / 'tavern/apps/tavern-ops/updater/bootstrap.py'
+            entry = root / 'tavern/apps/tavern-ops/updater/task.py'
             with patch.dict(os.environ, {'HERMES_HOME': str(home)}), \
                     patch.object(sys, 'argv', ['update.py', '--apply', '--confirm']), \
                     patch.object(MODULE, 'select_python', return_value=os.path.abspath(sys.executable)), \
@@ -135,11 +202,16 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
 
     def test_status_survives_a_broken_hermes_interpreter(self):
         with tempfile.TemporaryDirectory() as directory:
-            home, target = self.managed(directory)
-            (target / 'request.json').write_text(json.dumps({'status': 'error', 'error': 'test failure'}))
-            with patch.dict(os.environ, {'HERMES_HOME': str(home)}), \
+            home, _ = self.managed(directory)
+            root = Path(directory).resolve()
+            node = root / 'node'; node.write_text('test Node selection')
+            entry = root / 'trusted-reader.js'; entry.write_text('// manifest-verified fixture')
+            reply = {'status': 'error', 'settled': True, 'busy': False, 'error': 'test failure'}
+            with patch.dict(os.environ, {'HERMES_HOME': str(home), 'TAVERN_NODE_EXECUTABLE': str(node)}), \
                     patch.object(sys, 'argv', ['update.py', '--status']), \
                     patch.object(MODULE, 'select_python', side_effect=AssertionError('no interpreter needed')), \
+                    patch.object(MODULE, 'query_entries', return_value=[entry]), \
+                    patch.object(MODULE.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, json.dumps(reply), '')), \
                     patch('builtins.print') as output:
                 with self.assertRaises(SystemExit) as result:
                     MODULE.main()

@@ -580,3 +580,71 @@ test('CLI drains closed failure logs after the basic event queue has already bee
   assert.equal(drained.length,1);assert.equal(chunks.length,1);assert.ok(chunks[0].final);
   assert.match(chunks[0].text,/native start failed/);
 });
+
+test('already-current admission checks real program bytes and rejects damaged or redirected trees',async t=>{
+  const f=fixture(t),sha=bytes=>require('node:crypto').createHash('sha256').update(bytes).digest('hex');
+  const manifest={artifacts:{}};
+  for(const [name,relative] of [['app/entry.js','tavern-runtime/entry.js'],['ops/task.py','tavern-ops/task.py'],['nora-mcp/dist/server.js','nora-mcp/dist/server.js']]){
+    const target=path.join(f.receipt.installRoot,'apps',relative);fs.mkdirSync(path.dirname(target),{recursive:true});fs.writeFileSync(target,name);
+    manifest.artifacts[name]=sha(name);
+  }
+  assert.equal(await cli.currentFilesMatch(f.receipt,manifest),true);
+  const app=path.join(f.receipt.installRoot,'apps/tavern-runtime'),file=path.join(app,'entry.js');
+  fs.writeFileSync(file,'different program, same version');assert.equal(await cli.currentFilesMatch(f.receipt,manifest),false);
+  fs.writeFileSync(file,'app/entry.js');
+  const moved=app+'-moved';fs.renameSync(app,moved);fs.symlinkSync(moved,app,process.platform==='win32'?'junction':'dir');
+  assert.equal(await cli.currentFilesMatch(f.receipt,manifest),false);
+});
+
+for(const managedInstallation of [true,false])for(const appOnly of [false,true])for(const receiptForm of appOnly?['raw','first-install','altered-source']:['raw'])test(`independent updater verifies an already-current ${managedInstallation?'managed':'standalone'} ${appOnly?'APP-only publication':'target'} (${receiptForm}) without a replacement transaction`,async t=>{
+  const f=fixture(t),sha=value=>require('node:crypto').createHash('sha256').update(value).digest('hex');
+  f.receipt.schema='nora-updater-control/1';f.receipt.managedInstallation=managedInstallation;
+  const release=path.join(f.home,'local-release'),app=path.join(f.receipt.installRoot,'apps/tavern-runtime/entry.js');
+  fs.mkdirSync(path.dirname(app),{recursive:true});fs.writeFileSync(app,'current verified program');fs.mkdirSync(release);
+  const commit='e'.repeat(40),version='2.5.2',manifest={schema:'tavern-release/v2',commit,versions:{tavern:version},
+    updaterCapabilities:require('../installer/desktop/releases').UPDATER_CAPABILITIES,
+    bootstrap:{managedComponents:1,minimumLauncherVersion:'99.0.0',sha256:sha('bootstrap')},artifacts:{'app/entry.js':sha('current verified program')}};
+  const original=JSON.stringify(manifest),receipt=path.join(f.receipt.installRoot,'tavern-updates/installed-manifest.json');
+  const installed=receiptForm==='raw'?original:JSON.stringify({...manifest,integratedDependencies:{schema:1,
+    platform:process.platform,arch:process.arch,archive:'dependencies.tar.gz',sha256:sha('dependencies'),size:12,
+    nodeMajor:24,roots:['app/engine/sillytavern/node_modules','nora-mcp/node_modules']}},null,2);
+  fs.mkdirSync(path.dirname(receipt),{recursive:true});fs.writeFileSync(receipt,installed);
+  if(managedInstallation){
+    // File presence selects the existing healthy-managed route. Service health
+    // is the explicit adapter result below, not claimed from these placeholders.
+    for(const name of ['native-runtime.json','native_lifecycle.py'])fs.writeFileSync(path.join(path.dirname(app),name),'fixture');
+    const python=path.join(f.receipt.hermesHome,'hermes-agent/venv',process.platform==='win32'?'Scripts/python.exe':'bin/python3');
+    fs.mkdirSync(path.dirname(python),{recursive:true});fs.writeFileSync(python,'fixture');
+  }
+  const files={'release-manifest.json':appOnly?JSON.stringify({...manifest,commit:'f'.repeat(40),
+    publication:{schema:'nora-component-publication/1',tag:'v2.5.3'},launcherVersion:'2.2.3',
+    artifacts:{'ops/new-runner.js':sha('APP source is different')},
+    coreRelease:{schema:'nora-core-reference/1',tag:'v2.5.2',commit,manifests:{[`${process.platform}-${process.arch}`]:{
+      asset:`${process.platform}-${process.arch}-release-manifest.json`,sha256:sha(original),size:Buffer.byteLength(original)}}}}):original,
+    'tavern-updater-bootstrap.py':'bootstrap',...(appOnly?{[`${process.platform}-${process.arch}-release-manifest.json`]:
+      receiptForm==='altered-source'?original.replace(sha('current verified program'),'0'.repeat(64)):original}:{})};
+  files.SHA256SUMS=Object.entries(files).map(([name,value])=>sha(value)+'  '+name).join('\n');
+  for(const [name,value] of Object.entries(files))fs.writeFileSync(path.join(release,name),value);
+  const actual={version,commit,systemReady:true,running:false,gatewayRunning:false,noraHome:f.home,
+    hermesHome:f.receipt.hermesHome,installRoot:f.receipt.installRoot,port:f.receipt.port,
+    ...(!managedInstallation?{standalone:true,gatewayManaged:false,gatewayRunning:null}:{})},calls=[];
+  const operation=await cli.execute({receiptPath:'fixture',request:f.request('update',['--release-dir',release])},
+    {client:'updater',validate:async()=>f.receipt,lock:f.lock,telemetry:false,
+      policy:{observe:async()=>({effectState:'untouched',recoveryOutcome:'not-required'})},run:async(_context,_target,args)=>{
+        const command=args[8];calls.push(command);
+        if(command==='status'||command==='repair-preflight')return actual;
+        if(command==='verify-current-update')return {...actual,updateVerified:true};
+        assert.fail('An already-current target must not prepare or apply: '+command);
+      }});
+  if(receiptForm==='altered-source'){
+    assert.equal(operation.state,'failed');assert.equal(operation.effectState,'untouched');
+    assert.equal(operation.result?.noUpdate,undefined);
+    assert.deepEqual(calls,[managedInstallation?'status':'repair-preflight']);
+  }else{
+  assert.equal(operation.state,'succeeded',fs.readFileSync(path.join(f.receipt.installerDirectory,'install.log'),'utf8'));assert.equal(operation.verification,'confirmed');
+  assert.equal(operation.effectState,'untouched');assert.equal(operation.result.noUpdate,true);
+  assert.deepEqual(calls,[managedInstallation?'status':'repair-preflight','verify-current-update','status']);
+  }
+  assert.equal(fs.readFileSync(receipt,'utf8'),installed);
+  assert.equal(fs.readFileSync(app,'utf8'),'current verified program');
+});

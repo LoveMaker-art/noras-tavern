@@ -1,6 +1,132 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+
+const COMPONENT_VERSION=/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-beta\.(0|[1-9]\d*))?$/;
+// A first install records the verified dependency metadata in its local copy of
+// the manifest, then serializes it without the release file's final newline.
+// Keep this finite, reproducible representation separate from release identity.
+export function coreReceiptRepresentations(sourceBytes,{dependenciesBytes,dependencyEntry,platform,arch}={}) {
+    const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
+    const source=JSON.parse(sourceBytes),sourceManifestSha256=sha(sourceBytes);
+    const representations=[{kind:'release-bytes',sha256:sourceManifestSha256}];
+    if(dependenciesBytes!==undefined||dependencyEntry!==undefined){
+        assert.ok(dependenciesBytes&&dependencyEntry,'Missing authenticated dependency metadata');
+        assert.ok(dependenciesBytes.length>0&&dependenciesBytes.length<=4*1024*1024);
+        assert.equal(dependenciesBytes.length,dependencyEntry.size,'Dependency metadata size differs');
+        assert.equal(sha(dependenciesBytes),dependencyEntry.sha256,'Dependency metadata SHA differs');
+        const dependencies=JSON.parse(dependenciesBytes);
+        assert.equal(dependencies.schema,1);assert.equal(dependencies.platform,platform);assert.equal(dependencies.arch,arch);
+        assert.match(dependencies.archive||'',/^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.gz$/);
+        assert.match(dependencies.sha256||'',/^[a-f0-9]{64}$/);assert.ok(Number.isSafeInteger(dependencies.size)&&dependencies.size>0);
+        if(Object.hasOwn(source,'integratedDependencies'))assert.deepEqual(source.integratedDependencies,dependencies,'Core dependency declaration differs');
+        const installed=Object.hasOwn(source,'integratedDependencies')?source:{...source,integratedDependencies:dependencies};
+        representations.push({kind:'first-install',sha256:sha(JSON.stringify(installed,null,2))});
+    }
+    return {sourceManifestSha256,representations};
+}
+export function releasePublicationTag(identity) {
+    const core=identity.versions?.tavern ?? identity.version;
+    if(typeof core!=='string'||!COMPONENT_VERSION.test(core))throw new Error('Missing canonical core version');
+    if(!Object.hasOwn(identity,'publication'))return `v${core}`;
+    const value=identity.publication;
+    if(!value||Object.keys(value).length!==2||value.schema!=='nora-component-publication/1'
+        ||typeof value.tag!=='string'||!value.tag.startsWith('v')||!COMPONENT_VERSION.test(value.tag.slice(1)))
+        throw new Error('Invalid component publication identity');
+    return value.tag;
+}
+
+// The root describes the current product/APP and maintenance runner. Only this
+// exact reference may bind an unchanged, separately sealed core payload.
+export function coreReleaseIdentity(product,platform) {
+    if(!Object.hasOwn(product,'coreRelease'))return null;
+    const value=product.coreRelease,platforms=['darwin-arm64','darwin-x64','win32-x64'];
+    const exact=(item,keys)=>item&&typeof item==='object'&&!Array.isArray(item)
+        &&Object.keys(item).sort().join(',')===[...keys].sort().join(',');
+    if(!product.publication||!exact(value,['schema','tag','commit','manifests'])||value.schema!=='nora-core-reference/1'
+        ||!/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value.tag||'')
+        ||!/^[a-f0-9]{40}$/.test(value.commit||'')||!value.manifests||Array.isArray(value.manifests)
+        ||!Object.keys(value.manifests).length||Object.keys(value.manifests).some(name=>!platforms.includes(name)))
+        throw new Error('Invalid explicit core release reference');
+    const publication=releasePublicationTag(product),before=value.tag.slice(1).split('.').map(Number),after=publication.slice(1).split('-')[0].split('.').map(Number);
+    const difference=before.findIndex((number,index)=>number!==after[index]);
+    if(difference<0||before[difference]>=after[difference])throw new Error('Core reference must retain an older publication');
+    for(const [target,entry] of Object.entries(value.manifests))if(!exact(entry,['asset','sha256','size'])
+        ||entry.asset!==`${target}-release-manifest.json`||!/^[a-f0-9]{64}$/.test(entry.sha256||'')
+        ||!Number.isSafeInteger(entry.size)||entry.size<1||entry.size>4*1024*1024)
+        throw new Error('Invalid bound platform core manifest');
+    if(platform!==undefined&&!value.manifests[platform])throw new Error('Missing bound platform core manifest');
+    return structuredClone(value);
+}
+export function assertCoreReleasePayload(product,bytes,platform,entry) {
+    const reference=coreReleaseIdentity(product,platform);
+    if(!reference)return null;
+    const declared=reference.manifests[platform],actual=JSON.parse(bytes);
+    if(entry&&JSON.stringify(Object.fromEntries(Object.entries(entry).sort()))!==JSON.stringify(Object.fromEntries(Object.entries(declared).sort())))
+        throw new Error('Platform system differs from its bound core manifest');
+    if(bytes.length!==declared.size||crypto.createHash('sha256').update(bytes).digest('hex')!==declared.sha256
+        ||actual.schema!=='tavern-release/v2'||actual.candidate!==false||actual.dirty!==false||actual.coreRelease
+        ||actual.commit!==reference.commit||actual.versions?.tavern!==(product.versions?.tavern??product.version)
+        ||releasePublicationTag(actual)!==reference.tag)throw new Error('Core payload differs from its explicit source identity');
+    return actual;
+}
+
+// No default compatibility is inferred from a version, build, or protocol.
+// Actual native acceptance and local identities remain separate release gates.
+export function configurePublication(identity,{publicationTag,updateCompatibility}={}) {
+    const result={...identity};
+    if(publicationTag!==undefined)result.publication={schema:'nora-component-publication/1',tag:publicationTag};
+    releasePublicationTag(result);
+    if(updateCompatibility!==undefined){
+        const value=updateCompatibility,capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
+        const list=(versions,{stable=false}={})=>Array.isArray(versions)&&versions.length>0&&versions.length<=32
+            &&new Set(versions).size===versions.length&&versions.every(version=>typeof version==='string'
+                &&COMPONENT_VERSION.test(version)&&(!stable||!version.includes('-')));
+        if(!value||value.schema!=='nora-core-launcher-compatibility/1'||value.coreVersion!==identity.versions?.tavern
+            ||Object.keys(value).some(key=>!['schema','coreVersion','launcherVersions','previousCoreVersions','capabilities'].includes(key))
+            ||!list(value.launcherVersions,{stable:true})
+            ||identity.launcherVersion!==undefined&&!value.launcherVersions.includes(identity.launcherVersion)
+            ||value.previousCoreVersions!==undefined&&!list(value.previousCoreVersions)
+            ||!value.capabilities||Object.keys(value.capabilities).length!==Object.keys(capabilities).length
+            ||Object.entries(capabilities).some(([name,expected])=>value.capabilities[name]!==expected))
+            throw new Error('Invalid explicitly supplied core/launcher compatibility declaration');
+        result.updateCompatibility=structuredClone(value);
+    }
+    return result;
+}
+
+export function workflowPublicationOptions(root,{publicationTag='',compatibilityFile='',refType,refName}={}) {
+    const coreVersion=fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim();
+    const launcherVersion=JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version;
+    const identity={versions:{tavern:coreVersion},launcherVersion};
+    const tag=releasePublicationTag(configurePublication(identity,{...(publicationTag?{publicationTag}:{})}));
+    if(refType==='tag'&&refName!==tag)throw new Error('Requested publication differs from the immutable Git tag');
+    let compatibilitySha256;
+    if(compatibilityFile){
+        if(typeof compatibilityFile!=='string'||!/^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(compatibilityFile))
+            throw new Error('Compatibility input must be a reviewed repository JSON under tooling/release/compatibility/');
+        let current=path.resolve(root);
+        for(const part of compatibilityFile.split('/')){
+            current=path.join(current,part);const stat=fs.lstatSync(current);
+            if(stat.isSymbolicLink()||(!stat.isDirectory()&&!stat.isFile()))throw new Error('Compatibility input cannot traverse links');
+        }
+        const stat=fs.lstatSync(current);
+        if(!stat.isFile()||stat.size<1||stat.size>64*1024)throw new Error('Compatibility JSON must be a bounded regular file');
+        const git=args=>execFileSync('git',args,{cwd:root,maxBuffer:128*1024});
+        const commit=git(['rev-parse','--verify','HEAD^{commit}']).toString().trim();
+        const tree=git(['ls-tree',commit,'--',compatibilityFile]).toString();
+        if(!tree.startsWith('100644 blob '))throw new Error('Compatibility input must be a committed regular JSON');
+        const bytes=fs.readFileSync(current),committed=git(['show',`${commit}:${compatibilityFile}`]);
+        if(!bytes.equals(committed))throw new Error('Compatibility input differs from the fixed source commit');
+        configurePublication(identity,{publicationTag:publicationTag||undefined,updateCompatibility:JSON.parse(bytes)});
+        compatibilitySha256=crypto.createHash('sha256').update(bytes).digest('hex');
+    }
+    return {tag,coreVersion,explicit:Boolean(publicationTag),compatibilityFile,
+        ...(compatibilitySha256?{compatibilitySha256}:{})};
+}
 
 // Released launchers through 2.0.2 predate the registered executor protocol.
 // Candidate labels may be reused locally; they cannot establish compatibility
@@ -73,15 +199,30 @@ export function writeSystemRelease({ release, payload, identity, launcherVersion
         fs.copyFileSync(file, path.join(output, asset));
         files[name] = { asset, sha256: fileDigest(file), size: fs.statSync(file).size };
     }
+    if(identity.coreRelease)assertCoreReleasePayload(identity,fs.readFileSync(path.join(payload,'release-manifest.json')),platform,files['release-manifest.json']);
     const manifest = {
         schema: 'nora-system/v1', version: identity.versions.tavern, commit: identity.commit,
         candidate: Boolean(identity.candidate), platform: runtime.platform, arch: runtime.arch,
-        channel: /-beta\./.test(identity.versions.tavern) ? 'beta' : 'stable',
+        channel: /-beta\./.test(releasePublicationTag(identity)) ? 'beta' : 'stable',
         launcherVersion, minimumLauncherVersion, components: identity.versions, files,
         launcherCapabilities:identity.launcherCapabilities,
+        updaterCapabilities:identity.updaterCapabilities,
+        ...(identity.publication?{publication:identity.publication}:{}),
+        ...(identity.coreRelease?{coreRelease:coreReleaseIdentity(identity,platform)}:{}),
+        ...(identity.updateCompatibility?{updateCompatibility:identity.updateCompatibility}:{}),
     };
     const bytes = JSON.stringify(manifest, null, 2) + '\n';
     fs.writeFileSync(path.join(output, `nora-system-${platform}.json`), bytes);
     fs.writeFileSync(path.join(payload, 'nora-system.json'), bytes);
     return output;
+}
+
+if(process.argv[1]&&path.resolve(process.argv[1])===fileURLToPath(import.meta.url)){
+    if(process.argv.length!==3||process.argv[2]!=='--workflow-options')throw new Error('Usage: system-release.mjs --workflow-options');
+    const result=workflowPublicationOptions(process.cwd(),{publicationTag:process.env.BUILD_PUBLICATION_TAG||'',
+        compatibilityFile:process.env.BUILD_COMPATIBILITY_FILE||'',refType:process.env.GITHUB_REF_TYPE,refName:process.env.GITHUB_REF_NAME});
+    const values={NORA_PUBLICATION_TAG:result.tag,NORA_COMPONENT_PUBLICATION_TAG:result.explicit?result.tag:'',
+        NORA_UPDATE_COMPATIBILITY_FILE:result.compatibilityFile};
+    if(process.env.GITHUB_ENV)fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([name,value])=>`${name}=${value}\n`).join(''));
+    if(process.env.GITHUB_OUTPUT)fs.appendFileSync(process.env.GITHUB_OUTPUT,`publication_tag=${result.tag}\ncore_version=${result.coreVersion}\n`);
 }

@@ -11,6 +11,27 @@ import { assertMaintenanceVersions, fileDigest, writeSystemRelease } from '../to
 import { NORA_SYSTEM_REQUIRED_FILES, LAUNCHER_CAPABILITIES, createReleaseSource, groupRuntimeModules } from '../tooling/release/release-source.mjs';
 import { buildCommand } from '../tooling/release/build-commands.mjs';
 
+test('publication generation is explicit and preserves real core identity in platform descriptors', async t => {
+    const { configurePublication, releasePublicationTag } = await import('../tooling/release/system-release.mjs');
+    const identity={versions:{tavern:'2.5.2'},launcherVersion:'2.2.3'};
+    assert.deepEqual(configurePublication(identity),identity);
+    const compatibility={schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.2',launcherVersions:['2.2.2','2.2.3'],
+        capabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}};
+    const updated=configurePublication(identity,{publicationTag:'v2.5.3',updateCompatibility:compatibility});
+    assert.equal(updated.versions.tavern,'2.5.2');assert.equal(releasePublicationTag(updated),'v2.5.3');
+    assert.deepEqual(updated.updateCompatibility,compatibility);
+    assert.equal(identity.publication,undefined);
+    assert.throws(()=>configurePublication(identity,{publicationTag:'v2.5.3',updateCompatibility:{...compatibility,coreVersion:'2.5.1'}}));
+    assert.throws(()=>releasePublicationTag({...updated,publication:{...updated.publication,unknown:true}}));
+    const f=fixture(t);
+    f.current.publication=updated.publication;f.current.updateCompatibility={...compatibility,coreVersion:f.current.versions.tavern,launcherVersions:[f.current.launcherVersion]};
+    f.write(f.release,'release-manifest.json',f.current);assemblePlatform(f);
+    const descriptor=JSON.parse(fs.readFileSync(path.join(f.output,'system-assets/nora-system-darwin-arm64.json')));
+    assert.deepEqual(descriptor.publication,updated.publication);
+    assert.deepEqual(descriptor.updateCompatibility,f.current.updateCompatibility);
+    assert.equal(descriptor.version,f.current.versions.tavern);
+});
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 test('incremental updater archive loads its actual runner without the full ops archive', t => {

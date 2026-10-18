@@ -23,11 +23,12 @@ async function dailyInteractionPage(browser,viewport,options={}){
       modelProviders:async()=>({ok:true,providers:[{id:'custom',label:'自定义模型',custom:true}]}),
       modelOptions:async()=>({ok:true,models:['test-model']}),
       operationLogs:async id=>({operationId:id||'22222222-2222-4222-8222-222222222222',records:[{id:'one',text:'[INFO] retained log',outcome:'succeeded'}],hasMore:false,missing:[]}),
+      ...(options.resumeReady?{resumeOperation:async request=>{window.resumeRequest=request;return {restarting:true};}}:{}),
       openInstallDirectory:async()=>{window.calls.push({name:'directory'});},
       openExternal:async()=>{window.calls.push({name:'external'});},
       openClawChatApp:async()=>({ok:true}),openClawChat:async()=>{},uninstall:async()=>{window.calls.push({name:'uninstall'});return new Promise(resolve=>{window.finishUninstall=resolve;});}};
   },options);
-  await page.goto(url);await page.locator(options.initialState?.retainedUninstallPending?'#copy':'.services').waitFor();
+  await page.goto(url);await page.locator(options.initialState?.retainedUninstallPending||options.initialState?.updateSequence?'#copy':'.services').waitFor();
   await page.evaluate(async()=>{await document.fonts.ready;await Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{})));});
   return page;
 }
@@ -229,6 +230,86 @@ test('update cooldown keeps retry disabled through polling while logs and return
     await page.waitForFunction(()=>[...document.querySelectorAll('button')].some(button=>button.textContent==='重新检查更新'&&!button.disabled),{},{timeout:7000});
     await page.getByRole('button',{name:'返回酒馆',exact:true}).click();
     await page.locator('.services').waitFor();assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+
+for(const both of [false,true])test(`the existing update button submits the fixed batch for ${both?'both components':'APP only'}`,async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{state:'available',available:true,updateSupported:true,
+      current:both?'2.4.2':'2.5.2',latest:'v2.5.2',releaseTag:'v2.5.3',launcherVersion:'2.2.2',launcherLatest:'2.2.3',
+      launcherUpdateAvailable:true,releaseAvailable:both}});
+    await page.evaluate(()=>{window.NoraLauncherBridge.update=async options=>{window.updateRequest=options;return {restarting:true};};});
+    await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
+    await page.getByRole('button',{name:'安装更新',exact:true}).click();
+    const request=await page.evaluate(()=>({...window.updateRequest,onEvent:undefined}));
+    assert.equal(request.tag,'v2.5.3');assert.equal(request.includeLauncher,both?true:undefined);assert.equal(request.launcherOnly,both?undefined:true);
+    assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+test('reopened compatible partial update explains both versions and retries the original operation',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const operationId='11111111-1111-4111-8111-111111111111';
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{initialState:{
+      operation:{operationId,kind:'update',state:'failed',effectState:'untouched',verification:'unconfirmed',
+        recoveryOutcome:'not-required',snapshotSequence:7,allowedActions:['retry','recheck'],busy:false,
+        primaryFailure:{message:'APP download unavailable',code:'RESOURCE_DOWNLOAD_FAILED'}},
+      updateSequence:{status:'partial',failed:'launcher',
+      message:'酒馆已更新；启动器更新失败，原启动器已恢复。',coreVersion:'2.5.2',launcherVersion:'2.2.2',releaseTag:'v2.5.3',operationId,snapshotSequence:7}}});
+    assert.match(await page.locator('#copy').innerText(),/更新部分完成/);
+    assert.match(await page.locator('#subcopy').innerText(),/2\.5\.2.*2\.2\.2/s);
+    await page.evaluate(()=>{
+      window.NoraLauncherBridge.recheckOperation=async options=>{
+        window.recheckRequest=options;window.state.operation={...window.state.operation,snapshotSequence:8};return {operation:window.state.operation};
+      };
+      window.NoraLauncherBridge.resumeOperation=async options=>{window.resumeRequest=options;return {restarting:true};};
+    });
+    await page.getByRole('button',{name:'重新检查',exact:true}).click();
+    assert.match(await page.locator('#copy').innerText(),/更新部分完成/);
+    await page.getByRole('button',{name:'重新尝试更新',exact:true}).click();
+    const request=await page.evaluate(()=>({...window.resumeRequest,onEvent:undefined}));
+    assert.equal(request.operationId,operationId);assert.equal(request.snapshotSequence,8);assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+test('a failed second phase immediately shows the canonical partial result',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{versionResult:{state:'available',available:true,updateSupported:true,
+      current:'2.4.3',latest:'v2.5.2',releaseTag:'v2.5.3',launcherVersion:'2.2.1',launcherLatest:'2.2.2',
+      launcherUpdateAvailable:true,releaseAvailable:true}});
+    await page.evaluate(()=>{window.NoraLauncherBridge.resumeOperation=async()=>({restarting:true});window.NoraLauncherBridge.update=async()=>{
+      const operation={operationId:'11111111-1111-4111-8111-111111111111',kind:'update',state:'rolled-back',
+        snapshotSequence:9,effectState:'restored',verification:'confirmed',recoveryOutcome:'restored-and-verified',
+        busy:false,allowedActions:['retry','recheck','logs']};
+      window.state.operation=operation;window.state.updateSequence={status:'partial',failed:'core',coreVersion:'2.4.3',launcherVersion:'2.2.2',
+        operation,operationId:operation.operationId,snapshotSequence:9,message:'启动器已更新；酒馆更新未完成，当前程序组合已核验可用。'};
+      const {allowedActions,...raw}=operation;throw {message:'更新部分完成',operation:raw};
+    };});
+    await page.locator('#moreButton').click();await page.locator('[data-action="update"]').click();
+    await page.getByRole('button',{name:'安装更新',exact:true}).click();
+    await page.getByText('更新部分完成。',{exact:true}).waitFor();
+    assert.match(await page.locator('#subcopy').innerText(),/2\.4\.3.*2\.2\.2/s);
+    assert.equal(await page.getByRole('button',{name:'重新尝试更新',exact:true}).isEnabled(),true);
+    assert.deepEqual(page.uiErrors,[]);
+  }finally{await browser.close();}
+});
+test('partial update retry uses its own core task when the latest task is a later shutdown',async()=>{
+  const browser=await chromium.launch({headless:true,executablePath:process.env.NORA_CHROMIUM||undefined});
+  try{
+    const operationId='11111111-1111-4111-8111-111111111111';
+    const core={operationId,kind:'update',state:'rolled-back',snapshotSequence:13,effectState:'restored',
+      verification:'confirmed',recoveryOutcome:'restored-and-verified',busy:false,allowedActions:['retry','recheck','logs']};
+    const page=await dailyInteractionPage(browser,{width:1120,height:680},{resumeReady:true,initialState:{
+      operation:{operationId:'22222222-2222-4222-8222-222222222222',kind:'shutdown',state:'succeeded',
+        snapshotSequence:4,busy:false,allowedActions:['logs']},
+      updateSequence:{status:'partial',failed:'core',operation:core,operationId,snapshotSequence:13,
+        coreVersion:'2.4.3',launcherVersion:'2.2.2',message:'旧酒馆已恢复，启动器更新保留。'}}});
+    await page.getByRole('button',{name:'重新尝试更新',exact:true}).click();
+    await page.waitForFunction(()=>Boolean(window.resumeRequest),{},{timeout:3000});
+    const request=await page.evaluate(()=>({...window.resumeRequest,onEvent:undefined}));
+    assert.equal(request.operationId,operationId);assert.equal(request.snapshotSequence,13);
+    assert.deepEqual(page.uiErrors,[]);
   }finally{await browser.close();}
 });
 function sameAnchors(actual,expected,label){

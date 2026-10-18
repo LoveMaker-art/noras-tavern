@@ -208,3 +208,11 @@ test('release verifier requires installers, new launcher identity and unchanged 
     write(`nora-system-${last.platform}.json`, last.system);
     assert.throws(command);
 });
+
+test('a component core without environment fields still requires the separately bound full runtime/dependency bytes',t=>{
+ const f=fixture(t);const file=path.join(f.directory,'release-manifest.json'),core=JSON.parse(fs.readFileSync(file));delete core.hermesRuntime;delete core.dependencies;
+ fs.writeFileSync(file,JSON.stringify(core));const systemFile=path.join(f.directory,`nora-system-${process.platform}-${process.arch}.json`),system=JSON.parse(fs.readFileSync(systemFile));
+ system.files['release-manifest.json']={size:fs.statSync(file).size,sha256:digest(fs.readFileSync(file))};fs.writeFileSync(systemFile,JSON.stringify(system));
+ assert.doesNotThrow(()=>readBaseline(f.directory,identity()));
+ fs.writeFileSync(path.join(f.directory,'hermesRuntime.tar.gz'),'tampered');assert.throws(()=>readBaseline(f.directory,identity()),/checksum|size|mismatch/i);
+});

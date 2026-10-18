@@ -2,6 +2,7 @@
 """Resolve the Hermes interpreter before entering the installed updater."""
 import json
 import argparse
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -9,8 +10,7 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
-import uuid
+import re
 
 
 def candidates(home):
@@ -91,62 +91,118 @@ def managed_root(home):
     return root
 
 
-def managed_request(home, action):
-    root = managed_root(home)
-    directory = root / 'installer/skill-update'
-    request = directory / 'request.json'
-    if action == 'status':
-        if not request.is_file():
-            return {'status': 'none', 'message': '尚未提交技能更新任务。'}
-        return json.loads(request.read_text(encoding='utf-8'))
+def query_helper(ops, manifest_file, *, installed_receipt=None):
+    """Authenticate only the bootstrap pair; Node verifies its reader closure.
+
+    This wrapper never interprets task records. The two builtin-only files must
+    be trusted before Node can safely run their own dependency verification.
+    """
     try:
-        endpoint = json.loads((directory / 'endpoint.json').read_text(encoding='utf-8'))
-    except (OSError, ValueError):
-        raise RuntimeError('请先打开支持技能更新的新启动器，再重试；尚未开始更新。')
-    age = time.time() * 1000 - endpoint.get('updatedAt', 0)
-    if endpoint.get('schema') != 1 or Path(endpoint.get('noraHome', '')).resolve() != root or not 0 <= age <= 15000:
-        raise RuntimeError('启动器不在线或实例不匹配，请打开对应启动器再重试。')
-    lock = directory / 'submit.lock'
-    # Submission holds this lock only for one local atomic write. Recover a
-    # leftover empty lock after a killed agent, never replay its request.
-    if lock.is_dir() and time.time() - lock.stat().st_mtime > 60:
+        if manifest_file.is_symlink():
+            return None
+        raw = manifest_file.read_bytes()
+        manifest = json.loads(raw)
+        if manifest.get('schema') != 'tavern-release/v2':
+            return None
+        if installed_receipt is not None:
+            receipt = json.loads(installed_receipt.read_text(encoding='utf-8'))
+            if (receipt.get('version') != manifest.get('versions', {}).get('tavern')
+                    or receipt.get('commit') != manifest.get('commit')
+                    or receipt.get('releaseManifestSha256', hashlib.sha256(raw).hexdigest()) != hashlib.sha256(raw).hexdigest()):
+                return None
+        for name in ('installer/desktop/updater-task.js', 'installer/desktop/updater-capability.js'):
+            file = ops / name
+            for parent in (file, *file.parents):
+                if parent.is_symlink():
+                    return None
+                if parent == ops:
+                    break
+            if not file.is_file() or hashlib.sha256(file.read_bytes()).hexdigest() != manifest['artifacts'].get('ops/' + name):
+                return None
+        return ops / 'installer/desktop/updater-task.js'
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def query_entries(home, root):
+    # Choose code, not task state. Prefer the current installed reader; immutable
+    # snapshots are only a fallback while the installed ops tree is being swapped.
+    installs = [root / 'tavern'] if (home / 'nora-instance.json').is_file() else [Path(os.environ.get('TAVERN_DATA_ROOT') or home).expanduser()]
+    snapshots = []
+    directory = root / 'installer/update-jobs'
+    jobs = sorted((entry for entry in directory.iterdir()
+                   if re.fullmatch(r'[a-fA-F0-9-]{36}', entry.name) and entry.is_dir() and not entry.is_symlink()),
+                  key=lambda entry: entry.stat().st_mtime, reverse=True) if directory.is_dir() else []
+    for job in jobs:
+        snapshot, manifest = job / 'runner/ops', job / 'runner/release-manifest.json'
         try:
-            lock.rmdir()
-        except OSError:
-            pass
-    try:
-        lock.mkdir()
-    except FileExistsError:
-        raise RuntimeError('另一个技能正在提交更新请求；如上次提交中断，请一分钟后重试。')
-    try:
-        if request.is_file():
-            old = json.loads(request.read_text(encoding='utf-8'))
-            if old.get('status') in ('queued', 'running', 'restarting'):
-                return old
-        job = {'schema': 1, 'id': str(uuid.uuid4()), 'session': endpoint['session'],
-               'action': action, 'confirm': True, 'status': 'queued', 'createdAt': int(time.time() * 1000)}
-        temp = directory / (job['id'] + '.tmp')
+            receipt = json.loads((job / 'updater-control.json').read_text(encoding='utf-8'))
+            if (receipt.get('noraHome') != str(root) or receipt.get('hermesHome') != str(home)
+                    or receipt.get('opsRoot') != str(snapshot)
+                    or receipt.get('sourceManifest', {}).get('path') != str(manifest)
+                    or receipt['sourceManifest']['sha256'] != hashlib.sha256(manifest.read_bytes()).hexdigest()):
+                continue
+            install = Path(receipt['installRoot'])
+            if install.is_absolute() and not install.is_symlink():
+                installs.append(install)
+            entry = query_helper(snapshot, manifest)
+            if entry:
+                snapshots.append(entry)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    entries = []
+    for install in installs:
+        entry = query_helper(install / 'apps/tavern-ops', install / 'tavern-updates/installed-manifest.json',
+                             installed_receipt=install / 'tavern-updates/installed.json')
+        if entry and entry not in entries:
+            entries.append(entry)
+    yield from entries
+    yield from (entry for entry in snapshots if entry not in entries)
+
+
+def task_status(home):
+    root = managed_root(home) if (home / 'nora-instance.json').is_file() else home
+    unavailable = {'status': 'inspection-required', 'settled': False, 'busy': None,
+                   'error': '无法核验更新任务是否结束，请保留日志，暂勿重复更新。'}
+    nodes = []
+    if os.environ.get('TAVERN_NODE_EXECUTABLE'):
+        nodes.append(Path(os.environ['TAVERN_NODE_EXECUTABLE']))
+    for base in (root, home):
+        nodes.extend((base / 'node/node.exe', base / 'node/bin/node'))
+    command = shutil.which('node')
+    if command:
+        nodes.append(Path(command))
+    node = next((candidate for candidate in nodes if candidate.is_absolute() and candidate.is_file()), None)
+    if node is None:
+        return unavailable
+    for entry in query_entries(home, root):
         try:
-            with temp.open('x', encoding='utf-8') as stream:
-                json.dump(job, stream, ensure_ascii=False)
-            os.replace(temp, request)
-        finally:
-            temp.unlink(missing_ok=True)
-    finally:
-        lock.rmdir()
-    # Wait only for handoff. Hermes may be stopped after the launcher accepts it.
-    deadline = time.monotonic() + 8
-    while time.monotonic() < deadline:
-        state = json.loads(request.read_text(encoding='utf-8'))
-        if state.get('id') == job['id'] and state.get('status') != 'queued':
-            return state
-        time.sleep(0.2)
-    return job
+            result = subprocess.run([str(node), str(entry)], input=json.dumps({'action': 'status', 'noraHome': str(root)}),
+                                    text=True, capture_output=True, timeout=15, check=False)
+            reply = json.loads(result.stdout)
+            # Compatibility check for the public reply, not a second task state
+            # machine. An older reader without the settled/lock contract cannot
+            # claim completion during automatic recovery.
+            if (not isinstance(reply.get('settled'), bool)
+                    or not (isinstance(reply.get('busy'), bool) or reply.get('busy') is None)
+                    or reply['settled'] and reply.get('busy') is not False
+                    or reply.get('status') in ('succeeded', 'failed', 'rolled-back', 'blocked', 'cancelled', 'interrupted') and not reply['settled']):
+                continue
+            return reply
+        except (OSError, ValueError, TypeError, subprocess.TimeoutExpired):
+            continue
+    return unavailable
 
 
 def standalone_entry(home):
+    # Importing the verified bootstrap must not add undeclared .pyc files to
+    # its authenticated program tree, including when this skill ran without -B.
+    sys.dont_write_bytecode = True
     import yaml
     roots = [Path(os.environ.get('TAVERN_DATA_ROOT') or home).expanduser()]
+    managed = managed_root(home) if (home / 'nora-instance.json').is_file() else None
+    if managed:
+        roots.insert(0, managed / 'tavern')
     config = home / 'config.yaml'
     if config.is_file():
         value = yaml.safe_load(config.read_text(encoding='utf-8')) or {}
@@ -159,10 +215,13 @@ def standalone_entry(home):
             spec = importlib.util.spec_from_file_location('nora_skill_bootstrap', entry)
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
-            _, verified_root = module.resolve_update_target(home)
+            _, verified_root = module.resolve_update_target(home, managed_home=managed)
             if verified_root != root.resolve():
                 raise RuntimeError('Updater location differs from verified installation')
-            return entry, verified_root
+            task = entry.with_name('task.py')
+            if not task.is_file():
+                raise RuntimeError('当前更新器尚未包含独立任务入口，请使用新版官方独立更新命令接入；原数据未修改。')
+            return task, verified_root
     raise RuntimeError('未找到已安装的更新器，请检查 HERMES_HOME 和 TAVERN_DATA_ROOT。')
 
 
@@ -178,10 +237,10 @@ def main():
     if args.apply and not args.confirm:
         raise RuntimeError('更新需要用户明确授权，并带 --apply --confirm。')
     home = Path(os.environ.get('HERMES_HOME', Path(__file__).resolve().parents[4])).expanduser().resolve()
-    if args.status and (home / 'nora-instance.json').is_file():
-        result = managed_request(home, 'status')
+    if args.status:
+        result = task_status(home)
         print(json.dumps(result, ensure_ascii=False))
-        if result.get('status') in ('error', 'interrupted'):
+        if result.get('status') in ('error', 'inspection-required', 'interrupted', 'failed', 'blocked', 'cancelled', 'rolled-back'):
             raise SystemExit(1)
         return
     python = select_python(home)
@@ -191,20 +250,12 @@ def main():
         return
     environment = dict(os.environ, HERMES_HOME=str(home))
     environment['PATH'] = str(Path(python).parent) + os.pathsep + environment.get('PATH', '')
-    if (home / 'nora-instance.json').is_file():
-        result = managed_request(home, 'status' if args.status else 'check' if args.check else 'update')
-        print(json.dumps(result, ensure_ascii=False))
-        if result.get('status') in ('error', 'interrupted'):
-            raise SystemExit(1)
-        return
     if os.path.abspath(sys.executable) != python:
         raise SystemExit(subprocess.call([python, '-B', str(Path(__file__).absolute()), *sys.argv[1:]], env=environment))
     entry, root = standalone_entry(home)
     environment['TAVERN_DATA_ROOT'] = str(root)
-    if args.status or args.check:
-        command = [str(root / 'apps/tavern-ops/scripts/nora-tavern-update-check.py'), '--check-only']
-    else:
-        command = [str(entry), '--hermes-home', str(home), '--install-root', str(root), '--apply', '--confirm']
+    command = [str(entry), '--hermes-home', str(home), '--install-root', str(root)]
+    command += ['--check'] if args.check else ['--apply', '--confirm']
     raise SystemExit(subprocess.call([python, '-u', '-B', *command], env=environment))
 
 
