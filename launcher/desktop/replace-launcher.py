@@ -527,21 +527,50 @@ def assess(job, *, allow_legacy=False):
                 'diagnosticError': error_data(error), 'log': str(Path(job) / 'replace.log')}
 
 
+def detach_inherited_crash_handler():
+    if sys.platform != 'darwin': return
+    import ctypes
+    library = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    port = ctypes.c_uint32
+    task = port.in_dll(library, 'mach_task_self_').value
+    reset = library.task_set_exception_ports
+    reset.argtypes = (port, port, port, ctypes.c_int32, ctypes.c_int32)
+    reset.restype = ctypes.c_int32
+    # Crashpad's Mac send rights survive exec and keep its APP executable alive
+    # until this worker exits. Sever only this worker's inherited crash ports;
+    # otherwise waiting for every APP executable creates a circular wait.
+    # NULL is Crashpad's own fallback in UseSystemDefaultHandler(). No process
+    # is ignored or terminated, and ordinary Python errors still use replace.log.
+    if reset(task, (1 << 10) | (1 << 11) | (1 << 12), 0, 1, 0) != 0:
+        raise RuntimeError('无法解除恢复进程继承的崩溃报告连接，已保留程序和备份。')
+
+
 def require_launcher_offline(ctx):
     import psutil
     current_user = psutil.Process().username()
-    for process in psutil.process_iter():
-        try:
-            executable = process.exe()
-            if executable and any(contained(Path(executable), root) for root in (ctx['app'], ctx['backup'])):
-                raise RuntimeError('启动器仍在运行，请先关闭启动器后再恢复。')
-        except (psutil.NoSuchProcess, psutil.ZombieProcess): continue
-        except psutil.AccessDenied as error:
-            try: other_user = process.username() != current_user
+    deadline = time.monotonic() + 30
+    while True:
+        running = False
+        for process in psutil.process_iter():
+            try:
+                executable = process.exe()
+                if executable and any(contained(Path(executable), root) for root in (ctx['app'], ctx['backup'])):
+                    running = True
             except (psutil.NoSuchProcess, psutil.ZombieProcess): continue
-            except psutil.AccessDenied: other_user = False
-            if not other_user:
-                raise RuntimeError('当前用户进程路径无法确认，已保留启动器现场') from error
+            except psutil.AccessDenied as error:
+                try: other_user = process.username() != current_user
+                except (psutil.NoSuchProcess, psutil.ZombieProcess): continue
+                except psutil.AccessDenied: other_user = False
+                if not other_user:
+                    raise RuntimeError('当前用户进程路径无法确认，已保留启动器现场') from error
+        if not running: return
+        # Electron report helpers can outlive the exact parent briefly. Keep
+        # the writer and both trees intact until every owned executable exits;
+        # neither ignore a reporter nor terminate processes on the user's behalf.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError('启动器仍在运行，请先关闭启动器后再恢复。')
+        time.sleep(min(0.1, remaining))
 
 
 def launcher_environment(ctx):
@@ -918,6 +947,8 @@ def main():
     if not (args.assess or args.inspect_outcome or args.prepare or args.prepare_recovery or args.process_identity or args.recover or args.finalize or args.job):
         parser.error('缺少更新任务目录')
     try:
+        if args.recover or args.job:
+            detach_inherited_crash_handler()
         if args.process_identity:
             result = process_identity(args.process_identity)
         elif args.prepare:

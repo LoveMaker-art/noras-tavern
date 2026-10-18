@@ -256,3 +256,26 @@ test('launcher reuse follows full and chained component baseline provenance', t 
     assert.throws(() => launcherProvenance({ ...f.current, sourceFiles: { ...f.current.sourceFiles,
         'launcher/desktop/main.js': 'changed' } }, baseline, launcher, platform, previous), /Full launcher/);
 });
+
+test('APP-only discovery channel is derived from an authenticated core reference; ordinary defaults stay legacy compatible',async()=>{
+  const tools=await import('../tooling/release/system-release.mjs');
+  const normal={versions:{tavern:'2.5.3'},commit:'a'.repeat(40)};
+  assert.equal(tools.publicationCoreAnchor(normal),null);
+  assert.equal(tools.publicationChannelKey({tag:'v2.5.3',channel:'stable'}),'channels/stable.json');
+  const product={...normal,commit:'b'.repeat(40),publication:{schema:'nora-component-publication/1',tag:'v2.5.4'},
+    coreRelease:{schema:'nora-core-reference/1',tag:'v2.5.3',commit:'a'.repeat(40),manifests:{
+      'win32-x64':{asset:'win32-x64-release-manifest.json',sha256:'c'.repeat(64),size:100}}}};
+  const coreAnchor=tools.publicationCoreAnchor(product);assert.deepEqual(coreAnchor,{tag:'v2.5.3',commit:'a'.repeat(40)});
+  assert.equal(tools.publicationChannelKey({tag:'v2.5.4',channel:'stable',coreAnchor}),'channels/launcher-stable.json');
+  for(const invalid of [{...coreAnchor,tag:'v2.5.4'},{...coreAnchor,url:'https://example.com'},{...coreAnchor,commit:'bad'}])
+    assert.throws(()=>tools.publicationChannelKey({tag:'v2.5.4',channel:'stable',coreAnchor:invalid}));
+  assert.throws(()=>tools.publicationCoreAnchor({...product,publication:{schema:'nora-component-publication/1',tag:'v2.5.4-beta.1'}}),/stable|Beta/);
+});
+
+test('ordinary stable discovery refuses a batch tag that legacy APPs would mistake for a different core version',async t=>{
+    const {writeDiscoveryCatalogues}=await import('../tooling/release/publish-release.mjs');
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-core-anchor-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const product={versions:{tavern:'2.5.3'},publication:{schema:'nora-component-publication/1',tag:'v2.5.4'}};
+    await assert.rejects(writeDiscoveryCatalogues({product,output:root,release:{tag_name:'v2.5.4',draft:false,prerelease:false}}),/ordinary|legacy|anchor/i);
+    assert.equal(fs.readdirSync(root).length,0,'incompatible discovery must fail before writing a catalogue');
+});

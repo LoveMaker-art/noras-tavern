@@ -287,7 +287,10 @@ async function recover(options) {
     throw launcherError('恢复缺少受管父进程身份，旧程序与备份已保留。',{code:'OPERATION_CAPABILITY_REQUIRED'});
   const execution=independentPython(options),log=fs.openSync(path.join(job,'replace.log'),'a',0o600);
   let child;
-  try{child=spawn(execution.command,['-B',path.join(job,'replace.py'),'--recover',job,'--parent-pid',String(process.pid),
+  // The current APP's recovery reader already validates the sealed old plan
+  // and resources. Execute that same helper so fixes also reach historical
+  // jobs, without replacing their original helper, snapshots or backup proof.
+  try{child=spawn(execution.command,['-B',options.helper,'--recover',job,'--parent-pid',String(process.pid),
     '--parent-created',String(options.parentCreationTime)],{cwd:helperCwd(job),env:execution.env,
       detached:true,windowsHide:true,stdio:['ignore',log,log]});}finally{fs.closeSync(log);}
   child.unref();

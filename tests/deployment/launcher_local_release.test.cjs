@@ -49,3 +49,16 @@ test('local acceptance maps only exact configured domestic catalogues and sealed
     'https://example.com/v2.4.6/module.zip',base+'v2.4.6/unsealed.zip'])
     await assert.rejects(fetcher(url),/unexpected URL/);
 });
+
+test('one local acceptance directory keeps old core discovery flat and adds an APP-only child catalogue without changing bytes',async t=>{
+  const root=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-local-split-')));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  const core={versions:{tavern:'2.5.3'},commit:'a'.repeat(40)},app={...core,commit:'b'.repeat(40),publication:{schema:'nora-component-publication/1',tag:'v2.5.4'}};
+  fs.writeFileSync(path.join(root,'release-manifest.json'),JSON.stringify(core));fs.writeFileSync(path.join(root,'core.tar.gz'),'original core bytes');
+  const child=path.join(root,'launcher-stable');fs.mkdirSync(child);fs.writeFileSync(path.join(child,'release-manifest.json'),JSON.stringify(app));fs.writeFileSync(path.join(child,'app.zip'),'actual APP bytes');
+  const transport=createLocalRelease(root),api='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases';
+  assert.equal((await(await transport(api+'/latest')).json()).tag_name,'v2.5.3');
+  const list=await(await transport(api+'?per_page=100&page=1')).json();assert.equal(list[0].tag_name,'v2.5.4');
+  assert.equal(await(await transport('https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.5.3/core.tar.gz')).text(),'original core bytes');
+  assert.equal(await(await transport('https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.5.4/app.zip')).text(),'actual APP bytes');
+  await assert.rejects(transport('https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.5.4/core.tar.gz'),/unexpected URL/);
+});

@@ -713,6 +713,119 @@ test('native root proof accepts a positively located absolute script from anothe
   }finally{if(child.exitCode===null&&child.signalCode===null)child.kill('SIGKILL');await closed;}
 });
 
+function nativeOfflineHarness(run){
+  const file=path.resolve(__dirname,'../installer/desktop/uninstall-offline-check.js'),localRequire=createRequire(file);
+  const context=vm.createContext({require:name=>name==='node:child_process'?{spawnSync:run}:localRequire(name),
+    __filename:file,__dirname:path.dirname(file),module:{exports:{}},Buffer,TextDecoder,console,
+    process:{...process,platform:'darwin',pid:42,getuid:()=>501}});
+  vm.runInContext(fs.readFileSync(file,'utf8'),context);
+  return context.module.exports;
+}
+
+function macHermesProofFixture(t,change=()=>{},prepare=()=>{}){
+  const f=fixture(t),outside=path.join(f.directory,'Other home = safe');fs.mkdirSync(outside);
+  const saved=new Map([...f.data,...f.programs].map(name=>[name,fs.readFileSync(path.join(f.home,name))]));
+  const record={schema:'nora-uninstall-mac-process/1',pid:43,uid:501,created:[1700000000,123456],
+    argv:['/usr/bin/python3','-B','-m','hermes_cli.main','gateway','run'],environment:{HERMES_HOME:outside}};
+  prepare(f,outside,record);
+  let reads=0;
+  const success=stdout=>({status:0,signal:null,stdout,stderr:''});
+  const check=nativeOfflineHarness((command,args)=>{
+    if(command==='/usr/sbin/lsof')return success(`p43\ncPython\nfcwd\nn${outside}\nftxt\nn/usr/bin/python3\n`);
+    if(args.includes('pid=,uid=,comm='))return success('42 501 /App/checker\n43 501 /usr/bin/python3\n');
+    if(args.includes('args='))return success('/usr/bin/python3 -m hermes_cli.main gateway run\n');
+    if(command==='/usr/bin/osascript'){
+      const current=JSON.parse(JSON.stringify(record)),result=change(current,++reads,f,outside);
+      if(result)return result;
+      return success(JSON.stringify(current));
+    }
+    throw Error('Unexpected native process query');
+  });
+  return {...f,outside,record,check,saved,get reads(){return reads;}};
+}
+
+test('native root proof permits a positively bound unrelated Hermes home without mutating either instance',{skip:process.platform!=='darwin'},t=>{
+  const f=macHermesProofFixture(t);
+  assert.doesNotThrow(()=>f.check.nativeOffline({root:fs.realpathSync(f.home)}));
+  assert.equal(f.reads,2,'A stable kernel identity must bracket the open-file proof');
+  for(const [name,before] of f.saved)assert.deepEqual(fs.readFileSync(path.join(f.home,name)),before);
+});
+
+test('Mac Hermes proof refuses owned, missing, unreadable and changing process bindings before deletion',{skip:process.platform!=='darwin'},async t=>{
+  for(const kind of ['owned','missing home','relative home','overlapping home','filesystem root','symlink home','interpreter alias','unreadable','changed birth','changed home','wrong pid','wrong uid','inline argv','bound module source','bound Python launcher','bound Python executable','bound Python prefix','malformed proof'])await t.test(kind,t=>{
+    const f=macHermesProofFixture(t,(record,read,f)=>{
+      if(kind==='owned')record.environment.HERMES_HOME=f.home;
+      if(kind==='missing home')delete record.environment.HERMES_HOME;
+      if(kind==='relative home')record.environment.HERMES_HOME='relative-home';
+      if(kind==='overlapping home')record.environment.HERMES_HOME=f.directory;
+      if(kind==='filesystem root')record.environment.HERMES_HOME='/';
+      if(kind==='symlink home'){
+        const alias=path.join(f.directory,'linked-home');if(!fs.existsSync(alias))fs.symlinkSync(f.home,alias,process.platform==='win32'?'junction':'dir');
+        record.environment.HERMES_HOME=alias;
+      }
+      if(kind==='unreadable')return {status:1,signal:null,stdout:'',stderr:'Process arguments unavailable'};
+      if(kind==='changed birth'&&read===2)record.created[1]++;
+      if(kind==='changed home'&&read===2)record.environment.HERMES_HOME=f.directory;
+      if(kind==='wrong pid')record.pid++;
+      if(kind==='wrong uid')record.uid++;
+      if(kind==='inline argv')record.argv=['/usr/bin/python3','-c','import hermes_cli.main','gateway','run'];
+      if(kind==='bound module source')record.environment.PYTHONPATH=path.join(f.home,'hermes');
+      if(kind==='bound Python launcher')record.environment.__PYVENV_LAUNCHER__=path.join(f.home,f.programs[0]);
+      if(kind==='bound Python executable')record.environment.PYTHONEXECUTABLE=path.join(f.home,f.programs[0]);
+      if(kind==='bound Python prefix')record.environment.PYTHONHOME=f.home;
+      if(kind==='malformed proof')record.created=null;
+    },(f,outside,record)=>{
+      if(kind!=='interpreter alias')return;
+      const runtime=path.join(f.home,'runtime/bin'),alias=path.join(outside,'runtime-alias');fs.mkdirSync(runtime,{recursive:true});
+      fs.symlinkSync(process.execPath,path.join(runtime,'python'));
+      fs.symlinkSync(runtime,alias,process.platform==='win32'?'junction':'dir');record.argv[0]=path.join(alias,'python');
+    });
+    assert.throws(()=>f.check.nativeOffline({root:fs.realpathSync(f.home)}),error=>error.code==='UNINSTALL_SERVICES_UNCONFIRMED');
+    for(const [name,before]of f.saved)assert.deepEqual(fs.readFileSync(path.join(f.home,name)),before);
+  });
+});
+
+test('Mac native KEEP waits for its own Hermes instance and preserves another running instance and both user data',{skip:process.platform!=='darwin',timeout:30000},async t=>{
+  const f=fixture(t),{spawn}=require('node:child_process'),{once}=require('node:events');
+  const external=path.join(f.directory,'external-runtime'),otherHome=path.join(f.directory,'Other Hermes = home');
+  fs.mkdirSync(path.join(external,'hermes_cli'),{recursive:true});fs.mkdirSync(otherHome);
+  fs.writeFileSync(path.join(external,'hermes_cli/__init__.py'),'');
+  fs.writeFileSync(path.join(external,'hermes_cli/main.py'),"import time\nprint('fixture-ready',flush=True)\ntime.sleep(60)\n");
+  fs.writeFileSync(path.join(otherHome,'user-data.txt'),'other-instance-data');
+  const saved=new Map(f.data.map(name=>[name,fs.readFileSync(path.join(f.home,name))]));
+  const child=spawn(process.env.NORA_TEST_PYTHON,['-B','-m','hermes_cli.main','gateway','run'],
+    {cwd:external,env:{PATH:process.env.PATH,HERMES_HOME:otherHome,PYTHONPATH:external,DECOY:'HERMES_HOME='+f.home},stdio:['ignore','pipe','pipe']});
+  const owned=spawn(process.env.NORA_TEST_PYTHON,['-B','-m','hermes_cli.main','gateway','run'],
+    {cwd:external,env:{PATH:process.env.PATH,HERMES_HOME:path.join(f.home,'hermes'),PYTHONPATH:external},stdio:['ignore','pipe','pipe']});
+  const closed=once(child,'close'),ownedClosed=once(owned,'close');let startupTimer;
+  try{
+    await Promise.race([Promise.all([once(child.stdout,'data'),once(owned.stdout,'data')]),
+      closed.then(()=>{throw Error('Other Hermes fixture exited before readiness');}),
+      ownedClosed.then(()=>{throw Error('Owned Hermes fixture exited before readiness');}),
+      new Promise((_,reject)=>{startupTimer=setTimeout(()=>reject(Error('Hermes fixtures readiness timeout')),5000);})]);
+    clearTimeout(startupTimer);
+    const plan=f.plan('keep',{port:await idlePort()}),file=path.join(f.directory,'nora-uninstall.json');fs.writeFileSync(file,JSON.stringify(plan));
+    const previous=process.exitCode;try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+    const blocked=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(blocked.state,'error');assert.equal(blocked.code,'UNINSTALL_SERVICES_UNCONFIRMED');
+    for(const [name,before]of saved)assert.deepEqual(fs.readFileSync(path.join(f.home,name)),before);
+    for(const name of f.programs)assert.equal(fs.readFileSync(path.join(f.home,name),'utf8'),'fixture',name);
+    process.kill(child.pid,0);process.kill(owned.pid,0);
+    owned.kill('SIGTERM');await ownedClosed;
+    try{await worker(file,()=>{});}finally{process.exitCode=previous;}
+    const result=JSON.parse(fs.readFileSync(path.join(f.directory,'result.json'),'utf8'));
+    assert.equal(result.state,'complete',JSON.stringify(result));assert.equal(result.serviceVerification.method,'native-os');
+    for(const [name,before]of saved)assert.deepEqual(fs.readFileSync(path.join(f.home,name)),before);
+    for(const name of f.programs)assert.equal(fs.existsSync(path.join(f.home,name)),false,name);
+    assert.equal(fs.readFileSync(path.join(otherHome,'user-data.txt'),'utf8'),'other-instance-data');process.kill(child.pid,0);
+    assert.equal(require('../installer/desktop/retained-installation').inspect(f.home).state,'complete');
+  }finally{
+    clearTimeout(startupTimer);
+    for(const process of [child,owned])if(process.exitCode===null&&process.signalCode===null)process.kill('SIGKILL');
+    await Promise.all([closed,ownedClosed]);
+  }
+});
+
 test('native root proof refuses an ambiguous Hermes module process outside the installation',{timeout:30000},async t=>{
   const f=fixture(t),{spawn}=require('node:child_process'),{once}=require('node:events');
   const external=path.join(f.directory,'external-runtime'),module=path.join(external,'hermes_cli');fs.mkdirSync(module,{recursive:true});

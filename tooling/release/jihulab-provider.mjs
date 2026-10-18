@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import {publicationChannelObjects} from './system-release.mjs';
 
 function immutableObject(object) {
     assert.ok(object && ['asset','catalogue'].includes(object.phase), 'JihuLab generic upload requires an immutable object, not a channel');
@@ -7,11 +8,7 @@ function immutableObject(object) {
     assert.match(object.sha256,/^[a-f0-9]{64}$/);
 }
 function channelObject(publication) {
-    const channel=publication.plan.objects.filter(object=>object.phase==='channel');
-    assert.equal(channel.length,1,'JihuLab requires one sealed channel pointer');
-    assert.ok(['stable','beta'].includes(publication.plan.channel),'Invalid JihuLab channel');
-    assert.equal(channel[0].key,`channels/${publication.plan.channel}.json`,'Different JihuLab channel pointer');
-    return channel[0];
+    return publicationChannelObjects(publication.plan)[0];
 }
 function boundReceipt(object,receipt) {
     assert.ok(receipt && receipt.size===object.size && receipt.sha256===object.sha256

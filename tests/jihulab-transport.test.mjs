@@ -439,3 +439,108 @@ test('Jihu HTTP 503 on an immutable PUT is never automatically replayed',async t
     await assert.rejects(f.transport.upload(asset,{immutable:true}),/503/);
     assert.equal(f.calls.filter(call=>call.method==='PUT').length,1);
 });
+
+test('APP-only channel CAS never overwrites the normal stable core anchor and verifies its fixed source',async t=>{
+  const anchor={tag:'v2.4.4',commit:'c'.repeat(40)},core=Buffer.from(JSON.stringify({schema:'tavern-release/v2',commit:anchor.commit,versions:{tavern:'2.4.4'}}));
+  const coreHead={...release(anchor.tag),assets:[{name:'release-manifest.json',state:'uploaded',size:core.length,digest:'sha256:'+hash(core),
+    browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${anchor.tag}/release-manifest.json`}]};
+  const key='channels/launcher-stable.json',url=api+'/repository/files/'+encodeURIComponent(key);let published;
+  const f=fixture(t,{route:call=>{
+    if(call.url===publicChannel)return new Response(JSON.stringify(coreHead));
+    if(call.url===source.baseUrl+anchor.tag+'/release-manifest.json')return new Response(core);
+    if(call.url===url+'?ref=main')return published?json({...metadata(published),file_path:key}):json({message:'missing'},404);
+    if(call.url===url&&call.method==='POST'){const body=JSON.parse(call.body);published=Buffer.from(body.content,'base64');return json({file_path:key,branch:'main'},201);}
+    if(call.url===source.channelBaseUrl+key)return published?new Response(published):new Response(null,{status:404});
+    return new Response(null,{status:404});
+  }});
+  const bytes=Buffer.from(JSON.stringify([release('v2.4.5')])+'\n'),pointer=f.object(bytes,key,'channel');
+  const p={plan:{tag:'v2.4.5',channel:'stable',coreAnchor:anchor,objects:[pointer]}};
+  await f.transport.preflight();await f.transport.channelPromotion.check(p);
+  await f.transport.channelPromotion.promote(pointer,p);await f.transport.channelPromotion.verify(pointer,p);
+  assert.deepEqual(published,bytes);assert.equal(f.calls.some(c=>c.url===fileApi&&['POST','PUT'].includes(c.method)),false);
+  coreHead.tag_name='v2.4.3';await assert.rejects(f.transport.channelPromotion.check(p),/anchor/i);
+});
+
+test('ordinary stable advances both sealed pointers in one repository commit and resumes a committed response loss',async t=>{
+  const coreKey='channels/stable.json',appKey='channels/launcher-stable.json',commits=api+'/repository/commits';
+  const current=new Map([[coreKey,{bytes:Buffer.from(JSON.stringify(release('v2.4.4'))+'\n'),commit:'a'.repeat(40)}]]);
+  let loseResponse=true;
+  const f=fixture(t,{route:call=>{
+    const url=new URL(call.url),prefix=api+'/repository/files/';
+    if(call.url.startsWith(prefix)&&url.search==='?ref=main'){
+      const key=decodeURIComponent(url.pathname.split('/').pop()),value=current.get(key);
+      return value?json({...metadata(value.bytes,value.commit),file_path:key}):json({},404);
+    }
+    if(call.url===commits&&call.method==='POST'){
+      const body=JSON.parse(call.body);assert.equal(body.branch,'main');
+      assert.deepEqual(body.actions.map(action=>action.file_path),[coreKey,appKey]);
+      for(const action of body.actions){
+        const previous=current.get(action.file_path);assert.equal(action.action,previous?'update':'create');
+        assert.equal(action.last_commit_id,previous?.commit);assert.equal(action.encoding,'base64');
+      }
+      for(const action of body.actions)current.set(action.file_path,{bytes:Buffer.from(action.content,'base64'),commit:'b'.repeat(40)});
+      if(loseResponse){loseResponse=false;throw Error('Response lost after atomic commit');}
+      return json({id:'b'.repeat(40)},201);
+    }
+    if(call.url.startsWith(source.channelBaseUrl)){
+      const value=current.get(call.url.slice(source.channelBaseUrl.length));return value?new Response(value.bytes):new Response(null,{status:404});
+    }
+    throw Error('Unexpected channel request');
+  }});
+  const p=f.publication(),app=f.object(Buffer.from(JSON.stringify([release(p.plan.tag)])+'\n'),appKey,'channel');
+  p.plan.objects.push(app);
+  await f.transport.channelPromotion.check(p);
+  await assert.rejects(f.transport.channelPromotion.promote(p.pointer,p),/request failed/);
+  for(const object of p.plan.objects)assert.equal(hash(current.get(object.key).bytes),object.sha256);
+  await f.transport.channelPromotion.check(p);
+  await f.transport.channelPromotion.promote(p.pointer,p);await f.transport.channelPromotion.verify(p.pointer,p);
+  assert.equal(f.calls.filter(call=>call.url===commits&&call.method==='POST').length,1,'Resume must adopt both already committed bytes');
+  assert.equal(f.calls.some(call=>call.url.startsWith(api+'/repository/files/')&&['POST','PUT'].includes(call.method)),false);
+  current.set(appKey,{...current.get(appKey),bytes:Buffer.from('wrong')});
+  await assert.rejects(f.transport.channelPromotion.verify(p.pointer,p),/size|SHA|different|incomplete/i);
+});
+
+test('either stable pointer CAS conflict or changed sealed bytes rejects the entire pair',async t=>{
+  const keys=['channels/stable.json','channels/launcher-stable.json'];
+  for(const kind of ['core changed','APP changed','APP created','core commit race','APP commit race','core bytes changed','APP bytes changed','sealed pointer removed'])await t.test(kind,async t=>{
+    const current=new Map(keys.map((key,index)=>[key,{bytes:Buffer.from(JSON.stringify(index?[release('v2.4.4')]:release('v2.4.4'))),commit:'a'.repeat(40)}]));
+    if(kind==='APP created')current.delete(keys[1]);
+    const f=fixture(t,{route:call=>{
+      if(call.url.startsWith(api+'/repository/files/')&&call.url.endsWith('?ref=main')){
+        const key=decodeURIComponent(new URL(call.url).pathname.split('/').pop()),value=current.get(key);
+        return value?json({...metadata(value.bytes,value.commit),file_path:key}):json({},404);
+      }
+      if(call.url===api+'/repository/commits'&&call.method==='POST'){
+        const actions=JSON.parse(call.body).actions,key=kind==='core commit race'?keys[0]:keys[1];
+        current.get(key).commit='c'.repeat(40);
+        assert.equal(actions.length,2);
+        assert.ok(actions.some(action=>action.last_commit_id!==current.get(action.file_path)?.commit));
+        return json({},400); // The repository rejects all actions atomically.
+      }
+      throw Error('Unexpected request before a rejected promotion');
+    }});
+    const p=f.publication(),app=f.object(Buffer.from(JSON.stringify([release(p.plan.tag)])+'\n'),keys[1],'channel');p.plan.objects.push(app);
+    await f.transport.channelPromotion.check(p);
+    if(kind==='core changed')current.get(keys[0]).commit='b'.repeat(40);
+    if(kind==='APP changed')current.get(keys[1]).commit='b'.repeat(40);
+    if(kind==='APP created')current.set(keys[1],{bytes:Buffer.from(JSON.stringify([release('v2.4.4')])),commit:'b'.repeat(40)});
+    if(kind==='core bytes changed')fs.appendFileSync(p.pointer.file,' ');
+    if(kind==='APP bytes changed')fs.appendFileSync(app.file,' ');
+    if(kind==='sealed pointer removed')p.plan.objects.pop();
+    const before=new Map([...current].map(([key,value])=>[key,hash(value.bytes)]));
+    await assert.rejects(f.transport.channelPromotion.promote(p.pointer,p),/conflict|HTTP 400|sealed|snapshot|size|SHA/i);
+    assert.deepEqual(new Map([...current].map(([key,value])=>[key,hash(value.bytes)])),before);
+    assert.equal(f.calls.filter(call=>call.method==='POST'&&call.url===api+'/repository/commits').length,kind.includes('commit race')?1:0);
+    assert.equal(f.calls.some(call=>['PUT','POST'].includes(call.method)&&call.url.startsWith(api+'/repository/files/')),false);
+  });
+});
+
+test('a malformed atomic commit receipt cannot reflect credentials in the thrown diagnostic',async t=>{
+  const f=fixture(t,{route:call=>call.url===api+'/repository/commits'&&call.method==='POST'
+    ?json({id:'test-secret-token'},201):json({},404)});
+  const p=f.publication();p.plan.objects.push(f.object(Buffer.from(JSON.stringify([release(p.plan.tag)])),
+    'channels/launcher-stable.json','channel'));
+  await f.transport.channelPromotion.check(p);
+  await assert.rejects(f.transport.channelPromotion.promote(p.pointer,p),error=>
+    /Invalid JihuLab channel commit receipt/.test(error.message)&&!JSON.stringify(error).includes('test-secret-token'));
+});

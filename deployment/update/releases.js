@@ -241,7 +241,7 @@ function accepts(release, channel) {
 }
 async function latest(fetcher = fetch, signal, channel = 'stable', tag, options = {}) {
   options={...options,networkPolicy:operationNetworkPolicy(options.networkPolicy)};
-  let release;
+  let release,launcherCheckError;
   const evidence=[];
   const read=async url=>{const item=await requestJson(url,fetcher,signal,{...options,channel,withEvidence:true});evidence.push(item);return item.value;};
   if (tag) {
@@ -258,14 +258,65 @@ async function latest(fetcher = fetch, signal, channel = 'stable', tag, options 
       if (rows.length < 100 || evidence.at(-1)?.catalogueComplete === true) break;
     }
     release = candidates.sort((a, b) => compare(b.tag_name, a.tag_name))[0];
-  } else release = await read(API);
+  } else {
+    release = await read(API);
+    if(options.launcherDiscovery===true){
+      // The ordinary stable head remains readable by public legacy clients.
+      // Only a new desktop reader consults this fixed-purpose APP catalogue.
+      const anchor=release;
+      try{
+        const rows=[];let complete=false;
+        for(let page=1;page<=5;page++){
+          const batch=await read(`https://api.github.com/repos/${REPO}/releases?per_page=100&page=${page}`);
+          if(!Array.isArray(batch)||batch.length>100)throw new Error('启动器发布列表无效。');
+          rows.push(...batch);
+          if(batch.length<100||evidence.at(-1)?.catalogueComplete===true){complete=true;break;}
+        }
+        if(!complete)throw new Error('启动器发布列表超过本次有界查询范围。');
+        const candidates=rows.filter(item=>accepts(item,'stable')&&compare(item.tag_name,anchor?.tag_name)>0)
+          .sort((a,b)=>compare(b.tag_name,a.tag_name));
+        if(candidates.length){
+          const readManifest=async item=>{
+            const name='release-manifest.json',asset=item.assets?.find(value=>value.name===name);
+            if(!asset||asset.state!=='uploaded'||!/^sha256:[a-f0-9]{64}$/.test(asset.digest||'')
+              ||!Number.isSafeInteger(asset.size)||asset.size<1||asset.size>4*1024*1024)
+              throw new Error('启动器发布缺少固定清单校验信息。');
+            const value=await requestJson(releaseManifestAsset(item,{mode:'update'}),fetcher,signal,
+              {...options,channel,withEvidence:true,conditionIdentity:{sha256:asset.digest.slice(7),size:asset.size}});
+            evidence.push(value);return value.value;
+          };
+          const core=await readManifest(anchor);
+          if(core.schema!=='tavern-release/v2'||core.candidate||core.coreRelease
+            ||publicationTag(core)!==anchor.tag_name||compare(core.versions?.tavern,anchor.tag_name)!==0
+            ||!/^[a-f0-9]{40}$/.test(core.commit||''))throw new Error('核心稳定版锚点无法核验。');
+          // GitHub list order cannot authorize a different or older core.
+          for(const item of candidates){
+            const product=await readManifest(item);
+            if(!product.coreRelease)continue;
+            const ref=coreReference(product,options.platform||process.platform,options.arch||process.arch);
+            if(ref.tag!==anchor.tag_name||ref.commit!==core.commit||product.versions?.tavern!==core.versions.tavern)continue;
+            const original=anchor.assets?.find(value=>value.name===ref.asset);
+            if(!original||original.state!=='uploaded'||original.digest!==`sha256:${ref.sha256}`||original.size!==ref.size)
+              throw new Error('启动器发布引用的原核心清单与稳定版不一致。');
+            if(publicationTag(product)!==item.tag_name||product.candidate||!/^[a-f0-9]{40}$/.test(product.commit||''))
+              throw new Error('启动器发布批次身份无法核验。');
+            release=item;break;
+          }
+        }
+      }catch(error){
+        if(signal?.aborted)throw error;
+        launcherCheckError='启动器更新检查未完成：'+error.message;
+        release=anchor;
+      }
+    }
+  }
   if (!release || !accepts(release, channel)) throw new Error(channel === 'beta' ? '尚未发布可用的 Beta 测试版本。' : '没有找到有效的正式发布版本。');
   if (tag && release.tag_name !== tag) throw new Error('目标发布与所选版本不一致。');
   options.networkPolicy.sourceContext.bindTarget(release.tag_name);
   release = await withAssetReferences(release,fetcher,signal,{...options,channel},evidence);
   return options.withEvidence ? {release,checkedAt:evidence.map(item=>item.checkedAt).sort()[0],
     source:evidence.some(item=>item.source==='cache')?'cache':evidence.some(item=>item.source==='revalidated')?'revalidated':'network',
-    latestConfirmed:evidence.every(item=>item.latestConfirmed)} : release;
+    latestConfirmed:evidence.every(item=>item.latestConfirmed),...(launcherCheckError?{launcherCheckError}:{})} : release;
 }
 function validateSystemDescriptor(manifest, release, platform, arch, channel = 'stable',options={}) {
   if (manifest.schema !== 'nora-system/v1' || !acceptsCandidate(manifest,options,true) || manifest.platform !== platform || manifest.arch !== arch ||
@@ -542,8 +593,8 @@ async function check({ installRoot, launcherVersion, fetcher = fetch, platform, 
   };
   try {
     networkPolicy={...networkPolicy,deadlineAt:networkPolicy?.deadlineAt ?? (networkPolicy?.now || Date.now)()+(networkPolicy?.totalBudgetMs ?? 100000)};
-    const lookup = await latest(fetcher,signal,channel,undefined,{metadataCache,networkPolicy,withEvidence:true}),release=lookup.release;
-    let system = null, compatibilityError = '', requestError = '', requestFailed = false, launcher = null, diagnosticError, releasePlan,launcherCheckError;
+    const lookup = await latest(fetcher,signal,channel,undefined,{metadataCache,networkPolicy,withEvidence:true,launcherDiscovery,platform,arch}),release=lookup.release;
+    let system = null, compatibilityError = '', requestError = '', requestFailed = false, launcher = null, diagnosticError, releasePlan,launcherCheckError=lookup.launcherCheckError;
     try {
       releasePlan = await selectPlan({releaseEvidence:lookup,launcherVersion,fetcher,platform,arch,channel,metadataCache,networkPolicy,signal,client,updaterCapabilities,allowCandidate,explicitLocalRelease});
       launcher = releasePlan.launcherManifest;

@@ -102,6 +102,7 @@ function fixture(t) {
       }
     };
     admit(latestUrl,{kind:'catalogue'});
+    admit('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1',{kind:'launcher-list'});
     admit(`https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/tags/${encodeURIComponent(release.tag_name)}`,{kind:'tag'});
     for (const asset of release.assets) {
       assert.match(asset.name,/^[A-Za-z0-9][A-Za-z0-9._-]*$/);
@@ -116,6 +117,7 @@ function fixture(t) {
   const fetcher = async url => {
     requested.push(url);
     const identity = resource(url);
+    if(identity.kind==='launcher-list')return fixtureResponse(JSON.stringify([release]),url);
     if (['catalogue','tag'].includes(identity.kind)) return fixtureResponse(JSON.stringify(release),url);
     if (identity.asset === 'nora-system-darwin-arm64.json') return fixtureResponse(JSON.stringify(system),url);
     const name = Object.entries(system.files).find(([,item])=>item.asset===identity.asset)?.[0] || identity.asset;
@@ -573,7 +575,7 @@ function appOnlyFixture(t){
   const fetcher=async url=>{
     f.requested.push(String(url));
     const resource=f.resource(url);
-    return fixtureResponse(JSON.stringify(resource.kind==='asset'?undefined:f.release)||physical[resource.asset],url);
+    return fixtureResponse(JSON.stringify(resource.kind==='asset'?undefined:resource.kind==='launcher-list'?[f.release]:f.release)||physical[resource.asset],url);
   };
   const receipt=path.join(f.root,'tavern-updates/installed.json');fs.mkdirSync(path.dirname(receipt));
   fs.writeFileSync(receipt,JSON.stringify({version:'2.2.8',commit:'a'.repeat(40)}));
@@ -644,4 +646,80 @@ test('APP-only core proof rejects changed manifest bytes, source commit and recu
   Object.assign(f.system.coreRelease.manifests['darwin-arm64'],f.system.files['release-manifest.json']);
   f.refresh();await assert.rejects(releases.selectPlan(options),/不变核心/);
   assert.throws(()=>releases.coreReference({...f.product,coreRelease:{...f.product.coreRelease,tag:'v2.2.9'}},'darwin','arm64'),/来源证明/);
+});
+
+function splitDiscoveryFixture(t) {
+  const f=appOnlyFixture(t),sha=value=>crypto.createHash('sha256').update(value).digest('hex');
+  const anchorFiles={'release-manifest.json':f.original,'darwin-arm64-release-manifest.json':f.original};
+  const anchor={tag_name:'v2.2.8',draft:false,prerelease:false,assets:Object.entries(anchorFiles).map(([name,body])=>({
+    name,state:'uploaded',size:Buffer.byteLength(body),digest:'sha256:'+sha(body),
+    browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.2.8/${name}`}))};
+  const requests=[];let listStatus=200,githubOnly=false;
+  const fetcher=async address=>{
+    const url=String(address);requests.push(url);const u=new URL(url);
+    if(githubOnly&&u.hostname==='jihulab.com')return fixtureResponse('offline',url,{status:503});
+    if(url.endsWith('/latest')||url.endsWith('/channels/stable.json'))return fixtureResponse(JSON.stringify(anchor),url);
+    if(url.includes('?per_page=100&page=1')||url.endsWith('/channels/launcher-stable.json'))
+      return fixtureResponse(listStatus===200?JSON.stringify([f.release]):'temporarily offline',url,{status:listStatus});
+    const name=decodeURIComponent(u.pathname.split('/').pop());
+    if(u.pathname.includes('/v2.2.8/'))return fixtureResponse(anchorFiles[name],url);
+    if(u.pathname.includes('/v2.2.9/'))return fixtureResponse(f.physical[name],url);
+    throw new Error('Unexpected discovery test URL '+url);
+  };
+  return {...f,anchor,anchorFiles,requests,fetcher,options:{...f.options,fetcher,
+    client:'updater',updaterCapabilities:capabilities,networkPolicy:{maxAttempts:1,totalBudgetMs:3000,attemptTimeoutMs:1000}},
+    listFailure(){listStatus=503;},githubFallback(){githubOnly=true;}};
+}
+test('split stable discovery lets the desktop find APP-only while updater and Linux retain the compatible core anchor',async t=>{
+  const f=splitDiscoveryFixture(t);
+  const core=await releases.check(f.options);assert.equal(core.releaseTag,'v2.2.8');assert.equal(core.state,'current');
+  assert.equal(f.requests.some(url=>url.includes('launcher-stable')||url.includes('?per_page=')),false);
+  const gui=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(gui.releaseTag,'v2.2.9');assert.equal(gui.latest,'v2.2.8');assert.equal(gui.launcherUpdateAvailable,true);
+  const linux=await releases.check({...f.options,platform:'linux',arch:'x64'});
+  assert.equal(linux.releaseTag,'v2.2.8');assert.equal(linux.state,'current');
+});
+test('split stable discovery has a bounded GitHub list fallback when the domestic source is unavailable',async t=>{
+  const f=splitDiscoveryFixture(t);f.githubFallback();
+  const gui=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(gui.releaseTag,'v2.2.9');assert.equal(gui.launcherUpdateAvailable,true);
+  assert.ok(f.requests.includes('https://api.github.com/repos/LoveMaker-art/noras-tavern/releases?per_page=100&page=1'));
+  assert.equal(f.requests.some(url=>url.includes('page=2')),false);
+});
+test('unreadable APP discovery does not claim current or block a verified core update',async t=>{
+  const f=splitDiscoveryFixture(t);f.listFailure();
+  let result=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(result.state,'unavailable');assert.match(result.launcherError,/启动器/);assert.equal(result.updateSupported,true);
+  fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
+  result=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(result.state,'available');assert.equal(result.releaseAvailable,true);assert.equal(result.releaseTag,'v2.2.8');
+  assert.match(result.launcherError,/启动器/);
+});
+test('APP-only discovery cannot shadow a newer or different core anchor, nor forge its original platform manifest proof',async t=>{
+  const f=splitDiscoveryFixture(t);
+  for(const patch of [{commit:'c'.repeat(40)},{tag:'v2.2.7'}]) {
+    Object.assign(f.product.coreRelease,patch);f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
+    const result=await releases.check({...f.options,launcherDiscovery:true});
+    assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,false);
+  }
+  Object.assign(f.product.coreRelease,{tag:'v2.2.8',commit:'a'.repeat(40)});
+  f.product.coreRelease.manifests['darwin-arm64'].sha256='f'.repeat(64);f.physical['release-manifest.json']=JSON.stringify(f.product);f.refresh();
+  const result=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(result.releaseTag,'v2.2.8');assert.equal(result.launcherUpdateAvailable,false);assert.ok(result.launcherError);
+});
+
+test('a truncated GitHub APP list stays bounded and never proves that the APP is current',async t=>{
+  const f=splitDiscoveryFixture(t),pages=[];
+  const fetcher=async address=>{
+    const url=String(address);
+    if(url.includes('/channels/launcher-stable.json'))return fixtureResponse('unavailable',url,{status:503});
+    if(url.includes('?per_page=100&page=')){
+      const page=Number(new URL(url).searchParams.get('page'));pages.push(page);
+      return fixtureResponse(JSON.stringify(Array.from({length:100},(_,i)=>({draft:true,tag_name:`v99.0.${i}`}))),url);
+    }
+    return f.fetcher(address);
+  };
+  const result=await releases.check({...f.options,fetcher,launcherDiscovery:true});
+  assert.equal(result.state,'unavailable');assert.ok(result.launcherError);assert.equal(result.updateSupported,true);
+  assert.deepEqual(pages,[1,2,3,4,5]);assert.equal(result.releaseTag,'v2.2.8');
 });

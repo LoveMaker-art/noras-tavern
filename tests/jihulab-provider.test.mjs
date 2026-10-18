@@ -84,8 +84,21 @@ test('CAS conflict propagates without a generic channel upload or a promoted che
   await assert.rejects(provider.promote(p),/compare-and-swap conflict/);
   assert.deepEqual(calls,['cas-conflict']);assert.equal(p.state.sources.jihulab.promoted,false);
   const bad=publication();bad.plan.objects=[asset,catalogue,{...channel,key:'channels/beta.json'}];
-  await assert.rejects(provider.promote(bad),/Different JihuLab channel/);
+  await assert.rejects(provider.promote(bad),/Different.*channel/);
   assert.deepEqual(calls,['cas-conflict']);
+});
+
+test('a normal stable sealed pair is passed together to one CAS promotion and verification',async()=>{
+  const p=publication(),app={...channel,key:'channels/launcher-stable.json',sha256:'c'.repeat(64)};
+  p.plan.objects.push(app);const calls=[];
+  const {provider}=fixture({channelPromotion:{
+    check:async actual=>{assert.equal(actual,p);calls.push('check-pair');},
+    promote:async(object,actual)=>{assert.equal(object,channel);assert.equal(actual,p);
+      assert.deepEqual(actual.plan.objects.filter(item=>item.phase==='channel'),[channel,app]);calls.push('cas-pair');},
+    verify:async(object,actual)=>{assert.equal(object,channel);assert.equal(actual,p);calls.push('verify-pair');}
+  }});
+  await provider.checkPromotion(p);await provider.promote(p);await provider.verifyPromotion(p);
+  assert.deepEqual(calls,['check-pair','cas-pair','verify-pair']);
 });
 
 test('a missing CAS implementation fails before inspecting or uploading any release file',()=>{

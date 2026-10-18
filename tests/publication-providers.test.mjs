@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import childProcess from 'node:child_process';
 import {once} from 'node:events';
+import {createHash} from 'node:crypto';
 import {syncBuiltinESMExports} from 'node:module';
 import lifecycle from './deployment/launcher_test_lifecycle.cjs';
 import {command,githubProvider,sourceforgeProvider} from '../tooling/release/publication-providers.mjs';
@@ -99,7 +100,7 @@ function githubFixture(t,{draft=true,exists=true,populated=true}={}) {
                 assert.ok(args.includes('--paginate')&&args.includes('--slurp'));
                 return JSON.stringify([assets]);
             }
-            if(endpoint===`${base}/releases/latest`)return JSON.stringify({...release,draft:false,tag_name:release.draft?'v2.4.3':tag});
+            if(endpoint===`${base}/releases/latest`)return JSON.stringify(state.latest??{...release,draft:false,tag_name:release.draft?'v2.4.3':tag});
             assert.fail(`Unexpected GitHub API endpoint: ${endpoint}`);
         }
         assert.equal(args[0],'release');assert.equal(args[2],tag);
@@ -360,4 +361,38 @@ test('an invisible new GitHub draft fails after bounded reads and is never recre
     await assert.rejects(provider.begin(f.p),/Prepared GitHub release disappeared/);
     assert.equal(hidden,4);assert.equal(f.calls.filter(args=>args[0]==='release'&&args[1]==='create').length,1);
     assert.ok(!f.calls.some(args=>args[0]==='release'&&['edit','upload'].includes(args[1])));
+});
+
+test('APP-only GitHub promotion preserves the authenticated normal latest anchor',async t=>{
+    const f=githubFixture(t),core={tag:'v2.4.3',commit:'b'.repeat(40)};
+    f.p.plan.coreAnchor=core;
+    f.state.historical={commit:core.commit,release:{tag_name:core.tag,draft:false,prerelease:false}};
+    f.state.latest=f.state.historical.release;
+    await f.provider.begin(f.p);await f.provider.checkPromotion(f.p);await f.provider.promote(f.p);await f.provider.verifyPromotion(f.p);
+    const edit=f.calls.find(args=>args[0]==='release'&&args[1]==='edit');assert.ok(edit.includes('--latest=false'));
+    f.state.latest={...f.state.latest,tag_name:'v2.4.2'};
+    await assert.rejects(f.provider.checkPromotion(f.p),/anchor/i);
+});
+
+test('SourceForge resumes a partially advanced sealed pair and verifies both pointers',async()=>{
+    const release={tag_name:'v2.5.3',draft:false,prerelease:false},sha=bytes=>createHash('sha256').update(bytes).digest('hex');
+    const objects=[['catalogue','releases/v2.5.3/release.json',release],['channel','channels/stable.json',release],
+        ['channel','channels/launcher-stable.json',[release]]].map(([phase,key,value])=>{
+        const bytes=Buffer.from(JSON.stringify(value));return {phase,key,bytes,size:bytes.length,sha256:sha(bytes)};
+    });
+    const remote=new Map([[objects[0].key,objects[0].sha256]]),calls=[];let fail=true;
+    const p={plan:{tag:'v2.5.3',channel:'stable',objects},state:{sources:{sourceforge:{objects:{
+        [objects[0].key]:{sha256:objects[0].sha256,size:objects[0].size,verifiedAt:'2026-10-18T00:00:00Z'}}}}}};
+    const provider=sourceforgeProvider({upload:async object=>{
+        calls.push(object.key);if(fail&&object===objects[2]){fail=false;throw Error('second pointer response unavailable');}
+        remote.set(object.key,object.sha256);
+    },readPublic:async key=>new Response(null,{headers:{'content-length':String(objects.find(item=>item.key===key).size)}}),
+    verifyObject:async object=>assert.equal(remote.get(object.key),object.sha256),preventDowngrade:async()=>{},log:()=>{}});
+    await provider.assertReady(p);await provider.checkPromotion(p);
+    await assert.rejects(provider.promote(p),/second pointer/);
+    assert.equal(remote.get(objects[1].key),objects[1].sha256,'First sealed pointer may already have advanced');
+    await provider.checkPromotion(p);await provider.promote(p);await provider.verifyPromotion(p);
+    for(const object of objects)assert.equal(remote.get(object.key),object.sha256);
+    remote.set(objects[1].key,'0'.repeat(64));await assert.rejects(provider.verifyPromotion(p));
+    assert.deepEqual(calls,[objects[1].key,objects[2].key,objects[1].key,objects[2].key]);
 });

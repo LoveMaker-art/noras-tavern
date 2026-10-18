@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {verifyFinalConsumers} from './final-consumer.mjs';
+import {publicationCoreAnchor,publicationChannelObjects} from './system-release.mjs';
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const json = value => JSON.stringify(value, null, 2) + '\n';
@@ -45,26 +46,26 @@ function identity(plan) {
     assert.equal(typeof plan.body, 'string');
     assert.match(plan.sourceRun, /^(?:local|[1-9][0-9]*)$/);
     assert.ok(plan.objects.length >= 3);
-    const names = new Set();
+    const channels=publicationChannelObjects(plan),names = new Set();
     for (const object of plan.objects) {
         assert.match(object.sha256, /^[a-f0-9]{64}$/);
         assert.ok(Number.isSafeInteger(object.size) && object.size > 0);
         assert.ok(!names.has(object.key), 'Duplicate sealed object'); names.add(object.key);
         const sourceTag = object.assetReleaseTag || plan.tag;
         assert.match(sourceTag, /^v\d+\.\d+\.\d+(?:-beta\.\d+)?$/);
-        const phase = object.key === `channels/${plan.channel}.json` ? 'channel'
+        const phase = channels.includes(object) ? 'channel'
             : object.key === `releases/${plan.tag}/release.json` ? 'catalogue'
             : object.key.startsWith(`releases/${sourceTag}/`) ? 'asset' : null;
         assert.ok(phase && phase === object.phase, 'Invalid sealed phase/identity');
-        assert.match(object.key, /^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
+        assert.match(object.key, /^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
         assert.ok(['asset', 'state'].includes(object.location));
         assert.equal(typeof object.relativePath, 'string');
         assert.ok(object.relativePath && !path.isAbsolute(object.relativePath) && !object.relativePath.split(/[\\/]/).includes('..'));
         assert.ok(!object.reference || (phase === 'asset' && plan.assetMode === 'shared' && sourceTag !== plan.tag));
         if(object.reference)assert.match(object.sourceCommit,/^[a-f0-9]{40}$/);
     }
-    assert.equal(plan.objects.at(-1).phase, 'channel');
-    assert.equal(plan.objects.at(-2).phase, 'catalogue');
+    assert.deepEqual(plan.objects.slice(-channels.length),channels,'Channel pointers must follow immutable objects');
+    assert.equal(plan.objects.at(-channels.length-1).phase, 'catalogue');
 }
 
 // Paths in the signed-by-digest plan are portable across CI runners. Progress is
@@ -77,7 +78,7 @@ export async function sealPublication(distribution, {root, stateDir, repository,
     directory(root);directory(stateDir);
     const plan = {schema: 'nora-publication-plan/1', repository, sourceRun: String(sourceRun),
         tag: distribution.plan.tag, commit: distribution.plan.commit, mode: distribution.plan.mode,
-        channel: distribution.plan.channel, assetMode, destinations: [...destinations(selectedDestinations)], publishedAt: distribution.release.published_at,
+        channel: distribution.plan.channel, ...(distribution.plan.coreAnchor?{coreAnchor:distribution.plan.coreAnchor}:{}), assetMode, destinations: [...destinations(selectedDestinations)], publishedAt: distribution.release.published_at,
         body: distribution.release.body, objects: []};
     for (const object of distribution.plan.objects) {
         const location = inside(root, object.file) ? 'asset' : 'state';
@@ -150,13 +151,23 @@ export async function loadPublication({root, stateDir, repository, tag, commit, 
         assert.equal(bytes.sha256, object.sha256, 'Sealed publication bytes changed');
         objects.push({...object, file});
     }
-    const release=JSON.parse(fs.readFileSync(objects.at(-2).file));
+    const product=objects.find(object=>object.phase==='asset'&&object.key===`releases/${plan.tag}/release-manifest.json`);
+    if(plan.coreAnchor)assert.ok(product,'APP-only publication requires its authenticated product manifest');
+    if(product){
+        const manifest=JSON.parse(fs.readFileSync(product.file));
+        assert.deepEqual(publicationCoreAnchor(manifest),plan.coreAnchor||null,'Sealed core anchor differs from actual coreRelease');
+        if(plan.channel==='stable'&&!plan.coreAnchor)assert.equal(plan.tag,`v${manifest.versions?.tavern}`,'Ordinary core anchor must remain legacy compatible');
+    }
+    const catalogue=objects.find(item=>item.phase==='catalogue');
+    const release=JSON.parse(fs.readFileSync(catalogue.file));
     assert.equal(release.tag_name,plan.tag,'Catalogue tag differs');
     assert.equal(release.body,plan.body,'Catalogue notes differ');
     assert.equal(release.published_at,plan.publishedAt,'Catalogue date differs');
     assert.equal(release.draft,false);assert.equal(release.prerelease,plan.channel==='beta');
-    const advertised=JSON.parse(fs.readFileSync(objects.at(-1).file));
-    assert.deepEqual(advertised,plan.channel==='beta'?[release]:release,'Channel differs from sealed catalogue');
+    for(const object of publicationChannelObjects({...plan,objects})){
+        const advertised=JSON.parse(fs.readFileSync(object.file));
+        assert.deepEqual(advertised,object.key==='channels/stable.json'?release:[release],'Channel differs from sealed catalogue');
+    }
     const physical=objects.filter(item=>item.phase==='asset'&&!item.reference);
     assert.ok(Array.isArray(release.assets)&&release.assets.length===physical.length,'Catalogue asset closure differs');
     const names=new Set();

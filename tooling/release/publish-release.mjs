@@ -9,6 +9,7 @@ import { sealPublication, loadPublication, executePublication } from './publicat
 import { command, githubProvider, sourceforgeProvider } from './publication-providers.mjs';
 import { jihulabProvider } from './jihulab-provider.mjs';
 import { createJihuTransport } from './jihulab-transport.mjs';
+import {publicationCoreAnchor,publicationChannelKey,publicationChannelObjects,verifyPublishedCoreAnchor,releasePublicationTag} from './system-release.mjs';
 
 const run = (command, args) => execFileSync(command, args, { stdio: 'inherit' });
 
@@ -90,6 +91,28 @@ async function objectRecord(file, key, phase) {
     return {file, key, phase, size:fs.statSync(file).size, sha256:hash.digest('hex')};
 }
 
+// The same writer feeds production publication and read-only consumer replays.
+// It only writes fresh local catalogue files; it never uploads or promotes them.
+export async function writeDiscoveryCatalogues({release,product,output}) {
+    const tag=releasePublicationTag(product),beta=tag.includes('-beta.'),channel=beta?'beta':'stable';
+    assert.equal(release.tag_name,tag,'Catalogue differs from product publication');
+    assert.equal(release.draft,false);assert.equal(release.prerelease,beta);
+    const coreAnchor=publicationCoreAnchor(product),channelKey=publicationChannelKey({tag,channel,...(coreAnchor?{coreAnchor}:{})});
+    if(!beta&&!coreAnchor)assert.equal(tag,`v${product.versions?.tavern}`,'Ordinary stable core anchor must remain legacy compatible');
+    fs.mkdirSync(path.join(output,'releases',tag),{recursive:true});fs.mkdirSync(path.join(output,'channels'),{recursive:true});
+    const catalogue=path.join(output,'releases',tag,'release.json'),pointer=path.join(output,channelKey);
+    fs.writeFileSync(catalogue,JSON.stringify(release)+'\n',{flag:'wx'});
+    fs.writeFileSync(pointer,JSON.stringify(beta||coreAnchor?[release]:release)+'\n',{flag:'wx'});
+    const objects=[await objectRecord(catalogue,`releases/${tag}/release.json`,'catalogue'),
+        await objectRecord(pointer,channelKey,'channel')];
+    if(!beta&&!coreAnchor){
+        const launcher=path.join(output,'channels/launcher-stable.json');
+        fs.writeFileSync(launcher,JSON.stringify([release])+'\n',{flag:'wx'});
+        objects.push(await objectRecord(launcher,'channels/launcher-stable.json','channel'));
+    }
+    return {channel,...(coreAnchor?{coreAnchor}:{}),objects};
+}
+
 // Prepare an ordered, verified upload list. Storage-specific uploads are a
 // separate deployment step; never expose a channel before all objects verify.
 export async function prepareDistribution({root, tag, commit, mode='full', repository='LoveMaker-art/noras-tavern', output=root+'.distribution',body='',publishedAt=new Date().toISOString(),assetMode='legacy',reuseFrom}) {
@@ -159,20 +182,14 @@ export async function prepareDistribution({root, tag, commit, mode='full', repos
         fs.writeFileSync(index,JSON.stringify({schema:'nora-release-assets/1',repository,tag,commit,minimumLauncherVersion:minimum,assets:references})+'\n');
         objects.push(await objectRecord(index,`releases/${tag}/release-assets.json`,'asset'));
     }
-    const beta=tag.includes('-beta.'),channel=beta?'beta':'stable';
+    const beta=tag.includes('-beta.');
     assert.ok(Number.isFinite(Date.parse(publishedAt)), 'Invalid publication date');
     assert.equal(typeof body,'string');
     const release={tag_name:tag,draft:false,prerelease:beta,body,published_at:publishedAt,assets:objects.filter(item=>!item.reference).map(item=>({name:path.basename(item.key),state:'uploaded',size:item.size,
         digest:`sha256:${item.sha256}`,browser_download_url:`https://github.com/${repository}/releases/download/${tag}/${path.basename(item.key)}`}))};
-    fs.mkdirSync(path.join(output,'releases',tag),{recursive:true});
-    const catalogue=path.join(output,'releases',tag,'release.json');
-    fs.writeFileSync(catalogue,JSON.stringify(release)+'\n');
-    objects.push(await objectRecord(catalogue,`releases/${tag}/release.json`,'catalogue'));
-    fs.mkdirSync(path.join(output,'channels'));
-    const pointer=path.join(output,'channels',channel+'.json');
-    fs.writeFileSync(pointer,JSON.stringify(beta?[release]:release)+'\n');
-    objects.push(await objectRecord(pointer,`channels/${channel}.json`,'channel'));
-    const plan={schema:'nora-distribution/1',tag,commit,mode,channel,
+    const discovery=await writeDiscoveryCatalogues({release,product:JSON.parse(fs.readFileSync(path.join(root,'release-manifest.json'))),output});
+    objects.push(...discovery.objects);
+    const plan={schema:'nora-distribution/1',tag,commit,mode,channel:discovery.channel,...(discovery.coreAnchor?{coreAnchor:discovery.coreAnchor}:{}),
         publishChannelAfter:'all_objects_verified',objects};
     fs.writeFileSync(path.join(output,'distribution-plan.json'),JSON.stringify(plan,null,2)+'\n');
     return {output,plan,release,verification};
@@ -230,7 +247,7 @@ async function publicRetry(key,task,{timeout,attemptTimeout,maxAttempts=4,retryD
     }} finally {clearTimeout(timer);}
 }
 export async function readPublic(key,fetcher=fetch,timeout=120000,options={}) {
-    assert.match(key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
+    assert.match(key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
     const {signal,maxAttempts=4,retryDelay=2000,headerTimeout=30000,attemptTimeout=60000,revalidate=false,log=console.log,...request}=options;
     assert.ok(Number.isSafeInteger(headerTimeout)&&headerTimeout>0,'Invalid SourceForge header timeout');
     const url=sfRoot+sfKey(key);
@@ -289,23 +306,30 @@ function tagOrder(tag) {
     return [Number(match[1]),Number(match[2]),Number(match[3]),match[4]==null?1:0,Number(match[4]||0)];
 }
 async function preventDowngrade(distribution,fetcher) {
-    const key=`channels/${distribution.plan.channel}.json`;
-    const previous=await publicRetry(key,async(signal,attempt)=>{
-        const response=await readPublic(key,fetcher,120000,{signal,maxAttempts:1,revalidate:attempt>1});
-        if([404,410].includes(response.status)){await response.body?.cancel();return null;}
-        assert.ok(response.ok&&response.body,'Cannot confirm existing SourceForge channel');
-        const chunks=[];let size=0;
-        await publicBody(response,signal,chunk=>{size+=chunk.length;assert.ok(size<=4*1024*1024,'Existing channel too large');chunks.push(chunk);},{idleTimeout:30000,key});
-        return JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    },{timeout:120000,attemptTimeout:60000});
-    if(previous===null)return;
-    assert.equal(Array.isArray(previous),distribution.plan.channel==='beta','Existing channel has an invalid shape');
-    const items=Array.isArray(previous)?previous:[previous],target=tagOrder(distribution.plan.tag);
-    for(const item of items) {
-        assert.ok(item && !item.draft && Boolean(item.prerelease)===(distribution.plan.channel==='beta'),'Existing channel has an invalid release');
-        const old=tagOrder(item.tag_name);
-        const index=old.findIndex((number,index)=>number!==target[index]);
-        assert.ok(index<0||old[index]<target[index],'Refusing to downgrade SourceForge channel');
+    await verifyPublishedCoreAnchor(distribution.plan,async key=>{
+        const response=await readPublic(key,fetcher,120000,{revalidate:true});
+        assert.ok(response.ok&&response.body,'Cannot verify published core anchor');const chunks=[];let size=0;
+        await publicBody(response,undefined,chunk=>{size+=chunk.length;assert.ok(size<=4*1024*1024,'Core anchor too large');chunks.push(chunk);},{idleTimeout:30000,key});
+        return Buffer.concat(chunks,size);
+    });
+    for(const object of publicationChannelObjects(distribution.plan)){
+        const key=object.key,previous=await publicRetry(key,async(signal,attempt)=>{
+            const response=await readPublic(key,fetcher,120000,{signal,maxAttempts:1,revalidate:attempt>1});
+            if([404,410].includes(response.status)){await response.body?.cancel();return null;}
+            assert.ok(response.ok&&response.body,'Cannot confirm existing SourceForge channel');
+            const chunks=[];let size=0;
+            await publicBody(response,signal,chunk=>{size+=chunk.length;assert.ok(size<=4*1024*1024,'Existing channel too large');chunks.push(chunk);},{idleTimeout:30000,key});
+            return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+        },{timeout:120000,attemptTimeout:60000});
+        if(previous===null)continue;
+        assert.equal(Array.isArray(previous),distribution.plan.channel==='beta'||key==='channels/launcher-stable.json','Existing channel has an invalid shape');
+        const items=Array.isArray(previous)?previous:[previous],target=tagOrder(distribution.plan.tag);
+        for(const item of items) {
+            assert.ok(item && !item.draft && Boolean(item.prerelease)===(distribution.plan.channel==='beta'),'Existing channel has an invalid release');
+            const old=tagOrder(item.tag_name);
+            const index=old.findIndex((number,index)=>number!==target[index]);
+            assert.ok(index<0||old[index]<target[index],'Refusing to downgrade SourceForge channel');
+        }
     }
 }
 // Upload immutable objects first. Each source is independently complete before
@@ -317,11 +341,11 @@ export async function publishDistribution(distribution,{upload,verify=verifyDist
     tagOrder(tag);
     assert.equal(channel,tag.includes('-beta.')?'beta':'stable');
     assert.ok(objects.length>=3,'Incomplete publication plan');
-    const keys=new Set();
+    const channels=publicationChannelObjects(distribution.plan),keys=new Set();
     for(const object of objects) {
-        assert.match(object.key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
+        assert.match(object.key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
         assert.ok(!keys.has(object.key),'Duplicate publication object');keys.add(object.key);
-        const phase=object.key===`channels/${channel}.json`?'channel'
+        const phase=channels.includes(object)?'channel'
             :object.key===`releases/${tag}/release.json`?'catalogue'
             :object.key.startsWith(`releases/${tag}/`)?'asset':null;
         assert.ok(phase && object.phase===phase,'Publication phase or release identity differs');
@@ -329,8 +353,8 @@ export async function publishDistribution(distribution,{upload,verify=verifyDist
         assert.equal(bytes.size,object.size,'Sealed publication bytes changed');
         assert.equal(bytes.sha256,object.sha256,'Sealed publication bytes changed');
     }
-    assert.equal(objects.at(-1).phase,'channel');
-    assert.equal(objects.at(-2).phase,'catalogue');
+    assert.deepEqual(objects.slice(-channels.length),channels,'Channel pointers must follow immutable objects');
+    assert.equal(objects.at(-channels.length-1).phase,'catalogue');
     for(const object of objects.filter(item=>item.phase!=='channel')) {
         const progress=`[${objects.indexOf(object)+1}/${objects.length}] ${object.key}`;
         console.log(`SourceForge upload ${progress} (${object.size} bytes)`);
@@ -340,12 +364,13 @@ export async function publishDistribution(distribution,{upload,verify=verifyDist
         console.log(`SourceForge verified ${progress} sha256=${object.sha256}`);
     }
     await preventDowngrade(distribution,fetcher);
-    const pointer=objects.at(-1);
-    console.log(`SourceForge upload [${objects.length}/${objects.length}] ${pointer.key} (${pointer.size} bytes)`);
-    await upload(pointer,{immutable:false});
-    console.log(`SourceForge verify [${objects.length}/${objects.length}] ${pointer.key}`);
-    await verify(pointer,{fetcher});
-    console.log(`SourceForge verified [${objects.length}/${objects.length}] ${pointer.key} sha256=${pointer.sha256}`);
+    for(const pointer of channels){
+        console.log(`SourceForge upload ${pointer.key} (${pointer.size} bytes)`);
+        await upload(pointer,{immutable:false});
+        console.log(`SourceForge verify ${pointer.key}`);
+        await verify(pointer,{fetcher});
+        console.log(`SourceForge verified ${pointer.key} sha256=${pointer.sha256}`);
+    }
 }
 export function sourceforgeUploader(configPath,output,{execute=execFileSync}={}) {
     assert.ok(configPath,'Set NORA_SOURCEFORGE_UPLOAD_CONFIG to a protected publisher configuration file');
@@ -364,7 +389,7 @@ export function sourceforgeUploader(configPath,output,{execute=execFileSync}={})
         `-oUserKnownHostsFile=${config.knownHostsFile}`,'-i',config.identityFile].map(quote).join(' ');
     return async(object,{immutable})=>{
         const key=sfKey(object.key);
-        assert.match(key,/^(?:v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta)\.json)$/);
+        assert.match(key,/^(?:v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
         const stage=fs.mkdtempSync(path.join(output,'.sourceforge-upload-')),file=path.join(stage,key);
         try {
             fs.mkdirSync(path.dirname(file),{recursive:true});

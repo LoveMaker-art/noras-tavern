@@ -61,6 +61,53 @@ export function coreReleaseIdentity(product,platform) {
     if(platform!==undefined&&!value.manifests[platform])throw new Error('Missing bound platform core manifest');
     return structuredClone(value);
 }
+// Stable core discovery remains readable by public clients which predate
+// component publications. APP-only has one separate, fixed-purpose pointer.
+export function publicationCoreAnchor(product) {
+    const ref=coreReleaseIdentity(product);if(!ref)return null;
+    if(releasePublicationTag(product).includes('-')||ref.tag!==`v${product.versions?.tavern}`)
+        throw new Error('APP-only legacy discovery requires a stable ordinary core anchor; Beta is not supported');
+    return {tag:ref.tag,commit:ref.commit};
+}
+export function publicationChannelKey(plan) {
+    assert.ok(['stable','beta'].includes(plan.channel),'Invalid publication channel');
+    if(!Object.hasOwn(plan,'coreAnchor'))return `channels/${plan.channel}.json`;
+    const value=plan.coreAnchor;
+    assert.ok(plan.channel==='stable'&&value&&Object.keys(value).sort().join(',')==='commit,tag','Invalid APP-only core anchor');
+    assert.match(value.tag||'',/^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/,'Invalid APP-only core anchor tag');
+    assert.match(value.commit||'',/^[a-f0-9]{40}$/,'Invalid APP-only core anchor commit');
+    const before=value.tag.slice(1).split('.').map(Number),after=String(plan.tag).slice(1).split('.').map(Number);
+    const i=before.findIndex((v,i)=>v!==after[i]);
+    assert.ok(after.length===3&&after.every(Number.isSafeInteger)&&i>=0&&before[i]<after[i],'APP-only publication must follow its core anchor');
+    return 'channels/launcher-stable.json';
+}
+// Infer the fixed channel set from sealed objects. Historical ordinary plans
+// retain their one-pointer contract; new producers include both stable heads.
+export function publicationChannelObjects(plan) {
+    const primary=publicationChannelKey(plan),objects=plan.objects.filter(item=>item.phase==='channel');
+    const keys=objects.map(item=>item.key),dual=plan.channel==='stable'&&!plan.coreAnchor&&objects.length===2;
+    assert.deepEqual(keys,dual?['channels/stable.json','channels/launcher-stable.json']:[primary],
+        'Different sealed publication channel phase/identity');
+    return objects;
+}
+export async function verifyPublishedCoreAnchor(plan,readBytes) {
+    publicationChannelKey(plan);if(!plan.coreAnchor)return;
+    const head=JSON.parse(await readBytes('channels/stable.json'));
+    assert.ok(head&&head.draft===false&&head.prerelease===false&&head.tag_name===plan.coreAnchor.tag,'Published core anchor differs');
+    const matches=head.assets?.filter(item=>item.name==='release-manifest.json');
+    assert.ok(matches?.length===1,'Published core anchor has no unique manifest');
+    const asset=matches[0];assert.ok(asset.state==='uploaded'&&Number.isSafeInteger(asset.size)&&asset.size>0&&asset.size<=4*1024*1024,'Invalid core anchor manifest size');
+    assert.match(asset.digest||'',/^sha256:[a-f0-9]{64}$/,'Missing core anchor manifest digest');
+    assert.equal(asset.browser_download_url,`https://github.com/LoveMaker-art/noras-tavern/releases/download/${head.tag_name}/release-manifest.json`,'Different core anchor manifest origin');
+    const bytes=await readBytes(`releases/${head.tag_name}/release-manifest.json`);
+    assert.equal(bytes.length,asset.size,'Different core anchor manifest size');
+    assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'),asset.digest.slice(7),'Different core anchor manifest SHA');
+    const manifest=JSON.parse(bytes);
+    assert.ok(manifest.schema==='tavern-release/v2'&&!manifest.candidate&&!manifest.coreRelease
+        &&manifest.commit===plan.coreAnchor.commit&&`v${manifest.versions?.tavern}`===head.tag_name
+        &&releasePublicationTag(manifest)===head.tag_name,'Published core anchor identity differs');
+}
+
 export function assertCoreReleasePayload(product,bytes,platform,entry) {
     const reference=coreReleaseIdentity(product,platform);
     if(!reference)return null;

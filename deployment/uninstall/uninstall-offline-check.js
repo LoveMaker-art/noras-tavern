@@ -149,6 +149,119 @@ function macFiles(output,{root,pid}){
   }
   if(actualPid!==pid||!cwd||!text||field)throw failed('无法完整核验候选服务进程归属，未删除文件。');
 }
+// Kernel argv/environment boundaries and microsecond birth identity avoid
+// guessing ownership from ps's unquoted environment text. Only the declared
+// argv and installation paths leave this helper; never log its private output.
+const MAC_PROCESS_EVIDENCE=String.raw`function run(input) {
+  ObjC.import('Foundation');
+  ObjC.bindFunction('sysctl', ['int', ['void *','unsigned int','void *','void *','void *','unsigned long']]);
+  ObjC.bindFunction('proc_pidinfo', ['int', ['int','int','unsigned long long','void *','int']]);
+  var cap=1048576, pid=Number(input[0]);
+  if (!Number.isSafeInteger(pid)||pid<1||pid>2147483647) throw Error('Invalid process identity');
+  function raw(data) {
+    var s=ObjC.unwrap(data.base64EncodedStringWithOptions(0)), out=[], bits=0, value=0;
+    var chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+    for(var i=0;i<s.length&&s[i]!=='=';i++) { value=value*64+chars.indexOf(s[i]); bits+=6;
+      if(bits>=8) { bits-=8; out.push((value>>bits)&255); value&=(1<<bits)-1; } }
+    return out;
+  }
+  function encoded(bytes) {
+    var chars='ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/', out='';
+    for(var i=0;i<bytes.length;i+=3) { var a=bytes[i], b=bytes[i+1], c=bytes[i+2], v=(a<<16)|((b||0)<<8)|(c||0);
+      out+=chars[(v>>>18)&63]+chars[(v>>>12)&63]+(b===undefined?'=':chars[(v>>>6)&63])+(c===undefined?'=':chars[v&63]); }
+    return out;
+  }
+  function data(bytes) { return $.NSData.alloc.initWithBase64EncodedStringOptions(encoded(bytes),0); }
+  function u32(a,i) { return a[i]+a[i+1]*256+a[i+2]*65536+a[i+3]*16777216; }
+  function u64(a,i) { var n=u32(a,i)+u32(a,i+4)*4294967296; if(!Number.isSafeInteger(n))throw Error('Invalid native integer');return n; }
+  function birth() {
+    // Darwin's 64-bit proc_bsdinfo contains PID/UID and microsecond birth time.
+    var d=$.NSMutableData.dataWithLength(136);
+    if($.proc_pidinfo(pid,3,0,d.mutableBytes,136)!==136)throw Error('Process identity unavailable');
+    var a=raw(d), value={pid:u32(a,12),uid:u32(a,20),created:[u64(a,120),u64(a,128)]};
+    if(value.pid!==pid||value.created[0]<1||value.created[1]>999999||u32(a,4)===5)throw Error('Invalid process identity');
+    return value;
+  }
+  var before=birth(), mib=data([1,0,0,0,49,0,0,0,pid&255,(pid>>>8)&255,(pid>>>16)&255,(pid>>>24)&255]);
+  var output=$.NSMutableData.dataWithLength(cap), length=$.NSMutableData.alloc.initWithBase64EncodedStringOptions('AAAQAAAAAAA=',0);
+  if($.sysctl(mib.bytes,3,output.mutableBytes,length.mutableBytes,null,0)!==0)throw Error('Process arguments unavailable');
+  var size=u64(raw(length),0);
+  if(size<8||size>=cap)throw Error('Invalid process argument size');
+  output.setLength(size);
+  var bytes=raw(output), argc=u32(bytes,0), pos=4;
+  if(argc<1||argc>65536)throw Error('Invalid argument count');
+  function read() {
+    var start=pos;while(pos<size&&bytes[pos]!==0)pos++;
+    if(pos>=size)throw Error('Truncated process argument record');
+    var value=ObjC.unwrap($.NSString.alloc.initWithDataEncoding(output.subdataWithRange($.NSMakeRange(start,pos-start)),4));
+    pos++;if(typeof value!=='string')throw Error('Invalid process record encoding');return value;
+  }
+  var executable=read(); if(!executable||executable[0]!=='/')throw Error('Invalid executable record');
+  while(pos<size&&bytes[pos]===0)pos++;
+  var argv=[];for(var i=0;i<argc;i++)argv.push(read());
+  if(!argv[0])throw Error('Invalid first argument');
+  var allowed={HERMES_HOME:1,NORA_HERMES_HOME:1,NORA_TAVERN_HOME:1,TAVERN_DATA_ROOT:1,HERMES_INSTALL_DIR:1,
+    PYTHONPATH:1,PYTHONHOME:1,PYTHONEXECUTABLE:1,__PYVENV_LAUNCHER__:1,TAVERN_NODE_EXECUTABLE:1,VIRTUAL_ENV:1};
+  var environment={}, seen=Object.create(null);
+  while(pos<size&&bytes[pos]!==0) {
+    var entry=read(), split=entry.indexOf('=');if(split<=0)throw Error('Invalid environment record');
+    var key=entry.slice(0,split);if(seen[key])throw Error('Duplicate environment key');seen[key]=true;
+    if(Object.prototype.hasOwnProperty.call(allowed,key))environment[key]=entry.slice(split+1);
+  }
+  if(pos>=size)throw Error('Incomplete environment record');
+  // Darwin appends Apple data after the environment. A relevant key there is ambiguous.
+  while(pos<size) { if(bytes[pos]===0){pos++;continue;} var tail=read(), split=tail.indexOf('=');
+    if(split>0&&Object.prototype.hasOwnProperty.call(allowed,tail.slice(0,split)))throw Error('Ambiguous environment boundary'); }
+  var after=birth();
+  if(JSON.stringify(before)!==JSON.stringify(after))throw Error('Process identity changed');
+  return JSON.stringify({schema:'nora-uninstall-mac-process/1',pid:pid,uid:before.uid,created:before.created,argv:argv,environment:environment});
+}
+`;
+const HERMES_BINDINGS=['HERMES_HOME','NORA_HERMES_HOME','NORA_TAVERN_HOME','TAVERN_DATA_ROOT',
+  'HERMES_INSTALL_DIR','PYTHONPATH','PYTHONHOME','PYTHONEXECUTABLE','__PYVENV_LAUNCHER__','TAVERN_NODE_EXECUTABLE','VIRTUAL_ENV'];
+function macHermesProcess(pid,root,timeout){
+  let value;
+  try{value=JSON.parse(bounded('/usr/bin/osascript',['-l','JavaScript','-e',MAC_PROCESS_EVIDENCE,'--',String(pid)],{timeout}));}
+  catch(error){throw failed('无法读取候选诺拉后台的实例归属，未删除文件。',error);}
+  if(value?.schema!=='nora-uninstall-mac-process/1'||value.pid!==pid||value.uid!==process.getuid()
+    ||!Array.isArray(value.created)||value.created.length!==2||!value.created.every(Number.isSafeInteger)
+    ||value.created[0]<1||value.created[1]<0||value.created[1]>999999
+    ||!Array.isArray(value.argv)||value.argv.length<2||value.argv.length>128||!value.argv.every(item=>typeof item==='string')
+    ||!value.environment||Array.isArray(value.environment)||typeof value.environment!=='object'
+    ||Object.keys(value.environment).some(key=>!HERMES_BINDINGS.includes(key)||typeof value.environment[key]!=='string'))
+    throw failed('候选诺拉后台的进程证据不完整，未删除文件。');
+  const canonicalRoot=fs.realpathSync(root),paths={};
+  const outside=(file,{directory=true}={})=>{
+    if(!path.posix.isAbsolute(file||''))throw failed('候选诺拉后台缺少明确实例路径，未删除文件。');
+    let resolved,stat;
+    try{resolved=fs.realpathSync(file);stat=fs.statSync(resolved);}catch{throw failed('候选诺拉后台的实例路径无法核验，未删除文件。');}
+    if(directory?!stat.isDirectory():!stat.isFile())throw failed('候选诺拉后台的实例路径类型无法核验，未删除文件。');
+    if(resolved==='/'||resolved===canonicalRoot||resolved.startsWith(canonicalRoot+'/')||canonicalRoot.startsWith(resolved+'/'))
+      throw failed('当前安装仍有诺拉后台进程运行，未删除文件。');
+    return resolved;
+  };
+  const executable=file=>({file:outside(file,{directory:false}),directory:outside(path.posix.dirname(file))});
+  // A venv binary may resolve to a base interpreter outside the installation;
+  // its invocation directory still selects that venv's pyvenv.cfg and modules.
+  paths.interpreter=executable(value.argv[0]);
+  paths.HERMES_HOME=outside(value.environment.HERMES_HOME);
+  for(const [key,file] of Object.entries(value.environment)){
+    if(['PYTHONPATH','PYTHONHOME'].includes(key))paths[key]=file.split(':').map(item=>outside(item));
+    else if(['TAVERN_NODE_EXECUTABLE','PYTHONEXECUTABLE','__PYVENV_LAUNCHER__'].includes(key))paths[key]=executable(file);
+    else paths[key]=outside(file);
+  }
+  const args=value.argv.slice(1);
+  while(['-B','-u','-s','-E','-I'].includes(args[0]))args.shift();
+  if(args[0]==='-m'&&args[1]==='hermes_cli.main')args.splice(0,2);
+  else if(path.posix.isAbsolute(args[0]||'')&&(/(?:^|\/)hermes$|\/hermes_cli\/main\.py$/.test(args[0]))){
+    paths.entry=outside(args.shift(),{directory:false});
+  }else throw failed('候选诺拉后台入口无法核验，未删除文件。');
+  if(JSON.stringify(args)!==JSON.stringify(['gateway','run'])
+    &&JSON.stringify(args)!==JSON.stringify(['gateway','run','--replace'])
+    &&JSON.stringify(args)!==JSON.stringify(['gateway','restart']))
+    throw failed('候选诺拉后台命令无法核验，未删除文件。');
+  return {...value,paths};
+}
 function nativeOffline({root}){
   if(process.platform==='win32'){
     const systemRoot=process.env.SystemRoot;
@@ -179,15 +292,15 @@ function nativeOffline({root}){
     if(!status.error&&status.status===1&&!status.stdout.trim())continue;
     if(status.error||status.status!==0||!status.stdout.trim())throw failed('无法确认候选服务进程归属，未删除文件。');
     if(referencesRoot(status.stdout,root))throw failed('当前安装仍有进程运行，未删除文件。');
-    // Hermes can bind HERMES_HOME through its environment while executable
-    // and cwd both belong elsewhere. Neither lsof nor rootless argv proves
-    // that such a module/inline invocation is unrelated to this installation.
-    if(/(?:hermes_cli[.\\/]main|gateway\s+(?:run|restart))/i.test(status.stdout)
-      ||/(?:^|\s)(?:-e|-c|-p|-i|--eval|--print|--interactive|-)(?:\s|=|$)/.test(status.stdout)
+    const hermes=/(?:hermes_cli[.\\/]main|gateway\s+(?:run|restart))/i.test(status.stdout);
+    if(/(?:^|\s)(?:-e|-c|-p|-i|--eval|--print|--interactive|-)(?:\s|=|$)/.test(status.stdout)
       ||/(?:^|\/)(?:node|python(?:\d+(?:\.\d+)*)?)\s*$/i.test(status.stdout.trim()))
       throw failed('无法确认候选内联或诺拉后台进程归属，未删除文件。');
+    const before=hermes?macHermesProcess(pid,root,remaining()):null;
     const output=bounded('/usr/sbin/lsof',['-a','-p',String(pid),'-d','cwd,txt','-Fpcn'],{timeout:remaining()});
     macFiles(output,{root,pid});
+    if(hermes&&JSON.stringify(before)!==JSON.stringify(macHermesProcess(pid,root,remaining())))
+      throw failed('候选诺拉后台的进程或实例归属已变化，未删除文件。');
   }
 }
 async function inspect({check,expected,hermesHome}){

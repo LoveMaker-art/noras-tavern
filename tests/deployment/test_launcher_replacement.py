@@ -30,6 +30,98 @@ SPEC.loader.exec_module(worker)
 
 
 class ReplacementTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == 'darwin', 'Darwin exception ports are platform-specific')
+    def test_recovery_worker_releases_inherited_crashpad_while_worker_stays_alive(self):
+        import psutil
+        import time
+        modules = Path(os.environ.get('NORA_TEST_DESKTOP_NODE_MODULES', SOURCE.parent / 'node_modules'))
+        electron = modules / 'electron/dist/Electron.app/Contents/MacOS/Electron'
+        self.assertTrue(electron.is_file(), 'Mac recovery regression requires the installed Electron binary')
+        with tempfile.TemporaryDirectory(prefix='nora-crashpad-recovery-') as directory:
+            root = Path(directory).resolve()
+            child_script = root / 'child.py'
+            child_script.write_text('''import ctypes,json,os,runpy,sys,time
+from pathlib import Path
+root=Path(sys.argv[1])
+lib=ctypes.CDLL('/usr/lib/libSystem.B.dylib');port=ctypes.c_uint32;integer=ctypes.c_int32
+task=port.in_dll(lib,'mach_task_self_').value;masks=(port*32)();ports=(port*32)();behaviors=(integer*32)();flavors=(integer*32)();count=port(32)
+get=lib.task_get_exception_ports;get.argtypes=[port,port,ctypes.POINTER(port),ctypes.POINTER(port),ctypes.POINTER(port),ctypes.POINTER(integer),ctypes.POINTER(integer)];get.restype=integer
+dealloc=lib.mach_port_deallocate;dealloc.argtypes=[port,port];dealloc.restype=integer
+assert get(task,0x1c00,masks,ctypes.byref(count),ports,behaviors,flavors)==0
+registered=sum(bool(ports[i]) for i in range(count.value))
+for i in range(count.value):
+ if ports[i]:assert dealloc(task,ports[i])==0
+assert registered,'Actual Electron parent did not install an inherited crash handler'
+runpy.run_path(sys.argv[2])['detach_inherited_crash_handler']()
+(root/'ready.json').write_text(json.dumps({'pid':os.getpid(),'inheritedHandlers':registered}))
+deadline=time.monotonic()+15
+while time.monotonic()<deadline and not (root/'stop').exists():time.sleep(.05)
+(root/'exited').touch()
+''')
+            main = root / 'main.cjs'
+            main.write_text('''const {app,crashReporter}=require('electron'),{spawn}=require('child_process'),fs=require('fs'),path=require('path');
+const root=process.argv[2];app.setPath('userData',path.join(root,'profile'));app.setPath('crashDumps',path.join(root,'crashes'));
+app.whenReady().then(()=>{crashReporter.start({productName:'Nora recovery regression',submitURL:'https://127.0.0.1/disabled',uploadToServer:false});
+const c=spawn(process.argv[3],['-B',path.join(root,'child.py'),root,process.argv[4]],{detached:true,stdio:'ignore'});c.unref();fs.writeFileSync(path.join(root,'spawned.json'),JSON.stringify({pid:c.pid}));
+const deadline=Date.now()+10000,t=setInterval(()=>{if(fs.existsSync(path.join(root,'ready.json'))){clearInterval(t);app.exit(0);}else if(Date.now()>deadline){clearInterval(t);app.exit(1);}},20);});
+''')
+            env = {key: value for key, value in os.environ.items()
+                   if key not in ('ELECTRON_RUN_AS_NODE', 'NODE_OPTIONS', 'NODE_PATH')}
+            child = None
+            def handlers():
+                result = []
+                for process in psutil.process_iter(['pid', 'exe', 'cmdline']):
+                    try:
+                        if (Path(process.info['exe'] or '/').name == 'chrome_crashpad_handler'
+                                and any(str(root) in arg for arg in process.info['cmdline'] or [])):
+                            result.append(process.pid)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+                return result
+            try:
+                result = subprocess.run([str(electron), str(main), str(root), sys.executable, str(SOURCE)],
+                    env=env, capture_output=True, text=True, timeout=15)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                ready = json.loads((root / 'ready.json').read_text())
+                self.assertGreater(ready['inheritedHandlers'], 0)
+                child = psutil.Process(ready['pid'])
+                deadline = time.monotonic() + 3
+                while handlers() and time.monotonic() < deadline:
+                    time.sleep(.05)
+                self.assertTrue(child.is_running(), 'Recovery worker must remain alive after the parent exits')
+                self.assertNotEqual(child.status(), psutil.STATUS_ZOMBIE)
+                self.assertFalse((root / 'exited').exists())
+                self.assertFalse(handlers(), 'Inherited crash reporter must exit without excluding or killing it')
+            finally:
+                (root / 'stop').touch()
+                if child is None and (root / 'spawned.json').exists():
+                    try:
+                        candidate = psutil.Process(json.loads((root / 'spawned.json').read_text())['pid'])
+                        if str(child_script) in candidate.cmdline() and str(root) in candidate.cmdline():
+                            child = candidate
+                    except psutil.NoSuchProcess:
+                        pass
+                if child:
+                    deadline = time.monotonic() + 5
+                    while child.is_running() and child.status() != psutil.STATUS_ZOMBIE and time.monotonic() < deadline:
+                        time.sleep(.05)
+                    self.assertTrue((root / 'exited').exists(), 'Owned child must finish normally')
+
+    def test_crash_handler_detach_failure_stops_recovery_before_modifying_program(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            program = root / 'program'
+            program.write_bytes(b'original program')
+            (root / 'status.json').write_text(json.dumps({'status': 'awaiting-system', 'workerPid': 1}))
+            with patch.object(sys, 'argv', [str(SOURCE), '--recover', str(root)]), \
+                    patch.object(worker, 'detach_inherited_crash_handler', side_effect=RuntimeError('native detach refused')), \
+                    patch.object(worker, 'recover') as recover:
+                with self.assertRaises(SystemExit) as result:
+                    worker.main()
+                self.assertEqual(result.exception.code, 1)
+                recover.assert_not_called()
+            self.assertEqual(program.read_bytes(), b'original program')
+
     def test_file_digest_progress_counts_only_read_blocks_and_preserves_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             file = Path(directory) / 'blocks.bin'
@@ -804,6 +896,45 @@ class OperationReplacementTests(unittest.TestCase):
         process.username.return_value = psutil.Process().username()
         with patch.object(psutil, 'process_iter', return_value=[process]):
             with self.assertRaises(RuntimeError): worker.require_launcher_offline(worker.context(f['job']))
+
+    def test_recovery_waits_for_remaining_launcher_process_before_restoring_without_rewriting_history(self):
+        import psutil
+        from unittest.mock import Mock
+        f = self.fixture(); f['plan']['parentCreationTime'] -= 100
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        worker.prepare(f['job']); f['owner'].execute(f)
+        ctx = worker.context(f['job'])
+        protected = {'world.json': b'user-world', 'chat.jsonl': b'chat-fixture',
+                     'character.json': b'character-fixture', 'config.yaml': b'model: fixture-model\n'}
+        for name, data in protected.items(): (f['home'] / name).write_bytes(data)
+        sealed = {name: (f['job'] / name).read_bytes() for name in ('plan.json', 'replace.py')}
+        reporter = Mock(); reporter.exe.return_value = str(ctx['app'] / 'chrome_crashpad_handler')
+        with patch.object(psutil, 'process_iter', side_effect=[[reporter], []]), \
+                patch.object(worker.time, 'sleep') as pause, patch.object(worker, 'launch_old') as launch:
+            self.assertTrue(worker.recover(f['job'])['restored'])
+        pause.assert_called(); launch.assert_called_once()
+        f['owner'].assert_preserved(f)
+        self.assertEqual(worker.read_json(f['job'] / 'recovery.json')['phase'], 'restored')
+        for name, data in protected.items(): self.assertEqual((f['home'] / name).read_bytes(), data)
+        for name, data in sealed.items(): self.assertEqual((f['job'] / name).read_bytes(), data)
+
+    def test_recovery_keeps_programs_and_data_when_launcher_process_does_not_exit_before_deadline(self):
+        import itertools
+        import psutil
+        from unittest.mock import Mock
+        f = self.fixture(); f['plan']['parentCreationTime'] -= 100
+        worker.write_json(f['job'] / 'plan.json', f['plan'])
+        worker.prepare(f['job']); f['owner'].execute(f); ctx = worker.context(f['job'])
+        before = {name: worker.file_identity(ctx[name]) for name in ('app', 'backup')}
+        reporter = Mock(); reporter.exe.return_value = str(ctx['app'] / 'chrome_crashpad_handler')
+        with patch.object(psutil, 'process_iter', return_value=[reporter]), \
+                patch.object(worker.time, 'monotonic', side_effect=itertools.count(0, 31).__next__), \
+                patch.object(worker.time, 'sleep'), patch.object(worker, 'launch_old') as launch:
+            with self.assertRaisesRegex(RuntimeError, '启动器仍在运行'):
+                worker.recover(f['job'])
+        launch.assert_not_called()
+        self.assertEqual({name: worker.file_identity(ctx[name]) for name in before}, before)
+        self.assertEqual((f['home'] / 'world.json').read_text(), 'user-world')
 
     def test_real_worker_holds_both_locks_and_waits_for_exact_parent_instance(self):
         import time

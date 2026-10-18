@@ -45,7 +45,8 @@ function sourceCandidates(value,{channel='stable',sources=configuration}={}) {
   const api=`/repos/${repository}/releases`;
   if(url.origin==='https://api.github.com' && !url.hash) {
     if(url.pathname===api+'/latest' && !url.search && channel==='stable') relative='channels/stable.json';
-    else if(url.pathname===api && url.search==='?per_page=100&page=1' && channel==='beta') relative='channels/beta.json';
+    else if(url.pathname===api && url.search==='?per_page=100&page=1' && ['beta','stable'].includes(channel))
+      relative=channel==='beta'?'channels/beta.json':'channels/launcher-stable.json';
     else if(url.pathname.startsWith(api+'/tags/') && !url.search) {
       const tag=decodeURIComponent(url.pathname.slice((api+'/tags/').length));
       if(tagPattern.test(tag)) relative=`releases/${encodeURIComponent(tag)}/release.json`;
@@ -59,7 +60,7 @@ function sourceCandidates(value,{channel='stable',sources=configuration}={}) {
     }
   }
   const alternate=relative?mirrors.map(item=>({...item,
-    ...(relative==='channels/beta.json'?{catalogueComplete:true}:{}),
+    ...(['channels/beta.json','channels/launcher-stable.json'].includes(relative)?{catalogueComplete:true}:{}),
     url:new URL(['sourceforge','jihulab'].includes(item.provider)
     ?relative.replace(/^releases\//,''):relative,item.provider==='jihulab' && relative.startsWith('channels/')
       ?item.channelBaseUrl:item.baseUrl).href})):[];

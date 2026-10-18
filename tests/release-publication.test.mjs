@@ -177,3 +177,65 @@ test('changed sealed bytes, different source identity and tampered plan prevent 
         assert.deepEqual(f.events,[]);
     });
 });
+
+test('APP-only seal preserves its dedicated channel through resume and rejects stripping or forging the actual core anchor',async t=>{
+    const {writeDiscoveryCatalogues}=await import('../tooling/release/publish-release.mjs');
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-app-channel-seal-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+    const root=path.join(directory,'assets');fs.mkdirSync(root);
+    const product={schema:'tavern-release/v2',commit:'b'.repeat(40),versions:{tavern:'2.5.3'},
+        publication:{schema:'nora-component-publication/1',tag:'v2.5.4'},coreRelease:{schema:'nora-core-reference/1',tag:'v2.5.3',commit:'a'.repeat(40),
+        manifests:{'win32-x64':{asset:'win32-x64-release-manifest.json',size:100,sha256:'f'.repeat(64)}}}};
+    const file=path.join(root,'release-manifest.json');fs.writeFileSync(file,JSON.stringify(product));
+    const object={file,key:'releases/v2.5.4/release-manifest.json',phase:'asset',...await fileDigest(file)};
+    const release={tag_name:'v2.5.4',draft:false,prerelease:false,body:'APP only.',published_at:'2026-10-18T00:00:00Z',assets:[{name:'release-manifest.json',state:'uploaded',size:object.size,digest:'sha256:'+object.sha256,
+        browser_download_url:'https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.5.4/release-manifest.json'}]};
+    for(const mode of ['valid','stripped','forged']) {
+        const stateDir=path.join(directory,mode),discovery=await writeDiscoveryCatalogues({release,product,output:stateDir});
+        const {channel,coreAnchor}=discovery,plan={tag:release.tag_name,commit:product.commit,mode:'components',channel,
+            ...(mode==='stripped'?{}:{coreAnchor:mode==='forged'?{...coreAnchor,commit:'c'.repeat(40)}:coreAnchor}),objects:[object,...discovery.objects]};
+        if(mode==='valid'){
+            const sealed=await sealPublication({plan,release},{root,stateDir,repository:'LoveMaker-art/noras-tavern'});
+            assert.equal(sealed.plan.objects.at(-1).key,'channels/launcher-stable.json');
+            const resumed=await loadPublication({root,stateDir,expectedPlanId:sealed.state.planId});assert.deepEqual(resumed.plan.coreAnchor,coreAnchor);
+        }else await assert.rejects(sealPublication({plan,release},{root,stateDir,repository:'LoveMaker-art/noras-tavern'}),/phase|anchor/i);
+    }
+});
+
+test('ordinary stable seals both discovery pointers while legacy single-pointer plans resume unchanged',async t=>{
+    const {writeDiscoveryCatalogues}=await import('../tooling/release/publish-release.mjs');
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-normal-discovery-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+    const root=path.join(directory,'assets'),stateDir=path.join(directory,'state');fs.mkdirSync(root);
+    const tag='v2.5.3',commit='a'.repeat(40),product={schema:'tavern-release/v2',versions:{tavern:'2.5.3'},commit};
+    const file=path.join(root,'release-manifest.json');fs.writeFileSync(file,JSON.stringify(product));
+    const object={file,key:`releases/${tag}/release-manifest.json`,phase:'asset',...await fileDigest(file)};
+    const release={tag_name:tag,draft:false,prerelease:false,body:'Normal stable.',published_at:'2026-10-18T00:00:00Z',assets:[
+        {name:'release-manifest.json',state:'uploaded',size:object.size,digest:'sha256:'+object.sha256,
+            browser_download_url:`https://github.com/LoveMaker-art/noras-tavern/releases/download/${tag}/release-manifest.json`}]};
+    const discovery=await writeDiscoveryCatalogues({release,product,output:stateDir});
+    assert.deepEqual(discovery.objects.filter(item=>item.phase==='channel').map(item=>item.key),
+        ['channels/stable.json','channels/launcher-stable.json']);
+    const publication=await sealPublication({plan:{tag,commit,mode:'full',channel:'stable',objects:[object,...discovery.objects]},release},
+        {root,stateDir,repository:'LoveMaker-art/noras-tavern'});
+    const resumed=await loadPublication({root,stateDir,expectedPlanId:publication.state.planId});
+    const pointers=resumed.plan.objects.filter(item=>item.phase==='channel');
+    assert.deepEqual(JSON.parse(fs.readFileSync(pointers[0].file)),release);
+    assert.deepEqual(JSON.parse(fs.readFileSync(pointers[1].file)),[release]);
+    const planFile=path.join(stateDir,'publication-plan.json'),sealedBytes=fs.readFileSync(planFile),stripped=JSON.parse(sealedBytes);
+    stripped.objects.pop();fs.writeFileSync(planFile,JSON.stringify(stripped,null,2)+'\n');
+    await assert.rejects(loadPublication({root,stateDir,expectedPlanId:publication.state.planId}),/digest|Plan differs/);
+    fs.writeFileSync(planFile,sealedBytes);
+    fs.appendFileSync(pointers[1].file,' ');
+    await assert.rejects(loadPublication({root,stateDir}),/bytes changed/);
+    const old=await fixture(t),oldKeys=old.publication.plan.objects.map(item=>item.key),oldPlanId=old.publication.state.planId;
+    const oldResumed=await old.reload();assert.deepEqual(oldResumed.plan.objects.map(item=>item.key),oldKeys);
+    assert.equal(oldResumed.state.planId,oldPlanId);assert.equal(oldKeys.filter(key=>key.startsWith('channels/')).length,1);
+});
+
+test('ordinary Beta keeps its one sealed array pointer',async t=>{
+    const {writeDiscoveryCatalogues}=await import('../tooling/release/publish-release.mjs');
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-beta-discovery-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+    const release={tag_name:'v2.5.3-beta.1',draft:false,prerelease:true};
+    const value=await writeDiscoveryCatalogues({release,product:{versions:{tavern:'2.5.3-beta.1'}},output:root});
+    assert.deepEqual(value.objects.filter(item=>item.phase==='channel').map(item=>item.key),['channels/beta.json']);
+    assert.deepEqual(JSON.parse(fs.readFileSync(value.objects.at(-1).file)),[release]);
+});

@@ -6,7 +6,10 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { spawnSync } = require('node:child_process');
-const script = path.resolve(__dirname, '../scripts/verify-launcher-release.cjs');
+// Run publisher tooling from authored source. Export the actual consumer only
+// where its delivery-relative imports are required, just as packaging does.
+const sourceScript=path.resolve(__dirname,'../../tooling/release/verify-launcher-release.cjs');
+const script=fs.existsSync(sourceScript)?sourceScript:path.resolve(__dirname,'../scripts/verify-launcher-release.cjs');
 const capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
 const publisher=()=>import(pathToFileURL(path.resolve(__dirname,'../../tooling/release/publish-release.mjs')));
 
@@ -123,14 +126,17 @@ test('distribution preparation publishes canonical identities only after verifie
   const result=await prepareDistribution({root,tag:'v2.2.11',commit:'a'.repeat(40),output,body:'修复安装问题。',publishedAt:'2026-10-08T00:00:00Z'});
   assert.equal(result.plan.publishChannelAfter,'all_objects_verified');
   assert.equal(result.plan.objects.at(-1).phase,'channel');
-  assert.equal(result.plan.objects.at(-2).key,'releases/v2.2.11/release.json');
-  assert.ok(result.plan.objects.slice(0,-2).every(item=>item.phase==='asset'));
+  assert.deepEqual(result.plan.objects.filter(item=>item.phase==='channel').map(item=>item.key),
+    ['channels/stable.json','channels/launcher-stable.json']);
+  assert.equal(result.plan.objects.at(-3).key,'releases/v2.2.11/release.json');
+  assert.ok(result.plan.objects.slice(0,-3).every(item=>item.phase==='asset'));
   for(const item of result.plan.objects) {
     const bytes=fs.readFileSync(item.file);
     assert.equal(item.size,bytes.length);assert.equal(item.sha256,crypto.createHash('sha256').update(bytes).digest('hex'));
   }
   const channel=JSON.parse(fs.readFileSync(path.join(output,'channels/stable.json')));
   assert.deepEqual(channel,result.release);assert.equal(channel.tag_name,'v2.2.11');
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(output,'channels/launcher-stable.json'))),[result.release]);
   assert.equal(channel.body,'修复安装问题。');assert.equal(channel.published_at,'2026-10-08T00:00:00Z');
   assert.ok(channel.assets.every(item=>item.state==='uploaded'&&/^sha256:[a-f0-9]{64}$/.test(item.digest)));
   assert.ok(channel.assets.every(item=>item.browser_download_url===`https://github.com/LoveMaker-art/noras-tavern/releases/download/v2.2.11/${item.name}`));
@@ -168,8 +174,13 @@ test('shared publication references identical older assets while current metadat
   assert.ok(result.release.assets.some(item=>item.name==='release-assets.json'));
   assert.ok(refs.every(item=>!result.release.assets.some(asset=>asset.name===path.basename(item.key))));
   assert.ok(result.release.assets.every(item=>item.browser_download_url.includes('/v2.2.11/')));
-  const client=require('../installer/desktop/releases');
-  const {sourceCandidates}=require('../installer/desktop/release-sources');
+  const {createReleaseSource}=await import(pathToFileURL(path.resolve(__dirname,'../../tooling/release/release-source.mjs')));
+  const {stage}=createReleaseSource(path.resolve(__dirname,'../..'),{candidate:true});
+  t.after(()=>fs.rmSync(stage,{recursive:true,force:true}));
+  const dependencies=process.env.NORA_TEST_DESKTOP_NODE_MODULES||path.resolve(__dirname,'../../launcher/desktop/node_modules');
+  fs.symlinkSync(fs.realpathSync(dependencies),path.join(stage,'ops/installer/desktop/node_modules'),process.platform==='win32'?'junction':'dir');
+  const client=require(path.join(stage,'ops/installer/desktop/releases'));
+  const {sourceCandidates}=require(path.join(stage,'ops/installer/desktop/release-sources'));
   const latest='https://api.github.com/repos/LoveMaker-art/noras-tavern/releases/latest';
   const catalogueUrls=new Set(sourceCandidates(latest).map(source=>source.url));
   const assetUrls=new Map(result.release.assets.flatMap(asset=>sourceCandidates(asset.browser_download_url)

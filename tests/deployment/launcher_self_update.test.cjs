@@ -319,19 +319,24 @@ test('desktop handoff and recovery keep the desktop profile in real independent 
   const maintenanceEnv={...desktopEnv,HOME:path.join(f.home,'hermes'),USERPROFILE:path.join(f.home,'hermes'),
     APPDATA:path.join(f.home,'appdata/roaming'),LOCALAPPDATA:path.join(f.home,'appdata/local'),TMPDIR:path.join(f.home,'cache/tmp')};
   const main=fs.readFileSync(path.resolve(__dirname,'../installer/desktop/main.js'),'utf8');
-  f.write(path.join(job,'replace.py'),`import sys,json,os,time,psutil
+  const currentHelper=path.join(f.root,'current-recovery-helper.py');
+  const helperSource=`import sys,json,os,time,psutil
 from pathlib import Path
 if '--assess' in sys.argv: print(json.dumps({'canRecover':True}))
 else:
     job=Path(sys.argv[sys.argv.index('--recover')+1] if '--recover' in sys.argv else sys.argv[1])
     fields=('HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TMPDIR','TEMP','TMP')
-    (job/'desktop-environment.json').write_text(json.dumps({'environment':{name:os.environ.get(name) for name in fields},'prefix':sys.prefix,'pid':os.getpid(),'creationTime':psutil.Process().create_time()}))
+    (job/'desktop-environment.json').write_text(json.dumps({'environment':{name:os.environ.get(name) for name in fields},'helper':__file__,'prefix':sys.prefix,'pid':os.getpid(),'creationTime':psutil.Process().create_time()}))
     (job/'status.json').write_text(json.dumps({'status':'restored' if '--recover' in sys.argv else 'waiting-parent','workerPid':os.getpid()}))
     deadline=time.monotonic()+10
     while not (job/'fixture-complete').exists():
         if time.monotonic()>deadline: raise RuntimeError('fixture completion acknowledgement missing')
         time.sleep(.01)
-`);
+`;
+  f.write(currentHelper,helperSource);
+  f.write(path.join(job,'replace.py'),helperSource.replace('from pathlib import Path',
+    'from pathlib import Path\nif "--recover" in sys.argv: raise RuntimeError("historical recovery helper must remain sealed, not be re-executed")'));
+  const historicalHelper=fs.readFileSync(path.join(job,'replace.py'));
   for(const method of ['launchHandoff','recover']){
     fs.rmSync(path.join(job,'status.json'),{force:true});
     fs.rmSync(path.join(job,'fixture-complete'),{force:true});
@@ -340,10 +345,12 @@ else:
     const start=main.indexOf(`await launcherUpdate.${method}(`);
     assert.ok(start>=0);const expression=main.slice(start,main.indexOf(');',start)+2);
     await vm.runInNewContext(`(async()=>{${expression}})()`,{path,process:{env:desktopEnv},launcherUpdate:held,
-      launcherRecoveryOptions:()=>({home:f.home,executable:f.executable,python:python(),helper:path.join(job,'replace.py')}),
+      launcherRecoveryOptions:()=>({home:f.home,executable:f.executable,python:python(),helper:currentHelper}),
       hermesHome:()=>managedHome,launcherEnv:()=>maintenanceEnv,pending:{job},
       operation:{handoffRef:job,result:{parentCreationTime:1}},diagnostics:{event(){}}});
     const facts=JSON.parse(fs.readFileSync(path.join(job,'desktop-environment.json')));
+    assert.equal(facts.helper,method==='recover'?currentHelper:path.join(job,'replace.py'));
+    assert.deepEqual(fs.readFileSync(path.join(job,'replace.py')),historicalHelper,'historical recovery bytes must remain unchanged');
     for(const name of ['HOME','USERPROFILE','APPDATA','LOCALAPPDATA','TMPDIR','TEMP','TMP'])
       assert.equal(facts.environment[name],desktopEnv[name],`${method} changed ${name} to the maintenance profile`);
     assert.ok(facts.pid>0&&facts.creationTime>0);

@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import zlib from 'node:zlib';
 import {execFileSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {createRequire} from 'node:module';
 import {readConsumerAsar,verifyFinalConsumers} from '../tooling/release/final-consumer.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url));
@@ -168,6 +169,49 @@ function rewriteMetadata(fixture,name,change) {
     object.size=bytes.length;object.sha256=hash(bytes);
     const asset=fixture.release.assets.find(asset=>asset.name===name);asset.size=object.size;asset.digest=`sha256:${object.sha256}`;
 }
+
+test('first normal stable discovery proves current or available domestically with every GitHub request offline',async t=>{
+    const {writeDiscoveryCatalogues}=await import('../tooling/release/publish-release.mjs');
+    const f=distributionFixture(t,{shared:true}),directory=path.join(f.directory,'consumer'),installRoot=path.join(f.directory,'installed');
+    for(const [name,bytes] of f.closure){const file=path.join(directory,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,bytes);}
+    fs.mkdirSync(path.join(installRoot,'tavern-updates'),{recursive:true});
+    const require=createRequire(path.join(directory,'package.json')),client=require('./releases.js'),{sourceCandidates}=require('./release-sources.js');
+    const product=JSON.parse(fs.readFileSync(f.plan.objects.find(item=>item.key===`releases/${f.plan.tag}/release-manifest.json`).file));
+    const discovery=await writeDiscoveryCatalogues({release:f.release,product,output:path.join(f.directory,'discovery')});
+    const urls=new Map(),api=`https://api.github.com/repos/${repository}/releases`,calls=[];
+    for(const object of f.plan.objects.filter(item=>item.phase==='asset')){
+        const logical=`https://github.com/${repository}/releases/download/${object.assetReleaseTag||f.plan.tag}/${path.basename(object.key)}`;
+        for(const source of sourceCandidates(logical))urls.set(source.url,object);
+    }
+    for(const [logical,key] of [[api+'/latest','channels/stable.json'],[api+`/tags/${f.plan.tag}`,`releases/${f.plan.tag}/release.json`],
+        [api+'?per_page=100&page=1','channels/launcher-stable.json']]){
+        const object=discovery.objects.find(item=>item.key===key);
+        if(object)for(const source of sourceCandidates(logical))urls.set(source.url,object);
+    }
+    let legacy=true;
+    const fetcher=async address=>{
+        const url=String(address);calls.push(url);
+        if(['github.com','api.github.com'].includes(new URL(url).hostname))throw Error('GitHub completely offline');
+        const object=urls.get(url),missing=!object||legacy&&object.key==='channels/launcher-stable.json';
+        const response=new Response(missing?'not found':fs.readFileSync(object.file),{status:missing?404:200});
+        Object.defineProperty(response,'url',{value:url});return response;
+    };
+    const options={installRoot,launcherVersion:JSON.parse(f.closure.get('package.json')).version,platform:'darwin',arch:'arm64',
+        client:'updater',updaterCapabilities:client.UPDATER_CAPABILITIES,launcherDiscovery:true,fetcher,
+        networkPolicy:{attempts:1,maxAttempts:1,totalBudgetMs:3000,attemptTimeoutMs:1000}};
+    const installed=path.join(installRoot,'tavern-updates/installed.json');
+    fs.writeFileSync(installed,JSON.stringify({version:'2.4.4'}));
+    const absent=await client.check(options);assert.equal(absent.state,'unavailable');assert.ok(absent.launcherError);
+    assert.ok(calls.some(url=>new URL(url).hostname==='api.github.com'));
+    legacy=false;calls.length=0;
+    for(const [version,state] of [['2.4.4','current'],['2.4.3','available']]){
+        fs.writeFileSync(installed,JSON.stringify({version}));
+        const result=await client.check(options);assert.equal(result.state,state,JSON.stringify(result));
+        assert.equal(result.launcherError,undefined);assert.equal(result.releaseTag,f.plan.tag);
+    }
+    assert.ok(calls.some(url=>url.endsWith('/channels/launcher-stable.json')));
+    assert.equal(calls.some(url=>['github.com','api.github.com'].includes(new URL(url).hostname)),false);
+});
 
 test('synthetic final assembly reads actual shipped modules and public platform routing, with a deterministic receipt',async t=>{
     const fixture=distributionFixture(t),first=await verifyFinalConsumers(fixture),second=await verifyFinalConsumers(fixture);
