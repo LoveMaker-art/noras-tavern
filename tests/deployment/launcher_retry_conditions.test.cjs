@@ -378,9 +378,10 @@ test('physical Jihu metadata identity admits only the configured project, fixed 
     assert.equal(f.policy.identifyFailureCondition({...error(primary.url),code},record),null);
 });
 
-function completeReleaseFixture(){
-  const platform=process.platform,arch=process.arch,tag='v2.4.2',capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
-  const manifest={schema:'tavern-release/v2',commit:'a'.repeat(40),versions:{tavern:'2.4.2'},launcherVersion:'2.0.3',launcherCapabilities:capabilities,
+function completeReleaseFixture({publicationTag}={}){
+  const platform=process.platform,arch=process.arch,tag=publicationTag||'v2.4.2',capabilities={operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2};
+  const publication=publicationTag?{publication:{schema:'nora-component-publication/1',tag:publicationTag}}:{};
+  const manifest={schema:'tavern-release/v2',...publication,commit:'a'.repeat(40),versions:{tavern:'2.4.2'},launcherVersion:'2.0.3',launcherCapabilities:capabilities,
     bootstrap:{managedComponents:1,minimumLauncherVersion:'2.0.0',sha256:hash('bootstrap')}};
   const launcher={schema:'nora-launcher/v1',platform,arch,version:'2.0.3',asset:`Nora-Tavern-Launcher-2.0.3-${platform}-${arch}-update.zip`,size:7,sha256:hash('archive')};
   const payloads={'release-manifest.json':manifest,[`nora-launcher-${platform}-${arch}.json`]:launcher};
@@ -388,7 +389,7 @@ function completeReleaseFixture(){
     [launcher.asset]:'archive','tavern-updater-bootstrap.py':'bootstrap','SHA256SUMS':'hashes',
     'nora-tavern-app.tar.gz':'app','nora-tavern-ops.tar.gz':'ops','nora-tavern-nora-mcp.tar.gz':'mcp',
     'nora-tavern-first-install-bootstrap.py':'install','first-install-manifest.json':'{}','nora-hermes-runtime.json':'{}','nora-tavern-dependencies.json':'{}'};
-  const system={schema:'nora-system/v1',version:'2.4.2',commit:'a'.repeat(40),platform,arch,minimumLauncherVersion:'2.0.3',launcherCapabilities:capabilities,files:{}};
+  const system={schema:'nora-system/v1',...publication,version:'2.4.2',commit:'a'.repeat(40),platform,arch,minimumLauncherVersion:'2.0.3',launcherCapabilities:capabilities,files:{}};
   for(const [name,body] of Object.entries(bytes))if(!name.startsWith('nora-launcher-')&&name!==launcher.asset&&name!=='tavern-updater-bootstrap.py')
     system.files[name]={asset:name,sha256:hash(body),size:Buffer.byteLength(body)};
   bytes[`nora-system-${platform}-${arch}.json`]=JSON.stringify(system);payloads[`nora-system-${platform}-${arch}.json`]=system;
@@ -528,8 +529,8 @@ test('post-selection metadata proof refuses another tag, catalogue, descriptor o
   assert.equal((await f.policy.recheck(invalid,{conditionTarget:condition})).changed,false);assert.equal(f.reads,0);
 });
 
-async function manifestFixture(t,type){
-  const {platform,arch,tag,payloads,bytes,release}=completeReleaseFixture();
+async function manifestFixture(t,type,{publicationTag}={}){
+  const {platform,arch,tag,payloads,bytes,release}=completeReleaseFixture({publicationTag});
   const name=type==='release'?'release-manifest.json':`nora-${type}-${platform}-${arch}.json`;
   const url=releases.assetUrl(release,name);let mode='failed',originalReads=0;
   const server=http.createServer((request,response)=>{
@@ -539,7 +540,8 @@ async function manifestFixture(t,type){
       originalReads++;
       if(mode==='failed'){response.writeHead(503);response.end('unavailable');return;}
       let result=payloads[name];
-      if(mode==='bad-tag')result=type==='release'?{...result,versions:{tavern:'2.4.3'}}:type==='system'?{...result,version:'2.4.3'}:{...result,version:'2.0.4'};
+      if(mode==='bad-tag')result=publicationTag?{...result,publication:{...result.publication,tag:'v2.4.4'}}
+        :type==='release'?{...result,versions:{tavern:'2.4.3'}}:type==='system'?{...result,version:'2.4.3'}:{...result,version:'2.0.4'};
       if(mode==='bad-platform')result={...result,platform:platform==='darwin'?'win32':'darwin'};
       response.writeHead(200);response.end(JSON.stringify(result));return;
     }
@@ -553,18 +555,18 @@ async function manifestFixture(t,type){
     Object.defineProperty(response,'url',{value:String(original),configurable:true});return response;
   };
   fetcher.conditionRoute=async()=> 'DIRECT';
-  return {url,fetcher,expectedVersion:type==='launcher'?'2.0.3':undefined,expectedSystemVersion:type==='system'?tag:undefined,
+  return {url,tag,fetcher,expectedVersion:type==='launcher'?'2.0.3':undefined,expectedSystemVersion:type==='system'?tag:undefined,
     setMode:value=>{mode=value;},get originalReads(){return originalReads;}};
 }
 
-for(const type of ['release','launcher','system'])test(`real selectPlan ${type} metadata failure requires the original tag/platform/expected-version JSON before install can continue`,async t=>{
-  const metadata=await manifestFixture(t,type);let completedPlans=0;
+for(const [type,publicationTag] of [['release'],['launcher'],['system'],['system','v2.4.3']])test(`real selectPlan ${type} metadata failure requires the original tag/platform/expected-version JSON before install can continue${publicationTag?' with a distinct publication batch':''}`,async t=>{
+  const metadata=await manifestFixture(t,type,{publicationTag});let completedPlans=0;
   const f=await fixture(t,{selectBeforeExecute:false,policyOptions:{networkFetch:metadata.fetcher},execute:async context=>{
-    const selected=await releases.selectPlan({fetcher:metadata.fetcher,mode:'install',tag:'v2.4.2',launcherVersion:'2.0.2',
+    const selected=await releases.selectPlan({fetcher:metadata.fetcher,mode:'install',tag:metadata.tag,launcherVersion:'2.0.2',
       networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:1000}});
     await context.plan({...context.target,releasePlan:selected});completedPlans++;return {verification:'confirmed'};
   }});
-  const target={request:{action:'install',tag:'v2.4.2'}};
+  const target={request:{action:'install',tag:metadata.tag}};
   await f.controller().start('install',{target},`${type}-one`);const failed=await f.controller().start('install',{target},`${type}-two`);
   assert.equal(f.runs,2);assert.equal(failed.currentFailure.conditionTarget.kind,'release-metadata');
   assert.equal(failed.currentFailure.conditionTarget.resource.url,metadata.url);

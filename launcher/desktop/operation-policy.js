@@ -345,9 +345,10 @@ function create({home,hermesHome,installRoot,bridge,runRuntime,inspectRuntime=ru
           if(result.launcherVersion!==undefined&&releases.compare(result.launcherVersion,result.launcherVersion)!==0)return null;
           releases.validateUpdate(result,{tag_name:resource.tag},executionOptions(record).client==='updater'?undefined:result.launcherVersion||value(launcherVersion),executionOptions(record));
         }else if(resource.type==='system-manifest'){
-          if(releases.compare(result.version,resource.tag)!==0)return null;
+          const publication=releases.publicationTag(result);
+          if(publication!==resource.tag)return null;
           if(resource.expectedSystemVersion!==undefined){
-            if(releases.compare(result.version,resource.expectedSystemVersion)!==0)return null;
+            if(publication!==resource.expectedSystemVersion)return null;
             // This original read proves metadata availability. Full selection
             // still owns release membership and the launcher minimum handoff.
             releases.validateSystemDescriptor(result,null,value(platform),value(arch),value(channel),executionOptions(record));

@@ -331,18 +331,22 @@ test('launcher recovery waits for preparation and cannot bypass busy or unknown 
     prepareRecovery:async()=>({parentCreationTime:1}),
     recover:async options=>{calls.push(options);return{job:options.job,restarting:true};},
   }});
-  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=()=>{throw new Error("recovery must not touch managed services");}; activeRun=true;',context);
+  context.serviceCalls=[];
+  vm.runInContext('app.isPackaged=true; app.quit=()=>{globalThis.didQuit=true;}; findPython=()=>({command:"python-fixture"}); runBridge=async(command,options)=>{serviceCalls.push([command,options.service]);return {running:false,gatewayRunning:false};}; activeRun=true;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/当前任务/);
   vm.runInContext('activeRun=false;',context);
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/归属/);
   pending={...pending,canRecover:true,busy:true,reason:'替换仍在进行。'};
   await assert.rejects(vm.runInContext('recoverLauncher()',context),/仍在进行/);
   assert.equal(calls.length,0);
+  assert.deepEqual(context.serviceCalls,[],'busy or unconfirmed recovery must not stop services');
   pending={...pending,busy:false};
   recoveryControllerFixture(context,pending);
   const result=await vm.runInContext('recoverLauncher()',context);
   assert.equal(result.restarting,true);
   assert.equal(calls[0].job,pending.job);
+  assert.equal(context.serviceCalls.length,1);
+  assert.deepEqual(Array.from(context.serviceCalls[0]),['stop','all'],'owned recovery confirms service shutdown before APP handoff');
   assert.equal(vm.runInContext('quitReady',context),true);
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal(context.didQuit,true);
@@ -373,7 +377,7 @@ test('launcher backup commits only after the actual component transaction verifi
   assert.equal(calls[0].updateVerified,true);
 });
 
-test('launcher recovery is still offered when inspecting application services fails', async t => {
+test('launcher recovery remains offered after failed status inspection, but handoff requires confirmed service shutdown', async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-recovery-status-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const pending={job:path.join(root,'job'),canRecover:true,status:'resumed',reason:'可恢复旧启动器。'};
@@ -390,10 +394,15 @@ test('launcher recovery is still offered when inspecting application services fa
   assert.equal(result.launcherRecovery,pending);
   assert.equal(result.busy,false);
   assert.equal(Object.hasOwn(result,'running'),false);
+  assert.equal(context.bridgeCalls,0,'the failed directory inspection must not invent runtime facts');
+  await assert.rejects(vm.runInContext('recoverLauncher()',context),/fixture inspection denied/);
+  assert.equal(context.bridgeCalls,1);
+  assert.notEqual(vm.runInContext('quitReady',context),true,'failed service shutdown must not authorize APP exit');
+  vm.runInContext('runBridge=async(command,options)=>{bridgeCalls++;if(command!=="stop"||options.service!=="all")throw new Error("unexpected bridge request");return {running:false,gatewayRunning:false};};',context);
   const recovery=await vm.runInContext('recoverLauncher()',context);
   assert.equal(recovery.restarting,true);
-  assert.equal(assessed,2,'explicit recovery must reassess its own identity');
-  assert.equal(context.bridgeCalls,0,'without a Python environment, status and APP recovery cannot inspect or change services');
+  assert.equal(assessed,3,'each explicit recovery must reassess its own identity');
+  assert.equal(context.bridgeCalls,2,'retry confirms both services have stopped before the handoff');
   const busy=await status();
   assert.equal(busy.statusUnavailable,true);
   assert.equal(busy.busy,true);

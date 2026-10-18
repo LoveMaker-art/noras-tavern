@@ -520,7 +520,7 @@ test('missing Python recovery uses staged canonical effects and refuses unknown 
 
 test('default native CLI admission reaches managed Python repair only after orphan executor absence is proved',async()=>{
  const Module=require('node:module'),realLoad=Module._load,desktop=path.join(__dirname,'../installer/desktop'),
-  cli=require('../installer/desktop/operation-cli'),native=require('../installer/desktop/operation-lock');
+  cli=require('../installer/desktop/operation-cli'),native=require('../installer/desktop/operation-lock'),realReleases=require('../installer/desktop/releases');
  try{
   for(const action of ['update','repair']){
    const f=fixture();try{
@@ -530,8 +530,11 @@ test('default native CLI admission reaches managed Python repair only after orph
     assert.equal(dead.status,0);assert.ok(dead.pid>0);
     f.write('installer/operations/.guards/orphan.json',{schema:'nora-operation-guard/1',operationId:crypto.randomUUID(),
      jobs:[{jobId:crypto.randomUUID(),pid:dead.pid}]});
-    const plan={schema:'nora-release-plan/1',mode:'install',version:targetVersion,commit:'b'.repeat(40),releaseManifest:{versions:{tavern:targetVersion}}};
-    const releases={selectPlan:async options=>{assert.equal(options.mode,'install');return plan;},sealPlan:value=>value,validatePlan:value=>value,
+    const manifest={commit:'b'.repeat(40),versions:{tavern:targetVersion}};
+    const plan={schema:'nora-release-plan/1',mode:'install',version:targetVersion,commit:manifest.commit,
+     releaseManifest:manifest,releaseManifestText:JSON.stringify(manifest)};
+    const releases={coreIdentity:realReleases.coreIdentity,coreReference:realReleases.coreReference,
+     selectPlan:async options=>{assert.equal(options.mode,'install');return plan;},sealPlan:value=>value,validatePlan:value=>value,
      prepareInstall:async()=>path.join(f.root,'payload'),hash:async()=> 'b'.repeat(64),compare:(a,b)=>a===b?0:a<b?-1:1};
     Module._load=function(id,parent,...rest){if(id==='./releases'&&parent?.filename?.startsWith(desktop))return releases;return realLoad.call(this,id,parent,...rest);};
     const receipt={...f.args,installerDirectory:path.join(f.root,'installer'),resourcesRoot:path.join(f.root,'app'),platform:process.platform,arch:process.arch,

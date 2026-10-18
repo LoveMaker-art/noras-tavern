@@ -596,7 +596,7 @@ test('already-current admission checks real program bytes and rejects damaged or
   assert.equal(await cli.currentFilesMatch(f.receipt,manifest),false);
 });
 
-for(const managedInstallation of [true,false])for(const appOnly of [false,true])for(const receiptForm of appOnly?['raw','first-install','altered-source']:['raw'])test(`independent updater verifies an already-current ${managedInstallation?'managed':'standalone'} ${appOnly?'APP-only publication':'target'} (${receiptForm}) without a replacement transaction`,async t=>{
+for(const managedInstallation of [true,false])for(const appOnly of [false,true])for(const receiptForm of appOnly?['raw','first-install','altered-source']:['raw'])for(const requestedIdentity of receiptForm==='altered-source'?['none']:['none','correct','wrong-commit','wrong-manifest'])test(`independent updater verifies an already-current ${managedInstallation?'managed':'standalone'} ${appOnly?'APP-only publication':'target'} (${receiptForm}, ${requestedIdentity}) without a replacement transaction`,async t=>{
   const f=fixture(t),sha=value=>require('node:crypto').createHash('sha256').update(value).digest('hex');
   f.receipt.schema='nora-updater-control/1';f.receipt.managedInstallation=managedInstallation;
   const release=path.join(f.home,'local-release'),app=path.join(f.receipt.installRoot,'apps/tavern-runtime/entry.js');
@@ -628,7 +628,10 @@ for(const managedInstallation of [true,false])for(const appOnly of [false,true])
   const actual={version,commit,systemReady:true,running:false,gatewayRunning:false,noraHome:f.home,
     hermesHome:f.receipt.hermesHome,installRoot:f.receipt.installRoot,port:f.receipt.port,
     ...(!managedInstallation?{standalone:true,gatewayManaged:false,gatewayRunning:null}:{})},calls=[];
-  const operation=await cli.execute({receiptPath:'fixture',request:f.request('update',['--release-dir',release])},
+  const expectedCommit=appOnly?'f'.repeat(40):commit;
+  const fixedIdentity=requestedIdentity==='none'?[]:['--target-commit',requestedIdentity==='wrong-commit'?'0'.repeat(40):expectedCommit,
+    '--manifest-sha256',requestedIdentity==='wrong-manifest'?'0'.repeat(64):sha(files['release-manifest.json'])];
+  const operation=await cli.execute({receiptPath:'fixture',request:f.request('update',['--release-dir',release,...fixedIdentity])},
     {client:'updater',validate:async()=>f.receipt,lock:f.lock,telemetry:false,
       policy:{observe:async()=>({effectState:'untouched',recoveryOutcome:'not-required'})},run:async(_context,_target,args)=>{
         const command=args[8];calls.push(command);
@@ -636,7 +639,7 @@ for(const managedInstallation of [true,false])for(const appOnly of [false,true])
         if(command==='verify-current-update')return {...actual,updateVerified:true};
         assert.fail('An already-current target must not prepare or apply: '+command);
       }});
-  if(receiptForm==='altered-source'){
+  if(receiptForm==='altered-source'||requestedIdentity.startsWith('wrong-')){
     assert.equal(operation.state,'failed');assert.equal(operation.effectState,'untouched');
     assert.equal(operation.result?.noUpdate,undefined);
     assert.deepEqual(calls,[managedInstallation?'status':'repair-preflight']);

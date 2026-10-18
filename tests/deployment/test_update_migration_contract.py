@@ -66,7 +66,10 @@ class MigrationInstallFixture:
         (self.root / 'tavern-updates').mkdir()
         (self.root / 'tavern-updates/installed.json').write_text('{"version":"2.0.1"}')
         (self.root / 'tavern-updates/nora-system.json').write_text('{"schema":1,"setupCompleted":true}')
-        (self.home / 'config.yaml').write_text('old config')
+        # Standalone updates read the actual MCP port from this YAML mapping.
+        # Keep a valid existing configuration while substituting only services.
+        self.config = b'model: {default: fixture-model}\n'
+        (self.home / 'config.yaml').write_bytes(self.config)
         (self.home / 'AGENTS.md').write_text('old agents')
         (self.home / 'SOUL.md').write_text('old soul')
         if managed:
@@ -177,7 +180,7 @@ class MigrationInstallFixture:
                 'roots_with_unmanaged_files':{'return_value':set()},
                 'prepare_skills':{'return_value':{}},
                 'prepare_host_hook_swap':{'return_value':None},
-                'render_mcp':{'return_value':b'old config'},
+                'render_mcp':{'return_value':self.config},
                 'managed_lifecycle':{'side_effect':self.lifecycle},
                 'verify_worlds':{'return_value':{}},
                 'verify_preserved_worlds':{'return_value':{'status':'verified'}},

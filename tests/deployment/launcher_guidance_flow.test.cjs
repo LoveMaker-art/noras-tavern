@@ -564,8 +564,8 @@ test('APP-only offer uses the existing update control and requests the launcher 
   await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
   await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',launcherOnly:true}]);
 });
-test('content offer stays independent even when the launcher also has an update',async()=>{
+test('the existing update control requests both applicable components in one action',async()=>{
   const requests=[];const h=fixture({snapshot:{...ready},api:{checkUpdate:async()=>({...updateResult,releaseAvailable:true,launcherUpdateAvailable:true})}});
   await h.invoke('checkUpdates()');h.context.run=async(action,payload)=>requests.push({action,...payload});
-  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3'}]);
+  await action(h,'安装更新').onclick();assert.deepEqual(requests,[{action:'update',tag:'v2.4.3',includeLauncher:true}]);
 });

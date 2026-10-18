@@ -310,7 +310,7 @@ test('a verified KEEP reinstall survives receipt archive I/O failure, reopens re
       for(const value of Object.values(node))if(Array.isArray(value))value.forEach(findStatus);else if(value&&typeof value==='object')findStatus(value);
     }findStatus(ast);const cancellation=ast.body.find(node=>node.id?.name==='taskCancellation');
     let writes=0,reads=0;const readonly=vm.createContext({require:require('node:module').createRequire(path.join(desktop,'main.js')),
-      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,activeOperationContext:null,
+      quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,activeOperationContext:null,desktopUpdateNotice:null,
       activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,noraHome:()=>f.home,
       operations:()=>({snapshot:async()=>({...result,kind:'stop'})}),readLauncherRecovery:async()=>null,systemUpdate:{inspect:()=>null},findPython:()=>true,
       runBridge:async()=>{reads++;return {...result.result,running:true,gatewayRunning:true};},readInstallerState:()=>({phase:'ready'}),writeInstallerState:()=>{writes++;},

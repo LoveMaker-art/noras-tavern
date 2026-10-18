@@ -381,6 +381,12 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
         if(fixedTarget.launcherManifest)throw fail('RELEASE_COMPATIBILITY','目标版本需要先更新启动器。请保留数据，在启动器中检查更新后继续。');
         const contentPlan=releases.validatePlan(fixedTarget,options);
         fixedTarget=contentPlan;
+        // Caller pins identify the selected publication, including an APP-only
+        // publication whose core bytes belong to an earlier release. Check them
+        // before the already-current path can report success without a payload.
+        const selectionSha=require('node:crypto').createHash('sha256').update(contentPlan.releaseManifestText).digest('hex');
+        if(route.flags['--manifest-sha256']!==undefined&&route.flags['--manifest-sha256']!==selectionSha
+          ||route.flags['--target-commit']!==undefined&&route.flags['--target-commit']!==fixedTarget.commit)throw fail('CONDITIONS_CHANGED','指定发布身份与固定更新计划不一致，未修改当前安装。');
         const identity=releases.coreIdentity(contentPlan);
         const alreadyCurrent=client==='updater'&&route.kind==='update'&&before.systemReady===true&&before.commit===identity.commit
           &&releases.compare(before.version,identity.version)===0;
@@ -425,10 +431,6 @@ async function execute({receiptPath,request},{validate=capability.validate,autho
           :await releases.prepareUpdate({...options,selectedPlan:fixedTarget,plan:releaseDir=>bridge('plan-update',{releaseDir})});
         await context.stage('prepared');
         const manifestSha=await releases.hash(path.join(payload,'release-manifest.json'));
-        const selectionSha=releases.coreReference(contentPlan.releaseManifest,receipt.platform,receipt.arch)
-          ?require('node:crypto').createHash('sha256').update(contentPlan.releaseManifestText).digest('hex'):manifestSha;
-        if(route.flags['--manifest-sha256']!==undefined&&route.flags['--manifest-sha256']!==selectionSha
-          ||route.flags['--target-commit']!==undefined&&route.flags['--target-commit']!==fixedTarget.commit)throw fail('CONDITIONS_CHANGED','指定发布身份与固定更新计划不一致，未修改当前安装。');
         if(releases.coreReference(contentPlan.releaseManifest,receipt.platform,receipt.arch)){
           const actual=JSON.parse(fs.readFileSync(path.join(payload,'release-manifest.json'),'utf8'));
           if(manifestSha!==identity.manifestSha256||actual.commit!==identity.commit||actual.versions?.tavern!==identity.version)
