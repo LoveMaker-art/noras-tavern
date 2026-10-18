@@ -49,7 +49,13 @@ test('unsafe paths, missing ownership, duplicate delivery and legacy authored co
 test('candidate projection preserves authored fingerprints and seals generated entry bytes', t => {
     const exported = createReleaseSource(root, { candidate: true });
     t.after(() => fs.rmSync(exported.stage, { recursive: true, force: true }));
-    assertNoraSystemArtifacts(exported.files);
+    // Source projection does not install generated updater dependencies. The
+    // full-system guard must reject exactly those absent build outputs; actual
+    // dependency preparation and final delivery are covered by package tests.
+    assert.throws(() => assertNoraSystemArtifacts(exported.files), {
+        message: 'Incomplete Nora system artifacts: ' + ['receipt.json', 'package.json', 'package-lock.json']
+            .map(name => `ops/updater/actor-dependencies/${name}`).join(', '),
+    });
     const receipt = exported.identity.generatedSourceFiles;
     const generated = new Map(receipt.files.map(file => [file.path, file]));
     const entries = deliveryEntries(Object.keys(exported.identity.sourceFiles), rules);
