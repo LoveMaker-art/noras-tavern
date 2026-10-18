@@ -695,6 +695,68 @@ test('unreadable APP discovery does not claim current or block a verified core u
   assert.equal(result.state,'available');assert.equal(result.releaseAvailable,true);assert.equal(result.releaseTag,'v2.2.8');
   assert.match(result.launcherError,/启动器/);
 });
+
+test('slow or failed optional APP discovery preserves the already verified core plan and user data',async t=>{
+  for(const kind of ['fast failure','spent budget','headers timeout','body timeout'])await t.test(kind,async t=>{
+    const f=splitDiscoveryFixture(t);let now=1000000;
+    fs.mkdirSync(path.join(f.root,'tavern-updates'),{recursive:true});
+    fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
+    const protectedFiles=['chat.jsonl','character.json','world.json','config.yaml'];
+    for(const name of protectedFiles)fs.writeFileSync(path.join(f.root,name),'protected '+name);
+    const before=protectedFiles.map(name=>fs.readFileSync(path.join(f.root,name)));
+    const events=[];
+    const fetcher=async(address,options)=>{
+      const url=String(address);events.push(url);
+      if(url.includes('?per_page=')||url.endsWith('/channels/launcher-stable.json')){
+        if(kind==='spent budget')now+=101;
+        if(kind==='headers timeout')return new Promise((_,reject)=>options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true}));
+        if(kind==='body timeout')return fixtureResponse(new ReadableStream({start(){}}),url);
+        throw Object.assign(Error('APP catalogue unavailable'),{code:'TIMEOUT'});
+      }
+      return f.fetcher(address,options);
+    };
+    const result=await releases.check({...f.options,fetcher,launcherDiscovery:true,
+      networkPolicy:{sources:githubOnly,maxAttempts:1,totalBudgetMs:100,attemptTimeoutMs:20,now:()=>now}});
+    assert.equal(result.state,'available',JSON.stringify(result));assert.equal(result.installable,true);
+    assert.equal(result.releaseAvailable,true);assert.equal(result.releasePlan.tag,'v2.2.8');
+    assert.ok(result.launcherError);assert.equal(result.launcherUpdateAvailable,false);
+    assert.ok(events.findIndex(url=>url.endsWith('/release-manifest.json'))<events.findIndex(url=>url.includes('?per_page=')),
+      'Core manifest must be verified before optional APP traffic');
+    for(const [i,name]of protectedFiles.entries())assert.deepEqual(fs.readFileSync(path.join(f.root,name)),before[i]);
+  });
+});
+
+test('split discovery reuses each verified manifest once without a persistent metadata cache',async t=>{
+  const f=splitDiscoveryFixture(t),result=await releases.check({...f.options,launcherDiscovery:true});
+  assert.equal(result.releaseTag,'v2.2.9');assert.equal(result.launcherUpdateAvailable,true);
+  for(const tag of ['v2.2.8','v2.2.9'])assert.equal(f.requests.filter(url=>url.endsWith(`/${tag}/release-manifest.json`)).length,1,tag);
+});
+
+test('reused APP discovery bytes must match their advertised digest before replacing the core plan',async t=>{
+  const f=splitDiscoveryFixture(t);
+  fs.writeFileSync(path.join(f.root,'tavern-updates/installed.json'),JSON.stringify({version:'2.2.7'}));
+  const result=await releases.check({...f.options,launcherDiscovery:true,fetcher:async address=>{
+    const url=String(address);
+    return url.endsWith('/v2.2.9/release-manifest.json')?fixtureResponse(f.physical['release-manifest.json']+' ',url):f.fetcher(address);
+  }});
+  assert.equal(result.state,'available');assert.equal(result.releaseTag,'v2.2.8');
+  assert.equal(result.launcherUpdateAvailable,false);assert.match(result.launcherError,/校验|清单/);
+});
+
+test('explicit cancellation and invalid core capabilities are not swallowed as optional APP failure',async t=>{
+  const f=splitDiscoveryFixture(t),controller=new AbortController();let appReads=0;
+  const fetcher=async(address,options)=>{
+    if(String(address).includes('?per_page=')||String(address).endsWith('/channels/launcher-stable.json')){
+      appReads++;controller.abort();options.signal.throwIfAborted();
+    }
+    return f.fetcher(address,options);
+  };
+  const cancelled=await releases.check({...f.options,fetcher,signal:controller.signal,launcherDiscovery:true});
+  assert.equal(cancelled.state,'unavailable');assert.equal(cancelled.available,false);assert.ok(appReads);
+  appReads=0;
+  const blocked=await releases.check({...f.options,fetcher,updaterCapabilities:{},launcherDiscovery:true});
+  assert.equal(blocked.state,'blocked');assert.equal(blocked.updateSupported,false);assert.equal(appReads,0);
+});
 test('APP-only discovery cannot shadow a newer or different core anchor, nor forge its original platform manifest proof',async t=>{
   const f=splitDiscoveryFixture(t);
   for(const patch of [{commit:'c'.repeat(40)},{tag:'v2.2.7'}]) {

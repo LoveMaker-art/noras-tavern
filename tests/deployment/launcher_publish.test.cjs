@@ -23,24 +23,18 @@ function publication(t) {
   });
   return {output:root,plan:{tag,channel,objects}};
 }
-test('SourceForge channel is uploaded only after every immutable object was publicly verified',async t=>{
-  const distribution=publication(t),events=[];
-  const {publishDistribution}=await publisher();
-  await publishDistribution(distribution,{upload:async(object,options)=>events.push(['upload',object.phase,options.immutable]),
-    verify:async object=>events.push(['verify',object.phase]),fetcher:async()=>new Response(null,{status:404})});
-  assert.deepEqual(events,[['upload','asset',true],['verify','asset'],['upload','catalogue',true],['verify','catalogue'],['upload','channel',false],['verify','channel']]);
-});
-test('missing public bytes, altered sealed bytes and a newer channel all prevent channel promotion',async t=>{
-  const {publishDistribution}=await publisher();
-  for(const failure of ['verification','altered','newer','phase'])await t.test(failure,async child=>{
-    const distribution=publication(child),uploaded=[];
-    if(failure==='altered')fs.writeFileSync(distribution.plan.objects[0].file,'changed');
-    if(failure==='phase')distribution.plan.objects[0].phase='channel';
-    await assert.rejects(publishDistribution(distribution,{upload:async object=>uploaded.push(object.phase),verify:async()=>{if(failure==='verification')throw Error('object missing');},
-      fetcher:async()=>Response.json({tag_name:'v2.4.4',draft:false,prerelease:false})}));
-    assert.ok(!uploaded.includes('channel'));
-    if(['altered','phase'].includes(failure))assert.equal(uploaded.length,0);
+test('the retained SourceForge provider refuses a newer public channel before promotion',{skip:process.platform==='win32'},async t=>{
+  const f=publication(t),identity=path.join(f.output,'key'),hosts=path.join(f.output,'known-hosts'),config=path.join(f.output,'publisher.json');
+  fs.writeFileSync(identity,'fixture',{mode:0o600});fs.writeFileSync(hosts,'fixture');
+  fs.writeFileSync(config,JSON.stringify({project:'nora-tavern',username:'fixture',identityFile:identity,knownHostsFile:hosts}),{mode:0o600});
+  t.mock.method(globalThis,'fetch',async url=>{
+    assert.match(String(url),/^https:\/\/(?:downloads\.)?sourceforge\.net\//);
+    const response=Response.json({tag_name:'v2.4.4',draft:false,prerelease:false});Object.defineProperty(response,'url',{value:String(url)});return response;
   });
+  const {publicationProviders}=await publisher();
+  const provider=publicationProviders({stage:'promote',destinations:'all',repository:'LoveMaker-art/noras-tavern',scratch:f.output,
+    environment:{NORA_SOURCEFORGE_UPLOAD_CONFIG:config}}).sourceforge;
+  await assert.rejects(provider.checkPromotion(f),/downgrade/);
 });
 test('public SourceForge verification checks all bytes and the expected digest',async t=>{
   const {verifyDistributionObject}=await publisher(),object=publication(t).plan.objects[0];

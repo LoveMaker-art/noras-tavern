@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import {sealPublication, loadPublication, executePublication as executeWithConsumerGate, fileDigest} from '../tooling/release/publication-state.mjs';
+import {sourceforgeProvider} from '../tooling/release/publication-providers.mjs';
 
 // These fixtures exercise resumable provider state, not launcher acceptance.
 // A separate test below invokes the mandatory production consumer gate.
@@ -54,6 +55,29 @@ test('seal is portable and performs no remote work; source and publisher commits
     const moved=await loadPublication({root:path.join(copy,'assets'),stateDir:path.join(copy,'state'),tag:'v2.4.4'});
     assert.equal(moved.state.planId,f.publication.state.planId);
     assert.equal(moved.release.published_at,'2026-10-10T00:00:00Z');
+});
+test('the actual SourceForge provider switches its channel only after every sealed immutable object verifies',async t=>{
+    for(const fail of [false,true])await t.test(fail?'public verification fails':'verified publication',async t=>{
+        const f=await fixture(t,{destinations:['sourceforge']}),events=[],remote=new Map();
+        const provider=sourceforgeProvider({
+            upload:async(object,{immutable})=>{events.push(['upload',object.key,immutable]);remote.set(object.key,object.sha256);},
+            readPublic:async key=>remote.has(key)?new Response(null,{headers:{'content-length':String(f.publication.plan.objects.find(item=>item.key===key).size)}}):new Response(null,{status:404}),
+            verifyObject:async object=>{if(fail)throw Error('public verification failed');assert.equal(remote.get(object.key),object.sha256);events.push(['verify',object.key]);},
+            preventDowngrade:async()=>events.push(['promotion-check']),log:()=>{}});
+        const run=()=>executePublication(f.publication,{stage:'all',providers:{sourceforge:provider},log:()=>{}});
+        if(fail){
+            await assert.rejects(run(),/preparation failed/);
+            assert.equal(events.some(item=>item[0]==='upload'&&item[2]===false),false);
+            assert.equal(f.publication.state.sources.sourceforge.promoted,false);
+        }else{
+            await run();assert.equal(f.publication.state.status,'published');
+            const switchIndex=events.findIndex(item=>item[0]==='upload'&&item[2]===false);
+            for(const object of f.publication.plan.objects.filter(item=>item.phase!=='channel'))
+                assert.ok(events.findIndex(item=>item[0]==='verify'&&item[1]===object.key)<switchIndex,object.key);
+            assert.ok(events.findIndex(item=>item[0]==='promotion-check')<switchIndex);
+            assert.deepEqual(events.at(-1),['verify','channels/stable.json']);
+        }
+    });
 });
 test('a planted fixed temporary symlink cannot overwrite unrelated data',async t=>{
     const f=await fixture(t),unrelated=path.join(f.directory,'unrelated.txt');fs.writeFileSync(unrelated,'retain this user data');
@@ -167,10 +191,11 @@ test('partial cross-site promotion resumes the remaining switch without rebuildi
     assert.equal(checkpoint.state.status,'published');
 });
 test('changed sealed bytes, different source identity and tampered plan prevent all remote effects',async t=>{
-    for(const kind of ['bytes','identity','plan','receipt','symlink'])await t.test(kind,async child=>{
+    for(const kind of ['bytes','identity','plan','phase','receipt','symlink'])await t.test(kind,async child=>{
         const f=await fixture(child);
         if(kind==='bytes')fs.writeFileSync(path.join(f.root,'one.zip'),'changed');
         if(kind==='plan'){const file=path.join(f.stateDir,'publication-plan.json');const plan=JSON.parse(fs.readFileSync(file));plan.body='changed';fs.writeFileSync(file,JSON.stringify(plan));}
+        if(kind==='phase'){const file=path.join(f.stateDir,'publication-plan.json');const plan=JSON.parse(fs.readFileSync(file));plan.objects[0].phase='channel';fs.writeFileSync(file,JSON.stringify(plan));}
         if(kind==='receipt'){const file=path.join(f.stateDir,'publication-state.json');const state=JSON.parse(fs.readFileSync(file));state.sources.github.objects['releases/v2.4.4/one.zip']={size:1,sha256:'f'.repeat(64),verifiedAt:'x'};fs.writeFileSync(file,JSON.stringify(state));}
         if(kind==='symlink'){fs.renameSync(path.join(f.root,'one.zip'),path.join(f.root,'original.zip'));fs.symlinkSync(path.join(f.root,'original.zip'),path.join(f.root,'one.zip'));}
         await assert.rejects(kind==='identity'?loadPublication({root:f.root,stateDir:f.stateDir,commit:'c'.repeat(40)}):f.reload());

@@ -332,46 +332,6 @@ async function preventDowngrade(distribution,fetcher) {
         }
     }
 }
-// Upload immutable objects first. Each source is independently complete before
-// its mutable channel pointer can advertise the new release.
-export async function publishDistribution(distribution,{upload,verify=verifyDistributionObject,fetcher=fetch}={}) {
-    assert.equal(typeof upload,'function','SourceForge uploader is required');
-    const objects=distribution.plan.objects;
-    const {tag,channel}=distribution.plan;
-    tagOrder(tag);
-    assert.equal(channel,tag.includes('-beta.')?'beta':'stable');
-    assert.ok(objects.length>=3,'Incomplete publication plan');
-    const channels=publicationChannelObjects(distribution.plan),keys=new Set();
-    for(const object of objects) {
-        assert.match(object.key,/^(?:releases\/v\d+\.\d+\.\d+(?:-beta\.\d+)?\/[A-Za-z0-9][A-Za-z0-9._-]*|channels\/(?:stable|beta|launcher-stable)\.json)$/);
-        assert.ok(!keys.has(object.key),'Duplicate publication object');keys.add(object.key);
-        const phase=channels.includes(object)?'channel'
-            :object.key===`releases/${tag}/release.json`?'catalogue'
-            :object.key.startsWith(`releases/${tag}/`)?'asset':null;
-        assert.ok(phase && object.phase===phase,'Publication phase or release identity differs');
-        const bytes=await objectRecord(object.file,object.key,object.phase);
-        assert.equal(bytes.size,object.size,'Sealed publication bytes changed');
-        assert.equal(bytes.sha256,object.sha256,'Sealed publication bytes changed');
-    }
-    assert.deepEqual(objects.slice(-channels.length),channels,'Channel pointers must follow immutable objects');
-    assert.equal(objects.at(-channels.length-1).phase,'catalogue');
-    for(const object of objects.filter(item=>item.phase!=='channel')) {
-        const progress=`[${objects.indexOf(object)+1}/${objects.length}] ${object.key}`;
-        console.log(`SourceForge upload ${progress} (${object.size} bytes)`);
-        await upload(object,{immutable:true});
-        console.log(`SourceForge verify ${progress}`);
-        await verify(object,{fetcher});
-        console.log(`SourceForge verified ${progress} sha256=${object.sha256}`);
-    }
-    await preventDowngrade(distribution,fetcher);
-    for(const pointer of channels){
-        console.log(`SourceForge upload ${pointer.key} (${pointer.size} bytes)`);
-        await upload(pointer,{immutable:false});
-        console.log(`SourceForge verify ${pointer.key}`);
-        await verify(pointer,{fetcher});
-        console.log(`SourceForge verified ${pointer.key} sha256=${pointer.sha256}`);
-    }
-}
 export function sourceforgeUploader(configPath,output,{execute=execFileSync}={}) {
     assert.ok(configPath,'Set NORA_SOURCEFORGE_UPLOAD_CONFIG to a protected publisher configuration file');
     const stat=fs.lstatSync(configPath);
