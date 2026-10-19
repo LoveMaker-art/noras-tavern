@@ -430,9 +430,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export NORA_TEST_PYTHON="$(python -B -c 'import sys; print(sys.executable, end="")')"
+          python -B -c 'import json,os,sys; p=os.path.realpath(sys.executable); s=os.stat(p); print(json.dumps({"sourcePython":p,"mode":oct(s.st_mode & 0o777),"uid":s.st_uid}))'
+          python -m venv --copies "$RUNNER_TEMP/nora-source-python"
+          if [[ "$RUNNER_OS" == Windows ]]; then
+            export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/Scripts/python.exe"
+          else
+            export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/bin/python"
+          fi
           export NORA_PYTHON="$NORA_TEST_PYTHON"
-          python -m pip install psutil==7.0.0 PyYAML==6.0.2
+          "$NORA_TEST_PYTHON" -m pip install psutil==7.0.0 PyYAML==6.0.2
           node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 
       - name: Check release source contracts before preparing runtimes

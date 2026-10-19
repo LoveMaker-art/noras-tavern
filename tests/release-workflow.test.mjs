@@ -89,8 +89,10 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.equal(gate['continue-on-error'], undefined, 'A failed stability gate cannot become a successful build');
   assert.equal(gate.shell, 'bash');
   assert.match(gate.run, /set -euo pipefail/);
-  assert.match(gate.run, /export NORA_TEST_PYTHON="\$\(python -B -c/);
-  assert.match(gate.run, /python -m pip install psutil==7\.0\.0/, 'Native process inspection needs its explicit test dependency');
+  assert.match(gate.run, /python -m venv --copies "\$RUNNER_TEMP\/nora-source-python"/);
+  assert.match(gate.run, /NORA_TEST_PYTHON="\$RUNNER_TEMP\/nora-source-python\/Scripts\/python\.exe"/);
+  assert.match(gate.run, /NORA_TEST_PYTHON="\$RUNNER_TEMP\/nora-source-python\/bin\/python"/);
+  assert.match(gate.run, /"\$NORA_TEST_PYTHON" -m pip install psutil==7\.0\.0/, 'Native process inspection needs its explicit test dependency in the selected venv');
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
 });

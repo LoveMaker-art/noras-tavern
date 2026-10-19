@@ -1,4 +1,5 @@
 import importlib.util
+import io
 from pathlib import Path
 import subprocess
 import json
@@ -21,6 +22,26 @@ SPEC.loader.exec_module(MODULE)
 
 
 class UpdaterSkillEnvironmentTests(unittest.TestCase):
+    def test_status_json_preserves_unicode_on_a_legacy_windows_pipe(self):
+        reply = {'status': 'succeeded', 'message': '更新成功，用户数据已保留'}
+        raw = io.BytesIO()
+        output = io.TextIOWrapper(raw, encoding='cp1252')
+        with patch.object(sys, 'argv', ['update.py', '--status']), \
+                patch.object(MODULE, 'task_status', return_value=reply), patch.object(sys, 'stdout', output):
+            MODULE.main()
+            output.flush()
+        self.assertEqual(json.loads(raw.getvalue().decode('ascii')), reply)
+
+    def test_cli_error_json_survives_isolated_legacy_encoding_without_hiding_the_reason(self):
+        program = ('import sys,runpy;sys.stdout.reconfigure(encoding="cp1252");'
+                   'sys.argv=[' + repr(str(Path(SPEC.origin))) + ',"--apply"];'
+                   'runpy.run_path(sys.argv[0],run_name="__main__")')
+        result = subprocess.run([sys.executable, '-I', '-S', '-c', program],
+                                capture_output=True, encoding='utf-8', timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('授权', json.loads(result.stdout)['error'])
+        self.assertNotIn('UnicodeEncodeError', result.stderr)
+
     def test_plain_python_skill_does_not_write_cache_into_authenticated_ops(self):
         with tempfile.TemporaryDirectory(prefix='nora plain skill ') as directory:
             root = Path(directory).resolve()
@@ -145,6 +166,7 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             self.assertEqual(actual['requestId'], job_id)
             self.assertEqual(actual['operation'], expected)
             self.assertEqual(query.call_args.args[0], [str(node),str(entry)])
+            self.assertEqual(query.call_args.kwargs['encoding'], 'utf-8')
             self.assertEqual(json.loads(query.call_args.kwargs['input']), {'action':'status','noraHome':str(root)})
             self.assertFalse((legacy / 'request.json').exists())
             for old_reply in ({'status':'succeeded','requestId':job_id,'operation':expected},

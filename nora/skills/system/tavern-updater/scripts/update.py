@@ -178,7 +178,7 @@ def task_status(home):
     for entry in query_entries(home, root):
         try:
             result = subprocess.run([str(node), str(entry)], input=json.dumps({'action': 'status', 'noraHome': str(root)}),
-                                    text=True, capture_output=True, timeout=15, check=False)
+                                    text=True, encoding='utf-8', capture_output=True, timeout=15, check=False)
             reply = json.loads(result.stdout)
             # Compatibility check for the public reply, not a second task state
             # machine. An older reader without the settled/lock contract cannot
@@ -239,7 +239,8 @@ def main():
     home = Path(os.environ.get('HERMES_HOME', Path(__file__).resolve().parents[4])).expanduser().resolve()
     if args.status:
         result = task_status(home)
-        print(json.dumps(result, ensure_ascii=False))
+        # JSON escapes preserve Unicode even when an isolated Windows caller uses a legacy pipe encoding.
+        print(json.dumps(result))
         if result.get('status') in ('error', 'inspection-required', 'interrupted', 'failed', 'blocked', 'cancelled', 'rolled-back'):
             raise SystemExit(1)
         return
@@ -263,5 +264,5 @@ if __name__ == '__main__':
     try:
         main()
     except (OSError, ValueError, KeyError, RuntimeError) as error:
-        print(json.dumps({'status': 'error', 'error': str(error)}, ensure_ascii=False))
+        print(json.dumps({'status': 'error', 'error': str(error)}))
         raise SystemExit(1)
