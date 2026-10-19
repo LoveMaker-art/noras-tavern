@@ -12,6 +12,16 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
+test('domestic publisher acceptance uses the authored tooling layout while installed consumers use the delivery projection', () => {
+  const command = full.jobs.preflight.steps.find(step => step.name === 'Check release tooling before preparing runtimes').run;
+  const publisherLines = command.split('\n').filter(line => line.includes('launcher_jihulab_publication.test.cjs'));
+  assert.equal(publisherLines.length, 1);
+  assert.match(publisherLines[0], /^\s*node --test /);
+  assert.doesNotMatch(publisherLines[0], /tooling\/run\.mjs/);
+  for (const name of ['launcher_jihulab_sources', 'launcher_static_catalogue', 'launcher_shared_assets']) {
+    assert.ok(command.split('\n').some(line => line.includes('tooling/run.mjs') && line.includes(`${name}.test.cjs`)));
+  }
+});
 test('component publication is an explicit validated input forwarded as quoted arguments',async t=>{
   const {workflowPublicationOptions}=await import('../tooling/release/system-release.mjs');
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-workflow-publication-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
