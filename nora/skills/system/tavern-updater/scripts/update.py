@@ -124,6 +124,11 @@ def query_helper(ops, manifest_file, *, installed_receipt=None):
         return None
 
 
+def same_absolute_path(value, expected):
+    # Windows short names and full names can identify the same directory.
+    return isinstance(value, str) and Path(value).is_absolute() and Path(value).resolve() == expected.resolve()
+
+
 def query_entries(home, root):
     # Choose code, not task state. Prefer the current installed reader; immutable
     # snapshots are only a fallback while the installed ops tree is being swapped.
@@ -137,9 +142,9 @@ def query_entries(home, root):
         snapshot, manifest = job / 'runner/ops', job / 'runner/release-manifest.json'
         try:
             receipt = json.loads((job / 'updater-control.json').read_text(encoding='utf-8'))
-            if (receipt.get('noraHome') != str(root) or receipt.get('hermesHome') != str(home)
-                    or receipt.get('opsRoot') != str(snapshot)
-                    or receipt.get('sourceManifest', {}).get('path') != str(manifest)
+            if (not same_absolute_path(receipt.get('noraHome'), root) or not same_absolute_path(receipt.get('hermesHome'), home)
+                    or not same_absolute_path(receipt.get('opsRoot'), snapshot)
+                    or not same_absolute_path(receipt.get('sourceManifest', {}).get('path'), manifest)
                     or receipt['sourceManifest']['sha256'] != hashlib.sha256(manifest.read_bytes()).hexdigest()):
                 continue
             install = Path(receipt['installRoot'])

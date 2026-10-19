@@ -191,6 +191,48 @@ class UpdaterSkillEnvironmentTests(unittest.TestCase):
             query.assert_called_once()
             self.assertEqual(json.loads(query.call_args.kwargs['input']), {'action': 'status', 'noraHome': str(root)})
 
+    def test_query_discovery_compares_absolute_path_identity_not_alias_spelling(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            job = root / 'installer/update-jobs/6f110f8b-7671-4840-b7b3-740a42d2d923'
+            snapshot = job / 'runner/ops'
+            desktop = snapshot / 'installer/desktop'
+            desktop.mkdir(parents=True)
+            artifacts = {}
+            for name in ('updater-task.js', 'updater-capability.js'):
+                file = desktop / name
+                file.write_bytes(b'// bootstrap bytes\n')
+                artifacts['ops/installer/desktop/' + name] = MODULE.hashlib.sha256(file.read_bytes()).hexdigest()
+            manifest = job / 'runner/release-manifest.json'
+            manifest.write_text(json.dumps({'schema': 'tavern-release/v2', 'artifacts': artifacts}))
+            record = {'noraHome': str(root), 'hermesHome': str(root), 'opsRoot': str(snapshot),
+                      'installRoot': str(root / 'tavern'),
+                      'sourceManifest': {'path': str(manifest), 'sha256': MODULE.hashlib.sha256(manifest.read_bytes()).hexdigest()}}
+            receipt = job / 'updater-control.json'
+            expected = [desktop / 'updater-task.js']
+            receipt.write_text(json.dumps(record))
+            self.assertEqual(list(MODULE.query_entries(root, root)), expected)
+            for field in ('noraHome', 'hermesHome', 'opsRoot', 'sourceManifest'):
+                with self.subTest(field=field):
+                    changed = json.loads(json.dumps(record))
+                    value = record[field]['path'] if field == 'sourceManifest' else record[field]
+                    target = Path(value)
+                    alias = str(target.parent) + os.sep + '.' + os.sep + target.name
+                    if field == 'sourceManifest':
+                        changed[field]['path'] = alias
+                    else:
+                        changed[field] = alias
+                    receipt.write_text(json.dumps(changed))
+                    self.assertEqual(list(MODULE.query_entries(root, root)), expected)
+                    # Canonicalization must not accept a different or relative target.
+                    for wrong in (str(root / 'foreign'), target.name):
+                        if field == 'sourceManifest':
+                            changed[field]['path'] = wrong
+                        else:
+                            changed[field] = wrong
+                        receipt.write_text(json.dumps(changed))
+                        self.assertEqual(list(MODULE.query_entries(root, root)), [])
+
     def test_standalone_calls_shared_task_with_verified_paths(self):
         with tempfile.TemporaryDirectory(prefix='nora 中文 ') as directory:
             root = Path(directory).resolve()

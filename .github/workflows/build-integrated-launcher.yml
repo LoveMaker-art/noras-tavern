@@ -453,6 +453,7 @@ jobs:
           assert.equal(canonical(probe.prefix),canonical(venvHome),'Source actor did not select its declared virtual environment');
           console.log(JSON.stringify({executionIdentity:resolved.executionIdentity,...probe}));
           JS
+          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/updater_task_capability.test.cjs"
           node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 
       - name: Check release source contracts before preparing runtimes
