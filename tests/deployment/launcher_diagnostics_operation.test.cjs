@@ -28,7 +28,7 @@ test('the actual update-check handler binds failure logs to the check, not the p
     releaseCheckRequest:null,releaseMetadataState:null,noraHome:()=>root,
     describeError:require('../installer/desktop/launcher-errors').describeError,
     trackLauncher:(...args)=>telemetry.track(...args),releases:{check:async()=>({state:'blocked',compatibilityError:original.message,diagnosticError:original})},
-    updateFetch:null,installRoot:()=>root,app:{getVersion:()=> '2.0.2'},CHANNEL:'stable',
+    updateFetch:null,localReleaseDirectory:null,installRoot:()=>root,app:{getVersion:()=> '2.0.2'},CHANNEL:'stable',
     formatUserError:require('../installer/desktop/error-presentation').formatUserError});
   context.releases.createMetadataCache=require('../installer/desktop/releases').createMetadataCache;
   for(const name of ['releaseMetadataCache','checkRelease']){

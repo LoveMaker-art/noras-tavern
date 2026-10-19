@@ -577,10 +577,15 @@ class LegacyMigrationOfflineEvidenceTests(unittest.TestCase):
                 for directory in (app, unrelated):
                     directory.mkdir(parents=True)
                     script = directory/'server.py'
-                    script.write_text('from pathlib import Path\nimport time\n'
-                        'Path(__file__).with_suffix(".ready").write_text("ready")\n'
+                    script.write_text('from pathlib import Path\nimport os,time\n'
+                        'Path(__file__).with_suffix(".ready").write_text(str(os.getpid()))\n'
                         'while True: time.sleep(0.05)\n')
-                    child = subprocess.Popen([sys.executable,'-B',str(script)],cwd=root,
+                    environment = dict(os.environ)
+                    executable = sys.executable
+                    if os.name == 'nt':
+                        executable = sys._base_executable
+                        environment['__PYVENV_LAUNCHER__'] = sys.executable
+                    child = subprocess.Popen([executable,'-B',str(script)],cwd=root,env=environment,
                         stdin=subprocess.DEVNULL,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                     actors.append(child)
                     deadline = time.monotonic()+3
@@ -588,6 +593,7 @@ class LegacyMigrationOfflineEvidenceTests(unittest.TestCase):
                         time.sleep(0.01)
                     self.assertIsNone(child.poll())
                     self.assertTrue(script.with_suffix('.ready').is_file())
+                    self.assertEqual(int(script.with_suffix('.ready').read_text()), child.pid)
                 found = updater.legacy_migration_processes(app)
                 self.assertEqual([row['pid'] for row in found],[actors[0].pid])
                 service = SimpleNamespace(stop=lambda:None, info=lambda:{'pid':0,'statename':'STOPPED'})

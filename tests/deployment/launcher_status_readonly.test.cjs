@@ -16,7 +16,7 @@ test('status polling reports a pending legacy transaction without stopping servi
   const recovery={status:'applying',kind:'legacy',canRecover:true};
   const context=vm.createContext({quitting:false,uninstalling:false,selectingLocation:false,modelBusy:false,statusRequest:null,activeRun:false,
     require:require('node:module').createRequire(path.join(__dirname,'../installer/desktop/main.js')),
-    activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,
+    activeProcess:null,releaseAbort:null,cancelled:false,updatingSystem:false,desktopUpdateNotice:null,
     readLauncherRecovery:async()=>null,systemUpdate:{pending:()=>true,inspect:()=>recovery,recover:async()=>{stops++;}},noraHome:()=>'/fixture',
     stopForUpdate:async()=>{stops++;},readInstallerState:()=>installer,writeInstallerState:()=>{writes++;return installer;},findPython:()=>({command:'python'}),
     runBridge:async()=>({installed:true,version:'2.4.2',running:true}),lastStatusError:'',telemetry:null,LOCAL_TEST:null,

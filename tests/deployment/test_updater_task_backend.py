@@ -103,7 +103,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
         app, metadata = self.identity()
         transaction = metadata / 'transaction.json'
         legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2',
-            'backup': '/unavailable-historical-backup/old-update'}
+            'backup': str(self.root / 'unavailable-historical-backup/old-update')}
         transaction.write_text(json.dumps(legacy))
         saved = transaction.read_bytes()
         runtime = SimpleNamespace(verify_install=lambda: None,
@@ -127,7 +127,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
 
     def test_pending_or_malformed_journals_never_use_completed_legacy_acceptance(self):
         _, metadata = self.identity()
-        legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2', 'backup': '/old/backup'}
+        legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2', 'backup': str(self.root / 'old/backup')}
         for record in ({**legacy, 'status': 'prepared'}, {**legacy, 'status': 'restored'},
                 {**legacy, 'recoveryPlan': None}, {**legacy, 'operationId': self.args.operation_id}):
             with self.subTest(record=record), \
@@ -141,7 +141,7 @@ class UpdaterTaskBackendTests(unittest.TestCase):
     def test_legacy_journal_change_during_read_only_verification_is_rejected(self):
         _, metadata = self.identity()
         transaction = metadata / 'transaction.json'
-        legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2', 'backup': '/old/backup'}
+        legacy = {'schema': 1, 'status': 'committed', 'version': '2.4.2', 'backup': str(self.root / 'old/backup')}
         transaction.write_text(json.dumps(legacy))
         def changed(*_args):
             transaction.write_text(json.dumps({**legacy, 'status': 'prepared'}))
