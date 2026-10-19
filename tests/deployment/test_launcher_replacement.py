@@ -418,7 +418,12 @@ with (job/'children.jsonl').open('a',encoding='utf-8') as file:
 if kind=='new' and sys.argv[3]=='fail': sys.exit(3)
 if kind=='new':
  plan=json.loads((job/'plan.json').read_text(encoding='utf-8'))
- (job/'ready.json').write_text(json.dumps({'token':plan['token'],'version':plan['version']}),encoding='utf-8')
+ ready={'token':plan['token'],'version':plan['version']}
+ # Match launcher-update.js: readers must never see a partially written ACK.
+ temporary=job/('ready-'+str(os.getpid())+'.tmp')
+ with temporary.open('x',encoding='utf-8') as file:
+  file.write(json.dumps(ready));file.flush();os.fsync(file.fileno())
+ os.replace(temporary,job/'ready.json')
 time.sleep(0.15)
 ''')
         runner = base / 'fixture-worker.py'
@@ -668,8 +673,8 @@ class OperationReplacementTests(unittest.TestCase):
             shutil.copy2(SOURCE.parents[1] / name, f['job'] / name)
         f['owner'] = owner
         launcher = f['launcher'].read_text()
-        launcher = launcher.replace("(job/'ready.json').write_text(json.dumps({'token':plan['token'],'version':plan['version']}),encoding='utf-8')",
-            "(job/'ready.json').write_text(json.dumps({'schema':'nora-launcher-handoff/1','token':plan['token'],'version':plan['version'],'operationId':plan['operationId'],'planDigest':plan['planDigest']}),encoding='utf-8')")
+        launcher = launcher.replace("ready={'token':plan['token'],'version':plan['version']}",
+            "ready={'schema':'nora-launcher-handoff/1','token':plan['token'],'version':plan['version'],'operationId':plan['operationId'],'planDigest':plan['planDigest']}")
         f['launcher'].write_text(launcher)
         return f
 
