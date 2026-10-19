@@ -1,6 +1,15 @@
 # 文档入口
 
-项目唯一的[产品设计基线](product-baseline.md)规定已确认规则、模块职责、当前实现差异和后续修改程序；本轮选择及未决项集中在[决策登记](product-baseline.md#八-已确认决策与待确认事项)。开始修复、优化或交付前先对照；下列模块文档与历史记录不另立产品基线。
+项目唯一的[产品设计基线](product-baseline.md)规定已确认规则、模块职责和后续修改程序；已确认、已取消及待决选择集中在[决策登记](product-baseline.md#八-已确认决策与待确认事项)。开始修复、优化或交付前先对照；实际实现、验收与发行查附录链接的报告，下列模块文档与历史记录不另立产品基线。
+
+## 产品设计文档
+
+- [产品设计文档库](product/README.md) — 整套产品文档的主入口：定位、需求、功能标准、决策与设计归档。
+- [产品需求说明](product/requirements.md) — 目标用户、产品范围、主要流程、功能要求和验收标准。
+- [产品设计基线](product-baseline.md) — 唯一现行规则，包含诺拉、酒馆、启动器的职责、数据保护及更新发布策略。
+- [需求变更模板](product/change-request-template.md) — 新需求或策略调整时先说明结果、范围、取舍和验收。
+- [更新与发布产品设计](product/archive/20261019-update-release-design.md) — 已确认规则，按 2026-10-19 归档；实施和未验状态分别保留。
+- [发布执行流程与验证状态](release-process.md) — 工具、命令、协议和实际验证记录；不能自行改变产品策略。
 
 ## 用户使用
 
@@ -14,7 +23,7 @@
 
 - [仓库导航与职责](REPOSITORY.md)
 - [开发、验证与发布](../CONTRIBUTING.md)
-- [核心与启动器更新：设计与验收范围](design/update-release-alignment.md) — 已完成本地实施与集成；实际证据和发行限制见[查询预算验收](reports/20261018-update-query-budget-acceptance.md)及[合并审查](reports/20261018-main-updater-merge-review.md)，尚未正式发布。
+- [核心与启动器更新：历史实施方案](design/update-release-alignment.md) — 已归档的技术方案；当前规则查基线，发行状态查对应报告，历史证据保留各自日期和验收范围。
 - [诺拉内容](../nora/README.md)
 - [启动器](../launcher/README.md)
 - [安装、更新和卸载](../deployment/README.md)

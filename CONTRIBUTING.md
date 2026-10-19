@@ -124,6 +124,8 @@ The three-platform pipeline is `.github/workflows/build-integrated-launcher.yml`
 
 ## Release Rules
 
+Before release work, complete the [baseline execution cross-check](docs/product-baseline.md#七-后续修改与验收) in the existing task or release record. Record the plan before the relevant action and compare it with actual results before reporting completion; a statement that the process was followed is not the record.
+
 Full and component publication share the release channel lock. Select destinations in the sealed plan; the domestic-primary configuration uses GitHub and JihuLab (`github-jihulab`). Configure the project-scoped `JIHULAB_PRIVATE_TOKEN` secret for JihuLab. SourceForge credentials are required only when SourceForge is selected: repository variable `SOURCEFORGE_USERNAME` and secrets `SOURCEFORGE_SSH_PRIVATE_KEY` / `SOURCEFORGE_KNOWN_HOSTS`. Keep private credentials outside Git and public artifacts. Preparation creates immutable resources and a GitHub draft; promoting the official channel requires separate authorization. See [the release process](docs/release-process.md).
 
 1. Never commit credentials, runtime homes, logs, installed dependencies, or generated release assets.
