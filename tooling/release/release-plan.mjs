@@ -212,6 +212,8 @@ export function createReleasePlan({ baseline = null, current, platforms = PLATFO
             || /^(?:app\/tests|app\/engine\/sillytavern\/tests|nora-mcp\/(?:tests|docs)|story-profile\/(?:tests|docs))\//.test(name)
             || ['tooling/README.md', 'local-state/README.md', 'story-profile/README.md'].includes(name)) {
             reason('verification-only', 'Not selected by the product delivery/build inputs');
+        } else if (/^tooling\/release\/compatibility\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$/.test(name)) {
+            reason('components','Reviewed compatibility declaration changes release metadata, not runtime construction'); metadata=true;
         } else if (fullTools.has(name)) full('Shared packaging/projection/archive input affects product and environment construction');
         else if (name.startsWith('.github/')) {
             if (name === configPaths[4] && !current.configuration?.publicationWorkflowHasBuild) reason('verification-only', 'Audited accepted-artifact publication workflow does not construct product bytes');

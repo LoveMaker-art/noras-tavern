@@ -27,9 +27,7 @@ test('component publication is an explicit validated input forwarded as quoted a
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-workflow-publication-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   fs.mkdirSync(path.join(directory,'app'),{recursive:true});fs.writeFileSync(path.join(directory,'app/.tavern-release-version'),'2.5.2');
   fs.mkdirSync(path.join(directory,'launcher/desktop'),{recursive:true});fs.writeFileSync(path.join(directory,'launcher/desktop/package.json'),JSON.stringify({version:'2.2.3'}));
-  assert.equal(workflowPublicationOptions(directory).tag,'v2.5.2');
-  assert.equal(workflowPublicationOptions(directory).explicit,false);
-  assert.equal(workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.3'}).tag,'v2.5.3');
+  assert.throws(()=>workflowPublicationOptions(directory),/Missing reviewed compatibility declaration/);
   assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3\nEVIL=true'}));
   assert.throws(()=>workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.2'}));
   for(const compatibilityFile of ['/tmp/private.json','../private.json','local-state/private.json','tooling/release/compatibility/../../private.json'])
@@ -37,10 +35,15 @@ test('component publication is an explicit validated input forwarded as quoted a
   const compatibilityFile='tooling/release/compatibility/reviewed.json',compatibility={schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.2',
     launcherVersions:['2.2.2','2.2.3'],capabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}};
   fs.mkdirSync(path.dirname(path.join(directory,compatibilityFile)),{recursive:true});fs.writeFileSync(path.join(directory,compatibilityFile),JSON.stringify(compatibility));
+  fs.copyFileSync(path.join(directory,compatibilityFile),path.join(directory,'tooling/release/compatibility/v2.5.2.json'));
   const git=args=>execFileSync('git',args,{cwd:directory,stdio:'pipe'});
   git(['init','-q']);git(['add','.']);git(['-c','core.hooksPath=/dev/null','-c','user.name=Workflow fixture','-c','user.email=fixture@example.invalid',
     '-c','commit.gpgSign=false','commit','-qm','isolated workflow fixture']);
   const selected=workflowPublicationOptions(directory,{publicationTag:'v2.5.3',compatibilityFile});
+  assert.equal(workflowPublicationOptions(directory).tag,'v2.5.2');
+  assert.equal(workflowPublicationOptions(directory).explicit,false);
+  assert.equal(workflowPublicationOptions(directory).compatibilityFile,'tooling/release/compatibility/v2.5.2.json');
+  assert.equal(workflowPublicationOptions(directory,{publicationTag:'v2.5.3',refType:'tag',refName:'v2.5.3'}).tag,'v2.5.3');
   assert.equal(selected.compatibilityFile,compatibilityFile);assert.match(selected.compatibilitySha256,/^[a-f0-9]{64}$/);
   fs.appendFileSync(path.join(directory,compatibilityFile),'\n');assert.throws(()=>workflowPublicationOptions(directory,{compatibilityFile}),/fixed source commit/);
   fs.rmSync(path.join(directory,compatibilityFile));fs.symlinkSync(path.join(directory,'launcher/desktop/package.json'),path.join(directory,compatibilityFile));

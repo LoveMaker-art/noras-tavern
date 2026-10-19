@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       compatibility_file:
-        description: Reviewed committed JSON under tooling/release/compatibility/ (optional)
+        description: Reviewed committed compatibility JSON (blank selects compatibility/v<core-version>.json)
         type: string
         default: ''
 

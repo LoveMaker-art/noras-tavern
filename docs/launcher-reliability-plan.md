@@ -1,5 +1,7 @@
 # 启动器可靠性交付设计与执行方案
 
+2026-10-19 双更新修复：仅处理发布兼容声明遗漏、自更新重开标记影响后续请求，独立分支与验收边界见[修复记录](reports/20261019-dual-update-contract-fix.md)。未合并、推送或发布，不改变产品基线。
+
 2026-10-19 发布准备：用户已授权酒馆 2.5.3／启动器 2.2.3 的构建、验收及正式发布。使用 GitHub 独立三平台环境，不占用用户 Windows 测试机；冻结来源、发布计划审查和结果统一记录在[本次发行记录](reports/20261019-v2.5.3-release-preparation.md)。以下较早状态仅对应其日期。
 
 2026-10-18 当前状态：独立更新器、组件更新及后续修订已合并到本地 `main`，尚未推送或正式发布。集成过程见[合并审查](reports/20261018-main-updater-merge-review.md)，后续修复及实际验收边界见[恢复与旧版接入验收](reports/20261018-recovery-ownership-legacy-admission.md)和[查询预算验收](reports/20261018-update-query-budget-acceptance.md)。

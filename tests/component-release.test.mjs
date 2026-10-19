@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { assemblePlatform, assertReusable, launcherProvenance, PLATFORMS } from '../tooling/release/package-component-update.mjs';
 import { assertMaintenanceVersions, fileDigest, writeSystemRelease } from '../tooling/release/system-release.mjs';
@@ -278,4 +278,35 @@ test('ordinary stable discovery refuses a batch tag that legacy APPs would mista
     const product={versions:{tavern:'2.5.3'},publication:{schema:'nora-component-publication/1',tag:'v2.5.4'}};
     await assert.rejects(writeDiscoveryCatalogues({product,output:root,release:{tag_name:'v2.5.4',draft:false,prerelease:false}}),/ordinary|legacy|anchor/i);
     assert.equal(fs.readdirSync(root).length,0,'incompatible discovery must fail before writing a catalogue');
+});
+test('packaging requires a reviewed compatibility declaration even when no workflow input is supplied',async t=>{
+    const {readPublicationCompatibility}=await import('../tooling/release/system-release.mjs');
+    const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-required-compatibility-'));
+    t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+    const identity={versions:{tavern:'2.5.4'},launcherVersion:'2.2.4'};
+    assert.equal(typeof readPublicationCompatibility,'function');
+    assert.throws(()=>readPublicationCompatibility(directory,identity,{candidate:true}),/compatibility declaration/i);
+    const file='tooling/release/compatibility/v2.5.4.json';
+    fs.mkdirSync(path.dirname(path.join(directory,file)),{recursive:true});
+    const declaration={schema:'nora-core-launcher-compatibility/1',coreVersion:'2.5.4',launcherVersions:['2.2.4'],previousCoreVersions:['2.5.3'],
+        capabilities:{operationSchema:'nora-operation/1',executorProtocol:'nora-operation-executor/1',telemetrySchema:3,faultSchema:2}};
+    fs.writeFileSync(path.join(directory,file),JSON.stringify(declaration));
+    const result=readPublicationCompatibility(directory,identity,{candidate:true});
+    assert.equal(result.compatibilityFile,file);assert.deepEqual(result.updateCompatibility,declaration);
+    assert.match(result.compatibilitySha256,/^[a-f0-9]{64}$/);
+    assert.throws(()=>readPublicationCompatibility(directory,{...identity,launcherVersion:'2.2.5'},{candidate:true}),/compatibility declaration/i);
+    assert.throws(()=>readPublicationCompatibility(directory,identity),/committed|git/i,'formal inputs cannot borrow an uncommitted declaration');
+    const current={versions:{tavern:fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim()},
+        launcherVersion:JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'))).version};
+    const reviewed=readPublicationCompatibility(root,current,{candidate:true}).updateCompatibility;
+    assert.equal(reviewed.coreVersion,current.versions.tavern);assert.ok(reviewed.launcherVersions.includes(current.launcherVersion));
+    assert.ok(reviewed.previousCoreVersions?.length||reviewed.launcherVersions.some(version=>version!==current.launcherVersion),
+        'the actual reviewed file must declare a transition, not just the final pair');
+});
+test('the actual packager refuses an omitted reviewed file before exporting or building product files',()=>{
+    const output=path.join(root,'release'),before=fs.existsSync(output)?fs.readdirSync(output):null;
+    const result=spawnSync(process.execPath,[path.join(root,'tooling/release/package-release.mjs'),'--candidate',
+        '--update-compatibility','tooling/release/compatibility/missing-regression-contract.json'],{cwd:root,encoding:'utf8',timeout:10000});
+    assert.equal(result.status,1);assert.match(result.stderr,/Missing reviewed compatibility declaration/);
+    assert.deepEqual(fs.existsSync(output)?fs.readdirSync(output):null,before);
 });

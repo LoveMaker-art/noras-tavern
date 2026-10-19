@@ -88,7 +88,7 @@ function checkRelease(){
 const systemUpdate = require('./system-update');
 const { createSkillUpdateReceiver, finishHandoff } = require('./skill-update');
 const launcherUpdate = require('./launcher-update');
-const SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
+let SELF_UPDATE_JOB = process.argv.find(value => value.startsWith('--nora-self-update='))?.slice('--nora-self-update='.length);
 const updateSequence = require('./update-sequence');
 let continueDesktopUpdate;
 let desktopUpdateNotice;
@@ -2200,8 +2200,9 @@ if (primaryInstance) {
       || !['start', 'stop', 'restart'].includes(payload.action))) throw new Error('服务目标无效。');
     activeRun=true;cancelled=false;
     try {
-      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
-      if(payload.action==='update'&&!SELF_UPDATE_JOB&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
+      // Startup handoffs resume directly; a later request has its own owner.
+      if(payload.action==='update'&&payload.includeLauncher===true)return await runDesktopUpdate(event,payload);
+      if(payload.action==='update'&&payload.launcherOnly!==true)return await runSharedUpdate(event,payload);
       const request={action:payload.action};
       for(const name of ['port','tag','service','launcherOnly'])if(payload[name]!==undefined)request[name]=payload[name];
       const operation=await operations().start(payload.action,{target:{request},
@@ -2450,7 +2451,7 @@ if (primaryInstance) {
             } catch (error) {
               activeRun = false; diagnostics.error('update.resume', error);
               if (plan?.skillId) finishHandoff(noraHome(), plan.skillId, null, diagnostics.clean(error.message));
-            }finally{activeRun=false;activeOperationContext=null;}
+            }finally{SELF_UPDATE_JOB=null;activeRun=false;activeOperationContext=null;}
           });
         }else{
           const window=BrowserWindow.getAllWindows()[0];

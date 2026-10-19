@@ -45,6 +45,12 @@ function change(...names) {
 }
 const noEnvironment = plan => assert.ok(Object.values(plan.build.environment).every(values => values.length === 0));
 
+test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{
+    const plan=createReleasePlan(change('tooling/release/compatibility/v2.5.4.json'));
+    assert.equal(plan.requiresReview,false);assert.equal(plan.mode,'components');assert.equal(plan.build.metadata,true);
+    assert.deepEqual(plan.build.launcher,[]);noEnvironment(plan);
+});
+
 test('unshipped tests/docs and publication tooling require verification, not product construction', () => {
     const inputs = change('README.md', 'docs/releases/v2.4.4.md', 'tests/deployment/launcher_network_policy.test.cjs',
         'tooling/release/publish-release.mjs', 'tooling/release/publication-state.mjs',

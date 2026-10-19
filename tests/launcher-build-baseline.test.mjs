@@ -25,7 +25,7 @@ test('launcher changes are allowed but changed, added and deleted runtime inputs
     for (const name of ['launcher/desktop/main.js', 'deployment/shared/services.py', 'deployment/install/bootstrap.py',
         'app/.tavern-release-version', 'tooling/release/package-launcher-update.cjs',
         'tooling/release/package-local-launcher.mjs', 'tooling/release/verify-launcher-release.cjs',
-        'tooling/release/launcher-release-notes.cjs']) {
+        'tooling/release/launcher-release-notes.cjs','tooling/release/compatibility/v2.5.4.json']) {
         assert.deepEqual(assertLauncherReuse({ ...baseline, sourceFiles: { ...fingerprints, [name]: 'b'.repeat(64) } }, baseline), [name]);
     }
     for (const name of ['app/engine/sillytavern/src/server.js', 'nora-mcp/src/index.ts', 'nora/SOUL.md',

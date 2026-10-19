@@ -48,6 +48,9 @@ export function readConsumerAsar(bytes) {
         result.set(name, content);
     }
     for (const name of modules) read(header.files?.[name], name);
+    // Pre-2.2.3 APPs have no combined-update module. Keep their unchanged
+    // archive reusable; modern APPs must contain it (checked after extraction).
+    if(header.files?.['update-sequence.js'])read(header.files['update-sequence.js'],'update-sequence.js');
     function dependency(node, prefix) {
         assert.ok(node && !node.link && !node.unpacked, `Invalid consumer dependency: ${prefix}`);
         if (!node.files) { read(node, prefix); return; }
@@ -122,6 +125,9 @@ async function consumeFinalMetadata({plan, release}) {
             const pkg = JSON.parse(files.get('package.json'));
             assert.equal(pkg.version, descriptor.version, 'Shipped launcher package version differs');
             const consumer = require('./releases.js');
+            const consumerModules=[...modules,...(files.has('update-sequence.js')?['update-sequence.js']:[])];
+            const sequence=files.has('update-sequence.js')?require('./update-sequence.js'):null;
+            assert.ok(sequence||require('semver').lt(pkg.version,'2.2.3'), 'Missing shipped combined-update module');
             const shippedSources=JSON.parse(files.get('release-sources.json'));
             const {sourceCandidates} = require('./release-sources.js');
             const discoveryUrl=plan.channel==='beta'
@@ -174,7 +180,7 @@ async function consumeFinalMetadata({plan, release}) {
                 const expected = byUrl.get(url(expectedName));
                 assert.ok(expected && sha(Buffer.from(selected.releaseManifestText)) === expected.sha256,
                     `Consumer selected a different ${mode} manifest`);
-                if (mode === 'install') for (const name of modules.filter(name => name !== 'package.json')) {
+                if (mode === 'install') for (const name of consumerModules.filter(name => name !== 'package.json')) {
                     // Native APP reports are bound to these same payload module
                     // hashes. A different final update ZIP cannot borrow them.
                     const product=reference?JSON.parse(sealedMetadata(byUrl.get(url('release-manifest.json')))):selected.releaseManifest;
@@ -187,11 +193,19 @@ async function consumeFinalMetadata({plan, release}) {
                 assert.match(selected.planId, /^[a-f0-9]{64}$/);
                 consumer.validatePlan(selected, {mode, tag:plan.tag, platform, arch,
                     launcherVersion:pkg.version, channel:plan.channel});
+                // Selecting/download-verifying a release alone never exercised
+                // the admission check used by a normal two-component request.
+                const compatibilityProduct=reference
+                    ?JSON.parse(sealedMetadata(byUrl.get(url('release-manifest.json')))):selected.releaseManifest;
+                if(sequence)assert.ok(sequence.compatible(compatibilityProduct,selected.releaseManifest.versions.tavern,
+                    pkg.version,consumer.LAUNCHER_CAPABILITIES),
+                    'Missing or invalid shipped dual-update compatibility declaration');
                 modes[mode] = {validatedPlan:true, manifest:expectedName, manifestSha256:expected.sha256,
-                    coreVersion:selected.releaseManifest.versions.tavern,releaseTag:selected.tag};
+                    coreVersion:selected.releaseManifest.versions.tavern,releaseTag:selected.tag,
+                    dualUpdateCompatibility:sequence?true:'not-supported-by-legacy-client'};
             }
             report.platforms[target] = {launcherVersion:pkg.version, archiveSha256:archive.sha256,
-                asarSha256:sha(asar), moduleHashes:Object.fromEntries(modules.map(name => [name, sha(files.get(name))])), modes, metadata:calls};
+                asarSha256:sha(asar), moduleHashes:Object.fromEntries(consumerModules.map(name => [name, sha(files.get(name))])), modes, metadata:calls};
         } catch (error) {
             throw new Error(`Final consumer gate failed for ${target}: ${error.message}`, {cause:error});
         } finally {

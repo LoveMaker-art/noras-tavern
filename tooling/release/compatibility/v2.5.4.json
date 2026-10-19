@@ -1,0 +1,12 @@
+{
+  "schema": "nora-core-launcher-compatibility/1",
+  "coreVersion": "2.5.4",
+  "launcherVersions": ["2.2.4"],
+  "previousCoreVersions": ["2.5.3"],
+  "capabilities": {
+    "operationSchema": "nora-operation/1",
+    "executorProtocol": "nora-operation-executor/1",
+    "telemetrySchema": 3,
+    "faultSchema": 2
+  }
+}

@@ -14,7 +14,7 @@ const root=fileURLToPath(new URL('../',import.meta.url));
 const targets=['darwin-arm64','darwin-x64','win32-x64'];
 const repository='LoveMaker-art/noras-tavern';
 const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
-const modules=['package.json','releases.js','launcher-update.js','release-network.js','release-sources.js',
+const modules=['package.json','releases.js','launcher-update.js','update-sequence.js','release-network.js','release-sources.js',
     'release-sources.json','launcher-errors.js','telemetry-contract.json'];
 
 function shippedModuleFixture(version, sources) {
@@ -71,7 +71,7 @@ with zipfile.ZipFile(sys.argv[2],'w') as archive:
     return fs.readFileSync(archive);
 }
 
-function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false,sources,publicationTag}={}) {
+function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,bindingDrift=false,sources,publicationTag,omitCompatibility=false,legacyConsumer=false,missingSequence=false}={}) {
     const directory=fs.mkdtempSync(path.join(os.tmpdir(),'nora-final-consumer-test-'));
     t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
     const captured=JSON.parse(zlib.brotliDecompressSync(fs.readFileSync(path.join(root,
@@ -90,7 +90,8 @@ function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,b
         }
     }
     const url=(name,source=tag)=>`https://github.com/${repository}/releases/download/${source}/${name}`;
-    const closure=shippedModuleFixture(shared?'2.1.2':undefined,sources),pkg=JSON.parse(closure.get('package.json'));
+    const closure=shippedModuleFixture(legacyConsumer?'2.2.2':shared?'2.1.2':undefined,sources),pkg=JSON.parse(closure.get('package.json'));
+    if(legacyConsumer||missingSequence)closure.delete('update-sequence.js');
     if(shared) {
         // Future shared protocol: retain platform routing while moving only
         // environment archives to older, digest-bound objects. Payload objects
@@ -118,7 +119,11 @@ function distributionFixture(t,{shared=false,badRootSelection=false,zipMembers,b
     // keep every original platform archive/module descriptor SHA unchanged.
     for(const name of ['release-manifest.json',...targets.map(target=>`${target}-release-manifest.json`)]) {
         const manifest=JSON.parse(files.get(name));
-        for(const module of modules.filter(name=>name!=='package.json'))
+        manifest.launcherVersion=pkg.version;
+        if(!omitCompatibility)manifest.updateCompatibility={schema:'nora-core-launcher-compatibility/1',
+            coreVersion:manifest.versions.tavern,launcherVersions:[pkg.version],previousCoreVersions:['2.4.3'],
+            capabilities:manifest.launcherCapabilities};
+        for(const module of modules.filter(name=>name!=='package.json'&&closure.has(name)))
             manifest.artifacts[`ops/installer/desktop/${module}`]=hash(closure.get(module));
         files.set(name,Buffer.from(JSON.stringify(manifest)));
     }
@@ -223,9 +228,19 @@ test('synthetic final assembly reads actual shipped modules and public platform 
         assert.equal(proof.moduleHashes['releases.js'],hash(fixture.closure.get('releases.js')));
         assert.equal(proof.modes.install.manifest,`${target}-release-manifest.json`);
         assert.equal(proof.modes.update.manifest,'release-manifest.json');
+        assert.equal(proof.modes.update.dualUpdateCompatibility,true);
         assert.notEqual(proof.modes.install.manifestSha256,proof.modes.update.manifestSha256);
         assert.ok(proof.metadata.some(item=>item.url.endsWith(`/nora-system-${target}.json`)));
     }
+});
+test('final distribution refuses the missing dual-update declaration that selectors alone accepted',async t=>{
+    const fixture=distributionFixture(t,{omitCompatibility:true});
+    await assert.rejects(verifyFinalConsumers(fixture),/compatibility declaration/i);
+});
+test('unchanged legacy APP archives remain reusable, while a modern APP cannot omit its sequence module',async t=>{
+    const legacy=await verifyFinalConsumers(distributionFixture(t,{legacyConsumer:true,omitCompatibility:true}));
+    for(const target of targets)assert.equal(legacy.platforms[target].modes.update.dualUpdateCompatibility,'not-supported-by-legacy-client');
+    await assert.rejects(verifyFinalConsumers(distributionFixture(t,{missingSequence:true})),/Missing shipped combined-update module/);
 });
 test('shipped final consumers bind APP-only publication while preserving actual core version',async t=>{
     const fixture=distributionFixture(t,{publicationTag:'v2.4.5'}),report=await verifyFinalConsumers(fixture);
@@ -353,7 +368,7 @@ test('the ZIP gate refuses ambiguous app.asar members and path traversal',async 
 
 test('APP-only final assembly selects unchanged original core for install and current product for APP discovery',async t=>{
  const fixture=distributionFixture(t,{publicationTag:'v2.4.5'}),original='b'.repeat(40),reference={schema:'nora-core-reference/1',tag:'v2.4.4',commit:original,manifests:{}};
- for(const target of targets){const name=target+'-release-manifest.json';rewriteMetadata(fixture,name,manifest=>{manifest.commit=original;manifest.publication.tag='v2.4.4';});const object=fixture.plan.objects.find(o=>o.key.endsWith('/'+name));reference.manifests[target]={asset:name,size:object.size,sha256:object.sha256};}
+ for(const target of targets){const name=target+'-release-manifest.json';rewriteMetadata(fixture,name,manifest=>{manifest.commit=original;manifest.publication.tag='v2.4.4';delete manifest.updateCompatibility;});const object=fixture.plan.objects.find(o=>o.key.endsWith('/'+name));reference.manifests[target]={asset:name,size:object.size,sha256:object.sha256};}
  rewriteMetadata(fixture,'release-manifest.json',manifest=>{manifest.coreRelease=reference;});
  for(const target of targets)rewriteMetadata(fixture,`nora-system-${target}.json`,system=>{system.coreRelease=reference;system.files['release-manifest.json']=reference.manifests[target];});
  const report=await verifyFinalConsumers(fixture);assert.equal(report.tag,'v2.4.5');for(const target of targets)assert.equal(report.platforms[target].modes.install.coreVersion,'2.4.4');

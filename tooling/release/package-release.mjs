@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { assertMaintenanceVersions, configureCandidateLauncher, configurePublication, fileDigest, writeSystemRelease } from './system-release.mjs';
+import { assertMaintenanceVersions, configureCandidateLauncher, configurePublication, fileDigest, readPublicationCompatibility, writeSystemRelease } from './system-release.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -24,7 +24,10 @@ const explicitOption = name => {
 };
 const publicationTag=explicitOption('--publication-tag');
 const compatibilityFile=explicitOption('--update-compatibility');
-const updateCompatibility=compatibilityFile===undefined?undefined:JSON.parse(fs.readFileSync(path.resolve(compatibilityFile),'utf8'));
+const {updateCompatibility}=readPublicationCompatibility(root,{
+    versions:{tavern:fs.readFileSync(path.join(root,'app/.tavern-release-version'),'utf8').trim()},
+    launcherVersion:JSON.parse(fs.readFileSync(path.join(root,'launcher/desktop/package.json'),'utf8')).version,
+},{compatibilityFile,candidate});
 if (candidateTelemetry && (!candidate || componentsOnly)) throw new Error('Candidate telemetry requires a complete --candidate launcher build');
 const baselineIndex = process.argv.indexOf('--launcher-baseline');
 const baselineDirectory = baselineIndex >= 0 ? process.argv[baselineIndex + 1] : null;
