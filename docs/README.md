@@ -1,5 +1,7 @@
 # 文档入口
 
+项目唯一的[产品设计基线](product-baseline.md)规定已确认规则、模块职责、当前实现差异和后续修改程序；本轮选择及未决项集中在[决策登记](product-baseline.md#八-已确认决策与待确认事项)。开始修复、优化或交付前先对照；下列模块文档与历史记录不另立产品基线。
+
 ## 用户使用
 
 - [下载启动器](../README.md#下载安装包)
@@ -12,6 +14,7 @@
 
 - [仓库导航与职责](REPOSITORY.md)
 - [开发、验证与发布](../CONTRIBUTING.md)
+- [核心与启动器更新：设计与验收范围](design/update-release-alignment.md) — 已完成本地实施与集成；实际证据和发行限制见[查询预算验收](reports/20261018-update-query-budget-acceptance.md)及[合并审查](reports/20261018-main-updater-merge-review.md)，尚未正式发布。
 - [诺拉内容](../nora/README.md)
 - [启动器](../launcher/README.md)
 - [安装、更新和卸载](../deployment/README.md)

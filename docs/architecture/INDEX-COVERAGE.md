@@ -1,5 +1,10 @@
 # Tavern Index Coverage
 
+> Historical coverage evidence. The adjacent `project-index.json` was frozen on
+> 2026-09-03. Generate the current inventory with
+> `node tooling/checks/index-project.mjs`; its output is
+> `.codebase-memory/project-index.json`.
+
 ## Same-repository release audit — 2026-08-31
 
 The current candidate is `release/nora-refactor-20260831`, based on GitHub main

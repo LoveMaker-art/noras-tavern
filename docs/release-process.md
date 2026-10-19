@@ -1,5 +1,9 @@
 # Nora 发布流程
 
+更新范围和发布策略以唯一[产品设计基线](product-baseline.md)的 PB-06、PB-09 为准；本文说明现有发布工具与协议的执行方式。核心／启动器版本信息分离、一次发起两项更新及兼容部分完成已在本地实现，实际验收与发行限制见[合并审查](reports/20261018-main-updater-merge-review.md)、[仅启动器发布验收](reports/20261018-app-only-publication-acceptance.md)和[查询预算验收](reports/20261018-update-query-budget-acceptance.md)；尚未正式发布。
+
+设计范围及验收要求见[技术实施方案](design/update-release-alignment.md)。构建、迁移、推送和发布分别取得授权，不以文档或源码完成代替正式渠道验证。
+
 本文规定变更判断、构建验收、制品封存、分发准备、正式切换及失败恢复的执行边界。工作流实施和本地合同验证不等于已在 GitHub 执行，也不等于正式发布成功。
 
 ## 1. 先确定必须改变的交付内容

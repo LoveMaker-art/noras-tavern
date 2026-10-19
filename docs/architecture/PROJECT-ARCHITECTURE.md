@@ -2,6 +2,8 @@
 
 > 当前仓库分层与维护入口见 [仓库导航](../REPOSITORY.md)。本文保留历史架构与验收语境，不代表当前源码目录或最新测试状态。
 
+> 同目录 `project-index.json` 冻结于2026-09-03。当前逐文件索引由 `node tooling/checks/index-project.mjs` 生成到 `.codebase-memory/project-index.json`，请结合现有源码核对。
+
 > Latest implemented overlay: [release hardening, 2026-08-30](RELEASE-HARDENING-2026-08-30.md).
 > Its runtime-ready event, serialized Store commits, request deadlines, embedded
 > Profile build contract and guarded release flow supersede the older details below.

@@ -1,5 +1,7 @@
 # Development And Release
 
+Before planning or editing, read the [sole product design baseline](docs/product-baseline.md). Follow its change protocol, identify the applicable PB rules and preserved behavior, and keep implementation, acceptance, and publication status separate. Module plans describe implementation and progress; they do not independently change product rules.
+
 Start with [repository navigation](docs/REPOSITORY.md). Change authored source, not installed runtime files or generated copies. `nora/AGENTS.md` is delivered to Hermes; it is not instructions for repository contributors.
 
 ## Requirements
@@ -17,6 +19,9 @@ npm ci --prefix launcher/desktop
 npm ci --prefix app/engine/sillytavern
 npm ci --prefix nora-mcp
 ```
+
+Dependencies belong in `launcher/desktop/node_modules`; do not link them to a
+temporary build export or reuse the retired `ops/installer/desktop/node_modules`.
 
 ## Source And Delivery Layouts
 
