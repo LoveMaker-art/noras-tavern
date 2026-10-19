@@ -64,3 +64,7 @@ test('fresh actual APP seals native and all flat CLI resources; JS/Python agree 
   assertions:{actualElectron:true,nativeDependencyComplete:true,allFlatResourceHashesMatchCandidate:true,jsPythonReceiptAgree:true,arbitraryCliRefusedBeforeOperation:true},identity};
  if(process.env.NORA_GATE_REPORT)fs.writeFileSync(process.env.NORA_GATE_REPORT,JSON.stringify(report,null,2)+'\n');
 });
+
+// Run the retained-data regression under the exact packaged Electron and ASAR,
+// in addition to verifying module hashes. Source-only tests cannot prove this.
+if(artifactProvided)require('./launcher_retained_copy_electron.test.cjs');

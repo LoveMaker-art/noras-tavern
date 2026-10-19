@@ -11,6 +11,7 @@
 | 操作、结果与失败次数 | `launcher_operation_state.test.cjs`、`launcher_operation_result.test.cjs`、`launcher_retry_conditions.test.cjs`、`launcher_pair_retry.test.cjs` |
 | 原生锁、委托与关闭 | `launcher_operation_lock.test.cjs`、`launcher_operation_inspection.test.cjs`、`test_operation_control.py` |
 | 首装、更新与恢复 | `launcher_runtime_transaction.test.cjs`、`launcher_update_executor.test.cjs`、`test_first_install_transaction.py`、`test_update_operation_safety.py` |
+| 保留数据重装复制 | `launcher_runtime.test.cjs` 的私人文件、归属与并发变化检查；`launcher_runtime_transaction.test.cjs` 的真实提交／恢复；`launcher_retained_copy_electron.test.cjs` 的物理 ASAR 与 Windows 缓存 junction。最终 APP 门禁自动调用最后一项，不能以 Node 结果代替 Electron 结果 |
 | 独立部署更新 | `test_standalone_update_entry.py`、`test_standalone_update_recovery.py`、`test_update_dependency_materialization.py`：单文件入口、无桌面凭据执行、Linux staging 依赖准备与拒绝边界、持久恢复、设置备份轮换与再次中断；不替代旧安装实测 |
 | 版本、来源与下载 | `launcher_release_plan.test.cjs`、`launcher_network_policy.test.cjs`、`launcher_network.test.cjs` |
 | 日志、故障包和投递 | `launcher_diagnostics_operation.test.cjs`、`launcher_evidence_store.test.cjs`、`launcher_fault_packet.test.cjs`、`launcher_telemetry.test.cjs`、`launcher_telemetry_worker.test.cjs` |
