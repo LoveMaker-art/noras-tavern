@@ -497,9 +497,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          args=()
-          if [[ "$NORA_APP_ONLY" == "true" ]]; then args+=(--app-only); fi
-          node "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline" "${args[@]}"
+          set -- "$PWD/tooling/release/launcher-build-baseline.mjs" "$BASELINE_TAG" "${{ matrix.platform }}-${{ matrix.arch }}" "$RUNNER_TEMP/launcher-baseline"
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then set -- "$@" --app-only; fi
+          node "$@"
 
       - name: Fetch official ClawChat plugin for the runtime bundle
         uses: actions/checkout@v4
@@ -731,14 +731,16 @@ jobs:
           if [[ "$NORA_APP_ONLY" == "true" && "$PRODUCTION_MODE" != "true" && "$GITHUB_REF_TYPE" != "tag" ]]; then echo 'APP-only native acceptance requires production_mode=true ordinary protocol test artifacts (does not publish).' >&2; exit 1; fi
           if [[ "$GITHUB_REF_TYPE" == "tag" || "$PRODUCTION_MODE" == "true" ]]; then mode=""; fi
           if [[ "$NORA_APP_ONLY" == "true" && ( -z "$LAUNCHER_BASELINE" || -z "$NORA_COMPONENT_PUBLICATION_TAG" ) ]]; then echo 'APP-only requires explicit publication_tag and launcher_baseline_tag' >&2; exit 1; fi
-          publication_args=()
-          if [[ "$NORA_APP_ONLY" == "true" ]]; then publication_args+=(--app-only); fi
-          if [[ -n "$NORA_COMPONENT_PUBLICATION_TAG" ]]; then publication_args+=(--publication-tag "$NORA_COMPONENT_PUBLICATION_TAG"); fi
-          if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then publication_args+=(--update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"); fi
+          # macOS Bash 3.2 treats an empty array as unbound under set -u.
+          set -- "$PWD/tooling/release/package-release.mjs"
+          if [[ -n "$mode" ]]; then set -- "$@" "$mode"; fi
+          if [[ "$NORA_APP_ONLY" == "true" ]]; then set -- "$@" --app-only; fi
+          if [[ -n "$NORA_COMPONENT_PUBLICATION_TAG" ]]; then set -- "$@" --publication-tag "$NORA_COMPONENT_PUBLICATION_TAG"; fi
+          if [[ -n "$NORA_UPDATE_COMPATIBILITY_FILE" ]]; then set -- "$@" --update-compatibility "$NORA_UPDATE_COMPATIBILITY_FILE"; fi
           if [[ -n "$LAUNCHER_BASELINE" ]]; then
-            node "$PWD/tooling/release/package-release.mjs" $mode "${publication_args[@]}" --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
+            node "$@" --launcher-baseline "$RUNNER_TEMP/launcher-baseline"
           else
-            node "$PWD/tooling/release/package-release.mjs" $mode "${publication_args[@]}" \
+            node "$@" \
               --hermes-runtime-manifest "$RUNNER_TEMP/hermes-runtime/nora-hermes-runtime.json"
           fi
 
