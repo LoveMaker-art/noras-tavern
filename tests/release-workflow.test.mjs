@@ -93,6 +93,11 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.match(gate.run, /NORA_TEST_PYTHON="\$RUNNER_TEMP\/nora-source-python\/Scripts\/python\.exe"/);
   assert.match(gate.run, /NORA_TEST_PYTHON="\$RUNNER_TEMP\/nora-source-python\/bin\/python"/);
   assert.match(gate.run, /"\$NORA_TEST_PYTHON" -m pip install psutil==7\.0\.0/, 'Native process inspection needs its explicit test dependency in the selected venv');
+  assert.match(gate.run, /python -m pip install psutil==7\.0\.0 PyYAML==6\.0\.2/, 'Later source contracts retain their setup-python dependencies');
+  assert.match(gate.run, /export NORA_TEST_MANAGED_PYTHON_ROOT=.*sys\.base_prefix/);
+  assert.match(gate.run, /resolveExecution\(process\.env\.NORA_TEST_PYTHON/);
+  assert.match(gate.run, /spawnSync\(resolved\.command/);
+  assert.match(gate.run, /import json,sys,psutil,yaml/);
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
 });

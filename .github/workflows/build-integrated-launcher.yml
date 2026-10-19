@@ -431,6 +431,8 @@ jobs:
         run: |
           set -euo pipefail
           python -B -c 'import json,os,sys; p=os.path.realpath(sys.executable); s=os.stat(p); print(json.dumps({"sourcePython":p,"mode":oct(s.st_mode & 0o777),"uid":s.st_uid}))'
+          # Later source-contract steps still use the setup-python interpreter.
+          python -m pip install psutil==7.0.0 PyYAML==6.0.2
           python -m venv --copies "$RUNNER_TEMP/nora-source-python"
           if [[ "$RUNNER_OS" == Windows ]]; then
             export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/Scripts/python.exe"
@@ -438,7 +440,19 @@ jobs:
             export NORA_TEST_PYTHON="$RUNNER_TEMP/nora-source-python/bin/python"
           fi
           export NORA_PYTHON="$NORA_TEST_PYTHON"
+          export NORA_TEST_MANAGED_PYTHON_ROOT="$("$NORA_TEST_PYTHON" -B -c 'import sys; print(sys.base_prefix, end="")')"
           "$NORA_TEST_PYTHON" -m pip install psutil==7.0.0 PyYAML==6.0.2
+          node <<'JS'
+          const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path');
+          const {spawnSync}=require('node:child_process'),{resolveExecution}=require('./launcher/desktop/managed-python');
+          const venvHome=path.dirname(path.dirname(process.env.NORA_TEST_PYTHON));
+          const resolved=resolveExecution(process.env.NORA_TEST_PYTHON,{managedPythonRoot:process.env.NORA_TEST_MANAGED_PYTHON_ROOT,venvHome});
+          const result=spawnSync(resolved.command,['-B','-c','import json,sys,psutil,yaml; print(json.dumps({"prefix":sys.prefix,"basePrefix":sys.base_prefix}))'],{env:resolved.env,encoding:'utf8',timeout:10000});
+          assert.equal(result.status,0,result.stderr||result.error?.message||'Source actor interpreter did not start');
+          const probe=JSON.parse(result.stdout),canonical=value=>process.platform==='win32'?fs.realpathSync(value).toLowerCase():fs.realpathSync(value);
+          assert.equal(canonical(probe.prefix),canonical(venvHome),'Source actor did not select its declared virtual environment');
+          console.log(JSON.stringify({executionIdentity:resolved.executionIdentity,...probe}));
+          JS
           node "$PWD/tooling/checks/verify-launcher-stability.mjs"
 
       - name: Check release source contracts before preparing runtimes
