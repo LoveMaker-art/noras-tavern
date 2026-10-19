@@ -52,9 +52,10 @@ test('reviewed compatibility files are product metadata, without changing runtim
 });
 
 test('unshipped tests/docs and publication tooling require verification, not product construction', () => {
-    const inputs = change('README.md', 'docs/releases/v2.4.4.md', 'tests/deployment/launcher_network_policy.test.cjs',
+    const inputs = change('README.md', 'CONTRIBUTING.md', 'docs/releases/v2.4.4.md', 'tests/deployment/launcher_network_policy.test.cjs',
         'tooling/release/publish-release.mjs', 'tooling/release/publication-state.mjs',
         'tooling/release/publication-source.cjs', 'tooling/release/publication-providers.mjs', 'tooling/release/acceptance-baseline.mjs',
+        'tooling/release/final-consumer.mjs',
         'tooling/checks/launcher-installed-check.ps1');
     const plan = createReleasePlan(inputs);
     assert.equal(plan.mode, 'verification-only'); assert.equal(plan.requiresReview, false);

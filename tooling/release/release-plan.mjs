@@ -23,8 +23,8 @@ const automation = new Set(['tooling/run.mjs', 'tooling/release/release-plan.mjs
     'tooling/release/app-only-native-ui.ps1', 'tooling/release/app-only-native-ui.applescript',
     'tooling/release/sourceforge-credentials.mjs', 'tooling/release/verify-publish-source.cjs',
     'tooling/release/reuse-windows-build.cjs', 'tooling/release/verify-launcher-release.cjs',
-    'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs']);
-const rootDocuments = new Set(['README.md', 'AGENTS.md', 'CONTEXT.md', 'LICENSE', '.gitignore', '.gitattributes']);
+    'tooling/release/launcher-release-notes.cjs', 'tooling/release/package-local-launcher.mjs', 'tooling/release/final-consumer.mjs']);
+const rootDocuments = new Set(['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'CONTEXT.md', 'LICENSE', '.gitignore', '.gitattributes']);
 const engine = 'app/engine/sillytavern/';
 const omitted = ['default/content/backgrounds/', 'default/content/Seraphina/', 'public/webfonts/NotoSans/',
     'public/webfonts/NotoSansMono/', 'src/tokenizers/', 'tests/'].map(name => engine + name);
