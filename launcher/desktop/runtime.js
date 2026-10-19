@@ -1,5 +1,6 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const diskFs = process.versions.electron ? require('original-fs') : fs;
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { launcherError } = require('./launcher-errors');
@@ -218,12 +219,12 @@ function validateRuntime(home, manifest) {
 }
 
 function validateRuntimeLinks(home) {
-  const base = fs.realpathSync(home);
+  const base = diskFs.realpathSync(home);
   const walk = (directory) => {
-    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    for (const entry of diskFs.readdirSync(directory, { withFileTypes: true })) {
       const file = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) {
-        const target = fs.realpathSync(file);
+        const target = diskFs.realpathSync(file);
         if (target !== base && !target.startsWith(`${base}${path.sep}`)) {
           throw new Error(`运行时链接指向安装目录之外：${path.relative(home, file)}`);
         }

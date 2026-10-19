@@ -79,6 +79,7 @@
       "operation-history.js",
       "managed-python.js",
       "runtime-transaction.js",
+      "runtime-retained-data.js",
       "tree-integrity.js",
       "operation-cli.js",
       "launcher-capability.js"

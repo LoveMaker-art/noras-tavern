@@ -97,3 +97,43 @@ test('runtime link validation rejects an external directory before the tree can 
     assert.throws(()=>validateRuntimeLinks(home),/目录之外/);
   }finally{fs.rmSync(root,{recursive:true,force:true});}
 });
+
+function retainedFixture(t){
+  const top=fs.mkdtempSync(path.join(os.tmpdir(),'nora-retained-copy-'));
+  t.after(()=>fs.rmSync(top,{recursive:true,force:true}));
+  const previous=path.join(top,'previous'),stage=path.join(top,'stage');
+  fs.mkdirSync(previous);fs.mkdirSync(stage);
+  const write=(base,name,text)=>{const file=path.join(base,name);fs.mkdirSync(path.dirname(file),{recursive:true});fs.writeFileSync(file,text);return file;};
+  return {top,previous,stage,write,copy:require('../installer/desktop/runtime-retained-data').copyUserData};
+}
+test('retained copying preserves private files and real .asar directories without restoring old managed programs',t=>{
+  const f=retainedFixture(t),names=['config.yaml','.env','memories/USER.md','state/old-app/app.asar','AppData/Local/private-notes.txt'];
+  for(const name of names)f.write(f.previous,name,'original '+name);
+  f.write(f.previous,'hermes-agent/old.js','old program');f.write(f.stage,'hermes-agent/new.js','new program');
+  f.write(f.previous,'state/plain.asar/note.txt','real directory');
+  const result=f.copy(f.previous,f.stage);assert.equal(result.files,6);
+  for(const name of names)assert.equal(fs.readFileSync(path.join(f.stage,name),'utf8'),'original '+name);
+  assert.equal(fs.readFileSync(path.join(f.stage,'state/plain.asar/note.txt'),'utf8'),'real directory');
+  assert.equal(fs.existsSync(path.join(f.stage,'hermes-agent/old.js')),false);
+  assert.equal(fs.readFileSync(path.join(f.stage,'hermes-agent/new.js'),'utf8'),'new program');
+  assert.equal(fs.readFileSync(path.join(f.previous,'hermes-agent/old.js'),'utf8'),'old program');
+});
+test('retained copying rejects staging redirects before changing their external target',t=>{
+  const f=retainedFixture(t),outside=f.write(f.top,'outside/original.txt','must survive');
+  f.write(f.previous,'notes/original.txt','retained content');
+  fs.symlinkSync(path.dirname(outside),path.join(f.stage,'notes'),process.platform==='win32'?'junction':'dir');
+  assert.throws(()=>f.copy(f.previous,f.stage),error=>error.code==='RUNTIME_RETAINED_PATH_INVALID');
+  assert.equal(fs.readFileSync(outside,'utf8'),'must survive');
+});
+test('retained copying refuses external user links without following or changing them',t=>{
+  const f=retainedFixture(t),outside=f.write(f.top,'outside/original.txt','must survive');
+  fs.symlinkSync(path.dirname(outside),path.join(f.previous,'external'),process.platform==='win32'?'junction':'dir');
+  assert.throws(()=>f.copy(f.previous,f.stage),error=>error.code==='RUNTIME_RETAINED_LINK_UNSUPPORTED');
+  assert.equal(fs.readFileSync(outside,'utf8'),'must survive');
+});
+test('retained copying refuses a source changed during copying instead of reporting it preserved',t=>{
+  const f=retainedFixture(t),file=f.write(f.previous,'config.yaml','before');
+  const copy=fs.copyFileSync;t.mock.method(fs,'copyFileSync',(from,to,...args)=>{copy(from,to,...args);fs.appendFileSync(file,'external change');});
+  assert.throws(()=>f.copy(f.previous,f.stage),error=>error.code==='RUNTIME_RETAINED_CHANGED');
+  assert.equal(fs.readFileSync(file,'utf8'),'beforeexternal change');
+});
