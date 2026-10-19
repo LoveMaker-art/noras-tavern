@@ -540,25 +540,33 @@ test('a retried, continuously slow GitHub body cannot consume the backup downloa
   assert.equal(primaryCancelled,true);
 });
 
-test('default slow-source estimation switches a 1 KiB/s body before receiving 512 KiB and preserves Range',async t=>{
+test('default slow-source estimation switches a 1 KiB/s body before receiving 512 KiB and preserves Range',{timeout:5000},async t=>{
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-slow-estimate-'));t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const bytes=Buffer.alloc(4*1024*1024,0x61),target=path.join(root,'asset.zip'),requests=[],diagnostics=[];
-  let clock=1000,chunks=0,primaryCancelled=false,backupOffset=0;
+  let clock=1000,chunks=0,consumed=0,primaryCancelled=false,backupOffset=0,lastPublishedPrefix=0;
+  // Progress is throttled by Date, while source speed uses the independent
+  // virtual clock. A 250ms progress cadence keeps the default 2s checkpoint
+  // interval intact and gives the producer an explicit consumption handshake.
+  t.mock.timers.enable({apis:['Date'],now:1000000});
   const result=await networkModule.downloadAsset({url:assetUrl,target,identity:{tag:'v2.4.2',asset:'asset.zip',size:bytes.length,sha256:sha(bytes)},
     policy:{sources:sfSources,now:()=>clock,diagnostics:{write:(event,fields)=>diagnostics.push({event,...fields}),error(){}}},
+    onEvent:event=>{if(!primaryCancelled&&requests.length===1&&event.event==='progress'){
+      consumed=event.current;lastPublishedPrefix=JSON.parse(fs.readFileSync(target+'.partial.json')).size;
+    }},
     fetcher:async(url,options)=>{
       const headers=new Headers(options.headers);requests.push({url,range:headers.get('range'),ifRange:headers.get('if-range')});
       if(url===assetUrl)return new Response(new ReadableStream({async pull(controller){
-        // Keep virtual elapsed time aligned with bytes actually consumed by
-        // the reader instead of letting Web-stream prefetch advance the clock.
-        while(!primaryCancelled && (fs.statSync(target+'.partial',{throwIfNoEntry:false})?.size || 0)<chunks*5*1024)
+        // An OS write may finish before the consumer handles its completion.
+        // Advance only after the production reader has published consumption.
+        while(!primaryCancelled && consumed<chunks*5*1024)
           await new Promise(resolve=>setImmediate(resolve));
         if(primaryCancelled)return;
         if(chunks++>=15){controller.error(Object.assign(new Error('slow source did not yield within the observation window'),{code:'FIXTURE_NO_EARLY_SWITCH'}));return;}
-        clock+=5000;controller.enqueue(bytes.subarray(0,5*1024));
+        clock+=5000;t.mock.timers.tick(250);controller.enqueue(bytes.subarray(0,5*1024));
       },cancel(){primaryCancelled=true;}}),{headers:{ETag:'"slow-primary"','Content-Length':String(bytes.length)}});
       assert.equal(primaryCancelled,true);backupOffset=Number(headers.get('range')?.slice(6,-1));
       assert.ok(backupOffset>=16*1024&&backupOffset<512*1024);assert.equal(headers.get('if-range'),null);
+      assert.ok(backupOffset>lastPublishedPrefix,'handoff must checkpoint bytes newer than the last periodic checkpoint');
       assert.equal(JSON.parse(fs.readFileSync(target+'.partial.json')).size,backupOffset);
       return new Response(bytes.subarray(backupOffset),{status:206,headers:{ETag:'"faster-backup"','Content-Length':String(bytes.length-backupOffset),
         'Content-Range':`bytes ${backupOffset}-${bytes.length-1}/${bytes.length}`}});
