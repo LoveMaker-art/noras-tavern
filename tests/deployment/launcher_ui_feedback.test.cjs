@@ -159,7 +159,7 @@ function mainHandler(channel, values) {
   const ast = parse(mainSource,{ecmaVersion:'latest'}); visit(ast);
   const cancellation = ast.body.find(n=>n.id?.name==='taskCancellation');
   return vm.runInNewContext(`${mainSource.slice(cancellation.start,cancellation.end)}\n(${mainSource.slice(callback.start,callback.end)})`,
-    {require:mainRequire,updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,...values});
+    {require:mainRequire,updatingSystem:false,cancelled:false,releaseAbort:null,activeProcess:null,activeOperationContext:null,desktopUpdateNotice:null,...values});
 }
 
 test('main status failures return unavailable instead of invented stopped or broken-installation facts', async t => {

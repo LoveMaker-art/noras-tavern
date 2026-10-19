@@ -197,7 +197,7 @@ test('returned release failures retain the original local diagnosis before UI fo
   const context = vm.createContext({activeRun:false,modelBusy:false,trackLauncher:async(_action,_stage,fn)=>fn(),
     path,describeError,releaseCheckRequest:null,releaseMetadataState:null,noraHome:()=>'/fixture',
     releases:{check:async()=>result,createMetadataCache:require('../installer/desktop/releases').createMetadataCache},
-    updateFetch:null,installRoot:()=>'/fixture',app:{getVersion:()=> '1.0.0'},
+    updateFetch:null,localReleaseDirectory:null,installRoot:()=>'/fixture',app:{getVersion:()=> '1.0.0'},
     CHANNEL:'stable',formatUserError,diagnostics:{error:(event,error)=>reports.push({event,error})}});
   for (const name of ['releaseMetadataCache','checkRelease']) {
     const node = definitions.get(name); assert.ok(node);
