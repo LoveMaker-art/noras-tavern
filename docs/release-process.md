@@ -1,6 +1,6 @@
 # Nora 发布流程
 
-更新范围和发布策略以唯一[产品设计基线](product-baseline.md)的 PB-06、PB-09 为准；本文说明现有发布工具与协议的执行方式。核心／启动器版本信息分离、一次发起两项更新及兼容部分完成已在本地实现，实际验收与发行限制见[合并审查](reports/20261018-main-updater-merge-review.md)、[仅启动器发布验收](reports/20261018-app-only-publication-acceptance.md)和[查询预算验收](reports/20261018-update-query-budget-acceptance.md)；尚未正式发布。
+更新范围和发布策略以唯一[产品设计基线](product-baseline.md)的 PB-06、PB-09 为准；本文说明现有发布工具与协议的执行方式。核心／启动器版本信息分离、一次发起两项更新及兼容部分完成的修订已随 v2.5.3／启动器 2.2.3 正式发行；本轮成品与分发证据见[发行记录](reports/20261019-v2.5.3-release-preparation.md)。此前指定流程及其限制仍分别见[合并审查](reports/20261018-main-updater-merge-review.md)、[仅启动器发布验收](reports/20261018-app-only-publication-acceptance.md)和[查询预算验收](reports/20261018-update-query-budget-acceptance.md)，不因发布而扩大其验收范围。
 
 设计范围及验收要求见[技术实施方案](design/update-release-alignment.md)。构建、迁移、推送和发布分别取得授权，不以文档或源码完成代替正式渠道验证。
 

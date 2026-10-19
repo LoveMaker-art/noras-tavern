@@ -53,7 +53,7 @@ async function template(){
   })();
   return templatePromise;
 }
-async function fixture(t,{managed=true,backend,reader,admissionDelayMs}={}){
+async function fixture(t,{managed=true,backend,reader,admissionDelayMs,homeMode}={}){
   let source=await template();
   const directory=fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(),'nora-updater-cap-')));
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
@@ -72,6 +72,7 @@ async function fixture(t,{managed=true,backend,reader,admissionDelayMs}={}){
   fs.writeFileSync(path.join(install,'tavern-updates/installed.json'),JSON.stringify({schema:2,commit:'a'.repeat(40),version:'2.4.2'}),{mode:0o600});
   if(managed)fs.writeFileSync(path.join(hermes,'nora-instance.json'),JSON.stringify({schema:1,noraHome:home,hermesHome:hermes,installRoot:install,port:18799}),{mode:0o600});
   const job=path.join(home,'installer/update-jobs',crypto.randomUUID());fs.mkdirSync(job,{recursive:true,mode:0o700});
+  if(homeMode!==undefined)fs.chmodSync(home,homeMode);
   assert.ok(process.env.NORA_TEST_PYTHON,'Explicit native Python is required for updater identity verification');
   const options={noraHome:home,hermesHome:hermes,installRoot:install,jobDirectory:job,port:18799,
     python:process.env.NORA_TEST_PYTHON,node:process.execPath,opsRoot:path.join(source.directory,'ops'),
@@ -109,17 +110,34 @@ test('snapshot edits cannot be authorized by merely rewriting the per-file recei
   await assert.rejects(capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath}),{code:'UPDATER_IDENTITY_INVALID'});
 });
 
-test('group-writable snapshot directories and foreign installation bindings are rejected',async t=>{
+test('write-mode differences are accepted but foreign installation bindings remain rejected',async t=>{
   const f=await fixture(t);
   if(process.platform!=='win32'){
     fs.chmodSync(f.receipt.opsRoot,0o770);
-    try{await assert.rejects(capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath}),{code:'UPDATER_IDENTITY_INVALID'});}
+    try{assert.equal((await capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath})).noraHome,f.home);}
     finally{fs.chmodSync(f.receipt.opsRoot,0o700);}
   }
   const marker=path.join(f.hermes,'nora-instance.json'),record=JSON.parse(fs.readFileSync(marker));record.installRoot=path.join(f.directory,'another-tavern');
   fs.writeFileSync(marker,JSON.stringify(record));
   await assert.rejects(capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath}),{code:'UPDATER_IDENTITY_INVALID'});
 });
+
+for(const mode of [0o755,0o770,0o2770,0o2777])test('POSIX installation mode '+mode.toString(8)+' does not prevent verified updater admission',
+  {skip:process.platform==='win32'},async t=>{
+    const f=await fixture(t,{managed:false,homeMode:mode});
+    assert.equal((await capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath})).noraHome,f.home);
+    assert.equal(fs.statSync(f.home).mode&0o7777,mode,'updater does not rewrite deployment permissions');
+    assert.equal(fs.statSync(f.receipt.opsRoot).mode&0o077,0,'new snapshots keep their existing private defaults');
+  });
+
+test('deployment write permissions do not permit a linked installation target',
+  {skip:process.platform==='win32'},async t=>{
+    const f=await fixture(t,{managed:false,homeMode:0o2770}),actual=f.install+'-actual';
+    fs.renameSync(f.install,actual);fs.symlinkSync(actual,f.install,'dir');
+    try{await assert.rejects(capability.validate({receiptPath:f.receiptPath,currentExecutable:process.execPath}),error=>
+      error.code==='UPDATER_IDENTITY_INVALID');}
+    finally{fs.unlinkSync(f.install);fs.renameSync(actual,f.install);}
+  });
 
 test('unlisted executable files cannot shadow the sealed dependency graph',async t=>{
   const f=await fixture(t),shadow=path.join(f.receipt.opsRoot,'installer/desktop/node_modules/semver/index.js');

@@ -14,10 +14,12 @@ const hash=bytes=>crypto.createHash('sha256').update(bytes).digest('hex');
 const fail=()=>Object.assign(new Error('更新器或安装记录无法核验，未修改程序和用户数据。请保留日志。'),{code:'UPDATER_IDENTITY_INVALID'});
 const absolute=value=>{if(typeof value!=='string'||!path.isAbsolute(value))throw fail();return path.resolve(value);};
 const same=(left,right)=>process.platform==='win32'?absolute(left).toLowerCase()===absolute(right).toLowerCase():absolute(left)===absolute(right);
-function privatePath(file,{directory=false}={}){
+function checkedPath(file,{directory=false}={}){
   const stat=fs.lstatSync(file);
-  if(stat.isSymbolicLink()||(directory?!stat.isDirectory():!stat.isFile())
-    ||process.platform!=='win32'&&((stat.uid!==process.getuid()&&stat.uid!==0)||(stat.mode&0o022)))throw fail();
+  // Filesystem ownership and write permissions are deployment policy. Do not
+  // impose private-directory rules on existing installations or runtimes.
+  // Actual I/O errors, path binding and manifest checks remain authoritative.
+  if(stat.isSymbolicLink()||(directory?!stat.isDirectory():!stat.isFile()))throw fail();
   return stat;
 }
 function regular(file){
@@ -29,7 +31,7 @@ function regular(file){
     const checked=process.platform==='win32'&&current===root&&/^\\\\\?\\[a-z]:\\$/i.test(root)?root.slice(4):current;
     const s=fs.lstatSync(checked);if(s.isSymbolicLink())throw fail();if(current===root)break;
     const parent=path.dirname(current);if(parent===current)break;current=parent;}
-  return privatePath(file);
+  return checkedPath(file);
 }
 function bytes(file,max=16*1024*1024){if(regular(file).size>max)throw fail();return fs.readFileSync(file);}
 function descriptor(file,{executable=false}={}){
@@ -42,7 +44,7 @@ function descriptor(file,{executable=false}={}){
 }
 function atomic(file,value){const temp=file+'.'+crypto.randomUUID()+'.tmp';fs.writeFileSync(temp,JSON.stringify(value),{flag:'wx',mode:0o600});try{fs.renameSync(temp,file);}finally{fs.rmSync(temp,{force:true});}}
 function identity(root){
-  privatePath(root,{directory:true});
+  checkedPath(root,{directory:true});
   const manifestFile=path.join(root,'tavern-updates/installed-manifest.json'),receiptFile=path.join(root,'tavern-updates/installed.json');
   const manifest=JSON.parse(bytes(manifestFile)),receipt=JSON.parse(bytes(receiptFile));
   if(manifest.schema!=='tavern-release/v2'||!/^[a-f0-9]{40}$/.test(manifest.commit||'')||manifest.commit!==receipt.commit
@@ -50,7 +52,7 @@ function identity(root){
   return {manifest,files:[descriptor(manifestFile),descriptor(receiptFile)]};
 }
 function binding(value){
-  for(const directory of [value.noraHome,value.hermesHome,value.installRoot])privatePath(absolute(directory),{directory:true});
+  for(const directory of [value.noraHome,value.hermesHome,value.installRoot])checkedPath(absolute(directory),{directory:true});
   const file=path.join(value.hermesHome,'nora-instance.json'),managed=fs.existsSync(file);
   if(managed){
     const record=JSON.parse(bytes(file));
@@ -90,7 +92,7 @@ function dependencyClosure(files,manifest){
 }
 function snapshotInventory(root,files){
   const visit=directory=>{
-    privatePath(directory,{directory:true});
+    checkedPath(directory,{directory:true});
     for(const entry of fs.readdirSync(directory,{withFileTypes:true})){
       const file=path.join(directory,entry.name);
       if(entry.isDirectory())visit(file);
@@ -105,11 +107,11 @@ function stage(options){
   const noraHome=absolute(options.noraHome),hermesHome=absolute(options.hermesHome),installRoot=absolute(options.installRoot);
   if(!Number.isInteger(port)||port<1024||port>65535||!['stable','beta'].includes(channel))throw fail();
   if(!ID.test(path.basename(jobDirectory))||absolute(jobDirectory)!==path.join(noraHome,'installer/update-jobs',path.basename(jobDirectory)))throw fail();
-  privatePath(jobDirectory,{directory:true});
-  for(const directory of [path.join(noraHome,'installer'),path.join(noraHome,'installer/update-jobs')])privatePath(directory,{directory:true});
+  checkedPath(jobDirectory,{directory:true});
+  for(const directory of [path.join(noraHome,'installer'),path.join(noraHome,'installer/update-jobs')])checkedPath(directory,{directory:true});
   const managed=binding({noraHome,hermesHome,installRoot,port});
   const installed=identity(installRoot),sourceRoot=path.resolve(options.opsRoot||path.join(installRoot,'apps/tavern-ops'));
-  privatePath(sourceRoot,{directory:true});
+  checkedPath(sourceRoot,{directory:true});
   const sourceBytes=bytes(options.manifestPath||path.join(installRoot,'tavern-updates/installed-manifest.json'));
   const sourceManifest=JSON.parse(sourceBytes),selected=members(sourceManifest);
   const opsRoot=path.join(jobDirectory,'runner/ops');fs.mkdirSync(opsRoot,{recursive:true,mode:0o700});
@@ -147,7 +149,7 @@ async function validate({receiptPath,currentExecutable,readOnly=false}={}){
   const job=path.dirname(receiptPath),expected=path.join(value.installerDirectory,'update-jobs',path.basename(job));
   if(!ID.test(path.basename(job))||absolute(job)!==expected||value.opsRoot!==path.join(job,'runner/ops')
     ||value.resourcesRoot!==path.join(value.opsRoot,'installer')||value.sourceManifest?.path!==path.join(job,'runner/release-manifest.json'))throw fail();
-  for(const directory of [value.noraHome,value.installerDirectory,path.dirname(job),job,path.join(job,'runner'),value.opsRoot])privatePath(directory,{directory:true});
+  for(const directory of [value.noraHome,value.installerDirectory,path.dirname(job),job,path.join(job,'runner'),value.opsRoot])checkedPath(directory,{directory:true});
   if(binding(value)!==value.managedInstallation)throw fail();
   const sourceManifest=JSON.parse(bytes(value.sourceManifest.path)),selected=members(sourceManifest);
   if(value.sourceCommit!==sourceManifest.commit||!isDeepStrictEqual(Object.keys(value.files).sort(),selected.slice().sort())
@@ -156,7 +158,7 @@ async function validate({receiptPath,currentExecutable,readOnly=false}={}){
   snapshotInventory(value.opsRoot,value.files);
   for(const [name,item] of Object.entries(value.files)){
     if(item.path!==path.join(value.opsRoot,...name.slice(4).split('/'))||item.sha256!==sourceManifest.artifacts[name])throw fail();
-    for(let directory=path.dirname(item.path);directory!==value.opsRoot;directory=path.dirname(directory))privatePath(directory,{directory:true});
+    for(let directory=path.dirname(item.path);directory!==value.opsRoot;directory=path.dirname(directory))checkedPath(directory,{directory:true});
   }
   for(const item of [...Object.values(value.files),value.sourceManifest,
     ...(readOnly?[]:[...value.installed,value.python,value.executable])]){
@@ -177,7 +179,7 @@ function verifyReader({opsRoot,manifestPath}){
   const key=opsRoot+'\0'+manifestPath;if(readers.has(key))return readers.get(key);
   try{
     const manifest=JSON.parse(bytes(manifestPath)),selected=members(manifest),files={};
-    privatePath(opsRoot,{directory:true});
+    checkedPath(opsRoot,{directory:true});
     for(const name of selected){
       const file=path.join(opsRoot,...name.slice(4).split('/')),item=descriptor(file);
       if(item.sha256!==manifest.artifacts[name])throw fail();files[name]=item;
