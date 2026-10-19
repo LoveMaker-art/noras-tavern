@@ -52,6 +52,8 @@ const python = [
     'test_update_space_contract',
     'test_launcher_test_environment',
     'test_manual_acceptance',
+    'test_update_target',
+    'test_update_error_diagnostics',
 ];
 
 export function verifyLauncherStability({ root = sourceRoot, run = spawnSync, checkEnvironment = checkLauncherTestEnvironment,

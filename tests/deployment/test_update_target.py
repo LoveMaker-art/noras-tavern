@@ -135,7 +135,8 @@ class UpdateTargetTests(unittest.TestCase):
         bundle = self.root / "release"
         bundle.mkdir()
         manifest = bundle / "release-manifest.json"
-        manifest.write_text(json.dumps({"schema": "tavern-release/v2", "candidate": True}))
+        manifest.write_text(json.dumps({"schema": "tavern-release/v2", "candidate": True,
+                                        "versions": {"tavern": "2.4.2"}}))
         (bundle / "SHA256SUMS").write_text(BOOTSTRAP.sha(manifest) + "  release-manifest.json\n")
         with self.assertRaisesRegex(RuntimeError, "正式"):
             BOOTSTRAP.verify_metadata(bundle)
@@ -179,11 +180,15 @@ class UpdateTargetTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "冲突"):
             self.bootstrap()
 
-    def test_managed_launcher_is_rejected_even_at_same_version(self):
+    def test_unbound_managed_instance_is_rejected_even_at_same_version(self):
         self.installation(self.home)
         (self.home / "nora-instance.json").write_text("{}")
+        before = {str(file.relative_to(self.home)): file.read_bytes()
+                  for file in self.home.rglob('*') if file.is_file()}
         with self.assertRaisesRegex(RuntimeError, "启动器"):
-            self.bootstrap(["--hermes-home", str(self.home)])
+            BOOTSTRAP.resolve_update_target(self.home)
+        self.assertEqual({str(file.relative_to(self.home)): file.read_bytes()
+                          for file in self.home.rglob('*') if file.is_file()}, before)
 
     def managed_installation(self):
         tavern = self.root / "tavern"

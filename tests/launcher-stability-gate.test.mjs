@@ -44,7 +44,8 @@ test('the stability gate exercises both existing maintenance entry points withou
         'Forwarded test entries must also have unambiguous native process ownership');
     for (const name of ['test_first_install_transaction', 'test_managed_partial_repair', 'test_update_partial_repair',
         'test_update_recovery', 'test_update_dependency_materialization', 'test_standalone_update_entry', 'test_standalone_update_recovery', 'test_updater_task_backend', 'test_updater_task_entry', 'test_updater_skill_environment', 'test_nora_system', 'test_update_migration_contract',
-        'test_update_space', 'test_update_space_contract', 'test_launcher_test_environment', 'test_manual_acceptance']) {
+        'test_update_space', 'test_update_space_contract', 'test_launcher_test_environment', 'test_manual_acceptance',
+        'test_update_target', 'test_update_error_diagnostics']) {
         assert.ok(calls[1].args.includes(`tests.deployment.${name}`), name);
     }
 });
@@ -70,7 +71,7 @@ test('Windows and Intel Mac give complete serial source groups separate bounded 
             'An internal timer leaves forced-close time before the Windows hard outer deadline');
         assert.ok(calls.every(call => call.options.killSignal === 'SIGTERM'), 'Give the bounded projection runner its child-close and export-preservation path');
         assert.equal(calls[0].args.filter(arg => arg.endsWith('.test.cjs')).length, 25);
-        assert.equal(calls[1].args.filter(arg => arg.startsWith('tests.deployment.')).length, 16);
+        assert.equal(calls[1].args.filter(arg => arg.startsWith('tests.deployment.')).length, 18);
     }
     let completed = 0;
     fixtureGate({ platform: 'win32', run: (command, args, options) => {
