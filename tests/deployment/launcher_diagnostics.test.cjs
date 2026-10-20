@@ -413,7 +413,7 @@ test('launcher recovery remains offered after failed status inspection, but hand
   assert.equal(finished.some(event=>event.status==='succeeded'),false,'preparation cannot claim completed restoration');
 });
 
-test('comparing an already current application version cannot commit launcher backup', async t => {
+for(const verified of [false,true])test(`checking the current APP without an owned handoff cannot commit launcher backup (${verified?'core verified':'core verification rejected'})`, async t => {
   const root=fs.mkdtempSync(path.join(os.tmpdir(),'nora-launcher-version-comparison-'));
   t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
   const calls=[];
@@ -430,12 +430,19 @@ test('comparing an already current application version cannot commit launcher ba
     finalize:async options=>calls.push(options),
   }},[`--nora-self-update=${path.join(root,'job')}`]);
   context.AbortController=AbortController;
-  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async()=>({version:"2.4.2",systemReady:true});',context);
-  const result=await mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture'});
-  assert.equal(result.version,'2.4.2');
+  context.coreVerified=verified;context.bridgeRequests=[];
+  vm.runInContext('hermesHome=()=>path.join(root,"hermes"); installRoot=()=>path.join(root,"tavern"); runBridge=async command=>{bridgeRequests.push(command);return {version:"2.4.2",systemReady:true,updateVerified:command==="verify-current-update"&&coreVerified};};',context);
+  // This is an APP-only comparison. A startup marker no longer selects a
+  // legacy core executor; the request must state its actual update scope.
+  const pending=mainCallback(context,'runAction')({sender:null},{action:'update',runId:'comparison-fixture',launcherOnly:true,expectedCoreVersion:'2.4.2'});
+  let operation;
+  if(verified){
+    const result=await pending;operation=result.operation;assert.equal(result.version,'2.4.2');
+  }else await assert.rejects(pending,error=>{operation=error.operation;return error.code==='VERIFICATION_FAILED';});
+  assert.equal(context.bridgeRequests.filter(command=>command==='verify-current-update').length,1);
   assert.equal(calls.length,0);
-  assert.equal(result.operation.effectState,'untouched');
-  assert.equal(result.operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
+  assert.equal(operation.effectState,'untouched');
+  assert.equal(operation.target.releasePlan.manifestSha256,require('node:crypto').createHash('sha256').update(body).digest('hex'));
 });
 
 test('model progress cache failure releases its task lock and preserves the provider failure', async t => {
