@@ -4,7 +4,7 @@ const fs = require('node:fs'), os = require('node:os'), path = require('node:pat
 const { execFileSync, spawnSync, spawn } = require('node:child_process');
 const { once } = require('node:events');
 const { captureChild, stopChild } = require('./deployment/launcher_test_lifecycle.cjs');
-const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames, sourceStabilityNames } = require('../tooling/release/publication-source.cjs');
+const { selectAcceptanceBaseline, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, fullNames, componentNames } = require('../tooling/release/publication-source.cjs');
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 const stableRelease = tag_name => ({ id: 1, tag_name, draft: false, prerelease: false, published_at: '2026-01-01T00:00:00Z' });
 function writeGhFixture(bin, source) {
@@ -193,7 +193,7 @@ test('actual source CLI hashes artifact ZIP bytes before extracting complete nat
   const bad = path.join(root, 'rejected'), failure = execute(bad); assert.notEqual(failure.status, 0); assert.match(failure.stderr, /digest differs/);
   assert.equal(fs.existsSync(path.join(bad, 'delivery')), false, 'Unverified ZIP bytes must not be extracted');
 });
-function fullCliFixture(t, sourcePlatforms = []) {
+function fullCliFixture(t) {
   const native = nativeFixture(t), f = fixture(), root = native.root;
   const payloadBytes = fs.readFileSync(path.join(native.delivery, 'payload.json'), 'utf8');
   const system = JSON.parse(fs.readFileSync(path.join(native.delivery, 'nora-system-darwin-arm64.json')));
@@ -224,12 +224,6 @@ function fullCliFixture(t, sourcePlatforms = []) {
     ['nora-acceptance-published-releases.json', JSON.stringify([[]])],
   ];
   f.artifacts.artifacts.push({ ...f.artifacts.artifacts[0], id: 8, name: 'nora-release-plan' }); f.artifacts.total_count++;
-  for(const target of sourcePlatforms)for(const group of ['javascript','python']){
-    const [platform,arch]=target.split('-'),name=`nora-source-stability-${target}-${group}`;
-    members[name]=[[`${group}.json`,JSON.stringify({schema:'nora-launcher-source-stability/1',outcome:'passed',group,platform,arch,
-      source:{commit:f.options.commit},workflow:{repository:f.options.repository,runId:String(f.run.id)},job:'source-checks'})]];
-    f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:f.artifacts.artifacts.length+1,name});f.artifacts.total_count++;
-  }
   const zipInput = path.join(root, 'zip-members.json');
   fs.writeFileSync(zipInput, JSON.stringify(f.artifacts.artifacts.map(item => members[item.name])));
   execFileSync('python3', ['-c', 'import json,sys,zipfile,os\nwith open(sys.argv[1]) as f: artifacts=json.load(f)\nfor index,members in enumerate(artifacts,1):\n with zipfile.ZipFile(os.path.join(sys.argv[2],str(index)+".zip"),"w") as z:\n  for name,content in members: z.writestr(name,content)', zipInput, root]);
@@ -246,8 +240,7 @@ function fullCliFixture(t, sourcePlatforms = []) {
       'delivery', runFile, artifactsFile, f.options.commit, f.options.repository, '123', 'full', output, 'v2.4.4', factsFile],
     { env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FIXTURE_ZIP_ROOT: root }, encoding: 'utf8', timeout: 15000 });
   };
-  return { root, execute, artifacts:f.artifacts, artifactsFile,
-    saveArtifacts:()=>fs.writeFileSync(artifactsFile,JSON.stringify(f.artifacts)) };
+  return { root, execute };
 }
 test('actual full source CLI forwards the release tag and preserves the independent historical gate', t => {
   const f = fullCliFixture(t), accepted = path.join(f.root, 'accepted-full');
@@ -258,35 +251,6 @@ test('actual full source CLI forwards the release tag and preserves the independ
   const rejected = path.join(f.root, 'rejected-full'), bad = f.execute(rejected, [[stableRelease('v2.4.3')]]);
   assert.notEqual(bad.status, 0); assert.match(bad.stderr, /historical stable release now disproves/);
   assert.equal(fs.existsSync(path.join(rejected, 'source-receipt.json')), false, 'A new published baseline must prevent accepting obsolete first-release evidence');
-});
-for(const [label,targets]of [['all six',['darwin-arm64','darwin-x64','win32-x64']],['four Mac',['darwin-arm64','darwin-x64']]])
-test(`actual full source CLI retains ${label} isolated source artifacts outside product delivery`,t=>{
-  const f=fullCliFixture(t,targets),output=path.join(f.root,'accepted-with-source'),result=f.execute(output);
-  assert.equal(result.status,0,result.stderr);
-  const receipt=JSON.parse(fs.readFileSync(path.join(output,'source-receipt.json')));
-  assert.equal(receipt.artifacts.length,8+targets.length*2);
-  for(const target of targets)for(const group of ['javascript','python']){
-    const name=`nora-source-stability-${target}-${group}`;
-    assert.ok(sourceStabilityNames.includes(name));
-    const evidence=path.join(output,'acceptance',name,`${group}.json`);
-    assert.equal(JSON.parse(fs.readFileSync(evidence)).source.commit,'a'.repeat(40));
-    assert.equal(fs.existsSync(path.join(output,'delivery',`${group}.json`)),false,'Source report must never become a release resource');
-  }
-  assert.equal(fs.readdirSync(path.join(output,'originals')).filter(name=>name.startsWith('nora-source-')).length,0);
-});
-for(const [label,mutate,expected]of [
-  ['missing product despite complete source reports',f=>{f.artifacts.artifacts=f.artifacts.artifacts.filter(item=>item.name!=='nora-tavern-win32-x64');f.artifacts.total_count--;},/Incomplete accepted delivery/],
-  ['unknown source report name',f=>{f.artifacts.artifacts.find(item=>item.name.startsWith('nora-source-stability-')).name='nora-source-stability-linux-x64-javascript';},/unexpected artifact/],
-  ['incomplete isolated group pair',f=>{f.artifacts.artifacts=f.artifacts.artifacts.filter(item=>item.name!=='nora-source-stability-win32-x64-python');f.artifacts.total_count--;},/both isolated groups/],
-  ['source report from another commit',f=>{const item=f.artifacts.artifacts.find(item=>item.name.startsWith('nora-source-stability-'));item.workflow_run={...item.workflow_run,head_sha:'b'.repeat(40)};},/AssertionError/],
-  ['source ZIP with a different API digest',f=>{f.artifacts.artifacts.find(item=>item.name.startsWith('nora-source-stability-')).digest='sha256:'+hash('different source report bytes');},/digest differs/],
-])test(`actual full source CLI refuses ${label}`,t=>{
-  const f=fullCliFixture(t,['darwin-arm64','darwin-x64','win32-x64']);mutate(f);f.saveArtifacts();
-  const output=path.join(f.root,'rejected-source'),result=f.execute(output);
-  assert.notEqual(result.status,0);assert.match(result.stderr,expected);
-  assert.equal(fs.existsSync(path.join(output,'source-receipt.json')),false);
-  assert.equal(fs.existsSync(path.join(output,'delivery/javascript.json')),false);
-  assert.equal(fs.existsSync(path.join(output,'delivery/python.json')),false);
 });
 for (const [name, timeout, idleTimeout] of [['total', 150, 5000], ['idle', 5000, 150]]) test(`artifact ${name} deadline closes an actual child that ignores graceful termination`, {timeout:10000}, async t => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-source-timeout-'));

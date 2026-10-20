@@ -47,7 +47,7 @@ export function workflowInputs(text = '', job = 'build') {
     let end = start + 1;
     while (end < lines.length && !/^  [\w-]+:\s*$/.test(lines[end])) end++;
     const body = lines.slice(start + 1, end);
-    const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line))
+    const normalize = block => block.filter(line => line.trim() && !/^\s*#/.test(line) && !/^\s*-\s+name\s*:/.test(line))
         .map(line => line.trim().replace(/\s+#.*$/, '')).join('\n');
     const environment = body.filter(line => /\b(?:runs-on|runner|node-version|python-version)\s*:/.test(line)
         || /"(?:runner|platform|arch|package_script)"\s*:/.test(line));
@@ -57,10 +57,14 @@ export function workflowInputs(text = '', job = 'build') {
         const value = normalize(block);
         if (/actions\/setup-(?:node|python)@|repository:\s*clawling\/|hermes-agent\.nousresearch\.com\/|prepare-hermes-bootstrap|package-hermes-runtime|restore-launcher-runtime|UV_MANAGED_PYTHON|UV_PYTHON_INSTALL/.test(value)) environment.push(value);
         else if (/package-release\.(?:mjs|sh)|package-launcher-update|package-component-update|npm run pack:|npm (?:ci|install|prune)(?:\s|$)|electron-builder/.test(value)) packaging.push(value);
-        else if (/^[- ]*(?:name|uses):/m.test(value)
-            && !/^- name:\s*(?:Verify|Test|Require|Preserve|Reject|Keep build inputs|Configure actual operation actors|Record|Upload|Save|Collect|Check|Restore published runtime)/m.test(value)
-            && !/^- name: Accept the exact component delivery without publishing\n/.test(value)
-            && !/^- uses:\s*actions\/(?:checkout|upload-artifact|download-artifact)@/m.test(value)) unknown.push(value);
+        // Step labels do not establish what a command does. Only a literal
+        // test-only command or the existing artifact actions are recognized;
+        // other changed execution content remains a review requirement.
+        else if (/^[- ]*(?:run|uses):/m.test(value)
+            && !(/^(?:- )?run: node --test(?: tests\/[A-Za-z0-9_./*-]+)+$/.test(value)
+                && value.split(/\s+/).filter(token => token.startsWith('tests/'))
+                    .every(file => file.split('/').every(part => part && part !== '.' && part !== '..')))
+            && !/^(?:- )?uses:\s*actions\/(?:checkout|upload-artifact|download-artifact)@/m.test(value)) unknown.push(value);
         block = [];
     };
     for (const line of body) {

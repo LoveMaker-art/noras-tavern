@@ -43,7 +43,6 @@ export function componentAcceptanceFixture(root, commit = 'a'.repeat(40)) {
         const identity = { platform, commit, baselineTag, baselineCommit, baselineVersion: '2.5.4', baselineManifestSha256: source.payloadManifestSha256,
             sourceReceiptSha256: sha(fs.readFileSync(receiptFile)), targetVersion: '2.5.5', targetManifestSha256: sha(bytes(payload)),
             systemManifestSha256: sha(fs.readFileSync(systemFile)), runtimeSha256: runtime.sha256 };
-        const states = {};
         for (const state of ['fresh', 'running', 'stopped']) {
             const value = { schema: 'nora-launcher-products-smoke/1', outcome: 'passed', platform: os, arch,
                 releaseManifestSha256: identity.targetManifestSha256, runtimeSha256: runtime.sha256,
@@ -59,9 +58,8 @@ export function componentAcceptanceFixture(root, commit = 'a'.repeat(40)) {
                     releaseAcceptance: 'isolated-same-version-repair', updateInitialService: 'running',
                     componentInstallation: { platform, commit, targetVersion: '2.5.5', targetManifestSha256: identity.targetManifestSha256, installedVersion: '2.5.5' } });
             }
-            const file = write(directory, `${state}/harness-result.json`, value); states[state] = sha(fs.readFileSync(file));
+            write(directory, `${state}/harness-result.json`, value);
         }
-        write(directory, 'component-native-acceptance.json', { schema: 'nora-component-native-acceptance/1', outcome: 'passed', identity, states });
     }
     const output = path.join(reports, 'component-acceptance.json');
     const receipt = sealComponentAcceptance({ delivery, reports, plan, output, commit, tag });

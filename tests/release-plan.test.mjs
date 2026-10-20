@@ -45,23 +45,33 @@ function change(...names) {
 }
 const noEnvironment = plan => assert.ok(Object.values(plan.build.environment).every(values => values.length === 0));
 
-test('the audited old component verification step remains verification only during workflow migration', () => {
-    const previous = workflow.replace('      - name: Test contracts',
-        '      - name: Accept the exact component delivery without publishing');
-    assert.deepEqual(workflowInputs(previous), workflowInputs(workflow));
-    const unknown = previous.replace('Accept the exact component delivery without publishing',
-        'Accept arbitrary product construction');
-    assert.equal(workflowInputs(unknown).unknown.length, workflowInputs(workflow).unknown.length + 1,
-        'Only the reviewed historical acceptance step is recognized');
+test('step titles cannot exempt changed unknown executable commands from review', () => {
+    for (const title of ['Accept the exact component delivery without publishing', 'Verify contracts', 'Test contracts', 'Require evidence']) {
+        const before = workflow.replace('Test contracts', title);
+        const after = before.replace('node --test tests/contracts.test.mjs', 'bash tooling/release/unclassified-runtime-builder.sh');
+        const inputs = change('.github/workflows/build-integrated-launcher.yml');
+        inputs.baseline.configuration.workflow = workflowInputs(before);
+        inputs.current.configuration.workflow = workflowInputs(after);
+        const plan = createReleasePlan(inputs);
+        assert.equal(plan.mode, 'review-required', title);
+        assert.equal(plan.requiresReview, true, title);
+    }
 });
 
-test('source evidence transfer is verification only in the actual native build workflow', () => {
-    const file = path.join(root, '.github/workflows/build-integrated-launcher.yml');
-    const actual = fs.readFileSync(file, 'utf8');
-    const step = /^      - name: Require this run's isolated source-group acceptance\n[\s\S]*?(?=^      - |^  [\w-]+:|$(?![\s\S]))/m.exec(actual)?.[0];
-    assert.ok(step?.includes('actions/download-artifact@v4') && step.includes('nora-source-stability'));
-    assert.deepEqual(workflowInputs(actual), workflowInputs(actual.replace(step, '')),
-        'Transferring source evidence must not classify the release tools as an unknown product build input');
+test('test-looking commands with shell execution or paths outside tests still require review', () => {
+    for (const command of ['node --test tests/contracts.test.mjs; bash build-runtime.sh',
+        'node --test tests/../tooling/release/build-runtime.mjs', 'node --test tests/./contracts.test.mjs',
+        'node --test tests/$(bash build-runtime.sh).mjs', 'node --import ./build-runtime.mjs --test tests/contracts.test.mjs']) {
+        const inputs = change('.github/workflows/build-integrated-launcher.yml');
+        inputs.current.configuration.workflow = workflowInputs(workflow.replace('node --test tests/contracts.test.mjs', command));
+        assert.equal(createReleasePlan(inputs).requiresReview, true, command);
+    }
+});
+
+test('pure step-title changes do not alter actual packaging inputs', () => {
+    const inputs = change('.github/workflows/build-integrated-launcher.yml');
+    inputs.current.configuration.workflow = workflowInputs(workflow.replace('Build package', 'A clearer packaging title'));
+    assert.equal(createReleasePlan(inputs).mode, 'verification-only'); noEnvironment(createReleasePlan(inputs));
 });
 
 test('reviewed compatibility files are product metadata, without changing runtime construction',()=>{

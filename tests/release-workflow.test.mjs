@@ -3,7 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync, execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
 import { test } from 'node:test';
 import { verifyLauncherStability } from '../tooling/checks/verify-launcher-stability.mjs';
 
@@ -13,7 +12,6 @@ const load = name => JSON.parse(execFileSync(process.env.NORA_WORKFLOW_YAML_PYTH
   path.join(root, '.github/workflows', name)], { encoding: 'utf8' }));
 const full = load('build-integrated-launcher.yml'), components = load('publish-component-update.yml'), publisher = load('publish-accepted-release.yml');
 const scripts = workflow => Object.values(workflow.jobs).flatMap(job => job.steps || []).map(step => step.run || '').join('\n');
-
 test('component delivery requires all three native platforms before the final publishable receipt', () => {
   const native = components.jobs['native-components'], accepted = components.jobs['accept-components'];
   assert.equal(native.needs, 'build-components'); assert.equal(native.strategy['fail-fast'], 'false');
@@ -44,6 +42,13 @@ test('component delivery requires all three native platforms before the final pu
   const final = accepted.steps.find(step => step.name === 'Accept only complete three-platform native evidence for these bytes');
   assert.match(final.run, /component-acceptance\.mjs seal.*component-delivery.*component-native.*release-plan\.json.*GITHUB_SHA/);
   assert.equal(final['continue-on-error'], undefined);
+});
+test('source checks run locally in each platform job without cross-machine report handoff', () => {
+  assert.equal(full.jobs['source-checks'], undefined);
+  assert.ok(!full.on.workflow_dispatch.inputs.target.options.includes('source-checks'));
+  const gate = full.jobs.build.steps.find(step => step.name === 'Require launcher source stability before preparing runtimes');
+  assert.match(gate.run, /verify-launcher-stability\.mjs/);
+  assert.doesNotMatch(gate.run, /--report|--verify-reports|nora-source-stability/);
 });
 test('domestic publisher acceptance uses the authored tooling layout while installed consumers use the delivery projection', () => {
   const command = full.jobs.preflight.steps.find(step => step.name === 'Check release tooling before preparing runtimes').run;
@@ -91,7 +96,7 @@ test('component publication is an explicit validated input forwarded as quoted a
 test('native platform selectors preserve diagnostic, concurrency and publication boundaries', () => {
   const target = full.on.workflow_dispatch.inputs.target;
   assert.equal(target.default, 'all');
-  assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check', 'source-checks']);
+  assert.deepEqual(target.options, ['all', 'win32-x64', 'darwin-x64', 'darwin-arm64', 'win32-package-check']);
   assert.deepEqual(full.concurrency, {
     group: "nora-build-${{ github.sha }}-${{ inputs.target || 'all' }}",
     'cancel-in-progress': 'false',
@@ -135,90 +140,7 @@ test('critical launcher maintenance regressions block runtime preparation on eve
   assert.match(gate.run, /spawnSync\(resolved\.command/);
   assert.match(gate.run, /import json,sys,psutil,yaml/);
   assert.match(gate.run, /PyYAML==6\.0\.2/, 'The separate native build job must install its own recovery-test YAML dependency');
-  assert.match(gate.run, /--verify-reports "\$RUNNER_TEMP\/nora-source-stability"/);
-  assert.doesNotMatch(gate.run, /updater_task_capability\.test\.cjs/, 'That exact source-context file is already covered by the isolated complete JS group');
   assert.doesNotMatch(gate.run, /\|\|\s*true|--test-name-pattern|--skip/);
-});
-test('source groups use independent hosted matrix jobs and current-run evidence without weakening native gates', () => {
-  const shards = full.jobs['source-checks'];
-  assert.equal(shards.needs, 'preflight');
-  assert.equal(shards.strategy['fail-fast'], 'false');
-  assert.deepEqual(shards.strategy.matrix.group, ['javascript', 'python']);
-  assert.equal(shards['runs-on'], '${{ matrix.target.runner }}');
-  assert.equal(shards['timeout-minutes'], '30');
-  assert.equal(shards['continue-on-error'], undefined);
-  assert.match(shards.steps.find(step => step.uses === 'actions/checkout@v4').with.ref, /github.sha/);
-  const expression = shards.strategy.matrix.target.replace(/^\$\{\{\s*|\s*\}\}$/g, '');
-  const matrix = (inputs, event_name = 'workflow_dispatch') => Function('inputs', 'github', 'fromJSON', `return ${expression}`)(inputs, { event_name }, JSON.parse);
-  for (const [target, platform, arch] of [['win32-x64', 'win32', 'x64'], ['darwin-x64', 'darwin', 'x64'], ['darwin-arm64', 'darwin', 'arm64']]) {
-    const selected = matrix({ target, verified_windows_run: '' });
-    assert.equal(selected.length, 1); assert.equal(selected[0].platform, platform); assert.equal(selected[0].arch, arch);
-    assert.ok(!selected[0].runner.includes('self-hosted'));
-  }
-  assert.equal(matrix({ target: 'all', verified_windows_run: '' }).length, 3);
-  assert.equal(matrix({ target: 'source-checks', verified_windows_run: '' }).length, 3);
-  assert.equal(matrix({ target: '', verified_windows_run: '' }, 'push').length, 3);
-  assert.deepEqual(matrix({ target: 'all', verified_windows_run: '123' }).map(item => item.platform + '-' + item.arch), ['darwin-arm64', 'darwin-x64']);
-  const run = shards.steps.find(step => step.name === 'Run the complete isolated source group');
-  assert.equal(run.env.SOURCE_GROUP, '${{ matrix.group }}');
-  assert.match(run.run, /--group "\$SOURCE_GROUP" --report "\$RUNNER_TEMP\/\$SOURCE_GROUP\.json"/);
-  assert.doesNotMatch(run.run, /&\s*$|--test-name-pattern|--skip|\|\|\s*true/);
-  const artifact = shards.steps.find(step => step.uses === 'actions/upload-artifact@v4');
-  assert.equal(artifact.with.name, 'nora-source-stability-${{ matrix.target.platform }}-${{ matrix.target.arch }}-${{ matrix.group }}');
-  assert.equal(artifact.with.overwrite, 'true', 'Rerunning a failed matrix group must replace only that group evidence');
-  assert.equal(artifact.with['if-no-files-found'], 'error');
-  assert.ok(full.jobs.build.needs.includes('source-checks'));
-  assert.match(full.jobs.build.if, /needs.source-checks.result == 'success'/);
-  const download = full.jobs.build.steps.find(step => step.name === "Require this run's isolated source-group acceptance");
-  assert.equal(download.uses, 'actions/download-artifact@v4');
-  assert.equal(download.with.pattern, 'nora-source-stability-${{ matrix.platform }}-${{ matrix.arch }}-*');
-  assert.equal(download.with['merge-multiple'], 'true');
-  assert.equal(download.with['run-id'], undefined, 'Evidence cannot come from a different build run');
-  assert.match(full.jobs.build['runs-on'], /nora-launcher-native-ui/, 'Hosted source evidence never replaces interactive APP-only acceptance');
-});
-test('source-only mode runs complete source checks while rejecting every product, reuse and publication path', () => {
-  const inputs = { target: 'source-checks', package_source_run: '', runtime_source_run: '', verified_windows_run: '',
-    launcher_baseline_tag: '', production_mode: false, app_only: false, publication_tag: '', compatibility_file: '' };
-  const github = { event_name: 'workflow_dispatch' }, needs = { preflight: { result: 'success' },
-    'reuse-windows': { result: 'skipped' }, 'source-checks': { result: 'success' } };
-  const enabled = (name, selected = inputs) => Function('inputs', 'github', 'needs', 'always', 'cancelled',
-    'return ' + full.jobs[name].if.replaceAll('needs.reuse-windows', 'needs["reuse-windows"]')
-      .replaceAll('needs.source-checks', 'needs["source-checks"]'))(selected, github, needs, () => true, () => false);
-  assert.equal(enabled('preflight'), true); assert.equal(enabled('source-checks'), true);
-  for (const name of ['build', 'package-check', 'reuse-windows']) assert.equal(enabled(name), false, name);
-  for (const key of ['package_source_run', 'verified_windows_run']) {
-    const conflicting = { ...inputs, [key]: '123' };
-    assert.equal(enabled('preflight', conflicting), true, 'Conflict rejection must run even when product-reuse inputs were supplied');
-    for (const name of ['build', 'package-check', 'reuse-windows']) assert.equal(enabled(name, conflicting), false, name);
-  }
-  const preflight = full.jobs.preflight.steps, reject = preflight.find(step => step.name === 'Reject product and reuse inputs in source-only acceptance');
-  const environment = { ...process.env, BUILD_TARGET: 'source-checks', PACKAGE_SOURCE_RUN: '', RUNTIME_SOURCE_RUN: '',
-    VERIFIED_WINDOWS_RUN: '', LAUNCHER_BASELINE_TAG: '', PRODUCTION_MODE: 'false', NORA_APP_ONLY: 'false', PUBLICATION_TAG: '', COMPATIBILITY_FILE: '' };
-  const run = (script, extra = {}) => spawnSync('bash', ['-c', script], { env: { ...environment, ...extra }, encoding: 'utf8' });
-  assert.equal(run(reject.run).status, 0);
-  for (const key of ['PACKAGE_SOURCE_RUN', 'RUNTIME_SOURCE_RUN', 'VERIFIED_WINDOWS_RUN', 'LAUNCHER_BASELINE_TAG',
-    'PRODUCTION_MODE', 'NORA_APP_ONLY', 'PUBLICATION_TAG', 'COMPATIBILITY_FILE'])
-    assert.notEqual(run(reject.run, { [key]: ['PRODUCTION_MODE', 'NORA_APP_ONLY'].includes(key) ? 'true' : 'forbidden' }).status, 0, key);
-  const decision = preflight.find(step => step.name?.startsWith('Require a matching build decision')).run;
-  const plan = { PLAN_MODE: 'verification-only', REQUIRES_REVIEW: 'false', APPROVE_UNKNOWN_INPUTS: 'false' };
-  assert.equal(run(decision, plan).status, 0);
-  assert.notEqual(run(decision, { ...plan, BUILD_TARGET: 'all' }).status, 0, 'A tooling-only plan cannot cause a product build');
-  assert.equal(preflight.find(step => step.id === 'acceptance-baseline').if, "inputs.target != 'source-checks'");
-  assert.match(preflight.find(step => step.id === 'plan').run, /BUILD_TARGET.*source-checks[\s\S]*releases\/latest/);
-  assert.match(preflight.find(step => step.name === 'Verify historical download identities before native builds').if, /inputs.target != 'source-checks'/);
-  const shardScripts = full.jobs['source-checks'].steps.map(step => step.run || '').join('\n');
-  assert.doesNotMatch(shardScripts, /package-release|package-hermes-runtime|restore-launcher-runtime|npm run pack|publish-release/);
-  assert.ok(full.jobs['source-checks'].steps.filter(step => step.uses === 'actions/upload-artifact@v4')
-    .every(step => step.with.name.startsWith('nora-source-stability-')));
-  const { verifyDelivery, sourceStabilityNames } = createRequire(import.meta.url)('../tooling/release/publication-source.cjs');
-  const repository = { id: 42, full_name: 'fixture/tavern' }, commit = 'a'.repeat(40);
-  const source = { id: 123, head_sha: commit, repository, head_repository: repository,
-    path: '.github/workflows/build-integrated-launcher.yml', event: 'workflow_dispatch', status: 'completed', conclusion: 'success' };
-  const names = ['nora-release-plan', ...sourceStabilityNames];
-  const artifacts = { total_count: names.length, artifacts: names.map((name, index) => ({ id: index + 1, name, expired: false,
-    size_in_bytes: 100, digest: 'sha256:' + 'b'.repeat(64), workflow_run: { id: 123, head_sha: commit, repository_id: 42, head_repository_id: 42 } })) };
-  assert.throws(() => verifyDelivery(source, artifacts, { repository: repository.full_name, runId: '123', commit, mode: 'full' }),
-    /missing|complete|Expected|acceptance/i, 'Source reports and a change plan cannot substitute for the seven accepted product artifacts');
 });
 test('complete source coverage runs once before runtimes and only environment-dependent files repeat natively', () => {
   const steps=full.jobs.build.steps;
@@ -410,7 +332,7 @@ test('historical acceptance selects published history and runs independently fro
   assert.equal(full.permissions.contents, 'read'); assert.equal(full.permissions.actions, 'read');
   const early = full.jobs.preflight.steps.find(step => step.name === 'Verify historical download identities before native builds');
   assert.equal(full.jobs.preflight.env.GH_TOKEN, '${{ github.token }}');
-  assert.equal(early.if, "inputs.target != 'source-checks' && steps.acceptance-baseline.outputs.initial_release != 'true'");
+  assert.equal(early.if, "steps.acceptance-baseline.outputs.initial_release != 'true'");
   assert.equal(early.env.ACCEPTANCE_BASELINE_TAG, '${{ steps.acceptance-baseline.outputs.acceptance_baseline_tag }}');
   assert.equal(early['timeout-minutes'], '5');
   assert.match(early.run, /for platform in darwin-arm64 darwin-x64 win32-x64/);

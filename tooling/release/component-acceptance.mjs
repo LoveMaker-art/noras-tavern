@@ -99,17 +99,13 @@ export function verifyComponentNative({ delivery, reports, platform, commit, bas
         targetVersion: system.version, targetManifestSha256: digest(payloadBytes),
         systemManifestSha256: digest(systemBytes), runtimeSha256: payload.hermesRuntime.sha256,
     };
-    const summary = read(find(reports, 'component-native-acceptance.json'));
-    assert.equal(summary.schema, 'nora-component-native-acceptance/1'); assert.equal(summary.outcome, 'passed');
-    assert.deepEqual(summary.identity, expected);
-    assert.deepEqual(Object.keys(summary.states).sort(), ['fresh', 'running', 'stopped']);
     const actualReports = files(reports).filter(file => path.basename(file) === 'harness-result.json');
     assert.equal(actualReports.length, 3, 'Component acceptance requires a fresh target installation and two native upgrade reports');
-    let configurationDigest;
+    let configurationDigest; const reportSha256 = {};
     for (const state of ['fresh', 'running', 'stopped']) {
         const reportFile = path.join(reports, state, 'harness-result.json');
         const value = read(reportFile);
-        assert.equal(hashFile(reportFile), summary.states[state], 'Native harness bytes differ from the acceptance receipt');
+        reportSha256[state] = hashFile(reportFile);
         assert.equal(value.schema, 'nora-launcher-products-smoke/1'); assert.equal(value.outcome, 'passed');
         assert.equal(`${value.platform}-${value.arch}`, platform);
         assert.equal(value.releaseManifestSha256, expected.targetManifestSha256); assert.equal(value.runtimeSha256, expected.runtimeSha256);
@@ -136,10 +132,10 @@ export function verifyComponentNative({ delivery, reports, platform, commit, bas
             assert.deepEqual(value.componentTransition, { ...expected, startState: state, installedVersion: system.version });
         }
     }
-    return { ...expected, outcome: 'passed', freshInstallation: 'verified', states: ['running', 'stopped'], nativeEvidenceSha256: hashFile(find(reports, 'component-native-acceptance.json')) };
+    return { ...expected, outcome: 'passed', freshInstallation: 'verified', states: ['running', 'stopped'], reportSha256 };
 }
 
-export function runComponentNative({ payload, baseline, reports, scratch, commit, baselineTag, baselineCommit, root = path.resolve(fileURLToPath(new URL('../../', import.meta.url))) }) {
+export function runComponentNative({ payload, baseline, reports, scratch, commit, baselineTag, baselineCommit, root = path.resolve(fileURLToPath(new URL('../../', import.meta.url))), run = execFileSync }) {
     const platform = `${process.platform}-${process.arch}`;
     assert.ok(COMPONENT_PLATFORMS.includes(platform)); assert.ok(!fs.existsSync(reports), 'Native reports must be a new directory');
     const sourceReceipt = path.join(baseline, 'baseline-source-receipt.json'), receipt = read(sourceReceipt);
@@ -153,12 +149,11 @@ export function runComponentNative({ payload, baseline, reports, scratch, commit
         baselineManifestSha256: receipt.payloadManifestSha256, sourceReceiptSha256: hashFile(sourceReceipt),
         targetVersion: system.version, targetManifestSha256: digest(payloadBytes), systemManifestSha256: digest(systemBytes), runtimeSha256: identity.hermesRuntime.sha256 };
     fs.mkdirSync(reports, { recursive: true }); fs.copyFileSync(sourceReceipt, path.join(reports, 'baseline-source-receipt.json'));
-    const states = {};
     for (const state of ['fresh', 'running', 'stopped']) {
         const base = path.join(scratch, state);
         const selected = state === 'fresh' ? ['--update-release', payload, '--missing-system-receipt']
             : ['--baseline-release', baseline, '--update-release', payload, '--start-state', state];
-        execFileSync(process.execPath, [path.join(root, 'tooling/run.mjs'), 'node', path.join(root, 'tests/deployment/launcher_product_refactor_smoke.cjs'),
+        run(process.execPath, [path.join(root, 'tooling/run.mjs'), 'node', path.join(root, 'tests/deployment/launcher_product_refactor_smoke.cjs'),
             '--payload', payload, ...selected, '--scratch-base', base, '--keep'], { cwd: root, stdio: 'inherit' });
         const source = find(base, 'harness-result.json'), value = read(source);
         const installed = read(path.join(value.root, 'tavern/tavern-updates/installed.json'));
@@ -169,9 +164,8 @@ export function runComponentNative({ payload, baseline, reports, scratch, commit
             targetManifestSha256: expected.targetManifestSha256, installedVersion: installed.version };
         else value.componentTransition = { ...expected, startState: state, installedVersion: installed.version };
         fs.mkdirSync(path.join(reports, state)); const target = path.join(reports, state, 'harness-result.json');
-        fs.writeFileSync(target, json(value)); states[state] = hashFile(target);
+        fs.writeFileSync(target, json(value));
     }
-    fs.writeFileSync(path.join(reports, 'component-native-acceptance.json'), json({ schema: 'nora-component-native-acceptance/1', outcome: 'passed', identity: expected, states }));
 }
 
 export function sealComponentAcceptance({ delivery, reports, plan, output, commit, tag }) {
