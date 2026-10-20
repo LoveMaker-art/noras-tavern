@@ -324,21 +324,21 @@ ClawChat 是当前配对和对话平台，Hermes 承载诺拉，MCP 连接酒馆
 
 ## 附录 A 当前实现、差异与证据
 
-核对日期：2026-10-19。本附录是简短索引，不是全产品验收证明或持续在线状态监控。详细技术原因、源码／制品身份、平台和入口限制保存在所引报告；旧报告中的“未合并／未发布”只描述其记录日期。
+核对日期：2026-10-20。本附录是简短索引，不是全产品验收证明或持续在线状态监控。详细技术原因、源码／制品身份、平台和入口限制保存在所引报告；旧报告中的“未合并／未发布”只描述其记录日期。
 
 | 对照项 | 本次核对状态 | 证据与限制 |
 | --- | --- | --- |
-| 已记录的最近正式发行 | 核心 2.5.4／启动器 2.2.4 已有 GitHub、极狐发行记录 | [v2.5.4 发行记录](reports/20261019-v2.5.4-release-preparation.md)；本次只核对已有记录，未重新联网检查；不含以下两项新修复 |
+| 已记录的最近正式发行 | 核心 2.5.5／启动器 2.2.5 已在 GitHub、极狐正式发布并完成独立回读 | [v2.5.5 发行记录](reports/20261019-v2.5.5-release-preparation.md)；包含以下两项修复，产品标签绑定实际验收提交 |
 | 日常退出的平台差异（PB-04） | 现有 Windows 关窗会先停服再退出；Mac 可只关闭窗口，退出应用另行停服 | 依据主进程 `close`／`requestQuit`／`window-all-closed`；[安装指南](install-nora-tavern.md)已按源码分别说明，本次没有修改关闭行为或重新做原生验收 |
-| 双更新声明与重开标记修复（PB-06／PB-09） | 已合入本地 `main`，相关技术检查通过，尚未生成本修订安装包或发布 | [修复及集成记录](reports/20261019-dual-update-contract-fix.md)；正常启动／自更新续接后的请求、兼容声明、失败恢复及数据样本分别验证，不能冒充三平台成品连续双更新 |
-| 保留数据重装复制修复（PB-03／PB-05／PB-08） | 已合入本地 `main`；有事务及原生模块检查，尚未生成本修订安装包或发布 | [修复记录](reports/20261019-retained-data-copy-fix.md)；文件与缓存链接的技术处理不构成新的数据保留策略；不能以独立修复包认证本项目的新安装器 |
+| 双更新声明与重开标记修复（PB-06／PB-09） | 已随核心 2.5.5／启动器 2.2.5 正式交付 | [修复及集成记录](reports/20261019-dual-update-contract-fix.md)、[成品及分发记录](reports/20261019-v2.5.5-release-preparation.md)；入口、声明、原生迁移及数据保护分别举证，不外推三平台完整人工 GUI 连续双更新 |
+| 保留数据重装复制修复（PB-03／PB-05／PB-08） | 已随核心 2.5.5／启动器 2.2.5 正式交付；真实 Electron 及 Windows 缓存链接专项通过 | [修复记录](reports/20261019-retained-data-copy-fix.md)、[成品及分发记录](reports/20261019-v2.5.5-release-preparation.md)；使用本次正式 APP 验收，不借用独立救援工具冒充本项目安装器证据 |
 | 小优化发布工具（PB-09） | 策略已确认；工具仍在独立本地工作区，未合并、推送或完成新远端流程验收 | [实施与本机检查](release-process.md#2026-10-19-流程优化实施范围)；不将模拟请求减少或工程耗时目标表述为公网已提速 |
 | 历史入口、恢复与平台边界 | 来源版本、部署方式、平台及入口分别有证据，不承诺所有旧版原命令自动可用 | [旧版入口验收](reports/20261018-official-old-update-acceptance.md)、[恢复与旧版接入](reports/20261018-recovery-ownership-legacy-admission.md)；新源码不能改变尚未升级的旧二进制 |
 | 独立救援工具 | 历史 Windows 修复包独立维护，不并入主项目，也不是普通更新的必经步骤 | 其独立交付不等于主线内置修复；主线保留数据复制改动按上列报告单独核验 |
 
 较早的[独立更新器验收](reports/20261016-shared-independent-updater-acceptance.md)、[配对重试验收](reports/20261016-pair-standalone-update-acceptance.md)、[更新对齐验收](reports/20261017-update-release-alignment-acceptance.md)、[本地合并审查](reports/20261018-main-updater-merge-review.md)、[查询预算验收](reports/20261018-update-query-budget-acceptance.md)及[v2.5.3 发行记录](reports/20261019-v2.5.3-release-preparation.md)保留原有适用范围，不在此复制源码摘要、用例数或当时的待办状态。
 
-本次文档整理的逐项发现、保留规则和检查结果见[整理记录](reports/20261019-product-documentation-review.md)。两项修复的本地合并不等于已向用户交付；具体成品和正式渠道须另有对应证据。
+文档整理的逐项发现、保留规则和检查结果见[整理记录](reports/20261019-product-documentation-review.md)。源码合并、成品验收和正式分发分别记录，本次实际交付见上述 v2.5.5 发行证据。
 
 ## 附录 B 规则来源与相关材料
 
