@@ -1,7 +1,7 @@
 export const MVU_SCRIPT_ID = 'nora-mvu-headless-runtime';
 export const MVU_UPSTREAM_COMMIT = '7fe9ae7cfe01f13d606f7a2e533a458431fe318c';
 export const NORA_MVU_SETTINGS_VERSION = 5;
-export const NORA_MVU_BUNDLE_REVISION = 21;
+export const NORA_MVU_BUNDLE_REVISION = 22;
 
 export const MVU_BUNDLE_URL = `/scripts/extensions/third-party/nora-mvu/vendor/bundle.js?v=${MVU_UPSTREAM_COMMIT.slice(0, 12)}-nora${NORA_MVU_BUNDLE_REVISION}`;
 export const MVU_ZOD_PATH = './vendor/zod.iife.js?v=4.1.11';
@@ -318,20 +318,8 @@ export function initializeHeadlessMvuSettings(context) {
     const previousVersion = Number(marker.settingsVersion) || 0;
     const currentContextLimit = context.extensionSettings.mvu_settings?.['额外模型解析配置']?.['最大上下文token数'];
     const currentTokenLimit = context.extensionSettings.mvu_settings?.['额外模型解析配置']?.['最大回复token数'];
-    const patch = previousVersion === 0 ? {
-        '更新方式': '额外模型解析',
-        '通知': clone(HEADLESS_DEFAULTS['通知']),
-        '额外模型解析配置': {
-            '破限方案': '使用内置破限',
-            '应答格式': '聊天消息',
-            '启用自动请求': true,
-            '模型来源': '与插头相同',
-            '请求方式': '依次请求，失败后重试',
-            '请求次数': 1,
-            '最大上下文token数': currentContextLimit ?? 30000,
-            '最大回复token数': currentTokenLimit ?? 4000,
-        },
-    } : previousVersion < 5 ? {
+    // Defaults fill missing fields; adopting an existing runtime must not reset its model.
+    const patch = previousVersion > 0 && previousVersion < 5 ? {
         '额外模型解析配置': {
             ...(currentContextLimit === undefined || currentContextLimit === 128000
                 ? { '最大上下文token数': 64000 }

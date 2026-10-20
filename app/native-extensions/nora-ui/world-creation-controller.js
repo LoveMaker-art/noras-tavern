@@ -15,6 +15,43 @@ export function createWorldCreationController({
     // Keep a failed/uncertain intent stable until creation AND activation succeed.
     const libraryIntents = new Map();
     const restartIntents = new Map();
+    let blankIntent = null;
+    let importBatch = null;
+
+    async function matchesImportPrefix(files, items, count = items.length) {
+        if (files.length < count) return false;
+        for (let index = 0; index < count; index++) {
+            const incoming = files[index], previous = items[index].file;
+            if (incoming === previous) continue;
+            if (incoming.name !== previous.name || incoming.size !== previous.size) return false;
+            // Compare actual bytes, using bounded buffers and no additional
+            // secure-context/API requirement for ordinary file import.
+            const chunk = 1024 * 1024;
+            for (let offset = 0; offset < incoming.size; offset += chunk) {
+                const [left, right] = await Promise.all([incoming, previous].map(file => file.slice(offset, offset + chunk).arrayBuffer()));
+                const bytes = new Uint8Array(right);
+                if (new Uint8Array(left).some((value, at) => value !== bytes[at])) return false;
+            }
+        }
+        return true;
+    }
+
+    async function createIntent(intent, create) {
+        if (intent.worldId) return;
+        // Keep the key even when post-commit refresh fails: replaying it reads the
+        // original result and lets World Runtime finish preset/character loading.
+        intent.worldId = (await create()).id;
+    }
+
+    async function openCreatedWorld(worldId, interactionId) {
+        try {
+            const opened = await openWorldById(worldId, { interactionId });
+            if (opened === false) throw new Error(tr("世界操作失败"));
+        } catch (error) {
+            error.createdWorldId = worldId;
+            throw error;
+        }
+    }
 
     function openRestartWorldSheet(source) {
         if (isGenerating()) { showToast(tr('请等待当前回复结束，再开启新世界。')); return; }
@@ -125,24 +162,33 @@ export function createWorldCreationController({
             <div class="nora-sheet-actions"><button class="nora-secondary" data-blank-cancel type="button">${tr("取消")}</button><button class="nora-primary" type="submit">${tr("创建世界")}</button></div>
         </form>`, 'nora-world-modal nora-plain-sheet');
         select('[data-blank-cancel]', modal).addEventListener('click', closeModal);
+        const input = select('#nora-blank-world-form input[name="name"]', modal);
+        if (blankIntent) { input.value = blankIntent.name; input.readOnly = true; }
         select('#nora-blank-world-form', modal).addEventListener('submit', async (event) => {
             event.preventDefault();
             const form = event.currentTarget;
             const submit = form.querySelector('[type="submit"]');
             const name = String(new FormData(form).get('name') || '').trim();
-            let createdWorldId = '';
-            const completed = await runWorldOperation(async () => {
-                const world = await worldRuntime.createBlank({
-                    idempotencyKey: `browser:${crypto.randomUUID()}`,
-                    name,
+            if (!name) return;
+            if (isGenerating()) { showToast(tr('请等待当前回复结束，再开启新世界。')); return; }
+            if (operations.isBusy('world')) return;
+            const intent = blankIntent || { key: `browser:${crypto.randomUUID()}`, name, worldId: '' };
+            blankIntent = intent;
+            input.readOnly = true;
+            await runWorldOperation(async () => {
+                await createIntent(intent, () => worldRuntime.createBlank({
+                    idempotencyKey: intent.key,
+                    name: intent.name,
                     persona: { name: '', description: '' },
-                });
-                createdWorldId = world.id;
+                }));
+                if (!await refreshWorldsAfterCommit(tr("世界已创建"))) return false;
+                await openCreatedWorld(intent.worldId, `world-create-${Date.now()}`);
+                blankIntent = null;
                 closeModal();
-                await refreshWorldsAfterCommit(tr("世界已创建"));
             }, { control: submit, errorLabel: tr("世界创建失败"), logLabel: 'Failed to create a blank World through World Core v2' });
-            if (completed && createdWorldId) {
-                await openWorldById(createdWorldId, { interactionId: `world-create-${Date.now()}` });
+            if (blankIntent) {
+                submit.disabled = false;
+                submit.textContent = intent.worldId ? tr('打开新世界') : tr('重试');
             }
         });
         select('#nora-blank-world-form input[name="name"]', modal)?.focus();
@@ -155,8 +201,7 @@ export function createWorldCreationController({
         }
         if (control) control.disabled = true;
         try {
-            await operations.run('world', operation);
-            return true;
+            return await operations.run('world', operation) !== false;
         } catch (error) {
             if (control) control.disabled = false;
             console.error(`[Nora UI] ${logLabel || errorLabel || 'World operation failed'}:`, error);
@@ -182,27 +227,43 @@ export function createWorldCreationController({
         const files = [...(input.files || [])];
         input.value = '';
         if (!files.length) return;
+        if (isGenerating()) { showToast(tr('请等待当前回复结束，再开启新世界。')); return; }
         if (typeof worldRuntime.importCard !== 'function') throw new Error('World card import is unavailable.');
         let importedWorldId = '';
-        const completed = await runWorldOperation(async () => {
+        await runWorldOperation(async () => {
+            const sameBatch = importBatch && files.length === importBatch.items.length && await matchesImportPrefix(files, importBatch.items);
+            if (importBatch && !sameBatch) {
+                const prefix = importBatch.failedIndex;
+                if (Number.isInteger(prefix) && files.length > prefix && await matchesImportPrefix(files, importBatch.items, prefix)) {
+                    // A definite rejection permits correcting the rejected file,
+                    // without submitting the successful prefix again.
+                    importBatch = { items: [...importBatch.items.slice(0, prefix),
+                        ...files.slice(prefix).map(file => ({ file, key: `browser:${crypto.randomUUID()}`, worldId: '' }))] };
+                } else if (importBatch.items.every(item => item.worldId)) importBatch = null;
+                else throw new Error(tr("世界操作失败"));
+            }
+            importBatch ||= { items: files.map(file => ({ file, key: `browser:${crypto.randomUUID()}`, worldId: '' })) };
             let committed = false;
             try {
-                for (const file of files) {
-                    const idempotencyKey = `browser:${crypto.randomUUID()}`;
-                    const world = await worldRuntime.importCard(file, {
-                        idempotencyKey,
-                        persona: { name: '', description: '' },
-                    });
-                    importedWorldId = world.id;
+                for (const [index, intent] of importBatch.items.entries()) {
+                    try {
+                        await createIntent(intent, () => worldRuntime.importCard(intent.file, {
+                            idempotencyKey: intent.key,
+                            persona: { name: '', description: '' },
+                        }));
+                    } catch (error) {
+                        if (error.retryable === false && !error.createdWorldId) importBatch.failedIndex = index;
+                        throw error;
+                    }
+                    importedWorldId = intent.worldId;
                     committed = true;
                 }
             } finally {
                 if (committed) await refreshWorldsAfterCommit(tr("角色卡已导入"));
             }
+            await openCreatedWorld(importedWorldId, `world-import-${Date.now()}`);
+            importBatch = null;
         }, { errorLabel: tr("角色导入失败"), logLabel: 'Failed to import a World through World Core v2' });
-        if (completed && importedWorldId) {
-            await openWorldById(importedWorldId, { interactionId: `world-import-${Date.now()}` });
-        }
     }
 
     return Object.freeze({

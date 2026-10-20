@@ -21,3 +21,9 @@ Run offline projection tests from the repository root:
 ```sh
 python3 -m unittest discover -s story-profile/tests
 ```
+
+## Automatic preference reflection
+
+The Tavern integration defaults automatic preference reflection to on when no choice is stored. The existing Story Profile page provides the per-user “Automatically organize story preferences” switch. Saved on/off choices survive reopening and upgrades, including older choices without notice metadata; unreadable or malformed existing settings do not authorize new automatic calls. The original turn checkpoints and saved cursors remain. Manual reflection and profile reading do not change this choice. Disabling prevents new automatic requests (including a later derived-summary request), while an already sent request may complete and be billed. If learning is saved but its derived summary fails, the response and checkpoint retain that partial result instead of repeating learning.
+
+The authenticated integration exposes `GET/POST /api/nora-story-profile/automatic-preferences`; only the boolean `enabled` is written there, and no credential is returned. Host CSRF transport is reused. Runtime choices live under the current Tavern user root, separate from the canonical profile and World cursors. Product policy remains in [N-Q01](../docs/product/nora.md#automatic-reflection-policy); implementation and isolated acceptance are recorded in the [task report](../docs/reports/20261020-tavern-design-coverage.md#import-model-consent-fix).

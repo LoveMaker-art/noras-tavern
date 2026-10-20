@@ -15,9 +15,9 @@ function fixture(options = {}) {
     const bookPreviews = [];
     const characters = [{ name: 'Alice', avatar: 'alice.png', data: { description: 'Long description', creator: 'Author' } }];
     const controller = createCharacterController({
-        listLibraryCards: options.listLibraryCards,
+        listLibraryCards: options.listLibraryCards || (async () => ({ items: characters.map(card => ({ avatar: card.avatar, revision: 'viewed-revision' })) })),
         cards: { refreshCharacters: async () => {}, importLibraryCard: async file => imported.push(file),
-            deleteCharacterCards: async input => deleted.push(input) },
+            deleteCharacterCards: async input => { deleted.push(input); return { removed: input.avatars, retained: [] }; } },
         operations: { isBusy: () => false, run: async (_key, fn) => fn() },
         dialogs: { open: (_title, content, css) => { markup = content; modalClass = css; return {}; },
             confirm: async () => true, close() {}, toast: value => toasts.push(value), normalizeError: error => error.message },
@@ -56,7 +56,7 @@ test('card list and detail share frame; deletion stays in detail and protects in
     f.controller.openSheet(0, true);
     assert.match(f.markup(), /data-card-add-role type="button" disabled/);
     await f.node('[data-library-delete]').handlers.click();
-    assert.deepEqual(f.deleted, [{ avatars: ['alice.png'], deleteChats: true }]);
+    assert.deepEqual(f.deleted, [{ avatars: ['alice.png'], revisions: { 'alice.png': 'viewed-revision' } }]);
 });
 
 test('complete card exposes its embedded book without creating a standalone library item', () => {

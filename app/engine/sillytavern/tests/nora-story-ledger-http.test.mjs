@@ -130,6 +130,8 @@ test('isolated HTTP workflow: real model adapter → candidate → outgoing prov
     assert.equal(blockedConfig.status, 409);
     assert.equal((await blockedConfig.json()).code, 'NORA_CHAT_OPERATION_BUSY');
     activity.end(scope, generating.token);
+    const optedIn = await post('/ledger/configure', { ...scope, enabled: true });
+    assert.equal(optedIn.status, 200);
     await runtime.plugin.schedule(scope);
     const status = await (await post('/ledger/status', scope)).json();
     assert.equal(status.pending.coveredTurns, 15);

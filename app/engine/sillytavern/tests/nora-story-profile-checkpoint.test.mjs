@@ -4,7 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { createPreferenceCheckpointCoordinator as createStoryProfileCheckpointCoordinator } from '../../../story_profile_runtime/adapters/nora/preference-checkpoint.js';
+import { createPreferenceCheckpointCoordinator } from '../../../story_profile_runtime/adapters/nora/preference-checkpoint.js';
+
+// These scheduling tests exercise a user who has explicitly enabled this purpose.
+// Default-on, historical cursor and disabled cases have separate acceptance tests.
+function createStoryProfileCheckpointCoordinator(options) {
+    const coordinator = createPreferenceCheckpointCoordinator(options);
+    coordinator.configureAutomatic(true);
+    return coordinator;
+}
 
 function story(userTurns) {
     return Array.from({ length: userTurns }, (_, index) => ([
@@ -13,8 +21,9 @@ function story(userTurns) {
     ])).flat();
 }
 
-test('automatic reflection runs once at each persisted 15-user-turn checkpoint', async () => {
+test('automatic reflection runs once at each persisted 15-user-turn checkpoint', async t => {
     const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-checkpoint-'));
+    t.after(() => fs.rmSync(stateDirectory, { recursive: true, force: true }));
     let turns = 14;
     let release;
     const calls = [];
@@ -47,8 +56,9 @@ test('automatic reflection runs once at each persisted 15-user-turn checkpoint',
     assert.equal(coordinator.status('mist').reflected_at_turns, 30);
 });
 
-test('failed reflection preserves the cursor and is retried at the same checkpoint', async () => {
+test('failed reflection preserves the cursor and is retried at the same checkpoint', async t => {
     const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-checkpoint-retry-'));
+    t.after(() => fs.rmSync(stateDirectory, { recursive: true, force: true }));
     let attempts = 0;
     const coordinator = createStoryProfileCheckpointCoordinator({
         stateDirectory,
@@ -73,8 +83,9 @@ test('failed reflection preserves the cursor and is retried at the same checkpoi
     assert.equal(coordinator.status('mist').last_error, '');
 });
 
-test('reflection cursor survives a process restart', async () => {
+test('reflection cursor survives a process restart', async t => {
     const stateDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'nora-story-checkpoint-restart-'));
+    t.after(() => fs.rmSync(stateDirectory, { recursive: true, force: true }));
     let turns = 15;
     let calls = 0;
     const options = {

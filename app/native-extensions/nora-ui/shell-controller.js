@@ -66,7 +66,7 @@ export function createShellController({ select, selectAll, icons, messageView, e
             <button id="nora-scrim" type="button" aria-label="${tr("关闭面板")}"></button>
             <div id="nora-modal" class="nora-modal" aria-hidden="true"></div>
             <div id="nora-toast" class="nora-toast" role="status" aria-live="polite" hidden></div>
-            <input id="nora-character-import" type="file" accept=".json,image/png,.yaml,.yml,.charx,.byaf" multiple hidden>
+            <input id="nora-character-import" type="file" accept=".png,.json,.charx,.yaml,.yml,.byaf" multiple hidden>
             <div id="nora-runtime" aria-hidden="true"></div>`;
         return layout;
     }

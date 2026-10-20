@@ -63,7 +63,29 @@ def _request() -> dict:
 
 
 def _model(payload: dict):
-    return reflection.OpenAICompatibleModelClient(payload.get("model"))
+    client = reflection.OpenAICompatibleModelClient(payload.get("model"))
+    preference_file = payload.get("automatic_preference_file")
+    if not preference_file:
+        return client
+
+    class AutomaticModel:
+        def complete(self, messages):
+            try:
+                preferences = json.loads(Path(preference_file).read_text(encoding="utf-8"))
+            except FileNotFoundError:
+                preferences = {}
+            except (OSError, ValueError):
+                raise reflection.StoryProfileReflectionError("automatic_reflection_disabled")
+            enabled = isinstance(preferences, dict) and (
+                "automatic_reflection" not in preferences
+                or isinstance(preferences.get("automatic_reflection"), dict)
+                and preferences["automatic_reflection"].get("enabled") is True
+            )
+            if not enabled:
+                raise reflection.StoryProfileReflectionError("automatic_reflection_disabled")
+            return client.complete(messages)
+
+    return AutomaticModel()
 
 
 def main() -> int:

@@ -3,6 +3,7 @@ import path from 'node:path';
 
 const STATE_SCHEMA = 'nora-story-profile-preference-checkpoints/v1';
 const STATE_FILENAME = 'story_profile_preference_checkpoints.json';
+const PREFERENCE_NOTICE_VERSION = 1;
 
 function positiveInteger(value, fallback) {
     const parsed = Number.parseInt(value, 10);
@@ -56,6 +57,7 @@ function userTurnCount(story) {
  */
 export function createPreferenceCheckpointCoordinator({
     stateDirectory,
+    preferenceFile = path.join(stateDirectory || '', 'story_profile_preferences.json'),
     loadProgress,
     loadContext,
     runReflection,
@@ -80,10 +82,36 @@ export function createPreferenceCheckpointCoordinator({
         writeFileAtomicSync(stateFile, `${JSON.stringify(state, null, 2)}\n`);
     }
 
+    function automaticSettings() {
+        let preferences = {};
+        try { preferences = JSON.parse(fs.readFileSync(preferenceFile, 'utf8')); }
+        catch (error) {
+            if (error.code !== 'ENOENT') return { enabled: false, consentRequired: false };
+        }
+        if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) {
+            return { enabled: false, consentRequired: false };
+        }
+        const choice = preferences.automatic_reflection;
+        return { enabled: choice === undefined || choice?.enabled === true, consentRequired: false };
+    }
+
+    function configureAutomatic(enabled) {
+        if (typeof enabled !== 'boolean') throw new TypeError('enabled must be a boolean');
+        let preferences = {};
+        try { preferences = JSON.parse(fs.readFileSync(preferenceFile, 'utf8')); }
+        catch (error) { if (error.code !== 'ENOENT') throw error; }
+        if (!preferences || typeof preferences !== 'object' || Array.isArray(preferences)) throw new TypeError('Invalid preference settings');
+        preferences.automatic_reflection = { noticeVersion: PREFERENCE_NOTICE_VERSION, enabled };
+        fs.mkdirSync(path.dirname(preferenceFile), { recursive: true });
+        writeFileAtomicSync(preferenceFile, `${JSON.stringify(preferences, null, 2)}\n`);
+        return automaticSettings();
+    }
+
     function status(worldId) {
         const key = String(worldId || '').trim();
         return {
             world_id: key,
+            ...automaticSettings(),
             ...normalizedStatus(state.worlds[key]),
             running: jobs.has(key),
         };
@@ -92,6 +120,7 @@ export function createPreferenceCheckpointCoordinator({
     async function evaluate(worldId) {
         const key = String(worldId || '').trim();
         if (!key) throw new TypeError('World ID is required.');
+        if (!automaticSettings().enabled) return { scheduled: false, reason: 'automatic_disabled', ...status(key) };
         const progress = await loadProgress(key);
         if (!progress || String(progress.world_id || '') !== key) {
             throw new Error(`Story Profile world not found: ${key}`);
@@ -124,6 +153,7 @@ export function createPreferenceCheckpointCoordinator({
             return { scheduled: false, reason: 'history_changed', user_turns: userTurns, ...status(key) };
         }
 
+        if (!automaticSettings().enabled) return { scheduled: false, reason: 'automatic_disabled', ...status(key) };
         current.last_attempt_at = now();
         current.last_error = '';
         state.worlds[key] = current;
@@ -133,11 +163,12 @@ export function createPreferenceCheckpointCoordinator({
         // Install the job before any injected model runner can finish/throw.
         job = Promise.resolve().then(async () => {
             try {
-                await runReflection(context);
+                if (!automaticSettings().enabled) return;
+                const result = await runReflection(context);
                 const latest = normalizedStatus(state.worlds[key]);
                 latest.reflected_at_turns = Math.max(latest.reflected_at_turns, userTurns);
                 latest.last_success_at = now();
-                latest.last_error = '';
+                latest.last_error = result?.refresh_error ? `preference_saved_refresh_failed: ${String(result.refresh_error).slice(0, 900)}` : '';
                 state.worlds[key] = latest;
                 save();
             } catch (error) {
@@ -175,5 +206,5 @@ export function createPreferenceCheckpointCoordinator({
         return status(worldId);
     }
 
-    return Object.freeze({ checkpoint, status, waitForIdle });
+    return Object.freeze({ checkpoint, status, waitForIdle, automaticSettings, configureAutomatic });
 }

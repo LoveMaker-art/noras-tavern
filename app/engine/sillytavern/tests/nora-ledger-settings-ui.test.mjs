@@ -69,7 +69,7 @@ function fixture() {
         hold: value => { hold = value; }, state: () => state, changeState: patch => { state = { ...state, ...patch }; } };
 }
 
-test('default-on settings show scope, actual model configuration and the three bounded inputs without a model call', async () => {
+test('explicitly enabled settings show scope, actual model configuration and the three bounded inputs without a model call', async () => {
     const f = fixture(); await f.open();
     assert.equal(f.select('[data-ledger-toggle]').checked, true);
     assert.match(f.text(), /local-model/); assert.match(f.text(), /8192 tokens/);
@@ -171,4 +171,21 @@ test('extension menu retains a disabled empty ledger and stable builtin order, w
     assert.match(f.text(), /剧情账本/);
     assert.ok(!controls.includes('mvu.status'));
     assert.ok(controls.every(action => ['scripts.list', 'regex.list'].includes(action)));
+});
+
+
+test('legacy pending choice keeps the original dialog; rejecting sends no configure request', async () => {
+    const f = fixture(); f.changeState({ enabled: false, consentRequired: true }); await f.open();
+    assert.equal(f.select('[data-ledger-toggle]').checked, false);
+    assert.equal(f.select('[data-ledger-consent]'), null);
+    assert.doesNotMatch(f.text(), /必要历史片段|可能多次调用并计费/);
+    f.accepted(false); f.select('[data-ledger-toggle]').checked = true;
+    await f.select('[data-ledger-toggle]').fire('change');
+    assert.equal(f.requests.filter(item => item.action === 'configure').length, 0);
+    assert.equal(f.select('[data-ledger-toggle]').checked, false);
+    assert.equal(f.confirmations.at(-1).body, '当前会话将自动调用模型整理历史，可能产生费用。');
+    f.accepted(true); f.select('[data-ledger-toggle]').checked = true;
+    await f.select('[data-ledger-toggle]').fire('change');
+    assert.equal(f.requests.filter(item => item.action === 'configure').length, 1);
+    assert.equal(f.requests.at(-1).patch.enabled, true);
 });

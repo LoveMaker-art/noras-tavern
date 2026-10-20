@@ -86,8 +86,54 @@ function render(d) {
     <div class="acStats">${stats}</div>
     ${intimacy}
     ${knowsBlock}
+    <section class="acSec" aria-labelledby="automaticReflectionLabel">
+      <label id="automaticReflectionLabel" class="acPreferenceToggle"><span>${esc(t('automaticReflection'))}</span><input id="automaticReflection" type="checkbox" disabled></label>
+      <p id="automaticReflectionStatus" class="acEmpty2" role="status" hidden></p>
+    </section>
     ${timelineBlock}`;
   setupPersonalityEntry();
+  setupAutomaticReflection();
+}
+
+async function setupAutomaticReflection() {
+  const checkbox = document.getElementById('automaticReflection');
+  const status = document.getElementById('automaticReflectionStatus');
+  let current = false;
+  const show = data => {
+    current = data.enabled === true;
+    checkbox.checked = current;
+    status.textContent = '';
+    status.hidden = true;
+  };
+  try {
+    const response = await fetch('/api/nora-story-profile/automatic-preferences', { cache: 'no-store' });
+    if (!response.ok) throw new Error(String(response.status));
+    show(await response.json());
+    checkbox.disabled = false;
+  } catch (error) {
+    status.hidden = false;
+    status.textContent = t('automaticReflectionFailed', { err: error.message || error });
+    return;
+  }
+  checkbox.addEventListener('change', async () => {
+    const next = checkbox.checked;
+    checkbox.checked = current;
+    if (next && !confirm(t('automaticReflection'))) return;
+    checkbox.disabled = true;
+    try {
+      const response = await fetch('/api/nora-story-profile/automatic-preferences', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      if (!response.ok) throw new Error(String(response.status));
+      show(await response.json());
+    } catch (error) {
+      status.hidden = false;
+      status.textContent = t('automaticReflectionFailed', { err: error.message || error });
+    } finally {
+      checkbox.disabled = false;
+    }
+  });
 }
 
 async function setupPersonalityEntry() {

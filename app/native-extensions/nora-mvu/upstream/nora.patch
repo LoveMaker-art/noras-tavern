@@ -646,6 +646,7 @@ index edc468c..e2b82a6 100644
 +    let timer: ReturnType<typeof setTimeout> | undefined;
 +    let did_set_extra_analysis_states = false;
 +    try {
++        await access?.assertCurrent();
 +        await setExtraAnalysisStates(access);
 +        did_set_extra_analysis_states = true;
 +        const timeout = new Promise<never>((_resolve, reject) => {
@@ -1101,6 +1102,7 @@ index 2f7a0bf..14a78e7 100644
 +    for (let attempt = 1; attempt <= 2; attempt++) {
 +        last_attempt = attempt;
 +        try {
++            await access.assertCurrent();
 +            const result = await invokeExtraModelAttempt({
 +                timeout_ms: EXTRA_MODEL_ATTEMPT_TIMEOUT_MS,
 +                repair_feedback,
@@ -2041,3 +2043,30 @@ index 76b0425..e3f598e 100644
              const cdn = {
                  sass: 'https://jspm.dev/sass',
              };
+diff --git a/src/store.ts b/src/store.ts
+--- a/src/store.ts
++++ b/src/store.ts
+@@ -320,10 +320,17 @@ export const useDataStore = defineStore('MVU变量框架', () => {
+     const effective_settings = computed<MvuSettings>(() => {
+         // 运行时读取合并后的配置，但不修改用户持久化的全局设置。
+         const result = klona(settings.value);
++        const permitted = () => {
++            const bridge = (window.parent as any).NoraMvu;
++            return bridge?.settingsForExecution?.(result) ?? {
++                ...result, 更新方式: '随AI输出',
++                额外模型解析配置: { ...result.额外模型解析配置, 启用自动请求: false },
++            };
++        };
+         if (!character_settings.value.is_valid) {
+-            return result;
++            return permitted();
+         }
+ 
+         const draft = character_settings.value.draft;
+@@ -338,7 +345,7 @@ export const useDataStore = defineStore('MVU变量框架', () => {
+         if (_.has(draft, '兼容性.sendas不视为user消息')) {
+             result.兼容性.sendas不视为user消息 = draft.兼容性!.sendas不视为user消息!;
+         }
+-        return result;
++        return permitted();
+     });

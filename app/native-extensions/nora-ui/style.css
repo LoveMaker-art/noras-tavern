@@ -48,25 +48,49 @@ body.nora-product .nora-extension-setting .nora-setting-button:hover:not(:disabl
 body.nora-product .nora-extension-setting .nora-setting-button:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
 .nora-extension-setting .nora-setting-description { margin: 12px 0 0; color: var(--nora-muted); font-size: 12px; line-height: 1.7; }
 .nora-extension-setting .nora-setting-metric { margin: 12px 0 0; padding-top: 12px; border-top: 1px solid var(--nora-line); color: var(--nora-ink-2); font-size: 12px; line-height: 1.6; font-variant-numeric: tabular-nums; }
-.nora-ledger-enabled { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 4px 0 14px; border-bottom: 1px solid var(--nora-line); font-size: 13px; }
-.nora-ledger-enabled small { display: block; margin-top: 4px; color: var(--nora-muted); font-size: 11px; }
-.nora-ledger-enabled input { width: 18px; height: 18px; flex: none; margin: 0; accent-color: var(--nora-brand); }
-.nora-ledger-metrics { display: grid; gap: 10px; margin: 16px 0; font-size: 12px; }
-.nora-ledger-metrics > div { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 12px; }
+body.nora-product .nora-ledger-settings { display: grid; gap: 16px; min-width: 0; color: var(--nora-ink); font: 13px/1.6 var(--nora-sans); }
+.nora-ledger-enabled { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin: 0; padding: 0 0 16px; border-bottom: 1px solid var(--nora-line); cursor: pointer; }
+.nora-ledger-enabled > span { min-width: 0; font-weight: 600; overflow-wrap: anywhere; }
+.nora-ledger-enabled small { display: block; margin-top: 2px; color: var(--nora-muted); font-size: 11px; font-weight: 400; }
+.nora-ledger-enabled input { appearance: none; -webkit-appearance: none; position: relative; width: 30px; height: 18px; flex: 0 0 30px; margin: 0; padding: 0; border: 1px solid var(--nora-line-2); border-radius: 999px; background: var(--nora-bg); cursor: pointer; transition: background .16s ease, border-color .16s ease; }
+.nora-ledger-enabled input::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--nora-muted); transition: transform .16s ease, background .16s ease; }
+.nora-ledger-enabled input:checked { border-color: var(--nora-brand); background: var(--nora-brand-tint); }
+.nora-ledger-enabled input:checked::after { background: var(--nora-brand); transform: translateX(12px); }
+.nora-ledger-enabled input:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 3px; }
+.nora-ledger-enabled input:disabled { opacity: .45; cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+    .nora-ledger-enabled input, .nora-ledger-enabled input::after { transition: none; }
+}
+.nora-ledger-metrics { display: grid; gap: 8px; min-width: 0; margin: 0; font-size: 12px; }
+.nora-ledger-metrics > div { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); align-items: baseline; gap: 16px; }
 .nora-ledger-metrics dt { color: var(--nora-muted); }
-.nora-ledger-metrics dd { margin: 0; color: var(--nora-ink); overflow-wrap: anywhere; }
-.nora-ledger-options { margin-top: 16px; color: var(--nora-ink-2); font-size: 13px; }
-.nora-ledger-options summary { cursor: pointer; padding: 8px 0; }
-.nora-ledger-options label { display: block; margin: 14px 0 6px; }
-body.nora-product .nora-ledger-options input { width: 100%; min-width: 0; min-height: 36px; box-sizing: border-box; padding: 7px 10px; border: 1px solid var(--nora-line-2); border-radius: 6px; background: var(--nora-surface); color: var(--nora-ink); font: inherit; }
-.nora-ledger-save { display: flex; align-items: center; justify-content: flex-end; gap: 12px; padding-top: 14px; font-size: 12px; }
-.nora-ledger-save > span { color: var(--nora-muted); }
-body.nora-product .nora-ledger-save .nora-primary { width: auto; flex: none; min-height: 34px; padding: 7px 14px; font: inherit; }
-.nora-ledger-reset { margin-top: 24px; padding-top: 14px; border-top: 1px solid var(--nora-line); }
-.nora-ledger-reset .nora-secondary { color: var(--nora-muted); }
-.nora-ledger-settings [role="alert"] { color: var(--nora-error, #b33528); font-size: 12px; overflow-wrap: anywhere; }
+.nora-ledger-metrics dd { min-width: 0; margin: 0; color: var(--nora-ink); text-align: right; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.nora-ledger-form { min-width: 0; margin: 0; padding-top: 8px; border-top: 1px solid var(--nora-line); }
+.nora-ledger-options { margin: 0; color: var(--nora-ink-2); }
+.nora-ledger-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 56%); align-items: center; gap: 12px 16px; padding-top: 12px; }
+.nora-ledger-options summary { display: flex; min-height: 38px; align-items: center; justify-content: space-between; gap: 16px; padding: 8px 0; color: var(--nora-ink); font-weight: 500; list-style: none; cursor: pointer; }
+.nora-ledger-options summary::-webkit-details-marker { display: none; }
+.nora-ledger-options summary::after { content: ''; width: 6px; height: 6px; flex: 0 0 6px; margin-right: 4px; border-right: 1px solid var(--nora-muted); border-bottom: 1px solid var(--nora-muted); transform: rotate(45deg); }
+.nora-ledger-options[open] summary::after { transform: rotate(225deg); }
+.nora-ledger-options label { display: block; min-width: 0; margin: 0; color: var(--nora-ink-2); font-size: 12px; overflow-wrap: anywhere; }
+body.nora-product .nora-ledger-options input { width: 100%; min-width: 0; min-height: 38px; box-sizing: border-box; padding: 8px 10px; border: 1px solid var(--nora-line-2); border-radius: 10px; outline: none; background: var(--nora-bg); color: var(--nora-ink); font: 13px/1.5 var(--nora-sans); font-variant-numeric: tabular-nums; }
+body.nora-product .nora-ledger-options input:focus { border-color: var(--nora-brand); }
+.nora-ledger-save { display: flex; grid-column: 1 / -1; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 12px; padding-top: 4px; }
+.nora-ledger-save > span { margin-right: auto; color: var(--nora-muted); font-size: 12px; }
+body.nora-product .nora-ledger-settings :is(.nora-primary, .nora-secondary):not([hidden]) { display: inline-flex; width: auto; max-width: 100%; min-height: 38px; align-items: center; justify-content: center; gap: 6px; padding: 8px 12px; border-radius: 10px; font: 500 13px/1.5 var(--nora-sans); overflow-wrap: anywhere; }
+.nora-ledger-settings > .nora-secondary { justify-self: start; }
+.nora-ledger-settings .nora-secondary:hover:not(:disabled) { border-color: var(--nora-brand); background: var(--nora-brand-tint); color: var(--nora-brand-ink); }
+.nora-ledger-settings button:focus-visible, .nora-ledger-options summary:focus-visible { outline: 2px solid var(--nora-brand); outline-offset: 2px; }
+.nora-ledger-reset { margin: 0; padding-top: 16px; border-top: 1px solid var(--nora-line); }
+.nora-ledger-settings [role="alert"] { margin: 0; color: var(--nora-danger); font-size: 12px; overflow-wrap: anywhere; }
+@media (max-width: 480px) {
+    .nora-ledger-fields { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    .nora-ledger-fields > input { margin-bottom: 6px; }
+    .nora-ledger-save { padding-top: 10px; }
+}
 @media (pointer: coarse) {
     body.nora-product .nora-extension-setting .nora-setting-button { min-height: 44px; }
+    body.nora-product .nora-ledger-settings :is(.nora-primary, .nora-secondary):not([hidden]), body.nora-product .nora-ledger-options input, .nora-ledger-options summary { min-height: 44px; }
 }
 .nora-plugin-library { min-width: 0; font-size: 13px; overflow-wrap: anywhere; }
 .nora-plugin-library h3 { margin: 0 0 8px; font-size: 16px; }

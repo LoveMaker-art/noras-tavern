@@ -6,7 +6,7 @@ import {
     hasInitializedMvuData,
     initializeHeadlessMvuSettings,
 } from './runtime.js';
-import { createMvuSettingsControls, isMvuVariableModelEnabled } from 'nora-module/scripts/nora-compat/mvu-settings.js';
+import { createMvuSettingsControls, isMvuVariableModelEnabled, MVU_MODEL_USE_NOTICE_VERSION, mvuSettingsForExecution } from 'nora-module/scripts/nora-compat/mvu-settings.js';
 import { inspectMvuCompatibility, isMvuUpdateInstructionEntry, normalizeTavernHelperScripts } from 'nora-module/scripts/nora-compat/mvu-compatibility.js';
 import * as protocol from 'nora-module/scripts/nora-compat/mvu-protocol.js';
 import { createEmptyMvuUpdateStatus, createMvuUpdateObserver } from 'nora-module/scripts/nora-compat/mvu-update-observer.js';
@@ -60,7 +60,8 @@ function statusSnapshot() {
         declarationChecked: false,
         initialized,
         supported: initialized,
-        enabled: isMvuVariableModelEnabled(settings),
+        enabled: isMvuVariableModelEnabled(mvuSettingsForExecution(settings, context().extensionSettings.nora_mvu?.modelUseConsent)),
+        consentRequired: context().extensionSettings.nora_mvu?.modelUseConsent?.noticeVersion !== MVU_MODEL_USE_NOTICE_VERSION,
         updateMode: settings['更新方式'] ?? null,
         variableModel: model['模型来源'] ?? null,
         variableModelName: model['模型名称'] ?? null,
@@ -162,7 +163,14 @@ function exposeApi() {
         configure(patch) {
             return applyMvuSettings(context(), patch);
         },
-        ...createMvuSettingsControls(patch => applyMvuSettings(context(), patch)),
+        settingsForExecution: settings => mvuSettingsForExecution(settings, context().extensionSettings.nora_mvu?.modelUseConsent),
+        ...createMvuSettingsControls(patch => applyMvuSettings(context(), patch), {
+            setConsent: choice => {
+                const current = context();
+                current.extensionSettings.nora_mvu ??= {};
+                current.extensionSettings.nora_mvu.modelUseConsent = choice;
+            },
+        }),
         async retryLastUpdate() {
             if (typeof globalThis.Mvu?.retryLastUpdate !== 'function') {
                 throw new Error('MVU runtime is not ready.');

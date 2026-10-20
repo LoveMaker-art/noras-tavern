@@ -44,7 +44,7 @@ test('provider deadline keeps raw history and reports a stable timeout code, not
 });
 function fixture(turns = 16, model = async input => memory(`Through ${input.segment.endTurn}`)) {
     let messages = chat(turns);
-    let state = null;
+    let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } };
     const calls = [];
     const options = { readChat: () => ({ messages: copy(messages), entities: ['__user__'] }),
         readState: () => copy(state), writeState: (_, value) => { state = copy(value); },
@@ -169,7 +169,7 @@ test('agent inspect is pure even with stale candidates, and reports active/reser
     const f = fixture();
     const empty = await f.plugin.inspect(scope, { limit: 2 });
     assert.equal(f.calls.length, 0);
-    assert.equal(f.state, null);
+    assert.deepEqual(f.state, { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } });
     assert.equal(empty.messageCount, 33);
     assert.equal(empty.expectedSignature, fingerprint(f.messages));
     await f.plugin.schedule(scope);

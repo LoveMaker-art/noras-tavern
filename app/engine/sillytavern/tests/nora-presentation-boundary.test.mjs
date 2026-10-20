@@ -18,7 +18,7 @@ test('the obsolete focus skin is removed from source and the lifecycle contract'
     assert.equal(fs.existsSync(new URL('../public/css/nora-skin.css', import.meta.url)), false);
     assert.match(index, /<body class="no-blur nora-product nora-no-world nora-booting">/);
     assert.doesNotMatch(index, /css\/nora-skin\.css|\bnora-focus\b/);
-    assert.match(lifecycle, /class=\"no-blur nora-product\"/);
+    assert.match(lifecycle, /class="no-blur nora-product"/);
     assert.doesNotMatch(lifecycle, /nora-skin\.css|nora-focus/);
 });
 
@@ -142,6 +142,12 @@ test('Nora exposes existing alternate replies as a visible pager above the messa
     assert.match(pager.innerHTML, /data-message-action="left"[^>]*disabled/);
     assert.match(pager.innerHTML, />(?:上一页|Previous page)<.*>1 \/ 2<.*>(?:下一页|Next page)</s);
     assert.doesNotMatch(controls.innerHTML, /data-message-action="(?:left|right)"/);
+
+    adapter.decorate([{ swipe_id: 1, swipes: ['first', 'second'] }]);
+    assert.equal(pager.hidden, false);
+    assert.match(pager.innerHTML, />2 \/ 2<.*data-message-action="right"[^>]*aria-label="(?:下一个回复|Next reply)"/s);
+    assert.match(pager.innerHTML, /(?:下一页|Next page)/);
+    assert.doesNotMatch(pager.innerHTML, /data-message-action="right"[^>]*disabled|生成新回复|Generate new reply/);
 
     adapter.decorate([{ swipe_id: 0, swipes: ['only'] }]);
     assert.equal(pager.hidden, true);

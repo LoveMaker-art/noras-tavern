@@ -1,4 +1,4 @@
-import { createMvuSettingsControls, isMvuVariableModelEnabled } from '../nora-compat/mvu-settings.js';
+import { createMvuSettingsControls, isMvuVariableModelEnabled, MVU_MODEL_USE_NOTICE_VERSION, mvuSettingsForExecution } from '../nora-compat/mvu-settings.js';
 export { NORA_MVU_MODEL_PROXY_URL } from '../nora-compat/mvu-settings.js';
 
 function isRecord(value) {
@@ -66,11 +66,17 @@ export function createStMvuSettingsAdapter(runtime, {
                 phase: runtimeAvailable ? 'ready' : 'unavailable',
                 runtimeAvailable,
                 initialized: hasInitializedData(mvuRuntime),
-                enabled: isMvuVariableModelEnabled(settings),
+                enabled: isMvuVariableModelEnabled(mvuSettingsForExecution(settings, runtime().extensionSettings.nora_mvu?.modelUseConsent)),
+                consentRequired: runtime().extensionSettings.nora_mvu?.modelUseConsent?.noticeVersion !== MVU_MODEL_USE_NOTICE_VERSION,
                 variableModel: model['模型来源'] ?? null,
                 variableModelName: model['模型名称'] ?? null,
             });
         },
-        ...createMvuSettingsControls(apply),
+        ...createMvuSettingsControls(apply, { setConsent: choice => {
+            requireMvuRuntime();
+            const current = runtime();
+            current.extensionSettings.nora_mvu ??= {};
+            current.extensionSettings.nora_mvu.modelUseConsent = choice;
+        } }),
     });
 }

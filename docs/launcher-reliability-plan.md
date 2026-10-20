@@ -6,7 +6,7 @@
 
 2026-10-18 当前状态：独立更新器、组件更新及后续修订已合并到本地 `main`，尚未推送或正式发布。集成过程见[合并审查](reports/20261018-main-updater-merge-review.md)，后续修复及实际验收边界见[恢复与旧版接入验收](reports/20261018-recovery-ownership-legacy-admission.md)和[查询预算验收](reports/20261018-update-query-budget-acceptance.md)。
 
-本文件是启动器模块的执行与验收计划，产品规则统一服从[项目产品设计基线](product-baseline.md)。下列带日期的状态保留其源码与证据范围，不作为第二份全产品基线。
+本文件是启动器模块的执行与验收计划，产品规则统一服从[项目总览](product/README.md)和[启动器设计](product/launcher.md)。下列带日期的状态保留其源码与证据范围，不作为另一份现行产品设计。
 
 ## 历史交付准备（2026-10-18）
 

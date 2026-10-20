@@ -4,6 +4,8 @@
 const I18N = (() => {
   const STRINGS = {
     zh: {
+      automaticReflection: "自动整理故事偏好",
+      automaticReflectionFailed: "设置失败：{err}",
       docTitleActor: "故事档案",
       appWindowTitleActor: "Story Profile",
       ariaBack: "返回酒馆",
@@ -44,6 +46,8 @@ const I18N = (() => {
       wan: "万"
     },
     en: {
+      automaticReflection: "Automatically organize story preferences",
+      automaticReflectionFailed: "Setting failed: {err}",
       docTitleActor: "Story Profile",
       appWindowTitleActor: "Story Profile",
       ariaBack: "Back to Tavern",

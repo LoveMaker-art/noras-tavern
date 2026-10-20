@@ -12,6 +12,9 @@ export class LedgerConflict extends Error {
     }
 }
 
+export const LEDGER_MODEL_USE_NOTICE_VERSION = 1;
+const modelAllowed = state => state.enabled === true && state.modelUseConsent?.noticeVersion === LEDGER_MODEL_USE_NOTICE_VERSION && state.modelUseConsent.enabled === true;
+
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
 const signature = (messages, count) => hash(prefixText(messages, count));
 export const matchesLedgerHistory = (record, messages) => record && record.coveredTurns > 0 && record.coveredTurns % BATCH_TURNS === 0
@@ -50,8 +53,8 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
         return { state, chat };
     }
     function projection(scope, state, chat) {
-        return { ...scope, restoreId: state.restoreId || null, enabled: state.enabled, configRevision: state.configRevision || 0,
-            effectiveConfig: ledgerConfig(state.config), taskPhase: jobs.has(scopeKey(scope)) ? controllers.get(scopeKey(scope))?.signal.aborted ? 'cancelling' : controllers.get(scopeKey(scope))?.phase || 'running' : !state.enabled ? 'disabled' : state.lastError ? 'paused' : !canRun() ? 'waiting' : 'idle', batchTurns: BATCH_TURNS,
+        return { ...scope, restoreId: state.restoreId || null, enabled: modelAllowed(state), configuredEnabled: state.enabled, consentRequired: state.modelUseConsent?.noticeVersion !== LEDGER_MODEL_USE_NOTICE_VERSION, configRevision: state.configRevision || 0,
+            effectiveConfig: ledgerConfig(state.config), taskPhase: jobs.has(scopeKey(scope)) ? controllers.get(scopeKey(scope))?.signal.aborted ? 'cancelling' : controllers.get(scopeKey(scope))?.phase || 'running' : !modelAllowed(state) ? 'disabled' : state.lastError ? 'paused' : !canRun() ? 'waiting' : 'idle', batchTurns: BATCH_TURNS,
             totalTurns: countTurns(chat.messages), active: state.active, pending: state.pending,
             running: jobs.has(scopeKey(scope)), lastError: state.lastError };
     }
@@ -90,7 +93,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
             signal.throwIfAborted();
             const input = await run(scope, () => {
                 const { state, chat } = checked(scope);
-                if (!state.enabled || (state.waitForHistory && state.waitForHistory === signature(chat.messages, chat.messages.length))) return null;
+                if (!modelAllowed(state) || (state.waitForHistory && state.waitForHistory === signature(chat.messages, chat.messages.length))) return null;
                 const previous = state.pending || state.active;
                 const covered = previous?.coveredTurns || 0;
                 const end = covered + BATCH_TURNS;
@@ -120,7 +123,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
                 assertModel();
                 const { state, chat } = checked(scope);
                 const previous = state.pending || state.active;
-                if (signal.aborted || !state.enabled || (state.configRevision || 0) !== input.revision || (previous?.id || null) !== (input.previous?.id || null)
+                if (signal.aborted || !modelAllowed(state) || (state.configRevision || 0) !== input.revision || (previous?.id || null) !== (input.previous?.id || null)
                     || signature(chat.messages, input.count) !== input.signature
                     || countTurns(chat.messages) <= input.end) return false;
                 state.pending = { id: crypto.randomUUID(), coveredTurns: input.end, messageCount: input.count,
@@ -140,7 +143,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
         if (jobs.has(key)) return jobs.get(key);
         const chat = readChat(scope);
         const state = load(scope, chat);
-        if (!state.enabled || (!retry && state.lastError)) return Promise.resolve();
+        if (!modelAllowed(state) || (!retry && state.lastError)) return Promise.resolve();
         const { messages } = chat;
         if (state.waitForHistory && state.waitForHistory === signature(messages, messages.length)) return Promise.resolve();
         const covered = (state.pending || state.active)?.coveredTurns || 0;
@@ -336,7 +339,7 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
             const state = load(scope);
             if (expectedRevision !== (state.configRevision || 0)) throw new LedgerConflict('Ledger configuration changed.', 'NORA_LEDGER_CONFIGURATION_STALE');
             const receipt = await prepare();
-            writeState(scope, { ...initial(), enabled: false, config: ledgerConfig(state.config),
+            writeState(scope, { ...initial(), enabled: false, modelUseConsent: state.modelUseConsent, config: ledgerConfig(state.config),
                 configRevision: (state.configRevision || 0) + 1, restoreId: receipt.id, waitForHistory: receipt.historySignature });
             return { reset: true, enabled: false, reloadRequired: true };
         });
@@ -352,7 +355,10 @@ export function createStoryLedger({ readChat, readState, writeState, merge, prep
             cancel(scope);
             state.config = config;
             state.configRevision = (state.configRevision || 0) + 1;
-            if (enabled !== undefined) state.enabled = enabled;
+            if (enabled !== undefined) {
+                state.enabled = enabled;
+                state.modelUseConsent = { noticeVersion: LEDGER_MODEL_USE_NOTICE_VERSION, enabled };
+            }
             if (!state.enabled) state.pending = null;
             if (Object.keys(configuration).length) state.lastError = null;
             writeState(scope, state);

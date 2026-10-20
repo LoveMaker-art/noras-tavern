@@ -250,7 +250,7 @@ server.tool("nora.library.delete", "Delete one independent profile or whole libr
   id: z.string().regex(/^[a-f0-9]{64}$/).optional(), source: z.object({ kind: z.literal("book"), name: z.string().min(1) }).optional(),
   revision: z.string().min(1), confirm: z.literal(true),
 }, async request => textResult(await nora.libraryDelete(request)));
-server.tool("nora.library.import_card", "Store a complete card ONLY in the library through the same import/deduplication service as UI. Does not create/open a World, run scripts or call models. File must be in upload directory, maximum 64 MiB.", {
+server.tool("nora.library.import_card", "Store a complete card ONLY in the library through the same import/deduplication service as UI. Does not create/open a World, run scripts or call models. Accepts complete PNG/JSON/CHARX/YAML/YML/BYAF cards, validated by content. File must be in upload directory, maximum 64 MiB; WebP is not a full-card format.", {
   filePath: z.string().min(1), confirm: z.literal(true),
 }, async request => textResult(await nora.importLibraryCard(request.filePath)));
 server.tool("nora.library.manage_card", "Delete the selected independent card file, or clean exact duplicates while keeping it. Requires revision from library.list(card). Referenced files are retained, never deletes chats or World copies. Inspect removed/retained, not just HTTP success.", {
@@ -303,7 +303,7 @@ server.tool("nora.world.create", "Create a blank World through World Core. Reuse
 server.tool("nora.world.import_library", "Create a NEW World from an existing library card. Reuse the same idempotencyKey for retries, not for intentional new Worlds.", {
   ...operationSchema, avatar: z.string().min(1),
 }, async request => textResult(await nora.importLibrary(request.avatar, request.idempotencyKey)));
-server.tool("nora.world.import", "Import a card within the configured upload directory. World Core owns parsing and idempotency; browser MVU activation is separate.", {
+server.tool("nora.world.import", "Import a complete PNG/JSON/CHARX/YAML/YML/BYAF card within the upload directory, maximum 64 MiB. World Core validates content and owns idempotency; browser MVU activation is separate.", {
   ...operationSchema, filePath: z.string().min(1), name: z.string().max(200).optional(), personaName: z.string().max(200).optional(), personaDescription: z.string().max(10000).optional(),
 }, async request => textResult(await nora.importWorld(request)));
 server.tool("nora.ledger.status", "Read ledger state WITHOUT scheduling models, repairing state or updating memory. pending is not active.", scopeSchema,
@@ -311,7 +311,7 @@ server.tool("nora.ledger.status", "Read ledger state WITHOUT scheduling models, 
 server.tool("nora.session.read", "Read a bounded narrative window and its full-history expectedSignature. IDs are message indexes, not turn numbers. No generation.", {
   ...scopeSchema, offset: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(30),
 }, async request => textResult(await nora.ledgerInspect(request)));
-server.tool("nora.ledger.configure", "Enable/disable ledger. Enabling may schedule PAID background compression. Disabling does not unlock active history.", {
+server.tool("nora.ledger.configure", "Enable/disable this Session's automatic ledger compression. First explain that eligible history excerpts and existing ledger are sent to the current text model, possibly in multiple PAID requests; enabling records that choice. Disabling stops new requests, but sent requests may be billed, and active history remains protected.", {
   ...scopeSchema, enabled: z.boolean().optional(), expectedRevision: z.number().int().min(0).optional(),
   contextLimitOverride: z.number().int().min(512).max(2000000).nullable().optional(),
   outputTokenLimit: z.number().int().min(128).max(16384).optional(), timeoutSeconds: z.number().int().min(60).max(1800).optional(),

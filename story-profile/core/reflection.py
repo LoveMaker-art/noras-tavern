@@ -226,12 +226,19 @@ def reflect_context(
             source_type="reflection",
         )
     taste_profile = None
+    refresh_error = ""
     current = profile_module.load_profile(state_dir, seed_actor)
     if current.get("taste_profile_stale"):
-        taste_profile = refresh_taste_profile(
-            profile_module, model, state_dir, seed_actor)
+        try:
+            taste_profile = refresh_taste_profile(
+                profile_module, model, state_dir, seed_actor)
+        except Exception as error:
+            # Learning is already durable. Do not replay it just because the
+            # derived taste summary failed; it can be refreshed separately.
+            refresh_error = str(error)
     return {
         **result,
+        "refresh_error": refresh_error,
         "written": bool(event),
         "event": event,
         "preferences": preferences,

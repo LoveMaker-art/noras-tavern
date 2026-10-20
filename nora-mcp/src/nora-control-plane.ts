@@ -561,7 +561,7 @@ export class NoraControlPlane {
     const relative = path.relative(root, file);
     if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new NoraRequestError("Card must be inside the configured upload directory.", "NORA_IMPORT_PATH_DENIED");
     const stat = await fs.stat(file);
-    if (!stat.isFile() || stat.size > 64 * 1024 * 1024 || ![".png", ".webp", ".json", ".charx"].includes(path.extname(file).toLowerCase())) throw new NoraRequestError("Unsupported card file or file exceeds 64 MiB.", "NORA_IMPORT_FILE_INVALID");
+    if (!stat.isFile() || !stat.size || stat.size > 64 * 1024 * 1024 || ![".png", ".json", ".charx", ".yaml", ".yml", ".byaf"].includes(path.extname(file).toLowerCase())) throw new NoraRequestError("Unsupported card file or file exceeds 64 MiB.", "NORA_IMPORT_FILE_INVALID");
     const bytes = await fs.readFile(file);
     const body = new FormData();
     body.set("avatar", new Blob([new Uint8Array(bytes)]), path.basename(file));

@@ -12,7 +12,7 @@ const memory = () => ({ timeline: ['Borrowed a book'], facts: [], open_threads: 
 const input = { previous: {}, segment: { startTurn: 1, endTurn: 1, text: '[Turn 1 · User]\nBorrow a book.\n[Turn 1 · Story]\nDone.' }, entities: ['__user__'], language: 'en' };
 const model = { custom_url: 'http://127.0.0.1:1/v1', custom_model: 'test', openai_max_context: 8192 };
 function fixture(merge, extra = {}) {
-    let state;
+    let state = { enabled: true, modelUseConsent: { noticeVersion: 1, enabled: true } };
     const messages = Array.from({ length: 16 }, (_, i) => [{ is_user: true, mes: `Action ${i}` }, { is_user: false, mes: `Reply ${i}` }]).flat();
     const plugin = createStoryLedger({ readChat: () => ({ messages, entities: ['__user__'] }), readState: () => structuredClone(state),
         writeState: (_, next) => { state = structuredClone(next); }, merge, ...extra });

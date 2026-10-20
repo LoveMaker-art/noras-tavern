@@ -1,7 +1,7 @@
 {
   "schema": "nora-story-profile-runtime/v1",
   "source": "repository-project",
-  "sourceRevision": "sha256:82a269bf1a04f31a74ed99520f989c903891f25d94a8a5fa3b3737edfaa5cc67",
+  "sourceRevision": "sha256:17709b70f66a8195e6e16f80660ed3c3deebdc441ca3ea8c43cbbd3d2f10aef5",
   "files": {
     "story_profile_runtime/core/story_profile.py": {
       "source": "story-profile/core/story_profile.py",
@@ -10,13 +10,13 @@
     },
     "story_profile_runtime/core/reflection.py": {
       "source": "story-profile/core/reflection.py",
-      "sourceSha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0",
-      "sha256": "80cadd6ff2435ce2c9793044ea7e03a2537e9fa5e51fad83f5992863b15950e0"
+      "sourceSha256": "473fd9dcdfceb411385c1d6bab73e2047aa9f62b176eb768553acdc4d3671b29",
+      "sha256": "473fd9dcdfceb411385c1d6bab73e2047aa9f62b176eb768553acdc4d3671b29"
     },
     "story_profile_runtime/adapters/nora/cli.py": {
       "source": "story-profile/adapters/nora/cli.py",
-      "sourceSha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16",
-      "sha256": "36e29028e213cdeacbdb5b0c785574ca424bff766ce56da768381849dac5ef16"
+      "sourceSha256": "57998671ead78097483e023749c2889aa9c573ea135abd0b7f2e3c9f1ed11e4b",
+      "sha256": "57998671ead78097483e023749c2889aa9c573ea135abd0b7f2e3c9f1ed11e4b"
     },
     "story_profile_runtime/adapters/nora/model-config.js": {
       "source": "story-profile/adapters/nora/model-config.js",
@@ -25,13 +25,13 @@
     },
     "story_profile_runtime/adapters/nora/preference-checkpoint.js": {
       "source": "story-profile/adapters/nora/preference-checkpoint.js",
-      "sourceSha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8",
-      "sha256": "ae261e1d4210b5c25ceb48b646d88e123e4064b693d7a9b3961a4628b8a689d8"
+      "sourceSha256": "ae6b111188225166aaaf7b60988310ccb090d2b41205716e1bc95b58318cb267",
+      "sha256": "ae6b111188225166aaaf7b60988310ccb090d2b41205716e1bc95b58318cb267"
     },
     "engine/sillytavern/public/actor.html": {
       "source": "story-profile/public/actor.html",
       "sourceSha256": "98216e81b8e289e1cadb8aaffd7fb2438c5f60a745f0af4c4a9f7e33136ea36f",
-      "sha256": "20476fa1d0fec4805fa6f858d29aaf52226580c92f8a9a3016ab2ec8712f392c"
+      "sha256": "4a6063edf11458a76d37ac8b7e18d81b1d6628edca5893e02ec1bde130c2bf5c"
     },
     "engine/sillytavern/public/story-profile-book.svg": {
       "source": "story-profile/public/story-profile-book.svg",
@@ -45,18 +45,18 @@
     },
     "engine/sillytavern/public/actor.js": {
       "source": "story-profile/public/actor.js",
-      "sourceSha256": "6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359",
-      "sha256": "9d958e7ce861493e84aa42f0c8c70223730ab62d259ff83098e66d9053156d8e"
+      "sourceSha256": "c8f70c23ddaee0975f4db5af3b893262444c599b0bbae41b03452c4b7325b492",
+      "sha256": "b7504ba3e18273e75440092976ffe72ac222fef902aa86da7849a71a8e92bae8"
     },
     "engine/sillytavern/public/console.css": {
       "source": "story-profile/public/console.css",
-      "sourceSha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32",
-      "sha256": "e317f2f19b46f4305bb3ed5b8af2495a1d5b651b6d18efd4c895e6a556a6dd32"
+      "sourceSha256": "0b7fc583d1cdceff37fe97e18fc30b3d0d6d2712c1d8b0d4d6d14ba7c4d73f38",
+      "sha256": "0b7fc583d1cdceff37fe97e18fc30b3d0d6d2712c1d8b0d4d6d14ba7c4d73f38"
     },
     "engine/sillytavern/public/i18n.js": {
       "source": "story-profile/public/i18n.js",
-      "sourceSha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0",
-      "sha256": "65d7c23a132a69a1af5395ff0b7c543447ac089bc696c32596069aa30d13a9c0"
+      "sourceSha256": "725d9109f204b1663046a503c36e31d59fbc5d20a1bf1884e82c0b3f9e9f0d66",
+      "sha256": "725d9109f204b1663046a503c36e31d59fbc5d20a1bf1884e82c0b3f9e9f0d66"
     },
     "engine/sillytavern/public/security.js": {
       "source": "story-profile/public/security.js",

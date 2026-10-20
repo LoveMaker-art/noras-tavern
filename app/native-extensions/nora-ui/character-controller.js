@@ -110,11 +110,16 @@ export function createCharacterController({
         }
         const cleaningDuplicates = group.retained.length > 0;
         const avatars = group.deletable.map(({ character }) => character.avatar);
+        const revisions = Object.fromEntries(avatars.map(avatar => [avatar, libraryCatalog?.get(avatar)?.revision]));
+        if (avatars.some(avatar => !revisions[avatar])) {
+            dialogs.toast(tr("角色卡删除失败"), { tone: 'error' });
+            return;
+        }
         const accepted = await dialogs.confirm({
             title: cleaningDuplicates ? tr("清理重复角色卡？") : t`删除“${group.primary.character.name || tr("未命名角色")}”？`,
             body: cleaningDuplicates
                 ? t`将删除 ${avatars.length} 个未被世界使用的重复副本，正在运行的世界不会受影响。`
-                : tr("将删除这张角色卡及其关联聊天记录，此操作无法撤销。"),
+                : '',
             confirmLabel: cleaningDuplicates ? tr("清理副本") : tr("删除角色卡"),
             tone: 'danger',
             details: avatars,
@@ -125,18 +130,21 @@ export function createCharacterController({
             dialogs.toast(tr("角色卡正在删除，请稍候。"));
             return;
         }
-        let deleted = false;
+        let result;
         try {
             await operations.run('character-delete', async () => {
-                await cards.deleteCharacterCards({ avatars, deleteChats: !cleaningDuplicates });
-                deleted = true;
+                result = await cards.deleteCharacterCards({ avatars, revisions });
                 await reloadWorlds();
                 refresh();
-                dialogs.toast(cleaningDuplicates ? tr("重复角色卡已清理。") : tr("角色卡已删除。"));
                 await openLibrary();
+                if (result.retained.length) {
+                    dialogs.toast(result.removed.length
+                        ? tr("角色卡删除失败")
+                        : tr("角色卡删除失败"));
+                } else dialogs.toast(cleaningDuplicates ? tr("重复角色卡已清理。") : tr("角色卡已删除。"));
             });
         } catch (error) {
-            const prefix = deleted ? tr("角色卡已删除，但页面刷新失败") : tr("角色卡删除失败");
+            const prefix = tr("角色卡删除失败");
             dialogs.toast(`${prefix}：${dialogs.normalizeError(error)}`, { tone: 'error', duration: 4200 });
         }
     }
@@ -214,7 +222,7 @@ export function createCharacterController({
     }
 
     function openCardImport() {
-        const modal = dialogs.open(tr('导入角色卡'), `<form class="nora-form" data-card-import-form><label>PNG / JSON / CHARX / YAML<input name="file" type="file" accept=".png,.json,.charx,.yaml,.yml" required></label><div class="nora-form-actions"><button type="button" data-back>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></div></form>`, 'nora-detail-modal');
+        const modal = dialogs.open(tr('导入角色卡'), `<form class="nora-form" data-card-import-form><label>PNG / JSON / CHARX / YAML<input name="file" type="file" accept=".png,.json,.charx,.yaml,.yml,.byaf" required></label><div class="nora-form-actions"><button type="button" data-back>${tr('取消')}</button><button type="submit" class="nora-primary">${tr('存入库')}</button></div></form>`, 'nora-detail-modal');
         select('[data-back]', modal)?.addEventListener('click', () => openLibrary());
         select('[data-card-import-form]', modal)?.addEventListener('submit', async event => {
             event.preventDefault();

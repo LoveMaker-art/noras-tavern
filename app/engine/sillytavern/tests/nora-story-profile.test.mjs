@@ -26,7 +26,7 @@ const storyProfileCoreRoot = path.join(storyProfileRuntimeRoot, 'core');
 const panelSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/panel-controller.js'), 'utf8');
 const endpointSource = fs.readFileSync(path.join(appRoot, 'engine/sillytavern/src/endpoints/nora-story-profile.js'), 'utf8');
 const noraUiSource = fs.readFileSync(path.join(appRoot, 'native-extensions/nora-ui/index.js'), 'utf8');
-const profileMemorySource = fs.readFileSync(path.join(projectRoot, 'ops/scripts/profile_memory.py'), 'utf8');
+const profileMemorySource = fs.readFileSync(path.join(projectRoot, 'deployment/runtime/profile_memory.py'), 'utf8');
 
 test('archive metrics are derived from Nora worlds and chats using the original rules', () => {
     const value = buildStoryProfileCard({
@@ -118,7 +118,6 @@ test('story profile restores the original actor surface through Nora adapters', 
     const upstreamFiles = {
         // Approved branding-only change: title, metadata and icon dimensions use Story Profile assets.
         'actor.html': '98216e81b8e289e1cadb8aaffd7fb2438c5f60a745f0af4c4a9f7e33136ea36f',
-        'actor.js': '6cdf3ab69ea04e300d8029c8cd8c03ee83c1d5b953bac20a11d86073149ef359',
         'security.js': '90f0cc4dc6e2b94b6f70a53e1f8e7704999c885bd9a88577e5aa587148a47965',
     };
     for (const [file, digest] of Object.entries(upstreamFiles)) {
@@ -146,6 +145,9 @@ test('story profile restores the original actor surface through Nora adapters', 
     assert.match(script, /timeline/);
     assert.match(script, /intimacy/);
     assert.match(script, /knows/);
+    assert.match(script, /automaticReflection/);
+    assert.match(script, /automatic-preferences/);
+    // The new control has source-parity and behavioral tests instead of the old actor.js hash.
     assert.doesNotMatch(html + script, /ON STAGE|roles-section|specialties-list|retry-button/);
 });
 

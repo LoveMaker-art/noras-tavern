@@ -1,3 +1,4 @@
+import path from 'node:path';
 import express from 'express';
 import { runStoryProfileAdapter as runAdapter } from '../nora-story-profile-adapter.js';
 
@@ -46,7 +47,8 @@ function modelEnvelope(request, value = {}) {
 }
 
 async function runReflectionAdapter(request, context) {
-    const result = await runAdapter('reflect', modelEnvelope(request, { context }));
+    const result = await runAdapter('reflect', modelEnvelope(request, { context,
+        automatic_preference_file: path.join(request.user.directories.root, 'story_profile_preferences.json') }));
     if (result.code !== 0 || result.value?.ok === false) {
         throw new Error(result.value?.error || result.stderr || 'Story Profile reflection failed.');
     }
@@ -61,6 +63,7 @@ function checkpointCoordinator(request) {
     if (!coordinator) {
         coordinator = createPreferenceCheckpointCoordinator({
             stateDirectory,
+            preferenceFile: path.join(directories.root, 'story_profile_preferences.json'),
             loadProgress: worldId => loadStoryProfileProgress({ directories, worldId }),
             loadContext: worldId => reflectionContext(request, worldId),
             runReflection: context => runReflectionAdapter(request, context),
@@ -69,6 +72,29 @@ function checkpointCoordinator(request) {
     }
     return coordinator;
 }
+
+function automaticPreferences(request) {
+    let model = null;
+    try {
+        const configured = modelEnvelope(request).model;
+        model = { name: configured?.model || '', source: 'tavern-text-model' };
+    } catch { /* Reading the choice must work before model configuration. */ }
+    return { ...checkpointCoordinator(request).automaticSettings(), model };
+}
+
+router.get('/automatic-preferences', (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    return response.json(automaticPreferences(request));
+});
+router.post('/automatic-preferences', (request, response) => {
+    response.set('Cache-Control', 'no-store');
+    try {
+        checkpointCoordinator(request).configureAutomatic(request.body?.enabled);
+        return response.json(automaticPreferences(request));
+    } catch {
+        return response.status(400).json({ error: 'story_profile_preferences_not_saved' });
+    }
+});
 
 router.get('/card', async (request, response) => {
     try {
