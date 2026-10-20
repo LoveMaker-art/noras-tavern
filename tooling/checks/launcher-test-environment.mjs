@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
+import { buildCommand } from '../release/build-commands.mjs';
 
 const rootDirectory = fileURLToPath(new URL('../../', import.meta.url));
 const desktopDirectory = root => fs.existsSync(path.join(root, 'launcher/desktop/package.json'))
@@ -101,6 +102,13 @@ function checkEnvironment({ root = rootDirectory, profile = 'source', environmen
     try { desktop = loadDependencies(root, clean); }
     catch (error) { if (error.category === 'test_environment') throw error; throw invalid('desktop_dependencies', 'install the locked desktop dependencies for this platform', error); }
     const facts = { profile, node, desktop };
+    if (profile === 'source') {
+        const command = buildCommand('npm', ['--version']);
+        const npm = run(command.command, command.args, { env: clean, encoding: 'utf8', timeout: 10000, maxBuffer: 256 * 1024 });
+        if (npm.error || npm.signal || npm.status !== 0 || !/^\d+\.\d+\.\d+$/.test(npm.stdout?.trim() || ''))
+            throw invalid('npm', 'npm is required on the test PATH before source dependency fixtures start', npm.error);
+        facts.npm = { version: npm.stdout.trim() };
+    }
     if(['source','chromium'].includes(profile)){
         const openssl=run('openssl',['version'],{env:clean,encoding:'utf8',timeout:10000});
         if(openssl.error||openssl.signal||openssl.status!==0||!/^(?:OpenSSL|LibreSSL)\s+\S+/.test(openssl.stdout||''))

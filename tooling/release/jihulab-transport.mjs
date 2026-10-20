@@ -515,5 +515,5 @@ export function createJihuTransport(input,{source,fetcher=fetch,privateToken,log
         },
         async verify(object,p) {const objects=pointers(p,object);await checkCoreAnchor(p);for(const target of objects)await verifyObject(target);},
     };
-    return {preflight,upload,readPublic,verifyObject,verifyIdentity,channelPromotion};
+    return {preflight,upload,readPublic,verifyObject,verifyIdentity,verifyPreparedIdentities,channelPromotion};
 }

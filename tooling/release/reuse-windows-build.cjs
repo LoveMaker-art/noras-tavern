@@ -1,6 +1,8 @@
 const assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {spawn,execFileSync}=require('node:child_process'),{pipeline}=require('node:stream/promises');
 const names=['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64'];
+const sourceStabilityNames=['darwin-arm64','darwin-x64','win32-x64'].flatMap(platform=>
+ ['javascript','python'].map(group=>`nora-source-stability-${platform}-${group}`));
 const otherPlatforms=new Map([
  ['darwin-arm64','build (macos-15, darwin, arm64, pack:mac:arm64)'],
  ['darwin-x64','build (macos-15-intel, darwin, x64, pack:mac:x64)'],
@@ -30,9 +32,13 @@ function verifySource(run,artifacts,jobs,{commit,repository,runId}) {
  assert.equal(run.event,'workflow_dispatch');assert.equal(run.status,'completed');assert.ok(['success','failure'].includes(run.conclusion),'Source must have finished without cancellation');
  assert.equal(artifacts.total_count,artifacts.artifacts.length);
  assert.equal(new Set(artifacts.artifacts.map(item=>item.name)).size,artifacts.artifacts.length,'Duplicate artifact names');
- const allowedNames=new Set([...names,'nora-release-plan','nora-windows-failed-packaging-diagnostic','nora-tavern-shared',
+ const allowedNames=new Set([...names,...sourceStabilityNames,'nora-release-plan','nora-windows-failed-packaging-diagnostic','nora-tavern-shared',
   ...[...otherPlatforms.keys()].flatMap(platform=>['nora-tavern-'+platform,'nora-operation-acceptance-'+platform])]);
  assert.ok(artifacts.artifacts.every(item=>allowedNames.has(item.name)),'Unexpected source artifact');
+ for(const platform of ['darwin-arm64','darwin-x64','win32-x64']) {
+  const pair=['javascript','python'].map(group=>artifacts.artifacts.some(item=>item.name===`nora-source-stability-${platform}-${group}`));
+  assert.equal(pair[0],pair[1],'Source artifacts must include both isolated groups for each platform');
+ }
  assert.deepEqual(artifacts.artifacts.filter(item=>names.includes(item.name)).map(item=>item.name).sort(),[...names].sort());
  assert.equal(new Set(artifacts.artifacts.map(item=>item.id)).size,artifacts.artifacts.length,'Duplicate artifact IDs');
  for(const item of artifacts.artifacts) {
@@ -182,7 +188,7 @@ async function materialize(run,artifacts,jobs,options,root) {
  const provenance=path.join(root,'acceptance','nora-verified-windows-reuse.json');assert.ok(!fs.existsSync(provenance),'Source already contains reuse provenance');
  fs.writeFileSync(provenance,JSON.stringify(proof,null,2)+'\n');console.log(`Verified unchanged native Windows package from run ${run.id} at ${options.commit}.`);
 }
-module.exports={verifyModes,verifySource,verifyArchive,verifyPackage,downloadArchive,materialize,requiredSteps,extractScript};
+module.exports={verifyModes,verifySource,verifyArchive,verifyPackage,downloadArchive,materialize,requiredSteps,extractScript,sourceStabilityNames};
 if(require.main===module) {
  verifyModes(process.env);const [runFile,artifactsFile,jobsFile,commit,repository,runId,root]=process.argv.slice(2);
  materialize(read(runFile),read(artifactsFile),read(jobsFile),{commit,repository,runId},root).catch(error=>{console.error(error);process.exitCode=1;});

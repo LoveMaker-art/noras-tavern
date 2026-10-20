@@ -74,7 +74,7 @@ jobs:
       - name: Verify release contracts and update preservation
         run: |
           node app/engine/sillytavern/build/sync-story-profile-runtime.mjs --check
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/launcher-release-notes.test.cjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/repository-layout.test.mjs tests/component-release.test.mjs tests/component-native-acceptance.test.mjs tests/launcher-release-notes.test.cjs
           node "$PWD/tooling/run.mjs" node --test tests/deployment/updater_worlds.test.mjs tests/deployment/launcher_system_update.test.cjs
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_update_target tests.deployment.test_update_download_sources tests.deployment.test_incremental_update tests.deployment.test_update_check tests.deployment.test_managed_update tests.deployment.test_update_dependency_materialization tests.deployment.test_update_recovery tests.deployment.test_standalone_update_entry tests.deployment.test_standalone_update_recovery tests.deployment.test_launcher_update_recovery tests.deployment.test_update_error_diagnostics tests.deployment.test_native_startup_evidence tests.deployment.test_native_cli_diagnostics
       - name: Require chat backup safety tests
@@ -100,12 +100,11 @@ jobs:
           set -euo pipefail
           release_dir="$(find release -maxdepth 1 -type d -name 'stable-*' | sort | tail -n 1)"
           node tooling/release/package-component-update.mjs "$release_dir" "$BASELINE_TAG" artifacts
-      - name: Accept the exact component delivery without publishing
+      - name: Verify the frozen component delivery before native acceptance
         shell: bash
         run: |
           set -euo pipefail
           node tooling/release/verify-launcher-release.cjs artifacts "$GITHUB_REF_NAME" "$GITHUB_SHA" components
-          node -e 'const fs=require("node:fs"),crypto=require("node:crypto"),path=require("node:path");const inventory={};for(const name of fs.readdirSync("artifacts",{recursive:true})){const p=path.join("artifacts",name);if(fs.statSync(p).isFile())inventory[name]={size:fs.statSync(p).size,sha256:crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex")};}fs.writeFileSync(path.join(process.env.RUNNER_TEMP,"component-acceptance.json"),JSON.stringify({schema:"nora-component-acceptance/1",commit:process.env.GITHUB_SHA,tag:process.env.GITHUB_REF_NAME,outcome:"passed",files:inventory},null,2)+"\n")'
       - name: Preserve accepted component delivery
         uses: actions/upload-artifact@v4
         with:
@@ -114,13 +113,6 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 90
-      - name: Preserve accepted component evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: nora-component-acceptance
-          path: ${{ runner.temp }}/component-acceptance.json
-          if-no-files-found: error
-          retention-days: 90
       - name: Preserve component change plan on failure
         if: always()
         uses: actions/upload-artifact@v4
@@ -128,4 +120,130 @@ jobs:
           name: nora-release-plan
           path: ${{ runner.temp }}/release-plan.json
           if-no-files-found: warn
+          retention-days: 90
+
+  native-components:
+    needs: build-components
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            platform: darwin-arm64
+          - runner: macos-15-intel
+            platform: darwin-x64
+          - runner: windows-latest
+            platform: win32-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      BASELINE_TAG: ${{ inputs.baseline_tag }}
+      PYTHONUTF8: '1'
+    steps:
+      - name: Preserve frozen source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-component-delivery
+          path: ${{ runner.temp }}/component-delivery
+      - name: Pin the native verification tool interpreter
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the native harness lockfile dependencies
+        shell: bash
+        run: npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+      - name: Materialize the same frozen component payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          node tooling/release/component-acceptance.mjs prepare "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-payload" "${{ matrix.platform }}" "$GITHUB_SHA"
+      - name: Authenticate the published baseline for actual native upgrades
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
+          node tooling/release/acceptance-baseline.mjs --tag "$BASELINE_TAG" --platform "${{ matrix.platform }}" --expected-commit "$baseline_commit" --output "$RUNNER_TEMP/component-baseline"
+      - name: Restore the verified frozen runtime for native harness prerequisites
+        timeout-minutes: 10
+        shell: bash
+        run: node "$PWD/tooling/run.mjs" node "$PWD/tooling/release/restore-launcher-runtime.cjs" "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP"
+      - name: Configure actual native operation actors
+        shell: bash
+        run: |
+          set -euo pipefail
+          py="$RUNNER_TEMP/hermes/hermes-agent/venv/bin/python"
+          if [[ "$RUNNER_OS" == Windows ]]; then py="$RUNNER_TEMP/hermes/hermes-agent/venv/Scripts/python.exe"; fi
+          test -f "$py"
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs"),path=require("node:path");const values={NODE_PATH:path.resolve("launcher/desktop/node_modules"),NORA_TEST_NODE:process.execPath,NORA_TEST_PYTHON:process.argv[1],NORA_TEST_MANAGED_PYTHON_ROOT:process.argv[2],NORA_TEST_HERMES:path.dirname(path.dirname(path.dirname(process.argv[1]))),NORA_TEST_OPERATION_HELPER:path.resolve("deployment/shared/operation_control.py")};fs.appendFileSync(process.env.GITHUB_ENV,Object.entries(values).map(([key,value])=>`${key}=${value}`).join("\n")+"\n")' "$py" "$python_root"
+      - name: Require real native harness prerequisites
+        shell: bash
+        run: node tooling/checks/launcher-test-environment.mjs native
+      - name: Test fresh target installation and both native upgrade states with retained user data
+        timeout-minutes: 25
+        shell: bash
+        run: |
+          set -euo pipefail
+          baseline_commit="$(git rev-parse "$BASELINE_TAG^{commit}")"
+          # The harness restores its own isolated runtime. Hide the prerequisite
+          # checkout so a test cannot silently use it as the installed product.
+          mv "$RUNNER_TEMP/hermes" "$RUNNER_TEMP/hermes-build-source"
+          node tooling/release/component-acceptance.mjs run "$RUNNER_TEMP/component-payload" "$RUNNER_TEMP/component-baseline" "$RUNNER_TEMP/component-native-reports" "$RUNNER_TEMP/component-native-scratch" "$GITHUB_SHA" "$BASELINE_TAG" "$baseline_commit"
+      - name: Preserve raw native component evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-native-${{ matrix.platform }}
+          path: ${{ runner.temp }}/component-native-reports/**
+          if-no-files-found: error
+          retention-days: 90
+
+  accept-components:
+    needs: [build-components, native-components]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-component-delivery
+          path: ${{ runner.temp }}/component-delivery
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nora-component-native-*
+          path: ${{ runner.temp }}/component-native
+      - uses: actions/download-artifact@v4
+        with:
+          name: nora-release-plan
+          path: ${{ runner.temp }}/component-plan
+      - name: Accept only complete three-platform native evidence for these bytes
+        shell: bash
+        env:
+          BASELINE_TAG: ${{ inputs.baseline_tag }}
+        run: |
+          set -euo pipefail
+          node tooling/release/component-acceptance.mjs seal "$RUNNER_TEMP/component-delivery" "$RUNNER_TEMP/component-native" "$RUNNER_TEMP/component-plan/release-plan.json" "$RUNNER_TEMP/component-acceptance.json" "$GITHUB_SHA" "$GITHUB_REF_NAME" "$BASELINE_TAG"
+      - name: Preserve final native-accepted component receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-component-acceptance
+          path: ${{ runner.temp }}/component-acceptance.json
+          if-no-files-found: error
           retention-days: 90

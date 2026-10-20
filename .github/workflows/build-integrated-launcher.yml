@@ -12,7 +12,7 @@ on:
         type: string
         default: ''
       target:
-        description: Build installers or check an existing sealed Windows package
+        description: Build installers, run source-only acceptance, or check a sealed Windows package
         type: choice
         default: all
         options:
@@ -21,6 +21,7 @@ on:
           - darwin-x64
           - darwin-arm64
           - win32-package-check
+          - source-checks
       package_source_run:
         description: Diagnostic only - run whose saved Windows package is checked without rebuilding
         type: string
@@ -76,7 +77,7 @@ env:
 
 jobs:
   preflight:
-    if: inputs.target != 'win32-package-check' && inputs.package_source_run == ''
+    if: inputs.target == 'source-checks' || (inputs.target != 'win32-package-check' && inputs.package_source_run == '')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -97,6 +98,23 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - name: Reject product and reuse inputs in source-only acceptance
+        shell: bash
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
+          PACKAGE_SOURCE_RUN: ${{ inputs.package_source_run }}
+          RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
+          VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+          LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
+          PRODUCTION_MODE: ${{ inputs.production_mode }}
+          PUBLICATION_TAG: ${{ inputs.publication_tag }}
+          COMPATIBILITY_FILE: ${{ inputs.compatibility_file }}
+        run: |
+          set -euo pipefail
+          if [[ "$BUILD_TARGET" == source-checks && ( -n "$PACKAGE_SOURCE_RUN" || -n "$RUNTIME_SOURCE_RUN" || -n "$VERIFIED_WINDOWS_RUN" || -n "$LAUNCHER_BASELINE_TAG" || "$PRODUCTION_MODE" == true || "${NORA_APP_ONLY:-false}" == true || -n "$PUBLICATION_TAG" || -n "$COMPATIBILITY_FILE" ) ]]; then
+            echo 'Source-only acceptance cannot prepare, reuse, package or publish product artifacts.' >&2
+            exit 1
+          fi
       - name: Install the workflow contract parser
         run: python -m pip install PyYAML==6.0.2 psutil==7.0.0
       - name: Resolve explicit component publication inputs
@@ -107,6 +125,7 @@ jobs:
         run: node tooling/release/system-release.mjs --workflow-options
       - name: Select a published acceptance baseline independently of environment reuse
         id: acceptance-baseline
+        if: inputs.target != 'source-checks'
         shell: bash
         env:
           ACCEPTANCE_BASELINE_TAG: ${{ inputs.acceptance_baseline_tag }}
@@ -117,12 +136,18 @@ jobs:
       - name: Plan committed changes before native builds
         id: plan
         shell: bash
+        env:
+          BUILD_TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           baseline="$PLANNING_BASELINE"
-          acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
-          if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
-          if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
+          if [[ "$BUILD_TARGET" == source-checks ]]; then
+            if [[ -z "$baseline" ]]; then baseline="$(timeout --signal=TERM --kill-after=5s 120s gh api "repos/$GITHUB_REPOSITORY/releases/latest" --jq '.tag_name')"; fi
+          else
+            acceptance_baseline="$(node -p 'JSON.parse(require("node:fs").readFileSync(process.env.RUNNER_TEMP+"/nora-acceptance-baseline-selection.json")).tag')"
+            if [[ "$baseline" == EMPTY && "$acceptance_baseline" != EMPTY ]]; then echo 'Existing stable history forbids an EMPTY build baseline.' >&2; exit 1; fi
+            if [[ -z "$baseline" ]]; then baseline="$acceptance_baseline"; fi
+          fi
           node "$PWD/tooling/release/release-plan.mjs" --base "$baseline" --head "$GITHUB_SHA" --output "$RUNNER_TEMP/release-plan.json" --github-output "$GITHUB_OUTPUT"
       - name: Require a matching build decision and explicit review of unknown inputs
         shell: bash
@@ -132,6 +157,7 @@ jobs:
           LAUNCHER_BASELINE_TAG: ${{ inputs.launcher_baseline_tag }}
           RUNTIME_SOURCE_RUN: ${{ inputs.runtime_source_run }}
           VERIFIED_WINDOWS_RUN: ${{ inputs.verified_windows_run }}
+          BUILD_TARGET: ${{ inputs.target }}
         run: |
           set -euo pipefail
           if [[ "$REQUIRES_REVIEW" == true && "$APPROVE_UNKNOWN_INPUTS" != true ]]; then
@@ -145,8 +171,8 @@ jobs:
           if [[ "${NORA_APP_ONLY:-false}" == "true" && ( -z "$LAUNCHER_BASELINE_TAG" || "$NORA_PUBLICATION_TAG" == "v$(cat app/.tavern-release-version)" ) ]]; then echo 'APP-only needs an explicit newer publication tag and real launcher baseline.' >&2; exit 1; fi
           case "$PLAN_MODE" in
             full|launcher|review-required) ;;
-            components) echo 'Use the component build workflow for this plan.' >&2; exit 1 ;;
-            verification-only) echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1 ;;
+            components) if [[ "$BUILD_TARGET" != source-checks ]]; then echo 'Use the component build workflow for this plan.' >&2; exit 1; fi ;;
+            verification-only) if [[ "$BUILD_TARGET" != source-checks ]]; then echo 'No product build is required; verify tooling or publish accepted bytes separately.' >&2; exit 1; fi ;;
             *) exit 1 ;;
           esac
       - name: Install mandatory backup workflow contract dependencies
@@ -158,14 +184,14 @@ jobs:
           npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
       - name: Check release tooling before preparing runtimes
         run: |
-          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/backup-safety-gate.test.mjs tests/shared-assets-frozen-client.test.mjs tests/jihulab-credentials.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-transport.test.mjs tests/release-sources-embedding.test.mjs tests/docs-navigation.test.cjs tests/launcher-publish-source.test.cjs
+          node --test tests/release-plan.test.mjs tests/asset-catalogue.test.mjs tests/acceptance-baseline.test.mjs tests/publication-source.test.cjs tests/release-workflow.test.mjs tests/launcher-stability-gate.test.mjs tests/launcher-test-environment.test.mjs tests/launcher-artifact-checks.test.cjs tests/launcher-release-notes.test.cjs tests/repository-layout.test.mjs tests/hermes-bootstrap.test.mjs tests/backup-safety-gate.test.mjs tests/shared-assets-frozen-client.test.mjs tests/jihulab-credentials.test.mjs tests/jihulab-provider.test.mjs tests/jihulab-publisher-config.test.mjs tests/jihulab-transport.test.mjs tests/release-sources-embedding.test.mjs tests/docs-navigation.test.cjs tests/launcher-publish-source.test.cjs tests/component-native-acceptance.test.mjs
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_launcher_shared_logic.SharedLogicTests.test_desktop_starts_gateway_before_scheduling_shared_hook
           node "$PWD/tooling/run.mjs" node --test --test-concurrency=1 "$PWD/tests/deployment/launcher_jihulab_sources.test.cjs" "$PWD/tests/deployment/launcher_static_catalogue.test.cjs" "$PWD/tests/deployment/launcher_shared_assets.test.cjs" "$PWD/tests/deployment/launcher_telemetry.test.cjs" "$PWD/tests/deployment/launcher_error_presentation.test.cjs" "$PWD/tests/deployment/launcher_ui_feedback.test.cjs" "$PWD/tests/deployment/launcher_task_progress.test.cjs" "$PWD/tests/deployment/launcher_diagnostics_operation.test.cjs" "$PWD/tests/deployment/launcher_status_readonly.test.cjs"
           # Publishing tools run from authored source, not the installed ops/ layout.
           node --test "$PWD/tests/deployment/launcher_jihulab_publication.test.cjs"
           node "$PWD/tooling/run.mjs" python -B -m unittest tests.deployment.test_updater_runtime_process_detection
       - name: Verify historical download identities before native builds
-        if: steps.acceptance-baseline.outputs.initial_release != 'true'
+        if: inputs.target != 'source-checks' && steps.acceptance-baseline.outputs.initial_release != 'true'
         timeout-minutes: 5
         shell: bash
         env:
@@ -189,7 +215,7 @@ jobs:
           retention-days: 90
 
   package-check:
-    if: inputs.target == 'win32-package-check' || inputs.package_source_run != ''
+    if: inputs.target != 'source-checks' && (inputs.target == 'win32-package-check' || inputs.package_source_run != '')
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -287,7 +313,7 @@ jobs:
 
   reuse-windows:
     needs: preflight
-    if: inputs.verified_windows_run != '' && inputs.package_source_run == ''
+    if: inputs.target != 'source-checks' && inputs.verified_windows_run != '' && inputs.package_source_run == ''
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -332,9 +358,73 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
+  # Process-census fixtures cannot share a machine with another interpreter
+  # group. Matrix jobs receive separate hosted VMs, not concurrent shells.
+  source-checks:
+    needs: preflight
+    if: inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'source-checks' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [javascript, python]
+        target: >-
+          ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.target == 'win32-x64'
+            && '[{"runner":"windows-latest","platform":"win32","arch":"x64"}]'
+            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-x64'
+            && '[{"runner":"macos-15-intel","platform":"darwin","arch":"x64"}]'
+            || github.event_name == 'workflow_dispatch' && inputs.target == 'darwin-arm64'
+            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64"}]'
+            || inputs.verified_windows_run != ''
+            && '[{"runner":"macos-15","platform":"darwin","arch":"arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64"}]'
+            || '[{"runner":"macos-15","platform":"darwin","arch":"arm64"},{"runner":"macos-15-intel","platform":"darwin","arch":"x64"},{"runner":"windows-latest","platform":"win32","arch":"x64"}]') }}
+    name: source-checks (${{ matrix.target.platform }}-${{ matrix.target.arch }}, ${{ matrix.group }})
+    runs-on: ${{ matrix.target.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Preserve the frozen source bytes
+        shell: bash
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: launcher/desktop/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the locked source-group prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --prefix launcher/desktop --ignore-scripts --no-audit --no-fund
+          python -m venv --copies "$RUNNER_TEMP/nora-source-python"
+          py="$RUNNER_TEMP/nora-source-python/bin/python"
+          if [[ "$RUNNER_OS" == Windows ]]; then py="$RUNNER_TEMP/nora-source-python/Scripts/python.exe"; fi
+          "$py" -m pip install psutil==7.0.0 PyYAML==6.0.2
+          python_root="$("$py" -B -c 'import sys; print(sys.base_prefix, end="")')"
+          node -e 'const fs=require("node:fs");fs.appendFileSync(process.env.GITHUB_ENV,`NORA_TEST_PYTHON=${process.argv[1]}\nNORA_PYTHON=${process.argv[1]}\nNORA_TEST_MANAGED_PYTHON_ROOT=${process.argv[2]}\n`)' "$py" "$python_root"
+      - name: Run the complete isolated source group
+        timeout-minutes: ${{ matrix.group == 'javascript' && (matrix.target.platform == 'win32' || matrix.target.arch == 'x64') && 16 || matrix.target.platform == 'win32' && 9 || 5 }}
+        shell: bash
+        env:
+          SOURCE_GROUP: ${{ matrix.group }}
+        run: node "$PWD/tooling/checks/verify-launcher-stability.mjs" --group "$SOURCE_GROUP" --report "$RUNNER_TEMP/$SOURCE_GROUP.json"
+      - name: Preserve exact source-group acceptance
+        uses: actions/upload-artifact@v4
+        with:
+          name: nora-source-stability-${{ matrix.target.platform }}-${{ matrix.target.arch }}-${{ matrix.group }}
+          overwrite: true
+          path: ${{ runner.temp }}/${{ matrix.group }}.json
+          if-no-files-found: error
+          retention-days: 90
+
   build:
-    needs: [preflight, reuse-windows]
-    if: always() && !cancelled() && needs.preflight.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
+    needs: [preflight, reuse-windows, source-checks]
+    if: always() && !cancelled() && needs.preflight.result == 'success' && needs.source-checks.result == 'success' && (needs.reuse-windows.result == 'success' || needs.reuse-windows.result == 'skipped') && inputs.package_source_run == '' && (github.event_name != 'workflow_dispatch' || inputs.target == 'all' || inputs.target == 'win32-x64' || inputs.target == 'darwin-x64' || inputs.target == 'darwin-arm64')
     strategy:
       fail-fast: false
       matrix:
@@ -425,8 +515,15 @@ jobs:
       - name: Verify cold-profile bootstrap identity before preparing runtimes
         run: node "$PWD/tooling/run.mjs" node --test --test-name-pattern="a fresh runtime bootstrap" "$PWD/tests/deployment/launcher_operation_lock.test.cjs"
 
+      - name: Require this run's isolated source-group acceptance
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nora-source-stability-${{ matrix.platform }}-${{ matrix.arch }}-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/nora-source-stability
+
       - name: Require launcher source stability before preparing runtimes
-        timeout-minutes: ${{ runner.os == 'Windows' && 25 || (runner.os == 'macOS' && matrix.arch == 'x64') && 20 || 10 }}
+        timeout-minutes: 5
         shell: bash
         run: |
           set -euo pipefail
@@ -453,8 +550,7 @@ jobs:
           assert.equal(canonical(probe.prefix),canonical(venvHome),'Source actor did not select its declared virtual environment');
           console.log(JSON.stringify({executionIdentity:resolved.executionIdentity,...probe}));
           JS
-          node "$PWD/tooling/run.mjs" node --test "$PWD/tests/deployment/updater_task_capability.test.cjs"
-          node "$PWD/tooling/checks/verify-launcher-stability.mjs"
+          node "$PWD/tooling/checks/verify-launcher-stability.mjs" --verify-reports "$RUNNER_TEMP/nora-source-stability"
 
       - name: Check release source contracts before preparing runtimes
         timeout-minutes: 5

@@ -37,6 +37,37 @@ test('resumed preparation rechecks immutable availability and delegates channel 
     ['check'],['cas',channel.key],['verify-channel',channel.key]]);
 });
 
+test('readiness batches inventory once per invocation while retaining every HEAD and the full catalogue hash',async()=>{
+  const phases=[],p=publication();let changed=false;
+  const {provider,calls}=fixture({verifyIdentity:async()=>{assert.fail('readiness must use the batch seam');},
+    verifyPreparedIdentities:async actual=>{assert.equal(actual,p);phases.push('fresh');
+      if(changed)throw new Error('inventory SHA changed');}});
+  for(const object of [asset,catalogue])p.state.sources.jihulab.objects[object.key]=receipt(object);
+  await provider.assertReady(p);
+  assert.deepEqual(phases,['fresh']);
+  assert.deepEqual(calls,[['head',asset.key,'HEAD'],['head',catalogue.key,'HEAD'],['verify',catalogue.key]]);
+  changed=true;await assert.rejects(provider.assertReady(p),/inventory SHA changed/);
+  assert.deepEqual(phases,['fresh','fresh'],'a second readiness phase must fetch a new inventory');
+  assert.deepEqual(calls.slice(3),[['head',asset.key,'HEAD'],['head',catalogue.key,'HEAD']]);
+});
+
+test('readiness rejects every invalid receipt before any IO, including receipts later in the plan',async()=>{
+  const {provider,calls}=fixture({verifyPreparedIdentities:async()=>assert.fail('invalid receipt reached inventory')}),p=publication();
+  p.state.sources.jihulab.objects[asset.key]=receipt(asset);
+  p.state.sources.jihulab.objects[catalogue.key]={...receipt(catalogue),sha256:'c'.repeat(64)};
+  await assert.rejects(provider.assertReady(p),/receipt/i);assert.deepEqual(calls,[]);
+});
+
+test('a batched readiness check cannot skip a disappeared public file or the catalogue full-byte verification',async()=>{
+  const p=publication();for(const object of [asset,catalogue])p.state.sources.jihulab.objects[object.key]=receipt(object);
+  const missing=fixture({readPublic:async()=>new Response(null,{status:404}),
+    verifyPreparedIdentities:async()=>assert.fail('unavailable public object reached inventory')});
+  await assert.rejects(missing.provider.assertReady(p),/disappeared/);
+  const corrupt=fixture({verifyPreparedIdentities:async()=>{},verifyObject:async object=>{
+    assert.equal(object,catalogue);throw new Error('catalogue SHA changed');}});
+  await assert.rejects(corrupt.provider.assertReady(p),/catalogue SHA changed/);
+});
+
 test('only a receipt bound to the same sealed bytes can skip adopting the full immutable file',async()=>{
   const {provider,calls}=fixture(),p=publication();
   assert.equal(await provider.inspect(asset,receipt(asset),p),'matching');

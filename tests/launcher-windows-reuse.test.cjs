@@ -53,6 +53,21 @@ test('a same-run decision plan is verified but is not extracted over native acce
  f.artifacts.artifacts[2].workflow_run={...f.artifacts.artifacts[2].workflow_run,head_sha:'b'.repeat(40)};
  assert.throws(()=>verifySource(f.run,f.artifacts,f.jobs,f.options));
 });
+test('isolated source groups remain evidence and cannot replace accepted Windows artifacts',()=>{
+ const {sourceStabilityNames}=require('../tooling/release/reuse-windows-build.cjs');
+ assert.deepEqual(require('../tooling/release/publication-source.cjs').sourceStabilityNames,sourceStabilityNames);
+ const f=sourceFixture();
+ for(const name of sourceStabilityNames)f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:f.artifacts.artifacts.length+1,name});
+ f.artifacts.total_count=f.artifacts.artifacts.length;
+ assert.deepEqual(verifySource(f.run,f.artifacts,f.jobs,f.options).map(item=>item.name),['nora-tavern-win32-x64','nora-operation-acceptance-win32-x64']);
+ for(const mutate of [
+  v=>{v.artifacts.artifacts=v.artifacts.artifacts.filter(item=>item.name!=='nora-tavern-win32-x64');v.artifacts.total_count--;},
+  v=>{v.artifacts.artifacts=v.artifacts.artifacts.filter(item=>item.name!=='nora-source-stability-win32-x64-python');v.artifacts.total_count--;},
+  v=>{v.artifacts.artifacts[2].name='nora-source-stability-linux-x64-javascript';},
+  v=>{v.artifacts.artifacts[2].workflow_run={...v.artifacts.artifacts[2].workflow_run,head_sha:'b'.repeat(40)};},
+  v=>{v.artifacts.artifacts[2].digest='missing';},
+ ]){const bad=structuredClone(f);mutate(bad);assert.throws(()=>verifySource(bad.run,bad.artifacts,bad.jobs,bad.options));}
+});
 test('failed native diagnostic evidence remains available without replacing the accepted Windows delivery',()=>{
  const f=sourceFixture();f.artifacts.artifacts.push({...f.artifacts.artifacts[0],id:3,name:'nora-windows-failed-packaging-diagnostic'});f.artifacts.total_count++;
  assert.equal(verifySource(f.run,f.artifacts,f.jobs,f.options).length,2);
@@ -119,11 +134,11 @@ test('safe extraction rejects path traversal, duplicate case-folded names and sy
 });
 const workflow=fs.readFileSync(path.join(__dirname,'../.github/workflows/build-integrated-launcher.yml'),'utf8');
 function condition(job) {return workflow.match(new RegExp(`^  ${job}:\\n(?:[^\\n]*\\n)*?    if: ([^\\n]+)`,'m'))[1];}
-function evaluate(expression,inputs,github,needs={},cancelled=false) {return Function('inputs','github','needs','always','cancelled','startsWith','return '+expression.replaceAll('needs.reuse-windows','needs["reuse-windows"]'))(inputs,github,needs,()=>true,()=>cancelled,(a,b)=>a.startsWith(b));}
+function evaluate(expression,inputs,github,needs={},cancelled=false) {return Function('inputs','github','needs','always','cancelled','startsWith','return '+expression.replace(/needs\.([a-z]+-[a-z-]+)/g,'needs["$1"]'))(inputs,github,needs,()=>true,()=>cancelled,(a,b)=>a.startsWith(b));}
 const buildWorkflow=workflow.split('\n  build:\n')[1].split(/\n  [\w-]+:\n/)[0];
 const matrixExpression=buildWorkflow.match(/\$\{\{ fromJSON\(([\s\S]*?)\) \}\}/)[1];
 test('actual build workflow routes package diagnostics independently, gates native work and never publishes',()=>{
- assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: \[preflight, reuse-windows\]/);
+ assert.match(condition('build'),/always\(\)/);assert.match(workflow,/  build:\n    needs: \[preflight, reuse-windows, source-checks\]/);
  assert.doesNotMatch(workflow,/^  (?:bootstrap-contract|replacement-contract|gui-exit-contract|publish-release):/m);
  const tuples={
   'darwin-arm64':{runner:'macos-15',platform:'darwin',arch:'arm64',package_script:'pack:mac:arm64'},
@@ -140,7 +155,7 @@ test('actual build workflow routes package diagnostics independently, gates nati
   ['darwin-x64','','123','branch',false,['darwin-x64']],['darwin-arm64','','123','branch',false,['darwin-arm64']],
   ['unknown-target','','','branch',false,all],
  ]) {
-  const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success'},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
+  const inputs={target,verified_windows_run:reuse,package_source_run:packageSource},github={event_name:'workflow_dispatch',ref_type:ref},needs={preflight:{result:'success'},'source-checks':{result:'success'},'reuse-windows':{result:reuse&&!packageSource?'success':'skipped'}};
   assert.equal(Boolean(evaluate(condition('package-check'),inputs,github,needs)),target==='win32-package-check'||packageSource!=='');
   assert.equal(Boolean(evaluate(condition('reuse-windows'),inputs,github,needs)),reuse!==''&&packageSource==='');
   assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),expectedBuild);
@@ -151,11 +166,16 @@ test('actual build workflow routes package diagnostics independently, gates nati
  for(const target of ['all','win32-x64','darwin-x64','darwin-arm64']) {
   const inputs={target,verified_windows_run:'123',package_source_run:''},github={event_name:'workflow_dispatch',ref_type:'branch'};
   for(const result of ['failure','cancelled']) {
-   const needs={preflight:{result:'success'},'reuse-windows':{result}};
+   const needs={preflight:{result:'success'},'source-checks':{result:'success'},'reuse-windows':{result}};
    assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false);
   }
  }
- const betaInputs={target:'',verified_windows_run:'',package_source_run:''},beta={event_name:'push',ref_type:'tag'},needs={preflight:{result:'success'},'reuse-windows':{result:'skipped'}};
+ for(const result of ['failure','cancelled','skipped']) {
+  const inputs={target:'all',verified_windows_run:'',package_source_run:''},github={event_name:'workflow_dispatch',ref_type:'branch'};
+  const needs={preflight:{result:'success'},'source-checks':{result},'reuse-windows':{result:'skipped'}};
+  assert.equal(Boolean(evaluate(condition('build'),inputs,github,needs)),false,'Incomplete source shards must stop packaging');
+ }
+ const betaInputs={target:'',verified_windows_run:'',package_source_run:''},beta={event_name:'push',ref_type:'tag'},needs={preflight:{result:'success'},'source-checks':{result:'success'},'reuse-windows':{result:'skipped'}};
  assert.equal(Boolean(evaluate(condition('build'),betaInputs,beta,needs)),true);
  assert.deepEqual(JSON.parse(evaluate(matrixExpression,betaInputs,beta)),all.map(target=>tuples[target]));
 });

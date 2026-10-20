@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {test} from 'node:test';
 import {createJihuTransport,loadJihuUploadConfig} from '../tooling/release/jihulab-transport.mjs';
+import {jihulabProvider} from '../tooling/release/jihulab-provider.mjs';
 
 const config={projectId:378185,projectPath:'LoveMaker-art/nora-tavern',packageName:'nora-tavern',branch:'main'};
 const api='https://jihulab.com/api/v4/projects/378185';
@@ -43,7 +44,7 @@ function fixture(t,{route=()=>new Response(null,{status:404}),policyValue=policy
     const pointer=object(bytes,'channels/stable.json','channel');
     return {plan:{tag,channel:'stable',objects:[pointer]},pointer,bytes};
   };
-  return {transport,calls,logs,object,publication,root};
+  return {transport,calls,logs,object,publication,root,fetcher};
 }
 
 const inventoryConfig={...config,immutablePolicy:'inventory-single-publisher'};
@@ -392,6 +393,75 @@ test('inventory compares exact package identity and never infers a missing file 
     const {transport,object,server}=inventoryFixture(t,{files:[{...inventoryFile(Buffer.from('asset')),...changed}]});
     await assert.rejects(transport.upload(object(Buffer.from('asset')),{immutable:true}),/inventory/i);assert.equal(server.writes,0);
   }
+});
+
+test('83-file readiness reads one complete inventory, all public HEADs, and the catalogue bytes per phase',async t=>{
+  const content=new Map();
+  const f=inventoryFixture(t,{extraRoute:call=>{
+    const bytes=content.get(call.url);
+    if(bytes)return new Response(call.method==='HEAD'?null:bytes,{headers:{'content-length':String(bytes.length)}});
+  }});
+  const p=f.publication(),objects=[];
+  for(let index=0;index<83;index++) {
+    const name=index===82?'release.json':`asset-${index}.zip`,bytes=Buffer.from(`sealed-${index}`);
+    const object=f.object(bytes,`releases/v2.4.5/${name}`,index===82?'catalogue':'asset');
+    objects.push(object);content.set(source.baseUrl+`v2.4.5/${name}`,bytes);
+  }
+  f.server.files=objects.map((object,index)=>inventoryFile(content.get(source.baseUrl+object.key.replace(/^releases\//,'')),
+    path.basename(object.key),901+index));
+  p.plan.objects.unshift(...objects);p.state={sources:{jihulab:{objects:Object.fromEntries(objects.map(object=>[object.key,
+    {size:object.size,sha256:object.sha256,verifiedAt:'2026-10-19T00:00:00.000Z'}]))}}};
+  const provider=jihulabProvider({...f.transport,fetcher:f.fetcher,log:()=>{}});
+  await provider.assertReady(p);
+  const counts=()=>({packages:f.calls.filter(call=>new URL(call.url).pathname===new URL(api).pathname+'/packages').length,
+    files:f.calls.filter(call=>new URL(call.url).pathname.endsWith('/package_files')).length,
+    heads:f.calls.filter(call=>call.method==='HEAD').length,
+    catalogueGets:f.calls.filter(call=>call.url===source.baseUrl+'v2.4.5/release.json'&&call.method==='GET').length});
+  assert.deepEqual(counts(),{packages:6,files:1,heads:83,catalogueGets:1});
+  assert.equal(f.calls.length,91,'one-page readiness must not repeat the seven-request inventory for every object');
+  f.server.files[0]={...f.server.files[0],file_sha256:hash('changed-after-readiness')};
+  await assert.rejects(provider.assertReady(p),/SHA/);
+  assert.deepEqual(counts(),{packages:12,files:2,heads:166,catalogueGets:1},'no inventory may survive into a later readiness phase');
+  f.server.files[0]={...f.server.files[0],file_sha256:objects[0].sha256};
+  const before=f.calls.length;
+  const perObject=jihulabProvider({...f.transport,verifyPreparedIdentities:undefined,fetcher:f.fetcher,log:()=>{}});
+  await perObject.assertReady(p);
+  const previousCalls=f.calls.slice(before);
+  assert.equal(previousCalls.filter(call=>new URL(call.url).pathname===new URL(api).pathname+'/packages'
+    ||new URL(call.url).pathname.endsWith('/package_files')).length,581);
+  assert.equal(previousCalls.length,665,'the per-object compatibility path provides the measured comparison');
+  assert.equal(f.server.writes,0);
+});
+
+test('batch readiness rejects missing, duplicate, changed, unavailable, and unexpected inventory objects',async t=>{
+  const bytes=Buffer.from('asset');
+  const cases=[{files:[]},{files:[inventoryFile(bytes),inventoryFile(bytes,'asset.zip',902)]},
+    {files:[{...inventoryFile(bytes),file_sha256:hash('changed')}]},
+    {files:[{...inventoryFile(bytes),size:bytes.length+1}]},
+    {packages:[{...packageRecord,status:'processing'}]},
+    {packages:[packageRecord,{...packageRecord,id:902}]},
+    {files:[inventoryFile(bytes),inventoryFile(bytes,'unexpected.zip',902)]}];
+  for(const scenario of cases) {
+    const f=inventoryFixture(t,scenario),p=f.publication();p.plan.objects.unshift(f.object(bytes));
+    await assert.rejects(f.transport.verifyPreparedIdentities(p),/missing|duplicate|SHA|unavailable|closure|inventory/i);
+    assert.ok(f.calls.every(call=>(call.method||'GET')==='GET'),'inventory validation must never write');
+  }
+});
+
+test('batch inventory is grouped by source version and refreshed for referenced historical assets too',async t=>{
+  const current=Buffer.from('current'),old=Buffer.from('previous');let oldFiles=[{...inventoryFile(old),package_id:910}];
+  const f=fixture(t,{configValue:inventoryConfig,route:call=>{
+    const url=new URL(call.url);
+    if(url.pathname===new URL(api).pathname+'/packages')return json(url.searchParams.get('status')==='default'
+      ?[{...packageRecord,...(url.searchParams.get('package_version')==='v2.4.4'?{id:910,version:'v2.4.4'}:{})}]:[],200,{'x-next-page':''});
+    if(url.pathname.endsWith('/packages/900/package_files'))return json([inventoryFile(current)],200,{'x-next-page':''});
+    if(url.pathname.endsWith('/packages/910/package_files'))return json(oldFiles,200,{'x-next-page':''});
+    return new Response(null,{status:404});
+  }});
+  const p=f.publication();p.plan.objects.unshift(f.object(current),{...f.object(old,'releases/v2.4.4/asset.zip'),reference:true});
+  await f.transport.verifyPreparedIdentities(p);assert.equal(f.calls.length,14);
+  oldFiles=[{...oldFiles[0],file_sha256:hash('historical-asset-changed')}];
+  await assert.rejects(f.transport.verifyPreparedIdentities(p),/SHA/);assert.equal(f.calls.length,28);
 });
 
 test('channel check and promotion recheck inventory closure and block changed identities before CAS',async t=>{

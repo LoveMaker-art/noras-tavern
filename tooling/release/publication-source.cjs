@@ -6,11 +6,16 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const { spawn, execFileSync } = require('node:child_process');
 const { pipeline } = require('node:stream/promises');
-const { verifyArchive, extractScript } = require('./reuse-windows-build.cjs');
+const { verifyArchive, extractScript, sourceStabilityNames } = require('./reuse-windows-build.cjs');
 const platforms = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const fullNames = ['nora-tavern-shared', ...platforms.map(p => `nora-tavern-${p}`),
   ...platforms.map(p => `nora-operation-acceptance-${p}`)];
-const componentNames = ['nora-component-delivery', 'nora-component-acceptance', 'nora-release-plan'];
+// New full workflows retain isolated source groups as evidence. Historical
+// accepted workflows predate these reports; their original native gates still
+// apply. Never treat an arbitrary source prefix as a deliverable or an excuse
+// for a missing required product artifact.
+const componentNames = ['nora-component-delivery', 'nora-component-acceptance', 'nora-release-plan',
+  ...platforms.map(p => `nora-component-native-${p}`)];
 const stateNames = ['nora-publication-state-before-transfer', 'nora-publication-state'];
 const diagnostics = ['nora-windows-failed-packaging-diagnostic'];
 const digestBytes = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -282,7 +287,8 @@ async function verifyHistoricalAcceptance(acceptance, planRoot, pages, { reposit
   return { initialRelease: false, baselines: result };
 }
 async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit) {
-  const report = oneReport(acceptance, 'component-acceptance.json'); assert.equal(report.schema, 'nora-component-acceptance/1');
+  const report = oneReport(acceptance, 'component-acceptance.json');
+  assert.equal(report.schema, 'nora-component-acceptance/2', 'Component publication requires three-platform native acceptance; old source-only receipts are insufficient');
   assert.equal(report.commit, commit); assert.equal(report.outcome, 'passed'); assert.match(report.tag, /^v\d+\.\d+\.\d+$/);
   const plan = oneReport(planRoot, 'release-plan.json'); assert.equal(plan.schema, 'nora-release-plan/v1'); assert.equal(plan.source.commit, commit);
   assert.equal(plan.mode, 'components'); assert.equal(plan.requiresReview, false);
@@ -292,7 +298,16 @@ async function verifyComponentAcceptance(delivery, acceptance, planRoot, commit)
     assert.equal(fs.statSync(path.join(delivery, name)).size, entry.size); assert.equal(await digestFile(path.join(delivery, name)), entry.sha256);
   }
   assert.deepEqual([...names].sort(), fs.readdirSync(delivery).sort(), 'Component receipt must cover the exact delivery');
-  return { outcome: 'passed', files: names.size };
+  assert.match(plan.baseline.ref, /^v\d+\.\d+\.\d+$/); assert.match(plan.baseline.commit, /^[a-f0-9]{40}$/);
+  const {verifyComponentNative}=await import('./component-acceptance.mjs');
+  assert.deepEqual(Object.keys(report.native || {}).sort(), [...platforms].sort(), 'All native platforms are required for component publication');
+  const native={};
+  for(const platform of platforms){
+    native[platform]=verifyComponentNative({delivery,reports:path.join(acceptance,`nora-component-native-${platform}`),
+      platform,commit,baselineTag:plan.baseline.ref,baselineCommit:plan.baseline.commit});
+    assert.deepEqual(report.native[platform],native[platform],'Final component receipt differs from raw native evidence');
+  }
+  return { outcome: 'passed', files: names.size, native };
 }
 function identity(run, artifacts, { repository, runId }, conclusions) {
   assert.match(repository, /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/);
@@ -324,7 +339,11 @@ function verifyDelivery(run, artifacts, options) {
   assert.equal(run.path, `.github/workflows/${full ? 'build-integrated-launcher' : 'publish-component-update'}.yml`);
   const names = artifacts.artifacts.map(item => item.name).sort();
   const expected = full ? fullNames : componentNames;
-  assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && diagnostics.includes(name))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
+  assert.deepEqual(names.filter(name => name !== 'nora-release-plan' && !(full && (diagnostics.includes(name) || sourceStabilityNames.includes(name)))), expected.filter(name => name !== 'nora-release-plan').sort(), 'Incomplete accepted delivery or unexpected artifact');
+  if(full)for(const platform of platforms){
+    const pair=['javascript','python'].map(group=>names.includes(`nora-source-stability-${platform}-${group}`));
+    assert.equal(pair[0],pair[1],'Retained source evidence must include both isolated groups for each platform');
+  }
   if (!full) assert.ok(names.includes('nora-release-plan'), 'Component source must retain its change plan');
   return artifacts.artifacts.filter(item => !diagnostics.includes(item.name));
 }
@@ -433,7 +452,7 @@ async function materialize(run, artifacts, options, root, kind) {
     const archive = path.join(root, item.name + '.zip');
     await downloadArchive(item, options.repository, archive);
     const category = kind === 'state' ? 'state' : item.name === 'nora-release-plan' ? 'plan'
-      : item.name.includes('acceptance') ? 'acceptance' : 'delivery';
+      : item.name.includes('acceptance') || item.name.startsWith('nora-component-native-') || sourceStabilityNames.includes(item.name) ? 'acceptance' : 'delivery';
     const destination = kind === 'state' ? path.join(root, 'state') : path.join(root, category === 'delivery' ? 'originals' : category, item.name);
     fs.mkdirSync(path.dirname(destination), { recursive: true });
     execFileSync('python3', ['-c', extractScript, archive, destination], { stdio: 'inherit' });
@@ -452,7 +471,7 @@ async function materialize(run, artifacts, options, root, kind) {
   console.log(`Verified ${kind} source ${run.id} at ${run.head_sha}; artifact ZIP digests match.`);
   return receipt;
 }
-module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, stateNames };
+module.exports = { selectAcceptanceBaseline, compareVersions, verifyHistoricalAcceptance, verifyDelivery, verifyState, verifyRestoredState, verifyNativeAcceptance, verifyComponentAcceptance, immutableStateHashes, snapshotBeforeTransfer, flattenDelivery, downloadArchive, materialize, fullNames, componentNames, sourceStabilityNames, stateNames };
 if (require.main === module) {
   if (process.argv[2] === 'baseline-selection') {
     const [, , , releasesFile, targetTag, repository, requestedTag, output, githubOutput, operation] = process.argv;
