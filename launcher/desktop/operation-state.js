@@ -31,6 +31,10 @@ function retryIdentity(target){
 }
 const failedAttempt=record=>record&&record.state!=='succeeded'&&Boolean(record.primaryFailure);
 const PAIR_COOLDOWN_MS=30000;
+const MODEL_RETRY_WINDOW_MS=30000;
+const modelValidation=(record,target=record?.target)=>record?.kind==='model'&&target?.request?.mode==='configure'
+  &&record.stageId==='selecting'&&record.effectState==='untouched'&&!record.handoffRef
+  &&!['recovery-required','files-restored-start-failed'].includes(record.recoveryOutcome);
 
 // The operation record stores references and outcomes. File swap inventories
 // and installed-version truth stay in their journal and receipt owners.
@@ -253,6 +257,11 @@ function createOperationController({directory,lock,executors={},recoverers={},re
     if(record.kind==='pair'||record.kind==='model'&&record.target?.request?.mode==='configure')
       allowedActions=allowedActions.filter(action=>!['retry','resume'].includes(action));
     allowedActions=failureActions((record.currentFailure||record.primaryFailure)?.code,{operation:{...record,busy:fields.busy,allowedActions}})||allowedActions;
+    // A fresh form submission supplies transient credentials again. Only a
+    // failed validation before saving can reopen it; never replay a saved write.
+    if(modelValidation(record)&&!record.archived&&!fields.busy
+      &&['failed','cancelled','blocked'].includes(record.state))
+      allowedActions=[...new Set(['configure-model',...allowedActions])];
     // A fresh, explicit pairing submission needs new transient input. It is
     // never an automatic replay of the previous operation's one-time code.
     if(record.kind==='pair'&&!record.archived&&!fields.busy&&!record.handoffRef
@@ -376,7 +385,7 @@ function createOperationController({directory,lock,executors={},recoverers={},re
           &&(value.retryTargetDigest||retryIdentity(value.target))===retryTargetDigest
           &&value.conditionFingerprint===record.conditionFingerprint).at(-1);
         await update({target:JSON.parse(JSON.stringify(target)),planDigest,retryTargetDigest,planSelected:true,attempt:failedAttempt(previous)?previous.attempt+1:1});
-        if(record.kind!=='pair'&&failedAttempt(previous)&&previous.attempt>=2){
+        if(record.kind!=='pair'&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
           const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
           const ownFailure=(record.currentFailure||record.primaryFailure)&&Date.parse(record.createdAt)>Date.parse(previous.createdAt);
           error.retryConditionTarget=ownFailure?failureCondition(record):failureCondition(previous);throw error;
@@ -577,7 +586,20 @@ function createOperationController({directory,lock,executors={},recoverers={},re
       }
       const previous=candidates.filter(value=>value.conditionFingerprint===record.conditionFingerprint).at(-1);
       record.attempt=failedAttempt(previous)?previous.attempt+1:1;
-      if(kind!=='pair'&&failedAttempt(previous)&&previous.attempt>=2){
+      if(modelValidation(record)){
+        // Count actual failed executions, not blocked clicks. Their original
+        // timestamps survive reopening; rejected submissions cannot extend the window.
+        const recent=candidates.filter(value=>!value.archived&&modelValidation(value,record.target)&&value.state==='failed'
+          &&value.conditionFingerprint===record.conditionFingerprint
+          &&Date.parse(now())-Date.parse(value.updatedAt)<MODEL_RETRY_WINDOW_MS);
+        if(recent.length>=2){
+          const error=fail('MODEL_RETRY_COOLDOWN','Model validation submissions are temporarily limited');
+          record.state='blocked';record.primaryFailure=recent.at(-1).primaryFailure;
+          record.currentFailure=failure(error,kind,record);
+          await write(record,lease,{expected:null});await lease.release();return dto(record);
+        }
+      }
+      if(kind!=='pair'&&!modelValidation(previous,record.target)&&failedAttempt(previous)&&previous.attempt>=2){
         const error=fail('RETRY_CONDITIONS_UNCHANGED','Same target and conditions have already failed twice');
         record.state='blocked';record.primaryFailure={code:'RETRY_CONDITIONS_UNCHANGED',site:'launcher.operation',
           guidance:presentError(error,{action:kind})};

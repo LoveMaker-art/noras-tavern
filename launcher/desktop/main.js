@@ -192,11 +192,12 @@ function maintenancePolicy(){
       spawnChild:(command,args,options)=>spawnMaintenance(command,args,options)})});
 }
 
-function requireOperationResult(operation,{recover=false}={}) {
+function requireOperationResult(operation,{recover=false,cause}={}) {
   if(operation.state!=='succeeded'&&!(recover&&operation.state==='rolled-back'&&operation.verification==='confirmed')&&operation.state!=='awaiting-handoff'){
     const failure=operation.currentFailure||operation.primaryFailure;
-    throw Object.assign(new Error(failure?.guidance?.detail||'操作尚未完成，请查看当前状态。'),
-      {code:failure?.code||'OPERATION_INTERRUPTED',userCode:failure?.code,operation,logOperationId:operation.operationId});
+    throw Object.assign(new Error(failure?.guidance?.detail||'操作尚未完成，请查看当前状态。',cause?{cause}:undefined),
+      {code:failure?.code||'OPERATION_INTERRUPTED',userCode:failure?.code,operation,logOperationId:operation.operationId},
+      cause?{status:cause.status,source:cause.source,site:cause.site}:{});
   }
   return {...operation.result,operation};
 }
@@ -259,7 +260,8 @@ async function runOwnedTask(kind,request,execute,{requestId=require('node:crypto
     telemetry?.begin(kind==='shutdown'?'stop':kind,{operationId:context.operationId});
     return telemetry?telemetry.scope(()=>execute(context)):execute(context);
   },onFailure:rememberOperationFailure},requestId);
-    finishOperationTelemetry(operation);return requireOperationResult(operation);
+    const cause=kind==='model'?operationErrors.get(operation.operationId):undefined;
+    finishOperationTelemetry(operation);return requireOperationResult(operation,{cause});
   }finally{activeOperationContext=null;}
 }
 let activeRun = false;

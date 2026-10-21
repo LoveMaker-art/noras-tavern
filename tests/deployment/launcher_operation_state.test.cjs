@@ -297,7 +297,7 @@ test('busy and uncertain effects keep safety actions ahead of incompatible-packa
   assert.deepEqual(failureResult(original,{operation:busy}).error.allowedActions,busy.allowedActions);
 });
 
-test('model failures are bounded for identical inputs while corrected credentials or model allow a new actual attempt',async t=>{
+test('model validation failures have a finite cooldown while corrected inputs allow a new actual attempt',async t=>{
   const {configurationFingerprint}=require('../installer/desktop/model-config');
   const salt='fixture-installation-private-salt';let runs=0;
   const execute=async()=>{runs++;throw Object.assign(new Error('credential rejected'),{status:401});};
@@ -314,6 +314,71 @@ test('model failures are bounded for identical inputs while corrected credential
   for(const secret of [input.key,'fixture-private-key-b',input.baseUrl])assert.equal(records.includes(secret),false);
   assert.equal(configurationFingerprint(input,salt),configurationFingerprint({...input},salt));
   assert.notEqual(configurationFingerprint(input,salt),configurationFingerprint(input,'another-installation-private-salt'));
+});
+
+test('model cooldown expires without changing input and blocked clicks cannot extend it across reopening',async t=>{
+  let now=Date.now(),runs=0,succeed=false;
+  const f=fixture(t,async()=>{}, {now:()=>new Date(now).toISOString(),executors:{model:async()=>{
+    runs++;if(!succeed)throw Object.assign(new Error('temporary provider failure'),{status:503});return {};
+  }}});
+  const options={target:{request:{mode:'configure',provider:'custom'}},conditionFingerprint:'same-private-input'};
+  const submit=id=>createOperationController(f.options).start('model',options,id);
+  const startedAt=now;
+  const first=await submit('first');now+=1000;const second=await submit('second');
+  const bytes=id=>fs.readFileSync(path.join(f.directory,'operations',id,'operation.json'));
+  const history=[bytes(first.operationId),bytes(second.operationId)];
+  for(const [i,elapsed] of [1000,10000,29000].entries()){
+    now=startedAt+elapsed;
+    const blocked=await submit(`blocked-${i}`);
+    assert.equal(blocked.failureCode,'MODEL_RETRY_COOLDOWN');assert.equal(runs,2);
+    assert.match(blocked.currentFailure.guidance.next,/30秒/);
+    assert.match(blocked.currentFailure.guidance.detail,/没有发送模型请求/);
+    assert.ok(blocked.allowedActions.includes('configure-model'));
+    assert.ok(!blocked.allowedActions.includes('resume'));
+  }
+  now=startedAt+30001;succeed=true;
+  assert.equal((await submit('after-window')).state,'succeeded');assert.equal(runs,3);
+  assert.deepEqual(bytes(first.operationId),history[0]);assert.deepEqual(bytes(second.operationId),history[1]);
+});
+
+test('legacy model retry blocks allow a fresh form submission without deleting history',async t=>{
+  for(const archived of [false,true])await t.test(archived?'archived historical summary':'full historical record',async t=>{
+  let runs=0;
+  const f=fixture(t,async()=>{}, {executors:{model:async()=>{runs++;return {};}}});
+  const options={target:{request:{mode:'configure',provider:'custom'}},conditionFingerprint:'same-input'};
+  const old=await f.controller.start('model',{...options,execute:async()=>{
+    throw Object.assign(new Error('old retry block'),{code:'RETRY_CONDITIONS_UNCHANGED'});
+  }},'legacy-block');
+  const file=path.join(f.directory,'operations',old.operationId,'operation.json');
+  const legacy=JSON.parse(fs.readFileSync(file));legacy.attempt=3;
+  // Archived summaries retain the retry identity but omit transient target fields.
+  if(archived){legacy.archived=true;legacy.target={};}
+  fs.writeFileSync(file,JSON.stringify(legacy));const before=fs.readFileSync(file);
+  const reopened=createOperationController(f.options);
+  const inspected=await reopened.snapshot(old.operationId);
+  if(!archived)assert.ok(inspected.allowedActions.includes('configure-model'));
+  assert.equal((await reopened.start('model',options,'fresh-form')).state,'succeeded');assert.equal(runs,1);
+  assert.deepEqual(fs.readFileSync(file),before);
+  });
+});
+
+test('model retry exemption does not reopen saved configuration or bypass unknown maintenance effects',async t=>{
+  let writes=0;
+  const f=fixture(t,async()=>{}, {executors:{model:async context=>{
+    writes++;await context.stage('applying');
+    throw Object.assign(new Error('configuration already saved'),{code:'MODEL_CONFIG_PARTIAL'});
+  }}});
+  const options={target:{request:{mode:'configure',provider:'custom'}},conditionFingerprint:'fixed-input'};
+  const first=await f.controller.start('model',options,'saved-one');
+  assert.ok(!first.allowedActions.includes('configure-model'));
+  await f.controller.start('model',options,'saved-two');
+  assert.equal((await f.controller.start('model',options,'saved-three')).failureCode,'RETRY_CONDITIONS_UNCHANGED');
+  assert.equal(writes,2);
+  const uncertain=fixture(t,async context=>{await context.effect('unknown');throw new Error('pending recovery');});
+  await uncertain.controller.start('install',{},'pending-install');
+  await assert.rejects(uncertain.controller.start('model',{...options,execute:async()=>{writes++;return {}; }},'denied-model'),
+    {code:'UPDATE_RECOVERY_REQUIRED'});
+  assert.equal(writes,2);
 });
 
 test('first condition facts commit before execution and fresh requests keep the failed final-plan baseline',async t=>{
